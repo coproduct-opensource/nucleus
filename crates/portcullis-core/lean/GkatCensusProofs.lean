@@ -11259,6 +11259,219 @@ theorem demo_solves :
 
 end RegionDemo
 
+section CycleDemo
+
+/-! **The two-state cycle.**  336's demo had one state, so `LoopLayerOn`'s shared
+`entry` never had to distinguish between region states.  Here it does, and the
+question 332 measured is answered mechanically: the shared entry is appended at
+EVERY region state, so a back-edge belonging to one state appears, syntactically,
+in the other's transition list too.  What makes that harmless is that the gate is
+`BExp.and (base.hlt s) (BExp.and b tr.1)` — and `base.hlt` is **per state**, and
+on `b`-atoms it is left completely free by `LoopLayerOn.hlt_eq`, which only
+constrains `base.hlt` where `b` is false.  So `base.hlt` doubles as the selector
+saying at which region states the shared entry actually fires. -/
+
+/-- `none` is a level-0 sink; `some false → some true → some false` is a level-1
+    two-cycle that exits to the sink. -/
+def lvl2 : Option Bool → Nat
+  | none => 0
+  | some _ => 1
+
+def d2Base : GkatThompson.GSystem (Option Bool) Unit Unit where
+  states := [none, some false, some true]
+  hlt := fun s => match s with
+    | none => BExp.and (BExp.and BExp.one (BExp.not BExp.zero)) BExp.one
+    | some false => BExp.zero
+    | some true => BExp.one
+  trans := fun s => match s with
+    | none => []
+    | some false => [(BExp.one, (), some true)]
+    | some true => []
+
+def d2Entry : List (BExp Unit × Unit × Option Bool) := [(BExp.one, (), none)]
+def d2Loop : List (BExp Unit × Unit × Option Bool) := [(BExp.one, (), some false)]
+
+def d2Mid : GkatThompson.GSystem (Option Bool) Unit Unit where
+  states := d2Base.states
+  hlt := fun s => match s with
+    | none => d2Base.hlt none
+    | some x => BExp.and (d2Base.hlt (some x)) (BExp.not (BExp.prim ()))
+  trans := fun s => match s with
+    | none => []
+    | some x => d2Base.trans (some x) ++ d2Loop.map (fun tr =>
+        (BExp.and (d2Base.hlt (some x)) (BExp.and (BExp.prim ()) tr.1), tr.2))
+
+def d2Sys : GkatThompson.GSystem (Option Bool) Unit Unit where
+  states := d2Base.states
+  hlt := fun s => match s with
+    | none => d2Mid.hlt none
+    | some x => BExp.and (d2Mid.hlt (some x)) BExp.zero
+  trans := fun s => match s with
+    | none => []
+    | some x => d2Mid.trans (some x) ++ d2Entry.map (fun tr =>
+        (BExp.and (d2Mid.hlt (some x)) tr.1, tr.2))
+
+theorem d2_region_one : RegionLevel d2Sys lvl2 1 := by
+  refine ⟨d2Mid, d2Base, BExp.zero, BExp.prim (), d2Entry, d2Loop,
+    (fun s => match s with | some false => 1 | _ => 0), some false, rfl,
+    ?_, ?_, ?_, ?_, ?_⟩
+  · exact { trans_eq := fun s hs => by
+              cases s with
+              | none => exact absurd (fun h => Nat.noConfusion h) hs
+              | some x => rfl
+            hlt_eq := fun s hs => by
+              cases s with
+              | none => exact absurd (fun h => Nat.noConfusion h) hs
+              | some x => rfl
+            outside := fun s hs => by
+              cases s with
+              | none => exact ⟨rfl, rfl⟩
+              | some x => exact absurd (fun h => h rfl) hs
+            states_eq := rfl }
+  · intro tr htr
+    cases htr with
+    | head => intro h; exact Nat.noConfusion h
+    | tail _ h => cases h
+  · exact { trans_eq := fun s hs => by
+              cases s with
+              | none => exact absurd (fun h => Nat.noConfusion h) hs
+              | some x => rfl
+            hlt_eq := fun s hs X W x => by
+              cases s with
+              | none => exact absurd (fun h => Nat.noConfusion h) hs
+              | some y => rfl
+            outside := fun s hs => by
+              cases s with
+              | none => exact ⟨rfl, rfl⟩
+              | some x => exact absurd (fun h => h rfl) hs
+            states_eq := rfl }
+  · intro s hs tr htr
+    cases s with
+    | none => exact Nat.noConfusion hs
+    | some x =>
+      have htr' : tr ∈ d2Base.trans (some x) ++ d2Loop.map (fun t =>
+          (BExp.and (d2Base.hlt (some x)) (BExp.and (BExp.prim ()) t.1), t.2)) := htr
+      cases List.mem_append.mp htr' with
+      | inl hl =>
+          cases x with
+          | false => cases hl with
+            | head => rfl
+            | tail _ h => cases h
+          | true => cases hl
+      | inr hr =>
+          obtain ⟨t, ht, heq⟩ := List.mem_map.mp hr
+          cases ht with
+          | head => rw [← heq]; rfl
+          | tail _ h => cases h
+  · intro s hs X W x r hfm
+    cases s with
+    | none => exact Nat.noConfusion hs
+    | some y =>
+      cases y with
+      | false =>
+          have h1 : GkatKleene.firstMatch W x (d2Base.trans (some false))
+              = some ((), some true) := rfl
+          rw [h1] at hfm
+          have : r = ((), some true) := (Option.some.inj hfm).symm
+          rw [this]
+          exact Or.inr (Nat.lt_succ_self 0)
+      | true =>
+          have h0 : GkatKleene.firstMatch W x (d2Base.trans (some true)) = none := rfl
+          rw [h0] at hfm
+          exact (Option.some_ne_none r hfm.symm).elim
+
+/-- The level-0 sink, peeled with empty exit and empty loop lists. -/
+def d2Mid0 : GkatThompson.GSystem (Option Bool) Unit Unit where
+  states := d2Base.states
+  hlt := fun s => match s with
+    | none => BExp.and BExp.one (BExp.not BExp.zero)
+    | some x => d2Sys.hlt (some x)
+  trans := fun s => match s with
+    | none => []
+    | some x => d2Sys.trans (some x)
+
+def d2Base0 : GkatThompson.GSystem (Option Bool) Unit Unit where
+  states := d2Base.states
+  hlt := fun s => match s with
+    | none => BExp.one
+    | some x => d2Mid0.hlt (some x)
+  trans := fun s => match s with
+    | none => []
+    | some x => d2Mid0.trans (some x)
+
+theorem d2_region_zero : RegionLevel d2Sys lvl2 0 := by
+  refine regionLevel_of_singleton (mid := d2Mid0) (base := d2Base0) (t := none)
+    (h₀ := BExp.one) (b := BExp.zero) (entry := []) (loopEntry := []) rfl
+    (fun s hs => by cases s with
+      | none => rfl
+      | some x => exact Nat.noConfusion hs) ?_ ?_ ?_ ?_ rfl
+  · exact { trans_eq := fun s hs => by
+              cases s with
+              | none => rfl
+              | some x => exact absurd (fun h => Nat.noConfusion h) hs
+            hlt_eq := fun s hs => by
+              cases s with
+              | none => rfl
+              | some x => exact absurd (fun h => Nat.noConfusion h) hs
+            outside := fun s hs => by
+              cases s with
+              | none => exact absurd (fun h => h rfl) hs
+              | some x => exact ⟨rfl, rfl⟩
+            states_eq := rfl }
+  · intro tr htr; cases htr
+  · exact { trans_eq := fun s hs => by
+              cases s with
+              | none => rfl
+              | some x => exact absurd (fun h => Nat.noConfusion h) hs
+            hlt_eq := fun s hs X W x => by
+              cases s with
+              | none => rfl
+              | some y => exact absurd (fun h => Nat.noConfusion h) hs
+            outside := fun s hs => by
+              cases s with
+              | none => exact absurd (fun h => h rfl) hs
+              | some x => exact ⟨rfl, rfl⟩
+            states_eq := rfl }
+  · intro tr htr; cases htr
+
+theorem lvl2_le_one : ∀ u, lvl2 u ≤ 1
+  | none => Nat.zero_le 1
+  | some _ => Nat.le_refl 1
+
+/-- **THE TWO-STATE CYCLE, SOLVED.**  Every level of `d2Sys` is regional, so the
+condensation chain hands back a parametric solution — for an automaton whose
+level-1 region is a genuine two-state cycle with an exit, i.e. the first case
+where `LoopLayerOn`'s shared entry has to distinguish region states. -/
+theorem d2_solves :
+    ∃ sol : Option Bool → Exp Unit Unit,
+      ∀ s, EquivBA (sol s)
+        (GkatThompson.eqRHSParam d2Sys sol (Exp.test BExp.one) s) := by
+  refine solves_of_region_levels lvl2 2
+    (fun s => match s with | none => Nat.zero_lt_succ 1 | some _ => Nat.lt_succ_self 1)
+    (fun s X W x r hfm => ?_) (fun n => ?_) (Exp.test BExp.one)
+  · cases s with
+    | none =>
+        have h0 : GkatKleene.firstMatch W x (d2Sys.trans none) = none := rfl
+        rw [h0] at hfm
+        exact (Option.some_ne_none r hfm.symm).elim
+    | some y => exact lvl2_le_one r.2
+  · cases n with
+    | zero => exact Or.inr d2_region_zero
+    | succ k =>
+        cases k with
+        | zero => exact Or.inr d2_region_one
+        | succ m =>
+            refine Or.inl (fun s h => ?_)
+            cases s with
+            | none => exact Nat.noConfusion h
+            | some x => exact Nat.noConfusion h (fun h1 => Nat.noConfusion h1)
+
+#print axioms d2_region_zero
+#print axioms d2_solves
+
+end CycleDemo
+
+#print axioms d2_region_one
 #print axioms layeredOn_of_levels
 #print axioms layeredOn_empty_of_levels
 #print axioms solves_of_levels

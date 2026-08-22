@@ -15439,3 +15439,50 @@ self-loops cannot be peeled as exits. The loop layer is forced to do the work.
 
 **Next.** The multi-state cycle instance — the same demo one size up, which is
 where `LoopLayerOn`'s shared `entry` first has to carry more than one state.
+
+## 337 — the two-state cycle, and why the shared entry is not an obstruction
+
+336's demo had one state, so `LoopLayerOn`'s shared `entry` never had to
+distinguish region states. 337 builds the first case where it does: `none` a
+level-0 sink, `some false → some true → some false` a level-1 two-cycle exiting
+to the sink. Both levels are shown regional and the chain closes:
+
+```lean
+theorem d2_solves : ∃ sol : Option Bool → Exp Unit Unit,
+    ∀ s, EquivBA (sol s) (eqRHSParam d2Sys sol (.test .one) s)
+```
+
+`[propext, Classical.choice, Quot.sound]`, no `sorry`.
+
+**The mechanism.** 332 measured the shared-entry shape and found 0 conflicts, but
+never said *why* it is harmless. Here is why. `LoopLayerOn` appends `entry` at
+EVERY region state, so a back-edge belonging to one state appears, syntactically,
+in the other's list too. The gate is
+
+```lean
+BExp.and (base.hlt s) (BExp.and b tr.1)
+```
+
+and `base.hlt` is **per state**. Crucially `LoopLayerOn.hlt_eq` reads
+`bval (sys.hlt s) = bval (base.hlt s) && !bval b`, which constrains `base.hlt s`
+only where `b` is **false** — on `b`-atoms it is entirely free. So `base.hlt`
+doubles as the selector saying at which region states the shared entry actually
+fires.
+
+In the instance: `base.hlt (some false) = zero`, so the shared back-edge gate
+`zero ∧ p ∧ 1` is unsatisfiable at `t₀` — present but inert — while
+`base.hlt (some true) = one` makes the same entry live on `p` at `t₁`. The
+spurious edge costs nothing because it can never be taken.
+
+**The exit is real too.** `t₀` never halts and steps unconditionally to `t₁`;
+`t₁` halts on `¬p` in `base`, which is exactly where the seq layer's exit to the
+sink fires. So this is a while-loop with a two-state body, not a degenerate case.
+
+**What this settles.** The 53 regions of size ≥ 2 that 335 left open have no
+shape obstruction — the shared entry was the only structural doubt, and it is a
+free parameter, not a constraint. What remains for them is `hacyc`: a rank on the
+peeled region, which for a simple cycle is the position along the path (here
+`rank t₀ = 1 > 0 = rank t₁`).
+
+**Next.** Whether `hmono` and the per-level peel can be produced *uniformly* from
+a quotient, rather than instance by instance — the construction, not the frame.
