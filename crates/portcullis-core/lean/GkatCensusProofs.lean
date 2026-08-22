@@ -12903,6 +12903,220 @@ theorem solvesBA_of_agreement {S : Type} (aut : GkatKleene.GAut S A T)
 
 #print axioms solvesBA_of_agreement
 
+/-! ### 343's condition, stated once
+
+The four agreement hypotheses of 349 are not theorems — they are properties of
+the automaton, which is why 343 had to MEASURE them.  What can be proved is that
+they all follow from a single natural statement:
+
+> at any atom, if one state of a level fires a non-raw transition to `r`, then
+> every state of that level fires to `r`.
+
+Kind agreement comes for free: two states firing to the SAME target agree on
+whether that target is inside the level, hence on loop-versus-exit. -/
+
+/-- Everything a state's raw part does not handle. -/
+def nonRaw {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (s : S) : List (BExp T × A × S) :=
+  (disjoin (aut.trans s)).filter (fun tr => !rawPred lvl rank s tr)
+
+/-- `raw.hlt s`: true exactly where `s` is neither handled by `raw` nor dead. -/
+def peelRawHlt {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (s : S) : BExp T :=
+  BExp.or (bigOr ((nonRaw aut lvl rank s).map (fun tr => tr.1))) (aut.hlt s)
+
+/-- **343's condition.** -/
+def LevelAgreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+    ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n, ∀ r : A × S,
+      GkatKleene.firstMatch W x (nonRaw aut lvl rank c) = some r →
+      GkatKleene.firstMatch W x (nonRaw aut lvl rank a) = some r
+
+/-- A sublist of an exclusive list is exclusive. -/
+theorem exclusiveAt_filter {S X : Type} (W : T → X → Bool) (x : X)
+    (D : List (BExp T × A × S)) (hex : ExclusiveAt W x D) (f : (BExp T × A × S) → Bool) :
+    ExclusiveAt W x (D.filter f) :=
+  fun a ha b hb => hex a (List.mem_filter.mp ha).1 b (List.mem_filter.mp hb).1
+
+/-- In an exclusive list, a firing member determines every filtered sublist that
+contains it. -/
+theorem firstMatch_filter_of_mem {S X : Type} (W : T → X → Bool) (x : X)
+    (D : List (BExp T × A × S)) (hex : ExclusiveAt W x D)
+    (f : (BExp T × A × S) → Bool) (tr : BExp T × A × S)
+    (htr : tr ∈ D) (hf : f tr = true) (hb : GkatGS.bval W tr.1 x = true) :
+    GkatKleene.firstMatch W x (D.filter f) = some tr.2 :=
+  firstMatch_of_exclusiveAt W x (D.filter f) (exclusiveAt_filter W x D hex f)
+    tr (List.mem_filter.mpr ⟨htr, hf⟩) hb
+
+/-- **The loop gate, derived.**  A firing loop entry of any level state makes the
+level's loop test true, and makes the firing state's own halt test true — the
+latter because `peelRawHlt` is by construction the disjunction of exactly those
+guards. -/
+theorem gateL_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hagree : LevelAgreement aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter
+        (fun tr => !rawPred lvl rank c tr && loopPred lvl c tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatGS.bval W (peelRawHlt aut lvl rank a) x = true ∧
+            GkatGS.bval W (peelBs aut lvl (rawPred lvl rank) (loopPred lvl) n) x = true := by
+  intro X W x n a ha c hc tr htr hb
+  have hmemD : tr ∈ disjoin (aut.trans c) := (List.mem_filter.mp htr).1
+  have hsplit := (Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2
+  have hnr : tr ∈ nonRaw aut lvl rank c :=
+    List.mem_filter.mpr ⟨hmemD, hsplit.1⟩
+  have hcfire : GkatKleene.firstMatch W x (nonRaw aut lvl rank c) = some tr.2 :=
+    firstMatch_of_exclusiveAt W x _
+      (exclusiveAt_filter W x _ (disjoin_exclusive W x (aut.trans c)) _) tr hnr hb
+  have hafire := hagree X W x n a ha c hc tr.2 hcfire
+  obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x (nonRaw aut lvl rank a) tr.2 hafire
+  constructor
+  · show (GkatGS.bval W (bigOr _) x || GkatGS.bval W (aut.hlt a) x) = true
+    refine (Bool.or_eq_true _ _).mpr (Or.inl ?_)
+    exact (bval_bigOr_true W x _).mpr ⟨g, List.mem_map.mpr ⟨(g, tr.2), hgm, rfl⟩, hgb⟩
+  · refine (bval_bigOr_true W x _).mpr ⟨tr.1, ?_, hb⟩
+    exact List.mem_map.mpr ⟨tr, List.mem_flatMap.mpr ⟨c, hc, htr⟩, rfl⟩
+
+#print axioms firstMatch_filter_of_mem
+#print axioms gateL_of_agreement
+
+theorem levelStates_lvl {S : Type} {aut : GkatKleene.GAut S A T} {lvl : S → Nat}
+    {n : Nat} {s : S} (hs : s ∈ levelStates aut lvl n) : lvl s = n :=
+  of_decide_eq_true (List.mem_filter.mp hs).2
+
+/-- A firing member of a state's non-raw part determines its `firstMatch`. -/
+theorem nonRaw_fire {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat)
+    (c : S) (tr : BExp T × A × S) (htr : tr ∈ nonRaw aut lvl rank c)
+    (hb : GkatGS.bval W tr.1 x = true) :
+    GkatKleene.firstMatch W x (nonRaw aut lvl rank c) = some tr.2 :=
+  firstMatch_of_exclusiveAt W x _
+    (exclusiveAt_filter W x _ (disjoin_exclusive W x (aut.trans c)) _) tr htr hb
+
+/-- **The loop agreement, derived.**  Kind agreement is free: the two states fire
+to the SAME target, and that target is inside the level, so both classify it as a
+loop. -/
+theorem agreeL_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hagree : LevelAgreement aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter
+        (fun tr => !rawPred lvl rank c tr && loopPred lvl c tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatKleene.firstMatch W x
+            ((disjoin (aut.trans a)).filter
+              (fun tr => !rawPred lvl rank a tr && loopPred lvl a tr)) = some tr.2 := by
+  intro X W x n a ha c hc tr htr hb
+  have hsplit := (Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2
+  have hnr : tr ∈ nonRaw aut lvl rank c :=
+    List.mem_filter.mpr ⟨(List.mem_filter.mp htr).1, hsplit.1⟩
+  have hafire := hagree X W x n a ha c hc tr.2
+    (nonRaw_fire W x aut lvl rank c tr hnr hb)
+  obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x (nonRaw aut lvl rank a) tr.2 hafire
+  have hgD : (g, tr.2) ∈ disjoin (aut.trans a) := (List.mem_filter.mp hgm).1
+  have hgraw : (!rawPred lvl rank a (g, tr.2)) = true := (List.mem_filter.mp hgm).2
+  have hloop : loopPred lvl a (g, tr.2) = true := by
+    have h1 : lvl tr.2.2 = lvl c := of_decide_eq_true hsplit.2
+    exact decide_eq_true (h1.trans ((levelStates_lvl hc).trans (levelStates_lvl ha).symm))
+  exact firstMatch_filter_of_mem W x _ (disjoin_exclusive W x (aut.trans a)) _
+    (g, tr.2) hgD ((Bool.and_eq_true _ _).mpr ⟨hgraw, hloop⟩) hgb
+
+/-- **The exit gate, derived.**  The interesting half is that the level's loop
+test must be FALSE at an exit atom: if any loop guard of the level fired there,
+agreement would force this state to fire to that same intra-level target — but it
+is firing OUT of the level. -/
+theorem gateE_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hagree : LevelAgreement aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter
+        (fun tr => !rawPred lvl rank c tr && !loopPred lvl c tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatGS.bval W (peelRawHlt aut lvl rank a) x = true ∧
+            GkatGS.bval W (peelBs aut lvl (rawPred lvl rank) (loopPred lvl) n) x = false := by
+  intro X W x n a ha c hc tr htr hb
+  have hsplit := (Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2
+  have hnr : tr ∈ nonRaw aut lvl rank c :=
+    List.mem_filter.mpr ⟨(List.mem_filter.mp htr).1, hsplit.1⟩
+  have hcfire := nonRaw_fire W x aut lvl rank c tr hnr hb
+  have hafire := hagree X W x n a ha c hc tr.2 hcfire
+  refine ⟨?_, ?_⟩
+  · obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x (nonRaw aut lvl rank a) tr.2 hafire
+    show (GkatGS.bval W (bigOr _) x || GkatGS.bval W (aut.hlt a) x) = true
+    refine (Bool.or_eq_true _ _).mpr (Or.inl ?_)
+    exact (bval_bigOr_true W x _).mpr ⟨g, List.mem_map.mpr ⟨(g, tr.2), hgm, rfl⟩, hgb⟩
+  · cases hbs : GkatGS.bval W
+      (peelBs aut lvl (rawPred lvl rank) (loopPred lvl) n) x with
+    | false => rfl
+    | true =>
+        exfalso
+        obtain ⟨g, hgm, hgb⟩ := (bval_bigOr_true W x _).mp hbs
+        obtain ⟨e, hem, heg⟩ := List.mem_map.mp hgm
+        obtain ⟨c', hc', hem'⟩ := List.mem_flatMap.mp hem
+        have hs' := (Bool.and_eq_true _ _).mp (List.mem_filter.mp hem').2
+        have henr : e ∈ nonRaw aut lvl rank c' :=
+          List.mem_filter.mpr ⟨(List.mem_filter.mp hem').1, hs'.1⟩
+        have heb : GkatGS.bval W e.1 x = true := by rw [heg]; exact hgb
+        have := hagree X W x n c hc c' hc' e.2
+          (nonRaw_fire W x aut lvl rank c' e henr heb)
+        have hEq : e.2 = tr.2 := Option.some.inj (this.symm.trans hcfire)
+        have hin : lvl e.2.2 = lvl c' := of_decide_eq_true hs'.2
+        have hout : lvl tr.2.2 ≠ lvl c :=
+          of_decide_eq_false ((Bool.not_eq_true' _).mp hsplit.2)
+        exact hout (hEq ▸ hin |>.trans ((levelStates_lvl hc').trans (levelStates_lvl hc).symm))
+
+#print axioms agreeL_of_agreement
+#print axioms gateE_of_agreement
+
+/-- **The exit agreement, derived.**  Same shape as the loop case: the two states
+fire to the same target, and that target is outside the level, so both classify
+it as an exit. -/
+theorem agreeE_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hagree : LevelAgreement aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter
+        (fun tr => !rawPred lvl rank c tr && !loopPred lvl c tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatKleene.firstMatch W x
+            ((disjoin (aut.trans a)).filter
+              (fun tr => !rawPred lvl rank a tr && !loopPred lvl a tr)) = some tr.2 := by
+  intro X W x n a ha c hc tr htr hb
+  have hsplit := (Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2
+  have hnr : tr ∈ nonRaw aut lvl rank c :=
+    List.mem_filter.mpr ⟨(List.mem_filter.mp htr).1, hsplit.1⟩
+  have hafire := hagree X W x n a ha c hc tr.2
+    (nonRaw_fire W x aut lvl rank c tr hnr hb)
+  obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x (nonRaw aut lvl rank a) tr.2 hafire
+  have hgD : (g, tr.2) ∈ disjoin (aut.trans a) := (List.mem_filter.mp hgm).1
+  have hgraw : (!rawPred lvl rank a (g, tr.2)) = true := (List.mem_filter.mp hgm).2
+  have hout : lvl tr.2.2 ≠ lvl c :=
+    of_decide_eq_false ((Bool.not_eq_true' _).mp hsplit.2)
+  have hnotloop : (!loopPred lvl a (g, tr.2)) = true := by
+    refine (Bool.not_eq_true' _).mpr (decide_eq_false ?_)
+    intro heq
+    exact hout (heq.trans ((levelStates_lvl ha).trans (levelStates_lvl hc).symm))
+  exact firstMatch_filter_of_mem W x _ (disjoin_exclusive W x (aut.trans a)) _
+    (g, tr.2) hgD ((Bool.and_eq_true _ _).mpr ⟨hgraw, hnotloop⟩) hgb
+
+#print axioms agreeE_of_agreement
+
+/-- The first halt-side hypothesis is immediate from the definition of
+`peelRawHlt`: a halting atom is by construction one where the state's own halt
+test already makes the disjunction true. -/
+theorem rawHlt_of_halt {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S),
+      GkatGS.bval W (aut.hlt s) x = true →
+        GkatGS.bval W (peelRawHlt aut lvl rank s) x = true := by
+  intro X W x s h
+  show (GkatGS.bval W (bigOr _) x || GkatGS.bval W (aut.hlt s) x) = true
+  exact (Bool.or_eq_true _ _).mpr (Or.inr h)
+
+#print axioms rawHlt_of_halt
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

@@ -16237,3 +16237,49 @@ passing) but the proof does not yet.
 
 **Next.** The agreement hypotheses themselves — `hagreeL`/`hgateL` and their exit
 and halt counterparts, for `rawPred`/`loopPred`.
+
+## 351 — 343's condition stated once, and the transition hypotheses derived from it
+
+**The four agreement hypotheses are not theorems.** They are properties of the
+automaton — which is exactly why 343 had to measure them rather than prove them.
+What CAN be proved is that all four follow from one natural statement:
+
+```lean
+def LevelAgreement aut lvl rank : Prop :=
+  ∀ W x n, ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n, ∀ r,
+    firstMatch W x (nonRaw aut lvl rank c) = some r →
+    firstMatch W x (nonRaw aut lvl rank a) = some r
+```
+
+*At any atom, if one state of a level fires a non-raw transition to `r`, every
+state of that level fires to `r`.* Note what is NOT in it: any mention of loops
+versus exits. **Kind agreement comes for free** — two states firing to the SAME
+target agree on whether that target is inside the level, hence on the kind. 343
+measured kind and target agreement as two clauses; only one is primitive.
+
+`peelRawHlt s := bigOr (nonRaw s guards) ∨ aut.hlt s` — true exactly where `s` is
+neither handled by `raw` nor dead, which is what 343's derivation required of it.
+
+**Derived, all four:**
+
+| | |
+|---|---|
+| `gateL_of_agreement` | a firing loop entry makes the level's loop test true and the firing state's halt test true |
+| `agreeL_of_agreement` | **`[propext]` only** |
+| `gateE_of_agreement` | the interesting half: the level's loop test is FALSE at an exit atom — if any loop guard fired there, agreement would force this state to the same INTRA-level target, but it is firing OUT |
+| `agreeE_of_agreement` | **`[propext]` only** |
+
+plus `rawHlt_of_halt`, the first of the three halt-side hypotheses, immediate
+from `peelRawHlt`'s definition.
+
+**What is left: two halt-side hypotheses**, and they need one more property of
+the automaton beyond agreement —
+
+> a state does not both halt and transition at the same atom
+
+— determinism, which every guarded automaton has but which nothing in the
+development has yet been made to state. `hloopoff` needs it to turn "s halts
+here" into "s's non-raw part fires nothing here"; `hnot` needs it plus agreement
+for the "exits shadow halting" clause.
+
+**Next.** That determinism property, and the two remaining halt hypotheses.
