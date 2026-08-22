@@ -15292,6 +15292,74 @@ theorem rawPred_false_of_not_lt {S : Type} (lvl : S → Nat) (rank : Nat → S �
 
 #print axioms rawPred_false_of_not_lt
 
+/-- **The source condition, as AGREEMENT rather than headedness.**  392 showed
+headedness is false for `wh` — several body states can back-edge at one atom — so
+the condition that survives is that active states of a component AGREE, which is
+what 393-395 actually prove. -/
+def SourceSccAgrees {S : Type} (aut : GkatKleene.GAut S A T) (slvl : S → Nat)
+    (srank : Nat → S → Nat) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (u w : S),
+    SemReaches aut u w → SemReaches aut w u →
+    GkatGS.bval W (peelRawHlt aut slvl srank u) x = true →
+    GkatGS.bval W (peelRawHlt aut slvl srank w) x = true →
+    GkatKleene.autStep W aut u x = GkatKleene.autStep W aut w x
+
+/-- A rank is **component-uniform** when a target non-raw from one state of a
+level is non-raw from every state of it.  396's prescription — give the shared
+target the top rank in its component — delivers exactly this, and without it a
+state's own classification says nothing about its neighbour's. -/
+def RankUniform {Q : Type} (quot : GkatKleene.GAut Q A T) (lvl : Q → Nat)
+    (rank : Nat → Q → Nat) : Prop :=
+  ∀ (n : Nat) (a c : Q), a ∈ levelStates quot lvl n → c ∈ levelStates quot lvl n →
+    ∀ r : A × Q, rawPred lvl rank c ((BExp.one : BExp T), r) = false →
+      rawPred lvl rank a ((BExp.one : BExp T), r) = false
+
+/-- **Agreement transports — and more simply than headedness did.**  The
+headedness route had to identify the two preimages (`u = w`); agreement only has
+to make their STEPS agree, and steps transport by `autStep_eq` in both
+directions. -/
+theorem levelAgreementActive_of_sourceAgrees {S Q : Type}
+    {aut : GkatKleene.GAut S A T} {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (hwf : GkatKleene.UniformWF aut)
+    (hniS : NoInert aut) (hniQ : NoInert quot) (rank : Nat → Q → Nat)
+    (hru : RankUniform quot
+      (reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans)) rank)
+    (hsrc : SourceSccAgrees aut
+      (fun s => reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans)
+        (π.mapState s))
+      (fun n s => rank n (π.mapState s))) :
+    LevelAgreementActive quot
+      (reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans)) rank := by
+  intro X W x n a ha c hc r hcfire hact
+  have hm1 : a ∈ quot.states := (List.mem_filter.mp ha).1
+  have hm2 : c ∈ quot.states := (List.mem_filter.mp hc).1
+  have heq : reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) a
+      = reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) c := by
+    rw [levelStates_lvl ha, levelStates_lvl hc]
+  obtain ⟨hr12, hr21⟩ := mutual_of_reachMask_eq
+    (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) hm1 hm2 heq
+  obtain ⟨s0, hs0mem, hs0map⟩ := π.onto_states a hm1
+  obtain ⟨u, w, hu, hw, humem, hwmem, huw, hwu⟩ :=
+    exists_mutual_over_pair π hwf (semReaches_of_sreaches quot hniQ hr12)
+      (semReaches_of_sreaches quot hniQ hr21) s0 hs0map hs0mem
+  -- the quotient facts, moved upstairs
+  have hcact : GkatGS.bval W (peelRawHlt quot
+      (reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans)) rank c) x = true :=
+    active_of_fires W x quot _ rank c hcfire
+  have hpu := (active_transport π _ rank u W x).mpr (by rw [hu]; exact hact)
+  have hpw := (active_transport π _ rank w W x).mpr (by rw [hw]; exact hcact)
+  have hstep := hsrc X W x u w (semReaches_of_sreaches aut hniS huw)
+    (semReaches_of_sreaches aut hniS hwu) hpu hpw
+  -- push the step agreement back down
+  obtain ⟨hcstep, hcraw⟩ := (firstMatch_nonRaw_iff W x quot _ rank c r).mp hcfire
+  have hqa : GkatKleene.autStep W quot a x = GkatKleene.autStep W quot c x := by
+    rw [← hu, ← hw, ← π.autStep_eq W u x, ← π.autStep_eq W w x, hstep]
+  exact (firstMatch_nonRaw_iff W x quot _ rank a r).mpr
+    ⟨hqa.trans hcstep, hru n a c ha hc r hcraw⟩
+
+#print axioms levelAgreementActive_of_sourceAgrees
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

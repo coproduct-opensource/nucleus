@@ -18477,3 +18477,51 @@ induction is.
 
 **Next.** The induction itself — starting with how to state the property over
 `CertifiedThompson` so the recursion typechecks.
+
+## 398 — agreement transports, and more simply than headedness did
+
+392 showed headedness is false for `wh`, but 386-390's transport was built for
+headedness — it identifies the two preimages (`u = w`). Agreement needs its own
+transport, and it turns out to be **simpler**: it only has to make their STEPS
+agree, and steps transport by `autStep_eq` in both directions.
+
+```lean
+def SourceSccAgrees aut slvl srank : Prop :=
+  ∀ W x u w, SemReaches aut u w → SemReaches aut w u →
+    active u → active w → autStep W aut u x = autStep W aut w x
+
+theorem levelAgreementActive_of_sourceAgrees (π) (hwf) (hniS) (hniQ) (rank)
+    (hru : RankUniform quot (reachMask …) rank)
+    (hsrc : SourceSccAgrees aut (pullback …) (pullback …)) :
+    LevelAgreementActive quot (reachMask …) rank
+```
+
+**And a hole I did not commit.** My first draft ended at
+`rawPred lvl rank a (one, r) = false` with `hcraw` giving only *`c`'s*
+classification of the same target. `rawPred`'s second conjunct compares the
+target's rank against **the state's own**, so `c`'s verdict says nothing about
+`a`'s — the draft needed a `sorry`. That is 396's `hraw` gap resurfacing at the
+transport, and rather than leave it I added the side condition 396's prescription
+delivers:
+
+```lean
+def RankUniform quot lvl rank : Prop :=
+  ∀ n a c, a ∈ levelStates … → c ∈ levelStates … → ∀ r,
+    rawPred lvl rank c (one, r) = false → rawPred lvl rank a (one, r) = false
+```
+
+*A target non-raw from one state of a level is non-raw from every state of it* —
+which "give the shared target the top rank in its component" supplies. File
+compiles with **0 errors and no `sorry`** (both textual hits are in doc comments).
+
+**Why this matters more than it looks.** The route now runs on the condition that
+is actually true — agreement — rather than the one that is merely usually true.
+393-395 prove agreement's `wh` case outright; 392 showed headedness's `wh` case is
+false. Until this iteration those two facts pointed at a transport that did not
+exist.
+
+**Odds: 96%, unchanged.** The transport for the surviving condition exists. What
+is still not written is the induction that discharges `SourceSccAgrees`, and
+`RankUniform` is now a second thing the induction must deliver.
+
+**Next.** The induction, delivering `SourceSccAgrees` and `RankUniform` together.
