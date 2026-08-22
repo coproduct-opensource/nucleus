@@ -2366,6 +2366,8 @@ fn twoexit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let (mut regions, mut two_exit, mut share_loop, mut src_two) = (0, 0, 0, 0);
     let mut single_header = 0usize;
     let (mut headerless, mut headerless_vacuous) = (0usize, 0usize);
+    let mut headerless_diff = 0usize;
+    let mut first_diff: Option<String> = None;
     let mut shown = 0usize;
     for a in &pool {
         let (blk, nb) = bisim_blocks(a);
@@ -2429,7 +2431,24 @@ fn twoexit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
                         if !next_perm(&mut perm2) { break; }
                     }
                     if !needs { headerless_vacuous += 1; }
-                    if headerless <= 2 {
+                    // 365's explanation for the residue was "identical transition
+                    // rows".  A headerless region whose states have DIFFERING rows
+                    // would break it.  Hunt for one.
+                    let mut same_rows = true;
+                    for &u in &comp {
+                        for &v in &comp {
+                            for x in 0..NA { if q.st[u][x] != q.st[v][x] { same_rows = false; } }
+                        }
+                    }
+                    if !same_rows {
+                        headerless_diff += 1;
+                        // and does agreement still hold there?
+                        if first_diff.is_none() {
+                            first_diff = Some(format!("region {comp:?}\n    {}",
+                                show_aut("quot ", &q)));
+                        }
+                    }
+                    if headerless <= 1 {
                         println!("  HEADERLESS region {comp:?} — two simultaneous back-edges \
                                   unavoidable: {needs}");
                         println!("    {}", show_aut("quot ", &q));
@@ -2489,6 +2508,10 @@ fn twoexit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     println!("  HEADERLESS: {headerless} regions with no single header; of those, \
               {headerless_vacuous} admit an ordering with NO atom carrying two \
               simultaneous back-edges (so the single-header fact is not needed there)");
+    println!("  HUNT: {headerless_diff} headerless regions whose states have DIFFERING \
+              transition rows — 365's explanation covers only the identical-row case, so \
+              any hit here is outside it");
+    if let Some(m) = &first_diff { println!("  FIRST DIFFERING-ROW HEADERLESS REGION\n    {m}"); }
     println!("  {two_exit} (region, atom) pairs where TWO OR MORE blocks exit at once");
     println!("  {share_loop} of those have all exiting blocks sharing a source loop \
               (355's fact)");

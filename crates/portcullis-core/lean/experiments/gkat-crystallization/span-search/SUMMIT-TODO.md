@@ -17021,3 +17021,57 @@ and I would rather say so than let "every region has a reason" stand unqualified
 
 **Next.** Whether a headerless region can have states with differing rows — a
 search, not an inspection.
+
+## 366 — the search finds what the inspection missed
+
+365 explained the two headerless regions by "identical transition rows" and said
+plainly that two examples is an observation, not a law. Searching for the shape
+that would break it, at 3× the pool:
+
+```
+2 193 multi-state quotient regions (CAP 400k)
+2 183 have a single header
+   10 are headerless
+    4 of those have states with DIFFERING transition rows
+```
+
+**So 365's explanation covers 6 of 10 and fails on 4.** The inspection was a
+coincidence of the two examples I happened to have.
+
+**The first counterexample, and what it actually shows:**
+
+```
+quot k=2 | q0: hl=100 st=[q0,q1,-] | q1: hl=000 st=[q0,q1,q0]
+```
+
+The rows differ at atom 2 — `q1` steps to `q0` there, `q0` does not. But `q0`
+does not halt at atom 2 either (`hl=100` is atom 0 only), so **`q0` is DEAD
+there**, hence not active, hence nothing to agree with. At atoms 0 and 1 the rows
+coincide and both states are active.
+
+So the reason agreement holds is *"the rows agree wherever both states are
+active"* — which is agreement restated, not an explanation of it. **I have no
+structural account of the headerless case.** 365's story was not a weaker
+version of the truth; it was the wrong shape, and the search is what showed it.
+
+**The predicate itself survived the larger sweep**, and by more than before:
+
+| | |
+|---|---|
+| regions agreeing under some ordering | **136 295 / 136 295** |
+| regions where every ordering clashes | 0 |
+| exits to different targets at one atom | 0 |
+| multi-state regions where agreement is vacuous | 2 151 / 2 193 |
+
+so the unexplained residue is 10 headerless regions — 0.46% of multi-state
+regions, 0.007% of all.
+
+**Odds: 97%, unchanged.** The sweep tripled and found no counterexample to the
+predicate, which is worth something; but an explanation I offered one iteration
+ago is gone, which is worth about the same in the other direction. Five
+measurement-vs-claim corrections now (342, 354, 358, 359, 366) — every one found
+by measuring rather than by thinking harder.
+
+**Next.** The headerless case needs either a structural account or an argument
+that the peel does not need one — the second may be easier, since agreement is
+only ever used at active states.
