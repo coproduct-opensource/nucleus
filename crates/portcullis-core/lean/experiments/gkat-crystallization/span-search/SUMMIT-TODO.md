@@ -14087,3 +14087,40 @@ than an open question.
 
 **Next.**  The `seq` case: split at the right classes, then `LayeredOn.seq` with
 289's layer, then recurse on `e`.
+
+---
+
+## 305 — THE PREFERENCE DIRECTION IS FORCED, AND ONE LEMMA SERVES BOTH CASES.
+
+304 split `ite` at the LEFT branch, using a representative preferring `inl`.
+**The `seq` case cannot do that.**  Only a sequence's RIGHT half is closed — the
+left half runs into the right through the connecting block — so a sequence must
+split at its RIGHT classes, which needs a representative preferring `inr`.
+
+A representative is GLOBAL to the quotient, so both preferences cannot hold at
+one node.  They do not have to: **`ite`'s halves are BOTH closed, so `ite` may
+split either way, while `seq` may not.**  The uniform choice is therefore forced
+to `inr`, and 304's left-handed version becomes an alternative rather than the
+main line.
+
+The preference is still PER-NODE, not per-quotient — at an inner node it ranks
+that node's own two halves.  A single global representative satisfies all of
+them by ranking the expression tree's LEAVES, right before left, consistently.
+That is a construction to discharge later, not an obstruction, and it is now
+written down as an obligation rather than assumed away.
+
+**Proved**: `right_block_closed`, stated once for ANY system whose `inr`
+transitions are the right component's retargeted — true of `sumGSystem` and
+`seqGSystem` alike, both by `rfl` — and `quotient_layered_split_right`, the
+split that serves `ite` and `seq` together.
+
+**What remains of `seq`** is only the layer step: discharging the left
+obligation `LayeredOn Qsys (B ∨ right classes)` by `LayeredOn.seq` with 289's
+`SeqLayer`, whose entry now points into the block because the right part joined
+it first.  That ordering was forced by the constructor and is why the split had
+to come first.
+
+**Odds: 99%, HELD.**  A correction to 304's handedness, found by attempting the
+next case rather than by inspection, plus the lemma that now serves both.
+
+**Next.**  The `seq` layer step, and with it the fifth case.

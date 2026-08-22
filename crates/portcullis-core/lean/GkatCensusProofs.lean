@@ -9579,4 +9579,78 @@ theorem quotient_layered_ite {S₁ S₂ Q : Type}
 
 #print axioms quotient_layered_ite
 
+
+/-! ### 305 — THE PREFERENCE DIRECTION IS FORCED, AND ONE LEMMA SERVES BOTH CASES
+
+    304 split `ite` at the LEFT branch, using a representative that prefers
+    `inl`.  The `seq` case cannot do that: **only a sequence's RIGHT half is
+    closed** — the left half runs into the right through the connecting block —
+    so a sequence must split at its right classes, which needs a representative
+    preferring `inr`.
+
+    A representative is GLOBAL to the quotient, so the two preferences cannot
+    both hold at the same node.  They do not have to: `ite`'s halves are BOTH
+    closed, so `ite` may split either way, while `seq` may not.  **The uniform
+    choice is therefore forced to `inr`**, and 304's left-handed version becomes
+    an alternative rather than the main line.
+
+    (The preference is still per-node, not per-quotient: at an inner node it
+    ranks that node's own two halves.  A single global representative satisfies
+    all of them at once by ranking the expression tree's LEAVES — right before
+    left, consistently — which is a construction to discharge later, not an
+    obstruction.)
+
+    Stated once, for any system whose `inr` transitions are the right
+    component's retargeted — which is true of `sumGSystem` and `seqGSystem`
+    alike, both by `rfl`. -/
+theorem right_block_closed {S₁ S₂ Q : Type}
+    (sys : GkatThompson.GSystem (Sum S₁ S₂) A T)
+    (Rt : S₂ → List (BExp T × A × S₂))
+    (hinr : ∀ t, sys.trans (Sum.inr t)
+      = (Rt t).map (fun w => (w.1, w.2.1, Sum.inr w.2.2)))
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : Sum S₁ S₂ → Q) (rep : Q → Sum S₁ S₂)
+    (hout : ∀ s, ¬ B (j s))
+    (hpref : ∀ (c : Q) (u : S₂), j (Sum.inr u) = c → ∃ v, rep c = Sum.inr v)
+    (htrans : ∀ c, ¬ B c → Qsys.trans c
+      = (sys.trans (rep c)).map (fun tr => (tr.1, tr.2.1, j tr.2.2))) :
+    ∀ c, (¬ B c ∧ ∃ u, rep c = Sum.inr u) →
+      ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × Q),
+        GkatKleene.firstMatch W x (Qsys.trans c) = some r →
+          (¬ B r.2 ∧ ∃ u, rep r.2 = Sum.inr u) := by
+  intro c hc X W x r hfm
+  obtain ⟨hcB, u, hcu⟩ := hc
+  obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (Qsys.trans c) r.1 r.2 (by rw [← hfm])
+  rw [htrans c hcB, hcu, hinr u] at hg
+  simp only [List.mem_map] at hg
+  obtain ⟨z, hz, hzeq⟩ := hg
+  obtain ⟨w, _, rfl⟩ := hz
+  have hr2 : r.2 = j (Sum.inr w.2.2) := (congrArg (fun y => y.2.2) hzeq).symm
+  rw [hr2]
+  exact ⟨hout _, hpref _ w.2.2 rfl⟩
+
+/-- **THE SPLIT AT THE RIGHT CLASSES**, serving `ite` and `seq` alike.  For
+    `seq` this is the FORCED order: the connecting block's entry points at the
+    right classes, and `LayeredOn.seq` demands a layer's entry point INTO the
+    block — so the right part must join the block BEFORE the layer is peeled. -/
+theorem quotient_layered_split_right {S₁ S₂ Q : Type}
+    (sys : GkatThompson.GSystem (Sum S₁ S₂) A T)
+    (Rt : S₂ → List (BExp T × A × S₂))
+    (hinr : ∀ t, sys.trans (Sum.inr t)
+      = (Rt t).map (fun w => (w.1, w.2.1, Sum.inr w.2.2)))
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : Sum S₁ S₂ → Q) (rep : Q → Sum S₁ S₂)
+    (hout : ∀ s, ¬ B (j s))
+    (hpref : ∀ (c : Q) (u : S₂), j (Sum.inr u) = c → ∃ v, rep c = Sum.inr v)
+    (htrans : ∀ c, ¬ B c → Qsys.trans c
+      = (sys.trans (rep c)).map (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+    (hright : LayeredOn Qsys (fun c => ¬ (¬ B c ∧ ∃ u, rep c = Sum.inr u)))
+    (hleft : LayeredOn Qsys (fun c => B c ∨ (¬ B c ∧ ∃ u, rep c = Sum.inr u))) :
+    LayeredOn Qsys B :=
+  LayeredOn.split (fun _ hB hC => hC.1 hB)
+    (right_block_closed sys Rt hinr Qsys B j rep hout hpref htrans) hright hleft
+
+#print axioms right_block_closed
+#print axioms quotient_layered_split_right
+
 end GkatCensus
