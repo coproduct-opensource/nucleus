@@ -10050,4 +10050,72 @@ theorem quotient_layered_seq_left' {S₁ S₂ Q : Type}
 
 end QuotientLayeredSeqWitness
 
+
+/-! ### 311 — THE PREFERENCE HYPOTHESIS IS UNNECESSARY
+
+    305 introduced a PREFERRING representative so that the block "the class is a
+    right class" would be closed, and 308 kept it as a condition on the witness.
+    **Neither is needed.**
+
+    The block downstairs is "the class HAS an `inr` preimage" — and that is
+    exactly the SATURATION of "is `inr`", whose closure 299 already proved from
+    the BISIMULATION.  The bisimulation is a hypothesis the acyclic case (297)
+    needs regardless, so this costs nothing new and removes a hypothesis that
+    had to be threaded through every node.
+
+    The argument downstairs: a class with an `inr` preimage `u` has its dynamics
+    witnessed by SOME preimage `s`, possibly a left one.  It does not matter.
+    `u` and `s` are in the same class, so the bisimulation gives `u` a matching
+    step; the right half is closed upstairs, so `u`'s step lands in the right
+    half; and the two steps agree after `j`.  So the target class has an `inr`
+    preimage — established without ever asking which preimage the quotient chose.
+
+    **This is what 305's "leaf ordering" obligation really was**: an artefact of
+    insisting the block be about a CHOICE rather than about the quotient.  307
+    made the block about the quotient; 311 removes the last trace of the choice. -/
+theorem right_block_closed_bisim {S₁ S₂ Q : Type}
+    (sys : GkatThompson.GSystem (Sum S₁ S₂) A T)
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : Sum S₁ S₂ → Q)
+    (hout : ∀ s, ¬ B (j s))
+    (hbisim : ∀ s t : Sum S₁ S₂, j s = j t →
+      ∀ (X : Type) (W : T → X → Bool) (x : X),
+      (GkatKleene.firstMatch W x (sys.trans s)).map (fun z => (z.1, j z.2))
+        = (GkatKleene.firstMatch W x (sys.trans t)).map (fun z => (z.1, j z.2)))
+    (hclosedR : ∀ (u : S₂) (X : Type) (W : T → X → Bool) (x : X)
+        (r : A × Sum S₁ S₂),
+      GkatKleene.firstMatch W x (sys.trans (Sum.inr u)) = some r →
+        ∃ v : S₂, r.2 = Sum.inr v)
+    (hwit : ∀ c, ¬ B c → ∃ s, j s = c ∧ Qsys.trans c
+      = (sys.trans s).map (fun tr => (tr.1, tr.2.1, j tr.2.2))) :
+    ∀ c, (¬ B c ∧ ∃ u : S₂, j (Sum.inr u) = c) →
+      ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × Q),
+        GkatKleene.firstMatch W x (Qsys.trans c) = some r →
+          (¬ B r.2 ∧ ∃ u : S₂, j (Sum.inr u) = r.2) := by
+  intro c hc X W x r hfm
+  obtain ⟨hcB, u, hu⟩ := hc
+  obtain ⟨s, hjs, hts⟩ := hwit c hcB
+  rw [hts, firstMatch_map] at hfm
+  cases hq : GkatKleene.firstMatch W x (sys.trans s) with
+  | none => rw [hq] at hfm; exact absurd hfm (by simp)
+  | some q =>
+      rw [hq] at hfm
+      have hr : r = (q.1, j q.2) := (Option.some.inj (by simpa using hfm)).symm
+      have hb := hbisim (Sum.inr u) s (by rw [hu, hjs]) X W x
+      rw [hq] at hb
+      cases hq' : GkatKleene.firstMatch W x (sys.trans (Sum.inr u)) with
+      | none => rw [hq'] at hb; exact absurd hb (by simp)
+      | some q' =>
+          rw [hq'] at hb
+          obtain ⟨v, hv⟩ := hclosedR u X W x q' hq'
+          have hb' : q'.1 = q.1 ∧ j q'.2 = j q.2 := by simpa using hb
+          have hjeq : j q'.2 = j q.2 := hb'.2
+          refine ⟨by rw [hr]; exact hout _, ⟨v, ?_⟩⟩
+          rw [hr]
+          show j (Sum.inr v) = j q.2
+          rw [← hv]
+          exact hjeq
+
+#print axioms right_block_closed_bisim
+
 end GkatCensus

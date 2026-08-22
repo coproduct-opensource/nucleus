@@ -14324,3 +14324,41 @@ witness hypothesis, produce the child's.  For `wh` the state type is unchanged,
 so the child's data IS the parent's; for `ite` and `seq` it is the parent's
 composed with an injection, and the witness must be shown to land in the right
 half — which is what 308's `hwitR` and 310's `S₁`-valued witness are for.
+
+---
+
+## 311 — THE PREFERENCE HYPOTHESIS IS UNNECESSARY.
+
+305 introduced a PREFERRING representative so the block "the class is a right
+class" would be closed; 308 kept it as a condition on the witness.  **Neither is
+needed.**
+
+The block downstairs is "the class HAS an `inr` preimage" — and that is exactly
+the SATURATION of "is `inr`", whose closure **299 already proved**, from the
+BISIMULATION.  The bisimulation is a hypothesis the acyclic case (297) needs
+regardless, so this costs nothing new and removes a hypothesis that had to be
+threaded through every node of the induction.
+
+The argument downstairs: a class with an `inr` preimage `u` has its dynamics
+witnessed by SOME preimage `s`, possibly a left one.  **It does not matter.**
+`u` and `s` are in the same class, so the bisimulation gives `u` a matching
+step; the right half is closed upstairs, so `u`'s step lands right; and the two
+steps agree after `j`.  The target class therefore has an `inr` preimage —
+established without ever asking which preimage the quotient chose.
+
+`right_block_closed_bisim`, `propext` ALONE.
+
+**What this says about 305–311.**  305 raised an obligation (a global leaf
+ordering), 307 shrank it (a per-node witness property), 311 deleted it.  Three
+iterations chasing something that was an artefact of stating the block in terms
+of a CHOICE rather than in terms of the QUOTIENT.  The lesson is the same one
+307 taught in a different key: **when a hypothesis needs threading everywhere,
+suspect the definition it serves.**
+
+**Odds: 99%, HELD.**  A standing obligation eliminated rather than discharged,
+which is better, but no new ground taken.
+
+**Next.**  The induction on `Exp`, now with one fewer hypothesis to construct at
+each node: `hout`, the witness, and the bisimulation — all three of which the
+parent supplies to the child directly, since `wh` keeps the state type and
+`ite`/`seq` compose `j` with an injection.
