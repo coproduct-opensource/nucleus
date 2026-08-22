@@ -11364,6 +11364,143 @@ theorem solves_of_syntacticallyLayered {S : Type} {sys : GkatThompson.GSystem S 
   obtain ⟨lvl, B, hbound, hmono, hlevels⟩ := h
   exact solves_of_syntactic_levels lvl B hbound hmono hlevels F
 
+
+section LevelExistence
+open Classical
+
+/-! ### The level function always exists
+
+`SyntacticallyLayered` asks for a bounded level function that no transition
+raises.  The condensation supplies one, but computing a condensation is graph
+theory.  It is not needed: **the number of states reachable from `s`** is already
+non-increasing along every edge, because a successor's reachable set is contained
+in its predecessor's.  No SCC computation, no pigeonhole, no decidability. -/
+
+/-- Reachability along *syntactic* transitions.  `firstMatch` steps are a subset
+(`step_mem`), so a level function monotone for this is monotone for those. -/
+inductive SReaches {S : Type} (sys : GkatThompson.GSystem S A T) : S → S → Prop where
+  | refl (s : S) : SReaches sys s s
+  | step {s t u : S} : (∃ g a, (g, a, t) ∈ sys.trans s) →
+      SReaches sys t u → SReaches sys s u
+
+/-- How many of `l`'s entries `s` can reach. -/
+noncomputable def countReach {S : Type} (sys : GkatThompson.GSystem S A T)
+    (s : S) : List S → Nat
+  | [] => 0
+  | u :: rest => (if SReaches sys s u then 1 else 0) + countReach sys s rest
+
+theorem countReach_le {S : Type} (sys : GkatThompson.GSystem S A T) (s : S) :
+    ∀ l : List S, countReach sys s l ≤ l.length
+  | [] => Nat.le_refl 0
+  | u :: rest => by
+      show (if SReaches sys s u then 1 else 0) + countReach sys s rest ≤ rest.length + 1
+      by_cases hu : SReaches sys s u
+      · rw [if_pos hu, Nat.add_comm]
+        exact Nat.succ_le_succ (countReach_le sys s rest)
+      · rw [if_neg hu, Nat.zero_add]
+        exact Nat.le_succ_of_le (countReach_le sys s rest)
+
+theorem countReach_mono {S : Type} (sys : GkatThompson.GSystem S A T) (s t : S)
+    (h : ∀ u, SReaches sys t u → SReaches sys s u) :
+    ∀ l : List S, countReach sys t l ≤ countReach sys s l
+  | [] => Nat.le_refl 0
+  | u :: rest => by
+      show (if SReaches sys t u then 1 else 0) + countReach sys t rest
+        ≤ (if SReaches sys s u then 1 else 0) + countReach sys s rest
+      refine Nat.add_le_add ?_ (countReach_mono sys s t h rest)
+      by_cases hu : SReaches sys t u
+      · rw [if_pos hu, if_pos (h u hu)]
+        exact Nat.le_refl 1
+      · rw [if_neg hu]; exact Nat.zero_le _
+
+/-- **The level function, for any system whatsoever.**  No finiteness assumption
+is needed beyond the state list the system already carries, and the proof is
+three inductions on that list. -/
+noncomputable def reachLevel {S : Type} (sys : GkatThompson.GSystem S A T) (s : S) : Nat :=
+  countReach sys s sys.states
+
+theorem reachLevel_bound {S : Type} (sys : GkatThompson.GSystem S A T) (s : S) :
+    reachLevel sys s < sys.states.length + 1 :=
+  Nat.lt_succ_of_le (countReach_le sys s sys.states)
+
+theorem reachLevel_mono {S : Type} (sys : GkatThompson.GSystem S A T) :
+    ∀ s, ∀ tr ∈ sys.trans s, reachLevel sys tr.2.2 ≤ reachLevel sys s := by
+  intro s tr htr
+  refine countReach_mono sys s tr.2.2 (fun u hu => ?_) sys.states
+  exact SReaches.step ⟨tr.1, tr.2.1, htr⟩ hu
+
+/-- **`hmono` and the bound are free.**  Whatever else `SyntacticallyLayered`
+needs, its first two conjuncts are discharged for every system by
+`reachLevel` — the entire remaining content is the per-level peel. -/
+theorem syntacticallyLayered_of_regions {S : Type}
+    (sys : GkatThompson.GSystem S A T)
+    (hlevels : ∀ n, (∀ s, reachLevel sys s ≠ n) ∨ RegionLevelSyn sys (reachLevel sys) n) :
+    SyntacticallyLayered sys :=
+  ⟨reachLevel sys, sys.states.length + 1, reachLevel_bound sys,
+    reachLevel_mono sys, hlevels⟩
+
+/-- Reachability composes. -/
+theorem SReaches.trans {S : Type} {sys : GkatThompson.GSystem S A T} {s t u : S}
+    (h1 : SReaches sys s t) : SReaches sys t u → SReaches sys s u := by
+  induction h1 with
+  | refl _ => exact fun h => h
+  | step hstep _ ih => exact fun h => SReaches.step hstep (ih h)
+
+theorem add_eq_left {a b c d : Nat} (hac : a ≤ c) (hbd : b ≤ d)
+    (h : a + b = c + d) : a = c := by
+  cases Nat.lt_or_ge a c with
+  | inl hlt => exact absurd h (Nat.ne_of_lt (Nat.add_lt_add_of_lt_of_le hlt hbd))
+  | inr hge => exact Nat.le_antisymm hac hge
+
+/-- If `t`'s reachable set is inside `s`'s and the two counts agree, the sets
+agree pointwise on the counted list.  A sum of pointwise-`≤` terms can only tie
+if every term ties. -/
+theorem countReach_pointwise {S : Type} (sys : GkatThompson.GSystem S A T) (s t : S)
+    (h : ∀ u, SReaches sys t u → SReaches sys s u) :
+    ∀ (l : List S), countReach sys t l = countReach sys s l →
+      ∀ u ∈ l, SReaches sys s u → SReaches sys t u := by
+  intro l
+  induction l with
+  | nil => intro _ u hu; cases hu
+  | cons v rest ih =>
+      intro heq u hu hsu
+      have hhead : (if SReaches sys t v then 1 else 0)
+          ≤ (if SReaches sys s v then 1 else 0) := by
+        by_cases hv : SReaches sys t v
+        · rw [if_pos hv, if_pos (h v hv)]
+          exact Nat.le_refl 1
+        · rw [if_neg hv]; exact Nat.zero_le _
+      have htail := countReach_mono sys s t h rest
+      have heq' : (if SReaches sys t v then 1 else 0) + countReach sys t rest
+          = (if SReaches sys s v then 1 else 0) + countReach sys s rest := heq
+      have hh := add_eq_left hhead htail heq'
+      have ht : countReach sys t rest = countReach sys s rest :=
+        Nat.add_left_cancel (hh ▸ heq')
+      cases hu with
+      | head =>
+          by_cases hv : SReaches sys t v
+          · exact hv
+          · rw [if_neg hv, if_pos hsu] at hh
+            exact absurd hh (fun hc => Nat.noConfusion hc)
+      | tail _ hmem => exact ih ht u hmem hsu
+
+/-- **The levels ARE the strongly connected components.**  If `s` reaches `t` and
+the two sit at the same `reachLevel`, then `t` reaches `s`.  So a level is a
+disjoint union of SCCs, and any edge leaving a level drops it strictly.  This is
+what keeps regions small — the census measures max region size 3. -/
+theorem reachLevel_scc {S : Type} (sys : GkatThompson.GSystem S A T) {s t : S}
+    (hs : s ∈ sys.states) (hst : SReaches sys s t)
+    (hlvl : reachLevel sys t = reachLevel sys s) :
+    SReaches sys t s :=
+  countReach_pointwise sys s t (fun _ hu => hst.trans hu) sys.states hlvl s hs
+    (SReaches.refl s)
+
+end LevelExistence
+
+#print axioms reachLevel_mono
+#print axioms reachLevel_scc
+#print axioms syntacticallyLayered_of_regions
+
 section CycleDemo
 
 /-! **The two-state cycle.**  336's demo had one state, so `LoopLayerOn`'s shared

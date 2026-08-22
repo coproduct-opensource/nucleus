@@ -15536,3 +15536,59 @@ and a per-level peel, both of which are properties of the quotient's own graph.
 **Next.** The level function's existence for a finite system — the condensation
 itself. That is the one place the route still needs graph theory rather than
 list manipulation.
+
+## 339 — the level function is free, and its levels are the SCCs
+
+338 left one graph-theoretic gap: `SyntacticallyLayered` needs a bounded level
+function no transition raises, and the condensation supplies one only if you
+compute a condensation. **You do not have to.**
+
+```lean
+noncomputable def reachLevel (sys) (s : S) : Nat := countReach sys s sys.states
+```
+
+— the number of the system's own states that `s` can reach. A successor's
+reachable set is contained in its predecessor's, so the count never rises along
+an edge. No SCC algorithm, no pigeonhole, no decidable reachability, no fuel: the
+whole proof is three inductions over `sys.states`, comparing the two counts term
+by term (`countReach_mono`). `Classical` appears only in the indicator.
+
+- `reachLevel_bound : reachLevel sys s < sys.states.length + 1`
+- `reachLevel_mono : ∀ s, ∀ tr ∈ sys.trans s, reachLevel sys tr.2.2 ≤ reachLevel sys s`
+- `syntacticallyLayered_of_regions` — **two of the three conjuncts of
+  `SyntacticallyLayered` now hold for EVERY system.** The entire remaining
+  content of the predicate is the per-level peel.
+
+**And the levels are not a crude approximation of the condensation — they are the
+condensation.**
+
+```lean
+theorem reachLevel_scc (hs : s ∈ sys.states) (hst : SReaches sys s t)
+    (hlvl : reachLevel sys t = reachLevel sys s) : SReaches sys t s
+```
+
+If `s` reaches `t` and the two counts tie, `t` reaches `s`. The argument is
+arithmetic, not graph theory: `countReach` is a sum of pointwise-`≤` indicator
+terms, and a sum of such terms can only tie if **every** term ties
+(`add_eq_left` + `Nat.add_left_cancel`), so the two reachable sets agree on every
+counted state — including `s` itself, which `s` reaches by `refl`.
+
+Consequences: a level is a disjoint union of mutually-unreachable SCCs, any edge
+leaving a level drops it strictly, and regions stay as small as the census
+measured (max 3, 94.5% singletons).
+
+**Where the route now stands.**
+
+```
+bounded level function, non-increasing        FREE for every system (339)
+each level unoccupied or peelable             the whole remaining content
+   · singleton self-loop region               PROVED (335)
+   · region closed in mid, ranked base        PROVED (336)
+   · shared entry across region states        NOT an obstruction (337)
+   · every hypothesis a finite list check     PROVED (338)
+every SyntacticallyLayered system solves      PROVED (338)
+```
+
+**Next.** The peel construction itself: given a level and the automaton's lists,
+produce `mid`, `base`, `h₀`, `b`, `entry`, `loopEntry` and the rank — the one
+step that is still done by hand in `d2_region_one`.
