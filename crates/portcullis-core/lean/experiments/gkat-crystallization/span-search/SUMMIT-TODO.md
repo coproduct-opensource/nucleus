@@ -19356,3 +19356,72 @@ like this one are why.
 **Next.** Levels by loop-nesting depth on the reducible fragment: define it,
 check it separates the 413 counterexample, and re-measure agreement against
 targeted families rather than the pool.
+
+## 414 — the 413 refutation is REPAIRED: key the hypothesis on the LEVEL, not on reachability.
+
+Web search: exhausted (200/200).
+
+**The repair, and why it was available.** 413 refuted `SourceSccAgrees` because
+it compares any two *mutually reachable* states, and mutual reachability merges
+an inner loop with its enclosing one. Reading
+`levelAgreementActive_of_sourceAgrees` closely, **the downstream never wanted
+reachability**: it starts from `a` and `c` in `levelStates quot lvl n`, derives
+`lvl a = lvl c`, and only then *manufactures* mutual reachability through
+`mutual_of_reachMask_eq` in order to have something `SourceSccAgrees` will
+accept. The reachability is scaffolding — and it is the scaffolding that forces
+`lvl` to be SCC-based, which is exactly what 413 refutes.
+
+```lean
+def SourceLevelAgrees (aut) (slvl) (srank) : Prop :=
+  ∀ X W x u w, u ∈ aut.states → w ∈ aut.states →
+    slvl u = slvl w →                              -- the level, not reachability
+    bval W (peelRawHlt aut slvl srank u) x = true →
+    bval W (peelRawHlt aut slvl srank w) x = true →
+    autStep W aut u x = autStep W aut w x
+```
+
+`levelAgreementActive_of_sourceLevelAgrees` proves the same conclusion from it,
+and the proof gets *shorter*: no `mutual_of_reachMask_eq`, no
+`exists_mutual_over_pair`, no `NoInert`, and **`lvl` becomes arbitrary**. Axioms
+drop from `[propext, Classical.choice, Quot.sound]` to `[propext, Quot.sound]` —
+the repair also eliminates `Classical.choice`.
+
+**Which level separates 413's states?** Not a graph-theoretic one. In the
+counterexample both back-edges target the same header, so classical loop nesting
+sees ONE loop. The nesting depth is a property of the **expression**, not of the
+graph — `wh` raises its body's states by one. That is what `RegionLevelSyn` and
+`SyntacticallyLayered` in the corpus were already reaching for.
+
+**Checked by EXHAUSTIVE ENUMERATION, per 413's method lesson.** `PAD_SYNLEVEL`
+builds every expression of depth ≤ 3 over 4 guards — not a capped closure —
+carrying each state's syntactic depth through `canon`'s renumbering, and looks
+for the refuting configuration (a self-loop and a halt at one atom; a self-loop
+is non-raw under every rank, so this needs no rank search).
+
+| | count |
+|---|---|
+| expressions built | 33,527,550 |
+| automata tested | **3,044,654** |
+| self-loop + halt in the SAME SCC — refutes `SourceSccAgrees` | **8** |
+| ... and at the SAME SYNTACTIC LEVEL — would refute `SourceLevelAgrees` | **0** |
+
+The first one found is 413's counterexample, bit for bit
+(`k=2 ih=110 it=[1,0,0] | q0: hl=000 st=[1,1,2] | q1: hl=110 st=[1,0,0]`,
+atom 1, u=0, w=1) — reproduced independently by a different code path.
+
+**What this does NOT show, stated plainly.** The sweep checks the *known*
+refuting class — self-loop against halt — not full agreement. Two states both
+stepping to different targets at one atom would also refute `SourceLevelAgrees`
+and are not covered here. So this is a targeted check that the 413 wound is
+closed, not a census of the repaired hypothesis. `G=2 D=4` did not finish.
+
+**Odds: 82% → 87%.** The refutation is repaired in Lean with a cleaner axiom
+footprint, and the repair's key claim is verified exhaustively rather than
+sampled. Not back to 96%: `SourceLevelAgrees` for `certifiedThompson` is still
+unproved, only one refuting class has been swept, and two central hypotheses
+have now been refuted in this program. The field's prior that this problem does
+not close still stands.
+
+**Next.** Sweep the second refuting class — two active states stepping to
+different targets — over the same exhaustive expression enumeration, at the
+syntactic level.

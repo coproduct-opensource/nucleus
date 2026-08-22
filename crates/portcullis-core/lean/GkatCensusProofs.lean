@@ -16198,6 +16198,61 @@ theorem haltKillsGuards_seq_inl {S₁ S₂ : Type}
 #print axioms haltKillsGuards_loop
 #print axioms haltKillsGuards_seq_inl
 
+/-! ### The repair for 413: key the hypothesis on the LEVEL, not on reachability
+
+413 refuted `SourceSccAgrees` because it compares any two mutually reachable
+states, and mutual reachability merges an inner loop with its enclosing one.
+The downstream never needed that.  Reading
+`levelAgreementActive_of_sourceAgrees`: it starts from `a` and `c` in
+`levelStates quot lvl n`, derives `lvl a = lvl c`, and only then manufactures
+mutual reachability via `mutual_of_reachMask_eq` in order to have something
+`SourceSccAgrees` will accept.  The reachability is scaffolding, and it is the
+scaffolding that forces `lvl` to be SCC-based — which is exactly what 413
+refutes.
+
+Key the hypothesis on the level directly and the scaffolding disappears: no
+`mutual_of_reachMask_eq`, no `exists_mutual_over_pair`, no `NoInert`, and `lvl`
+becomes ARBITRARY — free to be nesting depth, which separates 413's two states. -/
+def SourceLevelAgrees {S : Type} (aut : GkatKleene.GAut S A T) (slvl : S → Nat)
+    (srank : Nat → S → Nat) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (u w : S),
+    u ∈ aut.states → w ∈ aut.states →
+    slvl u = slvl w →
+    GkatGS.bval W (peelRawHlt aut slvl srank u) x = true →
+    GkatGS.bval W (peelRawHlt aut slvl srank w) x = true →
+    GkatKleene.autStep W aut u x = GkatKleene.autStep W aut w x
+
+/-- **The repaired reduction.**  Same conclusion as
+`levelAgreementActive_of_sourceAgrees`, from a hypothesis that 413 does not
+refute, over an ARBITRARY level function. -/
+theorem levelAgreementActive_of_sourceLevelAgrees {S Q : Type}
+    {aut : GkatKleene.GAut S A T} {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (lvl : Q → Nat) (rank : Nat → Q → Nat)
+    (hru : RankUniform quot lvl rank)
+    (hsrc : SourceLevelAgrees aut (fun s => lvl (π.mapState s))
+      (fun n s => rank n (π.mapState s))) :
+    LevelAgreementActive quot lvl rank := by
+  intro X W x n a ha c hc r hcfire hact
+  have hm1 : a ∈ quot.states := (List.mem_filter.mp ha).1
+  have hm2 : c ∈ quot.states := (List.mem_filter.mp hc).1
+  have heq : lvl a = lvl c := by rw [levelStates_lvl ha, levelStates_lvl hc]
+  obtain ⟨u, humem, hu⟩ := π.onto_states a hm1
+  obtain ⟨w, hwmem, hw⟩ := π.onto_states c hm2
+  have hcact : GkatGS.bval W (peelRawHlt quot lvl rank c) x = true :=
+    active_of_fires W x quot _ rank c hcfire
+  have hpu := (active_transport π lvl rank u W x).mpr (by rw [hu]; exact hact)
+  have hpw := (active_transport π lvl rank w W x).mpr (by rw [hw]; exact hcact)
+  have hlvl : lvl (π.mapState u) = lvl (π.mapState w) := by rw [hu, hw]; exact heq
+  have hstep := hsrc X W x u w humem hwmem hlvl hpu hpw
+  obtain ⟨hcstep, hcraw⟩ := (firstMatch_nonRaw_iff W x quot _ rank c r).mp hcfire
+  have hqa : GkatKleene.autStep W quot a x = GkatKleene.autStep W quot c x := by
+    rw [← hu, ← hw, ← π.autStep_eq W u x, ← π.autStep_eq W w x, hstep]
+  exact (firstMatch_nonRaw_iff W x quot _ rank a r).mpr
+    ⟨hqa.trans hcstep, hru n a c ha hc r hcraw⟩
+
+#print axioms levelAgreementActive_of_sourceLevelAgrees
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

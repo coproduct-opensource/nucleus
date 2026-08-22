@@ -2432,6 +2432,115 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
 /// Rather than argue, build the shape: `wh G (seq (wh g' X) Y)` over every
 /// choice of guards and of `X`, `Y` in {act, test}, and check the distance rank
 /// on it directly.
+/// **`PAD_SYNLEVEL`** (iteration 414).
+///
+/// 413 refuted `SourceSccAgrees` and diagnosed the cause: the SCC merges an
+/// inner loop with its enclosing one.  `SourceLevelAgrees` (proved in Lean this
+/// iteration) keys the hypothesis on the LEVEL instead of on reachability, and
+/// accepts an ARBITRARY level function — so the level is now free to separate
+/// them.
+///
+/// Classical loop nesting cannot: in 413's counterexample both back-edges
+/// target the same header, so graph analysis sees one loop.  The nesting depth
+/// is a property of the EXPRESSION, not of the graph.  So carry it
+/// syntactically — `wh` raises its body's states by one — and check
+/// level-restricted agreement.
+///
+/// And per 413's method lesson this enumerates EXPRESSIONS exhaustively to a
+/// depth bound, rather than sampling a capped closure.
+fn synlevel<const NA: usize>(nguards: u8, maxdepth: usize) {
+    // an expression is built directly; we carry (automaton, per-state syntactic depth)
+    fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<(Aut<NA>, Vec<usize>)>) {
+        if d == 0 {
+            out.push((a_act::<NA>(), vec![0]));
+            for g in 0..nguards { out.push((a_test::<NA>(g), vec![0; 1])); }
+            return;
+        }
+        let mut smaller: Vec<(Aut<NA>, Vec<usize>)> = Vec::new();
+        build::<NA>(nguards, d - 1, &mut smaller);
+        // dedup: the same (automaton, depth vector) reached two ways is one case
+        let mut seen: std::collections::HashSet<(Aut<NA>, Vec<usize>)> =
+            std::collections::HashSet::new();
+        smaller.retain(|e| seen.insert(e.clone()));
+        out.extend(smaller.iter().cloned());
+        for (l, ld) in &smaller {
+            for g in 0..nguards {
+                let w = a_wh::<NA>(g, l);
+                out.push((w, ld.iter().map(|z| z + 1).collect()));
+            }
+            for (r, rd) in &smaller {
+                if let Some(sq) = a_seq::<NA>(l, r) {
+                    let mut dv = ld.clone(); dv.extend(rd.iter().cloned());
+                    out.push((sq, dv));
+                }
+                for g in 0..nguards {
+                    if let Some(it) = a_ite::<NA>(g, l, r) {
+                        let mut dv = ld.clone(); dv.extend(rd.iter().cloned());
+                        out.push((it, dv));
+                    }
+                }
+            }
+        }
+    }
+    let mut exprs: Vec<(Aut<NA>, Vec<usize>)> = Vec::new();
+    build::<NA>(nguards, maxdepth, &mut exprs);
+    let (mut tested, mut scc_bad, mut lvl_bad) = (0usize, 0usize, 0usize);
+    let mut first_scc: Option<String> = None;
+    let mut first_lvl: Option<String> = None;
+    for (a, depths) in &exprs {
+        let k = a.k as usize;
+        if k == 0 || depths.len() < k { continue; }
+        // syntactic level, transported through canon's renumbering
+        let ord = canon_order(a);
+        let mut lvl = [0usize; MAXK];
+        let mut okmap = true;
+        for i in 0..k {
+            if (ord[i] as usize) < k { lvl[ord[i] as usize] = depths[i]; } else { okmap = false; }
+        }
+        if !okmap { continue; }
+        let a = match canon(a) { Some(c) => c, None => continue };
+        let k = a.k as usize;
+        tested += 1;
+        // a self-loop is non-raw under EVERY rank, and a halting state is always
+        // active, so these two checks need no rank search at all.
+        for x in 0..NA {
+            for u in 0..k {
+                let selfloop = a.st[u][x] == (u + 1) as u8;
+                if !selfloop { continue; }
+                for w in 0..k {
+                    if w == u { continue; }
+                    let whalts = (a.hl[w] >> x) & 1 == 1 && a.st[w][x] == 0;
+                    if !whalts { continue; }
+                    // same SCC?  then SourceSccAgrees is refuted
+                    let same_scc = sccs_of(&a).iter().any(|c| c.contains(&u) && c.contains(&w));
+                    if same_scc {
+                        scc_bad += 1;
+                        if first_scc.is_none() {
+                            first_scc = Some(format!("atom={} u={} w={} {}", x, u, w, show_aut("a", &a)));
+                        }
+                        if lvl[u] == lvl[w] {
+                            lvl_bad += 1;
+                            if first_lvl.is_none() {
+                                first_lvl = Some(format!("atom={} u={} w={} lvl={:?} {}",
+                                    x, u, w, &lvl[..k], show_aut("a", &a)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("PAD_SYNLEVEL  expressions built (depth <= {}) : {}", maxdepth, exprs.len());
+    println!("  automata tested                          : {}", tested);
+    println!("  self-loop + halt in the SAME SCC          : {}  (refutes SourceSccAgrees)", scc_bad);
+    println!("  ... and at the SAME SYNTACTIC LEVEL       : {}  (would refute SourceLevelAgrees)", lvl_bad);
+    if let Some(b) = first_scc { println!("  first SCC-level refutation:\n    {}", b); }
+    match first_lvl {
+        Some(b) => println!("  *** SYNTACTIC LEVEL DOES NOT SAVE IT:\n    {}", b),
+        None => println!("  the syntactic level separates every such pair"),
+    }
+}
+
 fn crosshalf<const NA: usize>(nguards: u8) {
     let mut built = 0usize;
     let (mut ok, mut bad) = (0usize, 0usize);
@@ -9882,6 +9991,12 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_SYNLEVEL").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let d: usize = std::env::var("D").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        synlevel::<3>(g, d);
         return;
     }
     if std::env::var("PAD_CROSSHALF").is_ok() {
