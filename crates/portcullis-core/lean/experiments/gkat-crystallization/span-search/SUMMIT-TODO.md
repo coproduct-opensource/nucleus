@@ -18643,3 +18643,43 @@ stretch that a "failure" dissolved once the right invariant was in hand (355,
 **Odds: 96%, unchanged.** An argument written down is not a case discharged.
 
 **Next.** The rank construction for `wh`, and with it the case.
+
+## 402 — the rank a `wh` needs, and the tension in it
+
+396 prescribed "give the entry's target the top rank". Writing it out exposes a
+tension I had not seen: **`loopInitialized` adds no state**, so the entry targets
+are BODY states, and lifting them to the top makes any body edge *into* them
+rank-increasing — hence non-raw, hence extra active states, which is precisely
+what the rank was supposed to prevent.
+
+**It resolves rather than blocks.** The only edges into a body's entry targets
+are back-edges — an edge into the body's initial state comes from the body's own
+loop closing — and those are exactly the edges that *should* be non-raw. 394's
+exclusivity then separates the inner ones from the outer ones.
+
+So the rank is characterised by two properties, and the structural obligation is
+to exhibit one satisfying them:
+
+```lean
+def RankTopEntry slvl srank entries : Prop :=
+  ∀ e ∈ entries, ∀ s, ¬ (srank (slvl s) e < srank (slvl s) s)
+```
+
+with **`backedge_nonRaw_of_topEntry`** (axiom-free) giving that every back-edge to
+a maximal entry is non-raw, and **`loop_autStep_agree_of_body_silent`** restating
+395 in `SourceSccAgrees`'s own currency — `autStep` equality rather than
+`firstMatch` equality on a transition list.
+
+**The claim the resolution rests on, and its status.** *"The only edges into a
+body's entry targets are back-edges"* is a structural claim about Thompson
+automata that I have **not verified**. Reading the constructors makes it
+plausible — `act`'s state has no incoming edge but the initial one; `seq` sends
+`inl → inr` only into the right half's entry; `wh` adds exactly the back-edges —
+but plausible from three cases is how 365 went wrong. It is checkable either by
+reading `seqInitialized`/`iteInitialized` properly or by measuring, and it should
+be checked before the `wh` case is built on it.
+
+**Odds: 96%, unchanged.**
+
+**Next.** Check that claim — read the remaining constructors rather than assume
+the pattern continues.

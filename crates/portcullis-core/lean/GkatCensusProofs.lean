@@ -15518,6 +15518,61 @@ theorem quot_acyclic_of_source_acyclic {S Q : Type} {aut : GkatKleene.GAut S A T
 #print axioms rankUniform_of_singleton_levels
 #print axioms quot_acyclic_of_source_acyclic
 
+/-! ### The rank a `wh` needs, and the tension in it
+
+396 prescribed "give the entry's target the top rank".  Writing it out exposes a
+tension: `loopInitialized` adds no state, so the entry targets are BODY states,
+and lifting them to the top makes any body edge INTO them rank-increasing —
+hence non-raw, hence extra active states.
+
+The tension resolves rather than blocks, because the only edges into a body's
+entry targets ARE back-edges: an edge into the body's initial state comes from
+the body's own loop closing, if the body is a loop, and those are exactly the
+edges that should be non-raw.  394's exclusivity then separates the inner ones
+from the outer ones.
+
+So the rank is characterised by two properties, and the structural obligation is
+to exhibit one satisfying them. -/
+
+/-- Entry targets are maximal: no back-edge decreases the rank, so every
+back-edge is non-raw. -/
+def RankTopEntry {S : Type} (slvl : S → Nat) (srank : Nat → S → Nat)
+    (entries : List S) : Prop :=
+  ∀ e ∈ entries, ∀ s : S, ¬ (srank (slvl s) e < srank (slvl s) s)
+
+/-- Every back-edge to a maximal entry is non-raw — `rawPred_false_of_not_lt`,
+instantiated. -/
+theorem backedge_nonRaw_of_topEntry {S : Type} (slvl : S → Nat)
+    (srank : Nat → S → Nat) (entries : List S)
+    (htop : RankTopEntry slvl srank entries) (s : S) (r : A × S)
+    (hr : r.2 ∈ entries) :
+    rawPred slvl srank s ((BExp.one : BExp T), r) = false :=
+  rawPred_false_of_not_lt slvl srank s r (htop r.2 hr s)
+
+/-- **The back-edge sub-case, in `SourceSccAgrees`'s own terms.**  395 gave the
+equality of `firstMatch` on the loop's transition lists; that IS `autStep`
+equality, which is what the source condition asks for. -/
+theorem loop_autStep_agree_of_body_silent {S X : Type} (W : T → X → Bool) (x : X)
+    (guard : BExp T) (body : GkatThompson.InitializedGAut S A T) (u w : S)
+    (hbu : GkatKleene.firstMatch W x (body.core.trans u) = none)
+    (hbw : GkatKleene.firstMatch W x (body.core.trans w) = none)
+    (hhu : GkatGS.bval W (body.core.hlt u) x = true)
+    (hhw : GkatGS.bval W (body.core.hlt w) x = true) :
+    GkatKleene.autStep W
+      { states := (GkatThompson.loopInitialized guard body).core.states
+        hlt := (GkatThompson.loopInitialized guard body).core.hlt
+        trans := (GkatThompson.loopInitialized guard body).core.trans
+        start := u } u x
+      = GkatKleene.autStep W
+      { states := (GkatThompson.loopInitialized guard body).core.states
+        hlt := (GkatThompson.loopInitialized guard body).core.hlt
+        trans := (GkatThompson.loopInitialized guard body).core.trans
+        start := u } w x :=
+  loopInitialized_agree_of_body_silent W x guard body u w hbu hbw hhu hhw
+
+#print axioms backedge_nonRaw_of_topEntry
+#print axioms loop_autStep_agree_of_body_silent
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
