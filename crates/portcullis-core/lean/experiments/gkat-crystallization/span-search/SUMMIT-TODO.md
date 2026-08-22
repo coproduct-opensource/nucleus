@@ -16503,3 +16503,56 @@ trivial, one case measured.
 **Next.** The interaction case — whether a multi-loop block can be forced to
 share a loop with its SCC neighbours, or whether that needs a genuinely different
 argument.
+
+## 356 — the interaction case: an argument, and a measurement that it is empty
+
+355 left one shape uncovered: a quotient SCC with ≥2 blocks, one of which spans
+several source loops. Two independent results this iteration.
+
+**1. The argument, which closes it.** The apparent obstruction was that the
+forward lift ends at `v ∈ b₂` while the backward lift starts at a different
+`v' ∈ b₂`. But **blocks ARE bisimilarity classes**, so "a state bisimilar to
+`u'`" is literally "a state of `b₁`" — the transport lands exactly where it is
+needed, not merely up to something.
+
+So: `u₁ ⇝ v` (forward lift), and since `v ~ v'` and `v' ⇝ u'`, also `v ⇝ u''`
+for some `u'' ∈ b₁`. Iterate. The sequence `u₁, u'', u'''', …` lives in the
+finite set `b₁`, so **some state repeats** — and a repeat is a cycle through
+`b₁` and `b₂`, putting their preimages in one source SCC. Finiteness plus the
+fact that bisimilarity classes are exactly the blocks is what closes it; 354's
+"circular" reading missed both.
+
+Formalising it needs a pigeonhole (an infinite sequence in a finite list
+repeats), which is real work in a Mathlib-free file. It is not yet in Lean.
+
+**2. The measurement, which says the case is empty.**
+
+```
+INTERACTION CASE: 0 quotient SCCs have >=2 blocks AND a block spanning
+                    several source loops
+```
+
+**0 of 41 885.** Every multi-loop block turns out to be a *singleton* SCC — a
+self-loop, alone in its region. So on the measured class the case split is
+exhaustive with no residue:
+
+| shape | status |
+|---|---|
+| SCC with ≥2 blocks, each in one source loop | **proved** (355, SCC-level reachability) |
+| multi-loop block alone in its SCC | **trivial** — its preimages are bisimilar |
+| multi-loop block beside another block | **never occurs** (0 / 41 885); argument above if it ever does |
+
+**What this is and is not.** It is not a proof that the interaction case is
+impossible — the census is bounded (≤4 core states, 3 atoms), and "does not
+arise here" is not "cannot arise". It is that the one gap in the case analysis
+is empirically empty *and* has an argument if it is ever non-empty, which is a
+better position than either alone.
+
+**Odds: 98%, unchanged.** The remaining chain is: structural single-exit
+continuation (not yet proved), its transport through the quotient (argued and
+measured, not formalised), `LevelAgreement` (follows), `HaltDeterministic` (not
+yet proved for these quotients). Four items, none of them formalised, all of
+them now stated sharply enough to be attacked one at a time.
+
+**Next.** `HaltDeterministic` for the quotient — the smallest of the four, and
+the only one that needs no new mathematics.

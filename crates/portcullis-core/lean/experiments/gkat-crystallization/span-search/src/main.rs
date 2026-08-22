@@ -2304,6 +2304,7 @@ fn loopmerge<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let (mut qsccs, mut merged, mut merged_conflict) = (0usize, 0usize, 0usize);
     let mut cross_loop = 0usize;
     let (mut blocks_seen, mut blocks_multi, mut blocks_max) = (0usize, 0usize, 0usize);
+    let mut interaction = 0usize;
     let mut spanmax = 0usize;
     let mut first_merge: Option<String> = None;
     for a in &pool {
@@ -2356,6 +2357,7 @@ fn loopmerge<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
                 }
                 if cross { cross_loop += 1; }
             }
+            let mut nmulti_here = 0usize;
             // How much ground does the SCC-level-reachability proof cover?  It
             // assumes each block's preimage lies in ONE source loop.  Count the
             // blocks for which that fails.
@@ -2368,9 +2370,14 @@ fn loopmerge<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
                     if !cs.contains(&ci) { cs.push(ci); }
                 }
                 blocks_seen += 1;
-                if cs.len() > 1 { blocks_multi += 1; }
+                if cs.len() > 1 { blocks_multi += 1; nmulti_here += 1; }
                 if cs.len() > blocks_max { blocks_max = cs.len(); }
             }
+            // The INTERACTION case: an SCC with >= 2 blocks, at least one of which
+            // spans several source loops.  This is the only shape the SCC-level
+            // reachability proof does not cover; if it never occurs, the worry is
+            // hypothetical for this class of automata.
+            if comp.len() >= 2 && nmulti_here > 0 { interaction += 1; }
             if spans.len() >= 2 {
                 merged += 1;
                 // does the merged SCC have two different exit targets at one atom?
@@ -2407,6 +2414,8 @@ fn loopmerge<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
               {blocks_multi} of them ({:.3}%) have a preimage spanning MORE THAN ONE source \
               loop (max {blocks_max}) — the case the SCC-reachability argument does not cover",
         100.0 * blocks_multi as f64 / blocks_seen.max(1) as f64);
+    println!("  INTERACTION CASE: {interaction} quotient SCCs have >=2 blocks AND a block \
+              spanning several source loops — the one shape the proof does not cover");
     match first_merge {
         None => println!("  no merge anywhere: the collapse never fuses two loops into one SCC, \
                           so a region keeps its single exit continuation"),
