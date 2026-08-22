@@ -2287,6 +2287,73 @@ fn build_pool<const NA: usize>(nguards: u8, rounds: usize, cap: usize) -> Vec<Au
     pool
 }
 
+/// **`PAD_STRONGAGREE`** (iteration 359).
+///
+/// A worry raised by 358's corrected picture.  The Lean `LevelAgreement` says:
+/// if ONE state of a level fires a non-raw transition to `r`, then EVERY state
+/// of that level fires to `r`.  But 358 found that in a loop body only the HEAD
+/// is ever non-raw — the others march forward and are raw.  If that is right,
+/// then at an atom where the head fires, the non-head states do NOT fire, and
+/// the hypothesis as formalised is FALSE.
+///
+/// Note what 343 actually measured: agreement among states that are neither raw
+/// nor dead — i.e. among the ACTIVE ones.  That is the weak form.  The Lean
+/// predicate is the strong form.  This measures the strong form directly.
+fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut regions, mut checked, mut violated) = (0usize, 0usize, 0usize);
+    let mut first: Option<String> = None;
+    for a in &pool {
+        let (blk, nb) = bisim_blocks(a);
+        let Some(q) = quotient_by(a, &blk, nb) else { continue };
+        for comp in sccs_of(&q) {
+            if comp.len() < 2 { continue; }          // strong form is vacuous on singletons
+            regions += 1;
+            // best case over rank orderings: does ANY ordering satisfy the STRONG form?
+            let m = comp.len();
+            let mut perm: Vec<usize> = (0..m).collect();
+            let mut any_ok = false;
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                let mut ok = true;
+                for x in 0..NA {
+                    let (mut fires, mut idle) = (0usize, 0usize);
+                    for &u in &comp {
+                        let tv = q.st[u][x];
+                        let active = if tv == 0 { false } else {
+                            let t = (tv - 1) as usize;
+                            // non-raw = not an intra-region rank-decreasing edge
+                            !(comp.contains(&t) && rank[t] < rank[u])
+                        };
+                        if active { fires += 1; } else { idle += 1; }
+                    }
+                    if fires > 0 && idle > 0 { ok = false; }
+                }
+                if ok { any_ok = true; break; }
+                if !next_perm(&mut perm) { break; }
+            }
+            checked += 1;
+            if !any_ok {
+                violated += 1;
+                if first.is_none() {
+                    first = Some(format!("region {comp:?}\n    {}", show_aut("quot ", &q)));
+                }
+            }
+        }
+    }
+    println!("STRONGAGREE: {regions} multi-state quotient regions (strong form is vacuous \
+              on singletons, so only these can test it)");
+    println!("  {violated} of {checked} ({:.2}%) admit NO rank ordering under which \
+              'one fires => all fire' holds at every atom",
+        100.0 * violated as f64 / checked.max(1) as f64);
+    match first {
+        None => println!("  the STRONG form survives: some ordering always makes every region \
+                          state fire together"),
+        Some(m) => println!("  FIRST VIOLATION — the Lean `LevelAgreement` is UNSATISFIABLE here\n    {m}"),
+    }
+}
+
 /// **`PAD_SRCEXIT`** (iteration 358).
 ///
 /// The last item needing new mathematics is the structural claim behind
@@ -8427,6 +8494,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_LLEE").is_ok() {
         llee_test::<NA>(nguards as u8);
+        return;
+    }
+    if std::env::var("PAD_STRONGAGREE").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        strongagree::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_SRCEXIT").is_ok() {

@@ -16668,3 +16668,68 @@ prose I wrap around them has not.
 
 **Next.** Step 1 by induction on the expression: `seq`, `ite` and `wh` each
 preserve "only the head exits", with `wh` the case that creates the head.
+
+## 359 — RETRACTION: 352's `LevelAgreement` is unsatisfiable, and 352 is vacuous where it matters
+
+358's corrected picture — in a loop body only the HEAD is ever non-raw — implies
+something about the Lean I had not checked. `LevelAgreement` as formalised says:
+
+> if ONE state of a level fires a non-raw transition to `r`, then **EVERY** state
+> of that level fires to `r`.
+
+If only the head is ever non-raw, then at an atom where the head fires, the
+non-head states do **not** fire, and the hypothesis is false. `PAD_STRONGAGREE`
+tests it directly:
+
+```
+695 multi-state quotient regions
+681 of 695 (97.99%) admit NO rank ordering under which
+    "one fires => all fire" holds at every atom
+```
+
+**So `solvesBA_of_levelAgreement` — 352's "theorem of the arc" — has a hypothesis
+that cannot be met for 98% of multi-state regions.** The theorem is true and
+`sorry`-free; it is also, for the case that matters, **vacuous**. That is exactly
+the defect 307 found and the post-proof agenda lists first: *a theorem whose
+statement quantifies in a way that makes it unusable.* I wrote it, called it the
+theorem of the arc, and did not check its hypothesis against the automata.
+
+**What 343 actually measured, versus what I formalised.** 343 measured agreement
+among states that are neither raw nor dead — the **ACTIVE** ones. The Lean
+predicate quantifies over **ALL** states of the level. The measurement supports
+the weak form; I formalised the strong one and carried it through seven
+iterations without noticing the gap.
+
+**What survives.**
+
+* Singleton regions — 94.5% of non-trivial regions — satisfy the strong form
+  trivially, so 352 applies there unchanged.
+* Everything structural (339-351, 357) is untouched: the layers, the peel, the
+  shared lists, guard normalisation, `HaltDeterministic`.
+* The four derived lemmas (351) are still correct proofs; they just consume a
+  hypothesis that is too strong.
+
+**The repair, and why it is not merely cosmetic.** Weakening the predicate to
+
+```lean
+firstMatch W x (nonRaw c) = some r → firstMatch W x (nonRaw a) ≠ none →
+  firstMatch W x (nonRaw a) = some r
+```
+
+makes it satisfiable — and under 358's picture it becomes nearly trivial, since
+at most one state is active. But `gateL_of_agreement` currently DERIVES
+`bval (peelRawHlt a) x = true` from the fact that `a` fires, and with the weaker
+hypothesis it cannot. The real fix is in `firstMatch_shared`: it routes through
+`firstMatch_gated`, which demands the gate be *invisible*, when all that is
+needed is that **both sides agree** — and where the gate is false at a state,
+both sides are silent and agree for free. That case has to be handled directly
+instead of being assumed away.
+
+**Odds: 97% (−1).** Not for the defect itself — the repair is clear and the
+structure is intact — but for calibration. This is the fourth time in this
+stretch that a claim of mine has fallen to a measurement (342, 354, 358, 359),
+and the fourth is different in kind: it invalidated the usability of something I
+had already called finished. The field's prior that this problem does not close
+still stands, and I should be slower to name milestones.
+
+**Next.** The `firstMatch_shared` restructure, so the weak agreement suffices.
