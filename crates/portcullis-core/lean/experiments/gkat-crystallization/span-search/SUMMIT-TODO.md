@@ -20371,3 +20371,61 @@ this problem does not close still stands.
 **Next.** Characterise the 114 survivors: they are the sharpest artefacts this
 program has produced — small, verified-equivalent, non-degenerate pairs on which
 the architecture fails under both extremal quotients.
+
+## 431 — SELF-CORRECTION: my 429/430 refuters are degenerate in exactly the way I criticised at 427.
+
+Web search: exhausted (200/200).
+
+Before characterising the 114 survivors I checked the population they came from.
+429 built pairs as **a loop against its W1 unrolling**:
+
+```
+A = wh g e          B = ite g (e ; wh g e) 1
+```
+
+and the axiom is
+
+```lean
+| w1 (b) (e) : Equiv (.wh b e) (.ite b (.seq e (.wh b e)) (.test .one))
+```
+
+**That is literally the construction.** Every one of the 5,190 verified-equivalent
+pairs is a W1 instance, so `EquivBA A B` holds by a SINGLE axiom application. The
+completeness route never needs to touch them.
+
+**This is the same degeneracy I used to dismiss 427, applied to my own work.** At
+427 I argued that 413's refuter only reaches the hypothesis via `e = f`, where
+the conclusion is free by reflexivity, and called the refutation degenerate. At
+429 I built a population deliberately out of an AXIOM identity to get large
+components — and got pairs where the conclusion is free by W1. I criticised the
+pattern and then reproduced it two iterations later.
+
+**What still holds.** The hypothesis of `finiteAxiomsComplete_of_maskAgreement`
+is `∀ e f, equivalent → ∃ quot …`, so the 114 remain genuine counterexamples TO
+THAT STATEMENT. The defect is that the statement demands a solvable quotient for
+every equivalent pair, including those the axioms already settle — which is the
+same defect 427 identified and which a repaired statement could avoid.
+
+**Where the evidence actually stands, with the degenerate populations removed.**
+
+* Non-degenerate FAILURES: **none confirmed.** 413's refuter needs `e = f`;
+  429/430's need W1.
+* Non-degenerate SUCCESSES in the regime that matters: **none tested.** The only
+  clean sweep (427/428, 50,000 pullbacks) had max component 2, and 425's failure
+  predictor is component size ≥ 3.
+
+So the interesting regime — genuinely distinct pairs, not settled by a single
+axiom, with components of size ≥ 3 — is **untested in both directions**. Every
+population I have built so far lands outside it, and the reason is structural:
+the constructions that produce large components are the axiom identities, and
+axiom identities are trivially provable.
+
+**Odds: 45% → 50%.** The confirmed refutations dissolve; so does the confirmed
+support. Back to genuine uncertainty rather than a leaning, which is what the
+evidence actually supports. The field's prior that this problem does not close
+still stands.
+
+**Next.** Build the missing regime deliberately: distinct equivalent pairs with
+components of size ≥ 3 that are NOT instances of a single axiom — e.g. pairs
+related by two or more rewrites, found by searching the behaviour classes of
+expressions containing multi-state loops.
