@@ -21578,3 +21578,56 @@ Running.
 **Odds: 25%, unchanged.** No result yet.
 
 **Next.** Read the x4/x6 counts against the prediction above.
+
+## 455 — consolidation checkpoint while the rounds run completes.
+
+Web search: exhausted (200/200).
+
+The `x4`/`x6` sweep is still running — more rounds is superlinear against a
+12,000-node frontier — so rather than start a second census competing for the
+same CPU, this is a checkpoint on what the Lean side actually gained across
+417-454.
+
+**Eleven theorems, none with a `sorry`, and the file builds at 0 errors.**
+
+| theorem | axioms |
+|---|---|
+| `selfLoop_nonRaw` (440) | **none** |
+| `levelAgreementActive_fails` (440) | **none** |
+| `mono_forces_same_level` (417) | **none** |
+| `fibre_mates_share_transitions` (442) | **none** |
+| `fibre_mates_share_halt` (448) | **none** |
+| `fibConstant_by_measure` (423) | **none** |
+| `hfib_of_salomaa` (422) | **none** |
+| `fibConstant_of_unroll` (421) | **none** |
+| `hh_fails_of_loop_and_halt` (418) | `propext, Quot.sound` |
+| `solvesBA_of_mapped` (420) | `propext` |
+| `eqRHS_of_mapped` (420) | `propext` |
+
+**Eight of eleven depend on no axioms at all.** That matters here because the
+whole programme is about which axioms are needed: a result that leans on
+`Classical.choice` would be suspect in a file whose point is that W3 suffices and
+the n-ary UA does not.
+
+**What they collectively establish**, independent of every census number that has
+oscillated since 417:
+
+1. **Monotone levels cannot separate an SCC** — so the peel's level is forced
+   SCC-coarse (417).
+2. **The peel pools each level, and pooling breaks `hh`** — so the
+   state-preserving peel cannot handle nested loops (418).
+3. **Duplication transports solvability**, at the price of fibre-constancy, which
+   **W3 discharges** — and W3 is finite (420–422).
+4. **Fibre-mates share both transitions and halts** — so duplication produces
+   behaviourally identical copies and cannot split a branch (442, 448).
+5. **A self-loop is non-raw under every level and rank**, which refutes
+   `LevelAgreementActive` outright wherever a self-loop and a halt share a level
+   (440).
+
+None of that is contingent on a pool size, a closure bound, or a witness choice.
+It is the part of this stretch that will still be true after the next census
+reverses whatever the last one showed.
+
+**Odds: 25%, unchanged.** A checkpoint, not a measurement.
+
+**Next.** Read the x4/x6 counts, which is still the live question.
