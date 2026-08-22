@@ -11569,6 +11569,43 @@ theorem sreaches_of_mem {S : Type} (sys : GkatThompson.GSystem S A T)
 #print axioms reachLevel_eq_of_mutual
 #print axioms not_mutual_of_level_ne
 
+/-- **Any level function is constant on a cycle.**  Not just `reachLevel` — ANY
+`lvl` that no transition raises.  Mutually reachable states are forced to the
+same level, so a level can never be finer than a strongly connected component. -/
+theorem level_const_of_mutual {S : Type} {sys : GkatThompson.GSystem S A T}
+    (lvl : S → Nat)
+    (hmono : ∀ s, ∀ tr ∈ sys.trans s, lvl tr.2.2 ≤ lvl s)
+    {u v : S} (huv : SReaches sys u v) (hvu : SReaches sys v u) :
+    lvl u = lvl v := by
+  have mono : ∀ {a b : S}, SReaches sys a b → lvl b ≤ lvl a := by
+    intro a b h
+    induction h with
+    | refl _ => exact Nat.le_refl _
+    | step hstep _ ih =>
+        obtain ⟨g, q, hmem⟩ := hstep
+        exact Nat.le_trans ih (hmono _ (g, q, _) hmem)
+  exact Nat.le_antisymm (mono hvu) (mono huv)
+
+/-! **Consequence: the fused-loop problem cannot be dodged by choosing levels.**
+
+354 measured that a bisimulation collapse fuses distinct source loops into one
+quotient region, and that is what makes the transport hard: agreement in the
+source constrains only states within one source loop, so it says nothing about
+two blocks drawn from different ones.
+
+The obvious escape is to pick a FINER level function — one that separates the
+fused loops, so each quotient level lies inside a single source loop.  The
+theorem above rules that out.  Every state of a quotient SCC is mutually
+reachable with every other, so **every** admissible `lvl` is constant on it.  A
+level can be coarser than an SCC but never finer, and `hmono` is not negotiable:
+it is what makes the peel's induction terminate.
+
+So the transport is not an artefact of choosing `reachLevel`.  It is forced by
+the architecture, and any proof of `LevelAgreementActive` must confront fused
+loops directly. -/
+
+#print axioms level_const_of_mutual
+
 end LevelExistence
 
 #print axioms reachLevel_mono

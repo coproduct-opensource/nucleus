@@ -17510,3 +17510,51 @@ completeness on either side of it.
 
 **Next.** `LevelAgreementActive` itself — the one open statement, by induction on
 GKAT syntax, with `wh` the only case that carries content.
+
+## 376 — the fused-loop problem cannot be dodged: any level is constant on a cycle
+
+The one open statement is `LevelAgreementActive` for quotients, and the obstacle
+has been the same since 354: a collapse **fuses distinct source loops** into one
+quotient region. Agreement in the source constrains only states within one source
+loop, so it says nothing about two blocks drawn from different ones.
+
+The obvious escape is to choose a **finer level function** — one that separates
+the fused loops, so each quotient level sits inside a single source loop. The
+level function is ours to pick, subject only to being bounded and non-raising.
+
+**That escape is impossible**, and now provably so:
+
+```lean
+theorem level_const_of_mutual (lvl) (hmono : ∀ s, ∀ tr ∈ sys.trans s, lvl tr.2.2 ≤ lvl s)
+    (huv : SReaches sys u v) (hvu : SReaches sys v u) : lvl u = lvl v
+```
+
+**Axiom-free.** Not just for `reachLevel` — for *any* `lvl` no transition raises.
+Every state of a quotient SCC is mutually reachable with every other, so every
+admissible level function is constant on it. A level can be coarser than an SCC
+but never finer.
+
+And `hmono` is not negotiable: it is what makes the peel's induction terminate
+(`layeredOn_of_levels` peels `{lvl = n}` against `{lvl < n}`, which needs steps
+not to climb).
+
+**So the transport is not an artefact of my choice of `reachLevel`.** It is forced
+by the architecture, and any proof of `LevelAgreementActive` has to confront fused
+loops head-on. That is worth knowing precisely because I have now spent many
+iterations circling this point — 355 and 356 argued about lifting, 369 tried a
+smaller quotient, 370–371 tried a canonical rank, and each time the fused-loop
+case survived. This iteration says why none of them could have worked: they were
+all attempts to make the fusion not matter.
+
+**What would count as progress from here**, stated so the next iteration is not
+another circle:
+
+1. a proof that two blocks in one quotient region, drawn from disjoint source
+   loops, cannot both be active at one atom (356 measured 0 such regions but its
+   argument needs a pigeonhole not yet in Lean); or
+2. a direct argument for agreement that never mentions source loops.
+
+**Odds: 97%, unchanged.** A negative result with a proof is worth more than a
+measurement, but it removes a route rather than opening one.
+
+**Next.** Option 1 — the pigeonhole, in Lean.
