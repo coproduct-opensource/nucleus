@@ -21340,3 +21340,52 @@ a search bound. **Stating it now so the reading afterwards is not free.**
 **Odds: 30%, unchanged.** No result yet.
 
 **Next.** Read the MAXK=22 table against the prediction above.
+
+## 450 — the residue SURVIVES the bound increase. First non-artefact obstruction in this program.
+
+Web search: exhausted (200/200).
+
+449 recorded a prediction before running: if the k=5 residue is a ceiling
+artefact, raising `MAXK` from 16 to 22 makes the rescue counts rise; if it is
+real, the counts hold while the variant size stops short of the new bound.
+
+**Neither branch fired cleanly, and the outcome is sharper than either.**
+
+| setting | MAXK=16 | **MAXK=22** | largest variant 16 → 22 |
+|---|---|---|---|
+| `W1 x1` | 895 | **895** | 10 → 10 |
+| `W1 x2` | 1,364 | **1,364** | 15 → 15 |
+| `W1+dup x1` | 1,410 | **1,410** | 10 → 10 |
+| `W1+dup x2` | 1,727 | **1,727** | 16 → **20** |
+| `cyc2 x2` | 1,105 | **1,105** | 16 → **20** |
+| `cyc2 x3` | 1,105 | **1,105** | 16 → **22** |
+| `W1+cyc2 x2` | 2,117 | **2,117** | 16 → **20** |
+| `W1+cyc2 x3` | 2,229 | **2,229** | 16 → **22** |
+| `W1+dup+cyc2 x1` | 2,028 | **2,028** | 10 → 10 |
+
+**Every count is identical, while the search demonstrably explored bigger
+variants — up to the new bound of 22.** So the settings that looked
+ceiling-bound were genuinely exploring more and gaining nothing. The "largest
+variant 16" readings were the search reaching the bound, not the bound
+suppressing rescues.
+
+**The residue is real.** Roughly 929 of 3,347 uncoverable pullbacks resist
+refinement by `W1`, duplication and 2-cycle moves, and that number does not
+depend on the state bound. This is the first obstruction in this program to
+survive the test designed to dissolve it — 444's "54" fell to a closure bound,
+428's "max component 2" fell to a pool cap, 437's "class size 1" fell to a depth
+bound. This one does not fall.
+
+**What it does not say.** "Resist" means these three mechanisms at ≤3 rounds do
+not rescue them, not that no witness exists. `GkatHardFrontier` already proves
+witnesses fail to exist in general, so the interesting question was always
+whether the *measured* residue was an artefact. It is not.
+
+**Odds: 30% → 25%.** A prediction was recorded in advance and the result went
+against the artefact reading. That is worth more than the same number obtained
+without the prediction, which is why 449 recorded it. The field's prior that this
+problem does not close still stands, and this is the cleanest evidence for it the
+program has produced.
+
+**Next.** Characterise the 929: what distinguishes them from the 2,418 that
+refinement rescues? If they share a shape, that shape is the obstruction.
