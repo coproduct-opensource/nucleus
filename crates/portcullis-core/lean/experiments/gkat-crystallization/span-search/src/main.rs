@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_CERTQ").is_ok() {
+        cert_arbitrary_quotient::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_L2P").is_ok() {
         l2prime_test::<NA>(nguards as u8);
         return;
@@ -12472,4 +12476,57 @@ fn l2prime_test<const NA: usize>(nguards: u8) {
     }
     println!("  l2prime_test NA={NA}: {n} loop SCCs; (L2') holds on {ok}; \
         after collapse {cok}/{cn}");
+}
+
+/// **IS THE CERTIFICATE PRESERVED BY ARBITRARY QUOTIENTS?** (iteration 260.)
+///
+/// 259 read from Grabmayer that "the class of finite LLEE-precharts is closed
+/// under ARBITRARY homomorphic images" — stronger than the minimal-collapse
+/// closure `hcollapse` needs.  227 had to add a minimality hypothesis to
+/// `QuotientClosure` after 4 failures at NA=4, but those were failures of the
+/// six-rule CALCULUS on non-minimal quotients, not of a certificate.  If the
+/// certificate really is closed under arbitrary quotients, the Lean statement
+/// needs no minimality hypothesis at all.
+///
+/// Test: take Thompson automata (which carry the certificate by `thompson_layered`,
+/// proved at 258), quotient by EVERY behavioural congruence in the lattice, and
+/// check the certificate survives each one.
+fn cert_arbitrary_quotient<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x6A09E667F3BCC908;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut auts, mut quots, mut bad, mut nonmin) = (0usize, 0usize, 0usize, 0usize);
+    let mut shown = 0usize;
+    for _ in 0..12_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        let mut bud = 200_000usize;
+        if !llee_L123(&a, &mut bud) { continue; }   // only certified starting points
+        auts += 1;
+        for (blk, nb) in lattice_congruences(&a) {
+            let q = match quotient_by(&a, &blk, nb) { Some(q) => q, None => continue };
+            quots += 1;
+            let (qb, qnb) = bisim_blocks(&q);
+            if qnb < q.k as usize { nonmin += 1; }
+            let mut b2 = 200_000usize;
+            if !llee_L123(&q, &mut b2) {
+                bad += 1;
+                if shown < 3 {
+                    shown += 1;
+                    println!("    CERT LOST on a quotient: {} states -> {} (minimal? {})",
+                        a.k, nb, qnb == q.k as usize);
+                    for s in 0..(q.k as usize) {
+                        let row: Vec<String> = (0..NA).map(|i| {
+                            let t = q.st[s][i];
+                            if t == 0 { "-".to_string() } else { format!("c{}", t - 1) }
+                        }).collect();
+                        println!("      c{s}: hl={:03b} st=[{}]", q.hl[s], row.join(","));
+                    }
+                }
+            }
+        }
+    }
+    println!("  cert_arbitrary_quotient NA={NA}: {auts} certified Thompson automata; \
+        {quots} behavioural quotients ({nonmin} of them NON-minimal); \
+        certificate LOST on {bad}");
 }

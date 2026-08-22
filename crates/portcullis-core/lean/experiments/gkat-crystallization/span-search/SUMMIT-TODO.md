@@ -11981,3 +11981,43 @@ the certificate version of closure should not need 227's minimality restriction.
 `Layered` — the acyclic case first, where the proper-step argument does the work
 (a cycle in the image lifts to an infinite path upstairs, contradicting the
 rank).
+
+---
+
+## 260 — THE CERTIFICATE SURVIVES ARBITRARY QUOTIENTS.  0 in 41 716.
+
+259 read from Grabmayer that LLEE-precharts are closed under ARBITRARY
+homomorphic images — stronger than the minimal-collapse closure `hcollapse`
+needs.  Tested in this setting: take Thompson automata carrying the certificate
+(`thompson_layered`, proved at 258), quotient by EVERY behavioural congruence in
+the lattice, and check the certificate survives each.
+
+    NA=2   3928 certified automata   16 853 quotients (14 363 non-minimal)   LOST 0
+    NA=3   3928                      13 229          (10 930 non-minimal)   LOST 0
+    NA=4   3928                      11 634          ( 9 461 non-minimal)   LOST 0
+
+**Zero losses in 41 716 quotients, 34 754 of them NON-minimal.**
+
+**This explains 227 retroactively.**  That iteration measured 4 failures at NA=4
+and added a minimality hypothesis to `QuotientClosure`, correctly, because the
+property being measured was "the six-rule CALCULUS solves it".  The certificate
+is a different object and does not need the restriction — the minimality
+hypothesis was compensating for the calculus, exactly as 259 suspected.
+
+**What it does NOT change, and this is worth being precise about.**  In 239's
+architecture `hcollapse` is a HYPOTHESIS of
+`sumQuotientSolvable_of_certificate`.  Dropping minimality from it would make
+that hypothesis STRONGER — harder to discharge, not easier.  So the Lean
+statement stays as it is, and what this measurement buys is MARGIN: the
+obligation as stated is weaker than what appears to be true, so a proof has room
+to be less careful than the statement allows.  `hstart` supplies the full
+collapse, which is minimal, so nothing downstream needs adjusting either.
+
+**Odds: 84%, held.**  A confirmation, on a population 41 716 wide, of a claim
+already read from the literature at 259 and already priced in at 224.  Margin is
+not progress.  What would move the number is `hcollapse` proved, not measured
+again.
+
+**Next.**  The single-pair identification in Lean, acyclic case first: a cycle in
+the image lifts to an infinite path upstairs, contradicting the rank — the
+proper-step argument 243 showed GKAT is on the right side of.
