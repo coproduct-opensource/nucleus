@@ -2354,6 +2354,86 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_MINCONGVAC`** (iteration 369).
+///
+/// The quotient transport has resisted since 354.  But 343 proved minimality is
+/// only plumbing — `SumQuotientSolvable` needs SOME quotient identifying the two
+/// starts, not the minimal one — and 340 proved the shape is ours to choose.  So
+/// stop transporting through the FULL bisimulation collapse and use the SMALLEST
+/// congruence that identifies the two starts instead.  It merges less, so it
+/// should disturb the loop structure less.
+///
+/// Measured against the full collapse on the same pairs, so the comparison is
+/// like for like.
+fn mincongvac<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut pairs, mut mc_regions, mc_vac, mut bs_regions, bs_vac) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut mc_vac, mut bs_vac) = (mc_vac, bs_vac);
+    let (mut mc_agree, mut bs_agree) = (0usize, 0usize);
+    let check = |q: &Aut<NA>, regions: &mut usize, vac: &mut usize, agree: &mut usize| {
+        for comp in sccs_of(q) {
+            if comp.len() < 2 { continue; }
+            *regions += 1;
+            let m = comp.len();
+            let mut perm: Vec<usize> = (0..m).collect();
+            let (mut okv, mut oka) = (false, false);
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                let (mut vacuous, mut agrees) = (true, true);
+                for x in 0..NA {
+                    let mut act = 0usize;
+                    let mut demand: i64 = -1;
+                    for &u in &comp {
+                        let tv = q.st[u][x];
+                        let halts = (q.hl[u] >> x) & 1 == 1;
+                        let d: i64 = if tv == 0 { if halts { -2 } else { continue } }
+                            else {
+                                let t = (tv - 1) as usize;
+                                if comp.contains(&t) && rank[t] < rank[u] { continue }
+                                else { t as i64 }
+                            };
+                        act += 1;
+                        if demand == -1 { demand = d; } else if demand != d { agrees = false; }
+                    }
+                    if act > 1 { vacuous = false; }
+                }
+                if vacuous { okv = true; }
+                if agrees { oka = true; }
+                if !next_perm(&mut perm) { break; }
+            }
+            if okv { *vac += 1; }
+            if oka { *agree += 1; }
+        }
+    };
+    let take: usize = std::env::var("TAKE").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
+    for a in pool.iter().take(take) {
+        for b in pool.iter().take(take) {
+            if behaviour(a) != behaviour(b) { continue; }
+            pairs += 1;
+            if let Some(mc) = min_congruence(a, b) {
+                check(&mc, &mut mc_regions, &mut mc_vac, &mut mc_agree);
+            }
+            if let Some(su) = sum_core(a, b) {
+                let (blk, nb) = bisim_blocks(&su);
+                if let Some(q) = quotient_by(&su, &blk, nb) {
+                    check(&q, &mut bs_regions, &mut bs_vac, &mut bs_agree);
+                }
+            }
+        }
+    }
+    println!("MINCONGVAC: {pairs} equivalent pairs");
+    println!("  MINIMAL CONGRUENCE : {mc_regions} multi-state regions, {mc_vac} vacuous \
+              ({:.2}%), {mc_agree} agreeing ({:.2}%)",
+        100.0 * mc_vac as f64 / mc_regions.max(1) as f64,
+        100.0 * mc_agree as f64 / mc_regions.max(1) as f64);
+    println!("  FULL COLLAPSE      : {bs_regions} multi-state regions, {bs_vac} vacuous \
+              ({:.2}%), {bs_agree} agreeing ({:.2}%)",
+        100.0 * bs_vac as f64 / bs_regions.max(1) as f64,
+        100.0 * bs_agree as f64 / bs_regions.max(1) as f64);
+}
+
 /// **`PAD_SRCVAC`** (iteration 368).
 ///
 /// Working the induction's `wh` case out by hand says the rank must be
@@ -8865,6 +8945,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_MINCONGVAC").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        mincongvac::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_SRCVAC").is_ok() {

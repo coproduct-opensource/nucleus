@@ -17172,3 +17172,44 @@ step that has resisted since 354 — is untouched by this.
 
 **Next.** Whether the head-distance rank survives the quotient, or whether the
 merged regions need their own.
+
+## 369 — the "smaller quotient" route, tested and NOT supported
+
+The quotient transport has resisted since 354. But 343 proved minimality is only
+plumbing — `SumQuotientSolvable` needs SOME quotient identifying the two starts,
+not the minimal one — and 340 proved the shape is ours to choose. So the obvious
+idea: stop transporting through the **full bisimulation collapse** and use the
+**smallest congruence identifying the two starts** instead. It merges less, so it
+should disturb the loop structure less.
+
+Measured on the same pairs, like for like:
+
+```
+13 312 equivalent pairs
+MINIMAL CONGRUENCE :  7 multi-state regions, 6 vacuous (85.71%), 7 agreeing (100%)
+FULL COLLAPSE      : 29 multi-state regions, 29 vacuous (100%),  29 agreeing (100%)
+```
+
+**The hypothesis is not supported, and if anything runs the other way.** The
+minimal congruence is *worse* for vacuity (85.7% against 100%) — it leaves a
+region where no rank makes only one state active, which the full collapse never
+does. Agreement itself holds in both, as everywhere else.
+
+Two honest caveats. The samples are small — 7 and 29 multi-state regions — so
+this rules the idea out as a *promising* route rather than as an impossible one.
+And the minimal congruence yields far fewer multi-state regions overall, which is
+itself expected: merging less leaves more states, more of them in singleton
+regions.
+
+**What this is worth.** A route I would otherwise have spent several iterations
+building is closed for the price of one measurement, and closed in the direction
+that matters: there is no structural advantage to be had by choosing a smaller
+quotient, so the transport problem stays exactly where 354 left it. Negative
+results of this shape are the cheapest thing in this whole program and I should
+reach for them earlier.
+
+**Odds: 97%, unchanged.** Nothing about the conjecture moved; one of my candidate
+proof strategies did.
+
+**Next.** Back to the transport itself, with the head-distance rank of 368 as the
+thing to transport rather than an arbitrary one.
