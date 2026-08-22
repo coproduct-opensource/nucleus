@@ -21293,3 +21293,23 @@ not close still stands.
 **Next.** Raise `MAXK` above 16 and re-run the k = 5 mechanism test. If the
 residue shrinks with the bound, it is an artefact; if it plateaus, it is real —
 and that is the first genuinely diagnostic version of this measurement.
+
+### 448a — the k=5 table, completed
+
+The run finished after 448 was filed; the two remaining settings are the best
+ones, so 448's "67%" understated it:
+
+```
+  W1+dup+cyc2 x2: rescued 2418 / 3347   (largest variant 16 states)  <- best
+  everything x1 : rescued 2106 / 3347   (largest variant 15 states)
+```
+
+**Best is 72%, not 67% — 929 resist rather than 1,118.** The conclusion is
+unchanged and the ceiling reading is strengthened: the best setting reports
+*largest variant 16 states*, i.e. it is pressed against `MAXK`, while
+`everything x1` tops out at 15 states and scores lower. **Rounds, not the
+mechanism set, is what the ceiling binds** — `W1+dup+cyc2` gains 390 rescues
+going from x1 to x2 and is still at the bound.
+
+That is the sharpest form of the next experiment: raise `MAXK` and add rounds. If
+the residue keeps falling, it was never an obstruction.
