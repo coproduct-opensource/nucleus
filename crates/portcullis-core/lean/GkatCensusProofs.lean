@@ -10463,4 +10463,124 @@ theorem exists_max_witness {S Q : Type} (w : S → Nat) (j : S → Q)
 
 end WitnessSelection
 
+
+section QuotWitCases
+open Classical
+
+/-! ### 318 — THE WITNESS BUNDLE, AND THE FIRST THREE CASES ON IT
+
+    Assembling the induction shows the 307-form witness is not quite enough.
+    The recursive call needs two things the case lemmas were not passing on:
+
+      * **`j s = c`** — that the witness really is a PREIMAGE of the class, which
+        the cases never used but the IH does;
+      * **MAXIMALITY** of the witness in its class, which is how 315-317 deliver
+        each node's preference.
+
+    Rather than thread four conjuncts through five lemmas by hand, name the
+    bundle.  `QuotWit` says: every class outside the block is carried by a
+    preimage of maximal weight, and the quotient's dynamics there is that
+    preimage's.
+
+    **Maximality is stated over the TYPE, not over the state list.**  That is
+    what the cases consume, and it keeps the finiteness bookkeeping in ONE
+    place — the eventual top-level construction — instead of in every case.
+    `exists_max_witness` (317) supplies it from a list when the time comes. -/
+def QuotWit {S Q : Type} (core : GkatThompson.GSystem S A T) (w : S → Nat)
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop) (j : S → Q) : Prop :=
+  ∀ c, ¬ B c → ∃ s, j s = c ∧ (∀ y, j y = c → w y ≤ w s)
+    ∧ Qsys.trans c = (core.trans s).map (fun tr => (tr.1, tr.2.1, j tr.2.2))
+    ∧ Qsys.hlt c = core.hlt s
+
+theorem quotient_layered_test'' (t : BExp T) {Q : Type}
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : (GkatThompson.certifiedThompson A T (.test t)).State → Q)
+    (hw : QuotWit (GkatThompson.certifiedThompson A T (.test t)).aut.core
+      (stateWeight (.test t)).1 Qsys B j) :
+    LayeredOn Qsys B :=
+  LayeredOn.acyclic ⟨fun _ => 0, fun c hc => (hw c hc).elim (fun s _ => nomatch s)⟩
+
+theorem quotient_layered_act'' (a : A) {Q : Type}
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : (GkatThompson.certifiedThompson A T (.act a)).State → Q)
+    (hw : QuotWit (GkatThompson.certifiedThompson A T (.act a)).aut.core
+      (stateWeight (.act a)).1 Qsys B j) :
+    LayeredOn Qsys B := by
+  refine LayeredOn.acyclic ⟨fun _ => 0, ?_⟩
+  intro c hc X W x r hfm
+  obtain ⟨s, _, _, hts, _⟩ := hw c hc
+  rw [hts] at hfm
+  have hnil : (GkatThompson.certifiedThompson A T (.act a)).aut.core.trans s = [] := rfl
+  rw [hnil] at hfm
+  exact absurd hfm (by simp [GkatKleene.firstMatch])
+
+/-- **THE `wh` CASE ON THE BUNDLE.**  The base system downstairs is built as in
+    309; what is new is that its bundle inherits BOTH extra conjuncts from the
+    parent's — the preimage fact verbatim, and maximality because
+    `stateWeight (.wh b e) = stateWeight e` by definition.  **A loop adds
+    transitions, never states, so it cannot change the weights.** -/
+theorem quotient_layered_wh'' (b : BExp T) (e : Exp A T) {Q : Type}
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : (GkatThompson.certifiedThompson A T e).State → Q)
+    (hout : ∀ s, ¬ B (j s))
+    (hw : QuotWit (GkatThompson.certifiedThompson A T (.wh b e)).aut.core
+      (stateWeight (.wh b e)).1 Qsys B j)
+    (ih : ∀ base : GkatThompson.GSystem Q A T,
+      QuotWit (GkatThompson.certifiedThompson A T e).aut.core
+        (stateWeight e).1 base B j → LayeredOn base B) :
+    LayeredOn Qsys B := by
+  refine LayeredOn.loop
+    (base := ⟨Qsys.states,
+      fun c => if h : ¬ B c then
+          (GkatThompson.certifiedThompson A T e).aut.core.hlt
+            (Classical.choose (hw c h))
+        else Qsys.hlt c,
+      fun c => if h : ¬ B c then
+          ((GkatThompson.certifiedThompson A T e).aut.core.trans
+            (Classical.choose (hw c h))).map (fun tr => (tr.1, tr.2.1, j tr.2.2))
+        else Qsys.trans c⟩)
+    (b := b)
+    (entry := (GkatThompson.certifiedThompson A T e).aut.initTrans.map
+      (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+    ⟨?_, ?_, ?_, rfl⟩ ?_ ?_ (ih _ ?_)
+  · intro c hc
+    have hs := (Classical.choose_spec (hw c hc)).2.2.1
+    show Qsys.trans c = (dite _ _ _) ++ _
+    simp only [dif_pos hc]
+    refine Eq.trans hs ?_
+    refine Eq.trans (congrArg (List.map (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+      (loop_core_trans b e _)) ?_
+    refine Eq.trans (map_append' _ _ _) ?_
+    congr 1
+    exact gate_map_comm _ _ _ _
+  · intro c hc X W x
+    have hh := (Classical.choose_spec (hw c hc)).2.2.2
+    show GkatGS.bval W (Qsys.hlt c) x = (GkatGS.bval W (dite _ _ _) x && _)
+    simp only [dif_pos hc]
+    refine Eq.trans (congrArg (fun z => GkatGS.bval W z x) hh) ?_
+    exact congrArg (fun z => GkatGS.bval W z x) (loop_core_hlt b e _)
+  · intro c hc
+    exact ⟨by show Qsys.trans c = dite _ _ _; rw [dif_neg hc],
+      by show Qsys.hlt c = dite _ _ _; rw [dif_neg hc]⟩
+  · intro tr htr
+    simp only [List.mem_map] at htr
+    obtain ⟨t, _, rfl⟩ := htr
+    exact hout t.2.2
+  · intro c hc tr htr
+    simp only [dif_pos hc, List.mem_map] at htr
+    obtain ⟨t, _, rfl⟩ := htr
+    exact hout t.2.2
+  · intro c hc
+    exact ⟨Classical.choose (hw c hc),
+      (Classical.choose_spec (hw c hc)).1,
+      (Classical.choose_spec (hw c hc)).2.1,
+      by show dite _ _ _ = _; rw [dif_pos hc],
+      by show dite _ _ _ = _; rw [dif_pos hc]⟩
+
+#print axioms quotient_layered_test''
+#print axioms quotient_layered_act''
+#print axioms quotient_layered_wh''
+
+end QuotWitCases
+
 end GkatCensus

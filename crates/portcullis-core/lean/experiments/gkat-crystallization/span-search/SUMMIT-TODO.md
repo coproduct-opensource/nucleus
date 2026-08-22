@@ -14622,3 +14622,41 @@ supplied — but assembly has surfaced genuine mismatches twice in this series
 (307).  The number moves when the induction compiles.
 
 **Next.**  The induction on `Exp`.
+
+---
+
+## 318 — THE WITNESS BUNDLE, AND THE FIRST THREE CASES ON IT.
+
+Assembling the induction shows the 307-form witness is not quite enough.  The
+recursive call needs two things the case lemmas were not passing on:
+
+  * **`j s = c`** — that the witness really is a PREIMAGE of the class.  The
+    cases never used it; the IH does.
+  * **MAXIMALITY** of the witness in its class — which is how 315–317 deliver
+    each node's preference.
+
+Rather than thread four conjuncts through five lemmas by hand, the bundle is
+named.  **`QuotWit core w Qsys B j`**: every class outside the block is carried
+by a preimage of MAXIMAL WEIGHT, and the quotient's dynamics there is that
+preimage's.
+
+**Maximality is stated over the TYPE, not over the state list** — that is what
+the cases consume, and it keeps the finiteness bookkeeping in ONE place (the
+eventual top-level construction) instead of in every case.  317's
+`exists_max_witness` supplies it from a list when the time comes.
+
+`quotient_layered_test''`, `quotient_layered_act''`, `quotient_layered_wh''`.
+All three compiled first try.
+
+**Why `wh` costs nothing extra.**  Its base's bundle inherits BOTH new conjuncts
+from the parent's — the preimage fact verbatim, and maximality because
+`stateWeight (.wh b e) = stateWeight e` BY DEFINITION.  A loop adds transitions,
+never states, so it cannot change the weights.  The same fact that made
+`LoopLayer.states_eq` `rfl` makes this free.
+
+**Odds: 99%, HELD.**
+
+**Next.**  `ite` and `seq` on the bundle — there maximality must transport along
+an INJECTION rather than an identity, which 316's definition was built to make
+immediate: `stateWeight (.ite b e f) (inl u) = stateWeight e u`, so a maximal
+`inl` witness upstairs is a maximal witness downstairs.  Then the induction.
