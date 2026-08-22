@@ -18525,3 +18525,44 @@ is still not written is the induction that discharges `SourceSccAgrees`, and
 `RankUniform` is now a second thing the induction must deliver.
 
 **Next.** The induction, delivering `SourceSccAgrees` and `RankUniform` together.
+
+## 399 — SOURCE AGREEMENT ⟹ COMPLETENESS
+
+**`sourceAgrees_pullback_of_intrinsic`** — the source condition's LEVEL becomes
+intrinsic, and for agreement this is clean in a way it was not for headedness.
+`SourceSccAgrees`'s conclusion is `autStep u = autStep w`, which **does not
+mention the level at all**; the level appears only in the hypothesis, so
+weakening the hypothesis is the whole job, and 390's
+`active_intrinsic_of_pullback` does precisely that. 390 got only half of this for
+headedness; here it falls out.
+
+**`finiteAxiomsComplete_of_sourceAgrees`** — the capstone on the surviving route.
+For each equivalent pair: a well-formed, inert-free quotient of their sum
+identifying the two starts, a component-uniform rank, and **within each component
+of the SUM the active states take the same step** ⟹ the finite GKAT axioms are
+complete.
+
+The source condition's level is now the sum's **own** `reachMask`; only the rank
+is borrowed, which 391 measured costs five components in 139 245.
+
+**And 388's capstone is marked.** `finiteAxiomsComplete_of_sourceHeaded` is a
+correct theorem whose hypothesis 392 showed is not universally instantiable —
+exactly the trap 374 was written about — so it now carries a ⚠️ pointing at the
+agreement version, with the measured coverage (99.39% of source components,
+98.1% of multi-state quotient regions) stated rather than implied.
+
+**The route, on the condition that is actually true:**
+
+```
+completeness ← sum-quotient solvability      corpus, sorry-free
+             ← level agreement               362, 384
+             ← source agreement + RankUniform 398, 399
+             ← wh: back-edges agree, halt blocks them, nesting splits  393-395
+             ← seq/ite: components inherited  397
+```
+
+**Odds: 96%, unchanged.** Every link is a theorem except the induction that
+discharges `SourceSccAgrees` and `RankUniform` for Thompson automata — which now
+has all its cases' content proved and needs writing.
+
+**Next.** That induction.

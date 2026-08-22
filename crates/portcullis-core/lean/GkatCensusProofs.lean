@@ -15080,7 +15080,15 @@ theorem headedRegion_of_sourceHeaded {S Q : Type} {aut : GkatKleene.GAut S A T}
 
 #print axioms headedRegion_of_sourceHeaded
 
-/-- # SOURCE HEADEDNESS ⟹ COMPLETENESS
+/-- ⚠️ **NOT UNIVERSALLY INSTANTIABLE.**  392 showed `wh` breaks headedness: a
+loop appends the body's entries at EVERY body state, so where two body states
+halt at one atom, both back-edge and two states are active at once.  They agree
+— but "at most one active" fails.  Measured, headedness holds for 99.39% of
+source components and 98.1% of multi-state quotient regions, not all.
+
+Use `finiteAxiomsComplete_of_sourceAgrees`, which runs on agreement.
+
+# (sufficient, not necessary) SOURCE HEADEDNESS ⟹ COMPLETENESS
 
 The chain, end to end.  For each equivalent pair, exhibit a quotient of their sum
 identifying the two starts such that
@@ -15299,6 +15307,7 @@ what 393-395 actually prove. -/
 def SourceSccAgrees {S : Type} (aut : GkatKleene.GAut S A T) (slvl : S → Nat)
     (srank : Nat → S → Nat) : Prop :=
   ∀ (X : Type) (W : T → X → Bool) (x : X) (u w : S),
+    u ∈ aut.states → w ∈ aut.states →
     SemReaches aut u w → SemReaches aut w u →
     GkatGS.bval W (peelRawHlt aut slvl srank u) x = true →
     GkatGS.bval W (peelRawHlt aut slvl srank w) x = true →
@@ -15349,7 +15358,7 @@ theorem levelAgreementActive_of_sourceAgrees {S Q : Type}
     active_of_fires W x quot _ rank c hcfire
   have hpu := (active_transport π _ rank u W x).mpr (by rw [hu]; exact hact)
   have hpw := (active_transport π _ rank w W x).mpr (by rw [hw]; exact hcact)
-  have hstep := hsrc X W x u w (semReaches_of_sreaches aut hniS huw)
+  have hstep := hsrc X W x u w humem hwmem (semReaches_of_sreaches aut hniS huw)
     (semReaches_of_sreaches aut hniS hwu) hpu hpw
   -- push the step agreement back down
   obtain ⟨hcstep, hcraw⟩ := (firstMatch_nonRaw_iff W x quot _ rank c r).mp hcfire
@@ -15359,6 +15368,72 @@ theorem levelAgreementActive_of_sourceAgrees {S Q : Type}
     ⟨hqa.trans hcstep, hru n a c ha hc r hcraw⟩
 
 #print axioms levelAgreementActive_of_sourceAgrees
+
+/-- **The source condition's LEVEL becomes intrinsic — and for agreement this is
+clean.**  `SourceSccAgrees`'s conclusion is `autStep u = autStep w`, which does
+not mention the level at all.  The level appears only in the hypothesis, so
+weakening the hypothesis is all that is needed — and 390's
+`active_intrinsic_of_pullback` does exactly that: active under the pullback
+implies active intrinsically.
+
+For headedness this was awkward (390 got only half of it); for agreement it falls
+out, because the conclusion is level-free. -/
+theorem sourceAgrees_pullback_of_intrinsic {S Q : Type}
+    {aut : GkatKleene.GAut S A T} {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (hwf : GkatKleene.UniformWF aut) (hniS : NoInert aut) (rank0Q : Q → Nat)
+    (hint : SourceSccAgrees aut
+      (reachMask (GkatThompson.GSystem.mk aut.states aut.hlt aut.trans))
+      (fun _ v => rank0Q (π.mapState v))) :
+    SourceSccAgrees aut
+      (fun s => reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans)
+        (π.mapState s))
+      (fun _ v => rank0Q (π.mapState v)) := by
+  intro X W x u w humem hwmem h1 h2 hau haw
+  exact hint X W x u w humem hwmem h1 h2
+    (active_intrinsic_of_pullback π hwf hniS (fun v => rank0Q (π.mapState v)) u humem W x hau)
+    (active_intrinsic_of_pullback π hwf hniS (fun v => rank0Q (π.mapState v)) w hwmem W x haw)
+
+#print axioms sourceAgrees_pullback_of_intrinsic
+
+/-- # SOURCE AGREEMENT ⟹ COMPLETENESS
+
+The capstone on the route that survives.  388's version ran on headedness, which
+392 then showed is false for `wh`; this one runs on **agreement**, which 393-395
+prove for `wh` outright.
+
+For each equivalent pair, exhibit a quotient of their sum identifying the two
+starts, well-formed and inert-free on both sides, with a component-uniform rank,
+such that **within each component of the SUM the active states take the same
+step** — and the finite GKAT axioms are complete.
+
+The source condition's LEVEL is the sum's own `reachMask`; only its rank is
+borrowed from the quotient, which 391 measured costs five components in 139 245. -/
+theorem finiteAxiomsComplete_of_sourceAgrees
+    (hquot : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient (GkatTrim.SUMof A T e f) quot)
+        (rank0Q : Q → Nat),
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) ∧
+        GkatKleene.UniformWF quot ∧
+        GkatKleene.UniformWF (GkatTrim.SUMof A T e f) ∧
+        NoInert (GkatTrim.SUMof A T e f) ∧ NoInert quot ∧
+        RankUniform quot
+          (reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans))
+          (fun _ b => rank0Q b) ∧
+        SourceSccAgrees (GkatTrim.SUMof A T e f)
+          (reachMask (GkatThompson.GSystem.mk
+            (GkatTrim.SUMof A T e f).states (GkatTrim.SUMof A T e f).hlt
+            (GkatTrim.SUMof A T e f).trans))
+          (fun _ v => rank0Q (π.mapState v))) :
+    GkatKleene.FiniteAxiomsCompleteBA A T := by
+  refine finiteAxiomsComplete_of_maskAgreement (fun e f hef => ?_)
+  obtain ⟨Q, quot, π, rank0Q, hπ, hwfQ, hwfS, hniS, hniQ, hru, hsrc⟩ := hquot e f hef
+  exact ⟨Q, quot, π, (fun _ b => rank0Q b), hπ, hwfQ,
+    levelAgreementActive_of_sourceAgrees π hwfS hniS hniQ (fun _ b => rank0Q b) hru
+      (sourceAgrees_pullback_of_intrinsic π hwfS hniS rank0Q hsrc)⟩
+
+#print axioms finiteAxiomsComplete_of_sourceAgrees
 
 end Instantiation
 
