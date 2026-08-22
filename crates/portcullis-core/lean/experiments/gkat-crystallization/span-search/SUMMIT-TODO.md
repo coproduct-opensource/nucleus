@@ -17307,3 +17307,52 @@ and no census over finished automata recovers it.
 **Next.** Stop inferring the head. The remaining work on `LevelAgreementActive`
 is an induction where `wh` supplies its own head — which is Lean work, not
 harness work.
+
+## 372 — the head as DATA: `solvesBA_of_headed`
+
+371 showed that inferring a region's head from the finished graph is ill-posed —
+two reasonable definitions give opposite answers. In an induction on `wh b e` no
+inference is needed, because the head is a state of the construction. So the Lean
+shape should take the head as **data** and prove what follows.
+
+```lean
+def HeadedRegion aut lvl rank n h : Prop :=
+  ∀ s ∈ levelStates aut lvl n, s ≠ h →
+    ∀ X W x, bval W (peelRawHlt aut lvl rank s) x = false
+```
+
+*Every non-head state of the level is inactive at every atom* — 358's structural
+picture, stated without reference to how the head was found.
+
+- **`levelAgreementActive_of_headed`** — vacuity gives agreement: two active
+  states of a level are both the head, hence equal, hence trivially fire alike.
+  This is the 96.7–98% route of 363, formalised.
+- **`solvesBA_of_headed`** — a quotient with a bounded non-raising level
+  function, halt determinism, and **a head for every level** is solvable.
+
+Two things caught in the writing, both worth recording:
+
+**`by_contra` is not available.** This is a Mathlib-free file;
+`cases Classical.em (c = h)` is the replacement. The failure mode is "unknown
+tactic", which is easy to misread as a typo.
+
+**`∃ h : S` cannot be met when `S` is empty.** Stated as `∀ n, ∃ h,
+HeadedRegion … n h`, the hypothesis demands a head for levels that have no
+states — and for an empty state type there is no `h` at all. That is the 307
+defect in miniature, in a theorem I had just written. Restated as `∀ n, ∀ a ∈
+levelStates aut lvl n, ∃ h, …` it is vacuous where the level is empty and needs
+no non-emptiness assumption. Both theorems compile in the fixed form.
+
+**What is now proved, end to end.** Level function free (339) · halt determinism
+from `UniformWF` (357) · the peel, layers, shared lists, gates, guard
+normalisation (338-351, 360-362) · agreement from headedness (372). The single
+remaining hypothesis is **`HeadedRegion` for the quotients**, which is where the
+`wh` induction has to land.
+
+**Odds: 97%, unchanged.** The route is now stated with its last hypothesis in a
+form that an induction can actually supply, rather than one a census has to
+guess at. That is a better target, not a closed one.
+
+**Next.** Whether `HeadedRegion` survives the collapse — the same transport
+question, but now about a predicate with a supplied witness rather than a
+searched rank.
