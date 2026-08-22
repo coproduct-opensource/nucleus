@@ -18683,3 +18683,45 @@ be checked before the `wh` case is built on it.
 
 **Next.** Check that claim — read the remaining constructors rather than assume
 the pattern continues.
+
+## 403 — 402's claim is FALSE as stated; the version the rank needs survives
+
+402 flagged *"the only edges into a body's entry targets are back-edges"* as
+unverified, on the grounds that plausible-from-three-cases is how 365 went wrong.
+Reading the remaining constructors: **it is wrong.**
+
+```lean
+seqInitialized left right :=
+  core := seqGSystem left.core right
+  -- inl's transitions: left's own, PLUS right.initTrans gated by left.hlt
+```
+
+So a `seq` adds an edge from **every left state that halts** into the right half's
+**entry targets**, and those are not back-edges by any reading. The claim as
+written is false, and it is false in the most common constructor.
+
+**The version the rank actually needs survives**, and 397 is why. The rank's
+concern is edges *within a component*, since that is where raw-ness is decided.
+The `seq` edges are `inl → inr`, and `seq_no_mixed_component` proves no component
+spans the halves — so those edges are **inter**-component and cannot disturb any
+component's rank. Restated:
+
+> **within a component**, the only edges into entry targets are back-edges.
+
+And that one holds inductively: `ite` leaves each half's edges untouched
+(`sumGSystem`); `seq`'s additions cross the halves and so are inter-component;
+`wh` adds exactly the back-edges into the body's entry, which are intra-component
+and are the ones that should be non-raw.
+
+**Why this was worth an iteration even though nothing changed downstream.** The
+correction costs nothing — `RankTopEntry`, `backedge_nonRaw_of_topEntry` and the
+`wh` argument all go through with the intra-component reading — but I would have
+built the `wh` case on a false lemma and discovered it later, in the middle of an
+induction, where the diagnosis is far harder. 402 called for the check precisely
+because 365's pattern was fresh; the check paid.
+
+**Odds: 96%, unchanged.** A false claim caught before use is not progress on the
+theorem.
+
+**Next.** The `wh` case with the corrected claim: entry targets maximal within
+the component, back-edges non-raw, the two guard classes exclusive.
