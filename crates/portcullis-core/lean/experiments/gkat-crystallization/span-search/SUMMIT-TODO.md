@@ -21484,3 +21484,62 @@ Running.
 **Odds: 25%, unchanged.** No result yet.
 
 **Next.** Read the cross-tab.
+
+## 453 — the 929 are not any named shape. They are BIG, and the rounds axis is untested.
+
+Web search: exhausted (200/200).
+
+```
+--- what distinguishes the survivors? (resistant | rescued) ---
+  max SCC >= 3         resistant  357/929 (38.4%)   rescued  580/2418 (24.0%)
+  reducible            resistant  648/929 (69.8%)   rescued 1837/2418 (76.0%)
+  two-HALT cycle       resistant  523/929 (56.3%)   rescued 1355/2418 (56.0%)
+  selfloop+halt (413)  resistant    0/929 ( 0.0%)   rescued    0/2418 ( 0.0%)
+  |P| histogram resistant: [.., 64, 516, 177, 164, 0,  8, ..]   (|P| = 5,6,7,8,9,10)
+  |P| histogram rescued  : [..,444,1407, 333, 204,12,  6, ..]
+  mean #candidates  resistant 80.9   rescued 77.2
+```
+
+**Three named candidates are retired.**
+* **413's configuration: 0% in BOTH groups.** It does not occur in these
+  pullbacks at all — consistent with 425, and confirming that the shape which
+  refutes `LevelAgreementActive` is simply not the coverage obstruction.
+* **two-HALT cycle: 56.3% vs 56.0%.** No discriminating power whatsoever. It
+  correlates with being *uncoverable*, never with *resisting refinement* — a
+  census correlate carried since the span era, retired by printing both rates.
+* **reducible: 69.8% vs 76.0%.** Irreducibility is enriched among resisters, but
+  only 1.26x. Real and weak, as 424 found by a different route.
+
+**What actually separates them is SIZE**, and monotonically:
+
+| `\|P\|` | resistant | total | resistance rate |
+|---|---|---|---|
+| 5 | 64 | 508 | **12.6%** |
+| 6 | 516 | 1,923 | **26.8%** |
+| 7 | 177 | 510 | **34.7%** |
+| 8 | 164 | 368 | **44.6%** |
+| 10 | 8 | 14 | **57.1%** |
+
+`max SCC ≥ 3` (1.6x) is a weak proxy for this. The obstruction tracks *how big
+the pullback is*, not any structural shape this program has named.
+
+**And the confound I added the metric to catch is ruled out.** Mean candidate
+count is 80.9 for resisters against 77.2 for rescues — essentially equal. So
+resistance is **not** "there was nothing to try".
+
+**This reopens the artefact question along an axis 450 did not test.** 450 ruled
+out the STATE bound by prediction and measurement. It did not vary **rounds** —
+the best setting is `x2`, and the mechanism table never exceeds 3 rounds. A
+monotone size effect with a candidate count that does not vary is exactly what a
+*depth* limit looks like: bigger pullbacks need more refinement steps to reach.
+**450's conclusion stands as stated (not a MAXK artefact) and is narrower than I
+wrote it.**
+
+**Odds: 25%, unchanged.** The evidence tilts toward the residue being a rounds
+artefact, which would favour the programme — but that is a hypothesis generated
+by this table, not tested by it, and this program has burned itself repeatedly on
+exactly that move. Testing it is one iteration away.
+
+**Next.** Run `W1+dup+cyc2` at x4 and x6. If the residue falls and keeps falling
+with rounds, it is a depth artefact and 450's obstruction dissolves like the four
+before it. If it plateaus, size is a real obstruction.
