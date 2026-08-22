@@ -20941,3 +20941,57 @@ missing lemma.
 undecided-crossing case can be attacked with the duplication route (420-423) —
 unrolling is DAG-shaped and free, and it is exactly a way to manufacture a pure
 continuation where there was none.
+
+## 442 — duplication CANNOT split a branch. The 419-423 route cannot reach the open case.
+
+Web search: exhausted (200/200).
+
+441 located the real obstruction: n=2 existence needs `LeftDistrib`
+(`p·(a +_c b) ≡ p·a +_c p·b`), which `left_distrib_not_gkat_theorem` refutes by
+soundness against a model, and the difficulty is confined to genuinely two-exit
+mutual recursion:
+
+```
+g₀ ≡ e₀·g₁ +_{b₀} f₀        g₁ ≡ e₁·g₀ +_{b₁} f₁      (BOTH branch)
+```
+
+**The obvious hope was 419-423's duplication.** Split the branching `g₁` into a
+copy taking `e₁·g₀` and a copy taking `f₁`; both become pure continuations, and
+`two_state_existence_pure_return` — axiom-free, congruence + S1 + W3 — solves the
+system. It would have been exactly the manoeuvre that route was built for.
+
+**It is impossible, and `solvesBA_of_mapped`'s own hypothesis says so.**
+
+```lean
+theorem fibre_mates_share_transitions (aut) (sys) (f)
+    (htr : ∀ s', aut.trans (f s') = (sys.trans s').map (…f…))
+    (a b : S') (hf : f a = f b) :
+  (sys.trans a).map (…f…) = (sys.trans b).map (…f…)
+```
+
+**No axioms.** `htr` forces every state of a fibre to carry the same transition
+list up to `f`. Duplication can replicate a state; it **cannot give two copies
+different branches**. And the split has to happen before `e₀` runs, while `b₁` is
+only testable after — which is `LeftDistrib` restated. The obstruction is
+ALGEBRAIC, and adding states does not touch it.
+
+**So the route I built across 419-423 does not reach the actual open case.** It
+is sound, its theorems stand, and it generalises the peel usefully; but its
+target was the peel's state-preservation, and the real difficulty was never
+there. Five iterations of construction aimed at the wrong obstruction — the same
+error as 404-440 treating the peel as the object of study, one level down.
+
+**What survives from that stretch.** `solvesBA_of_mapped` and `eqRHS_of_mapped`
+(420) are correct and reusable; `hfib_of_salomaa` (422) records that W3 is finite
+and cheap; `fibConstant_by_measure` (423) is the DAG-vs-cyclic criterion. None of
+them is wrong. All of them are aimed past the problem.
+
+**Odds: 45% → 40%.** The open case is now known to be immune to the one new
+technique this program built, and it was already immune to Gaussian elimination
+by `LeftDistrib`. What remains is the corpus's own narrow frontier, resistant
+from three directions. The field's prior that this problem does not close is the
+better-supported position.
+
+**Next.** Attack the open case on its own terms rather than routing around it:
+read `GkatUniquenessFrontierProofs` for what the uniqueness side already gives at
+n=2, since existence is the blocked half and uniqueness may constrain it.

@@ -16562,6 +16562,32 @@ theorem selfLoop_nonRaw {S : Type} (lvl : S → Nat) (rank : Nat → S → Nat)
 #print axioms levelAgreementActive_fails
 #print axioms selfLoop_nonRaw
 
+/-! ### 442: duplication cannot split a branch — so it cannot attack the open case
+
+441 located the real obstruction: the n=2 existence case needs `LeftDistrib`,
+which `left_distrib_not_gkat_theorem` shows is not a GKAT theorem, and the
+difficulty is confined to genuinely two-exit mutual recursion.
+
+The obvious hope is that 419-423's duplication attacks it: split the branching
+state `g₁` into one copy taking `e₁·g₀` and one taking `f₁`, making both copies
+pure continuations, which `two_state_existence_pure_return` then solves.
+
+**That is impossible, and `solvesBA_of_mapped`'s own hypothesis says so.**  `htr`
+requires `aut.trans (f s') = (sys.trans s').map (…f…)` for EVERY `s'`.  Two
+states in one fibre therefore have the same transition list up to `f` — copies
+must behave alike.  Duplication can replicate a state; it cannot give two copies
+different branches. -/
+theorem fibre_mates_share_transitions {S S' : Type}
+    (aut : GkatKleene.GAut S A T) (sys : GkatKleene.GAut S' A T) (f : S' → S)
+    (htr : ∀ s' : S', aut.trans (f s')
+      = (sys.trans s').map (fun tr => (tr.1, tr.2.1, f tr.2.2)))
+    (a b : S') (hf : f a = f b) :
+    (sys.trans a).map (fun tr => (tr.1, tr.2.1, f tr.2.2))
+      = (sys.trans b).map (fun tr => (tr.1, tr.2.1, f tr.2.2)) := by
+  rw [← htr a, ← htr b, hf]
+
+#print axioms fibre_mates_share_transitions
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
