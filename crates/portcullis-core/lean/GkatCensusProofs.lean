@@ -7437,4 +7437,49 @@ theorem loop_subsystem_of_layer {S : Type} (guard : BExp T)
 
 #print axioms loop_subsystem_of_layer
 
+
+/-! ### 278 — `hsolve` IS ALREADY DONE FOR THOMPSON AUTOMATA, AND THAT RESHAPES
+    THE REMAINDER
+
+    Before spending a ninth `Layered` migration on making `hsolve` provable by
+    recursion on the CONSTRUCTION (277's conclusion), check what the repository
+    already gives for construction-shaped automata.  It gives everything:
+    `certifiedThompson` carries `standard`, and its certificate carries
+    `standardSolves : ParamSolvesBA aut.core standard (.test .one)`, which
+    `StandardSolvesBA.withContinuation` lifts to EVERY finish.
+
+    So a Thompson automaton is solvable, parametrically, with no work at all.
+    **A `Layered` restructured to follow the construction would therefore prove
+    nothing new** — it would re-derive by recursion exactly what the certificate
+    already hands over.  The ninth migration is cancelled.
+
+    **What this means for the architecture.**  `hsolve` was never needed for
+    Thompson automata; it was only ever needed for the QUOTIENT.  Reading the
+    three obligations again with that in mind:
+
+      hsum       every Thompson automaton carries the certificate    PROVED
+      hcollapse  the certificate survives the quotient               OPEN
+      hsolve     the certificate implies a solution exists           free for
+                                                                     Thompson,
+                                                                     needed only
+                                                                     for the
+                                                                     quotient
+
+    — `hsolve` and `hcollapse` are not two independent obligations.  They are
+    one: **produce a solution for the minimal behavioural quotient.**  Every
+    layer lemma 274-277 proved is a tool for that single statement, and the
+    `Layered` predicate matters only insofar as the QUOTIENT satisfies it.
+
+    That is now the measurement to make, and it is measurable: 265's harness
+    already builds minimal quotients of Thompson automata. -/
+theorem thompson_has_solution (e : Exp A T) (F : Exp A T) :
+    ∃ sol : (GkatThompson.certifiedThompson A T e).State → Exp A T,
+      GkatThompson.ParamSolvesBA
+        (GkatThompson.certifiedThompson A T e).aut.core sol F :=
+  ⟨fun s => .seq ((GkatThompson.certifiedThompson A T e).standard s) F,
+   GkatThompson.StandardSolvesBA.withContinuation _ _
+     (GkatThompson.certifiedThompson A T e).certificate.standardSolves F⟩
+
+#print axioms thompson_has_solution
+
 end GkatCensus

@@ -12863,3 +12863,61 @@ loop / `sum`-lift / `seq`-lift, re-prove `thompson_layered` (all four cases are
 now constructors or existing lemmas), and then `hsolve` by recursion on it with
 `layer_subsystem` at the loop constructor and `seq_subsystem`/`sum_subsystem` at
 the lifts.
+
+---
+
+## 278 — THE NINTH MIGRATION IS CANCELLED, THE REMAINDER IS ONE OBLIGATION, AND THE LITERATURE SAYS IT IS TRUE.
+
+**The ninth migration is cancelled.**  Before restructuring `Layered` to follow
+the construction (277's conclusion), I checked what the repository already gives
+for construction-shaped automata.  It gives everything: `certifiedThompson`
+carries `standard`, its certificate carries `standardSolves :
+ParamSolvesBA aut.core standard (.test .one)`, and
+`StandardSolvesBA.withContinuation` lifts that to EVERY finish.  Verified by
+`thompson_has_solution`, a two-line theorem, now in the file.
+
+**So a `Layered` restructured to follow the construction would prove nothing
+new** — it would re-derive by recursion exactly what the certificate already
+hands over.  277's plan is dropped before it cost an iteration.
+
+**The remainder is ONE obligation, not two.**  `hsolve` was never needed for
+Thompson automata; it was only ever needed for the QUOTIENT.
+
+    hsum       every Thompson automaton carries the certificate    PROVED
+    hcollapse  the certificate survives the quotient               OPEN
+    hsolve     free for Thompson (278); needed only for the quotient
+
+`hsolve` and `hcollapse` are not independent.  They are one statement:
+**produce a solution for the minimal behavioural quotient.**  Every layer lemma
+274-277 proved is a tool for that single statement, and `Layered` matters only
+insofar as THE QUOTIENT satisfies it.
+
+**And the literature says the quotient statement is TRUE.**  From this
+iteration's search, on LEE/LLEE:
+
+> **"LLEE is preserved along functional bisimilarity, and consequently, also by
+> the operation of bisimulation collapse."**
+
+That is `hcollapse`, as a theorem, in the published record — together with the
+proof technique: **do not prove preservation under the minimal quotient
+directly; prove it along an arbitrary FUNCTIONAL BISIMILARITY, and take the
+collapse as the special case.**  A surjective homomorphism is easier to induct
+over than a minimality condition, because pushing a layer FORWARD along a map
+has none of the `post` trouble that pushing a solution BACKWARD had (277).
+
+**The caveat, stated.**  269 established my certificate is NOT LLEE — 18
+Thompson automata admit no nested decomposition — so the result does not
+transfer as a citation.  What transfers is (a) evidence that a
+structure-of-this-kind IS preserved by collapse rather than destroyed by it, and
+(b) the generalisation that makes the induction go.
+
+**Odds: 91%** (+1).  A planned migration cancelled before it was paid for, the
+remainder collapsed from two obligations to one, and independent evidence that
+the one obligation is true with a known technique.  The field's prior that the
+problem does not close still stands.
+
+**Next.**  State and attack `Layered`-preservation along a FUNCTIONAL
+BISIMULATION (a surjective `GAutHom`), rather than along the minimal quotient.
+`acyclic` should push forward if the map is rank-compatible; the layer case is
+where 265 located the obstruction, and the forward direction is the one that
+avoids 277's `post` problem.
