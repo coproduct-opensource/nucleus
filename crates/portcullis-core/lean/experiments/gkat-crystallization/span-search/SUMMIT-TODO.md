@@ -14886,3 +14886,43 @@ axioms; the weakening itself is not yet threaded through `LayeredOn.loop` and
 **Next.**  Thread it: weaken the constructor's entry field to admit stuck
 targets, and re-prove the loop case with `guardedFold_trans_congr` replaced by
 `fold_congr_step` and the stuck targets discharged by 323.
+
+---
+
+## 324 — THE CONGRUENCE THAT ADMITS ZERO TARGETS, AND WHERE THE ZEROS COME FROM.
+
+323 supplied the two `≈ 0` facts; `congr_with_zero_targets` consumes them.  Two
+labellings give equivalent folds as soon as, at every SELECTED target, they are
+either literally equal or BOTH ZERO.  First disjunct: the old requirement.
+Second: 322's escape hatch.
+
+**And the missing piece is now identifiable, which it was not two iterations
+ago.**  In the loop case the two labellings are `sol` — which is `sol₀` on the
+block — and the family `solB · W · F`, which is `sol₀ · W · F` there.  They agree
+only if `sol₀` is ZERO at the target, and `sol₀` is an ARBITRARY input to
+`layeredOn_has_solution`, so nothing forces it.
+
+**The fix is to strengthen the contract**: require `sol₀` to SOLVE the block,
+not merely to be some function on it.  Then 323 applies to `sol₀` at a stuck
+target and delivers `sol₀ t ≈ 0` for free.
+
+**And the hypothesis is available at every call site** — checked, not assumed:
+
+  * `split`'s first subderivation already PRODUCES a solution on `C`, and its
+    second call's `sol₀` is exactly that;
+  * `acyclic` (via `solExtF_has_solution`) leaves `sol₀` untouched on the block,
+    so the hypothesis passes straight through;
+  * `loop` and `seq` likewise pass it down.
+
+So the strengthening costs nothing at the call sites and buys the zeros.  **That
+it was not needed until now is exactly why the contract was weaker: the block's
+values were never READ before, only carried.**  322's escape hatch is the first
+thing that reads them.
+
+**Odds: 97%, HELD.**  The consuming step is proved and the missing hypothesis is
+identified with its availability verified case by case — but the contract change
+is not made and the loop case is not re-proved.
+
+**Next.**  Strengthen `layeredOn_has_solution`'s contract to "`sol₀` solves the
+block", re-prove its four cases under it (three are pass-through), then weaken
+`LayeredOn.loop`'s entry field and close 319.

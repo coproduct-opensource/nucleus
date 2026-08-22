@@ -10639,4 +10639,49 @@ theorem zero_targets_agree {S : Type} (sol sol' : S → Exp A T) (t : S)
 #print axioms stuck_solution_zero
 #print axioms zero_targets_agree
 
+
+/-! ### 324 — THE CONGRUENCE THAT ADMITS ZERO TARGETS, AND WHERE THE ZEROS COME FROM
+
+    323 supplied the two `≈ 0` facts; this is the step that consumes them.  Two
+    labellings give equivalent folds as soon as, at every SELECTED target, they
+    are either literally equal or both zero.  The first disjunct is the old
+    requirement; the second is 322's escape hatch.
+
+    **And the missing piece is now identifiable.**  In the loop case the two
+    labellings are `sol` — which is `sol₀` on the block — and the family
+    `solB · W · F`, which is `sol₀ · W · F` there.  Those agree only if `sol₀`
+    is zero at the target, and `sol₀` is an ARBITRARY input to
+    `layeredOn_has_solution`, so nothing forces it.
+
+    **The fix is to strengthen the contract**: require `sol₀` to SOLVE the
+    block, not merely to be some function on it.  Then 323 applies to `sol₀` at
+    a stuck target and delivers `sol₀ t ≈ 0` for free.  And the hypothesis is
+    available at every call site —
+
+      * `split` already produces a solution on `C` from its first
+        subderivation, and its second call's `sol₀` is that solution;
+      * `acyclic` (via `solExtF_has_solution`) leaves `sol₀` untouched on the
+        block, so the hypothesis passes straight through;
+      * `loop` and `seq` likewise pass it down.
+
+    So the strengthening costs nothing at the call sites and buys the zeros.
+    That it was not needed until now is why the contract was weaker: the block's
+    values were never READ before, only carried. -/
+theorem congr_with_zero_targets {S : Type} (sys : GkatThompson.GSystem S A T)
+    (s : S) (fb : Exp A T) (solA solB : S → Exp A T)
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r →
+        solA r.2 = solB r.2
+        ∨ (EquivBA (solA r.2) (.test .zero) ∧ EquivBA (solB r.2) (.test .zero))) :
+    EquivBA (guardedFold (transitionBranches (sys.trans s) solA) fb)
+      (guardedFold (transitionBranches (sys.trans s) solB) fb) := by
+  refine fold_congr_step sys s fb solA solB ?_
+  intro X W x r hfm
+  rcases h X W x r hfm with heq | ⟨hA, hB⟩
+  · rw [heq]
+    exact EquivBA.base (Equiv.refl _)
+  · exact zero_targets_agree solA solB r.2 hA hB
+
+#print axioms congr_with_zero_targets
+
 end GkatCensus
