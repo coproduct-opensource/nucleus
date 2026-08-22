@@ -3733,6 +3733,13 @@ fn minscc<const NA: usize>(nguards: u8, maxdepth: usize) {
     let mut seen: std::collections::HashSet<Aut<NA>> = std::collections::HashSet::new();
     let exprs: Vec<Aut<NA>> = raw.into_iter().filter_map(|a| canon(&a))
         .filter(|a| seen.insert(a.clone())).collect();
+    // 437: how many DISTINCT expressions share each language?  A refuting
+    // language with >= 2 members gives a genuinely distinct pair (e, f), not the
+    // degenerate e = f that 427/431 showed cannot be counted.
+    let mut byb: std::collections::HashMap<Vec<u8>, usize> = std::collections::HashMap::new();
+    for a in &exprs { *byb.entry(behaviour(a)).or_insert(0) += 1; }
+    let mut cls_hist = [0usize; 8];
+    let mut refuter_classes: Vec<usize> = Vec::new();
     let mut hist = [0usize; 12];
     let (mut big, mut big_sat, mut big_uns, mut big_undec) = (0usize, 0usize, 0usize, 0usize);
     let mut first_big: Option<String> = None;
@@ -3749,7 +3756,12 @@ fn minscc<const NA: usize>(nguards: u8, maxdepth: usize) {
                 Some(true) => big_sat += 1,
                 Some(false) => {
                     big_uns += 1;
-                    if first_uns.is_none() { first_uns = Some(show_aut("M", &m)); }
+                    let n = *byb.get(&behaviour(&m)).unwrap_or(&0);
+                    refuter_classes.push(n);
+                    if n < 8 { cls_hist[n] += 1; }
+                    if first_uns.is_none() {
+                        first_uns = Some(format!("class_size={} {}", n, show_aut("M", &m)));
+                    }
                 }
                 None => big_undec += 1,
             }
@@ -3762,6 +3774,11 @@ fn minscc<const NA: usize>(nguards: u8, maxdepth: usize) {
     println!("    UNSATISFIABLE                         : {}", big_uns);
     println!("    undecided (component too big)         : {}", big_undec);
     if let Some(b) = first_big { println!("  first multi-state minimal: {}", b); }
+    println!("  refuting languages by #distinct expressions sharing them: {:?}", cls_hist);
+    println!("    (index = class size; index >= 2 means a genuinely DISTINCT pair exists)");
+    let multi = refuter_classes.iter().filter(|&&n| n >= 2).count();
+    println!("  refuting languages with >= 2 distinct expressions : {} / {}",
+        multi, refuter_classes.len());
     if let Some(b) = first_uns { println!("  *** first REFUTER: {}", b); }
 }
 

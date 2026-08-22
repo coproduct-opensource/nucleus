@@ -20679,3 +20679,51 @@ prior that this problem does not close still stands.
 **Next.** Check the behaviour class of each of the 22 refuting languages for a
 second, distinct member. One hit turns this into a clean non-degenerate
 refutation of the architecture at its own best witness.
+
+## 437 — every one of the 22 refuting languages has exactly ONE expression. Degenerate again.
+
+Web search: exhausted (200/200).
+
+436 refuted `LevelAgreementActive` at the canonical witness for 22 languages and
+left one gap: does any of those languages have two syntactically distinct
+expressions, so the pair is not the degenerate `e = f`? Measured the size of each
+refuting language's behaviour class in the enumeration:
+
+| | G=4, D=3 | G=6, D=3 |
+|---|---|---|
+| refuting minimal automata | 6 | 22 |
+| class-size histogram (index = #distinct automata sharing the language) | `[0, 6, 0, …]` | `[0, 22, 0, …]` |
+| **refuting languages with ≥ 2 distinct expressions** | **0 / 6** | **0 / 22** |
+
+**Every single one has class size 1.** In an enumeration of 1,438,989
+expressions, each refuting language is realised by exactly one automaton. So the
+only pair available is `(e, e)`, where `EquivBA e e` is free by reflexivity —
+and for the sum-quotient route, two expressions with the SAME automaton get the
+same solution, so the obligation is trivial there too.
+
+**436's refutation is therefore degenerate, for all 22.** That is the third time
+a refutation in this program has dissolved on inspection: 413 needed `e = f`
+(427), 429/430 needed W1 (431), and now 436's needs a language with one
+expression.
+
+**The caveat, which is real.** Class size 1 means "no second expression at
+depth ≤ 3", not "no second expression". A depth-4 expression could realise one of
+these languages and turn 436 into a clean refutation. D=4 does not finish, so
+this is unverified — and it is the same "not in this pool" limitation that has
+now appeared six times.
+
+**The stable finding underneath the oscillation.** My odds have moved between 45
+and 55 for eight iterations, driven by refutations that turn out degenerate and
+supports that turn out under-sampled. What has NOT changed across all of it:
+**no confirmed non-degenerate refutation of the architecture has ever survived
+scrutiny.** Every counterexample found has reduced, on checking, to a pair the
+axioms already settle. That is a weak positive, but it is the only claim in this
+region that has held up under every attempt to break it.
+
+**Odds: 50% → 55%.** At the ±5 cap, and back to where 435 was — which is honest
+rather than embarrassing given that 436 and 437 are a refutation and its
+dissolution. The field's prior that this problem does not close still stands.
+
+**Next.** Break the depth-3 ceiling, since six iterations have now been limited
+by it: enumerate depth-4 expressions restricted to those whose automata could
+realise one of the 22 refuting languages, rather than enumerating all of them.
