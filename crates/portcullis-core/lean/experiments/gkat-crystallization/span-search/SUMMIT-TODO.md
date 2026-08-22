@@ -20071,3 +20071,54 @@ field's prior that this problem does not close still stands.
 
 **Next.** Characterise the 34 reducible-but-uncovered pullbacks — what do they
 share that the 219 covered reducible ones do not?
+
+## 425 — the second obstruction: my best candidate scored ZERO, and 417's target may be wrong.
+
+Web search: exhausted (200/200).
+
+424 left a second, larger obstruction unidentified: 34 reducible-but-uncovered
+pullbacks. My candidate was **413's configuration** — a self-loop and a halt in
+one SCC — the very shape that refuted the peel. Three features cross-tabulated
+against coverage, restricted to reducible pullbacks, base rates visible:
+
+```
+REDUCIBLE pullbacks only — feature x covered:
+  self-loop+halt in one SCC (413)   has:   0 cov /   0 unc   lacks: 219 cov / 34 unc
+  two-HALT 2-cycle                  has:  71 cov /  22 unc   lacks: 148 cov / 12 unc
+  SCC of size >= 3                  has:   8 cov /  12 unc   lacks: 211 cov / 22 unc
+```
+
+**My candidate scored zero.** 413's configuration does not occur ANYWHERE in the
+253 reducible pullbacks. Cross-tabulating rather than quoting a rate is what made
+that immediate.
+
+**The best predictor found is SCC size ≥ 3**: 60% uncovered when present (12/20)
+against a 9% base rate when absent (22/233) — a 6x enrichment, and it accounts
+for 12 of the 34 failures. `two-HALT 2-cycle` is weaker: 24% vs 7.5%. Neither
+determines anything, so the second obstruction is still not characterised;
+what is now known is that it correlates with *component size*, i.e. with how much
+of the automaton has to be solved simultaneously.
+
+**A caveat this raises against my own 417/418.** Those iterations refuted
+`LevelAgreementActive` by measuring `certifiedThompson` automata from the
+expression enumeration. But the top-level hypothesis quantifies over QUOTIENTS of
+`SUMof e f`, and the refuting configuration occurs in **none** of the 253
+reducible pullbacks here. The refutation still stands on its own terms — for
+`e = f =` 413's expression, `SUMof e e` with the starts identified quotients back
+to essentially that automaton, so the shape is reachable — but I measured it on
+the wrong objects and got the right answer for a reason I had not checked. The
+pullback sample is 273 items from k ≤ 3 pairs and is very likely just too small
+to contain it, which is the same sampling limitation 413 itself exposed.
+
+I am recording this rather than quietly relying on 417 being right: the argument
+from `SUMof e e` is a sketch, not a measurement, and it is the load-bearing step
+in a refutation I used to drop the odds by 27 points.
+
+**Odds: 50%, unchanged.** A refuted candidate, a moderate correlate, and a
+genuine doubt about the targeting of an earlier refutation — none of which moves
+the estimate on its own, and which point in opposite directions. The field's
+prior that this problem does not close still stands.
+
+**Next.** Settle the caveat: construct `SUMof e e` for 413's expression, quotient
+it, and check directly whether the refuting configuration survives — building the
+object rather than sampling for it.

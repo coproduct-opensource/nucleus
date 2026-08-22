@@ -11166,6 +11166,43 @@ pullback: {ok} / {}", res.len());
                 }
             }
         }
+        // 425: irreducibility explains only 37% of failures (424).  Among the
+        // REDUCIBLE pullbacks, what separates covered from uncovered?  Three
+        // candidate features, each cross-tabulated, so the base rates are visible
+        // rather than a single rate being quoted.
+        let selfloop_halt_scc = |a: &Aut<NA>| -> bool {
+            let k = a.k as usize;
+            for comp in sccs_of(a) {
+                for x in 0..NA {
+                    let mut has_self = false;
+                    let mut has_halt = false;
+                    for &u in &comp {
+                        if a.st[u][x] == (u + 1) as u8 { has_self = true; }
+                        if (a.hl[u] >> x) & 1 == 1 && a.st[u][x] == 0 { has_halt = true; }
+                    }
+                    if has_self && has_halt { return true; }
+                }
+            }
+            let _ = k;
+            false
+        };
+        let big_scc = |a: &Aut<NA>| -> bool { sccs_of(a).iter().any(|c| c.len() >= 3) };
+        let mut tab = [[[0usize; 2]; 2]; 3];   // [feature][has][covered]
+        for r in solv.iter() {
+            if let Some(p) = pullback(&list[r.0], &list[r.1]).and_then(|p| canon(&p)) {
+                if !reducible(&p) { continue; }
+                let feats = [selfloop_halt_scc(&p), two_halt_cycle(&p).is_some(), big_scc(&p)];
+                for (fi, &fv) in feats.iter().enumerate() {
+                    tab[fi][fv as usize][r.3 as usize] += 1;
+                }
+            }
+        }
+        let names = ["self-loop+halt in one SCC (413)", "two-HALT 2-cycle", "SCC of size >= 3"];
+        println!("\n  REDUCIBLE pullbacks only — feature x covered (425):");
+        for (fi, nm) in names.iter().enumerate() {
+            println!("    {:32}  has: {:3} cov / {:3} unc     lacks: {:3} cov / {:3} unc",
+                nm, tab[fi][1][1], tab[fi][1][0], tab[fi][0][1], tab[fi][0][0]);
+        }
         println!("\n  pullback reducible x covered:");
         println!("    reducible   & covered {rr:>4}   reducible   & NOT {rn:>4}");
         println!("    irreducible & covered {ir:>4}   irreducible & NOT {inn:>4}");
