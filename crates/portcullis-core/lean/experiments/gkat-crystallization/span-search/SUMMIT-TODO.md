@@ -21733,3 +21733,55 @@ progress against it.
 projection satisfy the transition-list equation? That number should track
 `SPAN FOUND: 219 / 273`, and if it does not, one of the two is measuring
 something other than what I think.
+
+## 458 — 457 upgraded from syntactic to SEMANTIC agreement, and what that costs.
+
+Web search: exhausted (200/200).
+
+457's hypothesis was `src.trans (π p) = (pull.trans p).map π` **as lists**. That
+is too strong to ever apply, and I should have said so when I wrote it: a
+pullback refines guards, so a pair `(s,t)` splits `s`'s transitions along `t`'s
+guards and the projected list is longer even when nothing has really changed. The
+lists agree as **functions**, not as syntax.
+
+**The corpus's own bridge is not tied to one automaton.** `eqRHS_congr_of_select`
+compares two states of the same `aut`, but it is built from
+`guardedFold_select_congr`, which takes **two arbitrary branch lists and
+fallbacks**. Lifting it across automata:
+
+```lean
+theorem eqRHS_congr_of_select_cross (src) (pull) (π) (sol) (p)
+    (h : ∀ X W x, EquivBA (selectFull W x (transitionBranches (src.trans (π p)) sol) …)
+                          (selectFull W x (transitionBranches (pull.trans p) (sol ∘ π)) …)) :
+  EquivBA (eqRHS src sol (π p)) (eqRHS pull (sol ∘ π) p)
+
+theorem solvesBA_pullback_of_semantic_projection … : SolvesBA pull (fun p => sol (π p))
+```
+
+**Now the hypothesis is one a pullback can satisfy**: the selected branch matches
+at every atom, which is exactly what a functional bisimulation gives. Still no
+fibre-constancy, no W3, no uniqueness — the solution remains `sol ∘ π`.
+
+**The cost, stated rather than buried.** Both inherit
+`[propext, Classical.choice, Quot.sound]` from `guardedFold_select_congr`, where
+457's syntactic version was `propext` alone. That is a genuine trade: the
+applicable form is axiomatically heavier. It is not heavier in the axiom under
+scrutiny — `Classical.choice` is not the n-ary UA — but a programme about which
+axioms are needed should not pick up a classical dependency without noticing, and
+455's checkpoint exists precisely to keep that visible.
+
+**Where this leaves the chain.** `SolvesBA src` is known for Thompson automata
+(Pham). `solvesBA_pullback_of_semantic_projection` carries it to the pullback
+whenever the projection agrees semantically. So the remaining question is exactly
+**when does a pullback's selected branch agree with its projection's** — which is
+456's "did the pairing introduce a new decision", now with a proof attached to
+the affirmative case.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 25%, unchanged.** The theorem is more applicable and no more true; the
+open case is untouched.
+
+**Next.** The x4/x6 counts are still pending after ~11 minutes on x4. If they do
+not land next iteration I will cut the experiment down — the same question is
+answerable on a sample rather than all 3,347.

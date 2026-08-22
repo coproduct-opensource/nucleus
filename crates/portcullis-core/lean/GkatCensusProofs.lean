@@ -16648,6 +16648,56 @@ theorem solvesBA_pullback_of_projection {P S : Type}
 
 #print axioms solvesBA_pullback_of_projection
 
+/-! ### 458: 457, upgraded from syntactic to SEMANTIC agreement
+
+457's `htr` demanded `src.trans (π p) = (pull.trans p).map π` as LISTS.  That is
+too strong to ever apply: a pullback refines guards, so a pair `(s,t)` splits
+`s`'s transitions along `t`'s guards and the projected list is longer even when
+nothing has really changed.  The two lists agree as FUNCTIONS, not as syntax.
+
+`guardedFold_select_congr` is stated for two arbitrary branch lists, so the
+bridge `eqRHS_congr_of_select` uses is not tied to one automaton.  Lifting it
+across automata gives 457 in a form whose hypothesis a pullback can actually
+satisfy. -/
+theorem eqRHS_congr_of_select_cross {S P : Type} (src : GkatKleene.GAut S A T)
+    (pull : GkatKleene.GAut P A T) (π : P → S) (sol : S → Exp A T) (p : P)
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      EquivBA
+        (selectFull W x
+          (GkatKleene.transitionBranches (src.trans (π p)) sol)
+          (Exp.test (src.hlt (π p))))
+        (selectFull W x
+          (GkatKleene.transitionBranches (pull.trans p) (fun q => sol (π q)))
+          (Exp.test (pull.hlt p)))) :
+    EquivBA (GkatKleene.eqRHS src sol (π p))
+      (GkatKleene.eqRHS pull (fun q => sol (π q)) p) := by
+  rw [eqRHS_eq_guardedFold, eqRHS_eq_guardedFold]
+  exact guardedFold_select_congr _ _ _ _ h
+
+/-- **457, applicable.**  The source's solution transports to the pullback as
+soon as the projection agrees SEMANTICALLY — the selected branch matches at every
+atom — rather than syntactically.  Still no fibre-constancy, no W3, no
+uniqueness. -/
+theorem solvesBA_pullback_of_semantic_projection {S P : Type}
+    (src : GkatKleene.GAut S A T) (pull : GkatKleene.GAut P A T) (π : P → S)
+    (sol : S → Exp A T) (hsol : GkatKleene.SolvesBA src sol)
+    (hmem : ∀ p ∈ pull.states, π p ∈ src.states)
+    (hsel : ∀ (p : P) (X : Type) (W : T → X → Bool) (x : X),
+      EquivBA
+        (selectFull W x
+          (GkatKleene.transitionBranches (src.trans (π p)) sol)
+          (Exp.test (src.hlt (π p))))
+        (selectFull W x
+          (GkatKleene.transitionBranches (pull.trans p) (fun q => sol (π q)))
+          (Exp.test (pull.hlt p)))) :
+    GkatKleene.SolvesBA pull (fun p => sol (π p)) := by
+  intro p hp
+  exact EquivBA.trans (hsol (π p) (hmem p hp))
+    (eqRHS_congr_of_select_cross src pull π sol p (hsel p))
+
+#print axioms eqRHS_congr_of_select_cross
+#print axioms solvesBA_pullback_of_semantic_projection
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
