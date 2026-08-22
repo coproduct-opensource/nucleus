@@ -12596,47 +12596,54 @@ theorem shared_flatMap {S X : Type} (W : T → X → Bool) (x : X)
 
 /-- **THE LEVEL'S TRANSITION AGREEMENT.**  Every state of a level fires exactly as
 `peeledSys.trans` does there, with the shared lists BUILT — not assumed — as the
-concatenations of the states' own parts.  The only remaining inputs are the gate
-conditions and the agreement condition, both of them 343's measurement. -/
+concatenations of the states' own parts.
+
+The classifiers take the SOURCE state, because whether an intra-level edge is
+"raw" is a statement about both its endpoints: it is raw when it decreases the
+region's rank, and the rank of the source is half of that. -/
 theorem firstMatch_peel_level {S X : Type} (W : T → X → Bool) (x : X)
     (states : List S) (L : S → List (BExp T × A × S))
-    (rawHlt : S → BExp T) (b : BExp T) (p q : (BExp T × A × S) → Bool)
-    (hgateL : ∀ s ∈ states, ∀ s' ∈ states,
-      ∀ tr ∈ (disjoin (L s')).filter (fun tr => !p tr && q tr),
+    (rawHlt : S → BExp T) (b : BExp T)
+    (p q : S → (BExp T × A × S) → Bool)
+    (hgateL : ∀ a ∈ states, ∀ c ∈ states,
+      ∀ tr ∈ (disjoin (L c)).filter (fun tr => !p c tr && q c tr),
         GkatGS.bval W tr.1 x = true →
-          GkatGS.bval W (rawHlt s) x = true ∧ GkatGS.bval W b x = true)
-    (hgateE : ∀ s ∈ states, ∀ s' ∈ states,
-      ∀ tr ∈ (disjoin (L s')).filter (fun tr => !p tr && !q tr),
+          GkatGS.bval W (rawHlt a) x = true ∧ GkatGS.bval W b x = true)
+    (hgateE : ∀ a ∈ states, ∀ c ∈ states,
+      ∀ tr ∈ (disjoin (L c)).filter (fun tr => !p c tr && !q c tr),
         GkatGS.bval W tr.1 x = true →
-          GkatGS.bval W (rawHlt s) x = true ∧ GkatGS.bval W b x = false)
-    (hagreeL : ∀ s ∈ states, ∀ s' ∈ states,
-      ∀ tr ∈ (disjoin (L s')).filter (fun tr => !p tr && q tr),
+          GkatGS.bval W (rawHlt a) x = true ∧ GkatGS.bval W b x = false)
+    (hagreeL : ∀ a ∈ states, ∀ c ∈ states,
+      ∀ tr ∈ (disjoin (L c)).filter (fun tr => !p c tr && q c tr),
         GkatGS.bval W tr.1 x = true →
-          GkatKleene.firstMatch W x ((disjoin (L s)).filter (fun tr => !p tr && q tr))
-            = some tr.2)
-    (hagreeE : ∀ s ∈ states, ∀ s' ∈ states,
-      ∀ tr ∈ (disjoin (L s')).filter (fun tr => !p tr && !q tr),
+          GkatKleene.firstMatch W x
+            ((disjoin (L a)).filter (fun tr => !p a tr && q a tr)) = some tr.2)
+    (hagreeE : ∀ a ∈ states, ∀ c ∈ states,
+      ∀ tr ∈ (disjoin (L c)).filter (fun tr => !p c tr && !q c tr),
         GkatGS.bval W tr.1 x = true →
-          GkatKleene.firstMatch W x ((disjoin (L s)).filter (fun tr => !p tr && !q tr))
-            = some tr.2) :
+          GkatKleene.firstMatch W x
+            ((disjoin (L a)).filter (fun tr => !p a tr && !q a tr)) = some tr.2) :
     ∀ s ∈ states,
       GkatKleene.firstMatch W x (L s)
         = GkatKleene.firstMatch W x
-            (((disjoin (L s)).filter p
+            (((disjoin (L s)).filter (p s)
                ++ (states.flatMap (fun s' =>
-                    (disjoin (L s')).filter (fun tr => !p tr && q tr))).map
+                    (disjoin (L s')).filter (fun tr => !p s' tr && q s' tr))).map
                       (fun tr => (BExp.and (rawHlt s) (BExp.and b tr.1), tr.2)))
               ++ (states.flatMap (fun s' =>
-                    (disjoin (L s')).filter (fun tr => !p tr && !q tr))).map
+                    (disjoin (L s')).filter (fun tr => !p s' tr && !q s' tr))).map
                       (fun tr => (BExp.and (BExp.and (rawHlt s) (BExp.not b)) tr.1, tr.2))) := by
   intro s hs
   obtain ⟨hagL, hbkL⟩ :=
-    shared_flatMap W x states (fun s' => (disjoin (L s')).filter (fun tr => !p tr && q tr))
+    shared_flatMap W x states
+      (fun s' => (disjoin (L s')).filter (fun tr => !p s' tr && q s' tr))
       (fun a ha c hc tr htr hb => hagreeL a ha c hc tr htr hb) s hs
   obtain ⟨hagE, hbkE⟩ :=
-    shared_flatMap W x states (fun s' => (disjoin (L s')).filter (fun tr => !p tr && !q tr))
+    shared_flatMap W x states
+      (fun s' => (disjoin (L s')).filter (fun tr => !p s' tr && !q s' tr))
       (fun a ha c hc tr htr hb => hagreeE a ha c hc tr htr hb) s hs
-  refine firstMatch_peel_shared_agrees W x (L s) (rawHlt s) b p q _ _ ?_ hagL hbkL ?_ hagE hbkE
+  refine firstMatch_peel_shared_agrees W x (L s) (rawHlt s) b (p s) (q s) _ _
+    ?_ hagL hbkL ?_ hagE hbkE
   · intro tr htr hb
     obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
     exact hgateL s hs s' hs' tr hmem hb
@@ -12665,25 +12672,25 @@ variable {S : Type}
 def levelStates (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (n : Nat) : List S :=
   aut.states.filter (fun s => decide (lvl s = n))
 
-def peelRaw (aut : GkatKleene.GAut S A T) (p : (BExp T × A × S) → Bool)
+def peelRaw (aut : GkatKleene.GAut S A T) (p : S → (BExp T × A × S) → Bool)
     (rawHlt : S → BExp T) : GkatThompson.GSystem S A T where
   states := aut.states
   hlt := rawHlt
-  trans := fun s => (disjoin (aut.trans s)).filter p
+  trans := fun s => (disjoin (aut.trans s)).filter (p s)
 
 def peelLoops (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
-    (p q : (BExp T × A × S) → Bool) (n : Nat) : List (BExp T × A × S) :=
+    (p q : S → (BExp T × A × S) → Bool) (n : Nat) : List (BExp T × A × S) :=
   (levelStates aut lvl n).flatMap
-    (fun s => (disjoin (aut.trans s)).filter (fun tr => !p tr && q tr))
+    (fun s => (disjoin (aut.trans s)).filter (fun tr => !p s tr && q s tr))
 
 def peelExits (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
-    (p q : (BExp T × A × S) → Bool) (n : Nat) : List (BExp T × A × S) :=
+    (p q : S → (BExp T × A × S) → Bool) (n : Nat) : List (BExp T × A × S) :=
   (levelStates aut lvl n).flatMap
-    (fun s => (disjoin (aut.trans s)).filter (fun tr => !p tr && !q tr))
+    (fun s => (disjoin (aut.trans s)).filter (fun tr => !p s tr && !q s tr))
 
 /-- The level's loop test: the disjunction of its loop guards. -/
 def peelBs (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
-    (p q : (BExp T × A × S) → Bool) (n : Nat) : BExp T :=
+    (p q : S → (BExp T × A × S) → Bool) (n : Nat) : BExp T :=
   bigOr ((peelLoops aut lvl p q n).map (fun tr => tr.1))
 
 /-- The level's halt test: the disjunction of its states' halt tests. -/
@@ -12692,7 +12699,7 @@ def peelH0 (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (n : Nat) : BExp T :=
 
 /-- The peeled system built from a quotient. -/
 def peelAut (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
-    (p q : (BExp T × A × S) → Bool) (rawHlt : S → BExp T) :
+    (p q : S → (BExp T × A × S) → Bool) (rawHlt : S → BExp T) :
     GkatThompson.GSystem S A T :=
   peeledSys (peelRaw aut p rawHlt) (peelBs aut lvl p q) (peelH0 aut lvl)
     (peelLoops aut lvl p q) (peelExits aut lvl p q) lvl
@@ -12701,35 +12708,33 @@ theorem mem_levelStates {aut : GkatKleene.GAut S A T} {lvl : S → Nat} {s : S}
     (hs : s ∈ aut.states) : s ∈ levelStates aut lvl (lvl s) :=
   List.mem_filter.mpr ⟨hs, by simp⟩
 
-/-- **The transition premise, instantiated.**  Every listed state of the quotient
-fires exactly as the built peel does, given the gate and agreement conditions —
-which are 343's measurement and nothing else. -/
+/-- **The transition premise, instantiated.** -/
 theorem peelAut_trans_agrees (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
-    (p q : (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
+    (p q : S → (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
     (hgateL : ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
       ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
-      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p tr && q tr),
+      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p c tr && q c tr),
         GkatGS.bval W tr.1 x = true →
           GkatGS.bval W (rawHlt a) x = true ∧
             GkatGS.bval W (peelBs aut lvl p q n) x = true)
     (hgateE : ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
       ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
-      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p tr && !q tr),
+      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p c tr && !q c tr),
         GkatGS.bval W tr.1 x = true →
           GkatGS.bval W (rawHlt a) x = true ∧
             GkatGS.bval W (peelBs aut lvl p q n) x = false)
     (hagreeL : ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
       ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
-      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p tr && q tr),
+      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p c tr && q c tr),
         GkatGS.bval W tr.1 x = true →
           GkatKleene.firstMatch W x
-            ((disjoin (aut.trans a)).filter (fun tr => !p tr && q tr)) = some tr.2)
+            ((disjoin (aut.trans a)).filter (fun tr => !p a tr && q a tr)) = some tr.2)
     (hagreeE : ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
       ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
-      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p tr && !q tr),
+      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p c tr && !q c tr),
         GkatGS.bval W tr.1 x = true →
           GkatKleene.firstMatch W x
-            ((disjoin (aut.trans a)).filter (fun tr => !p tr && !q tr)) = some tr.2) :
+            ((disjoin (aut.trans a)).filter (fun tr => !p a tr && !q a tr)) = some tr.2) :
     ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
       GkatKleene.firstMatch W x (aut.trans s)
         = GkatKleene.firstMatch W x ((peelAut aut lvl p q rawHlt).trans s) := by
@@ -12742,7 +12747,7 @@ theorem peelAut_trans_agrees (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
 
 /-- **The halt premise, instantiated.** -/
 theorem peelAut_hlt_agrees (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
-    (p q : (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
+    (p q : S → (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
     (hraw : ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
       GkatGS.bval W (aut.hlt s) x = true → GkatGS.bval W (rawHlt s) x = true)
     (hloopoff : ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
@@ -12764,12 +12769,9 @@ theorem peelAut_hlt_agrees (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
     (List.mem_map.mpr ⟨s, mem_levelStates (lvl := lvl) hs, rfl⟩)
     (hraw X W x s hs) (hloopoff X W x s hs) (hnot X W x s hs)).symm
 
-/-- **THE CAPSTONE.**  A quotient is solvable as soon as the peel built from it is
-`SyntacticallyLayered` and the gate, agreement and halt conditions hold.  Every
-object in sight is constructed from `aut`, `lvl`, `p`, `q` and `rawHlt`; nothing
-is exhibited by hand and nothing is assumed to exist. -/
+/-- **THE CAPSTONE.** -/
 theorem solvesBA_of_peel (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
-    (p q : (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
+    (p q : S → (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
     (htr : ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
       GkatKleene.firstMatch W x (aut.trans s)
         = GkatKleene.firstMatch W x ((peelAut aut lvl p q rawHlt).trans s))
@@ -12787,8 +12789,119 @@ theorem solvesBA_of_peel (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
   | ⟨sol, hsol⟩ =>
       ⟨sol, solvesBA_of_behaviour aut peeled (fun _ hs => hs) htr hh sol hsol⟩
 
+#print axioms peelAut_trans_agrees
 #print axioms peelAut_hlt_agrees
 #print axioms solvesBA_of_peel
+
+/-- Normalising rewrites guards, never targets. -/
+theorem mem_disjoinAux_target {S : Type} :
+    ∀ (L : List (BExp T × A × S)) (acc : BExp T) (tr : BExp T × A × S),
+      tr ∈ disjoinAux acc L → ∃ g, (g, tr.2) ∈ L := by
+  intro L
+  induction L with
+  | nil => intro acc tr htr; cases htr
+  | cons e tl ih =>
+      intro acc tr htr
+      obtain ⟨g, q, s'⟩ := e
+      cases htr with
+      | head => exact ⟨g, List.mem_cons_self ..⟩
+      | tail _ h =>
+          obtain ⟨g', hm⟩ := ih (BExp.and acc (BExp.not g)) tr h
+          exact ⟨g', List.mem_cons_of_mem _ hm⟩
+
+theorem mem_disjoin_target {S : Type} (L : List (BExp T × A × S))
+    (tr : BExp T × A × S) (h : tr ∈ disjoin L) : ∃ g, (g, tr.2) ∈ L :=
+  mem_disjoinAux_target L BExp.one tr h
+
+/-- **The classifiers.**  `rawPred` keeps the intra-level edges that decrease the
+region's rank; among what is left, `loopPred` keeps the intra-level ones — those
+are the back-edges — and the rest leave the level, which by monotonicity means
+downward.  Both take the source state, since "decreases the rank" is about both
+endpoints. -/
+def rawPred {S : Type} (lvl : S → Nat) (rank : Nat → S → Nat)
+    (s : S) (tr : BExp T × A × S) : Bool :=
+  decide (lvl tr.2.2 = lvl s) && decide (rank (lvl s) tr.2.2 < rank (lvl s) s)
+
+def loopPred {S : Type} (lvl : S → Nat) (s : S) (tr : BExp T × A × S) : Bool :=
+  decide (lvl tr.2.2 = lvl s)
+
+/-- **The region conditions, discharged.**  Every hypothesis of 341's
+`syntacticallyLayered_peeled` follows from the classifiers alone, given only that
+the level function is bounded and that no transition of the quotient raises it —
+both of which 339 gives for free. -/
+theorem syntacticallyLayered_peelAut {S : Type} (aut : GkatKleene.GAut S A T)
+    (lvl : S → Nat) (rank : Nat → S → Nat) (B : Nat) (rawHlt : S → BExp T)
+    (hbound : ∀ s, lvl s < B)
+    (hmono : ∀ s, ∀ tr ∈ aut.trans s, lvl tr.2.2 ≤ lvl s) :
+    SyntacticallyLayered
+      (peelAut aut lvl (rawPred lvl rank) (loopPred lvl) rawHlt) := by
+  have hlevel : ∀ (n : Nat), ∀ s ∈ levelStates aut lvl n, lvl s = n :=
+    fun n s hs => of_decide_eq_true (List.mem_filter.mp hs).2
+  have htgt : ∀ (s : S) (tr : BExp T × A × S),
+      tr ∈ disjoin (aut.trans s) → lvl tr.2.2 ≤ lvl s := by
+    intro s tr htr
+    obtain ⟨g, hm⟩ := mem_disjoin_target (aut.trans s) tr htr
+    exact hmono s (g, tr.2) hm
+  refine syntacticallyLayered_peeled (peelRaw aut (rawPred lvl rank) rawHlt)
+    (peelBs aut lvl (rawPred lvl rank) (loopPred lvl)) (peelH0 aut lvl)
+    (peelLoops aut lvl (rawPred lvl rank) (loopPred lvl))
+    (peelExits aut lvl (rawPred lvl rank) (loopPred lvl))
+    lvl rank B hbound ?_ ?_ ?_ ?_ ?_ ?_
+  · -- hraw: raw transitions do not raise the level
+    intro s tr htr
+    exact Nat.le_of_eq (of_decide_eq_true
+      ((Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2).1)
+  · -- hloopIn: loop entries stay in their level
+    intro n tr htr
+    obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
+    have := ((Bool.and_eq_true _ _).mp (List.mem_filter.mp hmem).2).2
+    exact (of_decide_eq_true this).trans (hlevel n s' hs')
+  · -- hexitLe: exit entries do not raise the level
+    intro n tr htr
+    obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
+    exact (hlevel n s' hs') ▸ htgt s' tr (List.mem_filter.mp hmem).1
+  · -- hexit: exit entries LEAVE the level
+    intro n tr htr
+    obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
+    have hb := ((Bool.and_eq_true _ _).mp (List.mem_filter.mp hmem).2).2
+    have hne : lvl tr.2.2 ≠ lvl s' :=
+      of_decide_eq_false ((Bool.not_eq_true' _).mp hb)
+    intro heq
+    exact hne (heq.trans (hlevel n s' hs').symm)
+  · -- hrawIn: raw transitions stay in their level
+    intro n s hs tr htr
+    exact (of_decide_eq_true
+      ((Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2).1).trans hs
+  · -- hrawRank: raw transitions decrease the region's rank
+    intro n s hs tr htr
+    have := ((Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2).2
+    exact hs ▸ of_decide_eq_true this
+
+#print axioms mem_disjoin_target
+#print axioms syntacticallyLayered_peelAut
+
+/-- **THE ROUTE, IN ONE STATEMENT.**  A quotient is solvable given only:
+a bounded level function no transition raises (339 supplies one for free), a
+per-level rank, and the behavioural agreement between the quotient and the peel
+built from it.  Every structural obligation — the layers, the levels, the shared
+lists, the region conditions — is discharged inside. -/
+theorem solvesBA_of_agreement {S : Type} (aut : GkatKleene.GAut S A T)
+    (lvl : S → Nat) (rank : Nat → S → Nat) (B : Nat) (rawHlt : S → BExp T)
+    (hbound : ∀ s, lvl s < B)
+    (hmono : ∀ s, ∀ tr ∈ aut.trans s, lvl tr.2.2 ≤ lvl s)
+    (htr : ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatKleene.firstMatch W x (aut.trans s)
+        = GkatKleene.firstMatch W x
+            ((peelAut aut lvl (rawPred lvl rank) (loopPred lvl) rawHlt).trans s))
+    (hh : ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (aut.hlt s) x
+        = GkatGS.bval W
+            ((peelAut aut lvl (rawPred lvl rank) (loopPred lvl) rawHlt).hlt s) x) :
+    ∃ sol : S → Exp A T, GkatKleene.SolvesBA aut sol :=
+  solvesBA_of_peel aut lvl (rawPred lvl rank) (loopPred lvl) rawHlt htr hh
+    (syntacticallyLayered_peelAut aut lvl rank B rawHlt hbound hmono)
+
+#print axioms solvesBA_of_agreement
 
 end Instantiation
 

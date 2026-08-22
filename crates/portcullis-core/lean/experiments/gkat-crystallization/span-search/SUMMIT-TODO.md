@@ -16189,3 +16189,51 @@ measured and found always to exist.
 
 **Next.** Define `p`, `q` and the rank from the quotient's own graph, and
 discharge 341's region conditions.
+
+## 350 — the classifiers, the region conditions, and the route in one statement
+
+**A refactor first, forced by the mathematics.** `p` and `q` were functions of an
+ENTRY. Whether an intra-level edge is "raw" is not a property of the entry — it is
+`rank target < rank source`, a statement about both endpoints. So the classifiers
+now take the source state, `p q : S → (BExp T × A × S) → Bool`, and each state
+classifies its own entries. `firstMatch_peel_level` and the whole `Instantiation`
+section were rewritten around it; nothing else moved, because every earlier lemma
+is stated for one list at a time.
+
+**The classifiers.**
+
+```lean
+def rawPred  lvl rank s tr := decide (lvl tr.2.2 = lvl s) && decide (rank (lvl s) tr.2.2 < rank (lvl s) s)
+def loopPred lvl      s tr := decide (lvl tr.2.2 = lvl s)
+```
+
+Raw keeps the intra-level rank-decreasing edges; among what is left, the
+intra-level ones are the back-edges and the rest leave the level — downward, by
+monotonicity.
+
+**`syntacticallyLayered_peelAut`** discharges **all six** region conditions of
+341 from these definitions plus `hbound` and `hmono` — and 339 supplies both for
+free, for every system. One supporting lemma was needed: `mem_disjoin_target`
+(**axiom-free**) — normalising rewrites guards, never targets, which is what lets
+`hmono` on the quotient carry over to the normalised lists.
+
+**The route in one statement:**
+
+```lean
+theorem solvesBA_of_agreement (aut) (lvl) (rank) (B) (rawHlt)
+    (hbound) (hmono) (htr) (hh) : ∃ sol, SolvesBA aut sol
+```
+
+A quotient is solvable given a bounded non-raising level function, a per-level
+rank, and **the behavioural agreement between the quotient and the peel built
+from it**. Every structural obligation — layers, levels, shared lists, region
+conditions — is discharged inside.
+
+**What is left is exactly one thing**, and it is 343's measured condition: the
+two `firstMatch`/`bval` agreements, for the specific classifiers above. 346-348
+reduce them to the gate and agreement hypotheses; what remains is to prove those
+hypotheses hold, which is where the measurement says they do (100%, control
+passing) but the proof does not yet.
+
+**Next.** The agreement hypotheses themselves — `hagreeL`/`hgateL` and their exit
+and halt counterparts, for `rawPred`/`loopPred`.
