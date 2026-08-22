@@ -12134,6 +12134,55 @@ theorem pullback_mono {S Q : Type} {aut : GkatKleene.GAut S A T}
 
 
 
+/-! ### Syntactic versus semantic reachability
+
+Assembling the last link exposes a mismatch that neither the census nor the Lean
+had forced into the open.
+
+* The **level** is built on `SReaches` — SYNTACTIC reachability, "there is a
+  listed transition to `t`" — because `hmono` is syntactic
+  (`∀ tr ∈ aut.trans s, …`) and that is what `syntacticallyLayered_peelAut`
+  consumes.
+* The **lift** is built on `SemReaches` — SEMANTIC reachability, "some atom makes
+  the step fire" — because `autStep_eq` is the only thing a behavioural quotient
+  gives, and it speaks about `autStep`.
+
+Syntactic reachability is the larger relation: an **inert** entry, whose guard is
+unsatisfiable, is listed but never fires.  So syntactic-mutual does not give
+semantic-mutual, and 383's `mutual_of_reachMask_eq` does not feed 381's
+`exists_mutual_over_pair`.
+
+This is not hypothetical.  337 established that the peel deliberately ADDS inert
+entries — a shared loop entry is present at every region state and killed at the
+ones where it does not belong.  The census cannot see the distinction at all,
+because its representation stores one target per atom and has no way to express
+an entry that never fires.
+
+**The side condition.**  The gap closes if the quotient's listed transitions all
+actually fire somewhere, and 340 established the quotient's lists are ours to
+choose — so this is a constraint we can meet by construction rather than a fact
+to be proved. -/
+
+/-- Every listed transition fires at some atom. -/
+def NoInert {S : Type} (aut : GkatKleene.GAut S A T) : Prop :=
+  ∀ s : S, ∀ tr ∈ aut.trans s, ∃ (X : Type) (W : T → X → Bool) (x : X),
+    GkatKleene.autStep W aut s x = some (tr.2.1, tr.2.2)
+
+/-- Under `NoInert`, syntactic reachability implies semantic — so the level's
+grouping and the lift's grouping agree. -/
+theorem semReaches_of_sreaches {S : Type} (aut : GkatKleene.GAut S A T)
+    (h : NoInert aut) {u v : S}
+    (hr : SReaches { states := aut.states, hlt := aut.hlt, trans := aut.trans } u v) :
+    SemReaches aut u v := by
+  induction hr with
+  | refl s => exact SemReaches.refl s
+  | step hstep _ ih =>
+      obtain ⟨g, q, hmem⟩ := hstep
+      obtain ⟨X, W, x, hfire⟩ := h _ (g, q, _) hmem
+      exact SemReaches.step ⟨X, W, x, q, hfire⟩ ih
+
+#print axioms semReaches_of_sreaches
+
 end LevelExistence
 
 #print axioms reachLevel_mono
@@ -14384,9 +14433,10 @@ That is 358's structural picture, stated without reference to how the head was
 found. -/
 def HeadedRegion {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
     (rank : Nat → S → Nat) (n : Nat) : Prop :=
-  ∀ (X : Type) (W : T → X → Bool) (x : X), ∃ h : S,
-    ∀ s ∈ levelStates aut lvl n, s ≠ h →
-      GkatGS.bval W (peelRawHlt aut lvl rank s) x = false
+  ∀ (X : Type) (W : T → X → Bool) (x : X),
+    ∀ s ∈ levelStates aut lvl n, ∀ t ∈ levelStates aut lvl n,
+      GkatGS.bval W (peelRawHlt aut lvl rank s) x = true →
+      GkatGS.bval W (peelRawHlt aut lvl rank t) x = true → s = t
 
 /-- A firing non-raw part makes its state active. -/
 theorem active_of_fires {S X : Type} (W : T → X → Bool) (x : X)
@@ -14407,18 +14457,9 @@ theorem levelAgreementActive_of_headed {S : Type} (aut : GkatKleene.GAut S A T)
     (hhead : ∀ n : Nat, HeadedRegion aut lvl rank n) :
     LevelAgreementActive aut lvl rank := by
   intro X W x n a ha c hc r hcfire hact
-  obtain ⟨h, hh⟩ := hhead n X W x
   have hca : GkatGS.bval W (peelRawHlt aut lvl rank c) x = true :=
     active_of_fires W x aut lvl rank c hcfire
-  have hce : c = h := by
-    cases Classical.em (c = h) with
-    | inl heq => exact heq
-    | inr hne => rw [hh c hc hne] at hca; exact Bool.noConfusion hca
-  have hae : a = h := by
-    cases Classical.em (a = h) with
-    | inl heq => exact heq
-    | inr hne => rw [hh a ha hne] at hact; exact Bool.noConfusion hact
-  rw [hae, ← hce]
+  rw [hhead n X W x a ha c hc hact hca]
   exact hcfire
 
 /-- The corresponding capstone: a headed automaton is solvable. -/

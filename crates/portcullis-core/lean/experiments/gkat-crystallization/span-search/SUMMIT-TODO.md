@@ -18014,3 +18014,54 @@ half is the Thompson induction, untouched. I am not moving odds for machinery.
 
 **Next.** Assemble *source-headed ⟹ quotient-headed*, which would leave exactly
 the induction.
+
+## 387 — syntactic versus semantic reachability, and a defect that came back
+
+Assembling *source-headed ⟹ quotient-headed* exposed a mismatch neither the
+census nor the Lean had forced into the open.
+
+* The **level** is built on `SReaches` — SYNTACTIC reachability — because `hmono`
+  is syntactic (`∀ tr ∈ aut.trans s, …`) and that is what
+  `syntacticallyLayered_peelAut` consumes.
+* The **lift** is built on `SemReaches` — SEMANTIC — because `autStep_eq` is all a
+  behavioural quotient gives.
+
+Syntactic is the larger relation: an **inert** entry, guard unsatisfiable, is
+listed but never fires. So 383's `mutual_of_reachMask_eq` does **not** feed 381's
+`exists_mutual_over_pair`.
+
+**This is not hypothetical.** 337 established that the peel deliberately *adds*
+inert entries — a shared loop entry sits at every region state and is killed where
+it does not belong. And **the census cannot see the distinction at all**: its
+representation stores one target per atom, so an entry that never fires is
+inexpressible. A gap the harness is structurally blind to is exactly the kind
+worth naming.
+
+**The side condition, and why it is affordable.** `NoInert aut` — every listed
+transition fires at some atom — closes it: `semReaches_of_sreaches` (axiom-free)
+turns syntactic reachability into semantic. And 340 established the quotient's
+lists are ours to choose, so this is a constraint to meet by construction, not a
+fact to prove.
+
+**A defect that came back.** 372 found that `∀ n, ∃ h : S, …` cannot be met for an
+empty state type and fixed it by moving the quantifier. 373 then made the head
+per-atom and, in doing so, **reintroduced the existential** — `∀ X W x, ∃ h, …`
+still needs a witness for a level with no states. Removing it entirely:
+
+```lean
+def HeadedRegion aut lvl rank n : Prop :=
+  ∀ X W x, ∀ s ∈ levelStates aut lvl n, ∀ t ∈ levelStates aut lvl n,
+    bval W (peelRawHlt aut lvl rank s) x = true →
+    bval W (peelRawHlt aut lvl rank t) x = true → s = t
+```
+
+*At most one active state per level*, said without naming it. Vacuous on empty
+levels, no witness needed — and `levelAgreementActive_of_headed` got shorter and
+**lost `Classical.choice`** from its axiom list, since choosing the head was the
+only thing using it.
+
+**Odds: 96%, unchanged.** One real gap named with an affordable fix, one
+regression caught. Neither is progress on the source induction.
+
+**Next.** `source-headed ⟹ quotient-headed`, now that both halves speak the same
+reachability.
