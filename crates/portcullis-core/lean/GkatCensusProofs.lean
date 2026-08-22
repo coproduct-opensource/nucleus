@@ -8536,4 +8536,140 @@ theorem seq_subsystem_of_layer {S₁ S₂ : Type}
 
 #print axioms seq_subsystem_of_layer
 
+
+/-! ### 292 — THE SAME MACHINERY AT AN ARBITRARY FINISH
+
+    The relativised recursion needs its pieces at an ARBITRARY finish, not only
+    at `1`.  291's `seqLayer_subsystem` hands the base a finish built from the
+    entry block, so whatever solves the base must solve it THERE.
+
+    288's `solExt` was written with the halt test as its leaf.  Generalising it
+    to `paramFallback (hlt s) F` needs one thing 283 did not provide: selection
+    through `transitionBranches` at an ARBITRARY fallback rather than a test.
+    That is the same induction, with the fallback carried instead of fixed. -/
+private theorem selectFull_tb_gen {S X : Type} (W : T → X → Bool) (x : X)
+    (sol : S → Exp A T) (fb : Exp A T) :
+    ∀ L : List (BExp T × A × S),
+      selectFull W x (transitionBranches L sol) fb
+        = (match GkatKleene.firstMatch W x L with
+           | some qt => Exp.seq (.act qt.1) (sol qt.2)
+           | none => fb)
+  | [] => rfl
+  | tr :: tl => by
+      obtain ⟨g, a, t⟩ := tr
+      cases hb : GkatGS.bval W g x
+      · simp only [transitionBranches, List.map_cons, selectFull, hb,
+          GkatKleene.firstMatch, if_neg]
+        exact selectFull_tb_gen W x sol fb tl
+      · simp only [transitionBranches, List.map_cons, selectFull, hb,
+          GkatKleene.firstMatch, if_pos]
+
+/-- Two labellings agreeing on every LIVE target give equivalent folds — at any
+    fallback.  283's `solFuel_congr_step`, freed of its test. -/
+theorem fold_congr_step {S : Type} (sys : GkatThompson.GSystem S A T) (s : S)
+    (fb : Exp A T) (sol sol' : S → Exp A T)
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → EquivBA (sol r.2) (sol' r.2)) :
+    EquivBA (guardedFold (transitionBranches (sys.trans s) sol) fb)
+      (guardedFold (transitionBranches (sys.trans s) sol') fb) := by
+  refine guardedFold_select_congr _ _ _ _ ?_
+  intro X W x
+  rw [selectFull_tb_gen W x sol fb, selectFull_tb_gen W x sol' fb]
+  cases hfm : GkatKleene.firstMatch W x (sys.trans s) with
+  | none => exact EquivBA.base (Equiv.refl _)
+  | some r => exact EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (h X W x r hfm)
+
+open Classical in
+noncomputable def solExtF {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) (F : Exp A T) : Nat → S → Exp A T
+  | 0, s => if P s then sol₀ s else GkatThompson.paramFallback (sys.hlt s) F
+  | n + 1, s => if P s then sol₀ s else
+      guardedFold (transitionBranches (sys.trans s) (solExtF sys P sol₀ F n))
+        (GkatThompson.paramFallback (sys.hlt s) F)
+
+open Classical in
+theorem solExtF_block {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) (F : Exp A T) (n : Nat) (s : S) (hs : P s) :
+    solExtF sys P sol₀ F n s = sol₀ s := by
+  cases n with
+  | zero => show (if P s then sol₀ s else _) = _; rw [if_pos hs]
+  | succ n => show (if P s then sol₀ s else _) = _; rw [if_pos hs]
+
+open Classical in
+theorem solExtF_out {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) (F : Exp A T) (n : Nat) (s : S) (hs : ¬ P s) :
+    solExtF sys P sol₀ F (n + 1) s
+      = guardedFold (transitionBranches (sys.trans s) (solExtF sys P sol₀ F n))
+          (GkatThompson.paramFallback (sys.hlt s) F) := by
+  show (if P s then sol₀ s else _) = _
+  rw [if_neg hs]
+
+theorem solExtF_stable {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) (F : Exp A T) (rank : S → Nat)
+    (hstep : ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → P r.2 ∨ rank r.2 < rank s) :
+    ∀ (n m : Nat) (s : S), rank s < n → rank s < m →
+      EquivBA (solExtF sys P sol₀ F n s) (solExtF sys P sol₀ F m s) := by
+  intro n
+  induction n with
+  | zero => intro m s hn _; exact absurd hn (Nat.not_lt_zero _)
+  | succ k ih =>
+      intro m s hn hm
+      cases m with
+      | zero => exact absurd hm (Nat.not_lt_zero _)
+      | succ j =>
+          by_cases hP : P s
+          · rw [solExtF_block sys P sol₀ F _ s hP, solExtF_block sys P sol₀ F _ s hP]
+            exact EquivBA.base (Equiv.refl _)
+          · rw [solExtF_out sys P sol₀ F k s hP, solExtF_out sys P sol₀ F j s hP]
+            refine fold_congr_step sys s _ _ _ ?_
+            intro X W x r hfm
+            rcases hstep s hP X W x r hfm with hPr | hlt
+            · rw [solExtF_block sys P sol₀ F _ r.2 hPr,
+                solExtF_block sys P sol₀ F _ r.2 hPr]
+              exact EquivBA.base (Equiv.refl _)
+            · exact ih j r.2 (Nat.lt_of_lt_of_le hlt (Nat.le_of_lt_succ hn))
+                (Nat.lt_of_lt_of_le hlt (Nat.le_of_lt_succ hm))
+
+/-- **THE EXTENSION, AT AN ARBITRARY FINISH.** -/
+theorem solExtF_has_solution {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) (F : Exp A T) (rank : S → Nat)
+    (hstep : ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → P r.2 ∨ rank r.2 < rank s) :
+    ∃ sol : S → Exp A T,
+      (∀ s, P s → sol s = sol₀ s) ∧
+      (∀ s, ¬ P s → EquivBA (sol s)
+        (GkatThompson.eqRHSParam sys sol F s)) := by
+  refine ⟨fun s => solExtF sys P sol₀ F (rank s + 1) s, ?_, ?_⟩
+  · intro s hs
+    exact solExtF_block sys P sol₀ F _ s hs
+  · intro s hs
+    show EquivBA (solExtF sys P sol₀ F (rank s + 1) s) _
+    rw [solExtF_out sys P sol₀ F (rank s) s hs]
+    refine fold_congr_step sys s _ _ _ ?_
+    intro X W x r hfm
+    rcases hstep s hs X W x r hfm with hPr | hlt
+    · rw [solExtF_block sys P sol₀ F _ r.2 hPr, solExtF_block sys P sol₀ F _ r.2 hPr]
+      exact EquivBA.base (Equiv.refl _)
+    · exact solExtF_stable sys P sol₀ F rank hstep (rank s) (rank r.2 + 1) r.2
+        hlt (Nat.lt_succ_self _)
+
+/-- **A SEQUENCE LAYER EXTENDS A SOLUTION.**  291's reduction, in the form the
+    relativised recursion consumes: whatever solves the base at the finish the
+    entry block builds, solves the layer at `F`. -/
+theorem seqLayer_extends {S : Type} {sys base : GkatThompson.GSystem S A T}
+    {h₀ : BExp T} {entry : List (BExp T × A × S)} {dom : S → Prop}
+    (h : SeqLayer sys base h₀ entry dom)
+    (sol : S → Exp A T) (F : Exp A T)
+    (hbase : ∀ s, dom s → EquivBA (sol s)
+      (GkatThompson.eqRHSParam base sol
+        (guardedFold (transitionBranches entry sol)
+          (GkatThompson.paramFallback h₀ F)) s)) :
+    ∀ s, dom s → EquivBA (sol s) (GkatThompson.eqRHSParam sys sol F s) :=
+  fun s hs => EquivBA.trans (hbase s hs)
+    (EquivBA.symm (seqLayer_subsystem h sol F s hs))
+
+#print axioms solExtF_has_solution
+#print axioms seqLayer_extends
+
 end GkatCensus

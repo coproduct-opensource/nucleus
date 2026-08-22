@@ -13519,3 +13519,48 @@ it compiles.  The field's prior that the problem does not close still stands.
 loop total on the domain (284) / `SeqLayer` on the domain (291) — with the
 solution theorem by induction, and the pushforward by induction from 264, 281
 and 289.
+
+---
+
+## 292 — THE SAME MACHINERY AT AN ARBITRARY FINISH.
+
+The relativised recursion needs its pieces at an ARBITRARY finish, not only at
+`1`: 291's `seqLayer_subsystem` hands the base a finish BUILT FROM THE ENTRY
+BLOCK, so whatever solves the base must solve it there.
+
+288's `solExt` had the halt test as its leaf.  Generalising it to
+`paramFallback (hlt s) F` needed one thing 283 did not provide: **selection
+through `transitionBranches` at an ARBITRARY fallback rather than a test** —
+the same induction with the fallback carried instead of fixed.
+
+**Proved**: `selectFull_tb_gen`; `fold_congr_step` (283's `solFuel_congr_step`
+freed of its test); `solExtF` with `solExtF_block`, `solExtF_out`,
+`solExtF_stable`, `solExtF_has_solution` — **the extension at an arbitrary
+finish**; and `seqLayer_extends`, 291's reduction in the form the recursion
+consumes: whatever solves the base at the finish the entry block builds, solves
+the layer at `F`.  All compiled first try.  `seqLayer_extends` on `propext`
+alone.
+
+**Every case of the relativised recursion now has its lemma.**
+
+    acyclic-relative, any finish     solExtF_has_solution      (292)
+    sequence layer, any finish       seqLayer_extends          (292 via 291)
+    loop layer, closed domain        loopLayer_has_solution    (284)
+    pushforward: acyclic             acyclic_quotient          (264)
+    pushforward: loop                loopLayer_pushforward_rep (281)
+    pushforward: sequence            seqLayer_pushforward_rep  (289)
+
+What is left is the INDUCTIVE that ties them together and the two inductions
+over it.
+
+**Odds: 98%, HELD** — deliberately, per 291's policy: the assembly is not done,
+assembly has surfaced a genuine mismatch before (283), and I will not price this
+one until it compiles.
+
+**Note: the session's WEB SEARCH BUDGET IS EXHAUSTED** (200/200).  Later
+iterations of this loop cannot include the search step; the proof work
+continues.
+
+**Next.**  Define `LayeredOn sys dom` — acyclic-relative / loop over a CLOSED
+domain / sequence layer whose entry points OUTSIDE the domain — and prove
+`layeredOn_has_solution` by induction, then the pushforward.
