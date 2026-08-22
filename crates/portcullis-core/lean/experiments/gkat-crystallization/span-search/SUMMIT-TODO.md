@@ -16390,3 +16390,59 @@ than "a measured existential":
 
 **Next.** Measure step 2 directly — whether any collapse merges two loops into a
 single SCC — since that is the one place the structural argument could fail.
+
+## 354 — 353's step 2 is FALSE, and the true statement is sharper
+
+353 proposed a three-step route to `LevelAgreement`, whose step 2 was "the
+collapse preserves one-exit-continuation". `PAD_LOOPMERGE` measures that joint
+directly, and **it is false**:
+
+| pool | non-trivial quotient SCCs | preimage spans ≥2 source loops |
+|---|---|---|
+| G=2 R=3 cap 4k | 968 | **6** (0.62%), max span 2 |
+| G=4 R=5 cap 120k | 41 885 | **902** (2.15%), max span **3** |
+
+The collapse fuses loops, routinely. So "each SCC comes from one while-loop" does
+not survive the quotient, and a proof resting on it would have rested on
+something false.
+
+**The conclusion survives, for a sharper reason.** Every merge is *inside a
+single quotient state*: bisimilar states from different source loops collapsing
+into one block, which agree on everything trivially. The shape that would
+actually cause trouble — two **distinct** quotient states in one SCC, drawn from
+**disjoint** source loops, each bringing its own exit continuation — is
+
+```
+0 quotient SCCs contain TWO DISTINCT states drawn from DISJOINT source loops
+```
+
+**0 of 41 885**, and correspondingly 0 of the 902 merged SCCs have two different
+exit targets at one atom.
+
+**The repaired route.** (1) exits from a loop body go to a single continuation —
+structural, by induction on the expression; (2) **a quotient SCC's distinct
+states never come from disjoint source loops** — measured 0/41 885, now a crisp
+statement about how bisimulation interacts with strong connectivity rather than a
+vague appeal to structure; (3) hence a region keeps its single exit continuation
+and `LevelAgreement` holds.
+
+**Why step 2 is not yet proved, precisely.** A cycle downstairs lifts to source
+transitions, but the lifted path leaves and re-enters blocks at *different*
+members: `u₁ → v₁` with `v₁ ∈ b₂`, and `v₂ → u₂` with `v₂ ∈ b₂`, `v₁ ≠ v₂`. To
+close the cycle upstairs one needs `v₁ ~ v₂` to transport reachability — true,
+but it transports only up to bisimilarity, i.e. back to the same statement
+downstairs. The argument is circular and I have not found the way out.
+
+**Odds: 98%, unchanged.** Two iterations running, a proposed proof step has been
+refuted by its own measurement (353's step 2 here, 342's counterexample before).
+The measurements keep landing; the proofs behind them keep needing repair.
+
+**A harness note.** This entry was nearly lost: `cd <relative path> && cat >> …`
+short-circuited when the `cd` failed, the ledger write never ran, and the commit
+went out with the code but no entry. Worse, the recovery attempt appended an
+unrelated root-level `SUMMIT-TODO.md` into this one before being reverted with
+`git checkout`. Use absolute paths for ledger writes; a failed `cd` in a `&&`
+chain is silent unless the tail is checked.
+
+**Next.** Step 2 without the circularity — likely by strengthening what is lifted
+from "reaches" to something bisimulation already respects.
