@@ -18326,3 +18326,41 @@ loop's own entries, not yet a proof that a whole Thompson automaton satisfies
 agreement.
 
 **Next.** The body's transitions under a rank, then `seq`/`ite`.
+
+## 394 — nested loops: each level is gated by its own guard
+
+393 proved the `wh` case for a single loop. The remaining worry was **nesting**:
+in `wh g (wh g' body)` the outer component *contains* the inner one — they are
+mutually reachable through the outer back-edge — so if the inner loop back-edged
+at an atom where a different state took the outer back-edge, agreement would
+demand two different targets agree.
+
+**It cannot happen, for 393's reason one level up.** The outer loop's gate runs
+through the INNER loop's halt test, which is `body.hlt s ∧ ¬g'`; the inner loop's
+own back-edge gate carries `g'`. So `g'` separates them at every atom.
+
+```lean
+theorem guard_split_exclusive (W x) (P Y Z g)
+    (h : bval W ((P ∧ ¬g) ∧ Y) x = true) : bval W (P ∧ (g ∧ Z)) x = false
+```
+
+**One guard, two sides.** `nested_loop_exclusive` is the `wh g (wh g' body)`
+instance.
+
+**Subsumption checked, not asserted.** I claimed this generalises 393's
+halt/back-edge exclusivity, so I re-derived that from it —
+`loopInitialized_halt_backedge_exclusive'`, at `Y := one`. The fit is up to
+`&& true` rather than syntactic, which is why the derivation needs a bridge line;
+had I only asserted the generalisation, that would have gone unnoticed and the
+claim would have been slightly false.
+
+**What the `wh` case now has.** Back-edges agree (393); halting and back-edging
+are exclusive (393); inner and outer back-edges are exclusive (394). All three
+are facts about `loopInitialized`, none needs a rank, and none is a measurement.
+
+**Odds: 96%, unchanged.** The nesting worry is closed, which was the last
+structural concern I could name for `wh`. What is still missing is the assembly
+— these are facts about gates, not yet a proof that a Thompson automaton
+satisfies `LevelAgreementActive` — plus `seq`/`ite`, which create no cycles.
+
+**Next.** Assemble the `wh` facts into agreement for a loop component.

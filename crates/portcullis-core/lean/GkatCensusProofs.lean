@@ -12298,6 +12298,61 @@ theorem loopInitialized_halt_backedge_exclusive {S X : Type} (W : T → X → Bo
 
 #print axioms loopInitialized_halt_backedge_exclusive
 
+/-! ### Nested loops: each level is gated by its own guard, and the guards split
+
+The `wh` case's remaining worry is nesting.  In `wh g (wh g' body)` the outer
+component CONTAINS the inner one — they are mutually reachable through the outer
+back-edge — so at an atom where the inner loop back-edges and the outer loop
+back-edges from a different state, agreement would demand two different targets
+agree.
+
+It cannot happen.  The outer loop's gate runs through the INNER loop's halt test,
+which is `body.hlt s ∧ ¬g'`; the inner loop's own back-edge gate carries `g'`.
+So `g'` separates them at every atom, exactly as `guard` separated halting from
+back-edging in 393. -/
+
+/-- One guard, two sides: a gate carrying `¬g` and a gate carrying `g` cannot both
+fire.  This subsumes 393's halt/back-edge exclusivity (take `Y := one`) and gives
+the nested-loop case (take `X := body.hlt s`). -/
+theorem guard_split_exclusive {X' : Type} (W : T → X' → Bool) (x : X')
+    (P Y Z g : BExp T)
+    (h : GkatGS.bval W (BExp.and (BExp.and P (BExp.not g)) Y) x = true) :
+    GkatGS.bval W (BExp.and P (BExp.and g Z)) x = false := by
+  have hg : GkatGS.bval W g x = false := by
+    have h2 : ((GkatGS.bval W P x && !GkatGS.bval W g x) && GkatGS.bval W Y x) = true := h
+    cases hgv : GkatGS.bval W g x with
+    | false => rfl
+    | true => rw [hgv] at h2; simp at h2
+  show (GkatGS.bval W P x && (GkatGS.bval W g x && GkatGS.bval W Z x)) = false
+  rw [hg]; simp
+
+/-- **The nested case, stated.**  In `wh g (wh g' body)`, a state that takes the
+OUTER back-edge at an atom cannot take an INNER one there, because the outer
+gate runs through the inner loop's halt test `body.hlt s ∧ ¬g'`. -/
+theorem nested_loop_exclusive {S X' : Type} (W : T → X' → Bool) (x : X')
+    (g g' : BExp T) (bodyHlt : BExp T) (outerEntry innerEntry : BExp T)
+    (h : GkatGS.bval W (BExp.and (BExp.and bodyHlt (BExp.not g')) outerEntry) x = true) :
+    GkatGS.bval W (BExp.and bodyHlt (BExp.and g' innerEntry)) x = false :=
+  guard_split_exclusive W x bodyHlt outerEntry innerEntry g' h
+
+#print axioms guard_split_exclusive
+#print axioms nested_loop_exclusive
+
+/-- Checking the subsumption claim rather than asserting it: 393's halt/back-edge
+exclusivity really is `guard_split_exclusive` at `Y := one`.  The fit is up to
+`&& true`, not syntactic, which is why the bridge line is there. -/
+theorem loopInitialized_halt_backedge_exclusive' {S X : Type} (W : T → X → Bool)
+    (x : X) (guard : BExp T) (body : GkatThompson.InitializedGAut S A T) (s : S)
+    (hhalt : GkatGS.bval W (BExp.and (body.core.hlt s) (BExp.not guard)) x = true)
+    (tr : BExp T × A × S) :
+    GkatGS.bval W (BExp.and (body.core.hlt s) (BExp.and guard tr.1)) x = false :=
+  guard_split_exclusive W x (body.core.hlt s) BExp.one tr.1 guard (by
+    show ((GkatGS.bval W (body.core.hlt s) x && !GkatGS.bval W guard x) && true) = true
+    rw [Bool.and_true]
+    exact hhalt)
+
+#print axioms loopInitialized_halt_backedge_exclusive'
+
 end LevelExistence
 
 #print axioms reachLevel_mono
