@@ -21685,3 +21685,51 @@ pair more decisions.
 corpus — it is new to me, which is the honest description.
 
 **Next.** Still the x4/x6 counts.
+
+## 457 — the pullback is solvable along a projection, and the hypothesis IS the obstruction.
+
+Web search: exhausted (200/200).
+
+456 identified the real task as *assigning expressions to the states of a
+pullback*, whose states are pairs and carry none. But a pullback **projects** onto
+each source, and `eqRHS_of_mapped` (420) runs in exactly that direction.
+
+```lean
+theorem solvesBA_pullback_of_projection (src) (pull) (π : P → S) (sol)
+    (hsol : SolvesBA src sol)
+    (hhlt : ∀ p, src.hlt (π p) = pull.hlt p)
+    (htr  : ∀ p, src.trans (π p) = (pull.trans p).map (fun tr => (tr.1, tr.2.1, π tr.2.2))) :
+  SolvesBA pull (fun p => sol (π p))
+```
+
+**Axioms: `propext` alone.** The source's solution transports to the pullback for
+free — and note what is *absent*: no fibre-constancy obligation, no W3, no
+uniqueness of any kind. The solution is literally `sol ∘ π`, so there is nothing
+to be constant about. That is a strictly cheaper transport than
+`solvesBA_of_mapped` (420), which needed `hfib`.
+
+**This cannot hold in general, or completeness would be trivial — so its
+hypothesis is the obstruction, stated exactly.** `htr` demands
+
+> `src.trans (π p) = (pull.trans p).map π`
+
+i.e. **the pairing introduced no new decision.** A pullback state `(s,t)` splits
+`s`'s transitions along `t`'s guards; whenever that split is non-trivial, the
+projected list has more entries than the source's and `htr` fails. This is 456's
+"two well-nested sources can have a non-well-nested pullback", now written as a
+single equation between transition lists.
+
+**Why this is worth having.** Every previous statement of the obstruction in this
+program has been a measurement (54, 929, 20%) or a prose description
+("genuinely two-exit mutual recursion"). This is the first form that is a
+checkable equation about the objects the census actually manipulates — and it
+says the census's span search and this hypothesis are the same question, since a
+covering witness is exactly what supplies a projection when the direct one fails.
+
+**Odds: 25%, unchanged.** A sharper statement of a known obstruction, not
+progress against it.
+
+**Next.** Measure `htr` directly: over the crux pullbacks, how often does either
+projection satisfy the transition-list equation? That number should track
+`SPAN FOUND: 219 / 273`, and if it does not, one of the two is measuring
+something other than what I think.

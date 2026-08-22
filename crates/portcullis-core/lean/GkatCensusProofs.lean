@@ -16612,6 +16612,42 @@ theorem fibre_mates_share_halt {S S' : Type}
 
 #print axioms fibre_mates_share_halt
 
+/-! ### 457: the pullback IS solvable along a projection — and the hypothesis is the obstruction
+
+456 identified the real task as *assigning expressions to the states of a
+pullback*, whose states are pairs and carry none.  But a pullback PROJECTS onto
+each source, and `eqRHS_of_mapped` (420) runs in exactly that direction: it
+rewrites the SOURCE's equation at `f s'` as the pullback's equation at `s'` with
+the solution precomposed by the projection.
+
+So if the projection is a structural map — the pullback's transitions project
+onto the source's, and halts agree — then the source's solution transports to the
+pullback **for free**, with no fibre-constancy obligation, because the solution
+is literally `sol ∘ π` and there is nothing to be constant about.
+
+That cannot hold in general or completeness would be trivial.  **Where it fails
+is the obstruction**, and stating it isolates that: the pullback refines guards
+(a pair `(s,t)` splits `s`'s transition on `t`'s guards), so
+`aut.trans (π p) = (pull.trans p).map π` is exactly the demand that **the pairing
+introduced no new decision** — the alignment condition. -/
+theorem solvesBA_pullback_of_projection {P S : Type}
+    (src : GkatKleene.GAut S A T) (pull : GkatKleene.GAut P A T) (π : P → S)
+    (sol : S → Exp A T) (hsol : GkatKleene.SolvesBA src sol)
+    (hmem : ∀ p ∈ pull.states, π p ∈ src.states)
+    (hhlt : ∀ p : P, src.hlt (π p) = pull.hlt p)
+    (htr : ∀ p : P, src.trans (π p)
+      = (pull.trans p).map (fun tr => (tr.1, tr.2.1, π tr.2.2))) :
+    GkatKleene.SolvesBA pull (fun p => sol (π p)) := by
+  intro p hp
+  have h := hsol (π p) (hmem p hp)
+  have hmap : GkatKleene.eqRHS src sol (π p)
+      = GkatKleene.eqRHS pull (fun q => sol (π q)) p :=
+    eqRHS_of_mapped src pull π sol p (hhlt p) (htr p)
+  rw [hmap] at h
+  exact h
+
+#print axioms solvesBA_pullback_of_projection
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
