@@ -12474,6 +12474,21 @@ theorem sum_no_mixed_component {S₁ S₂ : Type} (left : GkatThompson.GSystem S
 #print axioms seq_no_mixed_component
 #print axioms sum_no_mixed_component
 
+/-- An outer back-edge firing pins the loop's guard TRUE at that atom — the dual
+of `guard_false_of_loop_halt`, and the other half of the split the `wh` case
+runs on. -/
+theorem guard_true_of_backedge {S X : Type} (W : T → X → Bool) (x : X)
+    (guard : BExp T) (bodyHlt g : BExp T)
+    (h : GkatGS.bval W (BExp.and bodyHlt (BExp.and guard g)) x = true) :
+    GkatGS.bval W guard x = true := by
+  have h2 : (GkatGS.bval W bodyHlt x
+    && (GkatGS.bval W guard x && GkatGS.bval W g x)) = true := h
+  cases hgv : GkatGS.bval W guard x with
+  | true => rfl
+  | false => rw [hgv] at h2; simp at h2
+
+#print axioms guard_true_of_backedge
+
 end LevelExistence
 
 #print axioms reachLevel_mono

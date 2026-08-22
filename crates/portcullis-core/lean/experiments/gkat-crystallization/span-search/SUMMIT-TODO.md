@@ -18602,3 +18602,44 @@ remains is the `wh` case of the induction, where 393-396's facts have to be
 assembled into `SourceSccAgrees` for `loopInitialized`.
 
 **Next.** The `wh` case of the induction.
+
+## 401 — the `wh` case's argument, and where it nearly went wrong
+
+Working the `wh` case out, my first reading said **agreement fails**: state `u`
+steps inside the body while state `w` halts in the body and back-edges. Both look
+active, their targets differ, and nothing separates them — `u`'s body step and
+`w`'s back-edge are not exclusive, since they constrain different states.
+
+The reading was wrong, and the fix is where the induction hypothesis enters.
+**`u` is only active if its body step is NON-RAW**, and with the body's own rank
+— which the IH supplies — a body step is raw exactly when it decreases that rank.
+So the only non-raw body steps are the body's **own back-edges**, and those need
+the *body's* guard `g'`, while the outer back-edge needs `¬g'` through the inner
+loop's halt test. They are exclusive after all, by 394.
+
+**So the `wh` case reads:** at any atom, the active states of a loop component are
+either
+
+* all taking the **outer** back-edge — needing `guard` true, and agreeing by 395's
+  `loopInitialized_agree_of_body_silent`; or
+* all active **inside the body** — needing the body's own guard, and agreeing by
+  the induction hypothesis.
+
+and the two classes cannot both occur, because one needs `g'` and the other `¬g'`.
+`guard_false_of_loop_halt` and this iteration's **`guard_true_of_backedge`** are
+the two halves of that split.
+
+**What this is.** An argument, not a proof. Formalising it needs the rank
+construction — the body's rank with the loop entry placed on top (396's
+prescription) — and the IH stated so that "non-raw body step ⟹ body back-edge"
+is available. That is the next real chunk, and it is the last one for `wh`.
+
+I am recording the near-miss deliberately: the case *looked* like a
+counterexample for as long as I forgot that activity is relative to a rank, and
+the rank is the thing the induction is carrying. That is the third time in this
+stretch that a "failure" dissolved once the right invariant was in hand (355,
+377, 401).
+
+**Odds: 96%, unchanged.** An argument written down is not a case discharged.
+
+**Next.** The rank construction for `wh`, and with it the case.
