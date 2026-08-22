@@ -21313,3 +21313,30 @@ going from x1 to x2 and is still at the bound.
 
 That is the sharpest form of the next experiment: raise `MAXK` and add rounds. If
 the residue keeps falling, it was never an obstruction.
+
+## 449 — the ceiling experiment: MAXK 16 → 22 on the k=5 residue.
+
+Web search: exhausted (200/200).
+
+448 found 929 of 3,347 uncoverable pullbacks resisting at k=5, with every
+best-scoring setting reporting *"largest variant 16 states"* — pressed against
+`MAXK`. That is the same signature that produced two phantom obstructions in this
+program already (the k ≤ 4 closure bound behind 444's "54", and the
+`build_pool` cap behind 428's "max component 2"). So the experiment that decides
+it is simply to move the bound.
+
+**Raised `const MAXK: usize = 16` to `22` and re-ran `PAD_MECH=1 gkat-span 2 5 4`.**
+The change is cheap in principle — `Aut` carries `hl: [u8; MAXK]` and
+`st: [[u8; NA]; MAXK]`, so each automaton grows from ~50 to ~70 bytes and 2.9M
+of them stay well within memory; the `u32` reach masks still cover 22 + 1 nodes.
+It compiled clean and is running.
+
+**The prediction, recorded before the result.** If the residue is a ceiling
+artefact, the rescue counts rise and "largest variant" moves above 16. If it is
+real, the counts stay near 2,418/3,347 and the largest variant stops below 22 —
+which would be the first evidence in this program of an obstruction that is not
+a search bound. **Stating it now so the reading afterwards is not free.**
+
+**Odds: 30%, unchanged.** No result yet.
+
+**Next.** Read the MAXK=22 table against the prediction above.

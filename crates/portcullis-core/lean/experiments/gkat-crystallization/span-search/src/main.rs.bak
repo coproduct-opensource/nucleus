@@ -25,7 +25,7 @@ use rayon::prelude::*;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-const MAXK: usize = 22;
+const MAXK: usize = 16;
 
 // ---------------------------------------------------------------- hashing
 //
