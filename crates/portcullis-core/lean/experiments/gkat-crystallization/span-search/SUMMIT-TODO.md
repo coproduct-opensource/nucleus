@@ -20885,3 +20885,59 @@ File: 0 errors, no `sorry`.
 **Next.** The route needs rebuilding on `solvesBA_of_mapped` (420) with the
 duplication whose cost 421-423 established: unrolling is DAG-shaped and free,
 W3 is finite, and the peel is not required. That is a construction, not a search.
+
+## 441 — CONVERGENCE: the peel's failure class IS the corpus's known n=2 frontier.
+
+Web search: exhausted (200/200).
+
+440 named the next step as rebuilding via Gaussian elimination on
+`solvesBA_of_mapped`. Looking for the elimination machinery turned up the reason
+the peel exists at all, in the corpus's own header
+(`GkatExistenceNarrowProofs`):
+
+> "the textbook **Gaussian-elimination route needs `LeftDistrib`, which is *not* a
+> GKAT theorem**, but the elimination goes through by associativity and `W3`
+> alone whenever one state is a **pure continuation** — no guarded exit. So the
+> obstruction is confined to genuinely **two-exit mutual recursion**."
+
+**That is why elimination is unavailable and why a peel was ever needed.** In KAT
+you may push a prefix past a guarded choice; in GKAT the guard is tested *after*
+the prefix runs and the prefix can change the state, so `LeftDistrib` fails.
+
+**And the corpus has already narrowed the remainder.** Four sub-cases eliminate
+after all — tautologous guard, unsatisfiable guard, a body that is a test
+(`test_seq_ite`), and a decided crossing — each **axiom-free**. What remains open
+at two states is *"mutual recursion in which both guards are properly satisfiable
+AND refutable, neither body is a test, and the crossing is undecided."*
+
+**My refuters sit inside that description.** 439/440's automaton: `q0` self-loops
+at atoms 0,1 and exits to `q1` at atom 2 — guard satisfiable and refutable;
+`q1` halts at atoms 0,2 and steps to `q0` at atom 1 — likewise; both bodies are
+actions, not tests. The one condition I cannot check quickly is whether the
+crossing is undecided, so I am claiming containment in the frontier's shape, not
+identity with its open case.
+
+**Two independent lines have converged on one obstruction.** The n=2 existence
+frontier was mapped from the algebra; the peel's refutation class was found by
+census from the automaton side. They describe the same thing: genuinely two-exit
+mutual recursion. That is a real consistency check on thirty iterations of
+census work — and it means the outstanding gap is far narrower than my recent
+entries implied.
+
+**What I got wrong in emphasis.** I have spent iterations 404-440 treating the
+peel as the object of study, and 417-440 discovering that it fails. The corpus
+had already localised the difficulty to a two-state case with four of five
+sub-cases discharged. The peel was a route *around* that frontier, and it fails
+on the frontier's own open case — which, in hindsight, is where a route around
+an obstruction would be expected to fail.
+
+**Odds: 40% → 45%.** The gap is narrow, precisely characterised, and mostly
+discharged already; that is better news than "the architecture is refuted" alone
+suggested. Not more, because this narrow case has resisted independently from
+both directions, which is the signature of the actual hard core rather than of a
+missing lemma.
+
+**Next.** Read `GkatExistFrontier`'s two-state theorems and check whether the
+undecided-crossing case can be attacked with the duplication route (420-423) —
+unrolling is DAG-shaped and free, and it is exactly a way to manufacture a pure
+continuation where there was none.
