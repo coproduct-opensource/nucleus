@@ -16615,3 +16615,56 @@ is a worse move than grepping for it.
 
 **Next.** The structural single-exit continuation — the last item needing new
 mathematics.
+
+## 358 — "one exit continuation" is FALSE; "one exiting STATE" is true
+
+353 named the mechanism behind `LevelAgreement` as *a loop body has one exit
+continuation*, and 354-357 built on it. Every measurement of exits so far was
+taken on QUOTIENTS. The structural claim is about the SOURCE — that is where an
+induction on the expression would prove it — so `PAD_SRCEXIT` measures it there.
+
+```
+SRCEXIT: 42 815 non-trivial SCCs in Thompson automata, 12 780 with an exit
+  2 161 have MORE THAN ONE distinct exit target (16.91%), max 2
+      0 have more than one state WITH an exiting edge (0.00%), max 1
+```
+
+**The claim as stated is false**, and not marginally: 16.9% of exiting loop
+bodies exit to two different targets. The smallest witness is a three-state
+automaton whose head goes to `q1` on one atom and `q2` on another.
+
+**What is true is the neighbouring statement**: exactly **one state** of a loop
+body ever has an exiting edge — the head. It may exit to different places on
+different atoms; what it may not do is share the privilege.
+
+**And that is the statement `LevelAgreement` actually wants.** Agreement is
+per-atom: at atom `x`, every non-raw state of the level must fire to the same
+target. With a rank counting position in the body, the non-head states simply
+march forward — every intra-body edge decreases the rank, so they are **raw** —
+and the head alone is ever non-raw. Agreement over a set with at most one
+non-raw member is vacuous.
+
+So the corrected chain is:
+
+1. **only the head of a loop body has exiting edges** — measured 0/12 780, and
+   this is the thing to prove by induction on the expression;
+2. there is a rank making every non-head intra-body edge raw — 343's measured
+   rank ordering, in a form that now has a structural reason rather than a
+   search;
+3. hence at most one state of a region is ever non-raw, and `LevelAgreement` is
+   immediate.
+
+**Why the old version looked right.** On quotients, exits per atom were
+single-valued (332, 343), and I read that as "one exit continuation". It is not:
+single-valued *per atom* is compatible with several targets *across* atoms. The
+quotient measurements were correct; the structural sentence I attached to them
+was not.
+
+**Odds: 98%, unchanged.** A named mechanism was refuted and replaced by a
+sharper one that explains the same data — the third time in this stretch that a
+proposed proof step has fallen to its own measurement (342, 354, 358). The
+pattern is worth stating plainly: the measurements have been reliable, and the
+prose I wrap around them has not.
+
+**Next.** Step 1 by induction on the expression: `seq`, `ite` and `wh` each
+preserve "only the head exits", with `wh` the case that creates the head.

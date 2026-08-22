@@ -2287,6 +2287,69 @@ fn build_pool<const NA: usize>(nguards: u8, rounds: usize, cap: usize) -> Vec<Au
     pool
 }
 
+/// **`PAD_SRCEXIT`** (iteration 358).
+///
+/// The last item needing new mathematics is the structural claim behind
+/// `LevelAgreement`: **a loop body has ONE exit continuation.**  Every earlier
+/// measurement of exits was taken on QUOTIENTS; the structural claim is about
+/// the SOURCE, and it is the source version that an induction on the expression
+/// would prove.  So measure it where the claim actually lives.
+///
+/// Two numbers, because the claim has two readable strengths:
+///   * how many DISTINCT targets the edges leaving an SCC have (the claim says 1);
+///   * how many distinct STATES of the SCC have any leaving edge at all (the
+///     stronger reading: only the loop head exits).
+fn srcexit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut sccs, mut with_exit, mut multi_target, mut multi_source) = (0, 0, 0, 0);
+    let (mut maxt, mut maxs) = (0usize, 0usize);
+    let mut first: Option<String> = None;
+    for a in &pool {
+        for comp in sccs_of(a) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| a.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            sccs += 1;
+            let mut tgts: Vec<usize> = Vec::new();
+            let mut srcs: Vec<usize> = Vec::new();
+            for &u in &comp {
+                for x in 0..NA {
+                    let tv = a.st[u][x];
+                    if tv == 0 { continue; }
+                    let t = (tv - 1) as usize;
+                    if comp.contains(&t) { continue; }
+                    if !tgts.contains(&t) { tgts.push(t); }
+                    if !srcs.contains(&u) { srcs.push(u); }
+                }
+            }
+            if tgts.is_empty() { continue; }
+            with_exit += 1;
+            if tgts.len() > maxt { maxt = tgts.len(); }
+            if srcs.len() > maxs { maxs = srcs.len(); }
+            if tgts.len() > 1 {
+                multi_target += 1;
+                if first.is_none() {
+                    first = Some(format!("SCC {comp:?} exits to {tgts:?}\n    {}",
+                        show_aut("src  ", a)));
+                }
+            }
+            if srcs.len() > 1 { multi_source += 1; }
+        }
+    }
+    println!("SRCEXIT: {sccs} non-trivial SCCs in Thompson automata, {with_exit} with an exit");
+    println!("  {multi_target} have MORE THAN ONE distinct exit target ({:.4}%), max {maxt} \
+              — the structural claim says this must be 0",
+        100.0 * multi_target as f64 / with_exit.max(1) as f64);
+    println!("  {multi_source} have more than one state WITH an exiting edge ({:.2}%), max {maxs} \
+              — the stronger 'only the loop head exits' reading",
+        100.0 * multi_source as f64 / with_exit.max(1) as f64);
+    match first {
+        None => println!("  every loop body has a SINGLE exit continuation, as the structural \
+                          claim predicts"),
+        Some(m) => println!("  FIRST MULTI-TARGET SCC\n    {m}"),
+    }
+}
+
 /// **`PAD_HALTDET`** (iteration 357).
 ///
 /// 352 introduced `HaltDeterministic` — no state both halts and transitions at
@@ -8364,6 +8427,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_LLEE").is_ok() {
         llee_test::<NA>(nguards as u8);
+        return;
+    }
+    if std::env::var("PAD_SRCEXIT").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        srcexit::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_HALTDET").is_ok() {
