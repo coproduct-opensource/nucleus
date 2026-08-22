@@ -12021,3 +12021,46 @@ again.
 **Next.**  The single-pair identification in Lean, acyclic case first: a cycle in
 the image lifts to an infinite path upstairs, contradicting the rank — the
 proper-step argument 243 showed GKAT is on the right side of.
+
+---
+
+## 261 — `hcollapse`'s ACYCLIC CASE: the argument is clean, the definition needs a fifth migration.
+
+Working the acyclic case of `hcollapse` — a homomorphic image of an acyclic
+automaton is acyclic — gives a clean argument and one obstacle.
+
+**The argument.**  Define `rank' q` as the MINIMUM rank over `q`'s preimages;
+`Nat.find` supplies it in core Lean, with `Nat.find_spec` giving a preimage that
+ACHIEVES the minimum and `Nat.find_min'` giving minimality.  Then for `q → q'`
+in the quotient, take the minimising preimage `s` of `q`: the bisimulation gives
+`t` with `s → t` and `π t = q'`, so
+
+    rank' q' ≤ rank t < rank s = rank' q
+
+That is the whole proof, and it needs no finiteness machinery — `Nat.find`
+replaces the "minimum over a finite set" that a first attempt would reach for.
+
+**The obstacle.**  `Layered.acyclic` quantifies its rank condition over ALL
+states.  For a quotient state with NO preimage — possible, since
+`UniformBehavioralGAutQuotient`'s `onto_states` covers only LISTED states —
+`rank'` has nothing to be defined from, and nothing constrains that state's
+transitions.  So the certificate has to say what is actually true of these
+automata: `CoreTargetsListed` keeps every transition among listed states, so the
+condition belongs over `sys.states`, not over `S`.
+
+**Attempted and reverted.**  The restriction ripples into four proofs —
+`layered_act`, `layered_sum`'s acyclic case, `layered_seq_acyclic`, and
+`layered_seq`'s use of the two rank hypotheses — and needs membership-extraction
+lemmas (`inl x ∈ sumGSystem.states → x ∈ L.states` and the `seq` analogue) that
+do not exist yet.  Reverted to green rather than committed half-done, per 253.
+
+**This would be the fifth `IsLayer`/`Layered` migration**, and like the other
+four it is forced by the next thing attempted rather than chosen: 248 domain,
+254 shape, 256 syntax/semantics, 258 states, and now 261 listed-states.  The
+pattern is consistent enough to expect one more when `hsolve` is attempted.
+
+**Odds: 84%, held.**  The acyclic case has a complete argument on paper and a
+known, bounded obstacle; that is progress in understanding, not in proof.
+
+**Next.**  The membership-extraction lemmas, then the listed-states migration in
+one pass, then `hcollapse`'s acyclic case.
