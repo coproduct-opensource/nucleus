@@ -15782,3 +15782,75 @@ for some automata, so the gate framing was wrong.
 **Next.** Resolve the fork: check whether `hstart`'s minimality is load-bearing
 for the rest of the certificate argument, or whether a non-minimal quotient still
 satisfies everything `sumQuotientSolvable_of_certificate` actually uses.
+
+## 343 — 342's counterexample RETRACTED, the real condition measured, and the fork closed
+
+**The retraction first.** 342 reported one region where every rank ordering
+clashes and drew a fork from it. That measurement was wrong. It counted an atom
+with no transition as a HALTING atom, but a state can also be **dead** there — no
+transition and no halt. A dead atom constrains `bs n` not at all: setting
+`raw.hlt s` false at that atom kills the loop gate, the exit gate and the halt
+condition together, which is exactly deadness. Only a genuinely halting atom
+forces `bs n` false.
+
+Corrected, the 342 counterexample dissolves: `q0` is dead on atom 0, not halting,
+so the ordering `rank q1 < rank q0` works. **There is no counterexample.**
+
+**And the condition I derived was too weak anyway.** Both the loop list and the
+exit list are shared by the whole level and scanned in order, so at any atom the
+first matching entry fires for *every* region state whose `raw.hlt` is true
+there. That forces more than a true/false split on `bs n`:
+
+> At each atom, every region state not handled by `raw` and not dead must agree —
+> **same kind and same target**. And exits **shadow** halting: an exit entry sits
+> before the fallback, so no state may halt at an atom where another exits.
+
+**`PAD_BACKATOM`, now measuring the strong condition:**
+
+| | 4k quotients | 20k quotients |
+|---|---|---|
+| non-trivial regions | 968 | 5722 |
+| admit a rank ordering with full agreement | **968 (100%)** | **5722 (100%)** |
+| multi-state regions (agreement not trivial) | 53 → all admit | 126 → all admit |
+| **base-rate control**: multi-state regions where at least ONE ordering clashes | **51 / 53** | **126 / 126** |
+| regions where every ordering clashes | 0 | 0 |
+
+The control is the point. 915 of 968 regions are singletons, where agreement is
+vacuous — so a bare 100% would have proved nothing. Among the regions where the
+condition can bite, it **does** bite: at the wider setting every single one has a
+rank ordering that fails, and every single one has another that succeeds. The
+choice of back-edge set is doing real work, and it always exists.
+
+**The fork closed, in Lean.** Even though the counterexample dissolved, 342's
+architectural question deserved an answer, and it is: minimality is only plumbing.
+
+```lean
+theorem sumQuotientSolvable_of_solver
+    (hquot : ∀ e f, UniformLanguageEquivalent e f →
+      ∃ Q quot π, (∃ qsol, SolvesBA quot qsol) ∧
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none)) :
+    SumQuotientSolvable A T
+```
+
+`GenBisimilar quot u v → u = v` is produced by `hstart`, consumed by `hcollapse`,
+and appears nowhere in `SumQuotientSolvable`. Drop the `Cert` layer and it
+vanishes. `sumQuotientSolvable_of_certificate_via_solver` factors the old
+architecture through the new one, so this is a strict generalisation, not a rival
+— and state duplication is legal if it is ever needed after all.
+
+**Where the route stands.**
+
+```
+bounded non-increasing level function        FREE for every system      (339)
+every SyntacticallyLayered system solves     PROVED                     (338)
+the peel, constructed for every level        PROVED                     (341)
+hsolve in the target's own language          PROVED                     (340)
+minimality not required anywhere             PROVED                     (343)
+the per-atom agreement condition             100%, control passes       (343)
+-------------------------------------------------------------------------------
+the split as a THEOREM, not a measurement    THE REMAINDER
+```
+
+**Next.** Turn the measured condition into the Lean construction: define
+`raw`/`loops`/`exits` from a level's agreement data and prove `firstMatch`
+agreement.

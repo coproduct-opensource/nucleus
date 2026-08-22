@@ -2315,6 +2315,8 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let (mut regions, mut ok, mut bad) = (0usize, 0usize, 0usize);
     let mut first_bad: Option<String> = None;
     let mut singleton_ok = 0usize;
+    let (mut multi, mut multi_ok, mut some_ordering_fails, mut every_ordering_fails) =
+        (0usize, 0usize, 0usize, 0usize);
     for a in &pool {
         let (blk, nb) = bisim_blocks(a);
         let Some(q) = quotient_by(a, &blk, nb) else { continue };
@@ -2327,30 +2329,49 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
             let m = comp.len();
             let mut perm: Vec<usize> = (0..m).collect();
             let mut any = false;
+            let mut nclash = 0usize;
+            let mut ntried = 0usize;
             loop {
+                ntried += 1;
                 let mut rank = [0usize; MAXK];
                 for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
-                // per-atom demand on bs: 1 = must be true, 2 = must be false
-                let mut demand = [0u8; 16];
+                // At each atom the whole level shares ONE loop list and ONE exit
+                // list, both scanned in order, so every region state that is not
+                // handled by `raw` and is not dead must agree at that atom — same
+                // kind AND same target.  Exits also SHADOW halting: an exit entry
+                // sits before the fallback, so a state cannot halt at an atom where
+                // another state of the level exits.
+                //   0 = nothing demanded yet
+                //   1|target<<4 = back-edge to target   2|target<<4 = exit to target
+                //   3 = halt
+                let mut demand = [0u32; 16];
                 let mut clash = false;
                 for &u in &comp {
                     for x in 0..NA {
                         let tv = q.st[u][x];
-                        let want = if tv == 0 {
-                            2                                   // halting atom
+                        let halts = (q.hl[u] >> x) & 1 == 1;
+                        let want: u32 = if tv == 0 {
+                            // dead atom: `raw.hlt s` false there kills every branch
+                            if halts { 3 } else { 0 }
                         } else {
                             let t = (tv - 1) as usize;
-                            if !comp.contains(&t) { 2 }         // exit atom
-                            else if rank[t] < rank[u] { 0 }     // raw edge: free
-                            else { 1 }                          // back-edge atom
+                            if !comp.contains(&t) { 2 | ((t as u32) << 4) }
+                            else if rank[t] < rank[u] { 0 }
+                            else { 1 | ((t as u32) << 4) }
                         };
                         if want == 0 { continue; }
                         if demand[x] == 0 { demand[x] = want; }
                         else if demand[x] != want { clash = true; }
                     }
                 }
-                if !clash { any = true; break; }
+                if !clash { any = true; } else { nclash += 1; }
                 if !next_perm(&mut perm) { break; }
+            }
+            if m > 1 {
+                multi += 1;
+                if any { multi_ok += 1; }
+                if nclash > 0 { some_ordering_fails += 1; }
+                if nclash == ntried { every_ordering_fails += 1; }
             }
             if any {
                 ok += 1;
@@ -2364,9 +2385,15 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
         }
     }
     println!("BACKATOM: {regions} non-trivial regions in quotients");
-    println!("  {ok} admit a rank ordering with NO back-atom/exit-atom clash ({:.2}%), \
-              of which {singleton_ok} are singletons", 100.0 * ok as f64 / regions.max(1) as f64);
+    println!("  {ok} admit a rank ordering where the whole level AGREES at every atom \
+              ({:.2}%), of which {singleton_ok} are singletons",
+        100.0 * ok as f64 / regions.max(1) as f64);
     println!("  {bad} where EVERY ordering clashes");
+    println!("  MULTI-STATE regions (where agreement is not trivial): {multi}, \
+              of which {multi_ok} admit an ordering");
+    println!("  base-rate control: {some_ordering_fails} multi-state regions have at least \
+              ONE ordering that clashes (so the condition bites and the choice matters); \
+              {every_ordering_fails} have all orderings clash");
     match first_bad {
         None => println!("  no clash anywhere: the shared level test `bs n` always exists"),
         Some(m) => println!("  FIRST CLASH\n    {m}"),

@@ -6083,6 +6083,50 @@ theorem sumQuotientSolvable_of_certificate
   obtain ⟨qsol, hqsol⟩ := hsolve quot (hcollapse _ _ π hmin (hsum e f))
   exact ⟨Q, quot, π, qsol, hqsol, hπ⟩
 
+/-- **Minimality is only plumbing.**  In `sumQuotientSolvable_of_certificate` the
+`GenBisimilar quot u v → u = v` conjunct is produced by `hstart` and consumed by
+`hcollapse`, and it appears nowhere in `SumQuotientSolvable` itself.  Drop the
+`Cert` layer and it disappears: all the conclusion ever needed is SOME quotient
+identifying the two starts that happens to be solvable. -/
+theorem sumQuotientSolvable_of_solver
+    (hquot : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient
+              (GkatTrim.SUMof A T e f) quot),
+        (∃ qsol : Q → Exp A T, GkatKleene.SolvesBA quot qsol) ∧
+          π.mapState (Sum.inl none) = π.mapState (Sum.inr none)) :
+    GkatSumQuotient.SumQuotientSolvable A T := by
+  intro e f hef
+  obtain ⟨Q, quot, π, ⟨qsol, hqsol⟩, hπ⟩ := hquot e f hef
+  exact ⟨Q, quot, π, qsol, hqsol, hπ⟩
+
+/-- Nothing is lost: the certificate architecture factors through the solver form,
+so the leaner statement is a strict generalisation rather than a rival. -/
+theorem sumQuotientSolvable_of_certificate_via_solver
+    (Cert : {S : Type} → GkatKleene.GAut S A T → Prop)
+    (hstart : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient
+              (GkatTrim.SUMof A T e f) quot),
+        (∀ u v, GkatPlanExistence.GenBisimilar quot u v → u = v) ∧
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none))
+    (hsum : ∀ e f : Exp A T, Cert (GkatTrim.SUMof A T e f))
+    (hcollapse : ∀ {S Q : Type} (aut : GkatKleene.GAut S A T)
+        (quot : GkatKleene.GAut Q A T),
+        GkatKleene.UniformBehavioralGAutQuotient aut quot →
+        (∀ u v, GkatPlanExistence.GenBisimilar quot u v → u = v) →
+        Cert aut → Cert quot)
+    (hsolve : ∀ {Q : Type} (quot : GkatKleene.GAut Q A T),
+        Cert quot → ∃ qsol : Q → Exp A T, GkatKleene.SolvesBA quot qsol) :
+    GkatSumQuotient.SumQuotientSolvable A T :=
+  sumQuotientSolvable_of_solver (fun e f hef =>
+    match hstart e f hef with
+    | ⟨Q, quot, π, hmin, hπ⟩ =>
+        ⟨Q, quot, π, hsolve quot (hcollapse _ _ π hmin (hsum e f)), hπ⟩)
+
+#print axioms sumQuotientSolvable_of_solver
+#print axioms sumQuotientSolvable_of_certificate_via_solver
+
 #print axioms sumQuotientSolvable_of_certificate
 
 /-- The certificate architecture SUBSUMES 226's closure property: a certificate
