@@ -32,7 +32,12 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
           command: check
-          args: "${{ matrix.checks }}"
+          # `args` is NOT an input of this action (its inputs are `arguments`
+          # and `command-arguments`), so it was silently ignored and every shard
+          # ran `cargo deny check` with no category filter — all four checks, in
+          # all four jobs. The matrix has never sharded anything: one failing
+          # category reddened all four shards and none of them named it.
+          command-arguments: "${{ matrix.checks }}"
           # The action runs in a rust:1.85.0-alpine3.20 container and only calls
           # `rustup default` when this input is set. Left empty, `cargo metadata`
           # runs against the workspace's rust-toolchain.toml (1.96.1), and modern
