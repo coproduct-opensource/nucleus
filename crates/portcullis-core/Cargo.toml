@@ -2,6 +2,9 @@
 name = "portcullis-core"
 version = "1.0.0"
 edition = "2024"
+# Kani floor: this crate is Kani-verified and must build on the rustc that
+# kani-verifier bundles (1.93), independently of the workspace floor.
+rust-version = "1.93"
 license = "MIT"
 description = "Core capability lattice types — dependency-free for Aeneas verification"
 repository = "https://github.com/coproduct-opensource/nucleus"
@@ -39,7 +42,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 toml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-wasmtime = { version = "45", optional = true }
+wasmtime = { version = "48", optional = true }
 c2pa = { workspace = true, optional = true }
 risc0-zkvm = { workspace = true, optional = true }
 
