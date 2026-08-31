@@ -6,22 +6,42 @@ measurements behind the distinction.
 
 > Reconciled 2026-08-31 against Kani 0.67.0 (the version pinned in
 > `.github/workflows/kani-nightly.yml`), run both in CI and locally on the same version.
+> Revised the same day after further measurement — see *Corrections* at the end.
 
 ## Summary
 
 `crates/ck-kernel/src/kani.rs` defines **17** proof harnesses. They fall into two groups,
 and the split is exact:
 
-| group | count | drives `Kernel::admit`? | status |
+| group | count | touches `BTreeSet<String>`? | status |
 | --- | --- | --- | --- |
-| bitmask / lattice tier | 6 | no | **verified** |
+| bitmask / lattice tier | 5 | no | **verified** |
+| refinement bridge | 1 | yes | **never verified** |
 | admission-path tier | 11 | yes | **never verified** |
 
-The five fast-tier harnesses run on every PR and push and are green. The sixth,
-`proof_refinement_bitmask_agrees_with_btreeset`, bridges the bitmask and `BTreeSet`
-representations for the subset check.
+The five fast-tier harnesses run on every PR and push and are green. **Everything else
+— 12 of 17 — has never completed**, in CI or locally.
 
-**No harness that exercises `Kernel::admit` has ever completed**, in CI or locally.
+The dividing line is not `Kernel::admit`, as this document first claimed. It is
+`BTreeSet<String>`. Every harness that constructs one fails to terminate; no harness
+that avoids one does.
+
+### The bridge is part of the gap
+
+`proof_refinement_bitmask_agrees_with_btreeset` is the proof that would let the bitmask
+results stand in for the production `BTreeSet` path — it asserts that
+`child.is_subset(&parent)` and `(child_bits & !parent_bits) == 0` always agree. It builds
+`BTreeSet<String>`, and **it does not verify either** (no result in 7 minutes locally).
+
+So the bitmask tier proves the lattice arithmetic, and nothing formally connects that
+arithmetic to the types the kernel actually uses. That gap is worth naming plainly rather
+than leaving implied by a passing fast tier.
+
+Note also what the bridge would and would not carry even if it verified: it is a lemma
+about **one predicate**. It says nothing about whether `Kernel::admit` calls that
+predicate on the right fields, returns `Rejected`, cites `IoConfinement`, or keeps the
+rejected candidate out of the lineage — which is what the 11 admission-path harnesses
+assert.
 
 ## What was wrong before
 
@@ -82,20 +102,48 @@ Expect the nightly to stay red until the admission-path tier is addressed. That 
 correct signal: those proofs are not passing today, and the previous configuration was
 red anyway while reporting a coverage claim it had not earned.
 
+## Corrections
+
+This file first proposed three fixes in order of promise. Two were then measured and
+**both fail**, so they are struck rather than left standing:
+
+| candidate | verdict |
+| --- | --- |
+| ~~1. Stubbing (`-Z stubbing`) the `format!` / `chrono` / clone machinery~~ | **struck** |
+| ~~2. A narrower `#[cfg(kani)]` entry point avoiding `WitnessBundle`~~ | **struck** |
+| 3. Eliminate `String` from the verified path | the only route left |
+
+The measurements that struck them:
+
+| probe | what it removes | result |
+| --- | --- | --- |
+| `check_monotonicity` called directly, no `Kernel::admit` | 216 lines of lineage, `format!`, `warn!`, `WitnessBundle` | no result in 10 min |
+| `parent_policy()` built, then `assert!(pp.version == 1)` | **everything** — no symbolic input, no logic | no result in 5 min |
+| `proof_refinement_bitmask_agrees_with_btreeset` | — | no result in 7 min |
+
+The second row is the one that decides it. A harness that constructs the fixture and
+asserts a constant does not terminate. There is no entry point narrower than that, and
+nothing left for stubbing to remove: the cost is `BTreeSet<String>` construction itself,
+roughly ten such fields built from string literals.
+
+This matches what Kani's own engineering writing describes. CBMC's field-sensitivity
+transform in 5.85.0 was what first made `BTreeSet` harnesses solvable at all, and it
+still degraded runtime on a quarter of the harnesses it was measured against. Heap-backed
+collections are a known frontier for this tool, not a misconfiguration here.
+
 ## What a real fix needs
 
-The admission path has to become tractable for CBMC, not merely re-tiered. In rough
-order of promise:
+Only candidate 3 survives: **the verified path must not build `BTreeSet<String>`.**
 
-1. **Stubbing** (`-Z stubbing`). Kani's documentation names this situation directly:
-   code that Kani supports but that verifies badly. Candidates are the `format!`
-   rejection-message construction, `chrono::Utc::now()` in `make_witness_for_proof`, and
-   the `PolicyManifest` deep clones — none of which the admission *decision* depends on.
-2. **A narrower entry point.** The properties under proof are about the decision logic.
-   A `#[cfg(kani)]` seam that exercises the invariant checks without constructing a full
-   `WitnessBundle` would shrink the program by a large factor.
-3. **`BTreeSet<String>` → interned ids** in the verified path, with the existing
-   refinement proof extended to cover the encoding.
+That means a representation change, not a harness change — interned ids or bitmasks in
+the types the proofs traverse, with a refinement argument connecting them to the
+production types. The refinement proof already in the tree is the right shape for that
+argument, but it is currently on the wrong side of the tractability line: it builds the
+very thing it is trying to bridge. A version over interned ids would verify and would
+carry real weight.
 
-Until one of these lands, the honest claim is the one at the top of this file: the
-bitmask tier is verified; the admission path is not.
+Until that lands, the honest claim is narrower than the one this file opened with:
+
+> Five harnesses verify, and they prove lattice arithmetic over bitmasks. Nothing that
+> touches the kernel's actual policy types has been verified, and the bridge between the
+> two representations is unverified too.

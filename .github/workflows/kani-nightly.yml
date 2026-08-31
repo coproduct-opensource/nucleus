@@ -89,8 +89,9 @@ jobs:
 
   # Constitutional Kernel (fast): 5 bitmask / lattice proofs. These touch no
   # BTreeSet<String> and never call Kernel::admit, which is why they finish in
-  # minutes. The 11 admission-path harnesses are sharded into the nightly matrix
-  # below and, as of 2026-08-31, none of them verifies — see KANI-STATUS.md.
+  # minutes. The other 12 harnesses are sharded into the nightly matrix below and,
+  # as of 2026-08-31, none of them verifies — the dividing line is BTreeSet<String>,
+  # not Kernel::admit. See KANI-STATUS.md.
   kani-constitutional:
     name: Kani (constitutional kernel)
     runs-on: ubuntu-24.04
@@ -155,12 +156,15 @@ jobs:
       fail-fast: false
       matrix:
         harness:
-          # Bitmask / lattice tier — no Kernel::admit, verified in minutes.
+          # Bitmask / lattice tier — no BTreeSet<String>, verified in minutes.
           - proof_budget_escalation_detected
           - proof_capability_escalation_detected_bitmask
           - proof_io_confinement_detected_bitmask
           - proof_combined_monotonicity_complete
           - proof_capability_subset_transitive
+          # The refinement bridge. Builds BTreeSet<String> and has never verified,
+          # so the bitmask results above do not yet formally transfer to the
+          # production types. See KANI-STATUS.md.
           - proof_refinement_bitmask_agrees_with_btreeset
           # Admission-path tier — these drive Kernel::admit over BTreeSet<String>
           # policies. None of them has ever completed in CI; see KANI-STATUS.md.
