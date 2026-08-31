@@ -341,14 +341,36 @@ jobs:
           #print axioms DerivationCascade.user_cascade_ratchets
           #print axioms SnapshotChannelBinding.mappable_keys_never_reach_workload_via_cmdline
           EOF
-          AXIOMS="$(lake env lean PrintAxioms.lean 2>&1 || true)"
+          # Defence 1 — the declaration above IS the gate. The heredoc names N theorems; the
+          # audit must report on N of them. This is the defence that survives someone re-adding
+          # `|| true`, and it is what catches a renamed or deleted audited theorem: `lake env
+          # lean` exits 1 on `error(lean.unknownIdentifier)`, and that paren form is exactly what
+          # a naive grep misses.
+          EXPECTED=$(grep -c '^#print axioms' PrintAxioms.lean)
+
+          # Defence 2 — NO `|| true`. A non-zero lean is a FAILED audit, not an empty one. The
+          # explicit message matters: `set -e` alone would kill the step with no explanation.
+          if ! AXIOMS="$(lake env lean PrintAxioms.lean 2>&1)"; then
+            echo "$AXIOMS"
+            echo "::error::the axiom audit did not run to completion (lean exited non-zero)."
+            exit 1
+          fi
           echo "$AXIOMS"
           rm -f PrintAxioms.lean
-          if echo "$AXIOMS" | grep -q 'sorryAx'; then
+
+          REPORTED=$(printf '%s\n' "$AXIOMS" \
+            | grep -c "depends on axioms\|does not depend on any axioms" || true)
+          if [ "$REPORTED" -ne "$EXPECTED" ]; then
+            echo "::error::audit incomplete: declared $EXPECTED theorems, got $REPORTED axiom reports."
+            echo "::error::a theorem was renamed, deleted, or failed to resolve. The audit shrank."
+            exit 1
+          fi
+
+          if printf '%s\n' "$AXIOMS" | grep -q 'sorryAx'; then
             echo "::error::an enforcement-core theorem depends on sorryAx (an unproven hole)."
             exit 1
           fi
-          if echo "$AXIOMS" | grep -q 'ofReduceBool'; then
+          if printf '%s\n' "$AXIOMS" | grep -q 'ofReduceBool'; then
             echo "NOTE: native_decide (Lean.ofReduceBool) is in the TCB of the audited theorems — disclosed, see CONJECTURES.md."
           fi
-          echo "OK: audited enforcement-core theorems are sorryAx-free."
+          echo "OK: all $EXPECTED audited theorems reported, none depends on sorryAx."
