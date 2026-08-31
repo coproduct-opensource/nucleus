@@ -14,6 +14,8 @@ on:
     paths-ignore:
       - "crates/ck-policy/lean/**"
       - ".github/workflows/ck-policy-lean.yml"
+      - "crates/ck-policy/src/lib.rs"
+      - "crates/ck-types/**"
 
 permissions:
   contents: read

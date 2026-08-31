@@ -16,6 +16,8 @@ on:
       - "crates/ck-policy/src/extracted.rs"
       - "crates/ck-policy/tests/policy_aeneas_parity.rs"
       - ".github/workflows/ck-policy-aeneas.yml"
+      - "crates/ck-policy/src/lib.rs"
+      - "crates/ck-types/**"
 
 permissions:
   contents: read
