@@ -1836,18 +1836,76 @@ mod tests {
             assert_eq!(checked, 75, "5 axes x 15 non-empty subsets");
         }
 
-        /// `proof_capability_escalation_always_rejected`, enumerated.
+        /// `proof_capability_escalation_always_rejected`, enumerated — and
+        /// widened one axis at a time.
+        ///
+        /// Per-axis isolation is the point: a gate that read `filesystem_read`
+        /// where it meant `network_allow` would pass a test that widens every
+        /// axis together. `policy_lean_parity` shared one membership mask across
+        /// all five capability axes until this change, so every axis held the
+        /// same set in all 2048 cases and the confusion was invisible there too.
         #[test]
-        fn capability_escalation_always_rejected() {
-            for mask in 1..(1u32 << FRESH.len()) {
-                let mut child = test_manifest();
-                child.capabilities.network_allow.extend(subset(mask));
-                assert_rejected_citing(
-                    &child,
-                    ConstitutionalInvariant::CapabilityNonEscalation,
-                    &format!("network_allow widened, mask {mask:04b}"),
-                );
+        fn capability_escalation_always_rejected_on_every_axis() {
+            type Axis = (&'static str, fn(&mut CapabilitySet, BTreeSet<String>));
+            let axes: [Axis; 5] = [
+                ("filesystem_read", |c, s| c.filesystem_read.extend(s)),
+                ("filesystem_write", |c, s| c.filesystem_write.extend(s)),
+                ("network_allow", |c, s| c.network_allow.extend(s)),
+                ("tools_allow", |c, s| c.tools_allow.extend(s)),
+                ("secret_classes", |c, s| c.secret_classes.extend(s)),
+            ];
+            let mut checked = 0;
+            for (name, widen) in axes {
+                for mask in 1..(1u32 << FRESH.len()) {
+                    let mut child = test_manifest();
+                    widen(&mut child.capabilities, subset(mask));
+                    assert_rejected_citing(
+                        &child,
+                        ConstitutionalInvariant::CapabilityNonEscalation,
+                        &format!("cap axis {name}, mask {mask:04b}"),
+                    );
+                    checked += 1;
+                }
             }
+            assert_eq!(checked, 75, "5 axes x 15 non-empty subsets");
+        }
+
+        /// The sixth capability axis is numeric, not a set.
+        #[test]
+        fn raising_max_parallel_tasks_is_an_escalation() {
+            let mut child = test_manifest();
+            child.capabilities.max_parallel_tasks += 1;
+            assert_rejected_citing(
+                &child,
+                ConstitutionalInvariant::CapabilityNonEscalation,
+                "max_parallel_tasks raised by one",
+            );
+        }
+
+        /// The numeric governance axis, end to end through `admit`: lowering the
+        /// human-signature threshold disarms the review that would police the
+        /// NEXT constitutional amendment, with every boolean flag untouched.
+        #[test]
+        fn lowering_human_signature_threshold_is_rejected() {
+            let mut child = test_manifest();
+            let before = child.amendment_rules.constitutional_human_signatures;
+            assert!(before > 0, "fixture must require signatures to weaken");
+            child.amendment_rules.constitutional_human_signatures = before - 1;
+            assert_rejected_citing(
+                &child,
+                ConstitutionalInvariant::AmendmentRulesMonotonicity,
+                &format!("signature threshold {before} -> {}", before - 1),
+            );
+
+            // Raising is admitted — the axis is monotone upward, not frozen.
+            let mut raised = test_manifest();
+            raised.amendment_rules.constitutional_human_signatures = before + 5;
+            let (decision, admitted) = decide(&raised, PatchClass::Config);
+            assert!(
+                matches!(decision, AdmissionDecision::Accepted { .. }),
+                "raising the threshold must be admitted: {decision:?}"
+            );
+            assert!(admitted);
         }
 
         /// `proof_governance_weakening_always_rejected`, enumerated over the
