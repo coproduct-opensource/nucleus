@@ -87,9 +87,10 @@ jobs:
           echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Full suite:** nightly + workflow_dispatch" >> "$GITHUB_STEP_SUMMARY"
 
-  # Constitutional Kernel (fast): 4 concrete-policy proofs — no symbolic BTreeSet
-  # These use only concrete BTreeSets + symbolic u64, finishing in <10 min.
-  # The 7 symbolic BTreeSet proofs (capability, governance, I/O axes) run nightly.
+  # Constitutional Kernel (fast): 5 bitmask / lattice proofs. These touch no
+  # BTreeSet<String> and never call Kernel::admit, which is why they finish in
+  # minutes. The 11 admission-path harnesses are sharded into the nightly matrix
+  # below and, as of 2026-08-31, none of them verifies — see KANI-STATUS.md.
   kani-constitutional:
     name: Kani (constitutional kernel)
     runs-on: ubuntu-24.04
@@ -132,15 +133,48 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Harnesses verified:** 5 / $TOTAL (fast tier — pure bitmask)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Proved:** budget escalation, capability non-escalation, I/O confinement, combined monotonicity, lattice transitivity" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Nightly:** 11 symbolic BTreeSet proofs via admit() pipeline" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Nightly:** 11 admission-path harnesses, one job each (see KANI-STATUS.md)" >> "$GITHUB_STEP_SUMMARY"
 
-  # Constitutional Kernel (full): all 11 harnesses including symbolic BTreeSet proofs
-  # symbolic_set() proofs take 5-15 min each due to BTreeSet node machinery.
+  # Constitutional Kernel (full): every harness, ONE JOB EACH.
+  #
+  # Was a single job running `-p ck-kernel` (all 17 harnesses) under one 60-minute
+  # budget. That job had never once succeeded: it spent the whole budget inside the
+  # FIRST harness it picked up and the other 16 were never attempted, so a nightly
+  # gate reported red with no indication of which proof was at fault.
+  #
+  # Sharding gives each harness its own runner and its own budget, and
+  # `fail-fast: false` stops one slow proof from masking the rest. The matrix is
+  # written out rather than generated so that adding a harness to kani.rs is a
+  # deliberate edit here too — the proof-count gate below catches the omission.
   kani-constitutional-full:
-    name: Kani (constitutional kernel full)
+    name: "CK full: ${{ matrix.harness }}"
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        harness:
+          # Bitmask / lattice tier — no Kernel::admit, verified in minutes.
+          - proof_budget_escalation_detected
+          - proof_capability_escalation_detected_bitmask
+          - proof_io_confinement_detected_bitmask
+          - proof_combined_monotonicity_complete
+          - proof_capability_subset_transitive
+          - proof_refinement_bitmask_agrees_with_btreeset
+          # Admission-path tier — these drive Kernel::admit over BTreeSet<String>
+          # policies. None of them has ever completed in CI; see KANI-STATUS.md.
+          - proof_capability_escalation_always_rejected
+          - proof_governance_weakening_always_rejected
+          - proof_rejected_never_in_lineage
+          - proof_budget_escalation_always_rejected
+          - proof_constitutional_self_merge_impossible
+          - proof_identical_policy_config_patch_admitted
+          - proof_io_outbound_domains_widening_rejected
+          - proof_io_local_file_roots_widening_rejected
+          - proof_io_env_vars_widening_rejected
+          - proof_io_tool_namespaces_widening_rejected
+          - proof_io_repo_write_targets_widening_rejected
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
@@ -155,29 +189,51 @@ jobs:
           # Bump this suffix together with the `kani-version` input below when
           # upgrading Kani.
           key: kani-toolchain-${{ runner.os }}-kani-0.67.0
-      - name: Run Kani (constitutional kernel — all harnesses)
+      - name: Run Kani (${{ matrix.harness }})
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
           # Pin the verifier version for reproducible proofs (default is
           # "latest", which silently changes what Kani checks) and to make the
           # toolchain cache key above stable. Bump both together.
           kani-version: "0.67.0"
-          args: "-p ck-kernel --solver cadical"
-      - name: Summary
-        if: always()
+          args: "-p ck-kernel --solver cadical --harness ${{ matrix.harness }}"
+
+  # Roll the shards up into one required-status-friendly result and record which
+  # harnesses actually verified, so the nightly summary reports what was proved
+  # rather than what was attempted.
+  kani-constitutional-full-summary:
+    name: Kani (constitutional kernel full)
+    runs-on: ubuntu-24.04
+    needs: kani-constitutional-full
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Report
+        env:
+          RESULT: ${{ needs.kani-constitutional-full.result }}
         run: |
           TOTAL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
-          echo "## Kani BMC — Constitutional Kernel (full)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Harnesses verified:** $TOTAL / $TOTAL (all)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Proved:** ALL constitutional invariants including symbolic BTreeSet proofs" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Kani BMC — Constitutional Kernel (full, sharded)"
+            echo ""
+            echo "- **Harnesses in ck-kernel:** $TOTAL, one CI job each"
+            echo "- **Matrix result:** $RESULT"
+            echo ""
+            echo "Per-harness results are in the job list above. A red shard names"
+            echo "exactly one proof; see KANI-STATUS.md for the known-unverified set."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$RESULT" != "success" ]; then
+            echo "::warning::One or more ck-kernel harnesses did not verify — see the per-harness jobs"
+          fi
 
-  # Full tier: all harnesses including normalize_* — nightly and on-demand only
-  # normalize_* harnesses each take 15+ minutes due to large symbolic state space
   kani-full:
     name: Kani (full)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Was 60. The job has never reached it: it dies after 3-10 minutes with
+    # exit 143 and "runner has received a shutdown signal", which is the
+    # signature of cbmc exhausting the runner's 16 GB rather than a timeout.
+    # Locally, one admission-path harness reaches 3.2 GB within three minutes.
+    timeout-minutes: 45
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
