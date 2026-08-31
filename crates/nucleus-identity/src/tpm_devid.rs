@@ -591,8 +591,7 @@ fn sensitive_to_credential(seed: &[u8], ak_name: &[u8], secret: &[u8]) -> Vec<u8
         .expect("kdfa(..., 128) yields exactly 16 bytes");
     let mut enc_identity = tpm2b(secret); // plaintext = TPM2B(secret)
     let iv = [0u8; 16];
-    cfb_mode::Encryptor::<aes::Aes128>::new(&sym_key.into(), &iv.into())
-        .encrypt(&mut enc_identity);
+    cfb_mode::Encryptor::<aes::Aes128>::new(&sym_key.into(), &iv.into()).encrypt(&mut enc_identity);
 
     let hmac_key = kdfa(seed, "INTEGRITY", &[], &[], 256);
     let mut integrity_input = enc_identity.clone();
