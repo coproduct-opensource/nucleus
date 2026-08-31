@@ -6,7 +6,7 @@ description = "Call SPIFFE agents anywhere over iroh: reach an agent by its SPIF
 license = "MIT"
 
 [dependencies]
-iroh = "=1.0.3"
+iroh = "=1.1.0"
 # tpm-devid: the assurance floor on a hail reuses `effective_assurance` (the C9
 # relying-party decision), which lives behind this feature.
 nucleus-identity = { path = "../nucleus-identity", features = ["tpm-devid"] }
