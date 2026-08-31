@@ -55,12 +55,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          # Must match [workspace.package] rust-version — the Kani
-          # floor (cargo kani has no --ignore-rust-version escape).
-          toolchain: "1.93"
+          # Must match [workspace.package] rust-version. Set by wasmtime 48
+          # (cranelift needs 1.95) behind the optional wasm-sandbox / host
+          # features. The Kani floor is lower and is enforced by the
+          # `kani-msrv` job below — see the comment in the root Cargo.toml.
+          toolchain: "1.95"
       # nucleus-verifier-service include_str!s the wasm-pack artifact
       # (sdks/verifier-js/pkg/) that only the Tests job builds first;
       # it is excluded here so the MSRV floor checks source, not
       # generated-artifact presence.
       - name: Check workspace on the MSRV toolchain
-        run: cargo +1.93 check --workspace --all-features --locked --exclude nucleus-verifier-service
+        run: cargo +1.95 check --workspace --all-features --locked --exclude nucleus-verifier-service
+
+  # The Kani floor, enforced on exactly what Kani builds.
+  #
+  # `cargo kani` has no --ignore-rust-version, so the crates it verifies must
+  # compile on the rustc that kani-verifier bundles (0.67.0 -> nightly = 1.93).
+  # That is a NARROWER claim than the workspace floor above: Kani builds these
+  # crates with DEFAULT features, and wasm-sandbox / host are `default = []`,
+  # so it never compiles wasmtime. Verified directly: `cargo kani -p ck-kernel`
+  # reports VERIFICATION:- SUCCESSFUL with wasmtime 48 in the lockfile.
+  #
+  # If this job goes red, the Kani BMC workflow is about to break — a dependency
+  # of one of these crates has moved past Kani's bundled toolchain.
+  kani-msrv:
+    name: Kani toolchain floor (1.93)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          # Must match the rustc that kani-verifier bundles; bump with Kani.
+          toolchain: "1.93"
+      - name: Check the Kani-verified crates on Kani's toolchain
+        run: cargo +1.93 check -p ck-kernel -p portcullis -p portcullis-core --locked
