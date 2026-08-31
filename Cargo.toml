@@ -95,15 +95,30 @@ resolver = "2"
 [workspace.package]
 version = "1.0.0"
 edition = "2021"
-# MSRV floor is pinned to the rustc that Kani's bundled toolchain ships
-# (kani-verifier 0.67.0 — latest as of 2026-06 — bundles nightly = rustc
-# 1.93). `cargo kani` has no `--ignore-rust-version`, so a workspace floor
-# above 1.93 makes the Kani BMC job (`-p portcullis`) refuse to compile with
-# "rustc 1.93.0-nightly is not supported … requires rustc 1.95". Nothing in
-# this workspace uses a 1.94/1.95 lang/std feature (edition is 2021/2024,
-# which only need ≤1.85), so 1.93 is the honest floor. Raise this only once
-# Kani's bundled nightly catches up, and bump it together with Kani.
-rust-version = "1.93"
+# MSRV floor. Two floors exist, deliberately, and CI enforces both:
+#
+#   * THIS one, 1.95, is the workspace floor with ALL features enabled. It is
+#     set by wasmtime 48 (via cranelift, which requires 1.95) behind the
+#     optional `wasm-sandbox` / `host` features. wasmtime is on 48 rather than
+#     45 because RUSTSEC-2026-0269 is a filesystem sandbox escape, severity 8.8,
+#     and every patched line above the old 36.x backport needs >= 1.94.
+#
+#   * 1.93 is the KANI floor, enforced separately by the "Kani toolchain floor"
+#     job on exactly the crates Kani verifies (ck-kernel, portcullis,
+#     portcullis-core) with DEFAULT features. `cargo kani` has no
+#     `--ignore-rust-version`, and kani-verifier 0.67.0 — the current release —
+#     bundles nightly = rustc 1.93.
+#
+# These do not conflict: `wasm-sandbox` and `host` are `default = []`, so Kani
+# never compiles wasmtime. Verified directly — `cargo kani -p ck-kernel` runs
+# VERIFICATION:- SUCCESSFUL with wasmtime 48 in the lockfile.
+#
+# Cargo has no per-feature MSRV, so `portcullis` and the other Kani crates keep
+# an explicit rust-version = "1.93" for their default surface; enabling
+# `wasm-sandbox` on portcullis-core requires 1.95 like the rest of the
+# workspace. Raise the Kani floor only when Kani's bundled nightly moves, and
+# bump it together with Kani.
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 authors = ["Coproduct <hello@coproduct.dev>"]
 repository = "https://github.com/coproduct-opensource/nucleus"
