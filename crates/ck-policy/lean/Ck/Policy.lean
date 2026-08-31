@@ -117,6 +117,11 @@ structure Rules where
   cap : Bool
   io : Bool
   proofreq : Bool
+  /-- `constitutional_human_signatures`: how many human signatures a
+      constitutional amendment needs. Numeric, and monotone upward only —
+      lowering it disarms the review that would police the NEXT amendment,
+      which is the same coup the booleans above prevent, spelled differently. -/
+  sigs : Nat
 deriving DecidableEq, Repr
 
 /-- The slice of a `PolicyManifest` the monotonicity gate actually reads:
@@ -164,7 +169,8 @@ def passedWeak (p c : Manifest) : Bool :=
 def weakensRules (c p : Manifest) : Prop :=
   (p.rules.cap = true ∧ c.rules.cap = false) ∨
   (p.rules.io = true ∧ c.rules.io = false) ∨
-  (p.rules.proofreq = true ∧ c.rules.proofreq = false)
+  (p.rules.proofreq = true ∧ c.rules.proofreq = false) ∨
+  (c.rules.sigs < p.rules.sigs)
 
 /-- `rulesNonWeakening c p`: the child's flags are pointwise `≥` the parent's —
     i.e. you can ENABLE a monotone flag but never DISABLE one. As a `Bool`:
@@ -174,7 +180,8 @@ def weakensRules (c p : Manifest) : Prop :=
 def rulesNonWeakening (c p : Manifest) : Bool :=
   (!p.rules.cap || c.rules.cap) &&
   (!p.rules.io || c.rules.io) &&
-  (!p.rules.proofreq || c.rules.proofreq)
+  (!p.rules.proofreq || c.rules.proofreq) &&
+  (decide (p.rules.sigs ≤ c.rules.sigs))
 
 /-- `passed p c` models the SHIPPED `check_monotonicity(parent=p, child=c).passed`.
     The verdict is `is_clean()` = no axis violated AND no amendment-rule
@@ -256,7 +263,7 @@ theorem T1_gate_sound (p c : Manifest) (h : passed p c = true) :
   -- unconditional non-weakening part.
   unfold passed passedWeak rulesNonWeakening at h
   simp only [Bool.and_eq_true, Bool.not_eq_true'] at h
-  obtain ⟨⟨⟨⟨hcap, hio⟩, hbud⟩, hproof⟩, ⟨⟨hrw_cap, hrw_io⟩, hrw_proof⟩⟩ := h
+  obtain ⟨⟨⟨⟨hcap, hio⟩, hbud⟩, hproof⟩, ⟨⟨⟨hrw_cap, hrw_io⟩, hrw_proof⟩, hrw_sigs⟩⟩ := h
   refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · -- capability axis
     intro hflag
@@ -285,10 +292,13 @@ theorem T1_gate_sound (p c : Manifest) (h : passed p c = true) :
     exact not_not_intro ((dropsB_false_iff_subset c.proofReqs p.proofReqs).mp hproof)
   · -- amendment-rules non-weakening — UNCONDITIONAL (no flag guard)
     intro hw
-    rcases hw with ⟨hp, hc⟩ | ⟨hp, hc⟩ | ⟨hp, hc⟩
+    rcases hw with ⟨hp, hc⟩ | ⟨hp, hc⟩ | ⟨hp, hc⟩ | hsig
     · rw [hp, hc] at hrw_cap; simp at hrw_cap
     · rw [hp, hc] at hrw_io; simp at hrw_io
     · rw [hp, hc] at hrw_proof; simp at hrw_proof
+    · -- numeric axis: the verdict gave `p.sigs ≤ c.sigs`, contradicting `c < p`
+      have : p.rules.sigs ≤ c.rules.sigs := of_decide_eq_true hrw_sigs
+      omega
 
 /- ───────────────────────────────────────────────────────────────────────────
    THE COUP: the OLD gate admits it; the NEW gate rejects it (PROVED, 0 sorry)
@@ -303,7 +313,7 @@ def zeroBudget : Budget :=
 def fullParent : Manifest :=
   { caps := [], ioSurface := [], proofReqs := []
   , budget := zeroBudget
-  , rules := { cap := true, io := true, proofreq := true } }
+  , rules := { cap := true, io := true, proofreq := true, sigs := 2 } }
 
 /-- The malicious child: IDENTICAL projections (so every escalation/drop scan is
     empty), but it silently turns OFF the capability monotone flag — disarming
@@ -311,7 +321,7 @@ def fullParent : Manifest :=
 def disarmingChild : Manifest :=
   { caps := [], ioSurface := [], proofReqs := []
   , budget := zeroBudget
-  , rules := { cap := false, io := true, proofreq := true } }
+  , rules := { cap := false, io := true, proofreq := true, sigs := 2 } }
 
 /-- **THEOREM weak_gate_admits_coup (PROVED, documentary).** The PRE-FIX hole.
 
@@ -336,6 +346,38 @@ theorem weak_gate_admits_coup : ∃ p c, passedWeak p c = true ∧ weakensRules 
     `rulesNonWeakening` conjunct rejects the disarming step at move ONE, so the
     coup never reaches its second move. -/
 theorem new_gate_rejects_coup : passed fullParent disarmingChild = false := by
+  decide
+
+/-- The NUMERIC coup: identical projections and identical boolean flags, but the
+    child lowers the human-signature threshold from 2 to 0 — disarming the human
+    review that would police the NEXT constitutional amendment. Same shape as
+    `disarmingChild`, spelled numerically instead of as a boolean. -/
+def signatureLoweringChild : Manifest :=
+  { caps := [], ioSurface := [], proofReqs := []
+  , budget := zeroBudget
+  , rules := { cap := true, io := true, proofreq := true, sigs := 0 } }
+
+/-- **The pre-numeric hole, documented.** Every boolean flag is untouched, so a
+    gate that enumerates only the three booleans sees nothing wrong. -/
+theorem signature_lowering_disarms :
+    weakensRules signatureLoweringChild fullParent := by
+  unfold weakensRules
+  exact Or.inr (Or.inr (Or.inr (by decide)))
+
+/-- **THEOREM: the shipped gate rejects the numeric coup.** -/
+theorem new_gate_rejects_signature_lowering :
+    passed fullParent signatureLoweringChild = false := by
+  decide
+
+/-- Raising the threshold is not a weakening — the axis is monotone upward, not
+    frozen. Guards against a fix that simply pins the value. -/
+def signatureRaisingChild : Manifest :=
+  { caps := [], ioSurface := [], proofReqs := []
+  , budget := zeroBudget
+  , rules := { cap := true, io := true, proofreq := true, sigs := 7 } }
+
+theorem raising_signatures_is_admitted :
+    passed fullParent signatureRaisingChild = true := by
   decide
 
 /-- The shipped gate refines the pre-fix gate: anything `passed` admits,

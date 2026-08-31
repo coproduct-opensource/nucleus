@@ -320,13 +320,21 @@ impl AmendmentRules {
     /// whole point is to stop an amendment from disarming the very flags that
     /// would police the next amendment.
     ///
-    /// SCOPE (honest): it enumerates exactly the three boolean governance
-    /// monotonicity flags — `require_monotone_{capabilities,io,proofreq}` — which
-    /// are precisely what the Lean model (`Ck.Policy.rulesNonWeakening`) and the
-    /// `policy_lean_parity` proptest are pinned to. It does NOT yet treat a LOWERED
-    /// `constitutional_human_signatures` threshold as a weakening; that numeric
-    /// monotonicity is a separate, deliberate FOLLOW-UP (it would need its own
-    /// model + parity), tracked so this stays parity-exact rather than overclaiming.
+    /// SCOPE: the three boolean governance monotonicity flags —
+    /// `require_monotone_{capabilities,io,proofreq}` — AND the numeric
+    /// `constitutional_human_signatures` threshold, which may be raised but never
+    /// lowered.
+    ///
+    /// The numeric axis was previously excluded and documented as a follow-up. It
+    /// is a coup vector in its own right: an amendment that lowers the threshold
+    /// from 2 to 0 disarms the human review that would police the NEXT
+    /// constitutional amendment, which is exactly what this function exists to
+    /// prevent. Boolean flags and a numeric threshold differ only in how disarming
+    /// is spelled.
+    ///
+    /// Kept parity-exact with the Lean model (`Ck.Policy.rulesNonWeakening`, whose
+    /// `sigs` field carries the same `parent ≤ child` obligation) and with the
+    /// `policy_lean_parity` proptest.
     pub fn weakened_flags_over(&self, parent: &Self) -> Vec<String> {
         let mut weakened = Vec::new();
         let mut check = |name: &str, parent_flag: bool, child_flag: bool| {
@@ -349,6 +357,14 @@ impl AmendmentRules {
             parent.require_monotone_proofreq,
             self.require_monotone_proofreq,
         );
+
+        // Numeric monotonicity: the threshold may RISE but never fall.
+        if self.constitutional_human_signatures < parent.constitutional_human_signatures {
+            weakened.push(format!(
+                "constitutional_human_signatures: {} -> {}",
+                parent.constitutional_human_signatures, self.constitutional_human_signatures
+            ));
+        }
         weakened
     }
 }

@@ -665,6 +665,56 @@ mod tests {
         assert!(child_strict.weakened_flags_over(&parent_loose).is_empty());
     }
 
+    /// The numeric governance axis: the human-signature threshold may be RAISED
+    /// but never LOWERED. Lowering it disarms the review that would police the
+    /// next constitutional amendment — the same coup this function blocks on the
+    /// boolean flags.
+    #[test]
+    fn test_lowered_human_signature_threshold_is_a_weakening() {
+        let mut parent = AmendmentRules {
+            may_modify: BTreeSet::new(),
+            may_not_modify: BTreeSet::new(),
+            require_monotone_capabilities: true,
+            require_monotone_io: true,
+            require_monotone_proofreq: true,
+            constitutional_human_signatures: 2,
+        };
+
+        // Lowering is a weakening, and the message names the transition.
+        let mut child = parent.clone();
+        child.constitutional_human_signatures = 0;
+        let w = child.weakened_flags_over(&parent);
+        assert!(
+            w.iter()
+                .any(|m| m.contains("constitutional_human_signatures")),
+            "lowering 2 -> 0 must be reported: {w:?}"
+        );
+
+        // Every strict lowering, not just to zero.
+        for lowered in 0..2u32 {
+            let mut c = parent.clone();
+            c.constitutional_human_signatures = lowered;
+            assert!(
+                !c.weakened_flags_over(&parent).is_empty(),
+                "lowering 2 -> {lowered} must be reported"
+            );
+        }
+
+        // Holding steady and raising are both fine.
+        let mut same = parent.clone();
+        same.constitutional_human_signatures = 2;
+        assert!(same.weakened_flags_over(&parent).is_empty());
+        let mut raised = parent.clone();
+        raised.constitutional_human_signatures = 7;
+        assert!(raised.weakened_flags_over(&parent).is_empty());
+
+        // A parent that required nothing cannot be weakened numerically.
+        parent.constitutional_human_signatures = 0;
+        let mut c0 = parent.clone();
+        c0.constitutional_human_signatures = 0;
+        assert!(c0.weakened_flags_over(&parent).is_empty());
+    }
+
     fn sign_bundle(
         bundle: &WitnessBundle,
         key_pair: &ring::signature::Ed25519KeyPair,

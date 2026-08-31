@@ -148,13 +148,16 @@ fn lean_proof_req_violated(p: &PolicyManifest, c: &PolicyManifest) -> bool {
 
 /// Mirror of Lean `rulesNonWeakening c p`: the child's governance flags are
 /// pointwise `≥` the parent's — you may ENABLE a flag but never DISABLE one
-/// (`parent_flag -> child_flag` on each axis). Checked UNCONDITIONALLY.
+/// (`parent_flag -> child_flag` on each axis) — AND the numeric signature
+/// threshold may rise but never fall (`Rules.sigs`, `p.sigs ≤ c.sigs`).
+/// Checked UNCONDITIONALLY.
 fn lean_rules_non_weakening(p: &PolicyManifest, c: &PolicyManifest) -> bool {
     let pr = &p.amendment_rules;
     let cr = &c.amendment_rules;
     (!pr.require_monotone_capabilities || cr.require_monotone_capabilities)
         && (!pr.require_monotone_io || cr.require_monotone_io)
         && (!pr.require_monotone_proofreq || cr.require_monotone_proofreq)
+        && (pr.constitutional_human_signatures <= cr.constitutional_human_signatures)
 }
 
 /// Mirror of the STRENGTHENED Lean `passed p c` (== the proven `checkPlus`):
@@ -194,6 +197,14 @@ fn set_of(items: &[&str], keep: &[bool]) -> BTreeSet<String> {
 }
 
 /// A `PolicyManifest` parameterized by the knobs the gate actually reads.
+/// Slice the `i`-th axis's membership mask out of a flat mask. Short inputs are
+/// tolerated (missing entries read as `false`) so fixtures can pass `&[]`.
+fn axis(flat: &[bool], i: usize, width: usize) -> &[bool] {
+    let start = (i * width).min(flat.len());
+    let end = (start + width).min(flat.len());
+    &flat[start..end]
+}
+
 #[allow(clippy::too_many_arguments)]
 fn manifest(
     caps_keep: &[bool],
@@ -204,32 +215,38 @@ fn manifest(
     flag_cap: bool,
     flag_io: bool,
     flag_proof: bool,
+    sigs: u32,
 ) -> PolicyManifest {
     let cap_pool = ["/a", "/b", "/c", "net1", "tool1", "secretA"];
     let io_pool = ["dom1", "root1", "ENV1", "ns1", "owner/repo"];
     let proof_pool = ["build_pass", "tests_pass", "kani_pass", "replay_pass"];
     PolicyManifest {
         version: 1,
+        // INDEPENDENT mask per axis. Previously every axis in a group shared one
+        // mask, so all five capability sets — and all five io sets — were EQUAL in
+        // all 2048 cases. A gate that read `filesystem_read` where it meant
+        // `network_allow` passed every case, because the two were never different.
+        // Chunking one longer mask gives each axis its own membership.
         capabilities: CapabilitySet {
-            filesystem_read: set_of(&cap_pool, caps_keep),
-            filesystem_write: set_of(&cap_pool, caps_keep),
-            network_allow: set_of(&cap_pool, caps_keep),
-            tools_allow: set_of(&cap_pool, caps_keep),
-            secret_classes: set_of(&cap_pool, caps_keep),
+            filesystem_read: set_of(&cap_pool, axis(caps_keep, 0, cap_pool.len())),
+            filesystem_write: set_of(&cap_pool, axis(caps_keep, 1, cap_pool.len())),
+            network_allow: set_of(&cap_pool, axis(caps_keep, 2, cap_pool.len())),
+            tools_allow: set_of(&cap_pool, axis(caps_keep, 3, cap_pool.len())),
+            secret_classes: set_of(&cap_pool, axis(caps_keep, 4, cap_pool.len())),
             max_parallel_tasks: parallel,
         },
         io_surface: IoSurface {
-            outbound_domains: set_of(&io_pool, io_keep),
-            local_file_roots: set_of(&io_pool, io_keep),
-            env_vars_readable: set_of(&io_pool, io_keep),
-            tool_namespaces: set_of(&io_pool, io_keep),
-            repo_write_targets: set_of(&io_pool, io_keep),
+            outbound_domains: set_of(&io_pool, axis(io_keep, 0, io_pool.len())),
+            local_file_roots: set_of(&io_pool, axis(io_keep, 1, io_pool.len())),
+            env_vars_readable: set_of(&io_pool, axis(io_keep, 2, io_pool.len())),
+            tool_namespaces: set_of(&io_pool, axis(io_keep, 3, io_pool.len())),
+            repo_write_targets: set_of(&io_pool, axis(io_keep, 4, io_pool.len())),
         },
         budget_bounds: budget(budget_vals),
         proof_requirements: ProofRequirements {
-            config_patch: set_of(&proof_pool, proof_keep),
-            controller_patch: set_of(&proof_pool, proof_keep),
-            evaluator_patch: set_of(&proof_pool, proof_keep),
+            config_patch: set_of(&proof_pool, axis(proof_keep, 0, proof_pool.len())),
+            controller_patch: set_of(&proof_pool, axis(proof_keep, 1, proof_pool.len())),
+            evaluator_patch: set_of(&proof_pool, axis(proof_keep, 2, proof_pool.len())),
         },
         amendment_rules: AmendmentRules {
             may_modify: BTreeSet::new(),
@@ -237,7 +254,7 @@ fn manifest(
             require_monotone_capabilities: flag_cap,
             require_monotone_io: flag_io,
             require_monotone_proofreq: flag_proof,
-            constitutional_human_signatures: 2,
+            constitutional_human_signatures: sigs,
         },
     }
 }
@@ -252,12 +269,12 @@ proptest! {
     /// pairs spanning all axes + all flag combinations.
     #[test]
     fn production_passed_agrees_with_lean_model(
-        pc in proptest::collection::vec(any::<bool>(), 6),
-        cc in proptest::collection::vec(any::<bool>(), 6),
-        pio in proptest::collection::vec(any::<bool>(), 5),
-        cio in proptest::collection::vec(any::<bool>(), 5),
-        ppr in proptest::collection::vec(any::<bool>(), 4),
-        cpr in proptest::collection::vec(any::<bool>(), 4),
+        pc in proptest::collection::vec(any::<bool>(), 6 * 5),
+        cc in proptest::collection::vec(any::<bool>(), 6 * 5),
+        pio in proptest::collection::vec(any::<bool>(), 5 * 5),
+        cio in proptest::collection::vec(any::<bool>(), 5 * 5),
+        ppr in proptest::collection::vec(any::<bool>(), 4 * 3),
+        cpr in proptest::collection::vec(any::<bool>(), 4 * 3),
         pbud in proptest::array::uniform8(0u64..8),
         cbud in proptest::array::uniform8(0u64..8),
         ppar in 0u32..8,
@@ -268,13 +285,15 @@ proptest! {
         cflag_cap in any::<bool>(),
         cflag_io in any::<bool>(),
         cflag_proof in any::<bool>(),
+        psigs in 0u32..4,
+        csigs in 0u32..4,
     ) {
         // The parent's flags gate cap/io/proofreq; the child's flags now MATTER
         // too — the SHIPPED gate checks `rulesNonWeakening` UNCONDITIONALLY, so
         // we vary the child's flags in BOTH directions to exercise the anti-coup
         // check (disabling a parent-enabled flag must now be rejected).
-        let parent = manifest(&pc, &pio, &ppr, pbud, ppar, flag_cap, flag_io, flag_proof);
-        let child = manifest(&cc, &cio, &cpr, cbud, cpar, cflag_cap, cflag_io, cflag_proof);
+        let parent = manifest(&pc, &pio, &ppr, pbud, ppar, flag_cap, flag_io, flag_proof, psigs);
+        let child = manifest(&cc, &cio, &cpr, cbud, cpar, cflag_cap, cflag_io, cflag_proof, csigs);
 
         let prod = check_monotonicity(&parent, &child).passed;
         let model = lean_passed(&parent, &child);
@@ -300,7 +319,7 @@ proptest! {
 fn meta_gap_coup_is_now_rejected() {
     let zero = [0u64; 8];
     // fullParent: every monotone flag ON, empty projections.
-    let parent = manifest(&[], &[], &[], zero, 0, true, true, true);
+    let parent = manifest(&[], &[], &[], zero, 0, true, true, true, 2);
     // disarmingChild: identical projections, but capability flag OFF.
     let mut child = parent.clone();
     child.amendment_rules.require_monotone_capabilities = false;
@@ -336,4 +355,53 @@ fn meta_gap_coup_is_now_rejected() {
     // Because step ONE is now rejected, the coup's intended SECOND step (a
     // grandchild escalating capabilities freely under the relaxed flag) is never
     // reachable on the ordinary path — the child never enters the lineage.
+}
+
+/// Rust image of the Lean `new_gate_rejects_signature_lowering` /
+/// `raising_signatures_is_admitted` theorems.
+///
+/// The NUMERIC half of the anti-coup check. Every boolean flag is untouched, so
+/// a gate that enumerates only the three booleans sees nothing wrong — the child
+/// merely lowers the human-signature threshold, disarming the review that would
+/// police the NEXT constitutional amendment.
+#[test]
+fn signature_lowering_is_rejected_and_raising_is_not() {
+    let zero = [0u64; 8];
+    let parent = manifest(&[], &[], &[], zero, 0, true, true, true, 2);
+
+    // Lowering: rejected, citing AmendmentRulesMonotonicity.
+    let mut lowered = parent.clone();
+    lowered.amendment_rules.constitutional_human_signatures = 0;
+    assert_eq!(
+        lowered.amendment_rules.require_monotone_capabilities,
+        parent.amendment_rules.require_monotone_capabilities,
+        "the numeric coup must leave every boolean flag untouched"
+    );
+    let prod = check_monotonicity(&parent, &lowered);
+    assert!(
+        !prod.passed,
+        "lowering the signature threshold must be rejected: {:?}",
+        prod.diff
+    );
+    assert!(
+        prod.diff
+            .violated_invariants
+            .contains(&ck_types::ConstitutionalInvariant::AmendmentRulesMonotonicity),
+        "must cite AmendmentRulesMonotonicity: {:?}",
+        prod.diff.violated_invariants
+    );
+
+    // The model agrees — this is the parity claim, not just the production one.
+    assert_eq!(prod.passed, lean_passed(&parent, &lowered));
+
+    // Raising: admitted. The axis is monotone upward, not frozen.
+    let mut raised = parent.clone();
+    raised.amendment_rules.constitutional_human_signatures = 7;
+    let prod_up = check_monotonicity(&parent, &raised);
+    assert!(
+        prod_up.passed,
+        "raising the threshold must be admitted: {:?}",
+        prod_up.diff
+    );
+    assert_eq!(prod_up.passed, lean_passed(&parent, &raised));
 }
