@@ -23,12 +23,12 @@ serde = ["dep:serde", "portcullis-core/serde"]
 # `host` makes the functor *executable*: a wasmtime host whose import set and
 # grant enforcement are derived from `world_of(cap)`. Heavy (pulls in wasmtime +
 # cranelift), so it is opt-in; the pure functor + Lean-mirrored proofs stay
-# dependency-light by default. Pinned to wasmtime 45 to match portcullis-core's
+# dependency-light by default. Pinned to wasmtime 48 to match portcullis-core's
 # `wasm-sandbox` feature (workspace dep convergence).
 host = ["dep:wasmtime", "dep:anyhow"]
 
 [dependencies]
 portcullis-core = { path = "../portcullis-core" }
 serde = { workspace = true, optional = true }
-wasmtime = { version = "45", optional = true }
+wasmtime = { version = "48", optional = true }
 anyhow = { workspace = true, optional = true }
