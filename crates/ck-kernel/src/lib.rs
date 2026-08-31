@@ -1732,4 +1732,251 @@ mod tests {
             "Forgery after restore must be rejected: {result:?}"
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Enumerated stand-ins for the never-verifying Kani full-tier harnesses
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // `src/kani.rs` is `#![cfg(kani)]`, so its 17 harnesses compile ONLY under
+    // `cargo kani`. Twelve of them have never completed, in CI or locally:
+    // CBMC cannot construct `BTreeSet<String>` — a harness that only builds the
+    // fixture and asserts a constant does not terminate. See KANI-STATUS.md.
+    //
+    // Those twelve therefore contribute nothing to any build today. Their
+    // symbolic domain is four `kani::any::<bool>()` over a four-element
+    // universe: sixteen subsets. Enumerating sixteen cases is EQUIVALENT IN
+    // STRENGTH at that size, not an approximation of it. Three of the twelve
+    // contain no `kani::any` at all and were already unit tests wearing a
+    // `#[kani::proof]` attribute.
+    //
+    // These also assert what the harnesses never did — that the decision cites
+    // the AXIS-SPECIFIC invariant. `admit` runs eight gates before the
+    // monotonicity check, so `matches!(d, Rejected { .. })` alone stays green
+    // while the gate the harness is named after rots.
+    //
+    // If Kani ever handles `BTreeSet<String>`, the harnesses in kani.rs reclaim
+    // the unbounded quantifier for free; these tests are the floor, not a
+    // replacement for that ambition.
+    mod enumerated_admission {
+        use super::*;
+
+        /// Four names absent from `test_manifest()` on every axis under test.
+        const FRESH: [&str; 4] = ["evil-a.example", "evil-b.example", "/etc", "secret-ns"];
+
+        fn subset(mask: u32) -> BTreeSet<String> {
+            (0..FRESH.len())
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| FRESH[i].to_string())
+                .collect()
+        }
+
+        fn decide(child: &PolicyManifest, class: PatchClass) -> (AdmissionDecision, bool) {
+            let genesis = ArtifactDigest::from_bytes(b"genesis");
+            let mut kernel = Kernel::new(genesis.clone());
+            let candidate = ArtifactDigest::from_bytes(b"candidate");
+            let witness =
+                make_witness_with_policies(&genesis, &candidate, class, &test_manifest(), child);
+            let decision = kernel.admit(CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: candidate.clone(),
+                patch_class: class,
+                witness,
+            });
+            let admitted = kernel.is_admitted(&candidate);
+            (decision, admitted)
+        }
+
+        /// Rejected, NOT admitted, and citing `want` — the assertion the Kani
+        /// harnesses omit.
+        fn assert_rejected_citing(
+            child: &PolicyManifest,
+            want: ConstitutionalInvariant,
+            ctx: &str,
+        ) {
+            let (decision, admitted) = decide(child, PatchClass::Config);
+            assert!(
+                matches!(decision, AdmissionDecision::Rejected { .. }),
+                "{ctx}: expected Rejected, got {decision:?}"
+            );
+            assert!(!admitted, "{ctx}: rejected candidate must not be admitted");
+            if let AdmissionDecision::Rejected { reasons } = decision {
+                assert!(
+                    reasons.iter().any(|r| r.invariant == want),
+                    "{ctx}: must cite {want:?}, got {reasons:?}"
+                );
+            }
+        }
+
+        /// The five `proof_io_*_widening_rejected` harnesses, enumerated.
+        #[test]
+        fn io_widening_always_rejected_on_every_axis() {
+            type Axis = (&'static str, fn(&mut IoSurface, BTreeSet<String>));
+            let axes: [Axis; 5] = [
+                ("outbound_domains", |io, s| io.outbound_domains.extend(s)),
+                ("local_file_roots", |io, s| io.local_file_roots.extend(s)),
+                ("env_vars_readable", |io, s| io.env_vars_readable.extend(s)),
+                ("tool_namespaces", |io, s| io.tool_namespaces.extend(s)),
+                ("repo_write_targets", |io, s| {
+                    io.repo_write_targets.extend(s)
+                }),
+            ];
+            let mut checked = 0;
+            for (name, widen) in axes {
+                for mask in 1..(1u32 << FRESH.len()) {
+                    let mut child = test_manifest();
+                    widen(&mut child.io_surface, subset(mask));
+                    assert_rejected_citing(
+                        &child,
+                        ConstitutionalInvariant::IoConfinement,
+                        &format!("io axis {name}, mask {mask:04b}"),
+                    );
+                    checked += 1;
+                }
+            }
+            assert_eq!(checked, 75, "5 axes x 15 non-empty subsets");
+        }
+
+        /// `proof_capability_escalation_always_rejected`, enumerated.
+        #[test]
+        fn capability_escalation_always_rejected() {
+            for mask in 1..(1u32 << FRESH.len()) {
+                let mut child = test_manifest();
+                child.capabilities.network_allow.extend(subset(mask));
+                assert_rejected_citing(
+                    &child,
+                    ConstitutionalInvariant::CapabilityNonEscalation,
+                    &format!("network_allow widened, mask {mask:04b}"),
+                );
+            }
+        }
+
+        /// `proof_governance_weakening_always_rejected`, enumerated over the
+        /// PROPER subsets of the parent's own requirement set — dropping any
+        /// required check is the weakening.
+        #[test]
+        fn governance_weakening_always_rejected() {
+            let parent = test_manifest();
+            let reqs: Vec<String> = parent
+                .proof_requirements
+                .config_patch
+                .iter()
+                .cloned()
+                .collect();
+            assert!(!reqs.is_empty(), "fixture must require at least one check");
+            for mask in 0..(1u32 << reqs.len()) {
+                let kept: BTreeSet<String> = (0..reqs.len())
+                    .filter(|i| mask & (1 << i) != 0)
+                    .map(|i| reqs[i].clone())
+                    .collect();
+                if kept.len() == reqs.len() {
+                    continue; // nothing dropped
+                }
+                let mut child = test_manifest();
+                child.proof_requirements.config_patch = kept;
+                assert_rejected_citing(
+                    &child,
+                    ConstitutionalInvariant::GovernanceMonotonicity,
+                    &format!("config_patch reqs dropped, mask {mask:04b}"),
+                );
+            }
+        }
+
+        /// `proof_budget_escalation_always_rejected`. The harness is a genuine
+        /// forall over 480 symbolic bits and cannot be enumerated; `is_within`
+        /// is eight independent comparisons, so raising each field by one past
+        /// the parent is the boundary case for each. This is WEAKER than the
+        /// harness intends — recorded as such in KANI-STATUS.md.
+        #[test]
+        fn budget_escalation_always_rejected_per_field() {
+            type Raise = (&'static str, fn(&mut BudgetBounds));
+            let raises: [Raise; 8] = [
+                ("max_tokens", |b| b.max_tokens += 1),
+                ("max_wall_ms", |b| b.max_wall_ms += 1),
+                ("max_cpu_ms", |b| b.max_cpu_ms += 1),
+                ("max_memory_bytes", |b| b.max_memory_bytes += 1),
+                ("max_network_calls", |b| b.max_network_calls += 1),
+                ("max_files_touched", |b| b.max_files_touched += 1),
+                ("max_dollar_spend_millicents", |b| {
+                    b.max_dollar_spend_millicents += 1
+                }),
+                ("max_patch_attempts", |b| b.max_patch_attempts += 1),
+            ];
+            for (name, raise) in raises {
+                let mut child = test_manifest();
+                raise(&mut child.budget_bounds);
+                assert_rejected_citing(
+                    &child,
+                    ConstitutionalInvariant::ResourceBoundedness,
+                    &format!("budget field {name} raised by one"),
+                );
+            }
+        }
+
+        /// `proof_rejected_never_in_lineage` — no symbolic input in the original.
+        #[test]
+        fn rejected_never_in_lineage() {
+            let mut child = test_manifest();
+            child
+                .capabilities
+                .network_allow
+                .insert("evil.example".into());
+            let (decision, admitted) = decide(&child, PatchClass::Config);
+            assert!(matches!(decision, AdmissionDecision::Rejected { .. }));
+            assert!(
+                !admitted,
+                "a rejected candidate must never enter the lineage"
+            );
+        }
+
+        /// `proof_constitutional_self_merge_impossible` — no symbolic input.
+        #[test]
+        fn constitutional_self_merge_impossible() {
+            let child = test_manifest(); // identical policy; the CLASS is the attack
+            let (decision, admitted) = decide(&child, PatchClass::Constitutional);
+            assert!(
+                matches!(decision, AdmissionDecision::Rejected { .. }),
+                "constitutional self-merge must be rejected: {decision:?}"
+            );
+            assert!(!admitted);
+            if let AdmissionDecision::Rejected { reasons } = decision {
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|r| r.invariant == ConstitutionalInvariant::GovernanceMonotonicity),
+                    "must cite GovernanceMonotonicity: {reasons:?}"
+                );
+            }
+        }
+
+        /// `proof_identical_policy_config_patch_admitted` — the control. If this
+        /// ever fails, every rejection test above is passing vacuously.
+        #[test]
+        fn identical_policy_config_patch_admitted() {
+            let child = test_manifest();
+            let (decision, admitted) = decide(&child, PatchClass::Config);
+            assert!(
+                matches!(decision, AdmissionDecision::Accepted { .. }),
+                "an identical policy must be admitted, else the rejection tests \
+                 above prove nothing: {decision:?}"
+            );
+            assert!(admitted, "an admitted candidate must be in the lineage");
+        }
+
+        /// `proof_refinement_bitmask_agrees_with_btreeset`, enumerated over all
+        /// 2^8 = 256 (parent, child) pairs rather than 8 symbolic bools.
+        #[test]
+        fn bitmask_agrees_with_btreeset_on_subset() {
+            for parent_bits in 0u32..16 {
+                for child_bits in 0u32..16 {
+                    let p = subset(parent_bits);
+                    let c = subset(child_bits);
+                    assert_eq!(
+                        c.is_subset(&p),
+                        (child_bits & !parent_bits) == 0,
+                        "bitmask/BTreeSet disagree at parent={parent_bits:04b} child={child_bits:04b}"
+                    );
+                }
+            }
+        }
+    }
 }
