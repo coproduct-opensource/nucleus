@@ -33,3 +33,12 @@ jobs:
         with:
           command: check
           args: "${{ matrix.checks }}"
+          # The action runs in a rust:1.85.0-alpine3.20 container and only calls
+          # `rustup default` when this input is set. Left empty, `cargo metadata`
+          # runs against the workspace's rust-toolchain.toml (1.96.1), and modern
+          # rustup no longer installs a toolchain file's channel implicitly — so
+          # every shard died with
+          #   error: override toolchain '1.96.1-x86_64-unknown-linux-musl' is not installed
+          # Nothing in-repo changed; the pinned action's container drifted under it.
+          # Keep this in step with rust-toolchain.toml.
+          rust-version: "1.96.1"
