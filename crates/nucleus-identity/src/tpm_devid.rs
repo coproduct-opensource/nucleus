@@ -578,13 +578,20 @@ fn tpm2b(data: &[u8]) -> Vec<u8> {
 /// credential built for one AK fail to activate on another.
 #[cfg(feature = "tpm-devid")]
 fn sensitive_to_credential(seed: &[u8], ak_name: &[u8], secret: &[u8]) -> Vec<u8> {
-    use cfb_mode::cipher::{AsyncStreamCipher, KeyIvInit};
+    // cfb-mode 0.9 / cipher 0.5: `encrypt` is inherent on `Encryptor` (no
+    // `AsyncStreamCipher` import), and key/IV are fixed-size arrays rather than
+    // slices — RustCrypto moved `GenericArray` to `hybrid-array::Array`, which
+    // has no `From<&[u8]>`.
+    use cfb_mode::cipher::KeyIvInit;
 
     let sym_key = kdfa(seed, "STORAGE", ak_name, &[], 128);
+    let sym_key: [u8; 16] = sym_key
+        .as_slice()
+        .try_into()
+        .expect("kdfa(..., 128) yields exactly 16 bytes");
     let mut enc_identity = tpm2b(secret); // plaintext = TPM2B(secret)
     let iv = [0u8; 16];
-    cfb_mode::Encryptor::<aes::Aes128>::new(sym_key.as_slice().into(), (&iv).into())
-        .encrypt(&mut enc_identity);
+    cfb_mode::Encryptor::<aes::Aes128>::new(&sym_key.into(), &iv.into()).encrypt(&mut enc_identity);
 
     let hmac_key = kdfa(seed, "INTEGRITY", &[], &[], 256);
     let mut integrity_input = enc_identity.clone();
