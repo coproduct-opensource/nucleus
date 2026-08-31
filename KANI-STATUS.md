@@ -142,6 +142,29 @@ argument, but it is currently on the wrong side of the tractability line: it bui
 very thing it is trying to bridge. A version over interned ids would verify and would
 carry real weight.
 
+## What runs today
+
+`src/kani.rs` carries `#![cfg(kani)]`, so **its harnesses compile only under `cargo kani`** —
+the twelve that never verify contribute nothing to any ordinary build. Enumerated
+stand-ins now live in `src/lib.rs` under `mod tests::enumerated_admission` and run on every
+`cargo test`.
+
+They are not a weaker substitute at the fixture's size. Each harness's symbolic domain is
+four `kani::any::<bool>()` over a four-element universe — sixteen subsets — so enumeration
+is equivalent in strength; three of the twelve contained no `kani::any` at all. The
+exception is `proof_budget_escalation_always_rejected`, a genuine forall over 480 symbolic
+bits, where the stand-in checks the eight per-field boundaries and is explicitly weaker.
+
+The stand-ins also assert what the harnesses never did: that the decision **cites the
+axis-specific invariant**. `admit` runs eight gates before the monotonicity check, so
+`matches!(d, Rejected { .. })` alone stays green while the gate a harness is named after
+rots. `AdmissionDecision` has four variants, so `Rejected` is a strictly stronger claim
+than "not accepted". A control case asserts an identical policy is *accepted*, without
+which every rejection case could pass vacuously.
+
+If Kani ever handles `BTreeSet<String>`, the harnesses reclaim the unbounded quantifier
+for free. These tests are the floor, not the ambition.
+
 Until that lands, the honest claim is narrower than the one this file opened with:
 
 > Five harnesses verify, and they prove lattice arithmetic over bitmasks. Nothing that
