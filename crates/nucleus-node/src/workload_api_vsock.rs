@@ -55,6 +55,15 @@ pub struct WorkloadApiVsockBridge {
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<()>,
     socket_path: PathBuf,
+    /// The STANDARD SPIFFE Workload API, on its own port beside the JSON one.
+    ///
+    /// Held here rather than as a second bridge in `main.rs` for a concrete
+    /// reason: `main.rs` sits exactly on its line-count ceiling, and threading
+    /// a second bridge through the launch path, the pod state and the shutdown
+    /// path would spend those lines on plumbing. One bridge owning both
+    /// listeners also makes it impossible to start one and forget the other,
+    /// or to shut down the JSON socket while leaving the gRPC one serving.
+    spiffe: Option<(oneshot::Sender<()>, JoinHandle<()>, PathBuf)>,
     /// The pod ID this bridge serves (used for unique identity per pod).
     #[allow(dead_code)]
     pod_id: uuid::Uuid,
@@ -239,6 +248,8 @@ impl WorkloadApiVsockBridge {
         // fields are read-only anyway — the one-shot flags inside are already
         // their own `Arc<AtomicBool>`s, so sharing the bundle shares them.
         let material = std::sync::Arc::new(material);
+        // Cloned before the accept loop takes ownership.
+        let identity_manager_for_spiffe = identity_manager.clone();
         // Firecracker naming convention: {uds_path}_{port}
         let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.as_ref().display(), port));
 
@@ -324,36 +335,61 @@ impl WorkloadApiVsockBridge {
             }
         });
 
+        // Serve the standard API too, on its own port. A failure here is
+        // logged and does NOT fail the pod: the JSON protocol is what
+        // guest-init actually uses to boot, so losing the standard API costs
+        // interop, not liveness. Failing the launch would trade a working pod
+        // for a missing convenience.
+        let spiffe = match Self::spawn_spiffe_listener(
+            vsock_uds_path.as_ref(),
+            SPIFFE_WORKLOAD_API_PORT,
+            pod_id,
+            &identity_manager_for_spiffe,
+            jail_owner,
+        )
+        .await
+        {
+            Ok(parts) => Some(parts),
+            Err(err) => {
+                tracing::warn!(
+                    "SPIFFE Workload API unavailable for pod {pod_id} (the JSON \
+                     protocol is unaffected): {err}"
+                );
+                None
+            }
+        };
+
         Ok(Self {
             shutdown: Some(shutdown_tx),
             task,
             socket_path,
             pod_id,
+            spiffe,
         })
     }
 
-    /// Starts the STANDARD SPIFFE Workload API for a pod, over vsock.
+    /// Spawns the STANDARD SPIFFE Workload API listener for a pod.
     ///
-    /// Same transport as [`start`], different protocol: gRPC at the standard
-    /// method path instead of the bespoke JSON-line format. A guest can use an
-    /// off-the-shelf SPIFFE client against this port; `start` remains for the
-    /// guest-init that ships in existing rootfs images and cannot be changed.
+    /// Same transport as the JSON protocol, different wire format: gRPC at the
+    /// standard method path, so a guest can use an off-the-shelf SPIFFE client.
+    /// The JSON listener stays because the guest-init in shipped rootfs images
+    /// speaks it and cannot be changed.
     ///
-    /// The socket is created and handed to the jail exactly as in [`start`] —
-    /// see the long comment there for why chown rather than chmod, and what
-    /// breaks four layers downstream when it is missed.
-    #[allow(dead_code)]
-    pub async fn start_spiffe(
-        vsock_uds_path: impl AsRef<Path>,
+    /// Its own port, not a shared one: the two formats travel over the same
+    /// kind of socket and nothing lets a server tell them apart before it has
+    /// committed to one, so they get a port each rather than a sniffing
+    /// heuristic that would be wrong occasionally and confusingly.
+    async fn spawn_spiffe_listener(
+        vsock_uds_path: &Path,
         port: u32,
         pod_id: uuid::Uuid,
-        identity_manager: IdentityManager,
+        identity_manager: &IdentityManager,
         jail_owner: Option<(u32, u32)>,
-    ) -> std::io::Result<Self> {
+    ) -> std::io::Result<(oneshot::Sender<()>, JoinHandle<()>, PathBuf)> {
         use nucleus_identity::spiffe_workload_api::SpiffeWorkloadApiService;
         use nucleus_proto::spiffe_workload::spiffe_workload_api_server::SpiffeWorkloadApiServer;
 
-        let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.as_ref().display(), port));
+        let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.display(), port));
         if socket_path.exists() {
             tokio::fs::remove_file(&socket_path).await?;
         }
@@ -361,12 +397,17 @@ impl WorkloadApiVsockBridge {
             tokio::fs::create_dir_all(parent).await?;
         }
         let listener = UnixListener::bind(&socket_path)?;
+
+        // Same reason as the JSON socket above: the node creates this as root
+        // while Firecracker runs as the jailer uid, and connect() needs write
+        // permission. See the comment in `start` for what breaks otherwise.
         crate::guest_socket::give_socket_to_jail(&socket_path, jail_owner)?;
         #[cfg(not(target_os = "linux"))]
         let _ = jail_owner;
 
-        // The same per-pod identity the JSON path serves, so a guest gets the
-        // same SVID whichever protocol it speaks.
+        // The SAME per-pod identity the JSON path serves, from the SAME
+        // SecretManager: a guest gets one certificate whichever protocol it
+        // asks over, and there is one issuance path to keep conformant.
         let identity = nucleus_identity::Identity::new(
             identity_manager.trust_domain(),
             "pods",
@@ -378,12 +419,12 @@ impl WorkloadApiVsockBridge {
             identity_manager.trust_bundle().clone(),
         );
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let socket_path_clone = socket_path.clone();
+        let (tx, rx) = oneshot::channel();
+        let path_for_log = socket_path.clone();
         let task = tokio::spawn(async move {
             info!(
-                "SPIFFE Workload API vsock bridge listening on {} (port {}) for pod {}",
-                socket_path_clone.display(),
+                "SPIFFE Workload API listening on {} (port {}) for pod {}",
+                path_for_log.display(),
                 port,
                 pod_id
             );
@@ -391,20 +432,15 @@ impl WorkloadApiVsockBridge {
             if let Err(err) = tonic::transport::Server::builder()
                 .add_service(SpiffeWorkloadApiServer::new(service))
                 .serve_with_incoming_shutdown(incoming, async {
-                    let _ = shutdown_rx.await;
+                    let _ = rx.await;
                 })
                 .await
             {
-                error!("SPIFFE Workload API vsock bridge stopped: {err}");
+                error!("SPIFFE Workload API listener stopped: {err}");
             }
         });
 
-        Ok(Self {
-            shutdown: Some(shutdown_tx),
-            task,
-            socket_path,
-            pod_id,
-        })
+        Ok((tx, task, socket_path))
     }
 
     /// Returns the pod ID this bridge serves.
@@ -427,6 +463,14 @@ impl WorkloadApiVsockBridge {
         let _ = self.task.await;
         // Clean up socket file
         let _ = tokio::fs::remove_file(&self.socket_path).await;
+
+        // And the SPIFFE listener. Leaving it up would keep serving SVIDs for
+        // a pod that is gone.
+        if let Some((tx, task, path)) = self.spiffe.take() {
+            let _ = tx.send(());
+            let _ = task.await;
+            let _ = tokio::fs::remove_file(&path).await;
+        }
     }
 }
 
@@ -1404,11 +1448,15 @@ mod spiffe_bridge_tests {
             crate::identity::IdentityManager::new("nucleus.local", Duration::from_secs(3600))
                 .expect("identity manager");
 
-        let _bridge = WorkloadApiVsockBridge::start_spiffe(
+        // Plain `start` — the standard API must come up for EVERY pod, without
+        // a caller opting in. If it were a separate constructor, nothing in the
+        // launch path would call it and the feature would ship dark.
+        let _bridge = WorkloadApiVsockBridge::start(
             &base,
-            SPIFFE_WORKLOAD_API_PORT,
+            15012,
             pod_id,
             manager,
+            PodMaterial::default(),
             None,
         )
         .await
@@ -1421,6 +1469,11 @@ mod spiffe_bridge_tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        assert!(
+            sock.exists(),
+            "starting a pod's bridge must also bring up the standard API at {}",
+            sock.display()
+        );
 
         let client = spiffe::WorkloadApiClient::connect_to(format!("unix:{}", sock.display()))
             .await
@@ -1430,8 +1483,8 @@ mod spiffe_bridge_tests {
             .await
             .expect("a standard SPIFFE client must fetch an SVID over the bridge");
 
-        // The pod's identity, not the node's: one bridge serves one pod, and
-        // that isolation is the reason the socket is per-pod.
+        // The POD's identity, not the node's: one bridge serves one pod, which
+        // is why the socket is per-pod in the first place.
         assert_eq!(
             svid.spiffe_id().to_string(),
             format!("spiffe://nucleus.local/ns/pods/sa/{pod_id}")
