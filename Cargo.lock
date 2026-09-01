@@ -7073,6 +7073,7 @@ dependencies = [
  "anyhow",
  "clap",
  "nucleus-ifc",
+ "portcullis",
  "serde",
  "serde_json",
  "tokio",

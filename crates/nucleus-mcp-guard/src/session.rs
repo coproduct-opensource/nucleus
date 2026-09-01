@@ -88,6 +88,31 @@ impl SessionMonitor {
         }
     }
 
+    /// Record **untrusted tool metadata** — a `tools/list` entry that is not
+    /// pinned, or whose schema mutated after pinning.
+    ///
+    /// MCP carries instructions and data in one channel, so a tool description
+    /// has as much influence over the agent as the system prompt does. An
+    /// unvouched-for description is therefore adversarial *ingest*, exactly like
+    /// fetched web content, and is recorded as [`DeclaredInput::WebContent`] —
+    /// the model-level counterpart of the kernel's
+    /// `NodeKind::McpToolDescription`.
+    ///
+    /// Only *unapproved* metadata taints. A description pinned on first sight is
+    /// trusted-on-first-use; if every server's `tools/list` tainted, the very
+    /// first list would lock the session and the guard would be unusable.
+    pub fn observe_untrusted_metadata(&mut self, tool: &str) {
+        self.events.push(ToolEvent {
+            tool: format!("{tool} (metadata)"),
+            role: ToolRole::Source {
+                input: DeclaredInput::WebContent,
+            },
+        });
+        if !self.seen.contains(&DeclaredInput::WebContent) {
+            self.seen.push(DeclaredInput::WebContent);
+        }
+    }
+
     /// Convenience for offline replay: a full call+result interaction in order.
     pub fn observe_invocation(&mut self, tool: &str) -> Option<Finding> {
         let f = self.observe_call(tool);

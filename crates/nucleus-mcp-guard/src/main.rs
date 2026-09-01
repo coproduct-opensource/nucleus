@@ -3,13 +3,14 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use nucleus_mcp_guard::{analyze_session, proxy, Classifier, ClassifierConfig, SessionMonitor};
+use proxy::{GuardConfig, Mode};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[derive(Parser)]
 #[command(
     name = "mcp-guard",
-    about = "Trifecta Gate: see what your AI agent can exfiltrate (observe-only MCP proxy)."
+    about = "Trifecta Gate: see \u{2014} or stop \u{2014} what your AI agent can exfiltrate."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -27,6 +28,15 @@ enum Cmd {
     /// Wrap a live stdio MCP server and observe the session. The server command
     /// and its args follow `--`, e.g. `mcp-guard proxy -- npx my-mcp-server`.
     Proxy {
+        /// Block denied calls instead of only reporting them. Off by default,
+        /// so wrapping a server never starts refusing traffic by surprise.
+        #[arg(long)]
+        enforce: bool,
+        /// Persist pinned tool schemas here (JSON). Without it a rug-pull can
+        /// only be caught within a single session, which is not the threat:
+        /// the attack is to be benign at approval time and mutate later.
+        #[arg(long, value_name = "PATH")]
+        pin_file: Option<PathBuf>,
         #[arg(last = true, required = true, num_args = 1..)]
         server: Vec<String>,
     },
@@ -71,10 +81,22 @@ async fn main() -> Result<()> {
             };
             (analyze_session(&tools, classifier), false)
         }
-        Cmd::Proxy { server } => {
+        Cmd::Proxy {
+            enforce,
+            pin_file,
+            server,
+        } => {
             let (cmd, args) = server.split_first().context("missing MCP server command")?;
             let monitor = Arc::new(Mutex::new(SessionMonitor::new(classifier)));
-            let report = proxy::run_stdio_proxy(monitor, cmd, args).await?;
+            let config = GuardConfig {
+                mode: if enforce {
+                    Mode::Enforce
+                } else {
+                    Mode::Observe
+                },
+                pin_file,
+            };
+            let report = proxy::run_stdio_proxy_with(monitor, cmd, args, config).await?;
             (report, true) // stdout is the MCP channel — report must go to stderr
         }
     };

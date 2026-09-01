@@ -40,6 +40,17 @@ pub enum NodeKind {
     /// privileged action. Distinct from `ToolResponse` (the proxy's own trusted
     /// tool output, merely `Untrusted`), so it actually trips `is_tainted`.
     McpToolResult,
+    /// MCP tool *metadata* — the name, description, and parameter schema an
+    /// upstream server returns from `tools/list`. **Adversarial**, identically
+    /// to `McpToolResult`.
+    ///
+    /// This is the discovery channel, and it is attacker-authored input rather
+    /// than configuration: MCP carries instructions and data in one channel, so
+    /// a tool description has exactly as much influence over the agent as the
+    /// system prompt does. A poisoned description on one connected server can
+    /// steer a call to a *different* server's benign-looking tool, which is why
+    /// the label has to attach at discovery time and not at call time.
+    McpToolDescription,
     /// Memory entry — internal, untrusted, informational authority.
     MemoryRead,
     /// Memory write — outbound action that persists data.
@@ -153,6 +164,7 @@ impl NodeKind {
             "tool_response" => Self::ToolResponse,
             "web_content" => Self::WebContent,
             "mcp_tool_result" => Self::McpToolResult,
+            "mcp_tool_description" => Self::McpToolDescription,
             "memory_read" => Self::MemoryRead,
             "memory_write" => Self::MemoryWrite,
             "file_read" => Self::FileRead,
@@ -176,13 +188,14 @@ impl NodeKind {
 
     /// Numeric discriminant for serialization (receipt hashing).
     ///
-    /// Built-in kinds are 0-20. Custom kinds are 255.
+    /// Built-in kinds are 0-21. Custom kinds are 255.
     pub fn discriminant(&self) -> u8 {
         match self {
             Self::UserPrompt => 0,
             Self::ToolResponse => 1,
             Self::WebContent => 2,
             Self::McpToolResult => 20,
+            Self::McpToolDescription => 21,
             Self::MemoryRead => 3,
             Self::MemoryWrite => 4,
             Self::FileRead => 5,
@@ -211,6 +224,7 @@ impl NodeKind {
             Self::ToolResponse => "tool_response",
             Self::WebContent => "web_content",
             Self::McpToolResult => "mcp_tool_result",
+            Self::McpToolDescription => "mcp_tool_description",
             Self::MemoryRead => "memory_read",
             Self::MemoryWrite => "memory_write",
             Self::FileRead => "file_read",
@@ -280,6 +294,9 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
         // Upstream/untrusted MCP tool result: adversarial, exactly like web
         // content (public, adversarial integrity, no authority).
         NodeKind::McpToolResult => IFCLabel::web_content(now),
+        // Tool metadata from an upstream server: the same adversarial label. A
+        // description is read by the model exactly like fetched web content.
+        NodeKind::McpToolDescription => IFCLabel::web_content(now),
         NodeKind::MemoryRead => IFCLabel::memory_entry(now),
         NodeKind::MemoryWrite => IFCLabel {
             confidentiality: ConfLevel::Internal,

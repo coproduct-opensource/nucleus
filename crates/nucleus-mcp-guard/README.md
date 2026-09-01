@@ -78,12 +78,23 @@ Set `"replace_defaults": true` to start from scratch.
 
 ## What this is (and isn't)
 
-- **Free / observe-only.** This tool *reports*; it does not block. The enforcement
-  tier (hard-blocking on a denied verdict + signed, recomputable audit receipts
-  mapped to SOC2 / OWASP LLM Top 10) is the commercial layer above it.
+- **Observes by default, enforces on request.** Without `--enforce` the proxy
+  reports and forwards, so wrapping a server never starts refusing traffic by
+  surprise. With `--enforce` a denied call is answered with a JSON-RPC error and
+  never reaches the server.
+- **It vets `tools/list`, not just `tools/call`.** MCP carries instructions and
+  data in one channel, so a tool description has as much influence over the agent
+  as the system prompt does. Schemas are pinned on first sight (`--pin-file` to
+  persist across sessions) and re-checked on every later listing; a tool that
+  redefines itself after approval is refused, and metadata that isn't vouched for
+  is treated as adversarial ingest.
+- **Pinning is trust-on-first-use.** That is a real bound and worth stating
+  plainly: TOFU defends the *rug-pull* — benign at approval, mutated later — and
+  the metadata-tainting is what covers a server that was hostile from the start.
 - **Model-level.** The verdict is over the data classes a session is *observed* to
   touch via MCP tool traffic. Coverage is the honest limit: a channel the agent
   uses outside MCP is a channel the gate doesn't see. It does **not** claim to
-  prove exfiltration is impossible — it shows when it's *possible*.
+  prove exfiltration is impossible — it shows when it's *possible*, and can stop
+  it at the points it sees.
 
 Built on the `nucleus-ifc` lethal-trifecta gate.

@@ -1,6 +1,6 @@
 [package]
 name = "nucleus-mcp-guard"
-description = "Trifecta Gate: an observe-only MCP proxy that taint-tracks AI-agent dataflow and flags lethal-trifecta exfiltration risk, using the proven nucleus-ifc gate."
+description = "Trifecta Gate: an MCP proxy that taint-tracks AI-agent dataflow, pins tool schemas against poisoning and rug-pulls, and can block lethal-trifecta exfiltration using the proven nucleus-ifc gate."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +15,9 @@ path = "src/main.rs"
 [dependencies]
 # The engine: the model-level lethal-trifecta IFC decision (FlowDeclaration → IfcVerdict).
 nucleus-ifc = { path = "../nucleus-ifc", features = ["decision"] }
+# Tool-schema pinning (rug-pull detection). `default-features = false` keeps
+# cedar/crypto out of the guard: `tool_schema` needs only sha2 + BTreeMap.
+portcullis = { path = "../portcullis", default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

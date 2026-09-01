@@ -148,6 +148,7 @@ pub fn source_category(kind: NodeKind) -> SourceCategory {
         }
         NodeKind::WebContent
         | NodeKind::McpToolResult
+        | NodeKind::McpToolDescription
         | NodeKind::CachedDatum
         | NodeKind::ImageContent
         | NodeKind::AudioContent

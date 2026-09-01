@@ -134,6 +134,7 @@ fn prov_category(kind: NodeKind) -> ProvCategory {
         NodeKind::FileRead
         | NodeKind::WebContent
         | NodeKind::McpToolResult
+        | NodeKind::McpToolDescription
         | NodeKind::MemoryRead
         | NodeKind::EnvVar
         | NodeKind::Secret
@@ -198,6 +199,7 @@ fn node_kind_str(kind: NodeKind) -> &'static str {
         NodeKind::ToolResponse => "ToolResponse",
         NodeKind::WebContent => "WebContent",
         NodeKind::McpToolResult => "McpToolResult",
+        NodeKind::McpToolDescription => "McpToolDescription",
         NodeKind::MemoryRead => "MemoryRead",
         NodeKind::MemoryWrite => "MemoryWrite",
         NodeKind::FileRead => "FileRead",
