@@ -300,8 +300,18 @@ impl SelfSignedCa {
         params.not_before = now;
         params.not_after = now + ttl_duration;
 
-        // Set as end-entity certificate
-        params.is_ca = IsCa::NoCa;
+        // ExplicitNoCa, not NoCa. rcgen's `NoCa` OMITS the basicConstraints
+        // extension entirely; `ExplicitNoCa` emits it with `CA:FALSE`. The
+        // X.509-SVID standard says a leaf "MUST set the cA field to false",
+        // and an absent extension does not set anything.
+        //
+        // This was not a theoretical gap: the `spiffe` crate refused our SVIDs
+        // outright with `MissingX509Extension(OID(2.5.29.19))`. Our own
+        // validator did not catch it, because `is_ca()` reports false when the
+        // extension is missing — the security property held while the
+        // conformance one did not, which is exactly the kind of thing only a
+        // real client finds.
+        params.is_ca = IsCa::ExplicitNoCa;
         params.key_usages = vec![
             KeyUsagePurpose::DigitalSignature,
             KeyUsagePurpose::KeyEncipherment,

@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+// The SPIFFE Workload API, X.509-SVID profile.
+//
+// Copied from the SPIFFE standard (as vendored by the `spiffe` crate 0.16.1),
+// with the JWT-SVID profile omitted — see below.
+//
+// DELIBERATELY NO `package` DECLARATION. The standard method path is
+// `/SpiffeWorkloadAPI/FetchX509SVID`, with no package prefix; the `spiffe`
+// crate hard-codes exactly that string. Adding `package spiffe.workload;`
+// would compile fine, look tidier, and silently make every real SPIFFE client
+// fail to find the method. Do not add one.
+//
+// The JWT-SVID RPCs (FetchJWTSVID, FetchJWTBundles, ValidateJWTSVID) are NOT
+// declared here. Nucleus does not issue JWT-SVIDs, and tonic answers an
+// undeclared method with UNIMPLEMENTED — which is the truthful response.
+// Declaring them so we could return UNIMPLEMENTED by hand would say the same
+// thing at more cost, and would pull in google/protobuf/struct.proto for a
+// message we never construct.
+
+service SpiffeWorkloadAPI {
+    // Fetch X.509-SVIDs for all SPIFFE identities the workload is entitled to,
+    // as well as related information like trust bundles and CRLs. As this
+    // information changes, subsequent messages will be streamed from the
+    // server.
+    rpc FetchX509SVID(X509SVIDRequest) returns (stream X509SVIDResponse);
+
+    // Fetch trust bundles and CRLs. Useful for clients that only need to
+    // validate SVIDs without obtaining an SVID for themself.
+    rpc FetchX509Bundles(X509BundlesRequest) returns (stream X509BundlesResponse);
+}
+
+// There are currently no request parameters.
+message X509SVIDRequest {  }
+
+message X509SVIDResponse {
+    // Required. A list of X509SVID messages, each of which includes a single
+    // X.509-SVID, its private key, and the bundle for the trust domain.
+    repeated X509SVID svids = 1;
+
+    // Optional. ASN.1 DER encoded certificate revocation lists.
+    repeated bytes crl = 2;
+
+    // Optional. CA certificate bundles belonging to foreign trust domains that
+    // the workload should trust, keyed by the SPIFFE ID of the foreign trust
+    // domain. Bundles are ASN.1 DER encoded.
+    map<string, bytes> federated_bundles = 3;
+}
+
+message X509SVID {
+    // Required. The SPIFFE ID of the SVID in this entry
+    string spiffe_id = 1;
+
+    // Required. ASN.1 DER encoded certificate chain. MAY include
+    // intermediates, the leaf certificate (or SVID itself) MUST come first.
+    bytes x509_svid = 2;
+
+    // Required. ASN.1 DER encoded PKCS#8 private key. MUST be unencrypted.
+    bytes x509_svid_key = 3;
+
+    // Required. ASN.1 DER encoded X.509 bundle for the trust domain.
+    bytes bundle = 4;
+
+    // Optional. An operator-specified string used to provide guidance on how
+    // this identity should be used by a workload when more than one SVID is
+    // returned.
+    string hint = 5;
+}
+
+// There are currently no such parameters.
+message X509BundlesRequest {
+}
+
+message X509BundlesResponse {
+    // Optional. ASN.1 DER encoded certificate revocation lists.
+    repeated bytes crl = 1;
+
+    // Required. CA certificate bundles belonging to trust domains that the
+    // workload should trust, keyed by the SPIFFE ID of the trust domain.
+    // Bundles are ASN.1 DER encoded.
+    map<string, bytes> bundles = 2;
+}
