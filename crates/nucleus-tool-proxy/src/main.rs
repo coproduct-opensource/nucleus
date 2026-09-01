@@ -30,6 +30,7 @@ mod art12_shipper;
 mod art12_sink;
 mod attestation;
 mod auth;
+mod boot_report;
 mod broker_client;
 mod cert_bridge;
 mod declassify;
@@ -1884,7 +1885,10 @@ async fn main() -> Result<(), ApiError> {
         session_task_token,
     };
 
-    if let Err(err) = st.timed("boot_report", emit_boot_report(&state)).await {
+    if let Err(err) = st
+        .timed("boot_report", boot_report::emit_boot_report_bounded(&state))
+        .await
+    {
         warn!("failed to emit boot report: {err}");
     }
 
@@ -4608,42 +4612,8 @@ fn parse_and_verify_lockdown_signal(content: &str, current_state: bool) -> bool 
         .unwrap_or(true) // signal without "restore" field = lockdown active
 }
 
-async fn emit_boot_report(state: &AppState) -> Result<(), ApiError> {
-    // Always emit boot report — this is the first entry in the audit chain.
-    // Optional env var adds a custom message; otherwise use a default.
-    let message = std::env::var("NUCLEUS_TOOL_PROXY_BOOT_REPORT")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "tool-proxy started".to_string());
-    let actor = std::env::var("NUCLEUS_TOOL_PROXY_BOOT_ACTOR").ok();
-    let report = format!(
-        "{} [sandbox_proof={}]",
-        message,
-        state.sandbox_proof.tier_label()
-    );
-
-    state
-        .audit
-        .log(AuditEntry {
-            timestamp_unix: now_unix(),
-            actor,
-            event: "boot".to_string(),
-            subject: report,
-            result: "ok".to_string(),
-            prev_hash: String::new(),
-            hash: String::new(),
-            signature: String::new(),
-            drand_round: None, // Will be filled by AuditLog::log
-            spiffe_id: None,
-            policy_rule: None,
-        })
-        .await?;
-
-    Ok(())
-}
-
 #[derive(Debug, Serialize, Deserialize)]
-struct AuditEntry {
+pub(crate) struct AuditEntry {
     timestamp_unix: u64,
     actor: Option<String>,
     event: String,
