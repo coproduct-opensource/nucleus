@@ -6705,6 +6705,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-commerce-conformance"
+version = "1.0.0"
+dependencies = [
+ "nucleus-econ-kernels",
+ "nucleus-ifc",
+ "nucleus-recompute",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nucleus-control-plane"
 version = "1.0.0"
 dependencies = [
