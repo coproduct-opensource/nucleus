@@ -19,6 +19,20 @@
   (`new_gate_rejects_coup`), and transitive anti-coup soundness across a 2-step
   chain (`strengthened_gate_closes_it`).
 
+  # ARITY CAVEAT — read `Ck.PolicyMulti` alongside this file
+
+  This model collapses each authority group to ONE `Names` carrier. The
+  production types do not: `CapabilitySet` is five `BTreeSet<String>` plus a
+  numeric axis, `IoSurface` is five, `ProofRequirements` is three. That collapse
+  is NOT faithful — a capability that moves between axes leaves the union
+  unchanged, so this model ADMITS a pair the production gate REJECTS
+  (`Ck.PolicyMulti.flattening_admits_what_per_axis_rejects`, proved by `rfl`).
+
+  Consequently `T1_gate_sound` below is a theorem about the flattened sets, and
+  its conclusion does not by itself entail per-axis non-escalation.
+  `Ck.PolicyMulti.T1_gate_sound_multi` is the version that does, and
+  `flat_is_a_special_case` pins this file to it so the two cannot drift.
+
   # EXTRACTION-GAP CAVEAT
 
   These theorems are proved about the Lean MODEL. The parity proptest binds the

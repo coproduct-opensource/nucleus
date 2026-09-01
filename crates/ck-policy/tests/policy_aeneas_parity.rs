@@ -230,6 +230,8 @@ fn core_verdict(parent: &PolicyManifest, child: &PolicyManifest) -> bool {
         &child_proof,
         &parent_budget,
         &child_budget,
+        parent.amendment_rules.constitutional_human_signatures,
+        child.amendment_rules.constitutional_human_signatures,
     )
 }
 
@@ -269,6 +271,7 @@ fn manifest(
     proof_bits: u32,
     budget_vals: [u64; 8],
     parallel: u32,
+    sigs: u32,
     flag_cap: bool,
     flag_io: bool,
     flag_proof: bool,
@@ -318,7 +321,7 @@ fn manifest(
             require_monotone_capabilities: flag_cap,
             require_monotone_io: flag_io,
             require_monotone_proofreq: flag_proof,
-            constitutional_human_signatures: 2,
+            constitutional_human_signatures: sigs,
         },
     }
 }
@@ -344,9 +347,13 @@ proptest! {
         cpar in 0u32..6,
         pf_cap in any::<bool>(), pf_io in any::<bool>(), pf_proof in any::<bool>(),
         cf_cap in any::<bool>(), cf_io in any::<bool>(), cf_proof in any::<bool>(),
+        // The numeric governance axis. Held at a constant 2 until now, which is
+        // why this proptest could not observe it: a gate ignoring the threshold
+        // entirely passed all 2048 cases.
+        psigs in 0u32..4, csigs in 0u32..4,
     ) {
-        let parent = manifest(pcaps, pio, ppr, pbud, ppar, pf_cap, pf_io, pf_proof);
-        let child = manifest(ccaps, cio, cpr, cbud, cpar, cf_cap, cf_io, cf_proof);
+        let parent = manifest(pcaps, pio, ppr, pbud, ppar, psigs, pf_cap, pf_io, pf_proof);
+        let child = manifest(ccaps, cio, cpr, cbud, cpar, csigs, cf_cap, cf_io, cf_proof);
 
         let prod = check_monotonicity(&parent, &child).passed;
         let core = core_verdict(&parent, &child);
@@ -364,7 +371,7 @@ proptest! {
 fn meta_gap_coup_parity() {
     let zero = [0u64; 8];
     // fullParent: every monotone flag ON, empty projections.
-    let parent = manifest(0, 0, 0, zero, 0, true, true, true);
+    let parent = manifest(0, 0, 0, zero, 0, 2, true, true, true);
     // disarmingChild: identical projections, capability flag OFF.
     let mut child = parent.clone();
     child.amendment_rules.require_monotone_capabilities = false;
@@ -419,6 +426,8 @@ fn core_verdict_broken_no_parallel(parent: &PolicyManifest, child: &PolicyManife
         &child_proof,
         &budget_arr(&parent.budget_bounds),
         &budget_arr(&child.budget_bounds),
+        parent.amendment_rules.constitutional_human_signatures,
+        child.amendment_rules.constitutional_human_signatures,
     )
 }
 
@@ -427,8 +436,8 @@ fn adapter_binding_is_load_bearing() {
     // Parent allows 1 parallel task; child wants 3 → a capability ESCALATION.
     // Parent has the capability monotonicity flag ON, so production REJECTS.
     let zero = [0u64; 8];
-    let parent = manifest(0, 0, 0, zero, 1, true, true, true);
-    let child = manifest(0, 0, 0, zero, 3, true, true, true);
+    let parent = manifest(0, 0, 0, zero, 1, 2, true, true, true);
+    let child = manifest(0, 0, 0, zero, 3, 2, true, true, true);
 
     let prod = check_monotonicity(&parent, &child).passed;
     assert!(!prod, "production must reject the parallel-task escalation");
