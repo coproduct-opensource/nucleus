@@ -51,6 +51,7 @@ mod policy;
 mod run_gate;
 mod sandbox_proof;
 mod session_token;
+mod startup_trace;
 mod telemetry;
 #[allow(dead_code)]
 mod unicode_audit;
@@ -59,7 +60,7 @@ mod verdict_sink;
 mod web_fetch_policy;
 mod workload;
 
-use attestation::{AttestationConfig, AttestationVerifier};
+use attestation::AttestationVerifier;
 use auth::{AuthConfig, AuthError};
 use base64::Engine as _;
 use mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
@@ -1389,6 +1390,7 @@ fn start_and_drain_workload(
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
+    let mut st = startup_trace::Startup::new();
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     {
@@ -1449,7 +1451,13 @@ async fn main() -> Result<(), ApiError> {
         sandbox_token: std::env::var("NUCLEUS_SANDBOX_TOKEN").ok(),
         auth_secret: args.auth_secret.as_bytes().to_vec(),
     };
-    let sandbox_proof = match sandbox_proof::verify_sandbox(&sandbox_proof_config).await {
+    let sandbox_proof = match st
+        .timed(
+            "sandbox_proof",
+            sandbox_proof::verify_sandbox(&sandbox_proof_config),
+        )
+        .await
+    {
         Ok(proof) => {
             info!(
                 "sandbox proof verified: tier={} label={}",
@@ -1464,7 +1472,9 @@ async fn main() -> Result<(), ApiError> {
         }
     };
 
-    let spec_contents = tokio::fs::read_to_string(&args.spec).await?;
+    let spec_contents = st
+        .timed("spec_read", tokio::fs::read_to_string(&args.spec))
+        .await?;
     let spec: PodSpec =
         serde_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
 
@@ -1559,7 +1569,7 @@ async fn main() -> Result<(), ApiError> {
         }
     };
 
-    let audit = build_audit_log(&args, &auth).await?;
+    let audit = st.timed("audit_log", build_audit_log(&args, &auth)).await?;
 
     // Resolve all web_fetch enforcement inputs (DNS/URL allowlists + per-pod
     // MIME and response-cap overrides) BEFORE building the client, so its
@@ -1583,25 +1593,7 @@ async fn main() -> Result<(), ApiError> {
     .map_err(|e| ApiError::Spec(format!("failed to build HTTP client: {e}")))?;
 
     // Build attestation verifier
-    let attestation_config = {
-        let mut config = if args.require_attestation {
-            AttestationConfig::required()
-        } else {
-            AttestationConfig::default()
-        };
-        if let Some(ref hashes) = args.allowed_kernel_hashes {
-            config = config.with_kernel_hashes(hashes);
-        }
-        if let Some(ref hashes) = args.allowed_rootfs_hashes {
-            config = config.with_rootfs_hashes(hashes);
-        }
-        if let Some(ref hashes) = args.allowed_config_hashes {
-            config = config.with_config_hashes(hashes);
-        }
-        config = config.with_min_assurance(args.min_assurance); // C9 floor (>L0 ⇒ required)
-        config
-    };
-    let attestation_verifier = AttestationVerifier::new(attestation_config);
+    let attestation_verifier = AttestationVerifier::new(startup_trace::attestation_config(&args));
 
     // Build policy engine for identity-based authorization
     let policy_engine = if let Some(policy_path) = &args.policy_file {
@@ -2054,7 +2046,8 @@ async fn main() -> Result<(), ApiError> {
         return Ok(());
     }
 
-    let listener = TcpListener::bind(&args.listen).await?;
+    let listener = st.timed("bind", TcpListener::bind(&args.listen)).await?;
+    st.report();
     let addr = listener.local_addr()?;
 
     if let Some(path) = args.announce_path.as_ref() {
