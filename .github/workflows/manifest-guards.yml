@@ -99,3 +99,8 @@ jobs:
       # copies of one fact drift, so this fails if they disagree.
       - name: merge_group scope gates match their declared paths
         run: bash ci/merge-group-scope-parity.sh
+      # Exactly one place decides what SPIFFE ID a certificate carries. Six
+      # independent copies of that parse existed, each returning the FIRST
+      # `spiffe://` SAN, which the X.509-SVID standard requires be rejected.
+      - name: One X.509-SVID validator
+        run: bash ci/one-svid-validator.sh

@@ -63,7 +63,9 @@ pub use attestation::{
 #[cfg(feature = "spire")]
 pub use ca::{auto_detect_ca, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV};
 pub use ca::{CaClient, SelfSignedCa};
-pub use certificate::{TrustBundle, WorkloadCertificate};
+pub use certificate::{
+    spiffe_uri_from_parsed_svid, spiffe_uri_from_svid, TrustBundle, WorkloadCertificate,
+};
 pub use cross_agent::{join_cross_agent, CrossAgentExchange, CrossAgentReceipt};
 pub use csr::{CertSign, CsrOptions};
 pub use did::{did_web_to_url, DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod};

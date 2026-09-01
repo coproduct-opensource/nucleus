@@ -260,19 +260,10 @@ fn verify_svid_chain(
         bail!("SVID leaf is not signed by any trusted CA root");
     }
 
-    let spiffe_id = leaf
-        .subject_alternative_name()
-        .ok()
-        .flatten()
-        .and_then(|san| {
-            san.value.general_names.iter().find_map(|gn| match gn {
-                x509_parser::extensions::GeneralName::URI(u) if u.starts_with("spiffe://") => {
-                    Some(u.to_string())
-                }
-                _ => None,
-            })
-        })
-        .ok_or_else(|| anyhow!("SVID has no spiffe:// URI SAN"))?;
+    // One validator for the whole repo. The find_map this replaced returned the
+    // first `spiffe://` SAN, so a multi-identity certificate was accepted.
+    let spiffe_id = nucleus_identity::spiffe_uri_from_parsed_svid(&leaf)
+        .map_err(|e| anyhow!("not a valid X.509-SVID: {e}"))?;
 
     // The leaf's ed25519 public key is the trailing 32 bytes of its SPKI.
     let raw = leaf.public_key().raw;
