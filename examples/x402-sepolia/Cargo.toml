@@ -38,3 +38,7 @@ anyhow = "1"
 # The nucleus trust layer that makes this more than a plain x402 paywall:
 # the IFC gate + signed receipt on the paid route.
 nucleus-verify-commerce = { path = "../../crates/nucleus-verify-commerce" }
+# The paid route emits a recompute-verifiable payout + settlement attestation, so
+# the buyer can check its own share offline instead of trusting this seller.
+nucleus-recompute = { path = "../../crates/nucleus-recompute" }
+nucleus-econ-kernels = { path = "../../crates/nucleus-econ-kernels" }

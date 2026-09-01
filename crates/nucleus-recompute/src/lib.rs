@@ -52,6 +52,15 @@ use portcullis_core::extracted::ifc_integrity::{imeet, IntegLevel};
 /// conservation theorem.
 pub mod payout;
 
+/// Settlement attestation — the rail-side fact that a payout was actually paid,
+/// bound into something the signature covers.
+///
+/// `EdgeKind::Settlement` carries `tx_ref` and `rail`, but `canonical_edge_bytes`
+/// signs only the kind DISCRIMINANT, so those fields are outside the signature.
+/// The settlement facts therefore have to live in the object the edge's
+/// `content_hash_hex` commits to — this one.
+pub mod settlement_attestation;
+
 /// Domain separator for the canonical receipt bytes (versioned).
 const RECEIPT_DOMAIN: &[u8] = b"nucleus-recompute/clearing-receipt/v1\0";
 
