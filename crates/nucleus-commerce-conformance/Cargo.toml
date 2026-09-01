@@ -1,0 +1,21 @@
+[package]
+name = "nucleus-commerce-conformance"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Language-agnostic conformance vectors for the open agent-commerce layer: every case is a scenario an integrator MUST classify the same way nucleus does. Exportable as JSON so a runtime in any language can check itself."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+nucleus-recompute = { path = "../nucleus-recompute", version = "1.0.0" }
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels", version = "1.0.0" }
+# The disclosure property is an IFC decision, so the corpus needs the decision
+# module (wasm-pure: serde + portcullis-core only).
+nucleus-ifc = { path = "../nucleus-ifc", version = "1.0.0", features = ["decision"] }
+
+[lints]
+workspace = true
