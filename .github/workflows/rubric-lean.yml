@@ -58,13 +58,23 @@ jobs:
           # Match the tactic/term forms (`:= sorry`, `:= by sorry`, a lone `sorry`,
           # a lone `admit` / `:= by admit`, `native_decide`, or the `sorryAx` axiom
           # spelled out in source) — NOT the word "sorry" in "0 sorry" doc comments.
+          # Non-vacuity: this gate is a grep, and a grep over a path that no longer
+          # matches exits non-zero, takes the `else` branch, and prints the success
+          # line having scanned NOTHING. Establish that there is something to scan
+          # before letting its silence count as a pass.
+          FILES=$(find crates/nucleus-rubric/lean/Nucleus -name '*.lean' | wc -l | tr -d ' ')
+          if [ "$FILES" -lt 1 ]; then
+            echo "::error::no .lean files under crates/nucleus-rubric/lean/Nucleus — the rubric sorry-ban scanned nothing."
+            exit 1
+          fi
+          echo "scanning $FILES .lean file(s) under crates/nucleus-rubric/lean/Nucleus"
           if grep -rnE \
                '(:=[[:space:]]*by[[:space:]]+sorry|:=[[:space:]]*sorry|^[[:space:]]*sorry$|:=[[:space:]]*by[[:space:]]+admit|^[[:space:]]*admit$|native_decide|sorryAx)' \
                --include='*.lean' crates/nucleus-rubric/lean/Nucleus; then
             echo "ERROR: rubric Lean uses 'sorry'/'admit' (proof holes), 'native_decide', or 'sorryAx' (banned)."
             exit 1
           fi
-          echo "No sorry / admit / native_decide / sorryAx — rubric scoring proofs are complete and kernel-checked."
+          echo "No sorry / admit / native_decide / sorryAx across $FILES file(s) — rubric scoring proofs are complete and kernel-checked."
 
       - name: Assert theorems are sorryAx-free (#print axioms)
         working-directory: crates/nucleus-rubric/lean
