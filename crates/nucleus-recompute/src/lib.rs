@@ -43,6 +43,15 @@ use nucleus_econ_kernels::{
 // of that theorem, so it recomputes via these exact functions.
 use portcullis_core::extracted::ifc_integrity::{imeet, IntegLevel};
 
+/// Payout — the split of a cleared amount among the parties that earned it.
+///
+/// [`verify_receipt`] answers "did this clearing compute the right number?";
+/// [`payout::verify_payout`] answers "and was that number split as claimed?".
+/// It reuses the proven `route_to_commons` kernel rather than introducing a
+/// second numeric path, so the payout math inherits `Commons.lean`'s
+/// conservation theorem.
+pub mod payout;
+
 /// Domain separator for the canonical receipt bytes (versioned).
 const RECEIPT_DOMAIN: &[u8] = b"nucleus-recompute/clearing-receipt/v1\0";
 
