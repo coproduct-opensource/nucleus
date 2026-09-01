@@ -73,10 +73,11 @@ nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
                                # POD and asserts what the guest did
 ```
 
-Guest artifacts come from the pinned release **v2.1.0**, the first one able to
-boot a pod at all — everything up to 2.0.2 ships a rootfs with no CA bundle, on
-which the guest panics as PID 1, and `tier2_artifacts::GUEST_RELEASE_FLOOR`
-refuses those rather than installing one. **Measured 48.7 s** from a deleted VM to
+Guest artifacts come from the pinned release **v2.2.0**, the first whose rootfs
+matches a current node. `tier2_artifacts::GUEST_RELEASE_FLOOR` refuses anything
+older rather than installing a pod that cannot boot — everything up to 2.0.2
+ships a rootfs with no CA bundle, on which the guest panics as PID 1, and 2.1.0
+predates the change to how the guest is approved, which panics the same way. **Measured 48.7 s** from a deleted VM to
 a booted pod, with Sigstore build provenance verified on every downloaded
 artifact.
 

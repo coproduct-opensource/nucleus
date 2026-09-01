@@ -85,24 +85,38 @@ pub const RELEASE_REPO: &str = "coproduct-opensource/nucleus";
 /// Both halves of that fix — the fallible constructor and `build-rootfs.sh`
 /// installing a bundle — landed after 2.0.2.
 ///
+/// The same thing has now happened a second time, one release up. #2214
+/// (2026-08-08) replaced the guest's shared approval secret with Ed25519
+/// verification against the node's public key: a current `nucleus-node` sends
+/// `nucleus.approval_pubkeys` and no longer sends `nucleus.approval_secret`,
+/// which the 2.1.0 rootfs's guest-init still requires. It exits, and because it
+/// is PID 1 the kernel panics — the identical failure shape as #2110, from a
+/// different cause. So 2.1.0 joins 2.0.2 below the floor.
+///
 /// So a quickstart pinned below this floor would hand a new user a pod that
 /// cannot boot. `setup` refuses rather than installing one, and says why.
-pub const GUEST_RELEASE_FLOOR: &str = "2.1.0";
+pub const GUEST_RELEASE_FLOOR: &str = "2.2.0";
 
 /// The release `setup` installs guest artifacts from.
 ///
-/// `2.1.0` is the first release containing everything a pod needs to boot: the CA
-/// bundle in the rootfs (#2110), the `ip netns exec` separator fix without which
-/// no pod launches on a default install, and the workload-API socket chown
-/// without which the guest cannot fetch its SVID.
+/// `2.2.0` is the first release whose rootfs matches a post-#2214 node. 2.1.0
+/// was the first release containing everything a pod needed to boot at the time
+/// — the CA bundle in the rootfs (#2110), the `ip netns exec` separator fix
+/// without which no pod launches on a default install, and the workload-API
+/// socket chown without which the guest cannot fetch its SVID — and it stayed
+/// pinned for five weeks after the node moved past it.
 ///
-/// Bumped from `2.1.0-rc.1` in the same change that is released as `2.1.0`, and
-/// deliberately BEFORE the tag is cut: a stable CLI must not pin prerelease guest
-/// images, which is what shipping 2.1.0 with the RC still pinned would do.
+/// Bumped BEFORE the tag is cut, matching how `2.1.0` was bumped from its RC in
+/// the change that was released as `2.1.0`. The ordering is deliberate and it
+/// has a cost worth naming: between this landing and the `v2.2.0` assets being
+/// built, `setup` points at a release that does not exist yet. That window is
+/// inherent to pinning your own next version, and the alternative — tag first,
+/// bump after — ships a release whose CLI pins the *previous* release's guest,
+/// which is precisely the skew being closed.
 ///
 /// `pinned_release_is_at_or_above_the_floor` fails if this ever drops below the
 /// floor; `parse_release` explains why an RC compares equal to its own version.
-pub const GUEST_RELEASE: &str = "2.1.0";
+pub const GUEST_RELEASE: &str = "2.2.0";
 
 /// Something a Tier 2 host needs, published as a release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,8 +271,8 @@ mod tests {
     /// numeric core.
     #[test]
     fn a_prerelease_of_an_acceptable_version_is_accepted() {
-        for rc in ["2.1.0-rc.1", "v2.1.0-rc.1", "2.1.0-rc1", "2.1.0+build.7"] {
-            assert_eq!(parse_release(rc), Some((2, 1, 0)), "{rc} core");
+        for rc in ["2.2.0-rc.1", "v2.2.0-rc.1", "2.2.0-rc1", "2.2.0+build.7"] {
+            assert_eq!(parse_release(rc), Some((2, 2, 0)), "{rc} core");
             assert!(release_is_acceptable(rc), "{rc} should be accepted");
         }
     }
@@ -268,7 +282,10 @@ mod tests {
     /// handling would be a way to smuggle a pre-CA-bundle rootfs past the floor.
     #[test]
     fn a_prerelease_of_a_refused_version_is_still_refused() {
-        for rc in ["2.0.2-rc.1", "1.1.0-rc.1", "v2.0.0-beta"] {
+        // `2.1.0` joined this list when the floor rose to 2.2.0: #2214 left its
+        // rootfs unable to boot a current node. If the floor is ever lowered
+        // back, this is the assertion that fails.
+        for rc in ["2.1.0-rc.1", "2.0.2-rc.1", "1.1.0-rc.1", "v2.0.0-beta"] {
             assert!(
                 !release_is_acceptable(rc),
                 "{rc} predates the PID-1 CA-store fix and must stay refused"
@@ -287,8 +304,8 @@ mod tests {
     /// the bare version rather than failing to parse.
     #[test]
     fn a_tag_style_version_parses() {
-        assert_eq!(parse_release("v2.1.0"), parse_release("2.1.0"));
-        assert!(release_is_acceptable("v2.1.0"));
+        assert_eq!(parse_release("v2.2.0"), parse_release("2.2.0"));
+        assert!(release_is_acceptable("v2.2.0"));
     }
 
     #[test]
