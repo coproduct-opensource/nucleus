@@ -37,6 +37,16 @@
 //! line-ratchet ceiling, so an instrumentation that cost two lines per call site
 //! could not land at all. Wrapping costs zero.
 //!
+//! # Streaming, because the interesting case is a stall
+//!
+//! Each phase prints as it completes (`nucleus-startup-phase`), and the summary
+//! (`nucleus-startup-trace`) prints before binding. The summary alone is not
+//! enough: the first real boot with this module produced NO output at all,
+//! because the proxy never reached `bind` — and a profiler that only speaks on
+//! the success path is silent in precisely the case you built it for. The last
+//! phase line printed names the last thing that finished; the stall is the next
+//! one.
+//!
 //! # Reconciliation, kept honest
 //!
 //! The report prints `unaccounted = total - sum(milestones)`, following the same
@@ -76,6 +86,18 @@ pub(crate) fn attestation_config(args: &Args) -> AttestationConfig {
     config.with_min_assurance(args.min_assurance)
 }
 
+/// How many approvals a declassification needs (`NUCLEUS_DECLASSIFY_THRESHOLD`).
+///
+/// Extracted alongside `attestation_config` for the same reason: `main.rs` is on
+/// its line ratchet, so instrumentation has to pay for itself. Defaults to 1 on
+/// an unset or unparseable value.
+pub(crate) fn declassify_threshold() -> usize {
+    std::env::var("NUCLEUS_DECLASSIFY_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1)
+}
+
 /// One timed initialisation step.
 struct Milestone {
     name: &'static str,
@@ -108,10 +130,19 @@ impl Startup {
     ) -> F::Output {
         let t = Instant::now();
         let out = fut.await;
-        self.milestones.push(Milestone {
-            name,
-            millis: t.elapsed().as_millis(),
-        });
+        let millis = t.elapsed().as_millis();
+        // Emit as each phase COMPLETES, not only in the summary. A trace that
+        // prints once at the end cannot diagnose a hang: if startup stalls, the
+        // summary never runs and the console stays empty — which is exactly what
+        // happened on the first real boot with this module, and is the whole
+        // failure mode it exists to investigate. Streaming the milestones means
+        // the LAST line printed names the phase that completed, so the stall is
+        // in the one after it.
+        println!(
+            "nucleus-startup-phase {name}={millis}ms at={}ms",
+            self.start.elapsed().as_millis()
+        );
+        self.milestones.push(Milestone { name, millis });
         out
     }
 

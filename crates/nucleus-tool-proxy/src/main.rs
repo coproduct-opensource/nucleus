@@ -1602,13 +1602,16 @@ async fn main() -> Result<(), ApiError> {
                 "policy file specified but --zero-prompt not enabled; policy will not be enforced"
             );
         }
-        let policy_config = policy::load_policy_file(policy_path).await.map_err(|e| {
-            ApiError::Spec(format!(
-                "failed to load policy file {}: {}",
-                policy_path.display(),
-                e
-            ))
-        })?;
+        let policy_config = st
+            .timed("policy_load", policy::load_policy_file(policy_path))
+            .await
+            .map_err(|e| {
+                ApiError::Spec(format!(
+                    "failed to load policy file {}: {}",
+                    policy_path.display(),
+                    e
+                ))
+            })?;
         info!(
             "loaded policy file with {} rules (zero_prompt={})",
             policy_config.policies.len(),
@@ -1801,10 +1804,7 @@ async fn main() -> Result<(), ApiError> {
             .ok()
             .as_deref(),
     ));
-    let declassify_threshold = std::env::var("NUCLEUS_DECLASSIFY_THRESHOLD")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1);
+    let declassify_threshold = startup_trace::declassify_threshold();
 
     // Live-path session task token (PR-2, present-not-consumed). Read the
     // host-injected token/nonce/issuer off the boot channel and verify ONCE.
@@ -1884,7 +1884,7 @@ async fn main() -> Result<(), ApiError> {
         session_task_token,
     };
 
-    if let Err(err) = emit_boot_report(&state).await {
+    if let Err(err) = st.timed("boot_report", emit_boot_report(&state)).await {
         warn!("failed to emit boot report: {err}");
     }
 
@@ -2025,7 +2025,12 @@ async fn main() -> Result<(), ApiError> {
         // serve, so its proxy URL names a socket that exists); before run 4's
         // diagnosis it started only below, and an in-guest pod's workload never
         // ran at all.
-        let bound = pod_mgmt::bind_vsock(vsock, args.announce_path).await?;
+        let bound = st
+            .timed(
+                "vsock_bind",
+                pod_mgmt::bind_vsock(vsock, args.announce_path),
+            )
+            .await?;
         let _workload = start_and_drain_workload(
             &spec,
             workload::BoundProxy::Vsock {
@@ -2034,6 +2039,7 @@ async fn main() -> Result<(), ApiError> {
             },
             &args.auth_secret,
         )?;
+        st.report();
         pod_mgmt::serve_vsock(app, bound).await?;
         write_exit_report(
             &exit_audit,
