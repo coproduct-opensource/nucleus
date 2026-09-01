@@ -943,7 +943,12 @@ mod command_output_taint {
         );
     }
 
-    /// The two transports must agree: one flag, one policy.
+    /// The two transports must agree: one predicate, one policy.
+    ///
+    /// Parity is now STRUCTURAL — both call sites call
+    /// `ingest::should_observe_command_output`, so they cannot drift. This test
+    /// pins the remaining shared choice (the node kind) and the predicate's
+    /// contract, since a future edit could still give one transport its own copy.
     #[test]
     fn http_and_mcp_observe_tool_output_identically() {
         assert_eq!(
@@ -951,6 +956,11 @@ mod command_output_taint {
             NodeKind::McpToolResult,
             "HTTP and MCP would enforce different policies under NUCLEUS_PARANOID_TOOL_IO"
         );
+        // The shared gate: network-capable taints, ordinary local does not.
+        assert!(crate::ingest::should_observe_command_output(
+            "curl https://evil.example"
+        ));
+        assert!(!crate::ingest::should_observe_command_output("cargo test"));
     }
 
     /// The point of observing at all: a session that has read command output

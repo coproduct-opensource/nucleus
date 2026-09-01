@@ -6,7 +6,7 @@
 //! When the `otel` feature is active, spans flow to OTLP backends as
 //! proper OpenTelemetry spans with parent-child relationships.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use portcullis::trace_monitor::TraceMonitor;
@@ -34,6 +34,30 @@ pub struct ToolProxyVerdictSink {
     /// `decide_term_with_flow`, and complete mediation routes every tool call
     /// through the kernel) — passed the issuer-credential check.
     dlc_provisioned: bool,
+    /// Consecutive denied operations. Reset by any allow.
+    ///
+    /// See [`ToolProxyVerdictSink::note_outcome_for_breaker`].
+    consecutive_denials: AtomicU32,
+    /// How many consecutive denials trip lockdown. `0` disables the breaker.
+    denial_budget: u32,
+}
+
+/// Consecutive denials that trip the breaker when `NUCLEUS_DENIAL_BUDGET` is
+/// unset.
+///
+/// Ten is chosen to sit well above legitimate behaviour and well below a
+/// productive attack. Because the count is CONSECUTIVE and any allow resets it,
+/// an agent doing real work — which interleaves successful calls with the
+/// occasional refusal — never approaches it; ten refusals in a row with nothing
+/// succeeding in between is not an agent working, it is an agent probing.
+pub(crate) const DEFAULT_DENIAL_BUDGET: u32 = 10;
+
+/// Read the configured denial budget. `0` (or an unparseable value) disables it.
+fn denial_budget_from_env() -> u32 {
+    match std::env::var("NUCLEUS_DENIAL_BUDGET") {
+        Ok(v) => v.trim().parse().unwrap_or(DEFAULT_DENIAL_BUDGET),
+        Err(_) => DEFAULT_DENIAL_BUDGET,
+    }
 }
 
 /// Build the process's verdict sink, already wrapped in its monitor.
@@ -118,6 +142,8 @@ impl ToolProxyVerdictSink {
         dlc_provisioned: bool,
     ) -> Self {
         Self {
+            consecutive_denials: AtomicU32::new(0),
+            denial_budget: denial_budget_from_env(),
             file_lockdown,
             stream_lockdown,
             capabilities,
@@ -132,6 +158,62 @@ impl ToolProxyVerdictSink {
     /// Mirrors `is_locked()` in main.rs.
     fn is_locked(&self) -> bool {
         self.file_lockdown.load(Ordering::Acquire) || self.stream_lockdown.load(Ordering::Acquire)
+    }
+
+    /// The **behavioural circuit breaker**: trip lockdown after
+    /// [`denial_budget`](Self::denial_budget) consecutive denials.
+    ///
+    /// Lockdown could already be entered two ways — an operator writing the
+    /// signal file, and a fleet command over the gRPC stream — and both are a
+    /// *human* deciding something is wrong. Nothing let the pod reach that
+    /// conclusion by itself, so an agent "operating outside policy while still
+    /// appearing legitimate" (OWASP ASI10, Rogue Agents) could hammer the policy
+    /// wall indefinitely: every individual call was correctly refused, and the
+    /// pattern across calls was nobody's job to notice.
+    ///
+    /// This does not introduce a new way to deny. It sets the SAME
+    /// `file_lockdown` flag the operator path sets, so the deny happens through
+    /// the existing, already-enforced `preflight`/`record` gate. One lockdown
+    /// state, three ways in; clearing it stays a human action.
+    ///
+    /// **Consecutive**, and reset by any allow — that choice is what makes the
+    /// default safe. Real work interleaves successes with the occasional
+    /// refusal, so it never accumulates; a run of denials with nothing
+    /// succeeding in between is a different shape of session.
+    ///
+    /// Returns `true` if this call tripped the breaker (for tests and logging).
+    fn note_outcome_for_breaker(&self, verdict: &str) -> bool {
+        if self.denial_budget == 0 {
+            return false; // explicitly disabled
+        }
+        if verdict == "allow" {
+            self.consecutive_denials.store(0, Ordering::Release);
+            return false;
+        }
+        // `requires_approval` is a deferral, not a refusal: it means a human was
+        // asked, which is the system working. Counting it would trip the breaker
+        // on well-behaved sessions that use approvals.
+        if verdict != "deny" {
+            return false;
+        }
+        let n = self.consecutive_denials.fetch_add(1, Ordering::AcqRel) + 1;
+        if n < self.denial_budget {
+            return false;
+        }
+        // Trip. Idempotent: already-locked sessions just stay locked.
+        let already = self.file_lockdown.swap(true, Ordering::AcqRel);
+        if !already {
+            tracing::error!(
+                target: "nucleus_permission",
+                consecutive_denials = n,
+                budget = self.denial_budget,
+                session_id = %self.session_id,
+                "CIRCUIT BREAKER TRIPPED: {n} consecutive denials — entering lockdown. \
+                 The agent is being refused repeatedly with nothing succeeding in between; \
+                 clearing lockdown is a human action."
+            );
+        }
+        !already
     }
 
     /// Map Operation to the short string names used by the audit log.
@@ -227,6 +309,11 @@ impl VerdictSink for ToolProxyVerdictSink {
                 other => ("error", format!("unclassified verdict outcome: {other:?}")),
             }
         };
+
+        // The behavioural breaker sees the verdict BEFORE telemetry, so the span
+        // below reports the lockdown state this call may itself have caused.
+        let breaker_tripped = self.note_outcome_for_breaker(verdict_str);
+        let lockdown_active = lockdown_active || breaker_tripped;
 
         let caps = telemetry::VerdictCapabilities::from(&self.capabilities);
         let exposure = self.read_exposure();
@@ -411,6 +498,112 @@ mod tests {
             "test-session".to_string(),
             false,
         )
+    }
+
+    /// The behavioural circuit breaker (ASI10, Rogue Agents).
+    ///
+    /// Every test here drives `note_outcome_for_breaker` directly rather than
+    /// through `record`, because `record`'s span emission needs no fixture and
+    /// the breaker's *decision* is the subject.
+    mod circuit_breaker {
+        use super::*;
+
+        fn sink_with_budget(budget: u32) -> ToolProxyVerdictSink {
+            let mut s = make_sink(false, false);
+            s.denial_budget = budget;
+            s
+        }
+
+        #[test]
+        fn consecutive_denials_trip_lockdown() {
+            let s = sink_with_budget(3);
+            assert!(!s.is_locked(), "must start unlocked or this proves nothing");
+
+            assert!(!s.note_outcome_for_breaker("deny"));
+            assert!(!s.note_outcome_for_breaker("deny"));
+            assert!(!s.is_locked(), "must not trip before the budget");
+
+            assert!(s.note_outcome_for_breaker("deny"), "the third trips it");
+            assert!(
+                s.is_locked(),
+                "the breaker must enter the SAME lockdown state"
+            );
+        }
+
+        #[test]
+        fn an_allow_resets_the_run() {
+            // The property that makes the default safe: real work interleaves
+            // successes, so it never accumulates toward the budget.
+            let s = sink_with_budget(3);
+            for _ in 0..10 {
+                s.note_outcome_for_breaker("deny");
+                s.note_outcome_for_breaker("deny");
+                s.note_outcome_for_breaker("allow");
+            }
+            assert!(
+                !s.is_locked(),
+                "20 denials interleaved with allows must NOT trip a budget of 3"
+            );
+        }
+
+        #[test]
+        fn approvals_are_deferrals_not_refusals() {
+            // `requires_approval` means a human was asked — the system working.
+            // Counting it would trip the breaker on well-behaved sessions.
+            let s = sink_with_budget(3);
+            for _ in 0..20 {
+                s.note_outcome_for_breaker("requires_approval");
+            }
+            assert!(!s.is_locked());
+        }
+
+        #[test]
+        fn a_zero_budget_disables_the_breaker() {
+            let s = sink_with_budget(0);
+            for _ in 0..100 {
+                s.note_outcome_for_breaker("deny");
+            }
+            assert!(!s.is_locked(), "budget 0 must be off, not instant");
+        }
+
+        #[test]
+        fn tripping_is_idempotent() {
+            let s = sink_with_budget(1);
+            assert!(
+                s.note_outcome_for_breaker("deny"),
+                "first trip reports true"
+            );
+            assert!(
+                !s.note_outcome_for_breaker("deny"),
+                "an already-locked session must not re-report a trip"
+            );
+            assert!(s.is_locked());
+        }
+
+        #[test]
+        fn a_tripped_breaker_denies_through_the_existing_gate() {
+            // The point of setting `file_lockdown` rather than inventing a new
+            // deny: enforcement is the path that already existed and is already
+            // tested. If this failed, the breaker would be setting a flag nobody
+            // reads — the exact "control that isn't wired" shape.
+            let s = sink_with_budget(1);
+            assert!(
+                s.preflight(Operation::RunBash).is_ok(),
+                "must be permitted before the trip, or the assertion below is vacuous"
+            );
+            s.note_outcome_for_breaker("deny");
+            assert!(matches!(
+                s.preflight(Operation::RunBash),
+                Err(SinkError::Locked)
+            ));
+        }
+
+        #[test]
+        fn the_default_budget_is_a_real_number() {
+            // Guards against a default of 0 (off) or 1 (trips on one refusal).
+            const { assert!(DEFAULT_DENIAL_BUDGET >= 5, "too twitchy for real sessions") };
+            const { assert!(DEFAULT_DENIAL_BUDGET <= 50, "too loose to catch probing") };
+        }
     }
 
     fn built() -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
