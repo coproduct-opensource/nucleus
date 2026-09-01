@@ -964,6 +964,14 @@ fn is_pr_command(args: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // This crate is `#![deny(unsafe_code)]` and that stays true of everything it
+    // ships. Edition 2024 made `std::env::set_var` unsafe, and two tests here
+    // must set a variable in the PARENT process to prove the child cannot see
+    // it -- which is the property under test, so it cannot be rewritten to use
+    // `Command::env`. The exception is therefore scoped to the test module and
+    // goes nowhere near the library.
+    #![allow(unsafe_code)]
+
     use super::*;
 
     /// Path-qualified git/gh must classify by operation, not slip into `run_bash`.
@@ -1379,7 +1387,11 @@ mod tests {
     #[test]
     fn test_env_isolation_clears_parent_env() {
         // Set a secret in the parent environment
-        std::env::set_var("TEST_PARENT_SECRET", "super-secret-value");
+        // SAFETY: edition 2024 makes env mutation unsafe because it races any
+        // concurrent reader, and the test harness is multi-threaded. This is
+        // a real caveat, not a formality: it is sound here only because the
+        // key is unique to this test, so no other test reads or writes it.
+        unsafe { std::env::set_var("TEST_PARENT_SECRET", "super-secret-value") };
 
         let tmp = tempdir().unwrap();
         let policy = test_policy();
@@ -1408,7 +1420,11 @@ mod tests {
         assert!(!output.status.success(), "env var should not be accessible");
 
         // Clean up
-        std::env::remove_var("TEST_PARENT_SECRET");
+        // SAFETY: edition 2024 makes env mutation unsafe because it races any
+        // concurrent reader, and the test harness is multi-threaded. This is
+        // a real caveat, not a formality: it is sound here only because the
+        // key is unique to this test, so no other test reads or writes it.
+        unsafe { std::env::remove_var("TEST_PARENT_SECRET") };
     }
 
     #[test]
@@ -1480,7 +1496,11 @@ mod tests {
     #[test]
     fn test_env_isolation_run_args() {
         // Verify env isolation also works for run_args
-        std::env::set_var("TEST_RUN_ARGS_SECRET", "leaked-secret");
+        // SAFETY: edition 2024 makes env mutation unsafe because it races any
+        // concurrent reader, and the test harness is multi-threaded. This is
+        // a real caveat, not a formality: it is sound here only because the
+        // key is unique to this test, so no other test reads or writes it.
+        unsafe { std::env::set_var("TEST_RUN_ARGS_SECRET", "leaked-secret") };
 
         let tmp = tempdir().unwrap();
         let policy = test_policy();
@@ -1516,7 +1536,11 @@ mod tests {
         assert!(String::from_utf8_lossy(&output.stdout).contains("allowed-value"));
 
         // Clean up
-        std::env::remove_var("TEST_RUN_ARGS_SECRET");
+        // SAFETY: edition 2024 makes env mutation unsafe because it races any
+        // concurrent reader, and the test harness is multi-threaded. This is
+        // a real caveat, not a formality: it is sound here only because the
+        // key is unique to this test, so no other test reads or writes it.
+        unsafe { std::env::remove_var("TEST_RUN_ARGS_SECRET") };
     }
 
     // ───────────────────────────────────────────────────────────────────────
@@ -1773,7 +1797,11 @@ mod tests {
         /// is cleared, and only explicitly-allowed vars reach the child.
         #[tokio::test]
         async fn run_with_timeout_isolates_env() {
-            std::env::set_var("TEST_ASYNC_PARENT_SECRET", "leaked");
+            // SAFETY: edition 2024 makes env mutation unsafe because it races any
+            // concurrent reader, and the test harness is multi-threaded. This is
+            // a real caveat, not a formality: it is sound here only because the
+            // key is unique to this test, so no other test reads or writes it.
+            unsafe { std::env::set_var("TEST_ASYNC_PARENT_SECRET", "leaked") };
 
             let tmp = tempdir().unwrap();
             let policy = test_policy();
@@ -1813,7 +1841,15 @@ mod tests {
             assert!(allowed.status.success());
             assert!(String::from_utf8_lossy(&allowed.stdout).contains("async-allowed"));
 
-            std::env::remove_var("TEST_ASYNC_PARENT_SECRET");
+            // SAFETY: edition 2024 makes env mutation unsafe because it races any
+
+            // concurrent reader, and the test harness is multi-threaded. This is
+
+            // a real caveat, not a formality: it is sound here only because the
+
+            // key is unique to this test, so no other test reads or writes it.
+
+            unsafe { std::env::remove_var("TEST_ASYNC_PARENT_SECRET") };
         }
     }
 }

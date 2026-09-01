@@ -123,7 +123,7 @@ pub fn init(service_name: &str) -> Result<OtelGuard> {
 /// layer to the subscriber it installs.
 pub fn otel_layer<S>(
     service_name: &str,
-) -> Result<Option<(impl tracing_subscriber::Layer<S>, OtelGuard)>>
+) -> Result<Option<(impl tracing_subscriber::Layer<S> + use<S>, OtelGuard)>>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
@@ -135,10 +135,14 @@ where
 
 /// Shared exporter wiring: propagator, OTLP gRPC exporter, resource,
 /// provider. Sets the global propagator and tracer provider as side effects.
+// `+ use<S>` is edition-2024 precise capturing: an RPIT there captures every
+// in-scope lifetime by default, which would make the returned layer borrow
+// `service_name`/`endpoint`. It borrows neither -- the strings are copied into
+// the exporter config -- so the captures are restricted to the type parameter.
 fn build_otel_layer<S>(
     service_name: &str,
     endpoint: &str,
-) -> Result<(impl tracing_subscriber::Layer<S>, OtelGuard)>
+) -> Result<(impl tracing_subscriber::Layer<S> + use<S>, OtelGuard)>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {

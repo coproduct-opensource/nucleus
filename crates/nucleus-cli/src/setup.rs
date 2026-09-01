@@ -974,26 +974,26 @@ mod apple_chip_tests {
     /// to Firecracker under Lima's `vz` backend.
     #[test]
     fn m5_and_newer_are_recognised_and_support_nested_virt() {
-        for (brand, gen) in [
+        for (brand, generation) in [
             ("apple m5 pro", 5),
             ("apple m5 max", 5),
             ("apple m6", 6),
             ("apple m12 ultra", 12),
         ] {
-            assert_eq!(apple_silicon_generation(brand), Some(gen), "{brand}");
+            assert_eq!(apple_silicon_generation(brand), Some(generation), "{brand}");
         }
         assert!(AppleChip::M5OrNewer.supports_nested_virt());
     }
 
     #[test]
     fn the_known_generations_still_parse() {
-        for (brand, gen) in [
+        for (brand, generation) in [
             ("apple m1", 1),
             ("apple m2 pro", 2),
             ("apple m3 max", 3),
             ("apple m4", 4),
         ] {
-            assert_eq!(apple_silicon_generation(brand), Some(gen), "{brand}");
+            assert_eq!(apple_silicon_generation(brand), Some(generation), "{brand}");
         }
     }
 

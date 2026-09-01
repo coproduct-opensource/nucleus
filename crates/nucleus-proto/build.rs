@@ -1,6 +1,11 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    std::env::set_var("PROTOC", protoc);
+    // SAFETY: `set_var` is unsafe as of edition 2024 because mutating the
+    // environment races with any concurrent reader, and on some platforms that
+    // is UB rather than merely a lost write. Here we are the first statement of
+    // a build script's `main`, before anything is spawned, so this process is
+    // still single-threaded and no reader can observe a torn update.
+    unsafe { std::env::set_var("PROTOC", protoc) };
 
     let crates_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

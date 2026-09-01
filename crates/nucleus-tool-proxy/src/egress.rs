@@ -396,7 +396,10 @@ mod tests {
     fn the_workload_env_never_carries_the_credential() {
         // SAFETY-equivalent note: single-threaded test, restored below.
         let sp = spec_named("NUCLEUS_TEST_EGRESS_CRED_LEAK");
-        std::env::set_var(&sp.credential_env, "super-secret-token");
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::set_var(&sp.credential_env, "super-secret-token") };
         let env = workload_egress_env(std::slice::from_ref(&sp), "http://127.0.0.1:9");
         for (k, v) in &env {
             assert!(
@@ -409,7 +412,10 @@ mod tests {
             Some("http://127.0.0.1:9/v1/egress/model-api"),
             "the workload must be pointed at the LOCAL forwarder"
         );
-        std::env::remove_var(&sp.credential_env);
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::remove_var(&sp.credential_env) };
     }
 
     /// **A request cannot redirect where the credential is sent.** Absolute URLs

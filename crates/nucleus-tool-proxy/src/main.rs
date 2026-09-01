@@ -1283,7 +1283,7 @@ impl IntoResponse for ApiError {
             }
             ApiError::Escalation(_) => (StatusCode::FORBIDDEN, "escalation_denied", None, None),
             ApiError::Validation(_) => (StatusCode::BAD_REQUEST, "validation_error", None, None),
-            ApiError::PermissionDenied(ref info) => (
+            ApiError::PermissionDenied(info) => (
                 StatusCode::PAYMENT_REQUIRED,
                 "permission_denied",
                 None,

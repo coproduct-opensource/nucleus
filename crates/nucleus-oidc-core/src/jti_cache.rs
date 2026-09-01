@@ -99,7 +99,7 @@ impl JtiCache {
             // Evict the entry that would expire soonest.
             if let Some(oldest_kid) = used
                 .iter()
-                .min_by_key(|(_, &exp)| exp)
+                .min_by_key(|&(_, &exp)| exp)
                 .map(|(k, _)| k.clone())
             {
                 used.remove(&oldest_kid);

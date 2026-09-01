@@ -691,8 +691,14 @@ impl NucleusRuntime {
         &mut self,
         _token: &UnmediatedAccess,
         proof: DischargedBundle,
+        // `+ use<>` is edition-2024 precise capturing. An RPIT there now captures
+        // every in-scope lifetime, including the `&mut self`, which would keep the
+        // runtime mutably borrowed for as long as the returned effects live --
+        // making `rt.flow_tracker()` unusable afterwards. The value borrows
+        // nothing (`production_effects` takes an owned clone of the policy), so
+        // capturing nothing is both correct and what the 2021 behaviour was.
     ) -> Result<
-        impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect,
+        impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect + use<>,
         RuntimeError,
     > {
         // `preflight_unmediated` discharges against the strictest egress sink,

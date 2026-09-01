@@ -1324,7 +1324,12 @@ impl FirecrackerPod {
             }
         }
 
-        if let (Some(ref identity), Some(ref manager)) = (&self.identity, &self.identity_manager) {
+        // A let-chain (edition 2024) rather than a tuple of Options: it says the
+        // same thing without building a throwaway tuple, and the explicit `ref`
+        // bindings the tuple form needed are gone.
+        if let Some(identity) = &self.identity
+            && let Some(manager) = &self.identity_manager
+        {
             manager
                 .release_pod(self.identity_registry_key.as_deref(), identity)
                 .await;
