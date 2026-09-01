@@ -216,7 +216,24 @@ jobs:
           # A hole anywhere in the dependency graph surfaces as `sorryAx` even
           # if the textual scan missed it. `Lean.ofReduceBool` (native_decide)
           # is expected/disclosed and is NOT a failure.
-          cat > PrintAxioms.lean <<'EOF'
+          #
+          # WHY THREE FILES AND NOT ONE. Every Aeneas extraction opens `namespace
+          # nucleus_ifc_kernel` and re-emits the shared Rust types reachable from its
+          # own signatures, so two extractions that both see (say) `extracted::egress::Dest`
+          # cannot be imported into one Lean environment:
+          #
+          #   import PortcullisCoreChannel.Types failed, environment already contains
+          #   'nucleus_ifc_kernel.extracted.egress.Dest.rec' from PortcullisCoreIFC.Types
+          #
+          # PortcullisCoreIFC, PortcullisCoreCapQuantale and PortcullisCoreChannel are
+          # pairwise incompatible (a triangle), so three groups is the MINIMUM; the base
+          # PortcullisCore extraction is compatible with all three and stays in group 1.
+          # Each theorem appears in exactly one group, so the counts still sum to the total.
+          #
+          # This is a property of the extraction, not a defect to fix here. What matters is
+          # that the audit RUNS: with a single file it did not, and `|| true` hid that.
+
+          cat > PrintAxioms1.lean <<'EOF'
           import FlowProofs
           import DeclassifyProofs
           import SessionCeilingProofs
@@ -226,7 +243,6 @@ jobs:
           import DelegationProofs
           import ExposureProofs
           import IntegrityNoninterferenceExtracted
-          import CapabilityResiduatedQuantaleProofs
           import AssuranceCoverage
           import UniversalDetection
           import ExposureLoopFixpointProofs
@@ -249,7 +265,6 @@ jobs:
           import GkatKleeneProofs
           import SnapshotCloneSafetyProofs
           import DerivationCascadeAdmissible
-          import SnapshotChannelBindingProofs
           #print axioms FlowProofs.authority_confinement_left
           #print axioms GkatSyntax.salomaa_solutions_agree
           #print axioms GkatGS.sound
@@ -329,7 +344,6 @@ jobs:
           #print axioms GkatKleene.loop2Aut_expressible
           #print axioms GkatKleene.loopAut_expressible
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
-          #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
           #print axioms Nucleus.Assurance.suite_not_full
           #print axioms PortcullisCore.UniversalDetection.universal_detection_impossibility
           #print axioms ExposureLoop.loop_admissible
@@ -339,38 +353,57 @@ jobs:
           #print axioms GkatWhile.solution_unique
           #print axioms SnapshotCloneSafety.unsafe_persists_under_superset
           #print axioms DerivationCascade.user_cascade_ratchets
+          EOF
+
+          cat > PrintAxioms2.lean <<'EOF'
+          import CapabilityResiduatedQuantaleProofs
+          #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
+          EOF
+
+          cat > PrintAxioms3.lean <<'EOF'
+          import SnapshotChannelBindingProofs
           #print axioms SnapshotChannelBinding.mappable_keys_never_reach_workload_via_cmdline
           EOF
-          # Defence 1 — the declaration above IS the gate. The heredoc names N theorems; the
-          # audit must report on N of them. This is the defence that survives someone re-adding
-          # `|| true`, and it is what catches a renamed or deleted audited theorem: `lake env
-          # lean` exits 1 on `error(lean.unknownIdentifier)`, and that paren form is exactly what
-          # a naive grep misses.
-          EXPECTED=$(grep -c '^#print axioms' PrintAxioms.lean)
 
-          # Defence 2 — NO `|| true`. A non-zero lean is a FAILED audit, not an empty one. The
-          # explicit message matters: `set -e` alone would kill the step with no explanation.
-          if ! AXIOMS="$(lake env lean PrintAxioms.lean 2>&1)"; then
+          # Defence 1 - the declarations above ARE the gate. The heredocs name N theorems
+          # in total; the audit must report on N of them. This is the defence that survives
+          # someone re-adding `|| true`, and it is what catches a renamed, deleted or
+          # regrouped theorem: `lake env lean` exits 1 on `error(lean.unknownIdentifier)`,
+          # and that paren form is exactly what a naive grep for 'error' misses.
+          EXPECTED=$(cat PrintAxioms*.lean | grep -c '^#print axioms')
+          REPORTED=0
+          : > AllAxioms.txt
+
+          for f in PrintAxioms*.lean; do
+            # Defence 2 - NO `|| true`. A non-zero lean is a FAILED audit, not an empty
+            # one. The explicit message matters: `set -e` alone would kill the step with
+            # no explanation, which is how the original defect stayed invisible.
+            if ! AXIOMS="$(lake env lean "$f" 2>&1)"; then
+              echo "$AXIOMS"
+              echo "::error::the axiom audit did not run to completion ($f: lean exited non-zero)."
+              exit 1
+            fi
             echo "$AXIOMS"
-            echo "::error::the axiom audit did not run to completion (lean exited non-zero)."
-            exit 1
-          fi
-          echo "$AXIOMS"
-          rm -f PrintAxioms.lean
+            printf '%s\n' "$AXIOMS" >> AllAxioms.txt
+            n=$(printf '%s\n' "$AXIOMS" \
+              | grep -c "depends on axioms\|does not depend on any axioms" || true)
+            echo "  -> $f: $(grep -c '^#print axioms' "$f") declared, $n reported"
+            REPORTED=$((REPORTED + n))
+          done
+          rm -f PrintAxioms*.lean
 
-          REPORTED=$(printf '%s\n' "$AXIOMS" \
-            | grep -c "depends on axioms\|does not depend on any axioms" || true)
           if [ "$REPORTED" -ne "$EXPECTED" ]; then
             echo "::error::audit incomplete: declared $EXPECTED theorems, got $REPORTED axiom reports."
             echo "::error::a theorem was renamed, deleted, or failed to resolve. The audit shrank."
             exit 1
           fi
 
-          if printf '%s\n' "$AXIOMS" | grep -q 'sorryAx'; then
+          if grep -q 'sorryAx' AllAxioms.txt; then
             echo "::error::an enforcement-core theorem depends on sorryAx (an unproven hole)."
             exit 1
           fi
-          if printf '%s\n' "$AXIOMS" | grep -q 'ofReduceBool'; then
-            echo "NOTE: native_decide (Lean.ofReduceBool) is in the TCB of the audited theorems — disclosed, see CONJECTURES.md."
+          if grep -q 'ofReduceBool' AllAxioms.txt; then
+            echo "NOTE: native_decide (Lean.ofReduceBool) is in the TCB of the audited theorems - disclosed, see CONJECTURES.md."
           fi
-          echo "OK: all $EXPECTED audited theorems reported, none depends on sorryAx."
+          rm -f AllAxioms.txt
+          echo "OK: all $EXPECTED audited theorems reported across 3 groups, none depends on sorryAx."
