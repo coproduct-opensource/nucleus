@@ -34,6 +34,7 @@ mod broker_client;
 mod cert_bridge;
 mod declassify;
 mod dlc_admission;
+mod drand_setup;
 mod egress;
 mod escalate;
 mod exit_report;
@@ -1569,8 +1570,6 @@ async fn main() -> Result<(), ApiError> {
         }
     };
 
-    let audit = st.timed("audit_log", build_audit_log(&args, &auth)).await?;
-
     // Resolve all web_fetch enforcement inputs (DNS/URL allowlists + per-pod
     // MIME and response-cap overrides) BEFORE building the client, so its
     // redirect policy can re-check every hop against the allowlists.
@@ -1582,6 +1581,10 @@ async fn main() -> Result<(), ApiError> {
     let url_allow = web_fetch_cfg.url_allow;
     let web_fetch_mime_allow = web_fetch_cfg.mime_allow;
     let web_fetch_max_bytes = web_fetch_cfg.max_bytes;
+
+    let audit = st
+        .timed("audit_log", build_audit_log(&args, &auth, &dns_allow))
+        .await?;
 
     // Client re-checks every redirect hop against the allowlists (see
     // `web_fetch_policy::build_web_fetch_client`) — closes the SSRF/exfil hop.
@@ -4425,9 +4428,11 @@ fn resolve_approval_expiry(
 
 // Pod management handlers live in pod_mgmt.rs
 
-async fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiError> {
-    use nucleus_client::drand::{DrandClient, DrandConfig, DrandFailMode};
-
+async fn build_audit_log(
+    args: &Args,
+    auth: &AuthConfig,
+    dns_allow: &[String],
+) -> Result<Arc<AuditLog>, ApiError> {
     let path = args.audit_log.clone();
 
     // Ensure parent directory exists (e.g., /var/log/nucleus/ or the pod state dir).
@@ -4469,46 +4474,7 @@ async fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>
         None
     };
 
-    // Set up drand client for cryptographic time anchoring if drand is enabled
-    let drand_client = if args.drand_enabled {
-        let fail_mode = match args.drand_fail_mode.to_lowercase().as_str() {
-            "cached" => DrandFailMode::Cached,
-            _ => DrandFailMode::Strict,
-        };
-        let config = DrandConfig {
-            enabled: true,
-            api_url: args.drand_url.clone(),
-            round_tolerance: args.drand_tolerance,
-            cache_ttl: Duration::from_secs(25),
-            fail_mode,
-            chain_hash: None, // Use default
-            public_key: None, // Use default
-        };
-        info!(
-            "drand anchoring enabled for audit logs (url={}, tolerance={})",
-            args.drand_url, args.drand_tolerance
-        );
-        // Exit with the reason rather than panicking. In a microVM this process
-        // is PID 1: a panic here kills init and panics the kernel, so the
-        // operator sees a reqwest error inside a kernel backtrace instead of the
-        // one sentence that tells them what to do.
-        //
-        // Refusing to start (rather than degrading to `None`) is deliberate: the
-        // operator asked for drand anchoring, and a pod that ran without it
-        // while reporting success would be a claim outrunning its wiring. The
-        // escalation path already refuses when drand is absent; this makes the
-        // refusal legible at the moment it is decided.
-        match DrandClient::new(config) {
-            Ok(c) => Some(Arc::new(c)),
-            Err(why) => {
-                tracing::error!("{why}");
-                eprintln!("FATAL: {why}");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        None
-    };
+    let drand_client = drand_setup::build_drand_client(args, dns_allow);
 
     // Set up S3 sink for deletion-resistant audit storage
     #[cfg(feature = "remote-audit")]
