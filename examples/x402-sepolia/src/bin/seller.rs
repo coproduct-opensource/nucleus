@@ -140,17 +140,38 @@ async fn paid_handler(
     }))
 }
 
-/// Build the recompute-verifiable payout for one paid call, plus the settlement
-/// attestation that says it was paid.
+/// Build the recompute-verifiable payout for one paid call, plus a settlement
+/// attestation for the payee that was **actually paid**.
 ///
 /// The buyer does not have to trust any of this: `verify_payout` re-derives the
 /// split from the proven kernels, and `verify_settlement_set` checks every payee
 /// was discharged exactly once. A seller that quietly reweighted the split, or
 /// paid two of three payees, is caught client-side.
 ///
+/// ## Why this deliberately reports an INCOMPLETE settlement
+///
+/// One x402 payment moves money buyer → seller. That is one transfer to one
+/// address. The runtime's 25% and the commons' 5% are **owed and not yet paid**,
+/// because nothing in this repository disburses to multiple payees — see the
+/// `wallet.rs` mapping seam, which has no implementation wired.
+///
+/// An earlier version of this function issued an attestation for **all three**
+/// allocations, every one carrying the same single `tx_ref`, and then
+/// self-certified the result as `Complete`. That was a false green of exactly
+/// the kind this project exists to catch: a receipt asserting three payments
+/// when one occurred, served under the claim that the buyer need not trust the
+/// seller. `settlement_attestation.rs` says plainly that the rail is not
+/// consulted — so nothing downstream could have caught it. Only the payer can,
+/// by not making the claim.
+///
+/// Attesting only the transfer that happened is both honest and a better demo:
+/// the response now shows `verify_settlement_set` returning
+/// `Unsettled ["commons", "runtime"]`, which is the set-check catching a real
+/// gap that a per-receipt check cannot see. That is the thing worth showing.
+///
 /// The split below is a DEMO constant. A real deployment reads it from the offer
-/// the buyer accepted — that is slice S3, and pretending otherwise here would
-/// make the example claim more than it does.
+/// the buyer accepted — that offer type does not exist yet, and pretending
+/// otherwise here would make the example claim more than it does.
 fn build_payout(tx_ref: &str) -> serde_json::Value {
     use nucleus_econ_kernels::commons::CommonsShare;
     use nucleus_recompute::payout::{issue_payout, Attribution};
@@ -193,16 +214,23 @@ fn build_payout(tx_ref: &str) -> serde_json::Value {
         return serde_json::json!({ "error": "payout could not be issued" });
     };
 
-    let attestations: Vec<_> = payout
-        .allocations
+    // ONLY the destination this x402 transfer actually paid. Attesting the
+    // others would be claiming payments that did not happen.
+    let attestations: Vec<_> = [SETTLED_DESTINATION]
         .iter()
-        .filter_map(|a| issue_settlement_attestation(&payout, &a.destination, "x402-evm", tx_ref))
+        .filter_map(|d| issue_settlement_attestation(&payout, d, "x402-evm", tx_ref))
         .collect();
 
     // Self-check before serving: never hand a buyer a receipt this seller has
-    // not itself verified.
+    // not itself verified. Expected to be INCOMPLETE — see the fn docs.
     let clearing_ok = verify_receipt(&clearing).is_match();
     let set = verify_settlement_set(&attestations, &payout);
+    let owed: Vec<&str> = payout
+        .allocations
+        .iter()
+        .map(|a| a.destination.as_str())
+        .filter(|d| *d != SETTLED_DESTINATION)
+        .collect();
 
     serde_json::json!({
         "payout": payout,
@@ -210,8 +238,76 @@ fn build_payout(tx_ref: &str) -> serde_json::Value {
         "self_check": {
             "clearing_recomputes": clearing_ok,
             "settlement_set": format!("{set:?}"),
+            "settled": [SETTLED_DESTINATION],
+            "owed_but_unpaid": owed,
+            "why_incomplete": "one x402 transfer pays one address. The remaining shares are \
+                               owed and undisbursed; nothing here pays multiple payees yet. \
+                               Attesting them anyway would be a false receipt.",
         },
         "how_to_verify": "POST {receipt, verifying_key_hex} to /v1/payout/verify, \
                           or run verifySignedPayout() in the browser — neither trusts this seller",
     })
+}
+
+/// The single payee an x402 transfer actually settles: money moves buyer → seller.
+const SETTLED_DESTINATION: &str = "seller";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The bite.** This seller must attest only the payee its single x402
+    /// transfer actually paid, and must therefore report an INCOMPLETE
+    /// settlement set.
+    ///
+    /// An earlier version attested all three allocations against the same
+    /// `tx_ref` and self-certified `Complete` — a receipt asserting three
+    /// payments when one occurred. Nothing downstream could catch it:
+    /// `settlement_attestation` does not consult the rail, by design. Only the
+    /// payer can, by not making the claim.
+    ///
+    /// So this test reds the moment someone "fixes" the incomplete-looking demo
+    /// by attesting payees that were never paid.
+    #[test]
+    fn the_seller_attests_only_the_payee_it_actually_paid() {
+        let v = build_payout("0xdeadbeef");
+
+        let settlements = v["settlements"].as_array().expect("settlements array");
+        assert_eq!(
+            settlements.len(),
+            1,
+            "exactly one transfer happened, so exactly one attestation is truthful: {v}"
+        );
+        assert_eq!(settlements[0]["destination"], SETTLED_DESTINATION);
+
+        // And the honest verdict is surfaced, not hidden.
+        let verdict = v["self_check"]["settlement_set"]
+            .as_str()
+            .expect("settlement_set");
+        assert!(
+            verdict.contains("Unsettled"),
+            "the set-check must report the unpaid payees, got {verdict}"
+        );
+        for owed in ["runtime", "commons"] {
+            assert!(
+                verdict.contains(owed),
+                "`{owed}` is owed and unpaid; the verdict must name it: {verdict}"
+            );
+        }
+    }
+
+    /// The split itself still recomputes — the payout is honest arithmetic over
+    /// a real pool; only the *disbursement* is incomplete. Keeping these two
+    /// facts separate is the point.
+    #[test]
+    fn the_payout_split_still_recomputes() {
+        use nucleus_recompute::payout::{verify_payout, PayoutClaim};
+        use nucleus_recompute::RecomputeOutcome;
+
+        let v = build_payout("0xdeadbeef");
+        let payout: PayoutClaim =
+            serde_json::from_value(v["payout"].clone()).expect("payout narrows");
+        assert_eq!(verify_payout(&payout), RecomputeOutcome::Match);
+        assert!(v["self_check"]["clearing_recomputes"].as_bool().unwrap());
+    }
 }
