@@ -21,9 +21,9 @@ base64 = { workspace = true }
 # If a no-default-features dalek is genuinely wanted, it has to be set at the
 # WORKSPACE level with consumers opting back in — a change to every dalek
 # consumer's feature resolution, which deserves its own PR rather than being
-# smuggled in as tidying. Nothing here needs it today: nucleus-oidc-core is not
-# in the wasm-pure set (see .github/workflows/wasm-pure-crates.yml), so the
-# smaller-tree argument does not apply to it.
+# smuggled in as tidying. Nothing here needs it today: this crate is not in the
+# workspace's wasm-pure crate set, so the smaller-tree argument does not apply
+# to it.
 ed25519-dalek = { workspace = true }
 # JWT-SVID signature verification (RS/PS/ES allowlist). Workspace-pinned to
 # the same `rust_crypto` (RustCrypto) backend the rest of the workspace uses,
