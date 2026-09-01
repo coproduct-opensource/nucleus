@@ -65,15 +65,50 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # `paths:` under `merge_group:` parses and is then IGNORED by GitHub, so
+      # the scoping declared above holds on pull_request and is silently dropped
+      # in the merge queue -- where speculative batches multiply it by the queue
+      # depth. This restores the declared intent for merge_group only; the
+      # PATTERN is DERIVED from the paths above and ci/merge-group-scope-parity.sh
+      # fails if they ever disagree.
+      - name: Is this change in scope?
+        id: scope
+        env:
+          # Never interpolate ${{ }} into a run script (zizmor hardening).
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+          PATTERN: '^\.github/workflows/ck\-policy\-aeneas\.yml$|^crates/ck\-policy/lean\-aeneas/|^crates/ck\-policy/src/extracted\.rs$|^crates/ck\-policy/src/lib\.rs$|^crates/ck\-policy/tests/policy_aeneas_parity\.rs$|^crates/ck\-types/'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "merge_group" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${HEAD:-}" ]; then
+            # Fail OPEN: an unknown range must run, never skip.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE "$PATTERN"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "in scope -- running."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "nothing in this merge group matches; skipping the expensive"
+            echo "steps. The job still reports, so it stays required-check safe."
+          fi
+
 
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon
+        if: steps.scope.outputs.relevant == 'true'
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: ${{ env.CHARON_NIGHTLY }}
           components: rustc-dev,llvm-tools-preview,rust-src
 
       - name: Rust / cargo cache (Charon target dir)
+        if: steps.scope.outputs.relevant == 'true'
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
         with:
           workspaces: crates/ck-policy
@@ -81,6 +116,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache Aeneas binary
+        if: steps.scope.outputs.relevant == 'true'
         id: cache-aeneas-bin
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
@@ -88,6 +124,7 @@ jobs:
           key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
 
       - name: Download Aeneas pre-built binaries
+        if: steps.scope.outputs.relevant == 'true'
         if: steps.cache-aeneas-bin.outputs.cache-hit != 'true'
         run: |
           gh release download "$AENEAS_RELEASE" \
@@ -100,15 +137,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Add Aeneas to PATH
+        if: steps.scope.outputs.relevant == 'true'
         run: echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
 
       - name: Verify tools
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           which charon && charon version
           which aeneas && aeneas -version
 
       # --- Regenerate the Lean translation (scoped to the extracted core) ---
       - name: Charon MIR extraction (scoped)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/ck-policy
         run: |
           # Force a recompile so Charon emits LLBC even on a warm cargo cache
@@ -123,12 +163,14 @@ jobs:
             --dest-file /tmp/ck_policy.llbc
 
       - name: Aeneas Lean 4 translation
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           rm -rf /tmp/ci-generated && mkdir -p /tmp/ci-generated
           aeneas -backend lean -split-files /tmp/ck_policy.llbc -dest /tmp/ci-generated
 
       # --- Drift gate: regenerated must match committed ---
       - name: Verify generated Lean matches committed (drift gate)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           MISMATCH=0
           for f in Funs.lean Types.lean; do
@@ -156,12 +198,14 @@ jobs:
 
       # --- Build the proofs over the generated core ---
       - name: Install elan (Lean toolchain)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Cache Lake build artifacts
+        if: steps.scope.outputs.relevant == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: |
@@ -175,10 +219,12 @@ jobs:
       # Aeneas Std transitively requires Mathlib; fetch its prebuilt oleans so a
       # cold cache does not trigger a ~1h Mathlib compile.
       - name: Fetch Mathlib cache (prebuilt oleans)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/ck-policy/lean-aeneas
         run: lake exe cache get || true
 
       - name: lake build (soundness proofs over extracted core)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/ck-policy/lean-aeneas
         run: lake build CkPolicyAeneas
 
@@ -191,6 +237,7 @@ jobs:
       # kernel-level backstop is the #print-axioms step below; this grep
       # is the fast human-readable layer.
       - name: Ban sorry / admit / native_decide in our proof file
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           stripped="$(sed -e '/\/-/,/-\//d' -e 's/--.*$//' \
                crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean)"
@@ -203,6 +250,7 @@ jobs:
           echo "No sorry / admit / native_decide in CkPolicyAeneas.lean (comments stripped)."
 
       - name: Assert theorems are sorryAx-free (#print axioms)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/ck-policy/lean-aeneas
         run: |
           cat > PrintAxioms.lean <<'EOF'
@@ -224,11 +272,13 @@ jobs:
 
       # --- Tier-4 parity: extracted core ↔ production check_monotonicity ---
       - name: Install stable Rust for parity test
+        if: steps.scope.outputs.relevant == 'true'
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: stable
 
       - name: cargo test (extracted-core ↔ production parity)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/ck-policy
         env:
           CARGO_TERM_COLOR: never
