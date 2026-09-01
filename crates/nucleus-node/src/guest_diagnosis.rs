@@ -63,8 +63,10 @@ const SIGNATURES: &[Signature] = &[
              shared approval secret with Ed25519 verification against the node's public key, \
              so this node sends `nucleus.approval_pubkeys` and no longer sends \
              `nucleus.approval_secret` — which this rootfs's guest-init still requires. \
-             Rebuild the rootfs from this checkout (scripts/firecracker/build-rootfs.sh), or \
-             run a nucleus-node from the same release as the rootfs.",
+             Rebuild the rootfs from this checkout: `bash \
+             scripts/firecracker/build-rootfs.sh` (or `just guest-rootfs`). It preflights \
+             the host tooling first and, on macOS, prints how to run it in the Linux VM. \
+             Or run a nucleus-node from the same release as the rootfs.",
     },
     Signature {
         marker: "failed to fetch identity",
@@ -273,7 +275,7 @@ mod tests {
         );
         assert!(
             d.contains("build-rootfs.sh"),
-            "a diagnosis without an action is half a diagnosis: {d}"
+            "a diagnosis without a runnable action is half a diagnosis: {d}"
         );
     }
 
