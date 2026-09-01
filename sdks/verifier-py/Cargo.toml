@@ -18,9 +18,29 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 nucleus-envelope = { path = "../../crates/nucleus-envelope" }
 nucleus-lineage = { path = "../../crates/nucleus-lineage" }
+# The commerce surface: payout / settlement / cart. The Rust and JS verifiers have
+# carried these since the commerce slices landed; Python could only verify bundles,
+# so "any runtime, any language" was not true for a payee checking its own share.
+nucleus-recompute = { path = "../../crates/nucleus-recompute", features = ["envelope"] }
+nucleus-receipt = { path = "../../crates/nucleus-receipt" }
 # abi3-py38 = single wheel covers CPython 3.8 through 3.13+; PyO3 0.28+
 # generates 3.8 ABI-stable bindings.
-pyo3 = { version = "0.28", features = ["abi3-py38", "extension-module"] }
+# `extension-module` is NOT listed here on purpose. It was, and it made the crate
+# impossible to test: `cargo test` builds a normal binary that must link libpython,
+# which `extension-module` suppresses, so every test target failed at link time with
+# "symbol(s) not found". That is why this crate had no tests.
+#
+# maturin supplies the feature itself for the real build — see `features =
+# ["pyo3/extension-module"]` under [tool.maturin] in pyproject.toml — so the wheel is
+# unchanged and `cargo test` now links and runs.
+pyo3 = { version = "0.28", features = ["abi3-py38"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
+
+[dev-dependencies]
+# The conformance corpus, so the Python surface is checked against the SAME
+# vectors a third-party runtime would use rather than against hand-written cases.
+nucleus-commerce-conformance = { path = "../../crates/nucleus-commerce-conformance" }
+nucleus-econ-kernels = { path = "../../crates/nucleus-econ-kernels" }
+ed25519-dalek = "=3.0.0"
