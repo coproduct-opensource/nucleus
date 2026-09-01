@@ -934,7 +934,7 @@ impl PermissionLattice {
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
                 manage_pods: CapabilityLevel::Never,
-                spawn_agent: CapabilityLevel::LowRisk,
+                spawn_agent: CapabilityLevel::Never,
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
@@ -970,7 +970,7 @@ impl PermissionLattice {
                 git_push: CapabilityLevel::LowRisk,
                 create_pr: CapabilityLevel::LowRisk,
                 manage_pods: CapabilityLevel::Never,
-                spawn_agent: CapabilityLevel::Always,
+                spawn_agent: CapabilityLevel::Never,
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
