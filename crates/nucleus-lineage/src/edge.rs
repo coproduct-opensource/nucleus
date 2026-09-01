@@ -486,6 +486,83 @@ impl LineageEdge {
         }
     }
 
+    /// Construct an **allocation** edge: a market mechanism split `content_hash_hex`'s
+    /// payout among its payees.
+    ///
+    /// The economic `EdgeKind`s have existed since the schema landed with nothing
+    /// constructing them. This is the first producer, and it exists so a payout is
+    /// recorded in the same lineage graph as the work that earned it rather than in
+    /// a separate ledger somebody has to be trusted about.
+    ///
+    /// `content_hash_hex` MUST be `nucleus_recompute::payout::payout_content_hash_hex`
+    /// of the payout being recorded. It is taken as an argument rather than computed
+    /// here so `nucleus-lineage` keeps no dependency on the economic kernels — and,
+    /// more importantly, so the hash that is *signed* is the same one an independent
+    /// verifier recomputes. Binding via `content_hash_hex` and not `attrs` is
+    /// deliberate: `canonical_edge_bytes` signs the content hash and does NOT sign
+    /// `attrs`, so a binding placed in `attrs` would be a false guarantee.
+    pub fn allocation(
+        child: CallSpiffeId,
+        parents: Vec<CallSpiffeId>,
+        market_id: impl Into<String>,
+        mechanism: impl Into<String>,
+        content_hash_hex: impl Into<String>,
+    ) -> Self {
+        Self {
+            child,
+            parents,
+            kind: EdgeKind::Allocation {
+                market_id: market_id.into(),
+                mechanism: mechanism.into(),
+            },
+            content_hash_hex: Some(content_hash_hex.into()),
+            ts: Utc::now(),
+            attrs: BTreeMap::new(),
+            proof: None,
+            verifier_attestation: None,
+        }
+    }
+
+    /// Construct a **settlement** edge: `amount_micro_usd_signed` moved to a payee on
+    /// an external rail, discharging the obligation recorded by `parents`.
+    ///
+    /// `amount` is signed (`i64`) because a refund is not a separate edge kind — it is
+    /// a `Settlement` with a negative amount whose parents include the edge being
+    /// reversed, so the signed sum over a charge is zero exactly when the refund is
+    /// full. Encoding it as a string keeps the attribute map `BTreeMap<String,String>`
+    /// and keeps JSON number coercion out of a money path.
+    ///
+    /// As with [`Self::allocation`], the *authoritative* binding is `content_hash_hex`
+    /// (which `canonical_edge_bytes` signs); the amount in `attrs` is a convenience for
+    /// readers and is NOT covered by the signature. Never verify against it.
+    pub fn settlement(
+        child: CallSpiffeId,
+        parents: Vec<CallSpiffeId>,
+        tx_ref: impl Into<String>,
+        rail: impl Into<String>,
+        amount_micro_usd_signed: i64,
+        content_hash_hex: impl Into<String>,
+    ) -> Self {
+        let mut attrs = BTreeMap::new();
+        attrs.insert(
+            "amount_micro_usd_signed".to_string(),
+            amount_micro_usd_signed.to_string(),
+        );
+        Self {
+            child,
+            parents,
+            kind: EdgeKind::Settlement {
+                tx_ref: tx_ref.into(),
+                rail: rail.into(),
+            },
+            content_hash_hex: Some(content_hash_hex.into()),
+            ts: Utc::now(),
+            attrs,
+            proof: None,
+            verifier_attestation: None,
+        }
+    }
+
     /// Construct a document-retrieval edge: `child` retrieved a document from
     /// `source_url` (content hash `content_hash`, trust class `source_class`).
     /// `parent` is the retrieving identity (the pod/call doing the fetch).
@@ -561,6 +638,114 @@ mod tests {
 
     fn pod() -> CallSpiffeId {
         CallSpiffeId::pod("prod.example.com", "agents", "coder").unwrap()
+    }
+
+    // ── Economic producers ──────────────────────────────────────────────
+    //
+    // The economic EdgeKinds shipped as a schema with nothing constructing them.
+    // These cover the first producers, and — more importantly — pin exactly how
+    // much of an economic edge the signature actually covers.
+
+    /// A payout is recorded in the same lineage graph as the work that earned it.
+    #[test]
+    fn allocation_edge_binds_the_payout_hash() {
+        let p = pod();
+        let payout_hash = "c".repeat(64);
+        let edge = LineageEdge::allocation(
+            p.derive_artifact(b"payout").unwrap(),
+            vec![p],
+            "offer-market",
+            "commons-split",
+            payout_hash.clone(),
+        );
+        assert_eq!(edge.content_hash_hex.as_deref(), Some(payout_hash.as_str()));
+        match &edge.kind {
+            EdgeKind::Allocation {
+                market_id,
+                mechanism,
+            } => {
+                assert_eq!(market_id, "offer-market");
+                assert_eq!(mechanism, "commons-split");
+            }
+            other => panic!("expected Allocation, got {other:?}"),
+        }
+    }
+
+    /// The documented refund semantics, exercised: a refund is not a distinct
+    /// edge kind but a `Settlement` with a negative amount whose parents include
+    /// the edge it reverses. The signed sum over a charge is zero exactly when
+    /// the refund is full.
+    #[test]
+    fn a_full_refund_sums_to_zero_against_its_charge() {
+        let p = pod();
+        let charge = LineageEdge::settlement(
+            p.derive_artifact(b"charge").unwrap(),
+            vec![p.clone()],
+            "0xabc",
+            "x402-evm",
+            1_000_000,
+            "d".repeat(64),
+        );
+        let refund = LineageEdge::settlement(
+            p.derive_artifact(b"refund").unwrap(),
+            vec![charge.child.clone()],
+            "0xdef",
+            "x402-evm",
+            -1_000_000,
+            "e".repeat(64),
+        );
+
+        let amount = |e: &LineageEdge| -> i64 {
+            e.attrs["amount_micro_usd_signed"].parse().unwrap()
+        };
+        assert_eq!(amount(&charge) + amount(&refund), 0);
+        assert!(
+            refund.parents.contains(&charge.child),
+            "a reversal must name the edge it reverses"
+        );
+    }
+
+    /// **The signature covers less of an economic edge than it looks like.**
+    ///
+    /// `canonical_edge_bytes` signs `kind_tag(&kind)` — the discriminant only —
+    /// so a `Settlement`'s `tx_ref` and `rail` are NOT covered, and neither is
+    /// `attrs`. Two settlements differing only in rail-side transaction id
+    /// produce byte-identical canonical bytes.
+    ///
+    /// This is pinned rather than fixed because changing the encoding would
+    /// break every existing signature. The consequence for anything built on
+    /// these edges: the authoritative binding is `content_hash_hex`, and the
+    /// payout receipt behind it must itself carry the settlement reference.
+    /// Verifying a payment against `attrs["amount_micro_usd_signed"]` or against
+    /// the edge's `tx_ref` would be a false guarantee.
+    #[test]
+    fn settlement_tx_ref_and_attrs_are_outside_the_signature() {
+        let p = pod();
+        let child = p.derive_artifact(b"settle").unwrap();
+        let hash = "f".repeat(64);
+        let a = LineageEdge::settlement(
+            child.clone(),
+            vec![p.clone()],
+            "0xaaa",
+            "x402-evm",
+            1_000_000,
+            hash.clone(),
+        );
+        let mut b = LineageEdge::settlement(
+            child,
+            vec![p],
+            "0xbbb", // different rail-side id
+            "x402-evm",
+            999, // different amount in attrs
+            hash,
+        );
+        b.ts = a.ts; // hold the one field that legitimately differs
+
+        assert_eq!(
+            crate::proof::canonical_edge_bytes(&a, None),
+            crate::proof::canonical_edge_bytes(&b, None),
+            "if this ever differs, the encoding changed and the warning above is stale"
+        );
     }
 
     #[test]

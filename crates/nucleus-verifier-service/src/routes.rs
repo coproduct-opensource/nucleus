@@ -367,6 +367,75 @@ pub async fn clearing_verify(
     Ok(Json(ClearingVerifyResponse { verified, verdict }))
 }
 
+/// `POST /v1/payout/verify` request: a signed payout envelope + the issuer's key.
+#[derive(Debug, Deserialize)]
+pub struct PayoutVerifyRequest {
+    /// The signed `nucleus_receipt::Receipt` carrying a payout projection
+    /// (`nucleus_recompute::payout::envelope::to_payout_projection` + `Receipt::sign`).
+    pub receipt: nucleus_receipt::Receipt,
+    /// 32-byte Ed25519 verifying key of the issuer, hex-encoded (no `0x`).
+    pub verifying_key_hex: String,
+}
+
+/// `POST /v1/payout/verify` response: signature + recompute collapsed to one verdict.
+#[derive(Debug, Serialize)]
+pub struct PayoutVerifyResponse {
+    /// `true` iff the signature verified AND the split re-derives from the
+    /// proven kernels.
+    pub verified: bool,
+    /// Machine verdict: `verified` | `bad_signature` | `malformed:<e>` |
+    /// `mismatch:<field>` | `invalid:<e>`.
+    pub verdict: String,
+}
+
+/// `POST /v1/payout/verify` — the public recompute verifier for signed payouts.
+///
+/// This is the endpoint that makes a revenue share trustless. A payee does not
+/// have to trust the operator's ledger: it takes the signed payout, checks the
+/// Ed25519 signature, then RECOMPUTES its own share from the declared inputs via
+/// the proven kernels. A signature-valid payout claiming a split the kernels do
+/// not produce is rejected (`mismatch:allocations`) — exactly what a
+/// signature-only verifier cannot catch.
+///
+/// Two stages run inside, in order: the underlying clearing must itself
+/// re-derive (a payout over a fabricated price fails here), then the split must
+/// match `route_to_commons`, whose conservation is proven in `Commons.lean`.
+///
+/// HONEST SCOPE: this verifies the split is the proven function of the
+/// **declared** inputs. It does not verify the payout's `attribution` — that a
+/// given workload surfaced a given offer is bound into the signed content hash
+/// so it cannot be altered afterwards, but proving it requires checking the
+/// workload's SPIFFE attestation independently.
+pub async fn payout_verify(
+    State(_state): State<AppState>,
+    Json(req): Json<PayoutVerifyRequest>,
+) -> Result<Json<PayoutVerifyResponse>, VerifyApiError> {
+    use nucleus_recompute::payout::envelope::{verify_signed_payout, SignedPayoutVerdict};
+    use nucleus_recompute::RecomputeOutcome;
+
+    let bytes = hex::decode(req.verifying_key_hex.trim().trim_start_matches("0x"))
+        .map_err(|e| VerifyApiError::BadRequest(format!("verifying_key_hex invalid: {e}")))?;
+    let vk: [u8; 32] = bytes.try_into().map_err(|b: Vec<u8>| {
+        VerifyApiError::BadRequest(format!(
+            "verifying_key_hex must decode to 32 bytes, got {}",
+            b.len()
+        ))
+    })?;
+
+    let (verified, verdict) = match verify_signed_payout(&req.receipt, &vk) {
+        SignedPayoutVerdict::Recomputed(RecomputeOutcome::Match) => (true, "verified".to_string()),
+        SignedPayoutVerdict::Recomputed(RecomputeOutcome::Mismatch { field, .. }) => {
+            (false, format!("mismatch:{field}"))
+        }
+        SignedPayoutVerdict::Recomputed(RecomputeOutcome::Invalid(m)) => {
+            (false, format!("invalid:{m}"))
+        }
+        SignedPayoutVerdict::BadSignature => (false, "bad_signature".to_string()),
+        SignedPayoutVerdict::Malformed(e) => (false, format!("malformed:{e}")),
+    };
+    Ok(Json(PayoutVerifyResponse { verified, verdict }))
+}
+
 /// `POST /v1/verify` — run [`verify_bundle`] against the caller-supplied
 /// trust anchor.
 ///

@@ -1646,3 +1646,108 @@ async fn clearing_verify_recomputes_and_catches_forgery_under_valid_signature() 
     assert_eq!(body["verified"], false, "forged clearing must be rejected");
     assert_eq!(body["verdict"], "mismatch:seller_gross");
 }
+
+/// S1 e2e: the public payout verifier endpoint — the one that makes a revenue
+/// share trustless. A payee POSTs the payout it was sent and learns whether its
+/// own share is what the proven kernels produce, without trusting the operator.
+///
+/// Both directions are exercised: an honest payout verifies, and a payout whose
+/// signature is genuinely valid but whose split has been skimmed is rejected.
+/// The second is the case a signature-only verifier cannot catch.
+#[tokio::test]
+async fn payout_verify_endpoint_verifies_honest_and_rejects_a_skim() {
+    use ed25519_dalek::SigningKey;
+    use nucleus_econ_kernels::commons::CommonsShare;
+    use nucleus_receipt::{Receipt, Session};
+    use nucleus_recompute::issue_settlement;
+    use nucleus_recompute::payout::{envelope::to_payout_projection, issue_payout, Attribution};
+
+    let sk = SigningKey::from_bytes(&[9u8; 32]);
+    let vk_hex = hex::encode(sk.verifying_key().to_bytes());
+    let session = || Session {
+        session_id: "spiffe://test/payout".into(),
+        issuer_kid: "test-kid".into(),
+        issued_at_micros: 1_717_000_000_000_000,
+        parent_chain: vec![],
+    };
+    let attribution = || Attribution {
+        workload_spiffe_id: "spiffe://nucleus.local/runtime/acme".into(),
+        assurance: 1,
+        offer_hash_hex: "a".repeat(64),
+        disclosure_hash_hex: "b".repeat(64),
+    };
+    let shares = || {
+        vec![
+            CommonsShare {
+                destination: "runtime".into(),
+                bps: 3_000,
+            },
+            CommonsShare {
+                destination: "seller".into(),
+                bps: 6_500,
+            },
+            CommonsShare {
+                destination: "commons".into(),
+                bps: 500,
+            },
+        ]
+    };
+
+    async fn post_payout(receipt: &Receipt, vk_hex: &str) -> Value {
+        let resp = build_app(AppState::default())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/payout/verify")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(
+                            &json!({"receipt": receipt, "verifying_key_hex": vk_hex}),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        read_json(resp.into_body()).await
+    }
+
+    // Honest payout → verified.
+    let honest = issue_payout(issue_settlement(1_000_000, 10_000), shares(), attribution())
+        .expect("well-formed");
+    let signed = Receipt::sign(session(), vec![to_payout_projection(&honest)], &sk);
+    let body = post_payout(&signed, &vk_hex).await;
+    assert_eq!(body["verified"], true, "honest payout must verify: {body}");
+    assert_eq!(body["verdict"], "verified");
+
+    // Skimmed split under a VALID signature → rejected by recompute.
+    let mut skimmed = issue_payout(issue_settlement(1_000_000, 10_000), shares(), attribution())
+        .expect("well-formed");
+    skimmed.allocations[0].amount_micro += 1; // to the runtime
+    skimmed.allocations[2].amount_micro -= 1; // from the commons
+    let signed_skimmed = Receipt::sign(session(), vec![to_payout_projection(&skimmed)], &sk);
+    let body = post_payout(&signed_skimmed, &vk_hex).await;
+    assert_eq!(body["verified"], false, "a skimmed payout must be rejected");
+    assert_eq!(body["verdict"], "mismatch:allocations");
+
+    // A payout over a fabricated clearing fails on the CLEARING, not the split —
+    // the pool has to be real before the split can be honest.
+    let nucleus_recompute::ClearingReceipt::Settlement(mut claim) =
+        issue_settlement(1_000_000, 10_000)
+    else {
+        unreachable!()
+    };
+    claim.seller_gross += 500_000;
+    let lying = nucleus_recompute::payout::PayoutClaim {
+        clearing: nucleus_recompute::ClearingReceipt::Settlement(claim),
+        shares: shares(),
+        attribution: attribution(),
+        allocations: vec![],
+    };
+    let signed_lying = Receipt::sign(session(), vec![to_payout_projection(&lying)], &sk);
+    let body = post_payout(&signed_lying, &vk_hex).await;
+    assert_eq!(body["verified"], false);
+    assert_eq!(body["verdict"], "mismatch:seller_gross");
+}

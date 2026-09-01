@@ -321,6 +321,63 @@ pub fn verify_signed_clearing_js(
     serde_wasm_bindgen::to_value(&report).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Structured result of [`verify_signed_payout_js`].
+#[derive(serde::Serialize)]
+struct SignedPayoutReport {
+    /// `true` iff the signature verified AND the split re-derives from the
+    /// proven kernels.
+    verified: bool,
+    /// `verified` | `bad_signature` | `malformed:<e>` | `mismatch:<field>` | `invalid:<e>`.
+    verdict: String,
+}
+
+/// Core (natively testable) of [`verify_signed_payout_js`].
+fn signed_payout_verdict(
+    receipt_json: &str,
+    verifying_key_bytes: &[u8],
+) -> Result<SignedPayoutReport, String> {
+    use nucleus_recompute::payout::envelope::{verify_signed_payout, SignedPayoutVerdict};
+    use nucleus_recompute::RecomputeOutcome;
+
+    let receipt: nucleus_receipt::Receipt =
+        serde_json::from_str(receipt_json).map_err(|e| format!("receipt JSON: {e}"))?;
+    let vk: [u8; 32] = verifying_key_bytes
+        .try_into()
+        .map_err(|_| "verifying key must be 32 bytes".to_string())?;
+    let (verified, verdict) = match verify_signed_payout(&receipt, &vk) {
+        SignedPayoutVerdict::Recomputed(RecomputeOutcome::Match) => (true, "verified".to_string()),
+        SignedPayoutVerdict::Recomputed(RecomputeOutcome::Mismatch { field, .. }) => {
+            (false, format!("mismatch:{field}"))
+        }
+        SignedPayoutVerdict::Recomputed(RecomputeOutcome::Invalid(m)) => {
+            (false, format!("invalid:{m}"))
+        }
+        SignedPayoutVerdict::BadSignature => (false, "bad_signature".to_string()),
+        SignedPayoutVerdict::Malformed(e) => (false, format!("malformed:{e}")),
+    };
+    Ok(SignedPayoutReport { verified, verdict })
+}
+
+/// Verify a SIGNED PAYOUT in the browser: the Ed25519 signature, then a
+/// RECOMPUTE of the revenue split via the proven kernels.
+///
+/// This is the function that makes a revenue share trustless. A payee pastes the
+/// payout it was sent and recomputes its own share client-side — no server, no
+/// operator ledger to trust. An operator that signs a skimmed split still gets
+/// `mismatch:allocations`, which is exactly what a signature-only check misses.
+///
+/// Returns `{ verified, verdict }`.
+#[wasm_bindgen(js_name = verifySignedPayout)]
+pub fn verify_signed_payout_js(
+    receipt_json: &str,
+    verifying_key_bytes: &[u8],
+) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let report =
+        signed_payout_verdict(receipt_json, verifying_key_bytes).map_err(|e| JsError::new(&e))?;
+    serde_wasm_bindgen::to_value(&report).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ── AGENT CARD: verify the counterparty's signed identity BEFORE acting ───────
 //
 // `verifyBundle` answers WHAT happened (provenance), `verifyReceipt` answers
@@ -1031,6 +1088,69 @@ mod receipt_tests {
         let r = signed_clearing_verdict(&serde_json::to_string(&forged).unwrap(), &vk).unwrap();
         assert!(!r.verified, "forged clearing must be rejected");
         assert_eq!(r.verdict, "mismatch:seller_gross");
+    }
+
+    /// The browser-side half of the revenue-share claim: a payee recomputes its
+    /// own share client-side, and an operator that signs a skimmed split is
+    /// caught even though the signature is genuinely valid.
+    #[test]
+    fn signed_payout_verifies_and_recompute_catches_a_skim() {
+        use nucleus_econ_kernels::commons::CommonsShare;
+        use nucleus_recompute::issue_settlement;
+        use nucleus_recompute::payout::{envelope::to_payout_projection, issue_payout, Attribution};
+
+        let session = || Session {
+            session_id: "spiffe://test/payout".into(),
+            issuer_kid: "test-kid".into(),
+            issued_at_micros: 1_717_000_000_000_000,
+            parent_chain: vec![],
+        };
+        let vk = signing_key().verifying_key().to_bytes();
+        let attribution = || Attribution {
+            workload_spiffe_id: "spiffe://test/runtime".into(),
+            assurance: 1,
+            offer_hash_hex: "a".repeat(64),
+            disclosure_hash_hex: String::new(),
+        };
+        let shares = || {
+            vec![
+                CommonsShare {
+                    destination: "runtime".into(),
+                    bps: 3_000,
+                },
+                CommonsShare {
+                    destination: "seller".into(),
+                    bps: 7_000,
+                },
+            ]
+        };
+
+        // Honest payout → verified (signature + recompute of the split).
+        let honest = issue_payout(issue_settlement(1_000_000, 10_000), shares(), attribution())
+            .expect("well-formed");
+        let signed = Receipt::sign(
+            session(),
+            vec![to_payout_projection(&honest)],
+            &signing_key(),
+        );
+        let r = signed_payout_verdict(&serde_json::to_string(&signed).unwrap(), &vk).unwrap();
+        assert!(r.verified, "honest payout must verify, got {}", r.verdict);
+
+        // The operator moves 1 micro-USD to itself, then signs. Signature is
+        // VALID; the split is not what the proven kernel produces.
+        let mut skimmed =
+            issue_payout(issue_settlement(1_000_000, 10_000), shares(), attribution())
+                .expect("well-formed");
+        skimmed.allocations[0].amount_micro += 1;
+        skimmed.allocations[1].amount_micro -= 1;
+        let signed = Receipt::sign(
+            session(),
+            vec![to_payout_projection(&skimmed)],
+            &signing_key(),
+        );
+        let r = signed_payout_verdict(&serde_json::to_string(&signed).unwrap(), &vk).unwrap();
+        assert!(!r.verified, "a skimmed payout must be rejected");
+        assert_eq!(r.verdict, "mismatch:allocations");
     }
 }
 
