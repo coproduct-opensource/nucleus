@@ -260,10 +260,15 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly-2026-04-16
-          components: llvm-tools-preview, rustc-dev
+      # Same LOCKSTEP TRIPLE as the job above, and installed the same way: plain
+      # rustup, no action. Pinning the toolchain action to a commit hash
+      # would also satisfy zizmor, but the ref was doing nothing here — the
+      # toolchain is chosen by `toolchain:`, not by the action ref — so dropping
+      # the action removes the supply-chain surface instead of pinning it.
+      - name: Install the pinned nightly
+        run: |
+          rustup toolchain install nightly-2026-04-16 \
+            --component rustc-dev,llvm-tools-preview --profile minimal
       - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.1
       - name: Install dylint
         run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
