@@ -1031,7 +1031,14 @@ mod tests {
     /// the platform that can run a microVM. These therefore run in CI and in
     /// OrbStack, never on a macOS dev machine — the same trap that once hid the
     /// vsock accept path behind a `cfg` nobody compiled.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    //
+    // GATED, not merely `allow(dead_code)`: `from_spec` does not EXIST off
+    // Linux, so the old attribute silenced the wrong diagnostic and the helper
+    // still failed to compile. `cargo test -p nucleus-node` was therefore
+    // broken on macOS — every test in this crate, not just these — while CI
+    // stayed green because CI is Linux. A Mac developer could not run the
+    // node's tests at all.
+    #[cfg(target_os = "linux")]
     fn boot_args_with_identity(will_have_identity: bool) -> String {
         let config = FirecrackerConfig::from_spec(
             &base_spec(),
@@ -1196,7 +1203,10 @@ mod tests {
             .find("WorkloadApiVsockBridge::start")
             .expect("the bridge start site");
         let health = src
-            .find("wait_for_proxy_health(health_addr)")
+            // Needle without the closing paren: the call gained a `console`
+            // argument and this guard failed on the punctuation rather than on
+            // the ordering it exists to protect.
+            .find("wait_for_proxy_health(health_addr")
             .expect("the health check site");
         assert!(
             bridge < health,

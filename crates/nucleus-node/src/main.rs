@@ -18,7 +18,7 @@ use nucleus_client::drand::{DrandConfig, DrandFailMode};
 use nucleus_spec::NetworkSpec;
 use nucleus_spec::PodSpec;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 #[cfg(any(feature = "local-driver", target_os = "linux"))]
 use tokio::process::Command;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
@@ -33,6 +33,7 @@ mod art12_collector;
 mod auth;
 mod firecracker_config;
 mod grpc_tls;
+mod guest_diagnosis;
 mod identity;
 mod lockdown;
 mod mediation;
@@ -2825,7 +2826,8 @@ async fn spawn_firecracker_pod(
             (None, None, None)
         };
 
-        if let Err(err) = wait_for_proxy_health(health_addr).await {
+        let console = pod_dir.join("firecracker.log");
+        if let Err(err) = guest_diagnosis::wait_for_proxy_health(health_addr, &console).await {
             if let Some(proxy) = signed_proxy {
                 proxy.shutdown().await;
             }
@@ -3163,127 +3165,10 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 /// host round-trips during startup, and would be wrong even once the host chain
 /// is fixed. It is not a workaround for that defect and should not be read as
 /// one.
-const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
+pub(crate) const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[tracing::instrument(skip_all, fields(boot.stage = "proxy.health_wait"))]
-async fn wait_for_proxy_health(addr: SocketAddr) -> Result<(), ApiError> {
-    wait_for_proxy_health_within(
-        addr,
-        Duration::from_secs(
-            std::env::var("NUCLEUS_NODE_PROXY_HEALTH_TIMEOUT_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(PROXY_HEALTH_TIMEOUT_SECS_DEFAULT),
-        ),
-    )
-    .await
-}
-
-/// What the last health probe actually saw.
-///
-/// # Why this type exists
-///
-/// The probe used to discard every outcome into one message: "proxy health check
-/// timed out". A refused connection, a guest that answered `401`, a bridge that
-/// answered `502`, and a guest that never came up were indistinguishable — to an
-/// operator and to whoever was debugging it. That is the same defect class as a
-/// panic naming `reqwest` when the real cause was a missing CA store: the
-/// information existed and the code threw it away.
-// Only reachable from the Firecracker spawn path, which is Linux-gated — same
-// reason the sibling health helpers carry this.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[derive(Debug, Clone)]
-enum HealthProbe {
-    /// Nothing has been attempted yet.
-    NotAttempted,
-    /// The TCP connection to the signed proxy was refused or failed.
-    ConnectFailed(String),
-    /// Connected, but the request could not be written.
-    WriteFailed(String),
-    /// Request sent, but no readable response came back.
-    ReadFailed(String),
-    /// The guest answered — with something other than 200.
-    ///
-    /// This is the case worth separating most: it means the whole chain WORKS
-    /// (signed proxy, bridge, guest) and the guest is refusing, which is a
-    /// completely different investigation from "nothing is listening".
-    NotOk { status: String },
-}
-
-impl std::fmt::Display for HealthProbe {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HealthProbe::NotAttempted => write!(f, "no probe completed"),
-            HealthProbe::ConnectFailed(e) => write!(
-                f,
-                "could not connect to the signed proxy ({e}) — the host-side proxy is not \
-                 accepting, so the guest was never reached"
-            ),
-            HealthProbe::WriteFailed(e) => {
-                write!(f, "connected but could not send the request ({e})")
-            }
-            HealthProbe::ReadFailed(e) => write!(
-                f,
-                "sent the request but got no response ({e}) — the signed proxy accepted and \
-                 then failed to complete, so look at the vsock bridge rather than the guest"
-            ),
-            HealthProbe::NotOk { status } => write!(
-                f,
-                "the guest ANSWERED with `{status}` instead of 200 — the chain works end to \
-                 end and the guest is refusing, so this is an authorization or routing \
-                 question, not a liveness one"
-            ),
-        }
-    }
-}
-
-async fn wait_for_proxy_health_within(addr: SocketAddr, budget: Duration) -> Result<(), ApiError> {
-    let start = std::time::Instant::now();
-    let host = addr.ip();
-    let mut last = HealthProbe::NotAttempted;
-    while start.elapsed() < budget {
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(mut stream) => {
-                let request =
-                    format!("GET /v1/health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-                if let Err(e) = stream.write_all(request.as_bytes()).await {
-                    last = HealthProbe::WriteFailed(e.to_string());
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-
-                let mut buf = Vec::new();
-                if let Err(e) = stream.read_to_end(&mut buf).await {
-                    last = HealthProbe::ReadFailed(e.to_string());
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-                let response = String::from_utf8_lossy(&buf);
-                if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
-                    return Ok(());
-                }
-                // Keep only the status line. The body may carry guest-influenced
-                // text, and this string ends up in an API error and the node log.
-                let status = response.lines().next().unwrap_or("<empty response>");
-                last = HealthProbe::NotOk {
-                    status: status.chars().take(120).collect(),
-                };
-            }
-            Err(e) => last = HealthProbe::ConnectFailed(e.to_string()),
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    Err(ApiError::Driver(format!(
-        "proxy health check timed out after {}s: {last}. The guest fetches its SVID and \
-         session token from the host over vsock before it serves, so a slow image can \
-         legitimately exceed this; raise NUCLEUS_NODE_PROXY_HEALTH_TIMEOUT_SECS if the pod \
-         log shows the guest still starting.",
-        budget.as_secs()
-    )))
-}
 
 async fn serve_grpc(
     state: NodeState,
