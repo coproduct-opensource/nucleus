@@ -292,7 +292,9 @@ fn signed_clearing_verdict(
         .try_into()
         .map_err(|_| "verifying key must be 32 bytes".to_string())?;
     let (verified, verdict) = match verify_signed_clearing(&receipt, &vk) {
-        SignedClearingVerdict::Recomputed(RecomputeOutcome::Match) => (true, "verified".to_string()),
+        SignedClearingVerdict::Recomputed(RecomputeOutcome::Match) => {
+            (true, "verified".to_string())
+        }
         SignedClearingVerdict::Recomputed(RecomputeOutcome::Mismatch { field, .. }) => {
             (false, format!("mismatch:{field}"))
         }
@@ -1097,7 +1099,9 @@ mod receipt_tests {
     fn signed_payout_verifies_and_recompute_catches_a_skim() {
         use nucleus_econ_kernels::commons::CommonsShare;
         use nucleus_recompute::issue_settlement;
-        use nucleus_recompute::payout::{envelope::to_payout_projection, issue_payout, Attribution};
+        use nucleus_recompute::payout::{
+            envelope::to_payout_projection, issue_payout, Attribution,
+        };
 
         let session = || Session {
             session_id: "spiffe://test/payout".into(),

@@ -695,9 +695,8 @@ mod tests {
             "e".repeat(64),
         );
 
-        let amount = |e: &LineageEdge| -> i64 {
-            e.attrs["amount_micro_usd_signed"].parse().unwrap()
-        };
+        let amount =
+            |e: &LineageEdge| -> i64 { e.attrs["amount_micro_usd_signed"].parse().unwrap() };
         assert_eq!(amount(&charge) + amount(&refund), 0);
         assert!(
             refund.parents.contains(&charge.child),

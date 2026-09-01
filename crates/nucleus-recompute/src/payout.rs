@@ -122,14 +122,13 @@ pub struct PayoutClaim {
 fn pool_of(clearing: &ClearingReceipt) -> Result<u64, String> {
     match clearing {
         ClearingReceipt::Settlement(c) => Ok(seller_gross(c.price_micro, c.delivered_bps)),
-        ClearingReceipt::Commons(_) => {
-            Err("a commons receipt is already a routing; splitting it again would double-route"
-                .to_string())
-        }
-        ClearingReceipt::Vcg(_) => {
-            Err("a VCG clearing settles per-winner payments, not one distributable pool"
-                .to_string())
-        }
+        ClearingReceipt::Commons(_) => Err(
+            "a commons receipt is already a routing; splitting it again would double-route"
+                .to_string(),
+        ),
+        ClearingReceipt::Vcg(_) => Err(
+            "a VCG clearing settles per-winner payments, not one distributable pool".to_string(),
+        ),
     }
 }
 
@@ -310,7 +309,10 @@ mod tests {
 
         match verify_payout(&payout) {
             RecomputeOutcome::Mismatch { field, .. } => {
-                assert_eq!(field, "seller_gross", "must fail on the CLEARING, not the split");
+                assert_eq!(
+                    field, "seller_gross",
+                    "must fail on the CLEARING, not the split"
+                );
             }
             other => panic!("a fabricated pool must not verify, got {other:?}"),
         }
@@ -481,9 +483,9 @@ pub mod envelope {
                 })
             }
         }
-        let payout = body
-            .get("payout")
-            .ok_or_else(|| PayoutNarrowError::MalformedBody("missing `payout` field".to_string()))?;
+        let payout = body.get("payout").ok_or_else(|| {
+            PayoutNarrowError::MalformedBody("missing `payout` field".to_string())
+        })?;
         serde_json::from_value(payout.clone())
             .map_err(|e| PayoutNarrowError::MalformedBody(e.to_string()))
     }
@@ -520,9 +522,9 @@ pub mod envelope {
                 Ok(payout) => SignedPayoutVerdict::Recomputed(verify_payout(&payout)),
                 Err(e) => SignedPayoutVerdict::Malformed(e),
             },
-            None => SignedPayoutVerdict::Malformed(PayoutNarrowError::NotEconomic {
-                found: "none",
-            }),
+            None => {
+                SignedPayoutVerdict::Malformed(PayoutNarrowError::NotEconomic { found: "none" })
+            }
         }
     }
 }
@@ -564,7 +566,10 @@ mod envelope_tests {
             verify_signed_payout(&signed, &vk),
             SignedPayoutVerdict::Recomputed(RecomputeOutcome::Match)
         );
-        assert_eq!(payout_from_projection(&signed.projections[0]).unwrap(), payout);
+        assert_eq!(
+            payout_from_projection(&signed.projections[0]).unwrap(),
+            payout
+        );
     }
 
     /// **The load-bearing test for the whole revenue-share design.** The operator
