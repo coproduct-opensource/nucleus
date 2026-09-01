@@ -27,6 +27,17 @@
 //!   (`tests/policy_aeneas_parity.rs`), which sample agreement over randomized
 //!   manifests. A proptest is NOT a proof; it narrows the gap probabilistically.
 //!
+//! ## Coverage note (kept current on purpose)
+//!
+//! This core must track the production gate's axes or the deductive bridge
+//! certifies something weaker than what ships. It did not, once: production
+//! gained numeric monotonicity on `constitutional_human_signatures` in #2332
+//! and this core kept only the three booleans, so `T1_extracted_gate_sound`
+//! proved soundness of a gate that could not see the numeric coup. The axis is
+//! now here, in the extracted Lean, and VARIED by the parity proptest — which
+//! previously hard-coded the threshold to 2 and therefore could not have
+//! observed it either.
+//!
 //! The honest end-to-end claim is therefore: *a self-contained, monomorphized
 //! core that faithfully mirrors the gate's verdict was extracted by Charon+Aeneas
 //! and proven in Lean; that core is bound to the production `check_monotonicity`
@@ -127,11 +138,24 @@ pub fn budget_within(child: &[u64; 8], parent: &[u64; 8]) -> bool {
 ///
 /// This is checked UNCONDITIONALLY by the gate — it is never itself gated on any
 /// flag, because a gated anti-coup check could be disarmed one level up.
-pub fn rules_non_weakening(parent: [bool; 3], child: [bool; 3]) -> bool {
+/// The `sigs` arguments are `constitutional_human_signatures`, and they are here
+/// because the boolean flags are not the whole of the anti-coup check. Lowering
+/// the human-signature threshold disarms the review that would police the NEXT
+/// amendment while leaving every boolean untouched — the same coup, spelled
+/// numerically. Production gained this axis in #2332; this core did not, so the
+/// deductive bridge was proving soundness of a gate strictly weaker than the one
+/// that ships. Monotone UPWARD: raising is admitted, lowering is a weakening.
+pub fn rules_non_weakening(
+    parent: [bool; 3],
+    child: [bool; 3],
+    parent_sigs: u32,
+    child_sigs: u32,
+) -> bool {
     let cap_ok = !parent[0] || child[0];
     let io_ok = !parent[1] || child[1];
     let proofreq_ok = !parent[2] || child[2];
-    cap_ok && io_ok && proofreq_ok
+    let sigs_ok = parent_sigs <= child_sigs;
+    cap_ok && io_ok && proofreq_ok && sigs_ok
 }
 
 // ── Per-axis "violated" verdicts (cap/io/proofreq gated on the PARENT flag) ───
@@ -182,12 +206,14 @@ pub fn budget_violated(child: &[u64; 8], parent: &[u64; 8]) -> bool {
 ///   * the budget is within bounds (ALWAYS checked), AND
 ///   * no proof requirement was dropped (gated on `parent_flags[2]`), AND
 ///   * the amendment rules are not weakened (`rules_non_weakening`, checked
-///     UNCONDITIONALLY — the anti-coup fix).
+///     UNCONDITIONALLY — the anti-coup fix), INCLUDING the numeric
+///     human-signature threshold.
 ///
 /// Arguments are the monomorphized projections the gate reads:
 ///   * `parent_flags` / `child_flags`: `[cap, io, proofreq]` governance flags.
 ///   * `*_caps` / `*_io` / `*_proof`: interned-id sets for each authority axis.
 ///   * `*_budget`: the 8 budget bounds.
+///   * `*_sigs`: `constitutional_human_signatures`, monotone upward only.
 ///
 /// `parent_flags` gates cap/io/proofreq; `child_flags` feeds the unconditional
 /// `rules_non_weakening` check. This composition is the structural image of the
@@ -204,12 +230,14 @@ pub fn passed_core(
     child_proof: &[u32],
     parent_budget: &[u64; 8],
     child_budget: &[u64; 8],
+    parent_sigs: u32,
+    child_sigs: u32,
 ) -> bool {
     let cap_ok = !cap_violated(parent_flags[0], child_caps, parent_caps);
     let io_ok = !io_violated(parent_flags[1], child_io, parent_io);
     let budget_ok = !budget_violated(child_budget, parent_budget);
     let proof_ok = !proofreq_violated(parent_flags[2], child_proof, parent_proof);
-    let rules_ok = rules_non_weakening(parent_flags, child_flags);
+    let rules_ok = rules_non_weakening(parent_flags, child_flags, parent_sigs, child_sigs);
     cap_ok && io_ok && budget_ok && proof_ok && rules_ok
 }
 
@@ -285,18 +313,18 @@ mod tests {
         // parent_flag -> child_flag on each axis.
         for &p in &[false, true] {
             for &c in &[false, true] {
-                let ok = rules_non_weakening([p, false, false], [c, false, false]);
+                let ok = rules_non_weakening([p, false, false], [c, false, false], 0, 0);
                 // non-weakening iff NOT(parent ON and child OFF), i.e. parent -> child.
                 assert_eq!(ok, !p || c);
             }
         }
         // enabling a flag the parent didn't require is fine
-        assert!(rules_non_weakening([false, false, false], ALL_ON));
+        assert!(rules_non_weakening([false, false, false], ALL_ON, 0, 0));
         // disabling any required flag is a weakening
-        assert!(!rules_non_weakening(ALL_ON, [false, true, true]));
-        assert!(!rules_non_weakening(ALL_ON, [true, false, true]));
-        assert!(!rules_non_weakening(ALL_ON, [true, true, false]));
-        assert!(rules_non_weakening(ALL_ON, ALL_ON));
+        assert!(!rules_non_weakening(ALL_ON, [false, true, true], 0, 0));
+        assert!(!rules_non_weakening(ALL_ON, [true, false, true], 0, 0));
+        assert!(!rules_non_weakening(ALL_ON, [true, true, false], 0, 0));
+        assert!(rules_non_weakening(ALL_ON, ALL_ON, 0, 0));
     }
 
     #[test]
@@ -313,6 +341,8 @@ mod tests {
             &[4, 5],
             &[10; 8],
             &[10; 8],
+            0,
+            0,
         ));
     }
 
@@ -330,6 +360,8 @@ mod tests {
             &[4, 5], // child proof (superset = stricter, nothing dropped)
             &[10; 8],
             &[5; 8], // tighter budget
+            0,
+            0,
         ));
     }
 
@@ -346,6 +378,8 @@ mod tests {
             &[],
             &Z,
             &Z,
+            0,
+            0,
         ));
     }
 
@@ -363,6 +397,8 @@ mod tests {
             &[],
             &Z,
             &Z,
+            0,
+            0,
         ));
     }
 
@@ -382,6 +418,8 @@ mod tests {
             &[],
             &Z,
             &child_b,
+            0,
+            0,
         ));
     }
 
@@ -398,6 +436,8 @@ mod tests {
             &[1], // child dropped proof req 2
             &Z,
             &Z,
+            0,
+            0,
         ));
     }
 
@@ -414,6 +454,8 @@ mod tests {
             &[],
             &Z,
             &Z,
+            0,
+            0,
         ));
     }
 
@@ -432,6 +474,8 @@ mod tests {
             &[],
             &Z,
             &Z,
+            0,
+            0,
         ));
     }
 
@@ -450,6 +494,8 @@ mod tests {
             &[],
             &Z,
             &Z,
+            0,
+            0,
         ));
     }
 
@@ -467,6 +513,8 @@ mod tests {
             &[],
             &Z,
             &Z,
+            0,
+            0,
         ));
     }
 }

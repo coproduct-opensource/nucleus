@@ -94,7 +94,9 @@ theorem passed_core_decomp
     (pf cf : Array Bool 3#usize)
     (pcap ccap pio cio ppr cpr : Slice U32)
     (pb cb : Array U64 8#usize)
-    (h : ck_policy.extracted.passed_core pf cf pcap ccap pio cio ppr cpr pb cb = ok true) :
+    (psig csig : Std.U32)
+    (h : ck_policy.extracted.passed_core pf cf pcap ccap pio cio ppr cpr pb cb psig csig
+         = ok true) :
     (∃ f0, pf.index_usize 0#usize = ok f0 ∧
         ck_policy.extracted.cap_violated f0 ccap pcap = ok false) ∧
     (∃ f1, pf.index_usize 1#usize = ok f1 ∧
@@ -102,7 +104,7 @@ theorem passed_core_decomp
     (ck_policy.extracted.budget_violated cb pb = ok false) ∧
     (∃ f2, pf.index_usize 2#usize = ok f2 ∧
         ck_policy.extracted.proofreq_violated f2 cpr ppr = ok false) ∧
-    (ck_policy.extracted.rules_non_weakening pf cf = ok true) := by
+    (ck_policy.extracted.rules_non_weakening pf cf psig csig = ok true) := by
   unfold ck_policy.extracted.passed_core at h
   obtain ⟨v1, e1, h⟩ := bind_eq_ok _ _ _ h    -- v1 = pf[0]
   obtain ⟨v2, e2, h⟩ := bind_eq_ok _ _ _ h    -- v2 = cap_violated v1
@@ -203,23 +205,34 @@ theorem budget_not_violated
    anti-self-weakening property carried by the SHIPPED gate.
    ─────────────────────────────────────────────────────────────────────────── -/
 
-/-- `weakensFlags parent child`: the child DISABLES a governance flag the parent
-    had ON, on at least one of the three amendment-rule axes (cap/io/proofreq).
-    This is exactly what the unconditional `rules_non_weakening` must forbid. -/
-def weakensFlags (parent child : Array Bool 3#usize) : Prop :=
+/-- `weakensFlags parent child parent_sigs child_sigs`: the child DISABLES a
+    governance flag the parent had ON (cap/io/proofreq), OR lowers the
+    human-signature threshold.
+
+    The numeric disjunct is the one this bridge was missing. Lowering
+    `constitutional_human_signatures` disarms the review that would police the
+    NEXT amendment while every boolean flag stays set — the same coup, spelled
+    numerically. Production gained the axis in #2332; until now the extracted
+    core did not, so this theorem certified a gate strictly weaker than the one
+    that ships. -/
+def weakensFlags (parent child : Array Bool 3#usize)
+    (parent_sigs child_sigs : Std.U32) : Prop :=
   (parent.val[0]! = true ∧ child.val[0]! = false) ∨
   (parent.val[1]! = true ∧ child.val[1]! = false) ∨
-  (parent.val[2]! = true ∧ child.val[2]! = false)
+  (parent.val[2]! = true ∧ child.val[2]! = false) ∨
+  (child_sigs < parent_sigs)
 
 /-- The GENERATED `rules_non_weakening` evaluates (via three literal-index reads
     of length-3 arrays) to the boolean conjunction
     `(¬p0 ∨ c0) ∧ (¬p1 ∨ c1) ∧ (¬p2 ∨ c2)` over the array elements. This pins
     the generated def's value to the elementwise flags it reads. -/
-theorem rules_non_weakening_val (parent child : Array Bool 3#usize) :
-    ck_policy.extracted.rules_non_weakening parent child =
+theorem rules_non_weakening_val (parent child : Array Bool 3#usize)
+    (parent_sigs child_sigs : Std.U32) :
+    ck_policy.extracted.rules_non_weakening parent child parent_sigs child_sigs =
       ok (((!parent.val[0]! || child.val[0]!) &&
            (!parent.val[1]! || child.val[1]!) &&
-           (!parent.val[2]! || child.val[2]!))) := by
+           (!parent.val[2]! || child.val[2]!) &&
+           (parent_sigs <= child_sigs))) := by
   have hp := parent.property
   have hc := child.property
   -- Length-3 arrays: name the three elements of each carrier list.
@@ -245,15 +258,23 @@ theorem rules_non_weakening_val (parent child : Array Bool 3#usize) :
     image, over the EXTRACTED def, of the unconditional non-weakening conjunct
     that closes the two-step coup. -/
 theorem rules_non_weakening_sound (parent child : Array Bool 3#usize)
-    (h : ck_policy.extracted.rules_non_weakening parent child = ok true) :
-    ¬ weakensFlags parent child := by
+    (parent_sigs child_sigs : Std.U32)
+    (h : ck_policy.extracted.rules_non_weakening parent child parent_sigs child_sigs
+         = ok true) :
+    ¬ weakensFlags parent child parent_sigs child_sigs := by
   rw [rules_non_weakening_val] at h
   have hb : ((!parent.val[0]! || child.val[0]!) &&
              (!parent.val[1]! || child.val[1]!) &&
-             (!parent.val[2]! || child.val[2]!)) = true := by injection h
+             (!parent.val[2]! || child.val[2]!) &&
+             (parent_sigs <= child_sigs)) = true := by injection h
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hb
+  obtain ⟨⟨⟨h0, h1⟩, h2⟩, hsig⟩ := hb
   intro hw
-  rcases hw with ⟨hp, hc⟩ | ⟨hp, hc⟩ | ⟨hp, hc⟩ <;>
-    rw [hp, hc] at hb <;> simp at hb
+  rcases hw with ⟨hp, hc⟩ | ⟨hp, hc⟩ | ⟨hp, hc⟩ | hs
+  · rw [hp, hc] at h0; simp at h0
+  · rw [hp, hc] at h1; simp at h1
+  · rw [hp, hc] at h2; simp at h2
+  · exact absurd hs (not_lt.mpr hsig)
 
 /- ───────────────────────────────────────────────────────────────────────────
    THEOREM T1 — soundness of the EXTRACTED gate (PROVED, 0 sorry, 0 native_decide)
@@ -284,7 +305,9 @@ theorem T1_extracted_gate_sound
     (pf cf : Array Bool 3#usize)
     (pcap ccap pio cio ppr cpr : Slice U32)
     (pb cb : Array U64 8#usize)
-    (h : ck_policy.extracted.passed_core pf cf pcap ccap pio cio ppr cpr pb cb = ok true) :
+    (psig csig : Std.U32)
+    (h : ck_policy.extracted.passed_core pf cf pcap ccap pio cio ppr cpr pb cb psig csig
+         = ok true) :
     (pf.index_usize 0#usize = ok true →
         ck_policy.extracted.subset_u32 ccap pcap = ok true) ∧
     (pf.index_usize 1#usize = ok true →
@@ -292,9 +315,9 @@ theorem T1_extracted_gate_sound
     (ck_policy.extracted.budget_within cb pb = ok true) ∧
     (pf.index_usize 2#usize = ok true →
         ck_policy.extracted.dropped_u32 cpr ppr = ok false) ∧
-    (¬ weakensFlags pf cf) := by
+    (¬ weakensFlags pf cf psig csig) := by
   obtain ⟨⟨f0, e0, hcap⟩, ⟨f1, e1, hio⟩, hbud, ⟨f2, e2, hpr⟩, hrules⟩ :=
-    passed_core_decomp pf cf pcap ccap pio cio ppr cpr pb cb h
+    passed_core_decomp pf cf pcap ccap pio cio ppr cpr pb cb psig csig h
   refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · -- capability axis
     intro hflag
@@ -314,7 +337,7 @@ theorem T1_extracted_gate_sound
     subst this
     exact proofreq_not_violated_flag_on cpr ppr hpr
   · -- amendment-rules non-weakening — UNCONDITIONAL
-    exact rules_non_weakening_sound pf cf hrules
+    exact rules_non_weakening_sound pf cf psig csig hrules
 
 /- ───────────────────────────────────────────────────────────────────────────
    #print axioms — kernel-checked axiom-hygiene audit (no sorryAx, no

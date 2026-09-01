@@ -201,10 +201,11 @@ def extracted.budget_within
   extracted.budget_within_loop child parent 0#usize true
 
 /-- [ck_policy::extracted::rules_non_weakening]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 130:0-135:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 137:0-148:1
     Visibility: public -/
 def extracted.rules_non_weakening
-  (parent : Array Bool 3#usize) (child : Array Bool 3#usize) :
+  (parent : Array Bool 3#usize) (child : Array Bool 3#usize)
+  (parent_sigs : Std.U32) (child_sigs : Std.U32) :
   Result Bool
   := do
   let b ← Array.index_usize parent 0#usize
@@ -220,13 +221,16 @@ def extracted.rules_non_weakening
                       then Array.index_usize child 2#usize
                       else ok true
   if cap_ok
-  then if io_ok
-       then ok proofreq_ok
-       else ok false
+  then
+    if io_ok
+    then if proofreq_ok
+         then ok (parent_sigs <= child_sigs)
+         else ok false
+    else ok false
   else ok false
 
 /-- [ck_policy::extracted::cap_violated]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 143:0-149:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 156:0-162:1
     Visibility: public -/
 def extracted.cap_violated
   (parent_flag : Bool) (child : Slice Std.U32) (parent : Slice Std.U32) :
@@ -238,7 +242,7 @@ def extracted.cap_violated
   else ok false
 
 /-- [ck_policy::extracted::io_violated]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 152:0-158:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 165:0-171:1
     Visibility: public -/
 def extracted.io_violated
   (parent_flag : Bool) (child : Slice Std.U32) (parent : Slice Std.U32) :
@@ -250,7 +254,7 @@ def extracted.io_violated
   else ok false
 
 /-- [ck_policy::extracted::proofreq_violated]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 162:0-168:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 175:0-181:1
     Visibility: public -/
 def extracted.proofreq_violated
   (parent_flag : Bool) (child : Slice Std.U32) (parent : Slice Std.U32) :
@@ -261,7 +265,7 @@ def extracted.proofreq_violated
   else ok false
 
 /-- [ck_policy::extracted::budget_violated]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 171:0-173:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 184:0-186:1
     Visibility: public -/
 def extracted.budget_violated
   (child : Array Std.U64 8#usize) (parent : Array Std.U64 8#usize) :
@@ -271,7 +275,7 @@ def extracted.budget_violated
   ok (¬ b)
 
 /-- [ck_policy::extracted::passed_core]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 196:0-214:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 211:0-231:1
     Visibility: public -/
 def extracted.passed_core
   (parent_flags : Array Bool 3#usize) (child_flags : Array Bool 3#usize)
@@ -279,7 +283,8 @@ def extracted.passed_core
   (parent_io : Slice Std.U32) (child_io : Slice Std.U32)
   (parent_proof : Slice Std.U32) (child_proof : Slice Std.U32)
   (parent_budget : Array Std.U64 8#usize)
-  (child_budget : Array Std.U64 8#usize) :
+  (child_budget : Array Std.U64 8#usize) (parent_sigs : Std.U32)
+  (child_sigs : Std.U32) :
   Result Bool
   := do
   let b ← Array.index_usize parent_flags 0#usize
@@ -289,7 +294,9 @@ def extracted.passed_core
   let b4 ← extracted.budget_violated child_budget parent_budget
   let b5 ← Array.index_usize parent_flags 2#usize
   let b6 ← extracted.proofreq_violated b5 child_proof parent_proof
-  let rules_ok ← extracted.rules_non_weakening parent_flags child_flags
+  let rules_ok ←
+    extracted.rules_non_weakening parent_flags child_flags parent_sigs
+      child_sigs
   if ¬ b1
   then
     if ¬ b3
