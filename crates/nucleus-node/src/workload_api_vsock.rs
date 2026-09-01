@@ -197,6 +197,14 @@ pub struct PodMaterial {
     pub pod_registry: crate::pod_api::PodRegistry,
 }
 
+/// The vsock port the standard SPIFFE Workload API listens on.
+///
+/// Deliberately NOT the JSON protocol's port. The two speak different wire
+/// formats on the same kind of socket, and there is no framing that lets a
+/// server tell them apart before committing to one — so they get a port each
+/// rather than a heuristic.
+pub const SPIFFE_WORKLOAD_API_PORT: u32 = 15013;
+
 impl WorkloadApiVsockBridge {
     /// Starts the Workload API vsock bridge for a specific pod.
     ///
@@ -313,6 +321,81 @@ impl WorkloadApiVsockBridge {
                         }
                     }
                 }
+            }
+        });
+
+        Ok(Self {
+            shutdown: Some(shutdown_tx),
+            task,
+            socket_path,
+            pod_id,
+        })
+    }
+
+    /// Starts the STANDARD SPIFFE Workload API for a pod, over vsock.
+    ///
+    /// Same transport as [`start`], different protocol: gRPC at the standard
+    /// method path instead of the bespoke JSON-line format. A guest can use an
+    /// off-the-shelf SPIFFE client against this port; `start` remains for the
+    /// guest-init that ships in existing rootfs images and cannot be changed.
+    ///
+    /// The socket is created and handed to the jail exactly as in [`start`] —
+    /// see the long comment there for why chown rather than chmod, and what
+    /// breaks four layers downstream when it is missed.
+    #[allow(dead_code)]
+    pub async fn start_spiffe(
+        vsock_uds_path: impl AsRef<Path>,
+        port: u32,
+        pod_id: uuid::Uuid,
+        identity_manager: IdentityManager,
+        jail_owner: Option<(u32, u32)>,
+    ) -> std::io::Result<Self> {
+        use nucleus_identity::spiffe_workload_api::SpiffeWorkloadApiService;
+        use nucleus_proto::spiffe_workload::spiffe_workload_api_server::SpiffeWorkloadApiServer;
+
+        let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.as_ref().display(), port));
+        if socket_path.exists() {
+            tokio::fs::remove_file(&socket_path).await?;
+        }
+        if let Some(parent) = socket_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let listener = UnixListener::bind(&socket_path)?;
+        crate::guest_socket::give_socket_to_jail(&socket_path, jail_owner)?;
+        #[cfg(not(target_os = "linux"))]
+        let _ = jail_owner;
+
+        // The same per-pod identity the JSON path serves, so a guest gets the
+        // same SVID whichever protocol it speaks.
+        let identity = nucleus_identity::Identity::new(
+            identity_manager.trust_domain(),
+            "pods",
+            pod_id.to_string(),
+        );
+        let service = SpiffeWorkloadApiService::new(
+            identity_manager.secret_manager(),
+            identity,
+            identity_manager.trust_bundle().clone(),
+        );
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let socket_path_clone = socket_path.clone();
+        let task = tokio::spawn(async move {
+            info!(
+                "SPIFFE Workload API vsock bridge listening on {} (port {}) for pod {}",
+                socket_path_clone.display(),
+                port,
+                pod_id
+            );
+            let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+            if let Err(err) = tonic::transport::Server::builder()
+                .add_service(SpiffeWorkloadApiServer::new(service))
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+            {
+                error!("SPIFFE Workload API vsock bridge stopped: {err}");
             }
         });
 
@@ -1297,5 +1380,65 @@ mod tests {
             parse_command(b"FETCH_AUDIT_CREDENTIALS\n").unwrap(),
             WorkloadApiCommand::FetchAuditCredentials
         );
+    }
+}
+
+#[cfg(test)]
+mod spiffe_bridge_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// The vsock bridge must serve a REAL SPIFFE client, not just compile.
+    ///
+    /// The node side of a Firecracker vsock connection IS a Unix socket
+    /// (`vsock.sock_<port>`), so pointing a standard client at that path
+    /// exercises exactly the bytes a guest would send. What is NOT covered here
+    /// is Firecracker's guest-side vsock plumbing, which needs a booted VM.
+    #[tokio::test]
+    async fn a_real_spiffe_client_can_fetch_an_svid_over_the_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("vsock.sock");
+        let pod_id = uuid::Uuid::new_v4();
+
+        let manager =
+            crate::identity::IdentityManager::new("nucleus.local", Duration::from_secs(3600))
+                .expect("identity manager");
+
+        let _bridge = WorkloadApiVsockBridge::start_spiffe(
+            &base,
+            SPIFFE_WORKLOAD_API_PORT,
+            pod_id,
+            manager,
+            None,
+        )
+        .await
+        .expect("bridge starts");
+
+        let sock = PathBuf::from(format!("{}_{}", base.display(), SPIFFE_WORKLOAD_API_PORT));
+        for _ in 0..100 {
+            if sock.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let client = spiffe::WorkloadApiClient::connect_to(format!("unix:{}", sock.display()))
+            .await
+            .expect("a standard SPIFFE client must connect to the vsock bridge");
+        let svid = client
+            .fetch_x509_svid()
+            .await
+            .expect("a standard SPIFFE client must fetch an SVID over the bridge");
+
+        // The pod's identity, not the node's: one bridge serves one pod, and
+        // that isolation is the reason the socket is per-pod.
+        assert_eq!(
+            svid.spiffe_id().to_string(),
+            format!("spiffe://nucleus.local/ns/pods/sa/{pod_id}")
+        );
+
+        // What we serve must survive the validator we reject with.
+        nucleus_identity::spiffe_uri_from_svid(svid.leaf().as_bytes())
+            .expect("the SVID served over vsock must pass X.509-SVID validation");
     }
 }
