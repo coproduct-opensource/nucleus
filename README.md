@@ -41,10 +41,11 @@ cargo run -q -p nucleus-ifc --example ifc_demo
 
 `--depth 1` because the full history is ~456 MB; the shallow clone is 29 MB.
 
-**Measured on an Apple M5 Pro:** 3.9 s from an empty `target/` to the output
-below, in a fresh shallow clone, with a warm cargo registry. The demo crate has
-three dependencies — the wait is compiling nucleus, not resolving the internet.
-Clone time is yours to discover; it is 29 MB.
+**Measured on an Apple M5 Pro: 1.4 s to clone, 4.0 s to first output — 5.4 s
+total**, from a fresh shallow clone into an empty `target/`, with a warm cargo
+registry and `just` not installed. The demo crate has three dependencies, so
+the wait is compiling nucleus rather than resolving the internet; a first-ever
+Rust build on a machine also downloads the registry and will be slower.
 
 Prefer a task runner? `brew install just` then `just demo` runs exactly the same
 thing, and `just vault` opens **The Vault** in a browser.
