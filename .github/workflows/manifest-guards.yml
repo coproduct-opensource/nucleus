@@ -64,3 +64,8 @@ jobs:
       # lives only in .gitignore is a rule that gets re-broken.
       - name: No tracked build artifacts
         run: bash ci/no-tracked-build-artifacts.sh
+      # The merge_group scope gates re-implement each workflow's `paths:` as a
+      # regex, because GitHub ignores `paths:` for merge_group events. Two
+      # copies of one fact drift, so this fails if they disagree.
+      - name: merge_group scope gates match their declared paths
+        run: bash ci/merge-group-scope-parity.sh

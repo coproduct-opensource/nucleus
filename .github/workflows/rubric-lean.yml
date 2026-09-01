@@ -29,17 +29,63 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # WHY THIS EXISTS: `paths:` under `merge_group:` is accepted by the YAML
+      # schema and then IGNORED by GitHub — path filtering is not supported for
+      # merge_group events. So the scoping declared above holds on pull_request
+      # and is silently dropped in the merge queue, where the queue's
+      # speculative batches multiply it by the queue depth. A README-only PR
+      # was running the full Lean proof suite, once per queue entry.
+      #
+      # This restores the declared intent for merge_group only. On every other
+      # event GitHub's own `paths:` already decided, so the gate says yes and
+      # changes nothing.
+      - name: Is this change in scope?
+        id: scope
+        env:
+          # Never interpolate ${{ }} into a run script (zizmor
+          # template-injection hardening) — pass through env.
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+          PATTERN: '^crates/nucleus-rubric/lean/|^\.github/workflows/rubric-lean\.yml$'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "merge_group" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "$EVENT: GitHub's own paths: filter already applied."
+            exit 0
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${HEAD:-}" ]; then
+            # Fail OPEN: an unknown range must run the proofs, never skip them.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "merge_group with no base/head sha — running to be safe."
+            exit 0
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE "$PATTERN"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "in scope — running."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "no file in this merge group matches $PATTERN — skipping the"
+            echo "expensive steps. This job still reports, so it remains usable"
+            echo "as a required status check."
+          fi
+
 
       # Mathlib-free project: install elan directly (the repo's established
       # pattern — see econ-lean.yml / aeneas.yml) and run `lake build`. No mathlib
       # cache fetch needed; the whole tree builds in seconds.
       - name: Install elan (Lean toolchain)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Cache Lake build artifacts
+        if: steps.scope.outputs.relevant == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: |
@@ -50,10 +96,12 @@ jobs:
             lean-rubric-${{ runner.os }}-
 
       - name: lake build Nucleus (rubric scoring proofs)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-rubric/lean
         run: lake build
 
       - name: Ban sorry / admit / native_decide / sorryAx in rubric Lean
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # Match the tactic/term forms (`:= sorry`, `:= by sorry`, a lone `sorry`,
           # a lone `admit` / `:= by admit`, `native_decide`, or the `sorryAx` axiom
@@ -77,6 +125,7 @@ jobs:
           echo "No sorry / admit / native_decide / sorryAx across $FILES file(s) — rubric scoring proofs are complete and kernel-checked."
 
       - name: Assert theorems are sorryAx-free (#print axioms)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-rubric/lean
         run: |
           # Ask the kernel which axioms each soundness theorem actually depends on.
