@@ -11,13 +11,37 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Top-level pod spec document (YAML/JSON).
+/// The only API version this build understands.
+///
+/// A `String` here meant `apiVersion: nucleus/v2` — or a typo — parsed happily
+/// and was never compared against anything. Now the parser rejects it, and
+/// adding a version is a deliberate variant rather than a string nobody checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ApiVersion {
+    /// `nucleus/v1`.
+    #[default]
+    #[serde(rename = "nucleus/v1")]
+    NucleusV1,
+}
+
+/// The only kind this build understands.
+///
+/// `kind: Podd` used to parse. It does not now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PodKind {
+    /// `Pod`.
+    #[default]
+    Pod,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PodSpec {
-    /// API version for the spec.
+    /// API version for the spec. Only `nucleus/v1` parses.
     #[serde(rename = "apiVersion")]
-    pub api_version: String,
-    /// Kind of the spec (should be "Pod").
-    pub kind: String,
+    pub api_version: ApiVersion,
+    /// Kind of the spec. Only `Pod` parses.
+    pub kind: PodKind,
     /// Metadata about the pod.
     #[serde(default)]
     pub metadata: Metadata,
@@ -29,8 +53,8 @@ impl PodSpec {
     /// Create a new PodSpec with defaults for version and kind.
     pub fn new(spec: PodSpecInner) -> Self {
         Self {
-            api_version: "nucleus/v1".to_string(),
-            kind: "Pod".to_string(),
+            api_version: ApiVersion::NucleusV1,
+            kind: PodKind::Pod,
             metadata: Metadata::default(),
             spec,
         }
@@ -39,6 +63,7 @@ impl PodSpec {
 
 /// Metadata for a pod.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Metadata {
     /// Optional pod name.
     pub name: Option<String>,
@@ -55,6 +80,7 @@ pub struct Metadata {
 
 /// Inner spec fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PodSpecInner {
     /// Working directory for the pod.
     #[serde(default = "default_work_dir")]
@@ -125,6 +151,7 @@ fn default_timeout_seconds() -> u64 {
 /// Policy spec for a pod.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum PolicySpec {
     /// Use a named profile.
     Profile { name: String },
@@ -192,6 +219,7 @@ impl PolicySpec {
 
 /// Budget model override spec.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BudgetModelSpec {
     /// Base cost for any execution.
     pub base_cost_usd: f64,
@@ -206,6 +234,7 @@ pub struct BudgetModelSpec {
 /// would be required to proceed. The actual payment protocol (x402, etc.)
 /// is implemented by the orchestrator, not by nucleus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PaymentRequiredInfo {
     /// Amount required in USD.
     pub amount_usd: f64,
@@ -224,6 +253,7 @@ pub struct PaymentRequiredInfo {
 /// Classification of the payment requirement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
+#[serde(deny_unknown_fields)]
 pub enum PaymentRequiredKind {
     /// Budget for the pod has been exhausted.
     BudgetExhausted {
@@ -241,6 +271,7 @@ pub enum PaymentRequiredKind {
 
 /// A permission dimension that was denied, with its market price.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeniedDimensionInfo {
     /// Dimension name (e.g. "filesystem", "network_egress").
     pub dimension: String,
@@ -250,6 +281,7 @@ pub struct DeniedDimensionInfo {
 
 /// Resource hints for the pod.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResourceSpec {
     /// CPU cores requested.
     pub cpu_cores: Option<u32>,
@@ -259,6 +291,7 @@ pub struct ResourceSpec {
 
 /// Network hints for the pod.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetworkSpec {
     /// Allowed egress destinations.
     #[serde(default)]
@@ -352,6 +385,7 @@ impl NetworkSpec {
 
 /// VM image configuration for Firecracker pods.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageSpec {
     /// Path to the kernel image.
     pub kernel_path: PathBuf,
@@ -370,6 +404,7 @@ pub struct ImageSpec {
 
 /// Vsock configuration for VM communication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VsockSpec {
     /// Guest CID for vsock.
     pub guest_cid: u32,
@@ -380,6 +415,7 @@ pub struct VsockSpec {
 /// Seccomp policy for Firecracker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum SeccompSpec {
     /// Use Firecracker defaults.
     Default,
@@ -391,6 +427,7 @@ pub enum SeccompSpec {
 
 /// Cgroup placement and settings for the Firecracker process.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CgroupSpec {
     /// Path to the cgroup directory.
     pub path: PathBuf,
@@ -401,6 +438,7 @@ pub struct CgroupSpec {
 
 /// A single cgroup file + value to write.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CgroupSetting {
     /// File name inside the cgroup directory (e.g. \"cpu.max\").
     pub file: String,
@@ -428,6 +466,7 @@ pub struct CgroupSetting {
 /// values for the `env` map. `workload_identity` entries contain no secret
 /// material so they debug normally.
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CredentialsSpec {
     /// Environment variables containing credentials.
     /// Keys are the variable names (e.g., `LLM_API_TOKEN`), values are the secrets.
@@ -509,6 +548,7 @@ impl CredentialsSpec {
 /// This type is provider-agnostic. The orchestrator (or operator) chooses the
 /// `audience` value for whichever relying party the workload calls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkloadIdentitySpec {
     /// Logical name (e.g. "llm-provider", "prod-sts"). Used in audit records.
     pub name: String,
@@ -540,6 +580,7 @@ pub struct WorkloadIdentitySpec {
 /// Token refresh policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum RefreshPolicy {
     /// Refresh when the token has consumed `fraction` of its lifetime.
     /// Value is in basis points (0–10000) so the type stays `Eq`.
@@ -558,6 +599,7 @@ impl Default for RefreshPolicy {
 /// Source of the workload identity token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum IdentitySource {
     /// Fetch from the local SPIFFE Workload API (e.g. SPIRE Agent socket).
     /// `socket_path` defaults to the SPIFFE-standard well-known location when
@@ -596,6 +638,7 @@ impl Default for IdentitySource {
 ///
 /// Compatible with: any S3-compatible object store (e.g. AWS S3, MinIO).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditSinkSpec {
     /// S3 bucket name.
     pub s3_bucket: String,
@@ -621,6 +664,7 @@ pub fn sha256_bytes_hex(data: &[u8]) -> String {
 /// Contains a deterministic workspace content hash and the audit chain tail
 /// so the host (nucleus-node) can build an `ExecutionReceipt`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExitReport {
     /// SHA-256 of workspace contents at exit.
     pub workspace_hash: String,
@@ -726,6 +770,7 @@ pub struct ExitReport {
 /// hold). The mitigation is structural: this proxy is per-pod and holds one
 /// pod's credentials, not a fleet's. Do not turn it into a shared gateway.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CredentialedEgressSpec {
     /// Name the workload refers to this upstream by.
     pub name: String,
@@ -839,6 +884,7 @@ impl CredentialedEgressSpec {
 /// allowlist. Nothing vendor-specific belongs in this struct or in the runtime
 /// that reads it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct WorkloadSpec {
     /// Executable to run. Resolved inside the guest, not on the host.
     pub command: String,
@@ -1717,5 +1763,161 @@ spec:
             }
             // If no uninhabitable_state, profile is safe by construction — no assertion needed
         }
+    }
+}
+
+#[cfg(test)]
+mod strict_parsing {
+    //! A misspelled key in a pod spec used to parse.
+    //!
+    //! `deny_unknown_fields` appeared ZERO times across these types, and serde's
+    //! default is to ignore what it does not recognise. So
+    //!
+    //! ```yaml
+    //! spec:
+    //!   netwrok:          # typo
+    //!     egress: deny
+    //! ```
+    //!
+    //! parsed successfully, `network` stayed `None`, the pod took the default,
+    //! and the operator believed they had denied egress. No error, no warning,
+    //! different enforcement than was written — the worst failure available to a
+    //! runtime whose product IS enforcement, because a crash would at least be
+    //! visible.
+
+    use super::*;
+
+    /// The exact hazard: a near-miss key must be refused, and the error must
+    /// name it. Anything less leaves the operator guessing at an indent.
+    #[test]
+    fn a_misspelled_key_is_rejected_and_named() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+spec:
+  netwrok:
+    deny: ["*"]
+"#;
+        let err =
+            serde_yaml::from_str::<PodSpec>(yaml).expect_err("a misspelled key must not parse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("netwrok"),
+            "the error must name the offending key, got: {msg}"
+        );
+    }
+
+    /// Non-vacuity for the test above: the SAME spec spelled correctly must
+    /// parse. Without this, `a_misspelled_key_is_rejected` would still pass if
+    /// the parser had simply broken.
+    #[test]
+    fn the_correctly_spelled_spec_still_parses() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+spec:
+  network:
+    deny: ["*"]
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("valid spec must parse");
+        assert!(
+            spec.spec.network.is_some(),
+            "the field must actually land, or the strictness is meaningless"
+        );
+    }
+
+    #[test]
+    fn an_unknown_kind_is_rejected() {
+        let yaml = "apiVersion: nucleus/v1\nkind: Podd\nspec: {}\n";
+        assert!(
+            serde_yaml::from_str::<PodSpec>(yaml).is_err(),
+            "`kind: Podd` used to parse because nothing compared it to anything"
+        );
+    }
+
+    #[test]
+    fn an_unknown_api_version_is_rejected() {
+        let yaml = "apiVersion: nucleus/v2\nkind: Pod\nspec: {}\n";
+        assert!(
+            serde_yaml::from_str::<PodSpec>(yaml).is_err(),
+            "an unrecognised apiVersion must not silently parse as v1"
+        );
+    }
+
+    /// **The tripwire, and the reason this module matters more than the 23
+    /// attributes it protects.**
+    ///
+    /// Adding a new `Deserialize` spec type without `deny_unknown_fields`
+    /// silently reopens the hole for that type, and no behavioural test would
+    /// catch it — you would have to think to write one. So assert the property
+    /// over the source itself: every deserializable type here is strict.
+    ///
+    /// Source-scanning is ugly and it is the honest tool for this job: the
+    /// property is about the SET of types, which no value-level test can see.
+    #[test]
+    fn every_deserializable_spec_type_denies_unknown_fields() {
+        let src = include_str!("lib.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let mut offenders = Vec::new();
+        let mut checked = 0;
+
+        for (i, line) in lines.iter().enumerate() {
+            if !(line.starts_with("#[derive(") && line.contains("Deserialize")) {
+                continue;
+            }
+            // Walk the attributes between the derive and the declaration.
+            let mut j = i + 1;
+            let mut strict = false;
+            while j < lines.len() && lines[j].starts_with("#[") {
+                if lines[j].contains("deny_unknown_fields") {
+                    strict = true;
+                }
+                j += 1;
+            }
+            let Some(decl) = lines.get(j) else { continue };
+            // Only types with named fields can carry unknown ones.
+            if !(decl.starts_with("pub struct ") || decl.starts_with("pub enum "))
+                || !decl.trim_end().ends_with('{')
+            {
+                continue;
+            }
+            // A unit-variant-only enum has no field to be unknown: serde already
+            // rejects an unrecognised variant, so the attribute would be a no-op.
+            // Skipping them keeps the assertion about types that can actually
+            // carry a silent typo.
+            if decl.starts_with("pub enum ") {
+                let mut k = j + 1;
+                let mut has_fields = false;
+                while k < lines.len() && !lines[k].starts_with('}') {
+                    let t = lines[k].trim();
+                    // Attributes and doc comments are not variant declarations —
+                    // `#[serde(rename = "...")]` must not read as a tuple variant.
+                    let is_decl = !t.starts_with('#') && !t.starts_with("//") && !t.is_empty();
+                    if is_decl && (t.ends_with('{') || t.contains('(')) {
+                        has_fields = true;
+                    }
+                    k += 1;
+                }
+                if !has_fields {
+                    continue;
+                }
+            }
+            checked += 1;
+            if !strict {
+                offenders.push(decl.trim().to_string());
+            }
+        }
+
+        assert!(
+            checked >= 20,
+            "the scanner found only {checked} types — it has stopped matching the \
+             source and would pass vacuously"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these deserializable spec types accept unknown fields, so a typo in \
+             them is silently ignored:\n  {}",
+            offenders.join("\n  ")
+        );
     }
 }
