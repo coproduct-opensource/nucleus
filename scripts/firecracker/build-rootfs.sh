@@ -199,9 +199,64 @@ ADVERSARY_PROBE_BIN="${ADVERSARY_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nuc
     esac
 done
 
+
+# Host tooling preflight.
+#
+# `--verify` checked the nucleus binaries -- the things that are almost always
+# present -- and not the host tools, which are the things that are actually
+# missing. On a stock Mac neither mke2fs nor docker exists, so this script used
+# to run several minutes of cargo builds and only then die on
+# `mke2fs: command not found`. Check first, and say what to do.
+preflight_host_tooling() {
+    local missing=0
+
+    if ! command -v mke2fs >/dev/null 2>&1; then
+        missing=1
+        echo "MISSING: mke2fs (e2fsprogs) -- needed to write the ext4 image" >&2
+        case "$(uname -s)" in
+            Darwin)
+                cat >&2 <<'HINT'
+  macOS has no ext4 tooling, so this script cannot build a rootfs on the host.
+  Run it inside the Linux VM instead:
+      limactl start nucleus-kvm
+      limactl shell nucleus-kvm -- bash -lc 'cd <repo> && scripts/firecracker/build-rootfs.sh'
+  The repo must be mounted in that VM (lima's `mounts:` in ~/.lima/nucleus-kvm/lima.yaml).
+HINT
+                ;;
+            *)
+                echo "  Install it:  apt-get install e2fsprogs  |  dnf install e2fsprogs" >&2
+                ;;
+        esac
+    fi
+
+    # The base filesystem comes from a Debian tarball, sourced either from a
+    # local file or by exporting a container image.
+    if [ -n "${DEBIAN_TARBALL:-}" ]; then
+        if [ ! -f "$DEBIAN_TARBALL" ]; then
+            missing=1
+            echo "MISSING: DEBIAN_TARBALL is set to '$DEBIAN_TARBALL', which does not exist" >&2
+        fi
+    elif ! command -v docker >/dev/null 2>&1; then
+        missing=1
+        cat >&2 <<'HINT'
+MISSING: a Debian base filesystem -- needs either docker or a prebuilt tarball
+  Either install docker, or point at a tarball you already have:
+      DEBIAN_TARBALL=/path/to/debian-rootfs.tar scripts/firecracker/build-rootfs.sh
+HINT
+    fi
+
+    if [ "$missing" -ne 0 ]; then
+        echo "" >&2
+        echo "Host tooling preflight failed -- nothing was built." >&2
+        return 1
+    fi
+    echo "Host tooling preflight: OK (mke2fs, Debian base source)"
+}
+
 # Verify mode: just check if binaries exist
 if [ "$VERIFY_ONLY" = true ]; then
     echo "Verifying binaries for $ARCH ($TARGET)..."
+    preflight_host_tooling || exit 1
     missing=0
     for bin in "$PROXY_BIN" "$NET_PROBE_BIN" "$WORKLOAD_PROBE_BIN" "$EGRESS_PROBE_BIN"; do
         if [ ! -f "$bin" ]; then
@@ -276,6 +331,8 @@ if [ "$LEGACY_SECRETS" = true ]; then
     fi
     echo "WARNING: --legacy-secrets is deprecated. Secrets should be injected at runtime." >&2
 fi
+
+preflight_host_tooling || exit 1
 
 echo "Building rootfs for architecture: $ARCH"
 echo "  Target: $TARGET"

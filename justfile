@@ -143,3 +143,20 @@ preflight: check
     RUSTFLAGS="-D warnings" cargo hack check --each-feature --no-dev-deps \
         -p portcullis -p portcullis-core -p nucleus-lineage -p nucleus-tool-proxy \
         -p nucleus-ifc -p nucleus-envelope -p nucleus-identity -p nucleus-creditworthiness
+
+# The pinned release rootfs and a current nucleus-node can drift: #2214
+# (2026-08-08) changed how the guest is approved, so a node newer than the
+# rootfs boots to a kernel panic. Building from source is the fix -- and it was
+# only ever a script path nobody could be expected to guess.
+#
+# Needs ext4 tooling, which macOS does not have. The script preflights and says
+# how to run it inside the Lima VM, instead of failing several minutes into a
+# build with `mke2fs: command not found`.
+
+# Build the guest rootfs from THIS checkout (fixes node/rootfs version skew).
+guest-rootfs *args:
+    bash scripts/firecracker/build-rootfs.sh {{args}}
+
+# Check the guest rootfs build prerequisites without building anything.
+guest-rootfs-check:
+    bash scripts/firecracker/build-rootfs.sh --verify
