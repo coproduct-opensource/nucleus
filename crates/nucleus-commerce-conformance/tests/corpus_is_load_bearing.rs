@@ -131,3 +131,39 @@ fn the_exported_vectors_are_complete_and_parseable() {
         }
     }
 }
+
+/// **The corpus must keep exercising integer-division dust.**
+///
+/// `route_to_commons` assigns the remainder to the FIRST share. Every original
+/// vector divided evenly, so nothing revealed that rule — and an independent
+/// implementation written from those vectors truncates, passes the whole corpus,
+/// and then skims one micro-USD per split forever, blessed by its own verifier.
+/// Demonstrated, not hypothesised: `examples/independent-conformance/conform.py`
+/// with the dust rule removed passes the 14-case corpus and fails this one.
+///
+/// So at least one payout vector must have a split that does NOT divide evenly.
+/// If someone later "tidies" the corpus to round numbers, this reds.
+#[test]
+fn a_payout_vector_exercises_integer_division_dust() {
+    use nucleus_commerce_conformance::{corpus, CaseInput};
+
+    let dusty = corpus().into_iter().any(|c| {
+        let CaseInput::Payout(p) = &c.input else {
+            return false;
+        };
+        let nucleus_recompute::ClearingReceipt::Settlement(s) = &p.clearing else {
+            return false;
+        };
+        let pool = u128::from(s.price_micro) * u128::from(s.delivered_bps.min(10_000)) / 10_000;
+        // Dust exists when at least one share does not divide the pool exactly.
+        p.shares
+            .iter()
+            .any(|sh| pool * u128::from(sh.bps) % 10_000 != 0)
+    });
+
+    assert!(
+        dusty,
+        "no payout vector has a remainder — an implementation that truncates instead of \
+         assigning the dust would pass this corpus and then skim on every real split"
+    );
+}

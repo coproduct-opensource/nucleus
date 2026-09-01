@@ -1,0 +1,712 @@
+{
+  "cases": [
+    {
+      "expect": "accept",
+      "expect_reason_contains": null,
+      "input": {
+        "allocations": [
+          {
+            "amount_micro": 700000,
+            "destination": "seller"
+          },
+          {
+            "amount_micro": 250000,
+            "destination": "runtime"
+          },
+          {
+            "amount_micro": 50000,
+            "destination": "commons"
+          }
+        ],
+        "attribution": {
+          "assurance": 1,
+          "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workload_spiffe_id": "spiffe://nucleus.local/runtime/acme"
+        },
+        "clearing": {
+          "delivered_bps": 10000,
+          "kind": "settlement",
+          "price_micro": 1000000,
+          "refund": 0,
+          "seller_gross": 1000000,
+          "verdict": "release"
+        },
+        "kind": "payout",
+        "shares": [
+          {
+            "bps": 7000,
+            "destination": "seller"
+          },
+          {
+            "bps": 2500,
+            "destination": "runtime"
+          },
+          {
+            "bps": 500,
+            "destination": "commons"
+          }
+        ]
+      },
+      "name": "payout/honest",
+      "property": "payout_recomputes",
+      "summary": "a split issued by the proven kernel re-derives"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": null,
+      "input": {
+        "allocations": [
+          {
+            "amount_micro": 700001,
+            "destination": "seller"
+          },
+          {
+            "amount_micro": 250000,
+            "destination": "runtime"
+          },
+          {
+            "amount_micro": 49999,
+            "destination": "commons"
+          }
+        ],
+        "attribution": {
+          "assurance": 1,
+          "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workload_spiffe_id": "spiffe://nucleus.local/runtime/acme"
+        },
+        "clearing": {
+          "delivered_bps": 10000,
+          "kind": "settlement",
+          "price_micro": 1000000,
+          "refund": 0,
+          "seller_gross": 1000000,
+          "verdict": "release"
+        },
+        "kind": "payout",
+        "shares": [
+          {
+            "bps": 7000,
+            "destination": "seller"
+          },
+          {
+            "bps": 2500,
+            "destination": "runtime"
+          },
+          {
+            "bps": 500,
+            "destination": "commons"
+          }
+        ]
+      },
+      "name": "payout/skimmed-one-micro-usd",
+      "property": "payout_recomputes",
+      "summary": "one micro-USD moved from the commons to the seller"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": null,
+      "input": {
+        "allocations": [
+          {
+            "amount_micro": 700000,
+            "destination": "seller"
+          },
+          {
+            "amount_micro": 250000,
+            "destination": "runtime"
+          },
+          {
+            "amount_micro": 50000,
+            "destination": "commons"
+          }
+        ],
+        "attribution": {
+          "assurance": 1,
+          "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workload_spiffe_id": "spiffe://nucleus.local/runtime/acme"
+        },
+        "clearing": {
+          "delivered_bps": 10000,
+          "kind": "settlement",
+          "price_micro": 1000000,
+          "refund": 0,
+          "seller_gross": 1500000,
+          "verdict": "release"
+        },
+        "kind": "payout",
+        "shares": [
+          {
+            "bps": 7000,
+            "destination": "seller"
+          },
+          {
+            "bps": 2500,
+            "destination": "runtime"
+          },
+          {
+            "bps": 500,
+            "destination": "commons"
+          }
+        ]
+      },
+      "name": "payout/fabricated-pool",
+      "property": "payout_recomputes",
+      "summary": "the split is honest but the clearing it distributes is not"
+    },
+    {
+      "expect": "accept",
+      "expect_reason_contains": null,
+      "input": {
+        "allocations": [
+          {
+            "amount_micro": 334,
+            "destination": "seller"
+          },
+          {
+            "amount_micro": 333,
+            "destination": "runtime"
+          },
+          {
+            "amount_micro": 333,
+            "destination": "commons"
+          }
+        ],
+        "attribution": {
+          "assurance": 1,
+          "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workload_spiffe_id": "spiffe://nucleus.local/runtime/acme"
+        },
+        "clearing": {
+          "delivered_bps": 10000,
+          "kind": "settlement",
+          "price_micro": 1000,
+          "refund": 0,
+          "seller_gross": 1000,
+          "verdict": "release"
+        },
+        "kind": "payout",
+        "shares": [
+          {
+            "bps": 3333,
+            "destination": "seller"
+          },
+          {
+            "bps": 3333,
+            "destination": "runtime"
+          },
+          {
+            "bps": 3334,
+            "destination": "commons"
+          }
+        ]
+      },
+      "name": "payout/remainder-dust-to-first-share",
+      "property": "payout_recomputes",
+      "summary": "a split that does not divide evenly: the dust goes to the first share"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": null,
+      "input": {
+        "allocations": [
+          {
+            "amount_micro": 333,
+            "destination": "seller"
+          },
+          {
+            "amount_micro": 333,
+            "destination": "runtime"
+          },
+          {
+            "amount_micro": 333,
+            "destination": "commons"
+          }
+        ],
+        "attribution": {
+          "assurance": 1,
+          "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workload_spiffe_id": "spiffe://nucleus.local/runtime/acme"
+        },
+        "clearing": {
+          "delivered_bps": 10000,
+          "kind": "settlement",
+          "price_micro": 1000,
+          "refund": 0,
+          "seller_gross": 1000,
+          "verdict": "release"
+        },
+        "kind": "payout",
+        "shares": [
+          {
+            "bps": 3333,
+            "destination": "seller"
+          },
+          {
+            "bps": 3333,
+            "destination": "runtime"
+          },
+          {
+            "bps": 3334,
+            "destination": "commons"
+          }
+        ]
+      },
+      "name": "payout/remainder-dust-dropped",
+      "property": "payout_recomputes",
+      "summary": "truncating instead of assigning the dust leaves the pool short by one"
+    },
+    {
+      "expect": "accept",
+      "expect_reason_contains": null,
+      "input": {
+        "attestations": [
+          {
+            "amount_micro_usd_signed": 700000,
+            "destination": "seller",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          },
+          {
+            "amount_micro_usd_signed": 250000,
+            "destination": "runtime",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          },
+          {
+            "amount_micro_usd_signed": 50000,
+            "destination": "commons",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          }
+        ],
+        "kind": "settlement",
+        "payout": {
+          "allocations": [
+            {
+              "amount_micro": 700000,
+              "destination": "seller"
+            },
+            {
+              "amount_micro": 250000,
+              "destination": "runtime"
+            },
+            {
+              "amount_micro": 50000,
+              "destination": "commons"
+            }
+          ],
+          "attribution": {
+            "assurance": 1,
+            "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "workload_spiffe_id": "spiffe://nucleus.local/runtime/acme"
+          },
+          "clearing": {
+            "delivered_bps": 10000,
+            "kind": "settlement",
+            "price_micro": 1000000,
+            "refund": 0,
+            "seller_gross": 1000000,
+            "verdict": "release"
+          },
+          "shares": [
+            {
+              "bps": 7000,
+              "destination": "seller"
+            },
+            {
+              "bps": 2500,
+              "destination": "runtime"
+            },
+            {
+              "bps": 500,
+              "destination": "commons"
+            }
+          ]
+        }
+      },
+      "name": "settlement/all-payees-once",
+      "property": "settlement_discharges",
+      "summary": "every allocation discharged exactly once"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": null,
+      "input": {
+        "attestations": [
+          {
+            "amount_micro_usd_signed": 700000,
+            "destination": "seller",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          },
+          {
+            "amount_micro_usd_signed": 250000,
+            "destination": "runtime",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          }
+        ],
+        "kind": "settlement",
+        "payout": {
+          "allocations": [
+            {
+              "amount_micro": 700000,
+              "destination": "seller"
+            },
+            {
+              "amount_micro": 250000,
+              "destination": "runtime"
+            },
+            {
+              "amount_micro": 50000,
+              "destination": "commons"
+            }
+          ],
+          "attribution": {
+            "assurance": 1,
+            "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "workload_spiffe_id": "spiffe://nucleus.local/runtime/acme"
+          },
+          "clearing": {
+            "delivered_bps": 10000,
+            "kind": "settlement",
+            "price_micro": 1000000,
+            "refund": 0,
+            "seller_gross": 1000000,
+            "verdict": "release"
+          },
+          "shares": [
+            {
+              "bps": 7000,
+              "destination": "seller"
+            },
+            {
+              "bps": 2500,
+              "destination": "runtime"
+            },
+            {
+              "bps": 500,
+              "destination": "commons"
+            }
+          ]
+        }
+      },
+      "name": "settlement/two-of-three",
+      "property": "settlement_discharges",
+      "summary": "each receipt verifies alone; the set leaves a payee unpaid"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": null,
+      "input": {
+        "attestations": [
+          {
+            "amount_micro_usd_signed": 699999,
+            "destination": "seller",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          },
+          {
+            "amount_micro_usd_signed": 250000,
+            "destination": "runtime",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          },
+          {
+            "amount_micro_usd_signed": 50000,
+            "destination": "commons",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          }
+        ],
+        "kind": "settlement",
+        "payout": {
+          "allocations": [
+            {
+              "amount_micro": 700000,
+              "destination": "seller"
+            },
+            {
+              "amount_micro": 250000,
+              "destination": "runtime"
+            },
+            {
+              "amount_micro": 50000,
+              "destination": "commons"
+            }
+          ],
+          "attribution": {
+            "assurance": 1,
+            "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "workload_spiffe_id": "spiffe://nucleus.local/runtime/acme"
+          },
+          "clearing": {
+            "delivered_bps": 10000,
+            "kind": "settlement",
+            "price_micro": 1000000,
+            "refund": 0,
+            "seller_gross": 1000000,
+            "verdict": "release"
+          },
+          "shares": [
+            {
+              "bps": 7000,
+              "destination": "seller"
+            },
+            {
+              "bps": 2500,
+              "destination": "runtime"
+            },
+            {
+              "bps": 500,
+              "destination": "commons"
+            }
+          ]
+        }
+      },
+      "name": "settlement/short-paid",
+      "property": "settlement_discharges",
+      "summary": "a payee is paid one micro-USD less than the proven split"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": null,
+      "input": {
+        "attestations": [
+          {
+            "amount_micro_usd_signed": 700000,
+            "destination": "spiffe://attacker.example/wallet",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          },
+          {
+            "amount_micro_usd_signed": 250000,
+            "destination": "runtime",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          },
+          {
+            "amount_micro_usd_signed": 50000,
+            "destination": "commons",
+            "payout_hash_hex": "1c2e0e0c24af28c804f3887c1d50a90b508f3fdf6040b7fd8005c376feecd185",
+            "rail": "x402-evm",
+            "tx_ref": "0xabc"
+          }
+        ],
+        "kind": "settlement",
+        "payout": {
+          "allocations": [
+            {
+              "amount_micro": 700000,
+              "destination": "seller"
+            },
+            {
+              "amount_micro": 250000,
+              "destination": "runtime"
+            },
+            {
+              "amount_micro": 50000,
+              "destination": "commons"
+            }
+          ],
+          "attribution": {
+            "assurance": 1,
+            "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "workload_spiffe_id": "spiffe://nucleus.local/runtime/acme"
+          },
+          "clearing": {
+            "delivered_bps": 10000,
+            "kind": "settlement",
+            "price_micro": 1000000,
+            "refund": 0,
+            "seller_gross": 1000000,
+            "verdict": "release"
+          },
+          "shares": [
+            {
+              "bps": 7000,
+              "destination": "seller"
+            },
+            {
+              "bps": 2500,
+              "destination": "runtime"
+            },
+            {
+              "bps": 500,
+              "destination": "commons"
+            }
+          ]
+        }
+      },
+      "name": "settlement/paid-a-stranger",
+      "property": "settlement_discharges",
+      "summary": "money moved to a destination the split does not owe"
+    },
+    {
+      "expect": "accept",
+      "expect_reason_contains": null,
+      "input": {
+        "inputs": [
+          "user_prompt",
+          "database_row"
+        ],
+        "kind": "flow",
+        "requires_authority": false,
+        "sink_public": false
+      },
+      "name": "disclosure/no-sponsored-content",
+      "property": "disclosure_required",
+      "summary": "an ordinary flow with no paid placement is unaffected"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": "disclosure",
+      "input": {
+        "inputs": [
+          "user_prompt",
+          "sponsored_offer"
+        ],
+        "kind": "flow",
+        "requires_authority": false,
+        "sink_public": false
+      },
+      "name": "disclosure/sponsored-undisclosed",
+      "property": "disclosure_required",
+      "summary": "paid placement with no disclosure record must be refused FOR THAT REASON"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": "AdversarialAncestry",
+      "input": {
+        "disclosure_hash_hex": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        "inputs": [
+          "user_prompt",
+          "sponsored_offer"
+        ],
+        "kind": "flow",
+        "requires_authority": false,
+        "sink_public": false
+      },
+      "name": "disclosure/sponsored-cannot-act",
+      "property": "disclosure_required",
+      "summary": "even disclosed, paid placement may not drive an outbound action"
+    },
+    {
+      "expect": "accept",
+      "expect_reason_contains": null,
+      "input": {
+        "cart": {
+          "currency": "USD",
+          "items": [
+            {
+              "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "quantity": 2,
+              "unit_price_micro": 500000
+            }
+          ],
+          "payer_spiffe_id": "spiffe://nucleus.local/human/alice",
+          "total_micro": 1000000
+        },
+        "kind": "cart",
+        "mandate_manifest_hash": "24604aae641ca7e099981f63a0101bdb3f8211fa64d2ce11941b4a3637cc628f"
+      },
+      "name": "cart/exact-match",
+      "property": "mandate_covers_cart",
+      "summary": "the mandate covers the cart presented"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": null,
+      "input": {
+        "cart": {
+          "currency": "USD",
+          "items": [
+            {
+              "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "quantity": 2,
+              "unit_price_micro": 500000
+            },
+            {
+              "offer_hash_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "quantity": 1,
+              "unit_price_micro": 250000
+            }
+          ],
+          "payer_spiffe_id": "spiffe://nucleus.local/human/alice",
+          "total_micro": 1250000
+        },
+        "kind": "cart",
+        "mandate_manifest_hash": "24604aae641ca7e099981f63a0101bdb3f8211fa64d2ce11941b4a3637cc628f"
+      },
+      "name": "cart/item-added-after-approval",
+      "property": "mandate_covers_cart",
+      "summary": "an item appended after the human approved is not covered"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": null,
+      "input": {
+        "cart": {
+          "currency": "USD",
+          "items": [
+            {
+              "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "quantity": 2,
+              "unit_price_micro": 500000
+            }
+          ],
+          "payer_spiffe_id": "spiffe://nucleus.local/human/alice",
+          "total_micro": 1
+        },
+        "kind": "cart",
+        "mandate_manifest_hash": "5f9949ca524d7621245378cc1ac480cd10b5d9a7c8c2a244d6bf149fd495312b"
+      },
+      "name": "cart/total-disagrees-with-lines",
+      "property": "mandate_covers_cart",
+      "summary": "a cart whose stated total is not the sum of its lines is malformed"
+    },
+    {
+      "expect": "reject",
+      "expect_reason_contains": null,
+      "input": {
+        "cart": {
+          "currency": "USD",
+          "items": [
+            {
+              "offer_hash_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "quantity": 2,
+              "unit_price_micro": 500000
+            }
+          ],
+          "payer_spiffe_id": "spiffe://nucleus.local/human/mallory",
+          "total_micro": 1000000
+        },
+        "kind": "cart",
+        "mandate_manifest_hash": "24604aae641ca7e099981f63a0101bdb3f8211fa64d2ce11941b4a3637cc628f"
+      },
+      "name": "cart/lifted-onto-another-payer",
+      "property": "mandate_covers_cart",
+      "summary": "a mandate cannot be moved onto someone else's account"
+    }
+  ],
+  "version": 1
+}
