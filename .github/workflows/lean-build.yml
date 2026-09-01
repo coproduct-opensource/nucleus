@@ -10,10 +10,10 @@ on:
     paths:
       - "crates/portcullis-core/lean/**"
       - ".github/workflows/lean-build.yml"
+  # No `paths:` here on purpose: GitHub ignores path filters for merge_group
+  # (actionlint flags them), which is the whole reason the `Is this change in
+  # scope?` step below exists. The scope for the queue lives there.
   merge_group:
-    paths:
-      - "crates/portcullis-core/lean/**"
-      - ".github/workflows/lean-build.yml"
   workflow_dispatch:
 
 permissions:

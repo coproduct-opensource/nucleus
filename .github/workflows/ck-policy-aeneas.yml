@@ -124,8 +124,7 @@ jobs:
           key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
 
       - name: Download Aeneas pre-built binaries
-        if: steps.scope.outputs.relevant == 'true'
-        if: steps.cache-aeneas-bin.outputs.cache-hit != 'true'
+        if: steps.scope.outputs.relevant == 'true' && (steps.cache-aeneas-bin.outputs.cache-hit != 'true')
         run: |
           gh release download "$AENEAS_RELEASE" \
             --repo AeneasVerif/aeneas \

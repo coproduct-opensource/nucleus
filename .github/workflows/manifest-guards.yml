@@ -64,6 +64,22 @@ jobs:
       # lives only in .gitignore is a rule that gets re-broken.
       - name: No tracked build artifacts
         run: bash ci/no-tracked-build-artifacts.sh
+      # NOTHING in this repo checked workflow SYNTAX. zizmor audits workflow
+      # SECURITY and is a different question. A duplicated `if:` key parses
+      # under a permissive YAML reader (last key wins) and is rejected outright
+      # by GitHub Actions, which reports it as a run named after the file with
+      # no jobs — after the runners have already been consumed. That is how a
+      # broken gate reached CI and burned ~27 queued runs before failing.
+      - name: Workflow syntax (actionlint)
+        run: |
+          set -euo pipefail
+          ver=1.7.12
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ver}/actionlint_${ver}_linux_amd64.tar.gz" \
+            | tar xz actionlint
+          # Syntax and expression errors only. Shellcheck style inside `run:`
+          # blocks is a separate, noisier question and is not gated here.
+          ./actionlint -shellcheck= -pyflakes= .github/workflows/*.yml
+
       # The merge_group scope gates re-implement each workflow's `paths:` as a
       # regex, because GitHub ignores `paths:` for merge_group events. Two
       # copies of one fact drift, so this fails if they disagree.
