@@ -43,6 +43,14 @@ on:
 
 # This job commits the regenerated Lean back to the branch, so it needs write.
 # (The top-level default elsewhere is read-only; we scope write to this job.)
+concurrency:
+  # Supersede a PR's older in-flight runs; NEVER cancel anything else.
+  # cancel-in-progress is scoped to pull_request on purpose: cancelling a
+  # merge_group run would abort a queue entry mid-flight, and cancelling a
+  # push to main would drop the signal for a commit that already landed.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: write
 

@@ -19,6 +19,14 @@ on:
   merge_group:
   workflow_dispatch:
 
+concurrency:
+  # Supersede a PR's older in-flight runs; NEVER cancel anything else.
+  # cancel-in-progress is scoped to pull_request on purpose: cancelling a
+  # merge_group run would abort a queue entry mid-flight, and cancelling a
+  # push to main would drop the signal for a commit that already landed.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
