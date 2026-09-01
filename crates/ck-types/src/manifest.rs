@@ -585,3 +585,299 @@ mod tests {
         assert!(result.is_err());
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUBSET ⟺ NO-ESCALATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Two spellings of "the child does not escalate" live in this file:
+///
+///   * [`CapabilitySet::is_subset_of`] — a conjunction of `is_subset` per axis.
+///     This is the PARTIAL ORDER, and it is what the Lean model and the Kani
+///     harnesses reason about.
+///   * [`CapabilitySet::escalations_over`] — a `difference()`-per-axis that
+///     returns the offending axis NAMES. This is what `check_monotonicity`
+///     actually calls, so it is what the running gate computes.
+///
+/// The gate's soundness argument silently assumes these agree. Nothing proved
+/// it. They do agree today — but only because each function happens to list the
+/// same axes, and that was an invariant no compiler or test enforced.
+///
+/// It is the same defect shape as the `constitutional_human_signatures`
+/// threshold: an axis present in one enumeration and absent from another. A
+/// drift bug waiting for the next field, not a bug in today's arithmetic. So
+/// these tests check BOTH — agreement now, and a compile-time tripwire that
+/// makes the next added axis impossible to wire into only one side.
+#[cfg(test)]
+mod subset_agrees_with_no_escalation {
+    use super::*;
+
+    /// Exhaustive destructuring with NO `..` rest pattern.
+    ///
+    /// This is the tripwire. Adding an axis to `CapabilitySet` stops this file
+    /// COMPILING, here, in the module that owns the agreement property — which
+    /// forces whoever adds it to decide how it appears in both functions rather
+    /// than discovering later that the gate never looked at it.
+    fn cap_axes(c: &CapabilitySet) -> (Vec<&BTreeSet<String>>, u32) {
+        let CapabilitySet {
+            filesystem_read,
+            filesystem_write,
+            network_allow,
+            tools_allow,
+            secret_classes,
+            max_parallel_tasks,
+        } = c;
+        (
+            vec![
+                filesystem_read,
+                filesystem_write,
+                network_allow,
+                tools_allow,
+                secret_classes,
+            ],
+            *max_parallel_tasks,
+        )
+    }
+
+    /// The same tripwire for the I/O surface.
+    fn io_axes(s: &IoSurface) -> Vec<&BTreeSet<String>> {
+        let IoSurface {
+            outbound_domains,
+            local_file_roots,
+            env_vars_readable,
+            tool_namespaces,
+            repo_write_targets,
+        } = s;
+        vec![
+            outbound_domains,
+            local_file_roots,
+            env_vars_readable,
+            tool_namespaces,
+            repo_write_targets,
+        ]
+    }
+
+    /// The five capability axis names, in the order `escalations_over` reports
+    /// them. Kept beside `cap_axes` so the destructuring guard covers both.
+    const CAP_AXIS_NAMES: [&str; 5] = [
+        "filesystem_read",
+        "filesystem_write",
+        "network_allow",
+        "tools_allow",
+        "secret_classes",
+    ];
+
+    const IO_AXIS_NAMES: [&str; 5] = [
+        "outbound_domains",
+        "local_file_roots",
+        "env_vars_readable",
+        "tool_namespaces",
+        "repo_write_targets",
+    ];
+
+    /// `mask` selects a subset of the two-element universe {"a", "b"}.
+    fn subset(mask: u8) -> BTreeSet<String> {
+        let mut s = BTreeSet::new();
+        if mask & 1 != 0 {
+            s.insert("a".to_string());
+        }
+        if mask & 2 != 0 {
+            s.insert("b".to_string());
+        }
+        s
+    }
+
+    fn cap(masks: [u8; 5], tasks: u32) -> CapabilitySet {
+        CapabilitySet {
+            filesystem_read: subset(masks[0]),
+            filesystem_write: subset(masks[1]),
+            network_allow: subset(masks[2]),
+            tools_allow: subset(masks[3]),
+            secret_classes: subset(masks[4]),
+            max_parallel_tasks: tasks,
+        }
+    }
+
+    fn io(masks: [u8; 5]) -> IoSurface {
+        IoSurface {
+            outbound_domains: subset(masks[0]),
+            local_file_roots: subset(masks[1]),
+            env_vars_readable: subset(masks[2]),
+            tool_namespaces: subset(masks[3]),
+            repo_write_targets: subset(masks[4]),
+        }
+    }
+
+    fn bits(m: u8) -> [u8; 5] {
+        [
+            m & 1,
+            (m >> 1) & 1,
+            (m >> 2) & 1,
+            (m >> 3) & 1,
+            (m >> 4) & 1,
+        ]
+    }
+
+    /// Per axis, EXHAUSTIVELY over the 4x4 subset pairs of a two-element
+    /// universe: the two spellings agree. Every other axis is held equal, so a
+    /// disagreement is attributable to the axis under test.
+    #[test]
+    fn capability_axes_agree_one_at_a_time() {
+        for axis in 0..5usize {
+            for cm in 0..4u8 {
+                for pm in 0..4u8 {
+                    let mut cmasks = [3u8; 5];
+                    let mut pmasks = [3u8; 5];
+                    cmasks[axis] = cm;
+                    pmasks[axis] = pm;
+                    let child = cap(cmasks, 1);
+                    let parent = cap(pmasks, 1);
+
+                    let subset_says = child.is_subset_of(&parent);
+                    let escalations = child.escalations_over(&parent);
+                    assert_eq!(
+                        subset_says,
+                        escalations.is_empty(),
+                        "axis {} ({}): is_subset_of={} but escalations_over={:?}",
+                        axis,
+                        CAP_AXIS_NAMES[axis],
+                        subset_says,
+                        escalations
+                    );
+
+                    // Cross-axis discrimination: when THIS axis escalates, the
+                    // report must name THIS axis and no other.
+                    if !subset_says {
+                        assert_eq!(escalations.len(), 1, "expected exactly one axis");
+                        assert!(
+                            escalations[0].starts_with(CAP_AXIS_NAMES[axis]),
+                            "axis {} escalated but report says {:?}",
+                            CAP_AXIS_NAMES[axis],
+                            escalations
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn io_axes_agree_one_at_a_time() {
+        for axis in 0..5usize {
+            for cm in 0..4u8 {
+                for pm in 0..4u8 {
+                    let mut cmasks = [3u8; 5];
+                    let mut pmasks = [3u8; 5];
+                    cmasks[axis] = cm;
+                    pmasks[axis] = pm;
+                    let child = io(cmasks);
+                    let parent = io(pmasks);
+
+                    let subset_says = child.is_subset_of(&parent);
+                    let escalations = child.escalations_over(&parent);
+                    assert_eq!(
+                        subset_says,
+                        escalations.is_empty(),
+                        "io axis {} ({}): is_subset_of={} but escalations_over={:?}",
+                        axis,
+                        IO_AXIS_NAMES[axis],
+                        subset_says,
+                        escalations
+                    );
+                    if !subset_says {
+                        assert_eq!(escalations.len(), 1);
+                        assert!(escalations[0].starts_with(IO_AXIS_NAMES[axis]));
+                    }
+                }
+            }
+        }
+    }
+
+    /// All 2^5 x 2^5 = 1024 patterns of WHICH axes escalate, over a one-element
+    /// universe. One element is enough to separate "subset on this axis" from
+    /// "not subset", which is all either function can observe — so this is
+    /// exhaustive over the space the conjunction actually sees.
+    #[test]
+    fn every_pattern_of_escalating_axes_agrees() {
+        for c in 0..32u8 {
+            for p in 0..32u8 {
+                let (cmasks, pmasks) = (bits(c), bits(p));
+                let child = cap(cmasks, 1);
+                let parent = cap(pmasks, 1);
+                assert_eq!(
+                    child.is_subset_of(&parent),
+                    child.escalations_over(&parent).is_empty(),
+                    "c={c:05b} p={p:05b}"
+                );
+
+                let ci = io(cmasks);
+                let pi = io(pmasks);
+                assert_eq!(
+                    ci.is_subset_of(&pi),
+                    ci.escalations_over(&pi).is_empty(),
+                    "io c={c:05b} p={p:05b}"
+                );
+
+                // The number of reported axes is exactly the number that widened.
+                let widened = (0..5).filter(|i| cmasks[*i] > pmasks[*i]).count();
+                assert_eq!(child.escalations_over(&parent).len(), widened);
+                assert_eq!(ci.escalations_over(&pi).len(), widened);
+            }
+        }
+    }
+
+    /// The numeric axis, exhaustively. `is_subset_of` uses `<=` and
+    /// `escalations_over` uses `>`; those are complements only if both read the
+    /// same field, which the destructuring guard above is what pins down.
+    #[test]
+    fn max_parallel_tasks_agrees() {
+        for c in 0..8u32 {
+            for p in 0..8u32 {
+                let child = cap([0; 5], c);
+                let parent = cap([0; 5], p);
+                assert_eq!(
+                    child.is_subset_of(&parent),
+                    child.escalations_over(&parent).is_empty(),
+                    "tasks {c} vs {p}"
+                );
+                if c > p {
+                    let e = child.escalations_over(&parent);
+                    assert_eq!(e.len(), 1);
+                    assert!(e[0].starts_with("max_parallel_tasks"));
+                }
+            }
+        }
+    }
+
+    /// Non-vacuity, the lesson of the axiom audit that never ran: a test whose
+    /// verdict is carried by the absence of a failure must show it had
+    /// something to fail on. Assert both outcomes actually occur.
+    #[test]
+    fn the_agreement_tests_see_both_verdicts() {
+        let mut subsets = 0;
+        let mut escalations = 0;
+        for c in 0..32u8 {
+            for p in 0..32u8 {
+                if cap(bits(c), 1).is_subset_of(&cap(bits(p), 1)) {
+                    subsets += 1;
+                } else {
+                    escalations += 1;
+                }
+            }
+        }
+        assert!(subsets > 0 && escalations > 0, "{subsets} / {escalations}");
+        assert_eq!(subsets + escalations, 1024);
+    }
+
+    /// The destructuring guards are load-bearing, so keep them reachable: if
+    /// either helper stops compiling, this test goes with it.
+    #[test]
+    fn axis_helpers_cover_every_field() {
+        let probe_cap = cap([1, 1, 1, 1, 1], 7);
+        let (sets, tasks) = cap_axes(&probe_cap);
+        assert_eq!(sets.len(), CAP_AXIS_NAMES.len());
+        assert_eq!(tasks, 7);
+        let probe_io = io([1, 1, 1, 1, 1]);
+        assert_eq!(io_axes(&probe_io).len(), IO_AXIS_NAMES.len());
+    }
+}
