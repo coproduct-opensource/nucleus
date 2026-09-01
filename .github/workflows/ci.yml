@@ -422,6 +422,19 @@ jobs:
       - name: Node tests (golden seal + smoke) against built wasm
         working-directory: sdks/verifier-js
         run: npm test
+      # The Python SDK is its own workspace, so the root `cargo test` above does
+      # not reach it — and until now NOTHING did: it had no CI at all, which is
+      # how it stayed untestable (`extension-module` was unconditional, so every
+      # test target failed to link) and how its commerce bindings went missing
+      # while the JS SDK gained them. Its tests run the shared conformance
+      # corpus, so a drift between the Python surface and the proven kernels
+      # fails here rather than in someone's integration.
+      - name: Python SDK tests (conformance corpus through the bindings)
+        working-directory: sdks/verifier-py
+        run: cargo test
+      - name: Python SDK clippy
+        working-directory: sdks/verifier-py
+        run: cargo clippy --all-targets -- -D warnings
 
   a2a-example:
     name: A2A example server (examples/a2a-server)
