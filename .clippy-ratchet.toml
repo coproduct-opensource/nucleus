@@ -1,0 +1,32 @@
+# Clippy ratchet: a curated lint set whose violation count may only go DOWN.
+#
+# WHY NOT JUST `-W clippy::pedantic`: the workspace has 4726 pedantic warnings.
+# Two thirds are stylistic (must_use_candidate 1788, doc_markdown 1008), and a
+# gate that emits thousands of warnings is one nobody reads. Denying them
+# wholesale is not an option either; that is thousands of edits in one change.
+#
+# So this tracks the subset where a violation is a CORRECTNESS risk in this
+# particular system rather than a style opinion: unchecked numeric casts. This
+# runtime computes budgets, byte counts, ports and policy decisions, and a
+# silent truncation there is a bug, not a nit. 177 of the current 402 are in
+# `portcullis` — the policy kernel.
+#
+# `target = 0` is the real goal. `step` is how much the ceiling drops on each
+# push to main, so the count cannot drift back up and shrinks on its own.
+
+lints = [
+  "clippy::cast_possible_truncation",
+  "clippy::cast_lossless",
+  "clippy::cast_sign_loss",
+  "clippy::cast_possible_wrap",
+  "clippy::cast_precision_loss",
+]
+
+# Seeded ABOVE the locally-measured 402 on purpose: clippy counts can differ by
+# platform and feature resolution, and CI (linux) is the authority. The first
+# push to main snaps this down to the real count (457 measured here, three
+# identical consecutive runs), so an over-generous seed
+# self-corrects within one commit rather than hiding a regression forever.
+ceiling = 470
+target = 0
+step = 5
