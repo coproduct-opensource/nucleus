@@ -227,20 +227,26 @@ impl NucleusMcpServer {
     /// privileged action (the next `run`/`git push`/`write`/`create_pr` hits the
     /// IFC egress gate, since `McpToolResult` is `Adversarial` ⇒ `is_tainted`).
     ///
-    /// **Opt-in** via `NUCLEUS_PARANOID_TOOL_IO=1`. Off by default because
-    /// blanket-tainting the proxy's own command output makes a session
-    /// "one privileged action then locked" (run-tests → can't commit) — a policy
-    /// choice an operator should make deliberately. The human-authorized
-    /// `cleanse` path clears the taint when on.
+    /// Tainted by DEFAULT when `command` could reach the network — see
+    /// [`crate::ingest::command_output_is_external`] — and ALWAYS under
+    /// `NUCLEUS_PARANOID_TOOL_IO=1`.
+    ///
+    /// The old default was off, because blanket-tainting the proxy's own command
+    /// output makes a session "one privileged action then locked" (run-tests →
+    /// can't commit). But that left `curl` inside `run` as an unmediated ingest,
+    /// which is the most obvious one an agent has. Classifying per command pays
+    /// the lock-out cost only where bytes actually came from outside. The
+    /// human-authorized `cleanse` path clears the taint.
+    ///
+    /// Kept in lockstep with the HTTP twin `ingest::http_observe_command_output`:
+    /// the two transports enforcing different policies under the same flag was a
+    /// real defect once, and it is worth not reintroducing.
     ///
     /// Brick 3: `result_bytes` are the *actual tool-result bytes* ingested into
     /// the session; their SHA-256 is content-addressed onto the `McpToolResult`
     /// node (recomputed from the real bytes, never an agent field).
-    async fn observe_tool_result(&self, result_bytes: &[u8]) {
-        let paranoid = std::env::var("NUCLEUS_PARANOID_TOOL_IO")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if paranoid {
+    async fn observe_tool_result(&self, command: &str, result_bytes: &[u8]) {
+        if crate::ingest::should_observe_command_output(command) {
             self.observe_flow(NodeKind::McpToolResult, result_bytes)
                 .await;
         }
@@ -685,7 +691,7 @@ impl NucleusMcpServer {
                 // Most-paranoid #2: command output may carry injected instructions;
                 // taint it (opt-in) so it can't drive a later privileged action.
                 // Brick 3: content-address the exact tool-result bytes ingested.
-                self.observe_tool_result(json.as_bytes()).await;
+                self.observe_tool_result(&subject, json.as_bytes()).await;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Err(e) => {
