@@ -16,8 +16,9 @@ use x402_reqwest::{ReqwestWithPayments, ReqwestWithPaymentsBuild, X402Client};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let key = std::env::var("X402_PRIVATE_KEY")
-        .map_err(|_| anyhow::anyhow!("set X402_PRIVATE_KEY (a TESTNET key with Base Sepolia USDC)"))?;
+    let key = std::env::var("X402_PRIVATE_KEY").map_err(|_| {
+        anyhow::anyhow!("set X402_PRIVATE_KEY (a TESTNET key with Base Sepolia USDC)")
+    })?;
     let target =
         std::env::var("TARGET_URL").unwrap_or_else(|_| "http://127.0.0.1:4021/paid".into());
 

@@ -532,9 +532,14 @@ impl LineageEdge {
     /// full. Encoding it as a string keeps the attribute map `BTreeMap<String,String>`
     /// and keeps JSON number coercion out of a money path.
     ///
-    /// As with [`Self::allocation`], the *authoritative* binding is `content_hash_hex`
-    /// (which `canonical_edge_bytes` signs); the amount in `attrs` is a convenience for
-    /// readers and is NOT covered by the signature. Never verify against it.
+    /// `content_hash_hex` MUST be
+    /// `nucleus_recompute::settlement_attestation::attestation_content_hash_hex` of the
+    /// attestation this edge records. That is not a stylistic preference: this edge's own
+    /// `tx_ref` and `rail` are NOT covered by the signature (only `kind_tag` is — see
+    /// `settlement_tx_ref_and_attrs_are_outside_the_signature`), and neither is `attrs`.
+    /// The attestation is where those facts are tamper-evident, so a verifier must read
+    /// the amount and the transaction id from it, never from this edge. The amount in
+    /// `attrs` is a convenience for human readers only.
     pub fn settlement(
         child: CallSpiffeId,
         parents: Vec<CallSpiffeId>,

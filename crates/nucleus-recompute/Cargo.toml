@@ -55,6 +55,8 @@ ifc-envelope = ["dep:nucleus-receipt", "nucleus-ifc/decision"]
 [dev-dependencies]
 # Fixed-key signing in the envelope end-to-end + tamper tests.
 ed25519-dalek = { workspace = true }
+# The payout_lifecycle example builds a split from the proven commons kernel.
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels", version = "1.0.0" }
 
 [lints]
 workspace = true

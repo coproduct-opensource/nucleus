@@ -113,11 +113,105 @@ async fn ifc_pregate(
 /// The paid work. By the time we get here the IFC gate has ALLOWED (and stashed
 /// the verdict) and x402 has verified payment. We echo the result + the verdict
 /// the gate made the call under.
-async fn paid_handler(Extension(verdict): Extension<IfcVerdict>) -> Json<serde_json::Value> {
+async fn paid_handler(
+    Extension(verdict): Extension<IfcVerdict>,
+    headers: axum::http::HeaderMap,
+) -> Json<serde_json::Value> {
     let body = b"{\"summary\":\"<paid result>\"}";
+
+    // The rail-side transaction reference, taken from the x402 payment the
+    // middleware just accepted. If the header is missing or unparseable we say
+    // so rather than inventing a reference — an attestation naming a
+    // transaction that does not exist would be worse than no attestation.
+    let tx_ref = headers
+        .get("x-payment")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| nucleus_verify_commerce::x402::parse_payment_header(h).ok())
+        .map(|p| p.reference)
+        .unwrap_or_else(|| "<no x-payment header>".to_string());
+
+    let payout_bundle = build_payout(&tx_ref);
+
     Json(serde_json::json!({
         "result": "paid result delivered",
         "body_sha256": body_sha256_hex(body),
         "ifc_verdict": verdict,
+        "payout": payout_bundle,
     }))
+}
+
+/// Build the recompute-verifiable payout for one paid call, plus the settlement
+/// attestation that says it was paid.
+///
+/// The buyer does not have to trust any of this: `verify_payout` re-derives the
+/// split from the proven kernels, and `verify_settlement_set` checks every payee
+/// was discharged exactly once. A seller that quietly reweighted the split, or
+/// paid two of three payees, is caught client-side.
+///
+/// The split below is a DEMO constant. A real deployment reads it from the offer
+/// the buyer accepted — that is slice S3, and pretending otherwise here would
+/// make the example claim more than it does.
+fn build_payout(tx_ref: &str) -> serde_json::Value {
+    use nucleus_econ_kernels::commons::CommonsShare;
+    use nucleus_recompute::payout::{issue_payout, Attribution};
+    use nucleus_recompute::settlement_attestation::{
+        issue_settlement_attestation, verify_settlement_set,
+    };
+    use nucleus_recompute::{issue_settlement, verify_receipt};
+
+    // Price in micro-USD. The demo price is 0.01 USDC; delivery is full, so the
+    // whole price is distributable.
+    let price_micro: u64 = std::env::var("PRICE_USDC")
+        .ok()
+        .and_then(|p| p.parse::<f64>().ok())
+        .map(|usd| (usd * 1_000_000.0) as u64)
+        .unwrap_or(10_000);
+
+    let clearing = issue_settlement(price_micro, 10_000);
+    let shares = vec![
+        CommonsShare {
+            destination: "seller".into(),
+            bps: 7_000,
+        },
+        CommonsShare {
+            destination: "runtime".into(),
+            bps: 2_500,
+        },
+        CommonsShare {
+            destination: "commons".into(),
+            bps: 500,
+        },
+    ];
+    let attribution = Attribution {
+        workload_spiffe_id: "spiffe://nucleus.local/example/x402-seller".into(),
+        assurance: 0, // demo: no attestation backend wired, and it says so
+        offer_hash_hex: String::new(),
+        disclosure_hash_hex: String::new(),
+    };
+
+    let Ok(payout) = issue_payout(clearing.clone(), shares, attribution) else {
+        return serde_json::json!({ "error": "payout could not be issued" });
+    };
+
+    let attestations: Vec<_> = payout
+        .allocations
+        .iter()
+        .filter_map(|a| issue_settlement_attestation(&payout, &a.destination, "x402-evm", tx_ref))
+        .collect();
+
+    // Self-check before serving: never hand a buyer a receipt this seller has
+    // not itself verified.
+    let clearing_ok = verify_receipt(&clearing).is_match();
+    let set = verify_settlement_set(&attestations, &payout);
+
+    serde_json::json!({
+        "payout": payout,
+        "settlements": attestations,
+        "self_check": {
+            "clearing_recomputes": clearing_ok,
+            "settlement_set": format!("{set:?}"),
+        },
+        "how_to_verify": "POST {receipt, verifying_key_hex} to /v1/payout/verify, \
+                          or run verifySignedPayout() in the browser — neither trusts this seller",
+    })
 }
