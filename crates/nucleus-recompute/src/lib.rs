@@ -50,6 +50,15 @@ use portcullis_core::extracted::ifc_integrity::{imeet, IntegLevel};
 /// It reuses the proven `route_to_commons` kernel rather than introducing a
 /// second numeric path, so the payout math inherits `Commons.lean`'s
 /// conservation theorem.
+/// Cart mandate — the human authorizes an exact cart, or nothing happens.
+///
+/// AP2's Cart Mandate is `nucleus_identity`'s `ApprovalBundle` with
+/// `manifest_hash` = the cart's hash; this module supplies the canonical cart
+/// and the checks that make that binding mean something. Wasm-pure on purpose:
+/// a buyer's browser recomputes its own cart hash, and the ES256 verification
+/// stays where the crypto already is.
+pub mod cart;
+
 pub mod payout;
 
 /// Settlement attestation — the rail-side fact that a payout was actually paid,

@@ -6953,6 +6953,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "hex",
+ "nucleus-recompute",
  "pem 4.0.0",
  "portcullis-core",
  "proptest",

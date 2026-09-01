@@ -68,6 +68,10 @@ spiffe = { version = "0.16", optional = true, features = ["workload-api-x509"] }
 futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
+# Cart Mandate end-to-end: AP2's Cart Mandate is an ApprovalBundle whose
+# manifest_hash is a cart hash. Dev-only — nucleus-identity does not depend on
+# the commerce layer, the commerce layer binds to it.
+nucleus-recompute = { path = "../nucleus-recompute" }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
