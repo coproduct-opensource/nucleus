@@ -3425,8 +3425,7 @@ async fn run_command(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
-    ingest::http_observe_command_output(&state, &display_command, &output.stdout, &output.stderr)
-        .await;
+    ingest::http_observe_command_output(&state, &display_command, &output).await;
 
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),

@@ -233,17 +233,16 @@ pub(crate) fn should_observe_command_output(command: &str) -> bool {
 pub(crate) async fn http_observe_command_output(
     state: &AppState,
     command: &str,
-    stdout: &[u8],
-    stderr: &[u8],
+    output: &std::process::Output,
 ) {
     if !should_observe_command_output(command) {
         return;
     }
     // Both streams in one node: they are one ingest event, and content-addressing
     // them separately would imply two independent sources.
-    let mut bytes = Vec::with_capacity(stdout.len() + stderr.len());
-    bytes.extend_from_slice(stdout);
-    bytes.extend_from_slice(stderr);
+    let mut bytes = Vec::with_capacity(output.stdout.len() + output.stderr.len());
+    bytes.extend_from_slice(&output.stdout);
+    bytes.extend_from_slice(&output.stderr);
     http_observe_flow(state, COMMAND_OUTPUT_NODE_KIND, &bytes).await;
 }
 
