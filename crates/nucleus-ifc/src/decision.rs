@@ -40,6 +40,12 @@ pub enum DeclaredInput {
     Secret,
     /// A row from a local database (internal, trusted).
     DatabaseRow,
+    /// A **sponsored commercial offer** surfaced to the model.
+    ///
+    /// Adversarial integrity, like [`Self::WebContent`]: paid content must never
+    /// be able to drive a privileged action. Declaring it also triggers the
+    /// disclosure obligation — see [`FlowDeclaration::disclosure_hash_hex`].
+    SponsoredOffer,
     /// A memory entry recalled into context.
     MemoryRead,
     /// A structured HTTP/API response from an external service.
@@ -56,6 +62,7 @@ impl DeclaredInput {
             DeclaredInput::EnvVar => NodeKind::EnvVar,
             DeclaredInput::Secret => NodeKind::Secret,
             DeclaredInput::DatabaseRow => NodeKind::DatabaseRow,
+            DeclaredInput::SponsoredOffer => NodeKind::SponsoredOffer,
             DeclaredInput::MemoryRead => NodeKind::MemoryRead,
             DeclaredInput::HttpResponse => NodeKind::HTTPResponse,
         }
@@ -71,6 +78,7 @@ impl DeclaredInput {
             DeclaredInput::EnvVar => "env_var",
             DeclaredInput::Secret => "secret",
             DeclaredInput::DatabaseRow => "database_row",
+            DeclaredInput::SponsoredOffer => "sponsored_offer",
             DeclaredInput::MemoryRead => "memory_read",
             DeclaredInput::HttpResponse => "http_response",
         }
@@ -88,6 +96,7 @@ impl DeclaredInput {
             "env_var" => DeclaredInput::EnvVar,
             "secret" => DeclaredInput::Secret,
             "database_row" => DeclaredInput::DatabaseRow,
+            "sponsored_offer" => DeclaredInput::SponsoredOffer,
             "memory_read" => DeclaredInput::MemoryRead,
             "http_response" => DeclaredInput::HttpResponse,
             _ => return None,
@@ -113,6 +122,20 @@ pub struct FlowDeclaration {
     /// authenticated counterparty). See the type docs.
     #[serde(default)]
     pub sink_public: bool,
+    /// SHA-256 (hex) of the disclosure record for this flow's sponsored content.
+    ///
+    /// **Required whenever [`DeclaredInput::SponsoredOffer`] is declared**: a
+    /// flow carrying paid placement cannot reach ALLOW without one. That is the
+    /// point — it makes disclosure a precondition of serving rather than a
+    /// promise about serving. AdCP defines sponsorship labelling as policy and
+    /// says plainly it has "no technical proof that sponsorship labeling
+    /// happened post-delivery"; this is that proof, in the only place it can be
+    /// enforced — before the response exists.
+    ///
+    /// Empty for flows with no sponsored component. `#[serde(default)]` so
+    /// existing receipts and declarations still parse.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub disclosure_hash_hex: String,
 }
 
 impl FlowDeclaration {
@@ -123,7 +146,18 @@ impl FlowDeclaration {
             inputs: inputs.into_iter().collect(),
             requires_authority: false,
             sink_public: false,
+            disclosure_hash_hex: String::new(),
         }
+    }
+
+    /// Attach the disclosure record covering this flow's sponsored content.
+    ///
+    /// Without this, a declaration naming [`DeclaredInput::SponsoredOffer`]
+    /// denies. There is deliberately no way to declare sponsored content and
+    /// opt out of disclosing it.
+    pub fn with_disclosure(mut self, disclosure_hash_hex: impl Into<String>) -> Self {
+        self.disclosure_hash_hex = disclosure_hash_hex.into();
+        self
     }
 
     /// Rebuild a declaration from wire tokens (e.g. a receipt's `declared_inputs`)
@@ -143,6 +177,7 @@ impl FlowDeclaration {
             inputs,
             requires_authority,
             sink_public,
+            disclosure_hash_hex: String::new(),
         })
     }
 
@@ -161,6 +196,21 @@ impl FlowDeclaration {
         declared.sort();
         declared.dedup();
         let declared_tokens: Vec<String> = declared.iter().map(|i| i.token().to_string()).collect();
+
+        // Disclosure is a PRECONDITION, checked before the flow is even walked.
+        // A sponsored flow with no disclosure record does not get to be
+        // evaluated on its other merits — there is no combination of inputs that
+        // makes undisclosed paid placement acceptable, so it fails first and for
+        // its own reason rather than being folded into a generic IFC verdict.
+        if declared.contains(&DeclaredInput::SponsoredOffer) && self.disclosure_hash_hex.is_empty()
+        {
+            return IfcVerdict::deny(
+                "sponsored content declared with no disclosure record — a paid placement \
+                 cannot be served without one"
+                    .to_string(),
+                declared_tokens,
+            );
+        }
 
         let mut tracker = FlowTracker::new();
         let mut parents = Vec::with_capacity(self.inputs.len());
@@ -771,5 +821,131 @@ mod tests {
             acc = ext::imeet(acc, to_ext(intrinsic_label(inp.node_kind(), 0).integrity));
         }
         ext::iflows_to(acc, ext::IntegLevel::Untrusted)
+    }
+}
+
+/// Sponsored-offer handling.
+///
+/// SCOPE NOTE: [`FlowDeclaration::decide`] models declared inputs reaching an
+/// **outbound action**. It therefore answers "may this sponsored content cause a
+/// privileged call?" (no, ever) and "was it disclosed?" (required). It does not
+/// model the human-visible sink — rendering an offer to a person is a different
+/// flow, and claiming this gate covers it would overstate what it checks.
+#[cfg(test)]
+mod sponsored_tests {
+    use super::*;
+
+    const DISCLOSURE: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+    /// **The enforcement AdCP does not have.** A flow carrying paid placement
+    /// cannot reach ALLOW without a disclosure record. Not "should not" — cannot.
+    #[test]
+    fn sponsored_content_without_disclosure_is_denied() {
+        let d = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::SponsoredOffer]);
+        let v = d.decide();
+        assert!(!v.is_allow(), "undisclosed paid placement must not serve");
+        assert!(
+            format!("{v:?}").contains("disclosure"),
+            "the denial must name the reason, got {v:?}"
+        );
+    }
+
+    /// Disclosure is necessary but NOT sufficient, and that is the correct
+    /// shape: `decide()` models inputs reaching an **outbound action**, and a
+    /// sponsored offer reaching one is the lethal trifecta whether or not it was
+    /// disclosed. Disclosing an ad does not entitle it to make an API call.
+    ///
+    /// (This test originally asserted the opposite — that disclosure makes the
+    /// flow servable — and failed. The model was right and the assumption was
+    /// wrong. Showing an offer to a HUMAN is a different sink, and `decide()`
+    /// does not model it; see the module note on scope.)
+    #[test]
+    fn disclosure_is_necessary_but_does_not_license_an_outbound_action() {
+        let disclosed =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::SponsoredOffer])
+                .with_disclosure(DISCLOSURE);
+        assert!(
+            !disclosed.decide().is_allow(),
+            "a disclosed offer still may not drive an outbound action"
+        );
+
+        // And it is denied for the FLOW reason now, not the disclosure reason —
+        // so an operator reading the verdict is told the truth about which
+        // control stopped it.
+        let v = disclosed.decide();
+        assert!(
+            !format!("{v:?}").contains("disclosure"),
+            "must not still cite disclosure once disclosed: {v:?}"
+        );
+    }
+
+    /// Disclosure is checked BEFORE the flow is walked, so an undisclosed
+    /// sponsored flow fails for its own reason rather than being folded into a
+    /// generic IFC verdict a reader would misdiagnose.
+    #[test]
+    fn the_disclosure_denial_is_distinct_from_a_trifecta_denial() {
+        let undisclosed =
+            FlowDeclaration::new([DeclaredInput::SponsoredOffer, DeclaredInput::Secret]).decide();
+        assert!(format!("{undisclosed:?}").contains("disclosure"));
+
+        // Same inputs, disclosed: now it may still deny, but on flow grounds.
+        let disclosed =
+            FlowDeclaration::new([DeclaredInput::SponsoredOffer, DeclaredInput::Secret])
+                .with_disclosure(DISCLOSURE)
+                .decide();
+        assert!(
+            !format!("{disclosed:?}").contains("disclosure"),
+            "a disclosed flow must not still cite disclosure: {disclosed:?}"
+        );
+    }
+
+    /// **The second bite.** A sponsored offer must carry ADVERSARIAL integrity,
+    /// so it can never drive a privileged action. If someone re-labels it as
+    /// trusted, this test is what reds.
+    ///
+    /// The comparison is against `WebContent` rather than a hardcoded verdict:
+    /// the claim is "paid content is treated exactly like adversarial web
+    /// content", so it is checked as that equivalence and stays true if the
+    /// trifecta rules are later retuned.
+    #[test]
+    fn a_sponsored_offer_is_treated_exactly_like_adversarial_web_content() {
+        for other in [
+            DeclaredInput::UserPrompt,
+            DeclaredInput::Secret,
+            DeclaredInput::FileRead,
+            DeclaredInput::DatabaseRow,
+        ] {
+            let web = FlowDeclaration::new([other, DeclaredInput::WebContent]).decide();
+            let sponsored = FlowDeclaration::new([other, DeclaredInput::SponsoredOffer])
+                .with_disclosure(DISCLOSURE)
+                .decide();
+            assert_eq!(
+                web.is_allow(),
+                sponsored.is_allow(),
+                "sponsored must match web-content treatment alongside {other:?}: \
+                 web={web:?} sponsored={sponsored:?}"
+            );
+        }
+    }
+
+    /// The wire token round-trips, so a receipt's declared inputs rebuild
+    /// exactly — a sponsored flow cannot be replayed as an unsponsored one.
+    #[test]
+    fn the_sponsored_token_round_trips() {
+        assert_eq!(DeclaredInput::SponsoredOffer.token(), "sponsored_offer");
+        assert_eq!(
+            DeclaredInput::from_token("sponsored_offer"),
+            Some(DeclaredInput::SponsoredOffer)
+        );
+    }
+
+    /// Existing declarations have no disclosure field; they must still parse and
+    /// behave exactly as before.
+    #[test]
+    fn declarations_without_the_field_still_parse() {
+        let json = r#"{"inputs":["user_prompt","database_row"]}"#;
+        let d: FlowDeclaration = serde_json::from_str(json).expect("back-compatible");
+        assert!(d.disclosure_hash_hex.is_empty());
+        assert!(d.decide().is_allow());
     }
 }
