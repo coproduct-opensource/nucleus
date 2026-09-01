@@ -57,6 +57,14 @@ use portcullis_core::extracted::ifc_integrity::{imeet, IntegLevel};
 /// and the checks that make that binding mean something. Wasm-pure on purpose:
 /// a buyer's browser recomputes its own cart hash, and the ES256 verification
 /// stays where the crypto already is.
+/// Offer — the purchasable capability that `offer_hash_hex` names.
+///
+/// `Attribution` and `CartItem` have both carried an `offer_hash_hex` since they
+/// landed, with no offer type behind it. This is that type. Sponsorship is a
+/// required field and "organic" is a value, not an omission — an
+/// `Option<Sponsorship>` can be forgotten, a required enum cannot.
+pub mod offer;
+
 pub mod cart;
 
 pub mod payout;
