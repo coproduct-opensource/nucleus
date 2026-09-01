@@ -453,16 +453,7 @@ impl ProfileSpec {
 
 // ── Canonical profiles (embedded at compile time) ─────────────────────
 
-const SAFE_PR_FIXER_YAML: &str = include_str!("../profiles/safe-pr-fixer.yaml");
-const DOC_EDITOR_YAML: &str = include_str!("../profiles/doc-editor.yaml");
-const TEST_RUNNER_YAML: &str = include_str!("../profiles/test-runner.yaml");
-const TRIAGE_BOT_YAML: &str = include_str!("../profiles/triage-bot.yaml");
-const CODE_REVIEW_YAML: &str = include_str!("../profiles/code-review.yaml");
-const CODEGEN_YAML: &str = include_str!("../profiles/codegen.yaml");
-const RELEASE_YAML: &str = include_str!("../profiles/release.yaml");
-const RESEARCH_WEB_YAML: &str = include_str!("../profiles/research-web.yaml");
-const READ_ONLY_YAML: &str = include_str!("../profiles/read-only.yaml");
-const LOCAL_DEV_YAML: &str = include_str!("../profiles/local-dev.yaml");
+include!(concat!(env!("OUT_DIR"), "/profile_names.rs"));
 
 /// A profile entry with its specification and provenance.
 #[derive(Debug, Clone)]
@@ -504,20 +495,12 @@ impl ProfileRegistry {
     /// profiles are available immediately.
     pub fn canonical() -> Result<Self, ProfileError> {
         let mut registry = Self::empty();
-        let builtins = vec![
-            ProfileSpec::from_yaml(SAFE_PR_FIXER_YAML)?,
-            ProfileSpec::from_yaml(DOC_EDITOR_YAML)?,
-            ProfileSpec::from_yaml(TEST_RUNNER_YAML)?,
-            ProfileSpec::from_yaml(TRIAGE_BOT_YAML)?,
-            ProfileSpec::from_yaml(CODE_REVIEW_YAML)?,
-            ProfileSpec::from_yaml(CODEGEN_YAML)?,
-            ProfileSpec::from_yaml(RELEASE_YAML)?,
-            ProfileSpec::from_yaml(RESEARCH_WEB_YAML)?,
-            ProfileSpec::from_yaml(READ_ONLY_YAML)?,
-            ProfileSpec::from_yaml(LOCAL_DEV_YAML)?,
-        ];
-        for spec in builtins {
-            registry.register_with_source(spec, ProfileSource::Builtin);
+        // Driven by the build-time provider rather than a hand-written list: a
+        // profile added to `profiles/` appears here without anyone remembering
+        // to add it, and one that does not parse failed `cargo build` already.
+        for name in ProfileName::ALL {
+            registry
+                .register_with_source(ProfileSpec::from_yaml(name.yaml())?, ProfileSource::Builtin);
         }
         Ok(registry)
     }
@@ -1206,5 +1189,114 @@ capabilities:
         assert_eq!(registry.len(), 2);
         assert!(registry.resolve("alpha").is_ok());
         assert!(registry.resolve("beta").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod builtin_profile_provider {
+    //! The built-in profiles decide what an agent may do, and they used to be
+    //! YAML parsed at process start behind
+    //! `Self::canonical().expect("canonical profiles must parse")` — so a
+    //! malformed one was a runtime panic in a booting pod.
+    //!
+    //! `build.rs` now reads `profiles/` at BUILD time, refuses a file that is not
+    //! YAML, is not a mapping, carries an unknown top-level key, or whose
+    //! declared `name` disagrees with its filename, and generates
+    //! [`ProfileName`] from what survives. A bad indent fails `cargo build`.
+    //!
+    //! `build.rs` cannot use this crate's types, so its validation is
+    //! structural. The type-level half is here.
+
+    use super::*;
+
+    /// The half `build.rs` cannot do: every built-in profile parses into the
+    /// real `ProfileSpec`, with the real capability levels.
+    ///
+    /// Together with the build-time structural check this closes the loop — a
+    /// bad indent fails the build, a bad *value* fails here, and neither reaches
+    /// a pod.
+    #[test]
+    fn every_builtin_profile_parses_with_the_real_types() {
+        for name in ProfileName::ALL {
+            let spec = ProfileSpec::from_yaml(name.yaml()).unwrap_or_else(|e| {
+                panic!("built-in profile `{}` does not parse: {e}", name.as_str())
+            });
+            assert_eq!(
+                spec.name,
+                name.as_str(),
+                "the generated variant and the YAML disagree on the name"
+            );
+        }
+    }
+
+    /// Non-vacuity: the loop above must actually iterate. An empty `ALL` would
+    /// make it pass while checking nothing — the failure mode that has bitten
+    /// this repo repeatedly.
+    #[test]
+    fn the_provider_found_the_profiles() {
+        assert!(
+            ProfileName::ALL.len() >= 10,
+            "expected the ten built-in profiles, generator produced {}",
+            ProfileName::ALL.len()
+        );
+    }
+
+    /// The registry is driven by the provider, so every generated name resolves.
+    #[test]
+    fn canonical_registry_contains_exactly_the_generated_profiles() {
+        let registry = ProfileRegistry::canonical().expect("canonical must build");
+        for name in ProfileName::ALL {
+            assert!(
+                registry.resolve(name.as_str()).is_ok(),
+                "`{}` is generated but not registered",
+                name.as_str()
+            );
+        }
+        assert_eq!(
+            registry.names().len(),
+            ProfileName::ALL.len(),
+            "the registry and the provider disagree on how many built-ins exist"
+        );
+    }
+
+    /// Hyphen and underscore are interchangeable — the behaviour the old
+    /// hand-written `"pr_review" | "pr-review"` table provided, now generated so
+    /// it cannot drift from the directory.
+    #[test]
+    fn underscores_and_hyphens_are_interchangeable() {
+        assert_eq!(
+            ProfileName::parse("safe-pr-fixer"),
+            Ok(ProfileName::SafePrFixer)
+        );
+        assert_eq!(
+            ProfileName::parse("safe_pr_fixer"),
+            Ok(ProfileName::SafePrFixer)
+        );
+        assert_eq!(
+            ProfileName::parse("  Safe_PR_Fixer  "),
+            Ok(ProfileName::SafePrFixer)
+        );
+    }
+
+    /// A typo must not resolve, and must say what WAS valid. "unknown profile"
+    /// with no candidate list is how a typo becomes a support ticket.
+    #[test]
+    fn a_typo_is_refused_and_the_candidates_are_offered() {
+        let err = ProfileName::parse("codgen").expect_err("a typo must not resolve");
+        assert!(
+            err.contains(&"codegen"),
+            "the error must offer the real names, got {err:?}"
+        );
+    }
+
+    /// The point of the whole exercise: a name is checked by the compiler, not
+    /// at pod boot. `ProfileName::Codgen` does not compile — there is no such
+    /// variant — which is not something a runtime test can demonstrate, so this
+    /// asserts the reachable half: the variant exists and denotes the profile.
+    #[test]
+    fn a_profile_name_is_a_type_not_a_string() {
+        let p: ProfileName = ProfileName::Codegen;
+        assert_eq!(p.as_str(), "codegen");
+        assert!(ProfileSpec::from_yaml(p.yaml()).is_ok());
     }
 }
