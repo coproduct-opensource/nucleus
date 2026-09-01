@@ -39,6 +39,16 @@ fn u8_to_node_kind(v: u8) -> NodeKind {
         16 => NodeKind::DeterministicBind,
         17 => NodeKind::ImageContent,
         18 => NodeKind::AudioContent,
+        19 => NodeKind::PDFContent,
+        // 20/21 were missing here while `NodeKind::discriminant()` has assigned
+        // them since the MCP kinds landed, so both decoded to PDFContent via the
+        // fallback. Fail-safe (all three are adversarial) but wrong; fixed while
+        // adding 22 rather than left as a trap beside new code.
+        20 => NodeKind::McpToolResult,
+        21 => NodeKind::McpToolDescription,
+        22 => NodeKind::SponsoredOffer,
+        // Unknown discriminants decode to an ADVERSARIAL kind, never a trusted
+        // one: an unrecognised node must fail closed.
         _ => NodeKind::PDFContent,
     }
 }
@@ -134,6 +144,7 @@ fn prov_category(kind: NodeKind) -> ProvCategory {
         NodeKind::FileRead
         | NodeKind::WebContent
         | NodeKind::McpToolResult
+        | NodeKind::SponsoredOffer
         | NodeKind::McpToolDescription
         | NodeKind::MemoryRead
         | NodeKind::EnvVar
@@ -199,6 +210,7 @@ fn node_kind_str(kind: NodeKind) -> &'static str {
         NodeKind::ToolResponse => "ToolResponse",
         NodeKind::WebContent => "WebContent",
         NodeKind::McpToolResult => "McpToolResult",
+        NodeKind::SponsoredOffer => "SponsoredOffer",
         NodeKind::McpToolDescription => "McpToolDescription",
         NodeKind::MemoryRead => "MemoryRead",
         NodeKind::MemoryWrite => "MemoryWrite",
