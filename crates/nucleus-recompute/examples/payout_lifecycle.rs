@@ -9,6 +9,10 @@
 //! every verdict is a recomputation a payee could run itself.
 
 use nucleus_econ_kernels::commons::CommonsShare;
+use nucleus_recompute::offer::{
+    disclosure_hash_hex, offer_content_hash_hex, verify_offer, Offer, Sponsorship, SponsorshipKind,
+    Terms,
+};
 use nucleus_recompute::payout::{issue_payout, verify_payout, Attribution};
 use nucleus_recompute::settlement_attestation::{
     issue_settlement_attestation, verify_settlement, verify_settlement_set, SettlementSetOutcome,
@@ -16,6 +20,26 @@ use nucleus_recompute::settlement_attestation::{
 use nucleus_recompute::{issue_settlement, verify_receipt};
 
 fn main() {
+    // ── 0. The offer being transacted. Its hash is what `Attribution` names, so
+    //       the payout points at exact commercial terms rather than a blank.
+    let offer = Offer::new(
+        "offer-summarise-v1",
+        "spiffe://vendor.example/seller",
+        "summarise",
+        "c".repeat(64),
+        1_000_000,
+        "USD",
+        Sponsorship::paid(
+            SponsorshipKind::PaidPlacement,
+            "AcmeCorp",
+            "Sponsored by AcmeCorp. Placement paid for; ranking unaffected.",
+        ),
+        Terms::default(),
+    );
+    println!("offer verifies: {:?}", verify_offer(&offer));
+    println!("  hash:       {}", &offer_content_hash_hex(&offer)[..16]);
+    println!("  disclosure: {}", &disclosure_hash_hex(&offer)[..16]);
+
     // ── 1. A cleared sale. Full delivery, so the whole price is distributable.
     let clearing = issue_settlement(1_000_000, 10_000); // $1.00, 100% delivered
     println!("clearing recomputes: {:?}", verify_receipt(&clearing));
@@ -39,8 +63,8 @@ fn main() {
     let attribution = Attribution {
         workload_spiffe_id: "spiffe://nucleus.local/runtime/acme".into(),
         assurance: 1,
-        offer_hash_hex: String::new(),
-        disclosure_hash_hex: String::new(),
+        offer_hash_hex: offer_content_hash_hex(&offer),
+        disclosure_hash_hex: disclosure_hash_hex(&offer),
     };
     let payout = issue_payout(clearing, shares, attribution).expect("well-formed");
 
@@ -114,8 +138,8 @@ fn main() {
         Attribution {
             workload_spiffe_id: "spiffe://nucleus.local/runtime/acme".into(),
             assurance: 1,
-            offer_hash_hex: String::new(),
-            disclosure_hash_hex: String::new(),
+            offer_hash_hex: offer_content_hash_hex(&offer),
+            disclosure_hash_hex: disclosure_hash_hex(&offer),
         },
     )
     .expect("well-formed");
