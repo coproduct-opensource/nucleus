@@ -253,3 +253,105 @@ jobs:
           tools/nucleus-identity-lint/README.md."
             exit 1
           fi
+
+  unpoliced-http-client:
+    name: unpoliced_http_client (guest egress)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Same LOCKSTEP TRIPLE as the job above, and installed the same way: plain
+      # rustup, no action. Pinning the toolchain action to a commit hash
+      # would also satisfy zizmor, but the ref was doing nothing here — the
+      # toolchain is chosen by `toolchain:`, not by the action ref — so dropping
+      # the action removes the supply-chain surface instead of pinning it.
+      - name: Install the pinned nightly
+        run: |
+          rustup toolchain install nightly-2026-04-16 \
+            --component rustc-dev,llvm-tools-preview --profile minimal
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.1
+      - name: Install dylint
+        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+
+      - name: Build the pass
+        working-directory: tools/nucleus-egress-lint
+        run: cargo build
+
+      - name: Name the dylib the way dylint resolves it
+        run: |
+          cd tools/nucleus-egress-lint/target/debug
+          host=$(rustc -vV | sed -n 's/host: //p')
+          cp libnucleus_egress_lint.so \
+             "libnucleus_egress_lint@nightly-2026-04-16-${host}.so"
+
+      # POSITIVE CONTROL, first. `cargo dylint` exits 0 even when a pass reports
+      # (the lint is `Warn`), so exit status is not the signal — and a pass that
+      # silently failed to load would report zero findings everywhere and read as
+      # a clean guest. The host crates legitimately build raw clients, so they
+      # are a known-violating input: if the pass reports NOTHING there, it is not
+      # running and every result below is worthless.
+      #
+      # `--all-features` is load-bearing. The original defect
+      # (`DrandClient::new`) sits behind the non-default `async-drand` feature,
+      # so without this flag the pass compiles a crate that does not contain the
+      # thing it is looking for and reports a confident zero.
+      - name: Prove the pass fires (positive control)
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-egress-lint/target/debug
+        run: |
+          set -o pipefail
+          out=$(cargo dylint --lib nucleus_egress_lint -- -p nucleus-node --all-features 2>&1) || true
+          echo "$out"
+          n=$(printf '%s\n' "$out" | grep -c 'HTTP client constructed outside' || true)
+          if [ "$n" -lt 1 ]; then
+            echo "::error::the pass reported 0 findings on a crate known to build raw clients — it is not running, so a clean guest below would be a false green."
+            exit 1
+          fi
+          echo "positive control: $n finding(s) — the pass is live"
+
+      # ZERO findings in the guest, enforced.
+      - name: Run unpoliced_http_client over the guest crates
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-egress-lint/target/debug
+        run: |
+          set -o pipefail
+          total=0
+          for crate in nucleus-tool-proxy nucleus-client; do
+            echo "::group::$crate"
+            out=$(cargo dylint --lib nucleus_egress_lint -- -p "$crate" --all-features 2>&1) || true
+            echo "$out"
+            echo "::endgroup::"
+            if printf '%s\n' "$out" | grep -qE 'could not compile|Compilation failed'; then
+              echo "::error::$crate failed to compile under the pass — zero findings would be a false green."
+              exit 1
+            fi
+            n=$(printf '%s\n' "$out" | grep -c 'HTTP client constructed outside' || true)
+            echo "$crate: $n finding(s)"
+            total=$((total + n))
+          done
+          # RATCHET, not zero. Four sites predate this pass and each needs its
+          # own decision, so the job blocks NEW ones rather than pretending the
+          # existing ones are fine:
+          #
+          #   nucleus-client/src/drand.rs      the original defect; gains an
+          #                                    `egress::Admitted` in #2348, which
+          #                                    drops the baseline to 3.
+          #   tool-proxy/art12_shipper.rs      ships audit records to an
+          #                                    operator-configured endpoint. Real
+          #                                    egress; should be policy-checked.
+          #   tool-proxy/node_client.rs        talks to the NODE, not the
+          #                                    internet. Probably legitimately
+          #                                    exempt — but say so deliberately.
+          #   tool-proxy/main.rs               the audit webhook. Same question as
+          #                                    art12_shipper.
+          #
+          # Lower this number as they are resolved; never raise it.
+          BASELINE=5
+          if [ "$total" -gt "$BASELINE" ]; then
+            echo "::error::$total unpoliced HTTP client(s) in the guest, baseline $BASELINE. A pod runs under default-deny egress: a client built without the allowlists, or without an egress::Admitted proof, can target a host its own policy forbids and will spend the full timeout discovering that on every boot (measured: 5044ms of a 5497ms startup)."
+            exit 1
+          fi
+          if [ "$total" -lt "$BASELINE" ]; then
+            echo "::warning::$total findings, below the baseline of $BASELINE — lower BASELINE in this workflow to lock the improvement in."
+          fi
+          echo "guest egress: $total finding(s), at or under the baseline of $BASELINE"
