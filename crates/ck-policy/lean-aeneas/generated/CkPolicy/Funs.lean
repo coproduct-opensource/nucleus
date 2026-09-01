@@ -16,7 +16,7 @@ set_option maxRecDepth 2048
 namespace ck_policy
 
 /-- [ck_policy::extracted::subset_u32]: loop body 1:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 62:8-67:9
+    Source: 'crates/ck-policy/src/extracted.rs', lines 73:8-78:9
     Visibility: public -/
 @[rust_loop_body]
 def extracted.subset_u32_loop0_loop0.body
@@ -35,7 +35,7 @@ def extracted.subset_u32_loop0_loop0.body
   else ok (done found)
 
 /-- [ck_policy::extracted::subset_u32]: loop 1:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 62:8-67:9
+    Source: 'crates/ck-policy/src/extracted.rs', lines 73:8-78:9
     Visibility: public -/
 @[rust_loop]
 def extracted.subset_u32_loop0_loop0
@@ -48,7 +48,7 @@ def extracted.subset_u32_loop0_loop0
     (found, j)
 
 /-- [ck_policy::extracted::subset_u32]: loop body 0:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 58:4-74:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 69:4-85:1
     Visibility: public -/
 @[rust_loop_body]
 def extracted.subset_u32_loop0.body
@@ -67,7 +67,7 @@ def extracted.subset_u32_loop0.body
   else ok (done true)
 
 /-- [ck_policy::extracted::subset_u32]: loop 0:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 58:4-74:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 69:4-85:1
     Visibility: public -/
 @[rust_loop]
 def extracted.subset_u32_loop0
@@ -79,7 +79,7 @@ def extracted.subset_u32_loop0
     i
 
 /-- [ck_policy::extracted::subset_u32]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 56:0-74:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 67:0-85:1
     Visibility: public -/
 @[reducible]
 def extracted.subset_u32
@@ -87,7 +87,7 @@ def extracted.subset_u32
   extracted.subset_u32_loop0 child parent 0#usize
 
 /-- [ck_policy::extracted::dropped_u32]: loop body 1:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 86:8-91:9
+    Source: 'crates/ck-policy/src/extracted.rs', lines 97:8-102:9
     Visibility: public -/
 @[rust_loop_body]
 def extracted.dropped_u32_loop0_loop0.body
@@ -106,7 +106,7 @@ def extracted.dropped_u32_loop0_loop0.body
   else ok (done found)
 
 /-- [ck_policy::extracted::dropped_u32]: loop 1:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 86:8-91:9
+    Source: 'crates/ck-policy/src/extracted.rs', lines 97:8-102:9
     Visibility: public -/
 @[rust_loop]
 def extracted.dropped_u32_loop0_loop0
@@ -119,7 +119,7 @@ def extracted.dropped_u32_loop0_loop0
     (found, j)
 
 /-- [ck_policy::extracted::dropped_u32]: loop body 0:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 82:4-98:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 93:4-109:1
     Visibility: public -/
 @[rust_loop_body]
 def extracted.dropped_u32_loop0.body
@@ -138,7 +138,7 @@ def extracted.dropped_u32_loop0.body
   else ok (done false)
 
 /-- [ck_policy::extracted::dropped_u32]: loop 0:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 82:4-98:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 93:4-109:1
     Visibility: public -/
 @[rust_loop]
 def extracted.dropped_u32_loop0
@@ -150,7 +150,7 @@ def extracted.dropped_u32_loop0
     i
 
 /-- [ck_policy::extracted::dropped_u32]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 80:0-98:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 91:0-109:1
     Visibility: public -/
 @[reducible]
 def extracted.dropped_u32
@@ -158,7 +158,7 @@ def extracted.dropped_u32
   extracted.dropped_u32_loop0 child parent 0#usize
 
 /-- [ck_policy::extracted::budget_within]: loop body 0:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 110:4-115:5
+    Source: 'crates/ck-policy/src/extracted.rs', lines 121:4-126:5
     Visibility: public -/
 @[rust_loop_body]
 def extracted.budget_within_loop.body
@@ -178,7 +178,7 @@ def extracted.budget_within_loop.body
   else ok (done ok1)
 
 /-- [ck_policy::extracted::budget_within]: loop 0:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 110:4-115:5
+    Source: 'crates/ck-policy/src/extracted.rs', lines 121:4-126:5
     Visibility: public -/
 @[rust_loop]
 def extracted.budget_within_loop
@@ -191,7 +191,7 @@ def extracted.budget_within_loop
     (i, ok1)
 
 /-- [ck_policy::extracted::budget_within]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 107:0-117:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 118:0-128:1
     Visibility: public -/
 @[reducible]
 def extracted.budget_within
@@ -201,7 +201,7 @@ def extracted.budget_within
   extracted.budget_within_loop child parent 0#usize true
 
 /-- [ck_policy::extracted::rules_non_weakening]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 137:0-148:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 148:0-159:1
     Visibility: public -/
 def extracted.rules_non_weakening
   (parent : Array Bool 3#usize) (child : Array Bool 3#usize)
@@ -230,7 +230,7 @@ def extracted.rules_non_weakening
   else ok false
 
 /-- [ck_policy::extracted::cap_violated]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 156:0-162:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 167:0-173:1
     Visibility: public -/
 def extracted.cap_violated
   (parent_flag : Bool) (child : Slice Std.U32) (parent : Slice Std.U32) :
@@ -242,7 +242,7 @@ def extracted.cap_violated
   else ok false
 
 /-- [ck_policy::extracted::io_violated]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 165:0-171:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 176:0-182:1
     Visibility: public -/
 def extracted.io_violated
   (parent_flag : Bool) (child : Slice Std.U32) (parent : Slice Std.U32) :
@@ -254,7 +254,7 @@ def extracted.io_violated
   else ok false
 
 /-- [ck_policy::extracted::proofreq_violated]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 175:0-181:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 186:0-192:1
     Visibility: public -/
 def extracted.proofreq_violated
   (parent_flag : Bool) (child : Slice Std.U32) (parent : Slice Std.U32) :
@@ -265,7 +265,7 @@ def extracted.proofreq_violated
   else ok false
 
 /-- [ck_policy::extracted::budget_violated]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 184:0-186:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 195:0-197:1
     Visibility: public -/
 def extracted.budget_violated
   (child : Array Std.U64 8#usize) (parent : Array Std.U64 8#usize) :
@@ -275,7 +275,7 @@ def extracted.budget_violated
   ok (¬ b)
 
 /-- [ck_policy::extracted::passed_core]:
-    Source: 'crates/ck-policy/src/extracted.rs', lines 211:0-231:1
+    Source: 'crates/ck-policy/src/extracted.rs', lines 222:0-242:1
     Visibility: public -/
 def extracted.passed_core
   (parent_flags : Array Bool 3#usize) (child_flags : Array Bool 3#usize)
