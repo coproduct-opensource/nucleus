@@ -28,10 +28,18 @@ LN=(--include='*.lean' --exclude-dir=.lake --exclude-dir=.claude)
 # from the attribute through its guarded item's closing brace (fresh awk per file,
 # so no cross-file bleed). Verified to keep production `.verify(` and drop only
 # test-module bodies.
+#
+# The attribute match covers COMPOUND cfgs — `#[cfg(all(test, feature = "x"))]`,
+# `#[cfg(any(test, ...))]` — not just the bare `#[cfg(test)]`. Matching only the
+# bare form was the same leak this comment already describes, in a new spelling:
+# four feature-gated test modules counted as production and inflated
+# permissive_verify by 4 (24 -> 20) and verify_calls_GUARD by 4 (53 -> 49).
+# Baselines re-derived in the same commit; see the commit message for why a GUARD
+# drop is legitimate HERE and would not be from a code change.
 nt() {
     grep -rlE "$1" "${RS[@]}" crates 2>/dev/null | while IFS= read -r f; do
         awk '
-            state==0 && $0 ~ /#\[cfg\(test\)\]/ { state=1; next }
+            state==0 && $0 ~ /#\[cfg\((test\)|.*[(,][ ]*test[,)])/ { state=1; next }
             state==1 { o=gsub(/\{/,"{"); c=gsub(/\}/,"}"); if (o>0){ depth=o-c; state=(depth>0?2:0) } next }
             state==2 { depth += gsub(/\{/,"{") - gsub(/\}/,"}"); if (depth<=0) state=0; next }
             { print FILENAME ":" FNR ":" $0 }

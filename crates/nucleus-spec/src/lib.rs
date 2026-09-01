@@ -205,6 +205,23 @@ pub struct BudgetModelSpec {
 /// insufficient permission bid, this struct describes what payment
 /// would be required to proceed. The actual payment protocol (x402, etc.)
 /// is implemented by the orchestrator, not by nucleus.
+///
+/// # Why these are `f64` when the rest of the econ stack is `MicroUsd`
+///
+/// This is a **reporting** type, not a ledger type. It is constructed to fill in
+/// an HTTP 402 body and is never read back to compute anything — the charging
+/// path is `nucleus::budget::AtomicBudget`, which is integer micro-USD with
+/// `checked_*` arithmetic and rejects NaN, infinity and non-positive amounts
+/// before converting.
+///
+/// So the inconsistency with `nucleus_econ_types::MicroUsd` is real but is not a
+/// precision hazard, and it is recorded here rather than "fixed" because the fix
+/// is a breaking change to a live 402 wire format bought for no safety gain.
+///
+/// **What would change that:** the moment any code reads a field of this struct
+/// back to compute a charge, a split, or a balance, it becomes a ledger type and
+/// must move to `MicroUsd`. Adding such a caller is the trigger, not the passage
+/// of time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentRequiredInfo {
     /// Amount required in USD.
