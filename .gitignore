@@ -1,5 +1,10 @@
-# Build output
-/target/
+# Build output.
+#
+# UNANCHORED on purpose. "/target/" matches only the workspace root, so every
+# nested target/ escaped it — and one did: tools/nucleus-mediation-lint/target
+# was committed, 2664 files and 1269 MB, including two 95.6 MB libclippy_utils
+# rlibs. That is 98% of this repository's HEAD tree, shipped to every reader.
+target/
 /book/
 
 # IDE
