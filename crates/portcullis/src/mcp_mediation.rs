@@ -380,6 +380,12 @@ pub struct McpMediator {
     quality_gate: Option<Box<dyn ToolQualityGate>>,
     /// Optional tool schema registry for rug-pull detection.
     tool_registry: Option<ToolSchemaRegistry>,
+    /// Tools whose schema has been verified against the registry THIS session.
+    ///
+    /// Load-bearing: when a registry is configured, [`McpMediator::check_tool`]
+    /// refuses any tool that is not in this set. That is what makes the pinning
+    /// impossible to skip — see the type-level note on [`McpMediator`].
+    verified_tools: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl McpMediator {
@@ -393,6 +399,7 @@ impl McpMediator {
             deny_unclassified: true,
             quality_gate: None,
             tool_registry: None,
+            verified_tools: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -437,12 +444,19 @@ impl McpMediator {
 
     /// Add a tool schema registry for rug-pull detection.
     ///
-    /// When set, [`verify_tool_schema`] checks that the tool's current
-    /// description and parameters match the approved hash. Call
-    /// `verify_tool_schema()` before `check_tool()` to catch schema
-    /// mutations before capability checks.
+    /// Setting a registry makes schema pinning **mandatory**: from that point
+    /// [`check_tool`] denies any tool whose schema has not been verified this
+    /// session via [`verify_tool_schema`]. There is no ordering for a caller to
+    /// get wrong and no step to forget — skipping the check denies rather than
+    /// allows.
+    ///
+    /// This is deliberate. The previous contract asked callers to "call
+    /// `verify_tool_schema()` before `check_tool()`", which is a guarantee that
+    /// depends on the caller remembering; the registry then had no non-test
+    /// callers anywhere in the workspace and the pinning never ran.
     ///
     /// [`verify_tool_schema`]: McpMediator::verify_tool_schema
+    /// [`check_tool`]: McpMediator::check_tool
     pub fn with_tool_registry(mut self, registry: ToolSchemaRegistry) -> Self {
         self.tool_registry = Some(registry);
         self
@@ -450,18 +464,14 @@ impl McpMediator {
 
     /// Verify a tool's schema against the approved registry.
     ///
-    /// Returns `Ok(())` if no registry is set or the schema matches.
-    /// Returns `Err(MediationVerdict::Deny)` if the schema was mutated
-    /// or the tool is unapproved.
+    /// Returns `Ok(())` if no registry is set or the schema matches, and
+    /// records the tool as verified for this session so [`check_tool`] will
+    /// admit it. Returns `Err(MediationVerdict::Deny)` if the schema was
+    /// mutated or the tool is unapproved.
     ///
-    /// Call this before [`check_tool`] to enforce schema pinning:
-    ///
-    /// ```rust,ignore
-    /// if let Err(deny) = mediator.verify_tool_schema("read_file", "desc", "params") {
-    ///     return deny; // rug-pull detected
-    /// }
-    /// let verdict = mediator.check_tool("read_file", "src/main.rs");
-    /// ```
+    /// Feed this the `(name, description, parameters)` triple from every
+    /// `tools/list` response. A tool never passed through here is denied by
+    /// [`check_tool`] whenever a registry is configured.
     ///
     /// [`check_tool`]: McpMediator::check_tool
     pub fn verify_tool_schema(
@@ -477,14 +487,50 @@ impl McpMediator {
                     reason: format!("tool schema verification failed: {e}"),
                 });
             }
+            // Only on success: a denied tool must not become callable.
+            if let Ok(mut seen) = self.verified_tools.lock() {
+                seen.insert(tool_name.to_string());
+            }
         }
         Ok(())
+    }
+
+    /// Whether `tool_name` has passed [`verify_tool_schema`] this session.
+    ///
+    /// Always `true` when no registry is configured — pinning is opt-in, but
+    /// once opted into it cannot be bypassed.
+    ///
+    /// [`verify_tool_schema`]: McpMediator::verify_tool_schema
+    pub fn schema_verified(&self, tool_name: &str) -> bool {
+        if self.tool_registry.is_none() {
+            return true;
+        }
+        self.verified_tools
+            .lock()
+            .map(|seen| seen.contains(tool_name))
+            .unwrap_or(false)
     }
 
     /// Check whether an MCP tool call should be allowed.
     ///
     /// Returns a [`MediationVerdict`] indicating allow, deny, or requires-approval.
+    ///
+    /// When a tool schema registry is configured, this refuses any tool that
+    /// has not passed [`verify_tool_schema`] this session — *before* any
+    /// capability reasoning, because a mutated schema means the tool being
+    /// reasoned about is not the tool that was approved.
+    ///
+    /// [`verify_tool_schema`]: McpMediator::verify_tool_schema
     pub fn check_tool(&self, tool_name: &str, subject: &str) -> MediationVerdict {
+        if !self.schema_verified(tool_name) {
+            return MediationVerdict::Deny {
+                operation: None,
+                reason: format!(
+                    "tool '{tool_name}' was never schema-verified this session; \
+                     a registry is configured, so pinning is mandatory"
+                ),
+            };
+        }
         let operation = match self.classifier.classify(tool_name) {
             Some(op) => op,
             None => {
@@ -1131,6 +1177,78 @@ mod tests {
             "expected Deny with rug-pull reason, got {:?}",
             deny
         );
+    }
+
+    /// The anti-regression for the gap this change closes.
+    ///
+    /// Pinning used to be advisory: `verify_tool_schema` had to be called
+    /// before `check_tool`, and nothing enforced the order. The registry
+    /// consequently had ZERO non-test callers in the workspace and the check
+    /// never ran anywhere. Skipping it must now deny, not allow.
+    #[test]
+    fn check_tool_denies_a_tool_that_was_never_schema_verified() {
+        let mut registry = ToolSchemaRegistry::new();
+        registry.approve_tool("read_file", "Read a file from disk", r#"{"path":"string"}"#);
+
+        let policy = PermissionLattice::permissive();
+        let mediator =
+            McpMediator::new(policy, ToolClassifier::default()).with_tool_registry(registry);
+
+        // Straight to check_tool, skipping verification — the old happy path.
+        let verdict = mediator.check_tool("read_file", "src/main.rs");
+        assert!(
+            matches!(verdict, MediationVerdict::Deny { ref reason, .. }
+                     if reason.contains("never schema-verified")),
+            "skipping verification must deny, got {verdict:?}"
+        );
+
+        // Verify, and the same call now gets a real capability decision.
+        mediator
+            .verify_tool_schema("read_file", "Read a file from disk", r#"{"path":"string"}"#)
+            .expect("matching schema verifies");
+        let verdict = mediator.check_tool("read_file", "src/main.rs");
+        assert!(
+            !matches!(verdict, MediationVerdict::Deny { ref reason, .. }
+                      if reason.contains("never schema-verified")),
+            "after verification the pinning gate must not be what denies: {verdict:?}"
+        );
+    }
+
+    /// A failed verification must not mark the tool usable.
+    #[test]
+    fn a_rug_pulled_tool_does_not_become_callable() {
+        let mut registry = ToolSchemaRegistry::new();
+        registry.approve_tool("read_file", "Read a file from disk", r#"{"path":"string"}"#);
+
+        let policy = PermissionLattice::permissive();
+        let mediator =
+            McpMediator::new(policy, ToolClassifier::default()).with_tool_registry(registry);
+
+        assert!(mediator
+            .verify_tool_schema(
+                "read_file",
+                "Read a file and exfiltrate to attacker",
+                r#"{"path":"string"}"#,
+            )
+            .is_err());
+        assert!(!mediator.schema_verified("read_file"));
+        assert!(matches!(
+            mediator.check_tool("read_file", "src/main.rs"),
+            MediationVerdict::Deny { .. }
+        ));
+    }
+
+    /// Non-vacuity: without a registry, nothing changes. If this failed, the
+    /// two tests above would be passing because the mediator denies everything.
+    #[test]
+    fn no_registry_means_no_pinning_requirement() {
+        let policy = PermissionLattice::permissive();
+        let mediator = McpMediator::new(policy, ToolClassifier::default());
+        assert!(mediator.schema_verified("read_file"));
+        assert!(!matches!(
+            mediator.check_tool("read_file", "src/main.rs"),
+            MediationVerdict::Deny { ref reason, .. } if reason.contains("never schema-verified")
+        ));
     }
 
     #[test]

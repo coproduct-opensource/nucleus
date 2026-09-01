@@ -1042,6 +1042,38 @@ mod tests {
     }
 
     #[test]
+    fn mcp_tool_description_is_adversarial_and_taints() {
+        // The DISCOVERY channel, not the call channel. MCP carries instructions
+        // and data together, so a tool description has as much influence over
+        // the agent as the system prompt does — a poisoned description on one
+        // connected server can steer a call to another server's benign tool.
+        // Labelling it at `tools/list` time is what makes that consequence
+        // impossible rather than merely detectable.
+        use crate::flow::intrinsic_label;
+        assert_eq!(
+            intrinsic_label(NodeKind::McpToolDescription, 0).integrity,
+            IntegLevel::Adversarial
+        );
+        let mut t = FlowTracker::new();
+        t.observe(NodeKind::McpToolDescription).unwrap();
+        assert!(
+            t.is_tainted(),
+            "an upstream tool description must taint the session"
+        );
+
+        // Non-vacuity: a tracker that never saw a description is NOT tainted,
+        // so the assertion above is not the trivially-true "everything taints".
+        let clean = FlowTracker::new();
+        assert!(!clean.is_tainted());
+
+        // Same label as a tool RESULT: discovery is not a lesser channel.
+        assert_eq!(
+            intrinsic_label(NodeKind::McpToolDescription, 0),
+            intrinsic_label(NodeKind::McpToolResult, 0)
+        );
+    }
+
+    #[test]
     fn mcp_tool_result_is_adversarial_and_taints() {
         // most-paranoid #2: an upstream/untrusted MCP tool result is adversarial
         // (like web content) and taints the session — distinct from the proxy's

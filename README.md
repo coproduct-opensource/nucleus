@@ -437,6 +437,8 @@ Documented in [`SECURITY_TODO.md`](SECURITY_TODO.md) and [`docs/production-delta
 
 **Unmediated by default:** bytes an agent obtains by running a command (`curl` inside `run`) are not observed as an ingest unless `NUCLEUS_PARANOID_TOOL_IO=1`, so they do not taint the session and the information-flow guarantee above does not cover them. Setting that variable closes the channel on both the HTTP and MCP transports at the cost of a session becoming "one privileged action then locked".
 
+**Third-party MCP servers** are a separate channel with its own boundary. The runtime mediates the tools *it* serves; an agent's connections to external MCP servers are mediated by [`nucleus-mcp-guard`](crates/nucleus-mcp-guard/README.md), which vets the discovery channel (`tools/list`) as well as the call channel — tool schemas are pinned on first sight and re-checked, and metadata that isn't vouched for is treated as adversarial ingest, because MCP carries instructions and data together and a tool description influences the agent as much as the system prompt does. It observes by default and blocks under `--enforce`. Pinning is trust-on-first-use: it defends the rug-pull (benign at approval, mutated later); the metadata-tainting is what covers a server hostile from the start.
+
 > **Versioning:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened.
 
 ---
