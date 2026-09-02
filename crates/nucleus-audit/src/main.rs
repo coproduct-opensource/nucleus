@@ -1402,10 +1402,10 @@ fn generate_assurance_report(
     let kani_core_file = project_dir.join("crates/portcullis-core/src/flow.rs");
     let mut kani_count = 0usize;
     for kani_path in [&kani_file, &kani_core_file] {
-        if kani_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(kani_path) {
-                kani_count += content.matches("#[kani::proof]").count();
-            }
+        if kani_path.exists()
+            && let Ok(content) = std::fs::read_to_string(kani_path)
+        {
+            kani_count += content.matches("#[kani::proof]").count();
         }
     }
     report.insert(
@@ -1450,10 +1450,10 @@ fn generate_assurance_report(
                     continue;
                 }
                 if let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if let Some(ph) = entry["prev_hash"].as_str() {
-                        if ph != prev_hash {
-                            chain_valid = false;
-                        }
+                    if let Some(ph) = entry["prev_hash"].as_str()
+                        && ph != prev_hash
+                    {
+                        chain_valid = false;
                     }
                     if let Some(rh) = entry["receipt_hash"].as_str() {
                         prev_hash = rh.to_string();

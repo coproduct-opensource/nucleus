@@ -130,40 +130,38 @@ pub fn scan_agent_settings(
             }
 
             // Exfiltration patterns in bash allow rules
-            if parsed.tool == ToolKind::Bash {
-                if let Some(pattern) = &parsed.pattern {
-                    if is_exfil_bash_pattern(pattern) {
-                        findings.push(Finding {
-                            severity: Severity::High,
-                            category: "exfiltration".to_string(),
-                            title: format!("Exfiltration command allowed: {}", rule),
-                            description: format!(
-                                "The allow rule '{}' permits a known exfiltration command. \
+            if parsed.tool == ToolKind::Bash
+                && let Some(pattern) = &parsed.pattern
+                && is_exfil_bash_pattern(pattern)
+            {
+                findings.push(Finding {
+                    severity: Severity::High,
+                    category: "exfiltration".to_string(),
+                    title: format!("Exfiltration command allowed: {}", rule),
+                    description: format!(
+                        "The allow rule '{}' permits a known exfiltration command. \
                                  If this is intentional, add it to the 'ask' list instead \
                                  so it requires approval.",
-                                rule
-                            ),
-                        });
-                    }
-                }
+                        rule
+                    ),
+                });
             }
 
             // Sensitive path access
-            if parsed.tool == ToolKind::Read {
-                if let Some(pattern) = &parsed.pattern {
-                    if is_sensitive_path_pattern(pattern) {
-                        findings.push(Finding {
-                            severity: Severity::Medium,
-                            category: "permissions".to_string(),
-                            title: format!("Sensitive path readable: {}", rule),
-                            description: format!(
-                                "The allow rule '{}' grants read access to a sensitive path \
+            if parsed.tool == ToolKind::Read
+                && let Some(pattern) = &parsed.pattern
+                && is_sensitive_path_pattern(pattern)
+            {
+                findings.push(Finding {
+                    severity: Severity::Medium,
+                    category: "permissions".to_string(),
+                    title: format!("Sensitive path readable: {}", rule),
+                    description: format!(
+                        "The allow rule '{}' grants read access to a sensitive path \
                                  (credentials, secrets, SSH keys). Consider adding a deny rule.",
-                                rule
-                            ),
-                        });
-                    }
-                }
+                        rule
+                    ),
+                });
             }
         }
 
@@ -225,23 +223,24 @@ pub fn scan_agent_settings(
 
     // --- Hooks ---
 
-    if let Some(hooks) = &settings.hooks {
-        if hooks.is_object() && !hooks.as_object().unwrap().is_empty() {
-            let hook_count = hooks.as_object().unwrap().len();
-            findings.push(Finding {
-                severity: Severity::Medium,
-                category: "hooks".to_string(),
-                title: format!(
-                    "{} hook{} configured",
-                    hook_count,
-                    if hook_count == 1 { "" } else { "s" }
-                ),
-                description: "Hooks can execute arbitrary commands or make HTTP requests in \
+    if let Some(hooks) = &settings.hooks
+        && hooks.is_object()
+        && !hooks.as_object().unwrap().is_empty()
+    {
+        let hook_count = hooks.as_object().unwrap().len();
+        findings.push(Finding {
+            severity: Severity::Medium,
+            category: "hooks".to_string(),
+            title: format!(
+                "{} hook{} configured",
+                hook_count,
+                if hook_count == 1 { "" } else { "s" }
+            ),
+            description: "Hooks can execute arbitrary commands or make HTTP requests in \
                     response to tool events. Each hook is a potential execution and \
                     exfiltration vector. Review hook configurations."
-                    .to_string(),
-            });
-        }
+                .to_string(),
+        });
     }
 
     // --- Inline credentials in env ---

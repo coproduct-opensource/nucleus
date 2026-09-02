@@ -66,21 +66,21 @@ pub fn parse_tool_permission(s: &str) -> ToolPermission {
     }
 
     // Try ToolName(pattern) format
-    if let Some(paren_pos) = s.find('(') {
-        if s.ends_with(')') {
-            let tool_name = &s[..paren_pos];
-            let pattern = &s[paren_pos + 1..s.len() - 1];
-            let tool = match_tool_name(tool_name);
-            return ToolPermission {
-                tool,
-                pattern: if pattern.is_empty() {
-                    None
-                } else {
-                    Some(pattern.to_string())
-                },
-                raw: s.to_string(),
-            };
-        }
+    if let Some(paren_pos) = s.find('(')
+        && s.ends_with(')')
+    {
+        let tool_name = &s[..paren_pos];
+        let pattern = &s[paren_pos + 1..s.len() - 1];
+        let tool = match_tool_name(tool_name);
+        return ToolPermission {
+            tool,
+            pattern: if pattern.is_empty() {
+                None
+            } else {
+                Some(pattern.to_string())
+            },
+            raw: s.to_string(),
+        };
     }
 
     // Bare tool name (e.g., just "Bash" or "Read")

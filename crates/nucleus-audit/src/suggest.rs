@@ -259,11 +259,11 @@ pub fn mcp_allowlist_snippet(report: &ScanReport) -> Option<String> {
                 deny_rules.push(format!("mcp__{}__create_pull_request", server_name));
             }
         }
-        if finding.category == "mcp_communication" {
-            if let Some(server_name) = extract_mcp_server_name(&finding.title) {
-                deny_rules.push(format!("mcp__{}__send_message", server_name));
-                deny_rules.push(format!("mcp__{}__post_message", server_name));
-            }
+        if finding.category == "mcp_communication"
+            && let Some(server_name) = extract_mcp_server_name(&finding.title)
+        {
+            deny_rules.push(format!("mcp__{}__send_message", server_name));
+            deny_rules.push(format!("mcp__{}__post_message", server_name));
         }
     }
 

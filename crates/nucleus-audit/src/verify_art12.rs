@@ -221,16 +221,16 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
 
         // The first record chains from the writer's genesis anchor, which this
         // verifier does not know; from the second on, the chain is checked.
-        if let Some(prev) = &prev_hash {
-            if &rec.prev_hash != prev {
-                return Err(AuditError::Invalid {
-                    line: line_no,
-                    message: format!(
-                        "prev_hash mismatch (expected {prev}, got {}) -- the chain is broken here",
-                        rec.prev_hash
-                    ),
-                });
-            }
+        if let Some(prev) = &prev_hash
+            && &rec.prev_hash != prev
+        {
+            return Err(AuditError::Invalid {
+                line: line_no,
+                message: format!(
+                    "prev_hash mismatch (expected {prev}, got {}) -- the chain is broken here",
+                    rec.prev_hash
+                ),
+            });
         }
 
         // Recompute from the record's OWN fields. Any tampered field changes the
