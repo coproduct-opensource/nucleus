@@ -144,5 +144,25 @@ elif printf %s "$tag_filters" | grep -qE '^\s*- "v\*"\s*$'; then
   fail=1
 fi
 
+# Third consumer: quickstart-boot.yml builds the guest binaries for the rootfs it
+# boots. Its list was ALSO hand-maintained and ALSO missing one -- podlist-probe
+# -- so the pod CI boots had no podlist probe in it. That is the same drift as
+# release.yml (#2366) and cross-build.sh (#2377), a third time.
+#
+# Accept either shape: derive from cross-build.sh (preferred), or name every
+# needed package literally. What is not acceptable is naming SOME of them.
+QUICKSTART_YML=".github/workflows/quickstart-boot.yml"
+if [ ! -f "$QUICKSTART_YML" ]; then
+  echo "::error::$QUICKSTART_YML missing; the booted-rootfs path is unchecked"
+  fail=1
+elif grep -q 'cross-build.sh --list-packages' "$QUICKSTART_YML"; then
+  : # derived — cannot drift
+else
+  for bin in $needed; do
+    grep -q -- "-p ${bin}" "$QUICKSTART_YML" \
+      || { echo "::error::$QUICKSTART_YML never builds ${bin}, so the rootfs it boots will not contain it"; fail=1; }
+  done
+fi
+
 [ "$fail" -eq 0 ] && echo "ok: release.yml builds and uploads all $n rootfs inputs"
 exit $fail
