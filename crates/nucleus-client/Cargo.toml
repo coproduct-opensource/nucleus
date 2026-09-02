@@ -15,6 +15,9 @@ categories = ["authentication", "development-tools"]
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# v4 UUIDs are the per-request nonce that lets an otherwise-identical request
+# repeat inside the node's replay window (#1631).
+uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

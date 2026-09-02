@@ -16,9 +16,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cp_proto = cp_dir.join("job_service.proto");
     println!("cargo:rerun-if-changed={}", cp_proto.display());
 
+    // SPIFFE Workload API (X.509-SVID profile). Its proto has NO package
+    // declaration on purpose — the standard method path is
+    // `/SpiffeWorkloadAPI/FetchX509SVID` and real clients hard-code it — so
+    // prost emits it as `_.rs`.
+    let spiffe_dir = crates_root.join("nucleus-identity/proto");
+    let spiffe_proto = spiffe_dir.join("workload.proto");
+    println!("cargo:rerun-if-changed={}", spiffe_proto.display());
+
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_protos(&[node_proto, cp_proto], &[node_dir, cp_dir])?;
+        .compile_protos(
+            &[node_proto, cp_proto, spiffe_proto],
+            &[node_dir, cp_dir, spiffe_dir],
+        )?;
     Ok(())
 }

@@ -123,5 +123,26 @@ else
   fi
 fi
 
+# The tag trigger must NOT match the floating major tag this workflow moves.
+# `v*` matches `v2`, so the workflow triggers itself on the tag it just moved,
+# rebuilds everything, and publishes a Release named "v2" that becomes Latest --
+# which is what scripts/install.sh resolves. Observed 2026-09-02.
+tag_filters=$(awk '
+  /^  push:/       { in_push = 1; next }
+  in_push && /^  [a-z_-]+:/ { exit }
+  in_push && /^      - "/   { print }
+' "$RELEASE_YML")
+
+if [ -z "$tag_filters" ]; then
+  echo "::error::$RELEASE_YML has no push tag filters; cannot tell what triggers a release."
+  fail=1
+elif printf %s "$tag_filters" | grep -qE '^\s*- "v\*"\s*$'; then
+  echo "::error::$RELEASE_YML triggers on the bare glob \"v*\", which matches the"
+  echo "  floating major tag (v2) that this workflow moves itself. That publishes a"
+  echo "  second Release named after the floating tag, and it becomes Latest."
+  echo "  Use \"v*.*.*\" so only versioned tags cut a release."
+  fail=1
+fi
+
 [ "$fail" -eq 0 ] && echo "ok: release.yml builds and uploads all $n rootfs inputs"
 exit $fail

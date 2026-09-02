@@ -124,12 +124,14 @@ pub const HEADER_POD_TOKEN: &str = "x-nucleus-pod-token";
 pub fn sign_http_headers(secret: &[u8], actor: Option<&str>, body: &[u8]) -> SignedHeaders {
     let timestamp = now_unix();
     let actor_value = actor.unwrap_or("");
-    let message = build_message(timestamp, actor_value, body);
+    let nonce = fresh_nonce();
+    let message = build_message(timestamp, actor_value, Some(&nonce), body);
     let signature = sign_message(secret, &message);
 
     let mut headers = vec![
         ("x-nucleus-timestamp".to_string(), timestamp.to_string()),
         ("x-nucleus-signature".to_string(), signature),
+        ("x-nucleus-nonce".to_string(), nonce),
     ];
 
     if !actor_value.is_empty() {
@@ -149,12 +151,14 @@ pub fn sign_http_headers(secret: &[u8], actor: Option<&str>, body: &[u8]) -> Sig
 pub fn sign_grpc_headers(secret: &[u8], actor: Option<&str>, method: &str) -> SignedHeaders {
     let timestamp = now_unix();
     let actor_value = actor.unwrap_or("");
-    let message = format!("{timestamp}.{actor_value}.{method}");
+    let nonce = fresh_nonce();
+    let message = format!("{timestamp}.{actor_value}.{nonce}.{method}");
     let signature = sign_message(secret, message.as_bytes());
 
     let mut headers = vec![
         ("x-nucleus-timestamp".to_string(), timestamp.to_string()),
         ("x-nucleus-signature".to_string(), signature),
+        ("x-nucleus-nonce".to_string(), nonce),
         ("x-nucleus-method".to_string(), method.to_string()),
     ];
 
@@ -285,10 +289,17 @@ pub fn verify_drand_signature(
 }
 
 /// Verify a standard (non-drand) signature.
+/// Verify a request signature.
+///
+/// `nonce` must be whatever the signer sent in `x-nucleus-nonce`, or `None` if
+/// it sent none. It is a parameter rather than an assumption because the nonce
+/// is part of the signed bytes: guessing wrong here does not weaken the check,
+/// it just fails to verify a legitimate signature.
 pub fn verify_signature(
     secret: &[u8],
     timestamp: i64,
     actor: Option<&str>,
+    nonce: Option<&str>,
     body: &[u8],
     signature: &str,
 ) -> bool {
@@ -297,20 +308,37 @@ pub fn verify_signature(
         return false;
     }
     let actor_value = actor.unwrap_or("");
-    let message = build_message(timestamp, actor_value, body);
+    let message = build_message(timestamp, actor_value, nonce, body);
     let expected = sign_message(secret, &message);
 
     constant_time_eq(signature.as_bytes(), expected.as_bytes())
 }
 
-fn build_message(timestamp: i64, actor: &str, body: &[u8]) -> Vec<u8> {
-    let mut message = Vec::with_capacity(body.len() + actor.len() + 32);
+/// `{ts}.{actor}.{nonce}.{tail}` — must stay byte-identical to the node's
+/// `auth::build_message`, which reconstructs this to check the signature.
+fn build_message(timestamp: i64, actor: &str, nonce: Option<&str>, body: &[u8]) -> Vec<u8> {
+    let nonce_len = nonce.map_or(0, |n| n.len() + 1);
+    let mut message = Vec::with_capacity(body.len() + actor.len() + nonce_len + 32);
     message.extend_from_slice(timestamp.to_string().as_bytes());
     message.push(b'.');
     message.extend_from_slice(actor.as_bytes());
     message.push(b'.');
+    if let Some(nonce) = nonce {
+        message.extend_from_slice(nonce.as_bytes());
+        message.push(b'.');
+    }
     message.extend_from_slice(body);
     message
+}
+
+/// A fresh per-request nonce.
+///
+/// Without one, two byte-identical requests in the same second produce the same
+/// signature, and the node cannot tell the second from a replay — so it refuses
+/// it. Polling the same endpoint twice a second is a normal thing for a client
+/// to do, so the client always sends a nonce.
+fn fresh_nonce() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 fn build_drand_message(drand_round: u64, timestamp: i64, actor: &str, body: &[u8]) -> Vec<u8> {
@@ -489,15 +517,15 @@ mod tests {
         let ts = now_unix();
         let body = b"payload";
         // World-known empty-key signature over the exact message the verifier builds.
-        let forged = sign_message(b"", &build_message(ts, "", body));
+        let forged = sign_message(b"", &build_message(ts, "", None, body));
         assert!(
-            !verify_signature(b"", ts, None, body, &forged),
+            !verify_signature(b"", ts, None, None, body, &forged),
             "empty auth secret must never verify a request signature (fail-closed)"
         );
         // No regression: a real secret verifies.
         let real: &[u8] = b"a-real-16byte-secret!!";
-        let sig = sign_message(real, &build_message(ts, "", body));
-        assert!(verify_signature(real, ts, None, body, &sig));
+        let sig = sign_message(real, &build_message(ts, "", None, body));
+        assert!(verify_signature(real, ts, None, None, body, &sig));
     }
 
     #[test]
@@ -643,13 +671,37 @@ mod tests {
             .map(|(_, v)| v.as_str())
             .unwrap();
 
+        let nonce = headers
+            .headers
+            .iter()
+            .find(|(k, _)| k == "x-nucleus-nonce")
+            .map(|(_, v)| v.as_str());
+        // The signer always sends a nonce now; if it stopped, this would be
+        // None and the round-trip below would still have to hold.
+        assert!(nonce.is_some(), "sign_http_headers must emit a nonce");
+
         assert!(verify_signature(
             secret,
             headers.timestamp,
             Some("actor"),
+            nonce,
             body,
             signature
         ));
+
+        // The nonce is inside the signed bytes: verifying without it must fail,
+        // which is what stops a nonce header from being stripped in transit.
+        assert!(
+            !verify_signature(
+                secret,
+                headers.timestamp,
+                Some("actor"),
+                None,
+                body,
+                signature
+            ),
+            "a stripped nonce must not verify"
+        );
     }
 
     #[test]

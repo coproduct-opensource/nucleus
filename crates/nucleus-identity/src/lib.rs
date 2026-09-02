@@ -42,6 +42,7 @@ pub mod ifc_extension;
 pub mod manager;
 pub mod oid;
 pub mod session;
+pub mod spiffe_workload_api;
 pub mod tls;
 #[cfg(feature = "tpm-devid")]
 pub mod tpm_devid;

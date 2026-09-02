@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::HeaderMap;
@@ -11,6 +12,84 @@ use tracing::warn;
 const HEADER_TIMESTAMP: &str = "x-nucleus-timestamp";
 const HEADER_SIGNATURE: &str = "x-nucleus-signature";
 const HEADER_ACTOR: &str = "x-nucleus-actor";
+/// Optional per-request uniqueness token. When present it is bound into the
+/// signed message, so it cannot be stripped: removing the header changes the
+/// message the server reconstructs and the signature stops verifying.
+const HEADER_NONCE: &str = "x-nucleus-nonce";
+
+/// Default bound on remembered signatures. At the 30 s window the node ships
+/// with, this is far more than a real client produces, and reaching it means
+/// something is flooding — see `ReplayCache::remember` for why that fails
+/// closed rather than evicting.
+const DEFAULT_REPLAY_CAPACITY: usize = 8192;
+
+/// Remembers recently-accepted signatures so a captured request cannot be sent
+/// again inside the timestamp window.
+///
+/// # Why the key is the signature
+///
+/// A replay is byte-identical to the original, so it produces the identical
+/// signature and collides here. A *legitimate* repeat that carries a fresh
+/// `x-nucleus-nonce` signs a different message, so it does not. One key handles
+/// both cases, and clients that do not send a nonce still get replay protection
+/// — they merely cannot repeat a byte-identical request inside the window,
+/// which is indistinguishable from a replay anyway.
+///
+/// # Why it is not a plain LRU
+///
+/// A bounded LRU evicts the oldest entry to make room. That reopens the exact
+/// hole this closes: flood the cache with fresh signatures, push a captured
+/// signature out while its timestamp is still inside the acceptance window, and
+/// replay it. So an entry is only ever dropped once it is **expired** — once
+/// `ensure_skew` would reject its timestamp anyway. If the cache is full of
+/// still-live entries, the request is refused rather than making room.
+#[derive(Debug)]
+pub struct ReplayCache {
+    seen: Mutex<HashMap<String, i64>>,
+    capacity: usize,
+}
+
+impl ReplayCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            seen: Mutex::new(HashMap::new()),
+            capacity,
+        }
+    }
+
+    /// Record a signature as used. `Err(AuthError::Replay)` if it was already
+    /// seen inside the window.
+    ///
+    /// Callers MUST verify the signature first. Remembering unverified
+    /// signatures would let anyone fill the cache with garbage and trip the
+    /// capacity refusal below — turning a replay defence into a denial of
+    /// service.
+    fn remember(&self, signature: &str, timestamp: i64, window: Duration) -> Result<(), AuthError> {
+        let now = unix_now();
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Expired entries can never be replayed again — `ensure_skew` rejects
+        // their timestamp — so dropping them is free.
+        let window = window.as_secs() as i64;
+        seen.retain(|_, ts| now.saturating_sub(*ts) <= window);
+
+        if seen.contains_key(signature) {
+            return Err(AuthError::Replay);
+        }
+        if seen.len() >= self.capacity {
+            // Everything still held is live. Evicting to make room is what
+            // would let a flood push a capturable signature out early.
+            return Err(AuthError::ReplayCapacity);
+        }
+        seen.insert(signature.to_string(), timestamp);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
 
 /// Global flag to suppress repeated HMAC deprecation warnings after the first few.
 static HMAC_DEPRECATION_WARNED: AtomicBool = AtomicBool::new(false);
@@ -92,6 +171,7 @@ impl AuthMethod {
 pub struct AuthConfig {
     secret: Arc<Vec<u8>>,
     max_skew: Duration,
+    replay: Arc<ReplayCache>,
 }
 
 impl AuthConfig {
@@ -99,7 +179,14 @@ impl AuthConfig {
         Self {
             secret: Arc::new(secret.as_ref().to_vec()),
             max_skew,
+            replay: Arc::new(ReplayCache::new(DEFAULT_REPLAY_CAPACITY)),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_replay_capacity(mut self, capacity: usize) -> Self {
+        self.replay = Arc::new(ReplayCache::new(capacity));
+        self
     }
 
     pub fn max_skew(&self) -> Duration {
@@ -161,6 +248,10 @@ pub enum AuthError {
     InvalidSignature,
     #[error("timestamp skew too large")]
     Skew,
+    #[error("request replayed")]
+    Replay,
+    #[error("replay cache is full of live entries; retry after the skew window")]
+    ReplayCapacity,
 }
 
 pub fn verify_http(
@@ -176,17 +267,16 @@ pub fn verify_http(
         .map(|s| s.to_string());
     let actor_value = actor.clone().unwrap_or_default();
 
+    let nonce = headers.get(HEADER_NONCE).and_then(|v| v.to_str().ok());
+
     let timestamp = parse_timestamp(ts)?;
     ensure_skew(timestamp, auth.max_skew())?;
 
-    let mut message = Vec::with_capacity(ts.len() + actor_value.len() + 2 + body.len());
-    message.extend_from_slice(ts.as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(actor_value.as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(body);
-
+    let message = build_message(ts.as_bytes(), actor_value.as_bytes(), nonce, body);
     verify_signature(&auth.secret, &message, sig)?;
+
+    // Only now, with the signature proven, is this signature worth remembering.
+    auth.replay.remember(sig, timestamp, auth.max_skew())?;
 
     Ok(AuthContext::from_hmac(actor, timestamp))
 }
@@ -210,13 +300,43 @@ pub fn verify_grpc(
         .map(|s| s.to_string());
     let actor_value = actor.clone().unwrap_or_default();
 
+    let nonce = metadata.get(HEADER_NONCE).and_then(|v| v.to_str().ok());
+
     let timestamp = parse_timestamp(ts)?;
     ensure_skew(timestamp, auth.max_skew())?;
 
-    let message = format!("{ts}.{actor_value}.{method}");
-    verify_signature(&auth.secret, message.as_bytes(), sig)?;
+    let message = build_message(
+        ts.as_bytes(),
+        actor_value.as_bytes(),
+        nonce,
+        method.as_bytes(),
+    );
+    verify_signature(&auth.secret, &message, sig)?;
+
+    auth.replay.remember(sig, timestamp, auth.max_skew())?;
 
     Ok(AuthContext::from_hmac(actor, timestamp))
+}
+
+/// `{ts}.{actor}.{tail}`, or `{ts}.{actor}.{nonce}.{tail}` when a nonce is sent.
+///
+/// The nonce sits INSIDE the signed bytes on purpose. A stripped nonce header
+/// makes the server rebuild the shorter form, which no longer matches the
+/// signature — so an attacker cannot downgrade a nonce-bearing request into a
+/// replayable one.
+fn build_message(ts: &[u8], actor: &[u8], nonce: Option<&str>, tail: &[u8]) -> Vec<u8> {
+    let nonce_len = nonce.map_or(0, |n| n.len() + 1);
+    let mut message = Vec::with_capacity(ts.len() + actor.len() + 2 + nonce_len + tail.len());
+    message.extend_from_slice(ts);
+    message.push(b'.');
+    message.extend_from_slice(actor);
+    message.push(b'.');
+    if let Some(nonce) = nonce {
+        message.extend_from_slice(nonce.as_bytes());
+        message.push(b'.');
+    }
+    message.extend_from_slice(tail);
+    message
 }
 
 fn header_value<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a str, AuthError> {
@@ -226,16 +346,20 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a st
         .ok_or(AuthError::MissingHeader(name))
 }
 
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 fn parse_timestamp(ts: &str) -> Result<i64, AuthError> {
     ts.parse::<i64>()
         .map_err(|_| AuthError::InvalidHeader(HEADER_TIMESTAMP))
 }
 
 fn ensure_skew(timestamp: i64, max_skew: Duration) -> Result<(), AuthError> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = unix_now();
     let skew = (now - timestamp).unsigned_abs();
     if skew > max_skew.as_secs() {
         return Err(AuthError::Skew);
@@ -574,6 +698,117 @@ pub fn authorize_grpc_operation<T>(
 
 #[cfg(test)]
 mod tests {
+
+    // ── replay protection (#1631) ──────────────────────────────────────────
+
+    fn hdrs(ts: &str, sig: &str, nonce: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(HEADER_TIMESTAMP, ts.parse().unwrap());
+        h.insert(HEADER_SIGNATURE, sig.parse().unwrap());
+        h.insert(HEADER_ACTOR, "tester".parse().unwrap());
+        if let Some(n) = nonce {
+            h.insert(HEADER_NONCE, n.parse().unwrap());
+        }
+        h
+    }
+
+    fn signed(secret: &[u8], ts: i64, nonce: Option<&str>, body: &[u8]) -> HeaderMap {
+        let ts = ts.to_string();
+        let msg = build_message(ts.as_bytes(), b"tester", nonce, body);
+        hdrs(&ts, &sign_message(secret, &msg), nonce)
+    }
+
+    #[test]
+    fn an_identical_request_replayed_inside_the_window_is_refused() {
+        let secret = b"s3cret";
+        let auth = AuthConfig::new(secret, Duration::from_secs(30));
+        let body = b"{\"kind\":\"Pod\"}";
+        let h = signed(secret, unix_now(), None, body);
+
+        // Non-vacuity: the FIRST send must succeed, or "refused" below would be
+        // proving nothing more than that the request was malformed.
+        assert!(verify_http(&h, body, &auth).is_ok(), "first send must pass");
+        assert!(matches!(
+            verify_http(&h, body, &auth),
+            Err(AuthError::Replay)
+        ));
+    }
+
+    #[test]
+    fn a_nonce_lets_an_otherwise_identical_request_repeat() {
+        let secret = b"s3cret";
+        let auth = AuthConfig::new(secret, Duration::from_secs(30));
+        let body = b"{}";
+        let ts = unix_now();
+        // Same timestamp, same actor, same body — only the nonce differs.
+        assert!(verify_http(&signed(secret, ts, Some("n1"), body), body, &auth).is_ok());
+        assert!(verify_http(&signed(secret, ts, Some("n2"), body), body, &auth).is_ok());
+    }
+
+    #[test]
+    fn stripping_the_nonce_header_does_not_downgrade_the_request() {
+        let secret = b"s3cret";
+        let auth = AuthConfig::new(secret, Duration::from_secs(30));
+        let body = b"{}";
+        let ts = unix_now().to_string();
+        let msg = build_message(ts.as_bytes(), b"tester", Some("n1"), body);
+        let sig = sign_message(secret, &msg);
+        // Signature made over the nonce-bearing message, nonce header removed.
+        let stripped = hdrs(&ts, &sig, None);
+        assert!(matches!(
+            verify_http(&stripped, body, &auth),
+            Err(AuthError::InvalidSignature)
+        ));
+    }
+
+    #[test]
+    fn a_full_cache_refuses_rather_than_evicting_a_live_entry() {
+        let secret = b"s3cret";
+        let auth = AuthConfig::new(secret, Duration::from_secs(30)).with_replay_capacity(2);
+        let body = b"{}";
+        let ts = unix_now();
+        assert!(verify_http(&signed(secret, ts, Some("a"), body), body, &auth).is_ok());
+        let victim = signed(secret, ts, Some("b"), body);
+        assert!(verify_http(&victim, body, &auth).is_ok());
+
+        // Cache is now full of LIVE entries. A plain LRU would evict "a" here,
+        // which is precisely how a flood would make room to replay it.
+        assert!(matches!(
+            verify_http(&signed(secret, ts, Some("c"), body), body, &auth),
+            Err(AuthError::ReplayCapacity)
+        ));
+        // And the entry a flood would have evicted is still remembered.
+        assert!(matches!(
+            verify_http(&victim, body, &auth),
+            Err(AuthError::Replay)
+        ));
+    }
+
+    #[test]
+    fn expired_entries_are_dropped_because_skew_already_refuses_them() {
+        let cache = ReplayCache::new(8);
+        let window = Duration::from_secs(30);
+        // An entry older than the window can never be replayed: ensure_skew
+        // rejects its timestamp before the cache is consulted.
+        cache.remember("old", unix_now() - 600, window).unwrap();
+        assert_eq!(cache.len(), 1);
+        cache.remember("fresh", unix_now(), window).unwrap();
+        assert_eq!(cache.len(), 1, "the expired entry should have been pruned");
+    }
+
+    #[test]
+    fn an_unsigned_request_never_reaches_the_cache() {
+        let secret = b"s3cret";
+        let auth = AuthConfig::new(secret, Duration::from_secs(30)).with_replay_capacity(1);
+        let body = b"{}";
+        let ts = unix_now().to_string();
+        // Garbage signature: if this were remembered, one anonymous request
+        // would fill a capacity-1 cache and lock out every real caller.
+        let bogus = hdrs(&ts, &"ab".repeat(32), None);
+        assert!(verify_http(&bogus, body, &auth).is_err());
+        assert!(verify_http(&signed(secret, unix_now(), None, body), body, &auth).is_ok());
+    }
+
     use super::*;
 
     #[test]
