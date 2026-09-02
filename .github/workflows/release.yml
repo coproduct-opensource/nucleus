@@ -3,7 +3,21 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      # `v*.*.*`, NOT `v*`. This workflow MOVES the floating major tag `v2` as
+      # its last step, and a ref update is a tag push -- so `v*` made the
+      # workflow trigger ITSELF on `v2`, build every asset again, and publish a
+      # second GitHub Release literally named "v2".
+      #
+      # That release is created after the real one, so it becomes "Latest", and
+      # `/releases/latest` is exactly what scripts/install.sh resolves. The
+      # one-liner would install a release named after a floating pointer instead
+      # of the version, and the real v2.2.0 would stop being Latest.
+      #
+      # It had never happened before only because the `git push origin v2` that
+      # moved the tag ALWAYS FAILED on a token permission (see the floating-tag
+      # step below). Fixing that push is what made this reachable: the bug was
+      # masked by a different bug. Observed 2026-09-02, cleaned up by hand.
+      - "v*.*.*"
       - "nucleus-node-v*"
   # DRY RUN. Five of the last seven release attempts failed, because every job
   # below runs ONLY when a tag is pushed — so they rot between releases and the
