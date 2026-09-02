@@ -19,3 +19,6 @@ nucleus-ifc = { path = "../nucleus-ifc", version = "1.0.0", features = ["decisio
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+nucleus-recompute = { path = "../nucleus-recompute", version = "1.0.0" }

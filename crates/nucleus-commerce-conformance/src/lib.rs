@@ -286,6 +286,56 @@ pub fn corpus() -> Vec<ConformanceCase> {
         input: CaseInput::Payout(inflated),
     });
 
+    // Integer-division dust. `route_to_commons` assigns the remainder to the
+    // FIRST share so the allocations sum to exactly the pool — a specific,
+    // non-obvious rule that NO other vector exercises, because every other case
+    // divides evenly. An implementer reading only those would write plain
+    // truncation, pass the whole corpus, and then diverge from nucleus on real
+    // money the first time a split had a remainder. These two cases are what
+    // make the corpus sufficient to implement against.
+    let dusty_shares = vec![
+        CommonsShare {
+            destination: "seller".into(),
+            bps: 3_333,
+        },
+        CommonsShare {
+            destination: "runtime".into(),
+            bps: 3_333,
+        },
+        CommonsShare {
+            destination: "commons".into(),
+            bps: 3_334,
+        },
+    ];
+    // pool 1000 -> 333 / 333 / 333 by truncation, dust 1 to the first -> 334.
+    let dusty = issue_payout(
+        issue_settlement(1_000, 10_000),
+        dusty_shares.clone(),
+        attribution(),
+    )
+    .expect("well-formed");
+    cases.push(ConformanceCase {
+        name: "payout/remainder-dust-to-first-share",
+        summary: "a split that does not divide evenly: the dust goes to the first share",
+        property: Property::PayoutRecomputes,
+        expect: Expect::Accept,
+        expect_reason_contains: None,
+        input: CaseInput::Payout(dusty.clone()),
+    });
+
+    // The same split with the dust DROPPED — what a truncating implementation
+    // produces. It sums to 999 against a pool of 1000, so it is a skim.
+    let mut truncated = dusty;
+    truncated.allocations[0].amount_micro -= 1;
+    cases.push(ConformanceCase {
+        name: "payout/remainder-dust-dropped",
+        summary: "truncating instead of assigning the dust leaves the pool short by one",
+        property: Property::PayoutRecomputes,
+        expect: Expect::Reject,
+        expect_reason_contains: None,
+        input: CaseInput::Payout(truncated),
+    });
+
     // ── SettlementDischarges ────────────────────────────────────────────────
     let p = honest_payout();
     let all: Vec<_> = p
