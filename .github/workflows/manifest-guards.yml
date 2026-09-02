@@ -57,6 +57,12 @@ jobs:
       - name: Vendor neutrality (no claude/anthropic/openai in source)
         run: bash ci/no-vendor-strings.sh
 
+      # release.yml built 3 of the 7 guest binaries the rootfs needs, so the
+      # rootfs job failed on the first missing one. It only surfaces when a
+      # release is cut, which is why it survived from July to v2.2.0.
+      - name: Release builds every rootfs input
+        run: bash ci/release-builds-rootfs-inputs.sh
+
       # `.gitignore` said `/target/` — anchored to the root, so every nested
       # target/ escaped it, and tools/nucleus-mediation-lint/target was
       # committed: 2664 files, 1269 MB, 98% of the HEAD tree. The same mistake
