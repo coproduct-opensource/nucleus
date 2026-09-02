@@ -45,5 +45,28 @@ if [ "$n" -lt 5 ]; then
   exit 1
 fi
 
+# release.yml now also runs on a schedule as a DRY RUN. Publishing must stay
+# tag-only, or a nightly build would cut a release nobody asked for. `publish`
+# and `homebrew` both `needs: release`, so this one guard covers all three.
+# Read the `release` job's OWN if:, not the whole file. The dry-run job carries a
+# NEGATED copy of this same expression, so a file-wide grep is satisfied by the
+# wrong line and the guard passes with the real one deleted (observed).
+release_if=$(awk '
+  /^  release:/            { in_job = 1; next }
+  in_job && /^  [a-z_-]+:/ { exit }
+  in_job && /^    if:/     { print; exit }
+' "$RELEASE_YML")
+
+if printf %s "$release_if" | grep -q -- "!startsWith(github.ref"; then
+  echo "::error::the release job if: NEGATES the tag check: $release_if"
+  echo "  As written, publishing happens on the nightly dry run and NOT on a tag."
+  fail=1
+elif ! printf %s "$release_if" | grep -qF "startsWith(github.ref, 'refs/tags/')"; then
+  echo "::error::$RELEASE_YML no longer gates publishing on a tag. It runs on a"
+  echo "  schedule; without that guard a nightly dry run would publish a release."
+  echo "  release job if: ${release_if:-<none found>}"
+  fail=1
+fi
+
 [ "$fail" -eq 0 ] && echo "ok: release.yml builds and uploads all $n rootfs inputs"
 exit $fail

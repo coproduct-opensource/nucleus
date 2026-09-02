@@ -5,6 +5,22 @@ on:
     tags:
       - "v*"
       - "nucleus-node-v*"
+  # DRY RUN. Five of the last seven release attempts failed, because every job
+  # below runs ONLY when a tag is pushed — so they rot between releases and the
+  # rot is discovered at the worst moment. v2.2.0 alone hit three: release.yml
+  # built 3 of the 7 guest binaries the rootfs needs (#2366), both macOS jobs
+  # died on `dead_code` promoted by -D warnings (#2367), and the Docker images
+  # pinned rust 1.88 against a 1.95 workspace (#2368). All three had been broken
+  # since v2.1.0 in July.
+  #
+  # A daily run builds everything and publishes NOTHING (see the tag guard on
+  # `release`), so the build path is exercised every day instead of every
+  # release. Deliberately the SAME workflow rather than a copy: a separate
+  # dry-run file would drift from the real one, which is the exact failure mode
+  # being fixed.
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
 
 # Restrict default permissions - jobs declare what they need
 concurrency:
@@ -213,11 +229,67 @@ jobs:
           name: lima-templates
           path: dist/*.yaml
 
+  # The dry run's own non-vacuity check. A scheduled run whose jobs all SKIPPED
+  # would report success while proving nothing — the same "green because it
+  # never ran" shape the dry run exists to catch. So assert the artifacts a
+  # real release needs were actually produced.
+  #
+  # It checks the rootfs images specifically because that is what broke: the
+  # first v2.2.0 attempt published 16 assets with ZERO rootfs, and `setup` needs
+  # exactly those.
+  dry-run-assert:
+    name: The dry run actually built a releasable set
+    runs-on: ubuntu-latest
+    needs: [build, build-musl, build-rootfs, upload-lima-templates]
+    if: always() && !startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Every build job must have succeeded
+        env:
+          B: ${{ needs.build.result }}
+          M: ${{ needs.build-musl.result }}
+          R: ${{ needs.build-rootfs.result }}
+          L: ${{ needs.upload-lima-templates.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for pair in "build:$B" "build-musl:$M" "build-rootfs:$R" "upload-lima-templates:$L"; do
+            name=${pair%%:*}; res=${pair#*:}
+            if [ "$res" != "success" ]; then
+              echo "::error::$name was '$res' — the release path is broken TODAY, not at the next tag"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: rootfs-*
+          path: rootfs
+
+      - name: A rootfs image exists for every architecture
+        run: |
+          set -euo pipefail
+          # The pin resolves nucleus-rootfs-<version>-<arch>.ext4.gz for both
+          # arches; anything less and `nucleus setup` cannot install a guest.
+          n=$(find rootfs -name '*.ext4.gz' | wc -l | tr -d ' ')
+          find rootfs -name '*.ext4.gz' | sed 's/^/  built: /'
+          if [ "$n" -lt 2 ]; then
+            echo "::error::only $n rootfs image(s) built; a release needs one per architecture."
+            echo "  This is the v2.2.0 failure exactly: 16 assets published, 0 of them a rootfs."
+            exit 1
+          fi
+          echo "ok: $n rootfs images"
+
   release:
     name: Create Release
     runs-on: ubuntu-latest
     needs: [build, build-musl, build-rootfs, upload-lima-templates]
-    if: always() && needs.build-musl.result == 'success'
+    # PUBLISHING IS TAG-ONLY. A scheduled or dispatched run builds everything and
+    # stops here — no release object, no assets, no attestations, no crates.io,
+    # no Homebrew (`publish` and `homebrew` both `needs: release`, so this one
+    # condition gates all three). A dry run that published would be far worse
+    # than no dry run.
+    if: always() && needs.build-musl.result == 'success' && startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
       id-token: write
