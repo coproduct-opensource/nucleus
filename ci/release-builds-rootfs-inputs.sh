@@ -90,5 +90,38 @@ elif printf %s "$float_step" | grep -qE '^[^#]*git push'; then
   fail=1
 fi
 
+# release.yml is not the only consumer of this list. `cross-build.sh` builds the
+# same binaries for a LOCAL rootfs, and build-rootfs.sh points users at it by
+# name when one is missing. It hand-maintained its own array, that array omitted
+# nucleus-adversary-probe, and because build-rootfs.sh copies that probe with a
+# bare `[ -f ]` the local rootfs came out exit-0 with the probe absent (#2377).
+#
+# Asked BEHAVIOURALLY -- run the script and compare what it would build -- rather
+# than by grepping its source, so it keeps working whether the list is derived or
+# literal.
+CROSS_SH="scripts/cross-build.sh"
+if [ ! -f "$CROSS_SH" ]; then
+  echo "::error::$CROSS_SH missing; the local rootfs path is unchecked"
+  fail=1
+elif ! cross_list=$(bash "$CROSS_SH" --list-packages 2>/dev/null); then
+  echo "::error::$CROSS_SH --list-packages failed; cannot tell what a local build produces."
+  echo "  That flag is what makes this check behavioural instead of a grep."
+  fail=1
+else
+  # printf '%s\n', not printf %s: without the trailing newline the last element
+  # has no line terminator, which both mangles the report and can hide an entry
+  # from `comm`.
+  cross_sorted=$(printf '%s\n' "$cross_list" | sort -u)
+  needed_sorted=$(printf '%s\n' "$needed" | sort -u)
+  missing_from_cross=$(comm -23 <(printf '%s\n' "$needed_sorted") <(printf '%s\n' "$cross_sorted"))
+  if [ -n "$missing_from_cross" ]; then
+    echo "::error::$CROSS_SH does not build binaries the rootfs needs:"
+    printf '%s\n' "$missing_from_cross" | sed 's/^/  missing: /'
+    echo "  build-rootfs.sh copies some of these with a bare [ -f ], so the rootfs"
+    echo "  would build successfully and simply not contain them."
+    fail=1
+  fi
+fi
+
 [ "$fail" -eq 0 ] && echo "ok: release.yml builds and uploads all $n rootfs inputs"
 exit $fail
