@@ -412,6 +412,13 @@ UNCOVERED_CEILING=2
 #     not probed here because it needs netns + iptables + sudo, and because its
 #     perturbation is internal — there is no external subject for this script to
 #     break.
+#   check-clippy-ratchet.sh — its perturbation needs a full workspace clippy run
+#     (minutes, and `--keep-going` over every crate); this job runs fast greps on
+#     stable Rust and would be the wrong place to spend that. The
+#     `ratchet-falsifier` job in clippy-ratchet.yml lowers the ceiling below the
+#     measured count and asserts `--strict` exits non-zero, then restores it and
+#     asserts zero — the same two-sided perturbation probe() would make, run
+#     every CI invocation beside the gate it falsifies.
 #   check-adversary-probe.sh — likewise a self-falsifier for the in-pod adversary:
 #     it reconstructs each attack surface and asserts the probe reports CONTAINED
 #     when confined, BREACH:<stage> when a surface is opened (reds-on-regression),
@@ -423,6 +430,7 @@ SELF_FALSIFIED=(
     "check-mediation-dylint.sh    --self-test in the 'mediated' job (dylint-separation.yml)"
     "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)"
     "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)"
+    "check-clippy-ratchet.sh     ceiling-below-actual in the 'ratchet-falsifier' job (clippy-ratchet.yml)"
 )
 
 echo
