@@ -70,6 +70,11 @@ jobs:
       # release is cut, which is why it survived from July to v2.2.0.
       - name: Release builds every rootfs input
         run: bash ci/release-builds-rootfs-inputs.sh
+      # The Dockerfiles pinned rust:1.88 while the workspace needs 1.95, so
+      # `cargo chef cook` refused to build. docker.yml runs on `v*` tags only,
+      # so the images are built when a release is cut and never between.
+      - name: Docker Rust base >= workspace MSRV
+        run: bash ci/docker-rust-matches-msrv.sh
 
       # `.gitignore` said `/target/` — anchored to the root, so every nested
       # target/ escaped it, and tools/nucleus-mediation-lint/target was

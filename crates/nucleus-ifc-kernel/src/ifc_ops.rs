@@ -493,7 +493,12 @@ mod bash_exec_boundary {
     /// already-running shell reaches — `bash -c curl`, `/dev/tcp`, `nc` — because
     /// a sink label cannot follow a process once it has execed. That surface
     /// (mediated-set.md channels 5 and 10) is confined by the netns default-deny
-    /// backstop, proven applied on boot by `scripts/check-egress-probe.sh`.
+    /// backstop — which every pod now PROVES rather than being assumed to have.
+    /// `nucleus-guest-init` spawns `nucleus-egress-probe` in the guest and
+    /// `net::confinement` refuses to report the pod healthy without a PASS on
+    /// the console. Until that landed the anchor was
+    /// `scripts/check-egress-probe.sh`, which runs in `quickstart-boot.yml`
+    /// against a pod CI booted — true of that pod, and of no other.
     ///
     /// This pins the floor so the doc claim has a checked anchor: lowering it to
     /// `Adversarial` (no requirement) would let a tainted session spawn a shell

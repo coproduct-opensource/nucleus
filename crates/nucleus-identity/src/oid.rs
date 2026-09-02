@@ -94,6 +94,44 @@ pub const OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES: &[u8] = &[
 
 pub const OID_NUCLEUS_MEDIATION_KEY_BINDING_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 4];
 
+/// OID for Nucleus TPM hardware-rooting evidence (same PEN arc, component .1.5).
+///
+/// OID: 1.3.6.1.4.1.57212.1.5
+/// - PEN: 57212 (same unregistered placeholder)
+/// - Component: .1.5 (attestation.tpm_hardware_rooting)
+///
+/// Carries the two witnesses that residency alone cannot supply: the EK
+/// certificate chain (to a manufacturer root) and the AK↔EK credential-activation
+/// binding. Together with the `.1.3` residency extension these are the three
+/// inputs `tpm_devid::compose_l2` requires.
+///
+/// **EVIDENCE, NOT A VERDICT.** This extension carries no assurance level and no
+/// `Claim`; the relying party runs `compose_l2` itself. Stamping the conclusion
+/// would create exactly the inflation hole `mediation_receipt.rs` already tests
+/// for — a field asserting L2 that nothing re-checks. There is no such field.
+///
+/// **What is re-verified vs vouched for**, stated because the difference is the
+/// whole trust argument:
+///
+/// * the EK chain is re-verified by the relying party against ITS OWN pinned
+///   roots — the issuer's opinion of the manufacturer does not carry;
+/// * residency (`.1.3`) is re-verified — it is a TPM2_Certify signature;
+/// * the **AK↔EK binding is vouched for by the issuer**, not replayable.
+///   Credential activation is an interactive challenge-response between the CA
+///   and the TPM; there is no artifact a third party can re-run. The CA performs
+///   it at enrolment and the certificate signature covers the binding tuple
+///   below, so a relying party trusts the CA for exactly this one link — the
+///   same trust IDevID/LDevID enrolment already requires. It is not re-derived,
+///   and this comment exists so nobody later assumes it is.
+///
+/// **INTERNAL / no interop commitment**, like the rest of the 57212 arc.
+pub const OID_NUCLEUS_TPM_HW_ROOTING_BYTES: &[u8] = &[
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212
+    0x01, 0x05, // .1.5 (attestation.tpm_hardware_rooting)
+];
+
+pub const OID_NUCLEUS_TPM_HW_ROOTING_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 5];
+
 #[cfg(test)]
 mod tests {
     use super::*;

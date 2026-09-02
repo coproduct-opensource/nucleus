@@ -28,16 +28,29 @@ On top of that core, Nucleus adds three newer pillars — a **Constitutional Ker
 
 ---
 
-## See it in 90 seconds
+## Quick start — 3 commands, ~4 seconds
 
-Two runnable hooks, nothing to configure ([`just`](https://github.com/casey/just), or run the commands directly):
+Needs [Rust 1.95+](https://rustup.rs) and nothing else. No task runner, no Docker,
+no VM.
 
 ```sh
-just demo     # 30s, in your terminal — information-flow control, 4 scenarios
-just vault    # play "The Vault" in your browser
+git clone --depth 1 https://github.com/coproduct-opensource/nucleus
+cd nucleus
+cargo run -q -p nucleus-ifc --example ifc_demo
 ```
 
-**`just demo`** (`cargo run -p nucleus-ifc --example ifc_demo`) — a prompt-injection write is **denied by adversarial *ancestry***, not by a classifier guessing at strings; a clean flow is allowed; a compartment transition clears taint; a deterministic bind excludes the model from the trust decision:
+`--depth 1` because the full history is ~456 MB; the shallow clone is 29 MB.
+
+**Measured on an Apple M5 Pro: 1.4 s to clone, 4.0 s to first output — 5.4 s
+total**, from a fresh shallow clone into an empty `target/`, with a warm cargo
+registry and `just` not installed. The demo crate has three dependencies, so
+the wait is compiling nucleus rather than resolving the internet; a first-ever
+Rust build on a machine also downloads the registry and will be slower.
+
+Prefer a task runner? `brew install just` then `just demo` runs exactly the same
+thing, and `just vault` opens **The Vault** in a browser.
+
+The demo runs five scenarios. A prompt-injection write is **denied by adversarial *ancestry***, not by a classifier guessing at strings; a clean flow is allowed; a compartment transition clears taint; a deterministic bind excludes the model from the trust decision:
 
 ```
 ─ Scenario 1: Web injection blocked ─
@@ -51,7 +64,11 @@ just vault    # play "The Vault" in your browser
 
 ---
 
-## Quick Start
+## Using it on your own code
+
+The demo above proves the algebra. To point nucleus at a real workload, install
+the CLI — a larger build (~1400 dependencies), which is why it is not the first
+thing this page asks you to run:
 
 ```bash
 cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-cli
