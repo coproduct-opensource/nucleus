@@ -116,3 +116,10 @@ jobs:
       # of the blank line between them, so nothing failed.
       - name: boot.stage spans annotate the item they measure
         run: bash ci/boot-stage-spans-are-attached.sh
+      # `ip netns exec <ns> <argv>` runs argv IN the namespace and inserts no
+      # program name. Ten call sites passed bare ip SUBCOMMANDS, so the exec hit
+      # coreutils `link(1)` and every pod with a `network` block failed to launch
+      # (#2380). CI never saw it: a spec with no `network` block skips that path
+      # entirely, and none of the specs CI boots has one.
+      - name: run_netns argv names a program
+        run: bash ci/netns-argv-names-a-program.sh
