@@ -790,7 +790,7 @@ mod workload_delegation_tests {
 
     fn spec_with_workload() -> PodSpec {
         let yaml = r#"
-apiVersion: nucleus.dev/v1
+apiVersion: nucleus/v1
 kind: Pod
 metadata:
   name: sub
@@ -865,7 +865,7 @@ mod credentialed_egress_delegation_tests {
     fn spec_requesting(ups: Vec<nucleus_spec::CredentialedEgressSpec>) -> PodSpec {
         let mut spec: PodSpec = serde_yaml::from_str(
             r#"
-apiVersion: nucleus.dev/v1
+apiVersion: nucleus/v1
 kind: Pod
 metadata:
   name: sub
