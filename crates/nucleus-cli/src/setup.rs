@@ -248,8 +248,12 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
     if let (Some(host), false) = (host, args.skip_verify) {
         if let Err(e) = crate::verify::verify_tier2(&host, &args.vm_name) {
             print_setup_summary(&args, &platform, false);
+            // Do NOT name a cause here. This runs for ANY verification failure,
+            // and asserting "the pod could not boot" was wrong on a run where the
+            // pod booted in 2.7 s and passed 16 checks before a later assertion
+            // refused (#2372). `{e}` already says what actually failed.
             bail!(
-                "setup finished, but a nucleus pod could not boot — Tier 2 is not usable yet.\n\
+                "setup finished, but Tier 2 verification did not pass.\n\
                  {e}\n\
                  Re-run the check on its own with: nucleus verify --tier2\n\
                  To skip it: nucleus setup --skip-verify"
@@ -684,7 +688,14 @@ fn provision_tier2_host(args: &SetupArgs, platform: &Platform) -> Result<()> {
     let auth = secret_hex(SecretKind::NodeAuthSecret)?;
     let proxy = secret_hex(SecretKind::ProxyAuthSecret)?;
     let approval = secret_hex(SecretKind::ApprovalSecret)?;
-    provision::install_node_service(&host, &provision::node_env_body(&auth, &proxy, &approval))?;
+    // A fresh canary per setup. It is not a stored secret: it exists only so the
+    // guest leak sweep has something real to fail to find, and rotating it every
+    // run means a value that DID leak once cannot keep passing later (#2372).
+    let canary = hex::encode(rand::random::<[u8; 16]>());
+    provision::install_node_service(
+        &host,
+        &provision::node_env_body(&auth, &proxy, &approval, &canary),
+    )?;
 
     Ok(())
 }
