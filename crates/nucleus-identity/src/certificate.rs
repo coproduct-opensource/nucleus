@@ -558,9 +558,11 @@ mod tests {
             vec![KeyUsagePurpose::DigitalSignature],
         );
         parses_as_a_certificate(&der);
-        assert!(Certificate::from_der(der)
-            .extract_spiffe_identity()
-            .is_err());
+        assert!(
+            Certificate::from_der(der)
+                .extract_spiffe_identity()
+                .is_err()
+        );
     }
 
     /// "Leaf certificates MUST set the cA field to false."

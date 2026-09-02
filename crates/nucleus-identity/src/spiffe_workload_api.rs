@@ -19,14 +19,14 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
 use nucleus_proto::spiffe_workload::{
-    spiffe_workload_api_server::SpiffeWorkloadApi, X509BundlesRequest, X509BundlesResponse,
-    X509svid, X509svidRequest, X509svidResponse,
+    X509BundlesRequest, X509BundlesResponse, X509svid, X509svidRequest, X509svidResponse,
+    spiffe_workload_api_server::SpiffeWorkloadApi,
 };
 
+use crate::Identity;
 use crate::ca::CaClient;
 use crate::certificate::TrustBundle;
 use crate::manager::SecretManager;
-use crate::Identity;
 
 /// The header every Workload API client must send.
 ///
