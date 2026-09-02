@@ -101,15 +101,14 @@ pub(crate) async fn attest(pod_dir: &Path, spec: &PodSpec, pod_id: &str) -> Resu
     // correctly-confined pod, and this gate fails closed, so a lost race would
     // be an outage rather than a warning.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    let mut v = Verdict::Absent;
-    loop {
+    let v = loop {
         let console = tokio::fs::read_to_string(&log).await.unwrap_or_default();
-        v = verdict(&console, applies);
+        let v = verdict(&console, applies);
         if v != Verdict::Absent || std::time::Instant::now() >= deadline {
-            break;
+            break v;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    };
 
     let problem = match v {
         Verdict::Proved => {
