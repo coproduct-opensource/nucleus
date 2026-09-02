@@ -577,6 +577,9 @@ impl IntoResponse for ApiError {
             ApiError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Serde(_) => StatusCode::BAD_REQUEST,
             ApiError::Driver(_) => StatusCode::BAD_REQUEST,
+            // Capacity is a server condition, not a credential problem: the
+            // caller should retry, not re-authenticate.
+            ApiError::Auth(AuthError::ReplayCapacity) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Auth(_) => StatusCode::UNAUTHORIZED,
             ApiError::Body(_) => StatusCode::BAD_REQUEST,
         };

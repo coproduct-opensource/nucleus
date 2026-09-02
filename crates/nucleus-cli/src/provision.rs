@@ -538,7 +538,17 @@ fn install_binary(host: &Tier2Host, local: &Path, name: &str, bin: &str) -> Resu
 /// reads `NUCLEUS_NODE_LISTEN`), `NUCLEUS_NODE_GRPC_ADDR` (it reads
 /// `NUCLEUS_NODE_GRPC_LISTEN`), and `NUCLEUS_NODE_ARTIFACTS_DIR`, which nothing
 /// reads at all.
-pub fn node_env_body(auth_hex: &str, proxy_hex: &str, approval_hex: &str) -> String {
+/// `canary_hex` is a throwaway value planted so `verify --tier2` has a real
+/// node-held secret to hunt for in the guest. Without one the leak sweep has
+/// nothing to look for and refuses to run — which is correct, but made the check
+/// reachable only from CI, since CI was the only thing that planted a canary.
+/// See #2372.
+pub fn node_env_body(
+    auth_hex: &str,
+    proxy_hex: &str,
+    approval_hex: &str,
+    canary_hex: &str,
+) -> String {
     format!(
         "# Written by `nucleus setup`. Contains HMAC secrets - keep mode 0600.\n\
          NUCLEUS_NODE_LISTEN=0.0.0.0:8080\n\
@@ -550,6 +560,7 @@ pub fn node_env_body(auth_hex: &str, proxy_hex: &str, approval_hex: &str) -> Str
          NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET={WORKLOAD_API_SOCKET}\n\
          NUCLEUS_FIRECRACKER_PATH=/usr/local/bin/firecracker\n\
          NUCLEUS_JAILER_PATH=/usr/local/bin/jailer\n\
+         NUCLEUS_E2E_CANARY=nucleus-e2e-canary-{canary_hex}\n\
          RUST_LOG=info\n"
     )
 }
@@ -611,7 +622,7 @@ mod tests {
     /// attributes.
     #[test]
     fn node_env_uses_the_names_the_node_reads() {
-        let body = node_env_body("aa", "bb", "cc");
+        let body = node_env_body("aa", "bb", "cc", "dd");
         for required in [
             "NUCLEUS_NODE_LISTEN=",
             "NUCLEUS_NODE_GRPC_LISTEN=",
@@ -629,7 +640,7 @@ mod tests {
     /// startup with a message about a missing secret.
     #[test]
     fn node_env_does_not_use_the_names_that_never_worked() {
-        let body = node_env_body("aa", "bb", "cc");
+        let body = node_env_body("aa", "bb", "cc", "dd");
         for wrong in [
             "NUCLEUS_NODE_LISTEN_ADDR",
             "NUCLEUS_NODE_GRPC_ADDR",
@@ -647,7 +658,7 @@ mod tests {
     /// so a partial env file is a node that never comes up.
     #[test]
     fn every_required_secret_reaches_the_env_file() {
-        let body = node_env_body("1111", "2222", "3333");
+        let body = node_env_body("1111", "2222", "3333", "4444");
         assert!(body.contains("NUCLEUS_NODE_AUTH_SECRET=1111"));
         assert!(body.contains("NUCLEUS_NODE_PROXY_AUTH_SECRET=2222"));
         assert!(body.contains("NUCLEUS_NODE_PROXY_APPROVAL_SECRET=3333"));
@@ -665,7 +676,48 @@ mod tests {
     #[test]
     fn artifact_paths_are_guest_absolute_not_host_relative() {
         assert!(HOST_ARTIFACTS_DIR.starts_with('/'));
-        assert!(node_env_body("a", "b", "c").contains(HOST_STATE_DIR));
+        assert!(node_env_body("a", "b", "c", "d").contains(HOST_STATE_DIR));
+    }
+
+    /// The node env file is WRITTEN here and READ back by
+    /// `verify::resolve_canary` with `grep -m1 '^NUCLEUS_E2E_CANARY=' | cut -d= -f2-`.
+    /// Those are two different languages in two different files, so this pins
+    /// the contract: parse the generated body exactly the way the shell does and
+    /// require the planted value to come back out.
+    #[test]
+    fn the_canary_line_round_trips_through_the_shell_parse() {
+        let body = node_env_body("aa", "bb", "cc", "deadbeef");
+
+        let parsed = body
+            .lines()
+            .find(|l| l.starts_with("NUCLEUS_E2E_CANARY="))
+            .and_then(|l| l.split_once('=').map(|(_, v)| v))
+            .unwrap_or_default();
+
+        assert!(
+            parsed.contains("deadbeef"),
+            "the canary must survive the grep/cut the verifier uses; got {parsed:?}"
+        );
+        // One `=` only. A value containing '=' would be truncated by `cut -d=
+        // -f2` without `-f2-`, and would fail here first.
+        assert_eq!(parsed.matches('=').count(), 0);
+    }
+
+    /// A canary equal to a real secret would make a genuine credential leak
+    /// indistinguishable from the decoy, and vice versa.
+    #[test]
+    fn the_canary_is_not_any_of_the_real_secrets() {
+        let body = node_env_body("aaaa", "bbbb", "cccc", "dddd");
+        let canary = body
+            .lines()
+            .find(|l| l.starts_with("NUCLEUS_E2E_CANARY="))
+            .unwrap();
+        for secret in ["aaaa", "bbbb", "cccc"] {
+            assert!(
+                !canary.contains(secret),
+                "canary line must not carry a real secret value"
+            );
+        }
     }
 
     /// The bug this pins: `install_binary` stages a release tarball at

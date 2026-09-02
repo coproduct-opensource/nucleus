@@ -40,7 +40,7 @@ use nucleus_client::sign_http_headers;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::provision::{HOST_ARTIFACTS_DIR, HOST_STATE_DIR, Tier2Host};
+use crate::provision::{HOST_ARTIFACTS_DIR, HOST_STATE_DIR, NODE_ENV_PATH, Tier2Host};
 
 /// Verify that Tier 2 actually works on this machine.
 #[derive(Args, Debug)]
@@ -779,16 +779,7 @@ fn check_art12_witnessed(host: &Tier2Host, pod: &Pod) -> Result<()> {
 /// A test that printed the secret into a CI log to prove the secret does not
 /// leak would be self-defeating.
 fn check_credential_absent_from_guest(host: &Tier2Host, pod: &Pod) -> Result<()> {
-    let canary = std::env::var("NUCLEUS_E2E_CANARY").unwrap_or_default();
-    if canary.is_empty() {
-        // Refuse rather than skip. A silent skip is how this check would rot
-        // into a no-op that still prints reassuringly.
-        bail!(
-            "NUCLEUS_E2E_CANARY is not set in this process, so there is no secret to \
-             look for and the absence assertion below would be trivially true. The CI \
-             job must export the same value it wrote into /etc/nucleus/node.env."
-        );
-    }
+    let canary = resolve_canary(host)?;
 
     let log = format!("{HOST_STATE_DIR}/pods/{}/firecracker.log", pod.id);
     let contents = host.sh(&format!("cat {log}"))?;
@@ -797,6 +788,50 @@ fn check_credential_absent_from_guest(host: &Tier2Host, pod: &Pod) -> Result<()>
         "  [OK] no node-held secret surfaced in the guest (sweep read its sites; canary absent)"
     );
     Ok(())
+}
+
+/// Find the node-held secret this check hunts for.
+///
+/// Two sources, process environment first:
+///
+/// * `NUCLEUS_E2E_CANARY` in this process — how CI supplies it.
+/// * `NUCLEUS_E2E_CANARY` in the node's own environment file — how a local
+///   `nucleus setup` supplies it, since setup writes that file.
+///
+/// The file is the better source of the two and exists for a reason beyond
+/// convenience: it is what the node ACTUALLY holds. A process variable that
+/// disagreed with the node's environment would make the sweep hunt for a value
+/// no one is holding, and "not found" would be trivially true again.
+///
+/// It also fixes the reachability bug in #2372. Only CI ever planted a canary,
+/// so on a local `nucleus setup` this check could never run — and its refusal
+/// was reported as the pod having failed to boot.
+///
+/// Still refuses when neither source yields a value. A silent skip is how this
+/// check would rot into a no-op that still prints reassuringly.
+fn resolve_canary(host: &Tier2Host) -> Result<String> {
+    if let Ok(v) = std::env::var("NUCLEUS_E2E_CANARY") {
+        if !v.is_empty() {
+            return Ok(v);
+        }
+    }
+
+    // `|| true` because grep exits 1 on no match, and "the file has no canary"
+    // must reach the error below rather than surface as a shell failure.
+    let script = format!(
+        "grep -m1 '^NUCLEUS_E2E_CANARY=' {NODE_ENV_PATH} 2>/dev/null | cut -d= -f2- || true"
+    );
+    let from_file = host.sh(&script).unwrap_or_default().trim().to_string();
+    if !from_file.is_empty() {
+        return Ok(from_file);
+    }
+
+    bail!(
+        "no NUCLEUS_E2E_CANARY in this process or in {NODE_ENV_PATH}, so there is no \
+         node-held secret to look for and the absence assertion below would be \
+         trivially true. `nucleus setup` plants one; a CI job may instead export the \
+         same value it wrote into {NODE_ENV_PATH}."
+    );
 }
 
 /// The decision, separated from the pod so it can be RUN rather than reasoned

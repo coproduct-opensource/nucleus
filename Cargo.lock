@@ -6702,6 +6702,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -6964,6 +6965,8 @@ dependencies = [
  "chrono",
  "futures-util",
  "hex",
+ "hyper-util",
+ "nucleus-proto",
  "nucleus-recompute",
  "pem 4.0.0",
  "portcullis-core",
@@ -6984,7 +6987,10 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tokio-test",
+ "tonic",
+ "tower",
  "tracing",
  "x509-parser",
 ]
