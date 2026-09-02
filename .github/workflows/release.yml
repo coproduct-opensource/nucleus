@@ -89,6 +89,22 @@ jobs:
           cross build -p nucleus-guest-init --release --target ${{ matrix.target }}
           cross build -p nucleus-tool-proxy --release --features remote-audit --target ${{ matrix.target }}
           cross build -p nucleus-net-probe --release --target ${{ matrix.target }}
+          # The rootfs needs SEVEN guest binaries; this step built three, so
+          # `build-rootfs.sh` failed on the first one it could not find:
+          #
+          #   Missing target/<triple>/release/nucleus-workload-probe
+          #
+          # These four were added to the rootfs over time and never added here.
+          # Nobody noticed because the failure only surfaces when a release is
+          # actually cut, and the last one was v2.1.0 in July — so the rootfs
+          # job has been broken for however long that drift has existed.
+          #
+          # It also explains a thing found separately: `nucleus-egress-probe`
+          # was absent from the shipped v2.1.0 rootfs. It was never built.
+          cross build -p nucleus-workload-probe --release --target ${{ matrix.target }}
+          cross build -p nucleus-egress-probe --release --target ${{ matrix.target }}
+          cross build -p nucleus-adversary-probe --release --target ${{ matrix.target }}
+          cross build -p nucleus-podlist-probe --release --target ${{ matrix.target }}
       - name: Build CLI + MCP + Audit + Hook (musl)
         run: |
           cross build -p nucleus-cli --release --target ${{ matrix.target }}
@@ -114,10 +130,19 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: guest-binaries-${{ matrix.arch }}
+          # All seven the rootfs needs. Building them is not enough — the
+          # rootfs job runs on a different runner and only sees what is
+          # uploaded here, so this list and the `cross build` list above must
+          # stay in step. `the_release_builds_every_binary_the_rootfs_needs`
+          # fails if either drifts from build-rootfs.sh.
           path: |
             target/${{ matrix.target }}/release/nucleus-guest-init
             target/${{ matrix.target }}/release/nucleus-tool-proxy
             target/${{ matrix.target }}/release/nucleus-net-probe
+            target/${{ matrix.target }}/release/nucleus-workload-probe
+            target/${{ matrix.target }}/release/nucleus-egress-probe
+            target/${{ matrix.target }}/release/nucleus-adversary-probe
+            target/${{ matrix.target }}/release/nucleus-podlist-probe
 
   # Build pre-built rootfs images
   build-rootfs:
