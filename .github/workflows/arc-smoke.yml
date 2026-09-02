@@ -1,0 +1,30 @@
+name: ARC smoke (self-hosted)
+
+# Deliberately scoped to ONE branch. Self-hosted runners execute whatever the
+# workflow says, and this repo is public, so a trigger that fork PRs can reach
+# would hand arbitrary code a shell on the host. `push` to a named branch can
+# only be fired by someone who can already push here.
+#
+# No `pull_request`, and never `pull_request_target`.
+on:
+  push:
+    branches: ["ci/arc-smoke"]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    # The scale set installed on pci-k3s. Scale-to-zero: this pod does not
+    # exist until this job is assigned.
+    runs-on: nucleus-k3s
+    timeout-minutes: 5
+    steps:
+      - name: Prove where we are
+        run: |
+          echo "runner:   ${RUNNER_NAME:-?}"
+          echo "os/arch:  $(uname -s)/$(uname -m)"
+          echo "cores:    $(nproc)"
+          echo "hostname: $(hostname)"
+          # The point of the exercise: this is Brandon's Mac, not GitHub's fleet.
+          echo "kvm:      $([ -e /dev/kvm ] && echo present || echo absent)"
