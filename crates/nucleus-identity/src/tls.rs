@@ -225,33 +225,20 @@ impl SpiffeServerCertVerifier {
         }
     }
 
-    /// Extracts SPIFFE URI from certificate's Subject Alternative Name extension.
+    /// Extracts the SPIFFE URI from an SVID, if it is in the expected trust
+    /// domain.
     ///
-    /// Returns the first SPIFFE URI found that matches the expected trust domain prefix,
-    /// or None if no matching URI is found.
+    /// Two rules, kept apart on purpose. `spiffe_uri_from_svid` decides whether
+    /// this is a well-formed SVID at all — exactly one URI SAN, not a CA, no
+    /// signing key usage. The trust-domain prefix is then a policy question
+    /// about whether we accept *this* SVID. The local SAN loop this replaced
+    /// conflated them: it took the first SAN matching the prefix, so a
+    /// certificate carrying both a foreign identity and one of ours passed as
+    /// ours.
     fn extract_spiffe_uri(&self, cert_der: &[u8]) -> Option<String> {
-        use x509_parser::prelude::FromDer;
-
-        let (_, cert) = x509_parser::parse_x509_certificate(cert_der).ok()?;
-        let expected_prefix = format!("spiffe://{}/", self.trust_domain);
-
-        for ext in cert.extensions() {
-            if ext.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME {
-                if let Ok((_, san)) =
-                    x509_parser::extensions::SubjectAlternativeName::from_der(ext.value)
-                {
-                    for name in &san.general_names {
-                        // x509_parser uses URI variant (not UniformResourceIdentifier)
-                        if let x509_parser::extensions::GeneralName::URI(uri) = name {
-                            if uri.starts_with(&expected_prefix) {
-                                return Some(uri.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        None
+        let uri = crate::certificate::spiffe_uri_from_svid(cert_der).ok()?;
+        uri.starts_with(&format!("spiffe://{}/", self.trust_domain))
+            .then_some(uri)
     }
 }
 
