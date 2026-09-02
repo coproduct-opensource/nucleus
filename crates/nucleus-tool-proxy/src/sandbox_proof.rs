@@ -333,20 +333,10 @@ fn try_orchestrator_token(
 
 /// Extract SPIFFE ID from X.509 certificate SAN extension.
 fn extract_spiffe_id(cert: &x509_parser::prelude::X509Certificate<'_>) -> Option<String> {
-    use x509_parser::prelude::*;
-
-    for ext in cert.extensions() {
-        if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
-            for name in &san.general_names {
-                if let GeneralName::URI(uri) = name
-                    && uri.starts_with("spiffe://")
-                {
-                    return Some(uri.to_string());
-                }
-            }
-        }
-    }
-    None
+    // One validator for the whole repo: the local SAN loop this replaced took
+    // the first `spiffe://` entry, so a certificate naming two identities was
+    // resolved by DER order rather than refused.
+    nucleus_identity::spiffe_uri_from_parsed_svid(cert).ok()
 }
 
 /// Decode the first PEM block into DER bytes.

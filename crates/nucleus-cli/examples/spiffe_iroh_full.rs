@@ -194,17 +194,10 @@ fn verify_svid(
     );
 
     // SPIFFE ID from the URI SAN.
-    let spiffe_id = leaf
-        .subject_alternative_name()?
-        .and_then(|san| {
-            san.value.general_names.iter().find_map(|gn| match gn {
-                x509_parser::extensions::GeneralName::URI(u) if u.starts_with("spiffe://") => {
-                    Some(u.to_string())
-                }
-                _ => None,
-            })
-        })
-        .ok_or_else(|| anyhow::anyhow!("SVID has no SPIFFE URI SAN"))?;
+    // An example is read as guidance, so it must not demonstrate the
+    // first-match parse this repo just removed.
+    let spiffe_id = nucleus_identity::spiffe_uri_from_parsed_svid(&leaf)
+        .map_err(|e| anyhow::anyhow!("not a valid X.509-SVID: {e}"))?;
 
     let passport_pk = public_key_from_spki(leaf.public_key().raw)?;
     Ok((spiffe_id, passport_pk))

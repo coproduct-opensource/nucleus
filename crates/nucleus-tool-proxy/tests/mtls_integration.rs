@@ -295,26 +295,12 @@ async fn test_client_spiffe_id_extraction() {
 }
 
 /// Helper to extract SPIFFE ID from a DER-encoded certificate.
+///
+/// Delegates rather than reimplementing. The local copy this replaced meant the
+/// test asserted against its OWN loose parse instead of the production one, so
+/// it would have passed even if the real validator regressed.
 fn extract_spiffe_id_from_cert(cert_der: &[u8]) -> Option<String> {
-    use x509_parser::prelude::*;
-
-    let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
-
-    for ext in cert.extensions() {
-        if ext.oid == oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME
-            && let Ok((_, san)) =
-                x509_parser::extensions::SubjectAlternativeName::from_der(ext.value)
-        {
-            for name in &san.general_names {
-                if let x509_parser::extensions::GeneralName::URI(uri) = name
-                    && uri.starts_with("spiffe://")
-                {
-                    return Some(uri.to_string());
-                }
-            }
-        }
-    }
-    None
+    nucleus_identity::spiffe_uri_from_svid(cert_der).ok()
 }
 
 /// Test concurrent mTLS connections.
