@@ -1,11 +1,12 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Hand the vendored protoc to prost directly rather than exporting PROTOC.
+    // The env round-trip was only ever a way to reach prost's config, and
+    // edition 2024 makes `set_var` unsafe because mutating the environment
+    // races any concurrent reader. `Config::protoc_executable` is the same
+    // instruction with no process-global state and no `unsafe`.
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    // SAFETY: `set_var` is unsafe as of edition 2024 because mutating the
-    // environment races with any concurrent reader, and on some platforms that
-    // is UB rather than merely a lost write. Here we are the first statement of
-    // a build script's `main`, before anything is spawned, so this process is
-    // still single-threaded and no reader can observe a torn update.
-    unsafe { std::env::set_var("PROTOC", protoc) };
+    let mut config = tonic_prost_build::Config::new();
+    config.protoc_executable(protoc);
 
     let crates_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -24,6 +25,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_protos(&[node_proto, cp_proto], &[node_dir, cp_dir])?;
+        .compile_with_config(config, &[node_proto, cp_proto], &[node_dir, cp_dir])?;
     Ok(())
 }
