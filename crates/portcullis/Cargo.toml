@@ -142,3 +142,8 @@ required-features = ["crypto"]
 [[test]]
 name = "kernel_dlc_admission"
 required-features = ["dlc"]
+
+[build-dependencies]
+# The profile provider validates profiles/*.yaml at BUILD time, so a malformed
+# built-in profile fails `cargo build` instead of panicking in a booting pod.
+serde_yaml = { workspace = true }
