@@ -45,6 +45,8 @@ impl std::ops::BitOr for MsFlags {
 const POD_SPEC_PATH: &str = "/etc/nucleus/pod.yaml";
 const FALLBACK_POD_SPEC: &str = "/pod.yaml";
 const PROXY_BIN: &str = "/usr/local/bin/nucleus-tool-proxy";
+/// The egress backstop probe, baked into the rootfs beside the proxy.
+const EGRESS_PROBE_BIN: &str = "/usr/local/bin/nucleus-egress-probe";
 const GUEST_NET_SH: &str = "/usr/local/bin/guest-net.sh";
 
 fn main() {
@@ -630,6 +632,57 @@ fn is_writable(dir: &str) -> bool {
     false
 }
 
+/// Observe, from inside the guest, that egress is actually confined.
+///
+/// # Why this runs at all
+///
+/// The IFC guarantee cannot follow a process past `exec`: once a shell is
+/// running, `curl`, `/dev/tcp` and `nc` never reach `NetEffect::fetch`, so the
+/// containment for that surface is the netns/iptables default-deny backstop and
+/// nothing else. The host applies those rules and checks the `iptables`
+/// commands SUCCEEDED — but a command returning 0 is not traffic being dropped.
+/// An nftables backend translating differently, a missing conntrack module, or
+/// a netns that is not the one the VM ended up in each produce a pod reported
+/// healthy while the shell reaches the internet.
+///
+/// So the pod proves it instead of the host assuming it. `nucleus-egress-probe`
+/// already existed and already shipped in the rootfs; it was run only by a CI
+/// script against a CI-booted pod. This runs it for THIS pod.
+///
+/// # Spawned, not awaited — and what that measurement cost
+///
+/// Measured on real KVM (Lima, Firecracker host kernel), in a routed netns that
+/// mirrors a real pod rather than an empty one:
+///
+///   * a genuine escape connects in **11-18 ms**;
+///   * the probe under a DROP fence costs **1.01 s** at its default 500 ms
+///     per-target timeout, because DROP makes connects hang rather than fail
+///     fast (an empty netns returns ENETUNREACH instantly, which is why an
+///     unrouted control looked cheap AND passed without any fence at all).
+///
+/// #2344 had just cut guest startup to ~0.7 s, so blocking here would have more
+/// than doubled it. Instead the probe is spawned and NOT awaited: it writes its
+/// verdict to stderr — the guest console — while the tool-proxy starts. The host
+/// is already waiting for proxy health, which is longer than the probe takes, so
+/// the attestation is free in the common case.
+///
+/// The timeout is still lowered to 150 ms, giving ~8x headroom over the observed
+/// 18 ms escape and bounding the probe at ~0.31 s so it cannot outlive a short
+/// boot. Raising it is safe; lowering it is not, because a shorter deadline
+/// makes a slow-but-successful connect look like a denial — PASS is the
+/// dangerous direction here.
+fn attest_egress_confinement() {
+    let spawned = Command::new(EGRESS_PROBE_BIN)
+        // Inherit stderr so the verdict lands on the console the node captures.
+        .env("NUCLEUS_EGRESS_PROBE_TIMEOUT_MS", "150")
+        .spawn();
+    if let Err(err) = spawned {
+        // Do NOT invent a verdict. The host fails closed on a missing PASS, so
+        // saying nothing is the safe outcome; this only explains the absence.
+        eprintln!("nucleus-egress-probe could not start: {err}");
+    }
+}
+
 fn exec_proxy(spec_path: &str) {
     // Article 12 record-keeping ON for the live path (EU AI Act Art. 12): every
     // mediation verdict is recorded, and — when a mediator key was delivered
@@ -638,6 +691,8 @@ fn exec_proxy(spec_path: &str) {
     // workload cannot tamper), and NOT under the agent workspace (which the
     // proxy's own path check would refuse). The chain is session-derived when no
     // audit secret is configured — weaker than an operator secret, but present.
+    attest_egress_confinement();
+
     let err = Command::new(PROXY_BIN)
         .arg("--spec")
         .arg(spec_path)

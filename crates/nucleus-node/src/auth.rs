@@ -471,26 +471,11 @@ pub enum AuthorizationError {
 /// The SPIFFE ID is stored in the Subject Alternative Name (SAN) extension
 /// as a URI starting with "spiffe://".
 pub fn extract_spiffe_id_from_cert(cert_der: &[u8]) -> Option<String> {
-    use x509_parser::prelude::*;
-
-    let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
-
-    for ext in cert.extensions() {
-        if ext.oid == oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME {
-            if let Ok((_, san)) =
-                x509_parser::extensions::SubjectAlternativeName::from_der(ext.value)
-            {
-                for name in &san.general_names {
-                    if let x509_parser::extensions::GeneralName::URI(uri) = name {
-                        if uri.starts_with("spiffe://") {
-                            return Some(uri.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+    // Delegated to nucleus-identity so this AUTHORIZATION path cannot disagree
+    // with any other component about who a peer is. The local copy this
+    // replaced returned the FIRST `spiffe://` SAN, so a certificate naming two
+    // identities was accepted and resolved by DER encoding order.
+    nucleus_identity::spiffe_uri_from_svid(cert_der).ok()
 }
 
 /// Extracts SPIFFE ID from a tonic Request's peer certificates.
