@@ -519,37 +519,70 @@ pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
     run_ip(&["addr", "add", &host_cidr, "dev", &plan.host_veth]).await?;
     run_ip(&["link", "set", &plan.host_veth, "up"]).await?;
 
-    run_netns(
+    run_netns_ip(
         &plan.netns,
-        &["link", "add", &plan.bridge, "type", "bridge"],
+        &IpCmd::LinkAddBridge {
+            dev: plan.bridge.clone(),
+        },
     )
     .await?;
-    run_netns(&plan.netns, &["link", "set", &plan.bridge, "up"]).await?;
-    run_netns(
+    run_netns_ip(
         &plan.netns,
-        &["addr", "add", &peer_cidr, "dev", &plan.peer_veth],
+        &IpCmd::LinkSetUp {
+            dev: plan.bridge.clone(),
+        },
     )
     .await?;
-    run_netns(&plan.netns, &["link", "set", &plan.peer_veth, "up"]).await?;
-    run_netns(
+    run_netns_ip(
         &plan.netns,
-        &["tuntap", "add", "dev", &plan.tap_name, "mode", "tap"],
+        &IpCmd::AddrAdd {
+            cidr: peer_cidr.clone(),
+            dev: plan.peer_veth.clone(),
+        },
     )
     .await?;
-    run_netns(
+    run_netns_ip(
         &plan.netns,
-        &["link", "set", &plan.tap_name, "master", &plan.bridge],
+        &IpCmd::LinkSetUp {
+            dev: plan.peer_veth.clone(),
+        },
     )
     .await?;
-    run_netns(&plan.netns, &["link", "set", &plan.tap_name, "up"]).await?;
-    run_netns(
+    run_netns_ip(
         &plan.netns,
-        &["addr", "add", &gateway_cidr, "dev", &plan.bridge],
+        &IpCmd::TuntapAddTap {
+            dev: plan.tap_name.clone(),
+        },
     )
     .await?;
-    run_netns(
+    run_netns_ip(
         &plan.netns,
-        &["route", "add", "default", "via", &plan.host_ip.to_string()],
+        &IpCmd::LinkSetMaster {
+            dev: plan.tap_name.clone(),
+            master: plan.bridge.clone(),
+        },
+    )
+    .await?;
+    run_netns_ip(
+        &plan.netns,
+        &IpCmd::LinkSetUp {
+            dev: plan.tap_name.clone(),
+        },
+    )
+    .await?;
+    run_netns_ip(
+        &plan.netns,
+        &IpCmd::AddrAdd {
+            cidr: gateway_cidr.clone(),
+            dev: plan.bridge.clone(),
+        },
+    )
+    .await?;
+    run_netns_ip(
+        &plan.netns,
+        &IpCmd::RouteAddDefaultVia {
+            via: plan.host_ip.to_string(),
+        },
     )
     .await?;
     // Rewrite the CONSTANT guest address to this pod's unique link address on
@@ -1165,6 +1198,89 @@ async fn run_netns_iptables(netns: &str, args: &[&str]) -> Result<(), ApiError> 
     Ok(())
 }
 
+/// One `ip(8)` invocation, as a VALUE rather than a free argv slice.
+///
+/// # The defect this removes
+///
+/// `run_netns` is a generic "run this command inside the namespace" helper: it
+/// inserts no program name, which is correct, because its callers also run
+/// `iptables` and `sysctl`. Every ip-subcommand call site in `setup_network`
+/// then forgot to say `ip`, so
+///
+///     run_netns(ns, &["link", "add", br, "type", "bridge"])
+///
+/// executed `ip netns exec ns link add br type bridge`. `ip netns exec` runs a
+/// command IN the namespace, so that invoked GNU coreutils `link(1)` — the
+/// hard-link utility — and every pod with a `network` block failed to launch in
+/// ~90 ms with `link: extra operand 'type'` (#2380).
+///
+/// Fixing the ten call sites would fix today. Making the argv a datatype means
+/// "forgot the `ip`" is not a program anyone can write: there is no constructor
+/// that omits it, because the program name is supplied by `render`, not by the
+/// caller.
+///
+/// # Why the shape matters beyond this bug
+///
+/// `render` is pure, total and I/O-free, which puts it inside the fragment
+/// Aeneas functionalizes. The property that failed here —
+///
+///     ∀ c, (render c).head? = some "ip"
+///
+/// is then a statement about a value, provable by exhaustion over the
+/// constructors, instead of an unwritten assumption about a string handed to
+/// `execve`. `render_always_names_ip_first` below is that property as a test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IpCmd {
+    /// `ip link add <dev> type bridge`
+    LinkAddBridge { dev: String },
+    /// `ip link set <dev> up`
+    LinkSetUp { dev: String },
+    /// `ip link set <dev> master <master>`
+    LinkSetMaster { dev: String, master: String },
+    /// `ip addr add <cidr> dev <dev>`
+    AddrAdd { cidr: String, dev: String },
+    /// `ip tuntap add dev <dev> mode tap`
+    TuntapAddTap { dev: String },
+    /// `ip route add default via <via>`
+    RouteAddDefaultVia { via: String },
+}
+
+impl IpCmd {
+    /// The argv for this command. Pure, total, no I/O.
+    ///
+    /// `ip` is element 0 for every constructor, and that is the whole point:
+    /// the program name comes from here, never from a call site.
+    pub(crate) fn render(&self) -> Vec<String> {
+        let owned = |parts: &[&str]| parts.iter().map(|s| (*s).to_string()).collect();
+        match self {
+            IpCmd::LinkAddBridge { dev } => owned(&["ip", "link", "add", dev, "type", "bridge"]),
+            IpCmd::LinkSetUp { dev } => owned(&["ip", "link", "set", dev, "up"]),
+            IpCmd::LinkSetMaster { dev, master } => {
+                owned(&["ip", "link", "set", dev, "master", master])
+            }
+            IpCmd::AddrAdd { cidr, dev } => owned(&["ip", "addr", "add", cidr, "dev", dev]),
+            IpCmd::TuntapAddTap { dev } => {
+                owned(&["ip", "tuntap", "add", "dev", dev, "mode", "tap"])
+            }
+            IpCmd::RouteAddDefaultVia { via } => {
+                owned(&["ip", "route", "add", "default", "via", via])
+            }
+        }
+    }
+}
+
+/// Run an [`IpCmd`] inside a pod's namespace.
+///
+/// The rendered argv already begins with `ip`, so this produces
+/// `ip netns exec <ns> ip <subcommand> …` — the outer `ip` enters the namespace,
+/// the inner one is the program that runs there.
+#[cfg(target_os = "linux")]
+async fn run_netns_ip(netns: &str, cmd: &IpCmd) -> Result<(), ApiError> {
+    let argv = cmd.render();
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    run_netns(netns, &args).await
+}
+
 async fn run_netns(netns: &str, args: &[&str]) -> Result<(), ApiError> {
     let output = tokio::process::Command::new("ip")
         .args(["netns", "exec", netns])
@@ -1293,6 +1409,103 @@ async fn apply_rule(pid: u32, chain: &str, rule: &NetRule, verdict: &str) -> Res
 
 #[cfg(test)]
 mod tests {
+
+    // ── argv for ip(8) is a datatype, not a string (#2380) ────────────────────
+
+    /// Every constructor, so the property below is checked over all of them
+    /// rather than over whichever one someone remembered.
+    fn every_ip_cmd() -> Vec<IpCmd> {
+        vec![
+            IpCmd::LinkAddBridge { dev: "br0".into() },
+            IpCmd::LinkSetUp { dev: "br0".into() },
+            IpCmd::LinkSetMaster {
+                dev: "tap0".into(),
+                master: "br0".into(),
+            },
+            IpCmd::AddrAdd {
+                cidr: "10.0.0.1/30".into(),
+                dev: "br0".into(),
+            },
+            IpCmd::TuntapAddTap { dev: "tap0".into() },
+            IpCmd::RouteAddDefaultVia {
+                via: "10.0.0.1".into(),
+            },
+        ]
+    }
+
+    /// The property that failed in #2380, as a statement about a value:
+    ///
+    ///     ∀ c, (render c).head? = some "ip"
+    ///
+    /// The bug was `run_netns(ns, &["link", "add", ...])` — an argv whose first
+    /// element was a SUBCOMMAND, so `ip netns exec` ran coreutils `link(1)`
+    /// instead. Proved here by exhaustion over the constructors, which is
+    /// possible only because `render` is pure and total.
+    #[test]
+    fn render_always_names_ip_first() {
+        for cmd in every_ip_cmd() {
+            let argv = cmd.render();
+            assert_eq!(
+                argv.first().map(String::as_str),
+                Some("ip"),
+                "{cmd:?} rendered {argv:?}, which does not start with the program name"
+            );
+        }
+    }
+
+    /// Non-vacuity for the test above: if `every_ip_cmd` ever went empty, the
+    /// for-loop would pass having checked nothing.
+    #[test]
+    fn the_ip_cmd_property_is_checked_against_every_constructor() {
+        // Bump this when a constructor is added -- the point is that adding one
+        // and forgetting to cover it fails here rather than silently narrowing
+        // the property above.
+        assert_eq!(every_ip_cmd().len(), 6);
+    }
+
+    /// The exact command that failed to launch every networked pod.
+    #[test]
+    fn the_bridge_command_renders_what_iproute2_expects() {
+        assert_eq!(
+            IpCmd::LinkAddBridge {
+                dev: "br2fdea2d3".into()
+            }
+            .render(),
+            vec!["ip", "link", "add", "br2fdea2d3", "type", "bridge"],
+        );
+    }
+
+    #[test]
+    fn the_remaining_constructors_render_their_documented_argv() {
+        assert_eq!(
+            IpCmd::LinkSetMaster {
+                dev: "tap0".into(),
+                master: "br0".into()
+            }
+            .render(),
+            vec!["ip", "link", "set", "tap0", "master", "br0"],
+        );
+        assert_eq!(
+            IpCmd::AddrAdd {
+                cidr: "10.0.0.1/30".into(),
+                dev: "br0".into()
+            }
+            .render(),
+            vec!["ip", "addr", "add", "10.0.0.1/30", "dev", "br0"],
+        );
+        assert_eq!(
+            IpCmd::TuntapAddTap { dev: "tap0".into() }.render(),
+            vec!["ip", "tuntap", "add", "dev", "tap0", "mode", "tap"],
+        );
+        assert_eq!(
+            IpCmd::RouteAddDefaultVia {
+                via: "10.0.0.1".into()
+            }
+            .render(),
+            vec!["ip", "route", "add", "default", "via", "10.0.0.1"],
+        );
+    }
+
     use super::*;
 
     /// `ip netns exec NAME -- cmd` execs the literal `--` and fails. This test
