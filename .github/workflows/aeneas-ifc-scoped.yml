@@ -54,6 +54,14 @@ on:
   merge_group:
   workflow_dispatch:
 
+concurrency:
+  # Supersede a PR's older in-flight runs; NEVER cancel anything else.
+  # cancel-in-progress is scoped to pull_request on purpose: cancelling a
+  # merge_group run would abort a queue entry mid-flight, and cancelling a
+  # push to main would drop the signal for a commit that already landed.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -74,15 +82,50 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # `paths:` under `merge_group:` parses and is then IGNORED by GitHub, so
+      # the scoping declared above holds on pull_request and is silently dropped
+      # in the merge queue -- where speculative batches multiply it by the queue
+      # depth. This restores the declared intent for merge_group only; the
+      # PATTERN is DERIVED from the paths above and ci/merge-group-scope-parity.sh
+      # fails if they ever disagree.
+      - name: Is this change in scope?
+        id: scope
+        env:
+          # Never interpolate ${{ }} into a run script (zizmor hardening).
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+          PATTERN: '^\.github/workflows/aeneas\-ifc\-scoped\.yml$|^crates/nucleus\-ifc\-kernel/|^crates/portcullis\-core/lean/'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "merge_group" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${HEAD:-}" ]; then
+            # Fail OPEN: an unknown range must run, never skip.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE "$PATTERN"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "in scope -- running."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "nothing in this merge group matches; skipping the expensive"
+            echo "steps. The job still reports, so it stays required-check safe."
+          fi
+
 
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon
+        if: steps.scope.outputs.relevant == 'true'
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: ${{ env.CHARON_NIGHTLY }}
           components: rustc-dev,llvm-tools-preview,rust-src
 
       - name: Rust / cargo cache (Charon target dir)
+        if: steps.scope.outputs.relevant == 'true'
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
         with:
           workspaces: crates/nucleus-ifc-kernel
@@ -94,15 +137,18 @@ jobs:
       # of the real IFCLabel::join / flows_to and that GitPush requires Trusted.
       # They close the model<->code gap that the Lean theorem then builds on.
       - name: Stable toolchain (for cargo test)
+        if: steps.scope.outputs.relevant == 'true'
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: stable
 
       - name: Parity tests (extracted slice == production enforcement)
+        if: steps.scope.outputs.relevant == 'true'
         run: cargo test -p nucleus-ifc-kernel --lib extracted
 
       # --- Aeneas prebuilt binaries (Charon + Aeneas, no OCaml build) ---
       - name: Cache Aeneas binary
+        if: steps.scope.outputs.relevant == 'true'
         id: cache-aeneas-bin
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
@@ -110,7 +156,7 @@ jobs:
           key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
 
       - name: Download Aeneas pre-built binaries
-        if: steps.cache-aeneas-bin.outputs.cache-hit != 'true'
+        if: steps.scope.outputs.relevant == 'true' && (steps.cache-aeneas-bin.outputs.cache-hit != 'true')
         run: |
           gh release download "$AENEAS_RELEASE" \
             --repo AeneasVerif/aeneas \
@@ -122,9 +168,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Add Aeneas to PATH
+        if: steps.scope.outputs.relevant == 'true'
         run: echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
 
       - name: Verify tools
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           which charon && charon version
           which aeneas && aeneas -version
@@ -133,6 +181,7 @@ jobs:
       # --start-from each root walks ONLY the reachable callees, so the
       # crashing unrelated function bodies are never translated by Aeneas.
       - name: Charon scoped MIR extraction
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-ifc-kernel
         run: |
           STARTS=""
@@ -145,6 +194,7 @@ jobs:
           charon cargo --preset aeneas $STARTS
 
       - name: Aeneas Lean 4 translation (scoped slice)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           mkdir -p crates/portcullis-core/lean/ci-generated-ifc
           # Charon now runs in crates/nucleus-ifc-kernel (the IFC source crate
@@ -169,6 +219,7 @@ jobs:
       # committed Lean lib keeps the stable PortcullisCoreIFC module name so it
       # does not collide with the whole-crate «PortcullisCore» lib.
       - name: Canonicalize generated-ifc from the fresh extraction
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -185,6 +236,7 @@ jobs:
           echo "generated-ifc/ canonicalized from the fresh extraction; theorem builds against it."
 
       - name: Canonicalize generated-mediation from the fresh extraction
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-mediation/PortcullisCoreMediation
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -215,6 +267,7 @@ jobs:
       # disclosed hand-edit as the two steps above: only the inter-module import
       # is retargeted so the lib names do not collide.
       - name: Canonicalize generated-egress from the fresh extraction
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-egress/PortcullisCoreEgress
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -231,6 +284,7 @@ jobs:
           echo "generated-egress/ canonicalized from the fresh extraction; theorem builds against it."
 
       - name: Canonicalize generated-credential from the fresh extraction
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-credential/PortcullisCoreCredential
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -260,6 +314,7 @@ jobs:
       # That is why the lake build step below gained two targets rather than this
       # being a one-line addition.
       - name: Canonicalize generated-cap-quantale from the fresh extraction
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-cap-quantale/PortcullisCoreCapQuantale
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -280,6 +335,7 @@ jobs:
       # only the inter-module import is retargeted so the lib name does not
       # collide with the whole-crate «PortcullisCore» lib.
       - name: Canonicalize generated-identity from the fresh extraction
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-identity/PortcullisCoreIdentity
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -299,6 +355,7 @@ jobs:
       # taxonomy. Same single disclosed hand-edit as every step above: only the
       # inter-module import is retargeted so the lib name does not collide.
       - name: Canonicalize generated-channel from the fresh extraction
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-channel/PortcullisCoreChannel
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -321,6 +378,7 @@ jobs:
       # disclosed hand-edit as every step above: only the inter-module import is
       # retargeted so the lib name does not collide.
       - name: Canonicalize generated-declass from the fresh extraction
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-declass/PortcullisCoreDeclass
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -337,6 +395,7 @@ jobs:
           echo "generated-declass/ canonicalized from the fresh extraction; theorem builds against it."
 
       - name: Dump FULL canonical generated defs (to develop the proof against)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           echo "CANONICAL-TYPES-START"
           cat crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC/Types.lean
@@ -347,18 +406,21 @@ jobs:
 
       # --- Build the theorem + capture the REAL axiom set ---
       - name: Install elan (Lean toolchain)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
+        if: steps.scope.outputs.relevant == 'true'
         with:
           lean-project-dir: crates/portcullis-core/lean
           build-target: PortcullisCoreIFC
           cache-key-prefix: lean-ifc
 
       - name: lake build (extracted core + theorem)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
         # `shell: bash` is LOAD-BEARING, not style. GitHub's default `run` shell
         # is `bash -e {0}` — `-e` WITHOUT pipefail — so `lake build X | tee log`
@@ -410,6 +472,7 @@ jobs:
       # The #print axioms commands are in the .lean file; their output lands in
       # the build log above. Surface it explicitly and fail on a dirty axiom set.
       - name: Assert clean axiom set (no sorryAx / opaque axioms)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
         shell: bash
         run: |
@@ -519,6 +582,7 @@ jobs:
           # above are it — pin them in a follow-up, with a real log as input.
 
       - name: Reject sorry (proof holes)
+        if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
         run: |
           # Match `sorry`/`admit` only as actual tactic/term USAGE (preceded by

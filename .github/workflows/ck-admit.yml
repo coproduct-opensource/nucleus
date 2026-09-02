@@ -27,6 +27,14 @@ on:
   merge_group:
   workflow_dispatch:
 
+concurrency:
+  # Supersede a PR's older in-flight runs; NEVER cancel anything else.
+  # cancel-in-progress is scoped to pull_request on purpose: cancelling a
+  # merge_group run would abort a queue entry mid-flight, and cancelling a
+  # push to main would drop the signal for a commit that already landed.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -41,10 +49,43 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # need the base ref to diff PolicyManifest.toml
+      # `paths:` under `merge_group:` parses and is then IGNORED by GitHub, so
+      # the scoping declared above holds on pull_request and is silently dropped
+      # in the merge queue -- where speculative batches multiply it by the queue
+      # depth. This restores the declared intent for merge_group only; the
+      # PATTERN is DERIVED from the paths above and ci/merge-group-scope-parity.sh
+      # fails if they ever disagree.
+      - name: Is this change in scope?
+        id: scope
+        env:
+          # Never interpolate ${{ }} into a run script (zizmor hardening).
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+          PATTERN: '^\.github/workflows/ck\-admit\.yml$|^LICENSE$|^PolicyManifest\.toml$|^SECURITY\.md$|^crates/ck\-kernel/|^crates/ck\-policy/|^crates/ck\-types/|^crates/xtask/'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "merge_group" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${HEAD:-}" ]; then
+            # Fail OPEN: an unknown range must run, never skip.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE "$PATTERN"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "in scope -- running."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "nothing in this merge group matches; skipping the expensive"
+            echo "steps. The job still reports, so it stays required-check safe."
+          fi
+
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: steps.scope.outputs.relevant == 'true'
         with:
           cache: true
       - name: Extract base manifest + changed files
+        if: steps.scope.outputs.relevant == 'true'
         # Pass github.base_ref via env (never interpolate ${{ }} into a run
         # script — zizmor template-injection / code-injection hardening).
         env:
@@ -62,6 +103,7 @@ jobs:
             : > changed.txt
           fi
       - name: Gate PolicyManifest amendment (preflight)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           set -euo pipefail
           cargo run -q -p xtask -- policy-gate \
