@@ -59,6 +59,11 @@ const DOMAIN: &[u8] = b"nucleus-pod-caller-v1\0";
 ///
 /// Hex-encoded HMAC-SHA256. Returned as a `String` because it crosses a wire.
 #[must_use]
+// Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
+// On other hosts it is genuinely dead, and CI builds release binaries with
+// `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
+// error that fails the macOS release job. Same pattern as `boot_trace`/`cgroup`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn derive_token(node_secret: &[u8], pod_id: Uuid) -> String {
     // Built through the crate's own signer so derivation and verification are
     // the same computation by construction, not by two authors agreeing.

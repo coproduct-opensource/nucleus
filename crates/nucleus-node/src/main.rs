@@ -357,6 +357,11 @@ struct NodeState {
     /// `/v1/approve`. The PRIVATE half never leaves the node; guests get the
     /// public half as `nucleus.approval_pubkeys`. Persisted in `state_dir` so
     /// pods launched before a node restart can still be approved.
+    // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
+    // On other hosts it is genuinely dead, and CI builds release binaries with
+    // `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
+    // error that fails the macOS release job. Same pattern as `boot_trace`/`cgroup`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     approval_signer: std::sync::Arc<ed25519_dalek::SigningKey>,
     proxy_actor: Option<String>,
     /// Operator-configured registry of proof-carrying postures a trusted builder

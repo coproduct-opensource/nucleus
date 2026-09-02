@@ -30,6 +30,11 @@
 /// different version that does not satisfy that crate's `CryptoRng` bound. The
 /// bytes are the same either way — a CSPRNG-filled 32-byte seed.
 #[must_use]
+// Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
+// On other hosts it is genuinely dead, and CI builds release binaries with
+// `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
+// error that fails the macOS release job. Same pattern as `boot_trace`/`cgroup`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn new_seed_hex(pod_dir: &std::path::Path) -> Option<String> {
     use rand_core::RngCore;
     let mut seed = [0u8; 32];
@@ -52,6 +57,11 @@ pub(crate) fn new_seed_hex(pod_dir: &std::path::Path) -> Option<String> {
 /// cross-checks the SVID behind it (`verify_attested_receipt`) rather than
 /// trusting the string.
 #[must_use]
+// Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
+// On other hosts it is genuinely dead, and CI builds release binaries with
+// `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
+// error that fails the macOS release job. Same pattern as `boot_trace`/`cgroup`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn spiffe_id(trust_domain: &str, pod_id: impl std::fmt::Display) -> String {
     format!("spiffe://{trust_domain}/mediator/{pod_id}")
 }
