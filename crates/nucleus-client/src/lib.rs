@@ -42,6 +42,8 @@ use hmac::{digest::KeyInit, Hmac, Mac};
 use sha2::Sha256;
 
 pub mod drand;
+/// Egress admission proofs: a host the pod's policy allows.
+pub mod egress;
 
 /// Signed headers for an HTTP request.
 #[derive(Debug, Clone)]

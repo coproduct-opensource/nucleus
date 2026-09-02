@@ -108,20 +108,25 @@ impl SignedProxy {
         let listen_addr = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let drand_client =
-            drand_config
-                .filter(|c| c.enabled)
-                .and_then(|c| match DrandClient::new(c) {
-                    Ok(client) => Some(Arc::new(client)),
-                    Err(why) => {
-                        // The node is not PID 1, so it degrades rather than exiting.
-                        // Escalation still refuses without drand — see the `else`
-                        // arm in the tool-proxy's escalation handler — so this is a
-                        // loud degradation, not a silent bypass.
-                        tracing::error!("drand disabled for signed proxy: {why}");
-                        None
-                    }
-                });
+        let drand_client = drand_config.filter(|c| c.enabled).and_then(|c| {
+            // The NODE is the host process, not a sandboxed pod: pod
+            // egress policy does not apply to it. Stated at the call
+            // site rather than assumed.
+            let admitted = nucleus_client::egress::EgressPolicy::unrestricted_host_process()
+                .admit("api.drand.sh")
+                .expect("an unrestricted policy admits every host");
+            match DrandClient::new(c, admitted) {
+                Ok(client) => Some(Arc::new(client)),
+                Err(why) => {
+                    // The node is not PID 1, so it degrades rather than exiting.
+                    // Escalation still refuses without drand — see the `else`
+                    // arm in the tool-proxy's escalation handler — so this is a
+                    // loud degradation, not a silent bypass.
+                    tracing::error!("drand disabled for signed proxy: {why}");
+                    None
+                }
+            }
+        });
 
         let state = SignedProxyState {
             target,

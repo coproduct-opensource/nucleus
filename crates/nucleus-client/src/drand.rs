@@ -363,7 +363,22 @@ mod async_client {
         /// # Panics
         ///
         /// Panics if the public key is configured but invalid.
-        pub fn new(config: DrandConfig) -> Result<Self, String> {
+        /// # Egress admission
+        ///
+        /// Takes an [`Admitted`](crate::egress::Admitted) — an unforgeable proof
+        /// that the pod's policy allows the beacon host. There is no way to
+        /// build this client for a host the policy forbids, because there is no
+        /// way to construct the proof.
+        ///
+        /// That is the defect this closes. A pod runs under default-deny egress,
+        /// so the fetch to `api.drand.sh` could not succeed — and it was still
+        /// well-typed, and still cost **5044 ms of a 5497 ms startup**, measured,
+        /// on every pod boot. `reqwest::Client` is ambient authority: nothing in
+        /// its type mentions where it may connect.
+        pub fn new(
+            config: DrandConfig,
+            _admitted: crate::egress::Admitted,
+        ) -> Result<Self, String> {
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
@@ -592,9 +607,14 @@ mod constructor_tests {
     /// which reqwest reports as an `Err`, and which the old `.expect` turned
     /// into a kernel panic. Binding the function to its type is what keeps that
     /// `.expect` from coming back.
+    ///
+    /// The signature now also carries an [`Admitted`](crate::egress::Admitted):
+    /// pinning it here means a future edit cannot quietly drop the egress proof
+    /// and restore ambient authority to the beacon fetch.
     #[test]
     fn the_constructor_hands_failure_back_instead_of_expecting() {
-        let _shape: fn(DrandConfig) -> Result<DrandClient, String> = DrandClient::new;
+        let _shape: fn(DrandConfig, crate::egress::Admitted) -> Result<DrandClient, String> =
+            DrandClient::new;
     }
 }
 
