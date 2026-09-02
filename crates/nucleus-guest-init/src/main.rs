@@ -124,7 +124,7 @@ fn run() -> Result<(), String> {
                 // POINT THE PROXY AT WHAT WE JUST FETCHED.
                 //
                 // Without this the fetch is decorative: `fetch_identity` writes
-                // the SVID to /etc/nucleus/identity, and the tool-proxy looks
+                // the SVID to /run/nucleus/identity, and the tool-proxy looks
                 // for `--identity-cert` / `NUCLEUS_IDENTITY_CERT`, which nobody
                 // set — so the cert existed on disk and Tier 1/2 still reported
                 // "no identity cert" and the guest died as a naked process.
