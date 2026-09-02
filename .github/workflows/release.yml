@@ -325,14 +325,41 @@ jobs:
       # release CANDIDATE would ship unfinished code to those consumers under a
       # reference they have every reason to treat as stable. (The step was also
       # still named "v1" while computing `v2` from the tag.)
+      # Moved through the refs API, NOT `git push`. GITHUB_TOKEN is a GitHub App
+      # token without the `workflows` permission, and git refuses any ref push
+      # whose .github/workflows/ differs from the tip of a branch. A release tag
+      # is almost always a commit or two behind main by the time it builds, so
+      # that condition is the normal case, not an edge case:
+      #
+      #   ! [remote rejected] v2 -> v2 (refusing to allow a GitHub App to create
+      #     or update workflow `.github/workflows/manifest-guards.yml`)
+      #
+      # That is what failed the v2.2.0 release AFTER every asset had uploaded
+      # successfully -- the release was complete and the run still reported
+      # failure, leaving `v2` ten commits stale while `@v2` consumers kept
+      # getting old code.
+      #
+      # The refs API only repoints an existing ref at an existing object, so it
+      # is not subject to that check. Two calls keep the tag ANNOTATED, matching
+      # what `git tag -fa` produced before.
       - name: Update floating major tag
         if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
           MAJOR="${GITHUB_REF_NAME%%.*}"
-          git tag -fa "${MAJOR}" -m "Release ${MAJOR}"
-          git push origin "${MAJOR}" --force
+          TAG_OBJ=$(gh api "repos/$REPO/git/tags" \
+            -f tag="$MAJOR" -f message="Release $MAJOR" \
+            -f object="$GITHUB_SHA" -f type=commit --jq .sha)
+          # PATCH updates the ref; if the floating tag does not exist yet (a new
+          # major), POST creates it.
+          gh api -X PATCH "repos/$REPO/git/refs/tags/$MAJOR" \
+            -F sha="$TAG_OBJ" -F force=true --jq .object.sha \
+            || gh api -X POST "repos/$REPO/git/refs" \
+                 -f ref="refs/tags/$MAJOR" -F sha="$TAG_OBJ" --jq .object.sha
+          echo "floating tag $MAJOR -> $GITHUB_SHA"
 
   publish:
     name: Publish to crates.io

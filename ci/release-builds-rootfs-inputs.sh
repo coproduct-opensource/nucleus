@@ -68,5 +68,27 @@ elif ! printf %s "$release_if" | grep -qF "startsWith(github.ref, 'refs/tags/')"
   fail=1
 fi
 
+# The floating major tag must move through the refs API, never `git push`.
+# GITHUB_TOKEN cannot push a ref whose .github/workflows/ differs from a branch
+# tip, which is the normal state of a release tag -- so a `git push` here fails
+# the release AFTER every asset has uploaded. Regressing this is silent until
+# the next release, which is exactly the class of rot the dry run cannot see:
+# the step is tag-only, so no dry run ever executes it.
+float_step=$(awk '
+  /Update floating major tag/ { in_step = 1 }
+  in_step && /^      - name:/ && !/Update floating major tag/ { exit }
+  in_step { print }
+' "$RELEASE_YML")
+
+if [ -z "$float_step" ]; then
+  echo "::error::$RELEASE_YML has no 'Update floating major tag' step; consumers pin @v2."
+  fail=1
+elif printf %s "$float_step" | grep -qE '^[^#]*git push'; then
+  echo "::error::the floating major tag is moved with 'git push' in $RELEASE_YML."
+  echo "  GITHUB_TOKEN is refused when the tag's .github/workflows/ differs from a"
+  echo "  branch tip -- the normal case. Use the git refs API instead."
+  fail=1
+fi
+
 [ "$fail" -eq 0 ] && echo "ok: release.yml builds and uploads all $n rootfs inputs"
 exit $fail
