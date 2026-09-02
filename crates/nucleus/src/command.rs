@@ -33,10 +33,10 @@ use portcullis::{
 // would be `E0038`. `ShellEffect` (sync) is still needed in scope for the
 // `spawn_checked` call. Under `feature = "async"`, `AsyncShellSpawnEffect` must
 // also be in scope to name `run_argv_async` on the concrete handle.
-use portcullis_effects::authority::Authority;
 #[cfg(feature = "async")]
 use portcullis_effects::AsyncShellSpawnEffect;
-use portcullis_effects::{production_effects_concrete, PolicyEnforced, RealEffects, ShellEffect};
+use portcullis_effects::authority::Authority;
+use portcullis_effects::{PolicyEnforced, RealEffects, ShellEffect, production_effects_concrete};
 
 use crate::hardening::HostSandbox;
 
@@ -1014,8 +1014,8 @@ mod tests {
     fn allowed_bundle() -> nucleus_ifc_kernel::discharge::DischargedBundle {
         bundle_for(Operation::RunBash, SinkClass::BashExec)
     }
-    use portcullis::kernel::Kernel;
     use portcullis::BudgetLattice;
+    use portcullis::kernel::Kernel;
     use rust_decimal::Decimal;
     use tempfile::tempdir;
 

@@ -427,10 +427,10 @@ mod async_client {
             // Check cache first (read lock)
             {
                 let cache = self.cache.read().await;
-                if let Some(ref cached) = *cache {
-                    if cached.fetched_at.elapsed() < self.config.cache_ttl {
-                        return Ok(cached.beacon.round);
-                    }
+                if let Some(ref cached) = *cache
+                    && cached.fetched_at.elapsed() < self.config.cache_ttl
+                {
+                    return Ok(cached.beacon.round);
                 }
             }
 
@@ -455,18 +455,17 @@ mod async_client {
                         DrandFailMode::Cached => {
                             // Try to use stale cache (up to MAX_STALE_CACHE_SECS)
                             let cache = self.cache.read().await;
-                            if let Some(ref cached) = *cache {
-                                if cached.fetched_at.elapsed()
+                            if let Some(ref cached) = *cache
+                                && cached.fetched_at.elapsed()
                                     < Duration::from_secs(MAX_STALE_CACHE_SECS)
-                                {
-                                    tracing::warn!(
-                                        "drand fetch failed, using cached round {} (age: {:?}): {}",
-                                        cached.beacon.round,
-                                        cached.fetched_at.elapsed(),
-                                        e
-                                    );
-                                    return Ok(cached.beacon.round);
-                                }
+                            {
+                                tracing::warn!(
+                                    "drand fetch failed, using cached round {} (age: {:?}): {}",
+                                    cached.beacon.round,
+                                    cached.fetched_at.elapsed(),
+                                    e
+                                );
+                                return Ok(cached.beacon.round);
                             }
                             Err(DrandError::Unavailable)
                         }
@@ -583,8 +582,8 @@ pub use async_client::DrandClient;
 // `async_client`, which only exists under `async-drand`.
 #[cfg(all(test, feature = "async-drand"))]
 mod constructor_tests {
-    use super::async_client::DrandClient;
     use super::DrandConfig;
+    use super::async_client::DrandClient;
 
     /// **The constructor must be fallible.** This is a compile-time guard as
     /// much as a test: `DrandClient::new` returning `Result` is what stops the

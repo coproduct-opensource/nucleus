@@ -113,21 +113,13 @@ impl RecomputeMemory for TransformRegistry {
 /// Confidentiality flows UP: a derived value is at least as confidential as its
 /// most-confidential source (join / max).
 pub(crate) fn conf_join(a: ConfLevel, b: ConfLevel) -> ConfLevel {
-    if (a as u8) >= (b as u8) {
-        a
-    } else {
-        b
-    }
+    if (a as u8) >= (b as u8) { a } else { b }
 }
 
 /// Integrity flows DOWN: a derived value is at most as trusted as its
 /// least-trusted source (meet / min).
 pub(crate) fn integ_meet(a: IntegLevel, b: IntegLevel) -> IntegLevel {
-    if (a as u8) <= (b as u8) {
-        a
-    } else {
-        b
-    }
+    if (a as u8) <= (b as u8) { a } else { b }
 }
 
 /// Trust class of a raw-ingested source ⇒ integrity level. Untrusted-content

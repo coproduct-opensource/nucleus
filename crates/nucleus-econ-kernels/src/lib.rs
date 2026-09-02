@@ -40,27 +40,28 @@ pub mod vcg_combo;
 pub mod vcg_hetero;
 pub mod vcg_pigou;
 
-pub use commons::{route_to_commons, CommonsAllocation, CommonsError, CommonsShare};
-pub use settlement::{classify, refund, seller_gross, Verdict};
+pub use commons::{CommonsAllocation, CommonsError, CommonsShare, route_to_commons};
+pub use settlement::{Verdict, classify, refund, seller_gross};
 
 pub use rational::Rational;
 pub use sealed::{
-    audit_commit_ack, compute_commitment, compute_commitment_set_root, opening_to_integer_bid,
-    sorted_commitment_set, verify_reveal, BidCommitment, BidOpening, CommitAck, CommitmentSetRoot,
-    OmissionAudit, SealedBidError, COMMIT_DOMAIN, COMMIT_SET_DOMAIN,
+    BidCommitment, BidOpening, COMMIT_DOMAIN, COMMIT_SET_DOMAIN, CommitAck, CommitmentSetRoot,
+    OmissionAudit, SealedBidError, audit_commit_ack, compute_commitment,
+    compute_commitment_set_root, opening_to_integer_bid, sorted_commitment_set, verify_reveal,
 };
 pub use tlock::{DrandRound, StubBeacon, TimelockBackend, TimelockedBid, TlockError};
 
-pub use vcg::{run_vcg, Clearing, IntegerBid, IntegerProposal, VcgError, WinningBid};
+pub use vcg::{Clearing, IntegerBid, IntegerProposal, VcgError, WinningBid, run_vcg};
 pub use vcg_combo::{
-    clear_combinatorial_2good, Combinatorial2GoodClearing, CombinatorialBid, CombinatorialError,
+    Combinatorial2GoodClearing, CombinatorialBid, CombinatorialError, clear_combinatorial_2good,
 };
 pub use vcg_hetero::{
-    clear_heterogeneous, clear_heterogeneous_exact, HeteroError, EXACT_VCG_MAX_BIDS,
+    EXACT_VCG_MAX_BIDS, HeteroError, clear_heterogeneous, clear_heterogeneous_exact,
 };
 pub use vcg_pigou::{
-    effective_minus_pigou_micro, run_vcg_with_externalities, PigouvianClearing, PigouvianError,
-    PigouvianRates, LAMBDA_CARBON_SCC_MICRO_USD_PER_GRAM, LAMBDA_WATER_SHADOW_MICRO_USD_PER_LITRE,
+    LAMBDA_CARBON_SCC_MICRO_USD_PER_GRAM, LAMBDA_WATER_SHADOW_MICRO_USD_PER_LITRE,
+    PigouvianClearing, PigouvianError, PigouvianRates, effective_minus_pigou_micro,
+    run_vcg_with_externalities,
 };
 
 // A6 (docs/CLOSE-TO-HIGHEST.md): the welfare-overflow Kani harness

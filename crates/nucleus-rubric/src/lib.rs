@@ -683,9 +683,10 @@ mod tests {
             r.validate_scorecard(&over_max),
             Err(RubricError::GradeExceedsMax { .. })
         ));
-        assert!(r
-            .validate_scorecard(&sc("x", [10, 10, 10, 10, 100]))
-            .is_ok());
+        assert!(
+            r.validate_scorecard(&sc("x", [10, 10, 10, 10, 100]))
+                .is_ok()
+        );
     }
 
     // ── Transitivity / totality (mirrors ck-policy reflexive+transitive) ──────

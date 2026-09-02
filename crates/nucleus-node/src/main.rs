@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
-use axum::{middleware, Json, Router};
+use axum::{Json, Router, middleware};
 use clap::Parser;
 use driver::DriverKind;
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
@@ -1808,16 +1808,14 @@ async fn spawn_container_pod(
 
     // In direct mode, extract the task from the raw YAML (task is not in the typed
     // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
-    if !proxy_mode {
-        if let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(&spec_yaml) {
-            if let Some(task) = raw
-                .get("spec")
-                .and_then(|s| s.get("task"))
-                .and_then(|t| t.as_str())
-            {
-                env.push(format!("NUCLEUS_TASK={task}"));
-            }
-        }
+    if !proxy_mode
+        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(&spec_yaml)
+        && let Some(task) = raw
+            .get("spec")
+            .and_then(|s| s.get("task"))
+            .and_then(|t| t.as_str())
+    {
+        env.push(format!("NUCLEUS_TASK={task}"));
     }
 
     let pod_dir_abs = pod_dir
@@ -2067,7 +2065,7 @@ async fn wait_for_container_announce(
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[tracing::instrument(skip_all, fields(boot.stage = "vmm.preflight"))]
 async fn vmm_preflight(firecracker_path: &Path) -> nucleus_spec::vmm_version::VmmVerdict {
-    use nucleus_spec::vmm_version::{judge, VmmVerdict};
+    use nucleus_spec::vmm_version::{VmmVerdict, judge};
 
     // Fully qualified: the `Command` import is feature/platform-gated, and this
     // function deliberately is not.
@@ -2732,7 +2730,9 @@ async fn spawn_firecracker_pod(
                         .fetch_attested_certificate(&identity, &pod_id_str)
                         .await
                     {
-                        tracing::warn!("pod {id} serves a PLAIN (unattested) SVID; attesting relying parties refuse it: {e}");
+                        tracing::warn!(
+                            "pod {id} serves a PLAIN (unattested) SVID; attesting relying parties refuse it: {e}"
+                        );
                     }
                 }
                 Err(e) => {
@@ -3046,7 +3046,9 @@ fn build_github_oidc(args: &Args) -> Option<Arc<oidc::GitHubOidcValidator>> {
 
     // Require at least one allowed repo or org
     if config.allowed_repos.is_empty() && config.allowed_orgs.is_empty() {
-        error!("GitHub OIDC enabled but no repos or orgs allowed. Set --oidc-github-allowed-repos or --oidc-github-allowed-orgs");
+        error!(
+            "GitHub OIDC enabled but no repos or orgs allowed. Set --oidc-github-allowed-repos or --oidc-github-allowed-orgs"
+        );
         return None;
     }
 
@@ -3107,17 +3109,17 @@ fn start_pod_reaper(state: NodeState) {
             // Cascade cancel: kill children of exited parent pods
             if !exited_ids.is_empty() {
                 for pod in &pods {
-                    if let Some(parent_id) = pod.parent_pod_id {
-                        if exited_ids.contains(&parent_id) {
-                            let child_state = pod.status().await;
-                            if matches!(child_state, PodState::Running) {
-                                info!(
-                                    "cascading cancel: killing child pod {} (parent {} exited)",
-                                    pod.id, parent_id
-                                );
-                                if let Err(e) = pod.cancel().await {
-                                    error!("failed to cascade cancel pod {}: {}", pod.id, e);
-                                }
+                    if let Some(parent_id) = pod.parent_pod_id
+                        && exited_ids.contains(&parent_id)
+                    {
+                        let child_state = pod.status().await;
+                        if matches!(child_state, PodState::Running) {
+                            info!(
+                                "cascading cancel: killing child pod {} (parent {} exited)",
+                                pod.id, parent_id
+                            );
+                            if let Err(e) = pod.cancel().await {
+                                error!("failed to cascade cancel pod {}: {}", pod.id, e);
                             }
                         }
                     }

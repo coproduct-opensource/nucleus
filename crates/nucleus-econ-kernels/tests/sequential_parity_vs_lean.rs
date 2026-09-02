@@ -22,8 +22,8 @@
 //! as an end-to-end property of the production /match route — the
 //! "F theorem ↔ production" claim is now testable, not asserted.
 
-use nucleus_econ_kernels::{effective_minus_pigou_micro, PigouvianRates};
-use nucleus_externality::{sign_claim, ExternalityProfile, ResourceDim, SignedExternalityClaim};
+use nucleus_econ_kernels::{PigouvianRates, effective_minus_pigou_micro};
+use nucleus_externality::{ExternalityProfile, ResourceDim, SignedExternalityClaim, sign_claim};
 use proptest::prelude::*;
 
 fn one_dim_profile(ext_units: u64) -> ExternalityProfile {

@@ -40,7 +40,7 @@ pub mod ifc;
 pub mod x402;
 
 pub use card_verifier::AgentCardVerifier;
-pub use envelope_receipt::{verify_receipt_bundle, EnvelopeReceiptIssuer, VerifiedReceipt};
+pub use envelope_receipt::{EnvelopeReceiptIssuer, VerifiedReceipt, verify_receipt_bundle};
 pub use ifc::{DeclaredInput, FlowDeclaration, IfcVerdict};
 
 /// Identity material lifted from the incoming x402 / A2A request (e.g. a signed

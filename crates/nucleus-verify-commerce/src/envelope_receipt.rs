@@ -12,13 +12,13 @@
 //! convenience that [`verify_receipt_bundle`] re-derives and checks against the
 //! signed content hash — tampering any field is therefore detected.
 
-use nucleus_envelope::{verify_bundle, Bundle, BundleBuilder, TrustAnchor};
+use nucleus_envelope::{Bundle, BundleBuilder, TrustAnchor, verify_bundle};
 use nucleus_lineage::{
-    canonical_edge_bytes, edge_content_hash, CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink,
-    Jwks, LineageEdge, LineageSink, Proof,
+    CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink, Jwks, LineageEdge, LineageSink, Proof,
+    canonical_edge_bytes, edge_content_hash,
 };
 
-use crate::{body_sha256_hex, CommerceError, IfcVerdict, Receipt, ReceiptContext, ReceiptIssuer};
+use crate::{CommerceError, IfcVerdict, Receipt, ReceiptContext, ReceiptIssuer, body_sha256_hex};
 
 /// Deterministic canonical bytes of the commerce binding. NUL-separated; the
 /// fields never contain NUL. This is what the delivery edge's signed content

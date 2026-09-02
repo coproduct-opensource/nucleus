@@ -5,8 +5,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ipnet::IpNet;
 use nucleus_ifc_kernel::extracted::egress::Rule as EgressRule;

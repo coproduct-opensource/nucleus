@@ -8,7 +8,7 @@
 use iroh_blobs::store::mem::MemStore;
 use nucleus_envelope::Bundle;
 
-use crate::{blake3_bundle_hash, BundleHash};
+use crate::{BundleHash, blake3_bundle_hash};
 
 /// Errors from [`publish_bytes`] (generic artifact publishing).
 #[derive(Debug, thiserror::Error)]

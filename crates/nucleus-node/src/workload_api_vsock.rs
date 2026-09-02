@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
 use crate::identity::IdentityManager;
-use crate::workload_api_protocol::{parse_command, WorkloadApiCommand, MAX_COMMAND_LEN};
+use crate::workload_api_protocol::{MAX_COMMAND_LEN, WorkloadApiCommand, parse_command};
 
 /// The largest receipt body the host buffers from a `SHIP_RECEIPT`'s second frame.
 /// Bounds a single receipt (a fixed-shape JSON object, well under 1 KB) with
@@ -784,7 +784,7 @@ mod task_token_serving_tests {
     /// The command must round-trip through the wire spelling the guest sends.
     #[test]
     fn the_guest_spelling_parses_to_the_command() {
-        use crate::workload_api_protocol::{parse_command, WorkloadApiCommand};
+        use crate::workload_api_protocol::{WorkloadApiCommand, parse_command};
         assert_eq!(
             parse_command(b"FETCH_TASK_TOKEN").unwrap(),
             WorkloadApiCommand::FetchTaskToken
@@ -1217,7 +1217,7 @@ mod tests {
     /// client would fail closed — correctly, but silently and far from the cause.
     #[test]
     fn the_broker_secret_command_round_trips_through_the_parser() {
-        use crate::workload_api_protocol::{parse_command, WorkloadApiCommand};
+        use crate::workload_api_protocol::{WorkloadApiCommand, parse_command};
         assert_eq!(
             parse_command(b"FETCH_BROKER_SECRET\n").unwrap(),
             WorkloadApiCommand::FetchBrokerSecret
@@ -1292,7 +1292,7 @@ mod tests {
     /// guest client fails closed far from the cause.
     #[test]
     fn the_audit_credentials_command_round_trips_through_the_parser() {
-        use crate::workload_api_protocol::{parse_command, WorkloadApiCommand};
+        use crate::workload_api_protocol::{WorkloadApiCommand, parse_command};
         assert_eq!(
             parse_command(b"FETCH_AUDIT_CREDENTIALS\n").unwrap(),
             WorkloadApiCommand::FetchAuditCredentials

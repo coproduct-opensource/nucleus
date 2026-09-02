@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::claim::{canonical_claim_bytes, SignedExternalityClaim};
+use crate::claim::{SignedExternalityClaim, canonical_claim_bytes};
 use crate::dim::ResourceDim;
 
 /// Domain prefix for the K-dim profile canonical bytes. Bumping
@@ -228,9 +228,10 @@ mod tests {
     fn insert_returns_previous_claim() {
         let mut p = ExternalityProfile::new();
         let original = mk_claim(ResourceDim::GpuSeconds, 1_000_000);
-        assert!(p
-            .insert(ResourceDim::GpuSeconds, original.clone())
-            .is_none());
+        assert!(
+            p.insert(ResourceDim::GpuSeconds, original.clone())
+                .is_none()
+        );
         let replacement = mk_claim(ResourceDim::GpuSeconds, 2_000_000);
         let prev = p.insert(ResourceDim::GpuSeconds, replacement);
         assert_eq!(prev, Some(original));
@@ -302,8 +303,9 @@ mod tests {
     #[test]
     fn min_assurance_rung_none_for_empty_profile() {
         let p = ExternalityProfile::new();
-        assert!(p
-            .min_assurance_rung(|_, _| crate::AssuranceRung::ZkUpperEnvelope)
-            .is_none());
+        assert!(
+            p.min_assurance_rung(|_, _| crate::AssuranceRung::ZkUpperEnvelope)
+                .is_none()
+        );
     }
 }

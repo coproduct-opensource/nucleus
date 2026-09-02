@@ -872,9 +872,11 @@ mod tests {
         fs::write(dir.path().join(".mcp.json"), config.to_string()).unwrap();
 
         let findings = scan_mcp_configs(dir.path());
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "uninhabitable_state-capable-server"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == "uninhabitable_state-capable-server")
+        );
     }
 
     #[test]
@@ -907,10 +909,12 @@ mod tests {
 
         let findings = scan_sensitive_files(dir.path());
         assert!(!findings.is_empty());
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "sensitive-file-exposed"
-                || f.rule_id == "sensitive-file-gitignored"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == "sensitive-file-exposed"
+                    || f.rule_id == "sensitive-file-gitignored")
+        );
     }
 
     #[test]
@@ -927,9 +931,11 @@ capabilities:
         fs::write(dir.path().join("pod.yaml"), podspec).unwrap();
 
         let findings = scan_podspecs(dir.path());
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "overly-permissive-caps"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == "overly-permissive-caps")
+        );
     }
 
     #[test]

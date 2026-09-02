@@ -58,18 +58,18 @@ pub use assurance::{
     VerifiedAttestation,
 };
 pub use attestation::{
-    extract_launch_attestation, verify_attested_svid, AttestationRequirements, LaunchAttestation,
+    AttestationRequirements, LaunchAttestation, extract_launch_attestation, verify_attested_svid,
 };
-#[cfg(feature = "spire")]
-pub use ca::{auto_detect_ca, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV};
 pub use ca::{CaClient, SelfSignedCa};
+#[cfg(feature = "spire")]
+pub use ca::{DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV, SpireCaClient, auto_detect_ca};
 pub use certificate::{TrustBundle, WorkloadCertificate};
-pub use cross_agent::{join_cross_agent, CrossAgentExchange, CrossAgentReceipt};
+pub use cross_agent::{CrossAgentExchange, CrossAgentReceipt, join_cross_agent};
 pub use csr::{CertSign, CsrOptions};
-pub use did::{did_web_to_url, DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod};
+pub use did::{DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod, did_web_to_url};
 pub use did_binding::{BindingProof, BindingVerification, SpiffeDidBinding};
 pub use did_builder::{
-    build_binding, build_did_document, extract_svid_material, verify_binding, SvidMaterial,
+    SvidMaterial, build_binding, build_did_document, extract_svid_material, verify_binding,
 };
 pub use did_crypto::{
     cert_fingerprint, chain_from_base64url, chain_to_base64url, extract_ec_p256_jwk,
@@ -81,8 +81,8 @@ pub use did_resolver::{CachingDidResolver, DidResolver, InMemoryDidResolver};
 pub use dpop::{DpopClaims, DpopHeader, DpopProofBuilder, DpopVerifier};
 pub use identity::Identity;
 pub use ifc_extension::{
-    decode_ifc_extension, default_peer_label, encode_ifc_extension, extract_peer_ifc,
     ExtensionError, NUCLEUS_IFC_OID, OID_NUCLEUS_IFC_BYTES, OID_NUCLEUS_IFC_TUPLE,
+    decode_ifc_extension, default_peer_label, encode_ifc_extension, extract_peer_ifc,
 };
 pub use manager::SecretManager;
 pub use session::{SessionId, SessionIdentity};
@@ -90,7 +90,7 @@ pub use tls::{TlsClientConfig, TlsServerConfig};
 pub use verifier::{IdentityVerifier, TrustDomainVerifier};
 pub use wallet::{InMemoryWalletRegistry, WalletAddress, WalletMapping};
 pub use webfinger::{
-    parse_webfinger_resource, WebFingerLink, WebFingerResource, WebFingerResponse,
+    WebFingerLink, WebFingerResource, WebFingerResponse, parse_webfinger_resource,
 };
 pub use workload_api::{MtlsWorkloadApiClient, VmRegistry, WorkloadApiClient, WorkloadApiServer};
 

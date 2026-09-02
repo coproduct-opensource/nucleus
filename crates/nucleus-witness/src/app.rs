@@ -4,13 +4,13 @@
 use std::time::Duration;
 
 use axum::{
+    Router,
     http::StatusCode,
     routing::{get, post},
-    Router,
 };
 use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
-use crate::server::{add_checkpoint_handler, WitnessState};
+use crate::server::{WitnessState, add_checkpoint_handler};
 
 /// Max request body size. A checkpoint + up to 63 consistency-proof
 /// lines + signatures is a few KiB; 64 KiB is generous while bounding

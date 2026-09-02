@@ -188,18 +188,18 @@ impl IdentityManager {
     /// concerns. Both call sites of that check now live in this module, so a
     /// future key change has one place to be wrong instead of two.
     pub async fn release_pod(&self, registry_key: Option<&str>, identity: &Identity) {
-        if let Some(key) = registry_key {
-            if !self.unregister_pod(key).await {
-                // Reachable only if the key drifted again. Worth a warning
-                // rather than a silent no-op: a registry that does not drain is
-                // what makes the Workload API's "exactly one identity is
-                // registered" precondition permanently false.
-                tracing::warn!(
-                    registry_key = %key,
-                    "pod teardown removed no identity registry entry -- the \
-                     registration and removal keys have drifted apart"
-                );
-            }
+        if let Some(key) = registry_key
+            && !self.unregister_pod(key).await
+        {
+            // Reachable only if the key drifted again. Worth a warning
+            // rather than a silent no-op: a registry that does not drain is
+            // what makes the Workload API's "exactly one identity is
+            // registered" precondition permanently false.
+            tracing::warn!(
+                registry_key = %key,
+                "pod teardown removed no identity registry entry -- the \
+                 registration and removal keys have drifted apart"
+            );
         }
         self.forget_certificate(identity).await;
     }
@@ -442,7 +442,7 @@ mod tests {
     /// concrete override rather than the extension-dropping trait default.
     #[tokio::test]
     async fn with_ca_injects_a_root_that_still_attests_through_the_dyn_seam() {
-        use nucleus_identity::{verify_attested_svid, AttestationRequirements, SelfSignedCa};
+        use nucleus_identity::{AttestationRequirements, SelfSignedCa, verify_attested_svid};
         use std::io::Write;
 
         let injected: Arc<dyn CaClient> = Arc::new(SelfSignedCa::new("injected.local").unwrap());
@@ -494,7 +494,7 @@ mod tests {
     /// transport and a real Firecracker rootfs (named gaps in the ledger).
     #[tokio::test]
     async fn attested_svid_is_served_and_verifier_reds_on_drift_and_absent() {
-        use nucleus_identity::{verify_attested_svid, AttestationRequirements};
+        use nucleus_identity::{AttestationRequirements, verify_attested_svid};
         use std::io::Write;
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();

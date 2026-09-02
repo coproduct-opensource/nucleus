@@ -26,11 +26,11 @@
 use chrono::{Duration, Utc};
 use nucleus_permission_market::{PermissionBid, PermissionDimension, PermissionGrant, TrustTier};
 use portcullis::{
-    certificate::VerifiedPermissions, BudgetLattice, CapabilityLattice, CapabilityLevel,
-    PermissionLattice, TimeLattice,
+    BudgetLattice, CapabilityLattice, CapabilityLevel, PermissionLattice, TimeLattice,
+    certificate::VerifiedPermissions,
 };
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use std::collections::HashSet;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -256,7 +256,7 @@ mod tests {
     use super::*;
     use chrono::{Duration, Utc};
     use nucleus_permission_market::PermissionMarket;
-    use portcullis::certificate::{verify_certificate, LatticeCertificate};
+    use portcullis::certificate::{LatticeCertificate, verify_certificate};
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
 

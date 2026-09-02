@@ -31,12 +31,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
+use portcullis::Operation;
 use portcullis::art12_record::{Actor, Art12Record, DenyInfo};
 use portcullis::mediation_receipt::MediationReceipt;
 use portcullis::verdict_sink::{
     ActorIdentity, SinkError, VerdictContext, VerdictOutcome, VerdictSink,
 };
-use portcullis::Operation;
 
 use crate::art12::Art12Log;
 
@@ -78,13 +78,13 @@ impl ReceiptLog {
     fn append(&self, receipt: &MediationReceipt) {
         match serde_json::to_string(receipt) {
             Ok(line) => {
-                if let Ok(mut f) = self.file.lock() {
-                    if writeln!(f, "{line}").and_then(|()| f.flush()).is_err() {
-                        tracing::error!(
-                            "a MediationReceipt could not be written to the forensic log \
+                if let Ok(mut f) = self.file.lock()
+                    && writeln!(f, "{line}").and_then(|()| f.flush()).is_err()
+                {
+                    tracing::error!(
+                        "a MediationReceipt could not be written to the forensic log \
                              (the Article 12 record still holds; only the portable copy is lost)"
-                        );
-                    }
+                    );
                 }
             }
             Err(e) => tracing::error!(error = %e, "could not serialize a MediationReceipt"),
@@ -589,15 +589,15 @@ impl VerdictSink for Art12Sink {
         // The evidence channel failing is as disqualifying as the local log
         // failing: in both cases the next operation would execute without its
         // record reaching somewhere the pod cannot retract it.
-        if let Some(shipper) = &self.shipper {
-            if shipper.is_degraded() {
-                tracing::error!(
-                    ?operation,
-                    unshipped = shipper.unshipped(),
-                    "refusing: Article 12 records are not reaching the host"
-                );
-                return Err(SinkError::Locked);
-            }
+        if let Some(shipper) = &self.shipper
+            && shipper.is_degraded()
+        {
+            tracing::error!(
+                ?operation,
+                unshipped = shipper.unshipped(),
+                "refusing: Article 12 records are not reaching the host"
+            );
+            return Err(SinkError::Locked);
         }
         if self.log.is_degraded() {
             tracing::error!(

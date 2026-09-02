@@ -301,16 +301,15 @@ fn extract_spiffe_id_from_cert(cert_der: &[u8]) -> Option<String> {
     let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
 
     for ext in cert.extensions() {
-        if ext.oid == oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME {
-            if let Ok((_, san)) =
+        if ext.oid == oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME
+            && let Ok((_, san)) =
                 x509_parser::extensions::SubjectAlternativeName::from_der(ext.value)
-            {
-                for name in &san.general_names {
-                    if let x509_parser::extensions::GeneralName::URI(uri) = name {
-                        if uri.starts_with("spiffe://") {
-                            return Some(uri.to_string());
-                        }
-                    }
+        {
+            for name in &san.general_names {
+                if let x509_parser::extensions::GeneralName::URI(uri) = name
+                    && uri.starts_with("spiffe://")
+                {
+                    return Some(uri.to_string());
                 }
             }
         }

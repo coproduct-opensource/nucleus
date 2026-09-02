@@ -35,8 +35,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::FromRequestParts;
-use axum::http::{header, request::Parts, StatusCode};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+use axum::http::{StatusCode, header, request::Parts};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use ed25519_dalek::{Signature, VerifyingKey};
 use nucleus_oidc_core::{JwkPublicKey, Jwks};
 use serde::Deserialize;
@@ -276,10 +276,10 @@ pub fn verify_jwt_svid(
             now,
         });
     }
-    if let Some(nbf) = claims.nbf {
-        if nbf > now + config.clock_skew_secs {
-            return Err(AuthError::NotYetValid { nbf, now });
-        }
+    if let Some(nbf) = claims.nbf
+        && nbf > now + config.clock_skew_secs
+    {
+        return Err(AuthError::NotYetValid { nbf, now });
     }
 
     let auds = claims.aud.into_vec();
@@ -424,7 +424,7 @@ impl FromRequestParts<AppState> for RequireSpiffeAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer as _, SigningKey, SECRET_KEY_LENGTH};
+    use ed25519_dalek::{SECRET_KEY_LENGTH, Signer as _, SigningKey};
     use nucleus_oidc_core::Jwk;
     use serde_json::json;
 

@@ -12,7 +12,7 @@ use portcullis::flow_graph::FlowGraph;
 use portcullis::{CapabilityLevel, Operation};
 
 use nucleus_ifc_kernel::discharge::{
-    self, preflight_action, DischargedBundle, PreflightResult, VerifiedScope,
+    self, DischargedBundle, PreflightResult, VerifiedScope, preflight_action,
 };
 use nucleus_ifc_kernel::{IFCLabel, SinkClass};
 use nucleus_provenance_memory::TokenScope;

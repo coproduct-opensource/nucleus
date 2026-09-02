@@ -3,9 +3,9 @@
 use std::time::Duration;
 
 use axum::{
-    http::{header, Method, StatusCode},
-    routing::{get, post},
     Router,
+    http::{Method, StatusCode, header},
+    routing::{get, post},
 };
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use sqlx::SqlitePool;
 
 use crate::merkle::SharedMerkleLog;
 use tower::limit::ConcurrencyLimitLayer;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::{
     catch_panic::CatchPanicLayer,
     cors::{Any, CorsLayer},
@@ -285,10 +285,10 @@ mod panic_net_tests {
     //! serving afterwards. This exercises the real `fail_closed_panic_response`
     //! handler behind the same OUTERMOST `CatchPanicLayer` wiring as `build_app`.
     use super::fail_closed_panic_response;
+    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
-    use axum::Router;
     use tower::ServiceExt;
     use tower_http::catch_panic::CatchPanicLayer;
 

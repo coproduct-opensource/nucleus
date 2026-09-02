@@ -26,24 +26,24 @@ pub mod manifest;
 pub mod pin;
 
 pub use bond::{
-    canonical_bond_bytes, canonical_ownership_bytes, canonical_root_attestation_bytes,
-    canonical_signed_recompute_bytes, canonical_witness_claim_bytes, deters, forfeiture_amount,
-    forfeiture_on_fork, mint_bond, release_bond, required_bond, sign_ownership, sign_recompute,
-    sign_root_attestation, sign_witness_claim, slash, staying_is_rational,
-    total_canonical_collateral, verify_bond, verify_ownership, verify_root_attestation,
-    verify_signed_recompute, verify_witness_claim, AmountMicro, Bond, BondError, BondStanding,
-    LedgerRoot, Refutation, RootAttestation, SignedOwnership, SignedRecompute, SignedWitnessClaim,
-    SlashOutcome, BOND_BPS_SCALE, BOND_DOMAIN, FORK_COST_THEOREM_MODELED,
+    AmountMicro, BOND_BPS_SCALE, BOND_DOMAIN, Bond, BondError, BondStanding,
+    FORK_COST_THEOREM_MODELED, LedgerRoot, Refutation, RootAttestation, SignedOwnership,
+    SignedRecompute, SignedWitnessClaim, SlashOutcome, canonical_bond_bytes,
+    canonical_ownership_bytes, canonical_root_attestation_bytes, canonical_signed_recompute_bytes,
+    canonical_witness_claim_bytes, deters, forfeiture_amount, forfeiture_on_fork, mint_bond,
+    release_bond, required_bond, sign_ownership, sign_recompute, sign_root_attestation,
+    sign_witness_claim, slash, staying_is_rational, total_canonical_collateral, verify_bond,
+    verify_ownership, verify_root_attestation, verify_signed_recompute, verify_witness_claim,
 };
 pub use functor::{
-    accumulate, AdmissionVerdict, FakeWitnessSource, Gov, LineageEdge, NoUpgradeGov, OlogFact,
-    Tier, WitnessDigest, WitnessNode, WitnessSource,
+    AdmissionVerdict, FakeWitnessSource, Gov, LineageEdge, NoUpgradeGov, OlogFact, Tier,
+    WitnessDigest, WitnessNode, WitnessSource, accumulate,
 };
 pub use manifest::{
-    canonical_manifest_bytes, manifest_from_fact, sign_manifest, verify_manifest,
-    AccumulationManifest, ManifestError, MANIFEST_DOMAIN,
+    AccumulationManifest, MANIFEST_DOMAIN, ManifestError, canonical_manifest_bytes,
+    manifest_from_fact, sign_manifest, verify_manifest,
 };
 pub use pin::{
-    accept_fact, canonical_checkpoint_bytes, sign_checkpoint, LogIdentity, PinnedLog,
-    SignedCheckpoint, TrustRejection, CHECKPOINT_DOMAIN,
+    CHECKPOINT_DOMAIN, LogIdentity, PinnedLog, SignedCheckpoint, TrustRejection, accept_fact,
+    canonical_checkpoint_bytes, sign_checkpoint,
 };

@@ -18,7 +18,7 @@
 //!
 //! [`Bundle`]: nucleus_envelope::Bundle
 
-use nucleus_envelope::{verify_bundle, Bundle, BundleBuilder, TrustAnchor, VerifyBundleError};
+use nucleus_envelope::{Bundle, BundleBuilder, TrustAnchor, VerifyBundleError, verify_bundle};
 use nucleus_lineage::{
     CallSpiffeId, EdgeSigner, Jwks, LineageEdge, LineageSink, MerkleProver, SignedTreeHead,
     SinkError,

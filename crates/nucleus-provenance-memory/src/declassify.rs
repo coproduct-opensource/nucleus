@@ -214,8 +214,8 @@ mod tests {
     use crate::recompute::derive_label;
     use crate::record::MemoryDerivation;
     use nucleus_lineage::SourceClass;
-    use portcullis_core::memory::SchemaType;
     use portcullis_core::ConfLevel;
+    use portcullis_core::memory::SchemaType;
 
     fn key(seed: u8) -> SigningKey {
         // from_bytes is decode-only — no CSPRNG (production keys come from SPIRE).

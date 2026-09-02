@@ -330,10 +330,10 @@ impl<R: DidResolver> DidResolver for CachingDidResolver<R> {
         // Check cache
         {
             let cache = self.cache.read().await;
-            if let Some(entry) = cache.get(did) {
-                if entry.inserted_at.elapsed() < self.ttl {
-                    return Ok(entry.document.clone());
-                }
+            if let Some(entry) = cache.get(did)
+                && entry.inserted_at.elapsed() < self.ttl
+            {
+                return Ok(entry.document.clone());
             }
         }
 
@@ -360,10 +360,10 @@ impl<R: DidResolver> DidResolver for CachingDidResolver<R> {
         // Check cache
         {
             let cache = self.cache.read().await;
-            if let Some(entry) = cache.get(did) {
-                if entry.inserted_at.elapsed() < self.ttl {
-                    return Ok((entry.document.clone(), entry.binding.clone()));
-                }
+            if let Some(entry) = cache.get(did)
+                && entry.inserted_at.elapsed() < self.ttl
+            {
+                return Ok((entry.document.clone(), entry.binding.clone()));
             }
         }
 

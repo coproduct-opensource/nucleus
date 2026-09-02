@@ -17,7 +17,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use hmac::{digest::KeyInit, Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -2058,7 +2058,9 @@ fn verify_provenance(output_path: &Path, schema_path: Option<&Path>) -> Result<(
                     println!("  \u{2713} Schema hash matches {}", sp.display());
                     checks_passed += 1;
                 } else {
-                    println!("  \u{2717} Schema hash MISMATCH (expected {schema_hash}, got sha256:{actual_hash})");
+                    println!(
+                        "  \u{2717} Schema hash MISMATCH (expected {schema_hash}, got sha256:{actual_hash})"
+                    );
                     checks_failed += 1;
                 }
             }
@@ -2105,7 +2107,9 @@ fn verify_provenance(output_path: &Path, schema_path: Option<&Path>) -> Result<(
                     }
                 }
                 "AIDerived" => {
-                    println!("  \u{2139}\u{fe0f}  {field_name}: AIDerived — honestly labeled, no verification possible");
+                    println!(
+                        "  \u{2139}\u{fe0f}  {field_name}: AIDerived — honestly labeled, no verification possible"
+                    );
                     checks_passed += 1;
                 }
                 other => {

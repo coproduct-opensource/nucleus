@@ -39,7 +39,9 @@ pub enum IdError {
     ForbiddenChar(char, usize),
     #[error("authority {0:?} contains characters outside `[a-z0-9._-]`")]
     InvalidAuthority(String),
-    #[error("path component {0:?} contains characters outside `[A-Za-z0-9._-]` (or the reserved `sha256:<hex>` form)")]
+    #[error(
+        "path component {0:?} contains characters outside `[A-Za-z0-9._-]` (or the reserved `sha256:<hex>` form)"
+    )]
     InvalidPathChar(String),
     #[error("path contains an empty segment (consecutive `/` or trailing `/`) in {0:?}")]
     EmptyPathSegment(String),
@@ -449,9 +451,10 @@ mod tests {
     fn derive_tool_with_content_is_content_addressed() {
         let p = pod();
         let a1 = p.derive_tool("Bash", Some(b"hello")).unwrap();
-        assert!(a1
-            .as_str()
-            .ends_with(&format!("/sha256:{}", hex_lower(&sha256(b"hello")))));
+        assert!(
+            a1.as_str()
+                .ends_with(&format!("/sha256:{}", hex_lower(&sha256(b"hello"))))
+        );
         let hash = a1.content_hash_hex().unwrap();
         assert_eq!(hash.len(), 64);
         assert_eq!(hash, hex_lower(&sha256(b"hello")));

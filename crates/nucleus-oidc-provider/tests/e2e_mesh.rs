@@ -19,15 +19,15 @@
 //! cert-trust ceremony without exercising additional code paths.
 
 use axum::body::Body;
-use axum::http::{header, Method, Request, StatusCode};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use axum::http::{Method, Request, StatusCode, header};
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http_body_util::BodyExt;
 use nucleus_oidc_provider::{
-    app::{build_app, AppState},
+    app::{AppState, build_app},
     federation::{FederationRegistry, FederationRule, FederationRules},
     issuer::JwtIssuer,
-    keystore::{rfc7638_kid, InMemoryKeyStore, JwtKeyStore},
+    keystore::{InMemoryKeyStore, JwtKeyStore, rfc7638_kid},
     spire::StaticBundleProvider,
     token::{TOKEN_EXCHANGE_GRANT, TOKEN_TYPE_JWT},
 };

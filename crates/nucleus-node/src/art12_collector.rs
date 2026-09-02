@@ -283,7 +283,7 @@ mod tests {
         let body = r#"{"event":"decision"}"#;
 
         let sig_for_a = {
-            use hmac::{digest::KeyInit, Hmac, Mac};
+            use hmac::{Hmac, Mac, digest::KeyInit};
             let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret).expect("key");
             mac.update(&nucleus_client::art12_signed_bytes(
                 "session-a",

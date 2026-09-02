@@ -57,7 +57,7 @@
 
 use std::collections::BTreeMap;
 
-use nucleus_witness_olog::{deters, required_bond, AmountMicro};
+use nucleus_witness_olog::{AmountMicro, deters, required_bond};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "recompute")]

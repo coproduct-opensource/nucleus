@@ -13,19 +13,19 @@
 //! Requires `--features sign` for the card-signing helper.
 #![cfg(feature = "sign")]
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::SystemRandom;
-use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
 
 use nucleus_agent_card::{
-    sign_card, trust_anchor_from_card, verify_card, AgentCapabilities, AgentCard, AgentInterface,
-    JsonWebKey, NucleusClaims, A2A_PROTOCOL_VERSION,
+    A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCard, AgentInterface, JsonWebKey, NucleusClaims,
+    sign_card, trust_anchor_from_card, verify_card,
 };
-use nucleus_envelope::{verify_bundle, Bundle, BundleBuilder};
+use nucleus_envelope::{Bundle, BundleBuilder, verify_bundle};
 use nucleus_lineage::{
-    edge_content_hash, CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink, Jwks, LineageEdge,
-    LineageSink, LocalIssuer, Proof,
+    CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink, Jwks, LineageEdge, LineageSink, LocalIssuer,
+    Proof, edge_content_hash,
 };
 
 /// Generate a P-256 keypair: (PKCS#8 DER, matching public JWK).

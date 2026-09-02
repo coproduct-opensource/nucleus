@@ -23,13 +23,13 @@
 //! (`{error, error_description}`).
 
 use axum::{
+    Json,
     extract::{Form, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use nucleus_lineage::CallSpiffeId;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -144,12 +144,12 @@ pub async fn handler(
             req.subject_token_type
         )));
     }
-    if let Some(ref t) = req.requested_token_type {
-        if t != TOKEN_TYPE_ACCESS_TOKEN {
-            return Err(OidcApiError::InvalidRequest(format!(
-                "requested_token_type must be {TOKEN_TYPE_ACCESS_TOKEN:?}, got {t:?}"
-            )));
-        }
+    if let Some(ref t) = req.requested_token_type
+        && t != TOKEN_TYPE_ACCESS_TOKEN
+    {
+        return Err(OidcApiError::InvalidRequest(format!(
+            "requested_token_type must be {TOKEN_TYPE_ACCESS_TOKEN:?}, got {t:?}"
+        )));
     }
 
     // 2. Audience selection — RFC 8693 §2.1 says either `audience` or
@@ -248,24 +248,24 @@ pub async fn handler(
     // `aud` MUST include the OP's own issuer URL. If absent or empty,
     // accept (downstream SPIRE Agent SVIDs sometimes omit `aud`);
     // if present, require the OP to be in the list.
-    if let Some(aud_claim) = &claims.aud {
-        if !aud_claim.contains(state.issuer_url.as_ref()) {
-            tracing::warn!(?aud_claim, op_issuer = %state.issuer_url, "subject_token aud mismatch");
-            return Err(OidcApiError::InvalidGrant(
-                "subject_token aud does not include OP issuer".into(),
-            ));
-        }
+    if let Some(aud_claim) = &claims.aud
+        && !aud_claim.contains(state.issuer_url.as_ref())
+    {
+        tracing::warn!(?aud_claim, op_issuer = %state.issuer_url, "subject_token aud mismatch");
+        return Err(OidcApiError::InvalidGrant(
+            "subject_token aud does not include OP issuer".into(),
+        ));
     }
 
     // (#55 HIGH-2) RFC 7519 §4.1.5 nbf check with 60s clock-skew leeway
     // (THREAT_MODEL T06).
-    if let Some(nbf) = claims.nbf {
-        if nbf > now.saturating_add(60) {
-            tracing::warn!(nbf, now, "subject_token not yet valid");
-            return Err(OidcApiError::InvalidGrant(
-                "subject_token not yet valid (nbf in the future)".into(),
-            ));
-        }
+    if let Some(nbf) = claims.nbf
+        && nbf > now.saturating_add(60)
+    {
+        tracing::warn!(nbf, now, "subject_token not yet valid");
+        return Err(OidcApiError::InvalidGrant(
+            "subject_token not yet valid (nbf in the future)".into(),
+        ));
     }
 
     let sub_exp = claims.exp.ok_or_else(|| {
@@ -413,7 +413,7 @@ mod tests {
     use crate::issuer::JwtIssuer;
     use crate::keystore::{InMemoryKeyStore, JwtKeyStore};
     use axum::body::Body;
-    use axum::http::{header, Method, Request};
+    use axum::http::{Method, Request, header};
     use http_body_util::BodyExt;
     use nucleus_oidc_core::JtiCache;
     use std::sync::Arc;

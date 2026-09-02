@@ -10,8 +10,8 @@
 //! - [`jws_verify_es256`] — Verify a JWS compact serialization against a JWK
 //! - [`chain_to_base64url`] — Encode a certificate chain as base64url DER strings
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::SystemRandom;
 use ring::signature::{self, EcdsaKeyPair};
 use sha2::{Digest, Sha256};
@@ -37,8 +37,8 @@ pub fn extract_ec_p256_jwk(cert: &Certificate) -> Result<JsonWebKey> {
     let spki = &parsed.tbs_certificate.subject_pki;
 
     // Validate this is an EC key on P-256
-    let ec_oid = x509_parser::oid_registry::asn1_rs::oid!(1.2.840 .10045 .2 .1);
-    let p256_oid = x509_parser::oid_registry::asn1_rs::oid!(1.2.840 .10045 .3 .1 .7);
+    let ec_oid = x509_parser::oid_registry::asn1_rs::oid!(1.2.840.10045.2.1);
+    let p256_oid = x509_parser::oid_registry::asn1_rs::oid!(1.2.840.10045.3.1.7);
 
     if spki.algorithm.algorithm != ec_oid {
         return Err(Error::Certificate(
@@ -276,9 +276,9 @@ pub fn chain_from_base64url(encoded: &[String]) -> Result<Vec<Certificate>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CsrOptions;
     use crate::ca::SelfSignedCa;
     use crate::identity::Identity;
-    use crate::CsrOptions;
     use std::time::Duration;
 
     /// Helper: generate a self-signed P-256 workload certificate.

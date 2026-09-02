@@ -8,10 +8,10 @@
 //! capabilities entirely. This matches the nucleus approach — the agent can
 //! still do useful work, but dangerous paths require explicit approval.
 
+use portcullis::CapabilityLevel;
 use portcullis::profile::{
     BudgetSpec, CapabilitiesSpec, ObligationSpec, PathsSpec, ProfileSpec, TimeSpec,
 };
-use portcullis::CapabilityLevel;
 
 use crate::finding::{Finding, ScanReport, Severity};
 

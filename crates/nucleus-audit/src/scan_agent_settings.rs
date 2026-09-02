@@ -10,12 +10,12 @@ use std::path::Path;
 use portcullis::{CapabilityLattice, CapabilityLevel, IncompatibilityConstraint};
 use serde::Deserialize;
 
+use crate::AuditError;
 use crate::finding::{AgentSettingsSummary, Finding, Severity};
 use crate::tool_pattern::{
-    bash_implied_capabilities, is_exfil_bash_pattern, is_sensitive_path_pattern,
-    is_unrestricted_pattern, mcp_implied_capabilities, parse_tool_permission, ToolKind,
+    ToolKind, bash_implied_capabilities, is_exfil_bash_pattern, is_sensitive_path_pattern,
+    is_unrestricted_pattern, mcp_implied_capabilities, parse_tool_permission,
 };
-use crate::AuditError;
 
 // --- Serde structs for an agent tool's settings.json ---
 
@@ -483,12 +483,16 @@ mod tests {
         std::fs::write(&path, r#"{ "skipDangerousModePermissionPrompt": true }"#).unwrap();
 
         let (findings, summary) = scan_agent_settings(&path).unwrap();
-        assert!(findings
-            .iter()
-            .any(|f| f.category == "safety_bypass" && f.severity == Severity::High),);
-        assert!(summary
-            .safety_bypasses
-            .contains(&"skipDangerousModePermissionPrompt".to_string()));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "safety_bypass" && f.severity == Severity::High),
+        );
+        assert!(
+            summary
+                .safety_bypasses
+                .contains(&"skipDangerousModePermissionPrompt".to_string())
+        );
     }
 
     #[test]

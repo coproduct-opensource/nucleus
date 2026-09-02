@@ -247,19 +247,18 @@ pub fn decide_upstream(
 
     // 2. The trifecta gate on the egress itself. Runs in both modes: observing
     //    must still produce the finding, or the report would depend on the mode.
-    if refusal.is_none() {
-        if let Ok(mut m) = monitor.lock() {
-            if let Some(f) = m.observe_call(name) {
-                eprintln!(
-                    "[mcp-guard] /!\\ egress flagged: `{}` while holding [{}] — {}",
-                    f.sink_tool,
-                    f.verdict.declared_inputs.join(" + "),
-                    f.verdict.reason
-                );
-                if mode.enforces() {
-                    refusal = Some(deny_reply(&id, &f.verdict.reason));
-                }
-            }
+    if refusal.is_none()
+        && let Ok(mut m) = monitor.lock()
+        && let Some(f) = m.observe_call(name)
+    {
+        eprintln!(
+            "[mcp-guard] /!\\ egress flagged: `{}` while holding [{}] — {}",
+            f.sink_tool,
+            f.verdict.declared_inputs.join(" + "),
+            f.verdict.reason
+        );
+        if mode.enforces() {
+            refusal = Some(deny_reply(&id, &f.verdict.reason));
         }
     }
 
@@ -290,12 +289,12 @@ pub fn handle_downstream(
         return;
     };
     // The discovery channel.
-    if let Some(tools) = parse_tools_list(&v) {
-        if let Ok(mut reg) = registry.lock() {
-            let bad = vet_tools_list(&mut reg, monitor, &tools, pin_file);
-            if let Ok(mut b) = blocked.lock() {
-                b.extend(bad);
-            }
+    if let Some(tools) = parse_tools_list(&v)
+        && let Ok(mut reg) = registry.lock()
+    {
+        let bad = vet_tools_list(&mut reg, monitor, &tools, pin_file);
+        if let Ok(mut b) = blocked.lock() {
+            b.extend(bad);
         }
     }
     // The call channel.
@@ -304,10 +303,10 @@ pub fn handle_downstream(
             .lock()
             .ok()
             .and_then(|mut p| p.remove(&id.to_string()));
-        if let Some(name) = name {
-            if let Ok(mut m) = monitor.lock() {
-                m.observe_result(&name);
-            }
+        if let Some(name) = name
+            && let Ok(mut m) = monitor.lock()
+        {
+            m.observe_result(&name);
         }
     }
 }

@@ -34,13 +34,13 @@
 //! any machine that has not installed it. The tool-proxy's `/v1/run` route is
 //! the same enforcement path with no vendor in it.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nucleus_client::sign_http_headers;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::provision::{Tier2Host, HOST_ARTIFACTS_DIR, HOST_STATE_DIR};
+use crate::provision::{HOST_ARTIFACTS_DIR, HOST_STATE_DIR, Tier2Host};
 
 /// Verify that Tier 2 actually works on this machine.
 #[derive(Args, Debug)]
@@ -748,7 +748,9 @@ fn check_art12_witnessed(host: &Tier2Host, pod: &Pod) -> Result<()> {
         );
     }
 
-    println!("  [OK] host witnessed {allows} allowed and {denials} refused decisions in its own Article 12 log");
+    println!(
+        "  [OK] host witnessed {allows} allowed and {denials} refused decisions in its own Article 12 log"
+    );
     Ok(())
 }
 

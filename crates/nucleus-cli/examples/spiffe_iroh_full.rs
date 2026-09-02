@@ -19,9 +19,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use iroh::{endpoint::presets, Endpoint, EndpointAddr, SecretKey};
+use iroh::{Endpoint, EndpointAddr, SecretKey, endpoint::presets};
 use nucleus_identity::{CaClient, Identity, SelfSignedCa};
-use nucleus_node_binding::{sign_binding, verify_binding, NodeBinding};
+use nucleus_node_binding::{NodeBinding, sign_binding, verify_binding};
 use serde::{Deserialize, Serialize};
 
 const ALPN: &[u8] = b"nucleus-spiffe-hail/1";

@@ -173,10 +173,10 @@ impl Certificate {
                 ext.parsed_extension()
             {
                 for name in &san.general_names {
-                    if let x509_parser::extensions::GeneralName::URI(uri) = name {
-                        if uri.starts_with("spiffe://") {
-                            return Identity::from_spiffe_uri(uri);
-                        }
+                    if let x509_parser::extensions::GeneralName::URI(uri) = name
+                        && uri.starts_with("spiffe://")
+                    {
+                        return Identity::from_spiffe_uri(uri);
                     }
                 }
             }

@@ -14,7 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::pkcs8::EncodePrivateKey;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header};
@@ -215,7 +215,7 @@ impl crate::issuer::SigningProvider for LocalIssuer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jsonwebtoken::{decode, Validation};
+    use jsonwebtoken::{Validation, decode};
 
     fn pod() -> CallSpiffeId {
         CallSpiffeId::pod("prod.example.com", "agents", "coder").unwrap()

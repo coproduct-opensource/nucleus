@@ -43,7 +43,7 @@
 //! values up to 1B µUSD) so proptest's default 256 cases run in
 //! milliseconds.
 
-use nucleus_econ_kernels::{run_vcg, IntegerBid, IntegerProposal};
+use nucleus_econ_kernels::{IntegerBid, IntegerProposal, run_vcg};
 use proptest::prelude::*;
 use std::collections::HashMap;
 

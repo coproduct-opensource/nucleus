@@ -6,8 +6,8 @@ use std::path::Path;
 
 use portcullis::CapabilityLevel;
 
-use crate::finding::{Finding, PermissionSurface, RuntimeMetrics, ScanReport, Severity};
 use crate::AuditError;
+use crate::finding::{Finding, PermissionSurface, RuntimeMetrics, ScanReport, Severity};
 
 /// Signed line from FileAuditBackend.
 #[derive(Debug, serde::Deserialize)]

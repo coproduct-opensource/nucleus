@@ -12,16 +12,16 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    http::{header, Method, Request, StatusCode},
+    http::{Method, Request, StatusCode, header},
 };
 use http_body_util::BodyExt;
 use nucleus_control_plane::{
     AgentDriverRef, Destination, InputRef, JobSpec, JobState, MockJobRunner,
 };
 use nucleus_control_plane_server::{
-    build_app, registry::RunnerRegistry, state::build_demo_state, AppState,
+    AppState, build_app, registry::RunnerRegistry, state::build_demo_state,
 };
-use nucleus_envelope::{verify_bundle, Bundle, TrustAnchor};
+use nucleus_envelope::{Bundle, TrustAnchor, verify_bundle};
 use nucleus_lineage::{InMemorySink, Jwks};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -737,8 +737,8 @@ async fn idempotency_key_with_different_body_creates_new_job() {
 
 mod spiffe_auth {
     use super::*;
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
-    use ed25519_dalek::{Signer as _, SigningKey, SECRET_KEY_LENGTH};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
+    use ed25519_dalek::{SECRET_KEY_LENGTH, Signer as _, SigningKey};
     use nucleus_control_plane_server::SpiffeAuthConfig;
     use nucleus_oidc_core::{Jwk, Jwks as OidcJwks};
     use std::time::{SystemTime, UNIX_EPOCH};

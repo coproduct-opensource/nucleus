@@ -38,7 +38,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hmac::{digest::KeyInit, Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use sha2::Sha256;
 
 pub mod drand;
@@ -530,14 +530,18 @@ mod tests {
 
         assert!(headers.timestamp > 0);
         assert_eq!(headers.actor, Some("test-actor".to_string()));
-        assert!(headers
-            .headers
-            .iter()
-            .any(|(k, _)| k == "x-nucleus-signature"));
-        assert!(headers
-            .headers
-            .iter()
-            .any(|(k, _)| k == "x-nucleus-timestamp"));
+        assert!(
+            headers
+                .headers
+                .iter()
+                .any(|(k, _)| k == "x-nucleus-signature")
+        );
+        assert!(
+            headers
+                .headers
+                .iter()
+                .any(|(k, _)| k == "x-nucleus-timestamp")
+        );
         assert!(headers.headers.iter().any(|(k, _)| k == "x-nucleus-actor"));
     }
 
@@ -563,14 +567,18 @@ mod tests {
         assert!(headers.timestamp > 0);
         assert_eq!(headers.drand_round, 12345);
         assert_eq!(headers.actor, Some("test-actor".to_string()));
-        assert!(headers
-            .headers
-            .iter()
-            .any(|(k, _)| k == "x-nucleus-drand-round"));
-        assert!(headers
-            .headers
-            .iter()
-            .any(|(k, v)| k == "x-nucleus-drand-round" && v == "12345"));
+        assert!(
+            headers
+                .headers
+                .iter()
+                .any(|(k, _)| k == "x-nucleus-drand-round")
+        );
+        assert!(
+            headers
+                .headers
+                .iter()
+                .any(|(k, v)| k == "x-nucleus-drand-round" && v == "12345")
+        );
     }
 
     #[test]

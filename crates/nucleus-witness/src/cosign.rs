@@ -23,9 +23,9 @@
 //!
 //! [c2sp.org/tlog-cosignature]: https://c2sp.org/tlog-cosignature
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use nucleus_lineage::{ed25519_key_id, SIG_LINE_PREFIX, SIG_TYPE_COSIGNATURE};
+use nucleus_lineage::{SIG_LINE_PREFIX, SIG_TYPE_COSIGNATURE, ed25519_key_id};
 
 /// A witness signing identity: an Ed25519 key plus its C2SP name.
 pub struct WitnessKey {

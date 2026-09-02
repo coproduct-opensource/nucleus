@@ -22,9 +22,9 @@ use tokio::process::Command;
 
 use nucleus_spec::PodSpec;
 
-use crate::net;
 #[cfg(target_os = "linux")]
 use crate::ApiError;
+use crate::net;
 
 // ---------------------------------------------------------------------------
 // Config structs
@@ -353,14 +353,14 @@ pub(crate) fn prepare_jail(
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn cleanup_jail(layout: &JailLayout) {
     let pod_dir = layout.jail_root.parent().unwrap_or(&layout.jail_root);
-    if let Err(err) = std::fs::remove_dir_all(pod_dir) {
-        if err.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!(
-                path = %pod_dir.display(),
-                error = %err,
-                "failed to remove pod jail directory; leaking disk, not isolation"
-            );
-        }
+    if let Err(err) = std::fs::remove_dir_all(pod_dir)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            path = %pod_dir.display(),
+            error = %err,
+            "failed to remove pod jail directory; leaking disk, not isolation"
+        );
     }
 }
 

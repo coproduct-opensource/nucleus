@@ -126,6 +126,18 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 
 [workspace.lints.clippy]
 type_complexity = "allow"
+# Edition 2024 enables let-chains, which makes ~100 existing `if a { if let b }`
+# nests collapsible. That is a genuine readability win and it is NOT this
+# change: the value here is the edition, and bundling a hundred mechanical
+# rewrites would make the migration unreviewable while risking a subtle
+# behaviour change in any one of them (a collapse alters drop order of the
+# outer temporary).
+#
+# Allowed here so the migration lands on its own merits, and paid down as its
+# own reviewable pass. `cargo clippy --fix` does most of it but does not
+# converge — collapsing one nest exposes the next — so it needs a human read,
+# which is exactly the argument for separating it.
+collapsible_if = "allow"
 
 [workspace.lints.rust]
 # kani BMC harnesses are `#[cfg(kani)]`; allow the cfg for workspace-adopting

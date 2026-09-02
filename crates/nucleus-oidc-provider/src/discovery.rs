@@ -18,11 +18,11 @@
 
 use axum::{
     extract::State,
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -113,21 +113,20 @@ pub async fn handler(
         .map_err(|e| OidcApiError::Internal(format!("discovery serialize: {e}")))?;
     let etag = etag_for(&json);
 
-    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
-        if let Ok(s) = if_none_match.to_str() {
-            if s == etag {
-                let mut response = StatusCode::NOT_MODIFIED.into_response();
-                let h = response.headers_mut();
-                h.insert(
-                    header::CACHE_CONTROL,
-                    HeaderValue::from_static("public, max-age=300, must-revalidate"),
-                );
-                if let Ok(v) = HeaderValue::from_str(&etag) {
-                    h.insert(header::ETAG, v);
-                }
-                return Ok(response);
-            }
+    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH)
+        && let Ok(s) = if_none_match.to_str()
+        && s == etag
+    {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        let h = response.headers_mut();
+        h.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=300, must-revalidate"),
+        );
+        if let Ok(v) = HeaderValue::from_str(&etag) {
+            h.insert(header::ETAG, v);
         }
+        return Ok(response);
     }
 
     let mut response = (StatusCode::OK, json).into_response();
@@ -249,9 +248,11 @@ mod tests {
         let resp = get_discovery(app("https://oidc.nucleus.example/")).await;
         let body = body_to_value(resp.into_body()).await;
         let grants = body["grant_types_supported"].as_array().unwrap();
-        assert!(grants
-            .iter()
-            .any(|v| v == "urn:ietf:params:oauth:grant-type:token-exchange"));
+        assert!(
+            grants
+                .iter()
+                .any(|v| v == "urn:ietf:params:oauth:grant-type:token-exchange")
+        );
     }
 
     #[tokio::test]

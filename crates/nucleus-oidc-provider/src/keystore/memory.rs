@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::{Signer, SigningKey};
 
-use super::{rfc7638_kid, JwtKeyStore, KeyStoreError, RotateOutcome, SignedBytes, VerifyKey};
+use super::{JwtKeyStore, KeyStoreError, RotateOutcome, SignedBytes, VerifyKey, rfc7638_kid};
 
 /// Default rotation grace window. Tokens signed pre-rotation verify
 /// for this long after the rotation event. Matches the value

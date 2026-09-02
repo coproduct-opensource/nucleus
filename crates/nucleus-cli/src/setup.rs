@@ -2,7 +2,7 @@
 //!
 //! Provisions a Lima VM with Firecracker, downloads artifacts, and generates secrets.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use std::path::PathBuf;
 use std::process::Command;

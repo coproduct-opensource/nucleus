@@ -49,19 +49,19 @@ mod oracle;
 mod profile;
 mod rebate;
 
-pub use assurance::{assess_rung, AssuranceRung};
+pub use assurance::{AssuranceRung, assess_rung};
 pub use claim::{
-    canonical_claim_bytes, sign_claim, verify_claim, ClaimError, SignedExternalityClaim,
+    ClaimError, SignedExternalityClaim, canonical_claim_bytes, sign_claim, verify_claim,
 };
 pub use cube::{AggregateBucket, ExternalityCube, PullbackError, WindowId};
-pub use dim::{ResourceDim, RESOURCE_DIM_DOMAIN};
+pub use dim::{RESOURCE_DIM_DOMAIN, ResourceDim};
 pub use oracle::{
-    verify_vca_claim, verify_vca_claim_rung, OracleError, OracleRegistry, TeeAttestation,
-    TeeVendor, UpperEnvelopeProof, VcaExternalityClaim,
+    OracleError, OracleRegistry, TeeAttestation, TeeVendor, UpperEnvelopeProof,
+    VcaExternalityClaim, verify_vca_claim, verify_vca_claim_rung,
 };
 pub use profile::{
-    canonical_externality_bytes, externality_digest, ExternalityProfile, PROFILE_DOMAIN,
+    ExternalityProfile, PROFILE_DOMAIN, canonical_externality_bytes, externality_digest,
 };
 pub use rebate::{
-    emit_rebates, RebateError, WitnessFederation, WitnessShare, TOTAL_SHARE_BASIS_POINTS,
+    RebateError, TOTAL_SHARE_BASIS_POINTS, WitnessFederation, WitnessShare, emit_rebates,
 };

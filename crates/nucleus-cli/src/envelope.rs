@@ -8,13 +8,13 @@
 //!
 //! [`Bundle`]: nucleus_envelope::Bundle
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use nucleus_envelope::{verify_bundle, BundleBuilder, TrustAnchor};
-use nucleus_lineage::{read_checkpoints, CallSpiffeId, JsonlSink, Jwks, SignedTreeHead};
+use nucleus_envelope::{BundleBuilder, TrustAnchor, verify_bundle};
+use nucleus_lineage::{CallSpiffeId, JsonlSink, Jwks, SignedTreeHead, read_checkpoints};
 
 #[derive(Args, Debug)]
 pub struct EnvelopeArgs {

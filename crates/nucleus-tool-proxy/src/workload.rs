@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 
 use nucleus_ifc_kernel::extracted::identity::{
-    ident_may_deliver, mat_label, MaterialKind, Principal,
+    MaterialKind, Principal, ident_may_deliver, mat_label,
 };
 use nucleus_ifc_kernel::extracted::ifc_confidentiality::ConfLevel;
 use nucleus_spec::WorkloadSpec;
@@ -1211,7 +1211,7 @@ mod tests {
     // model refuses AND the overlay omits. Neither side proves the other; the
     // pointwise agreement is the claim.
 
-    use nucleus_ifc_kernel::extracted::identity::{ident_may_deliver, MaterialKind, Principal};
+    use nucleus_ifc_kernel::extracted::identity::{MaterialKind, Principal, ident_may_deliver};
 
     /// An INDEPENDENT oracle for the production `env_key_material` classifier —
     /// deliberately a different structure (an exact-match lookup table plus two

@@ -236,17 +236,16 @@ impl SpiffeServerCertVerifier {
         let expected_prefix = format!("spiffe://{}/", self.trust_domain);
 
         for ext in cert.extensions() {
-            if ext.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME {
-                if let Ok((_, san)) =
+            if ext.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME
+                && let Ok((_, san)) =
                     x509_parser::extensions::SubjectAlternativeName::from_der(ext.value)
-                {
-                    for name in &san.general_names {
-                        // x509_parser uses URI variant (not UniformResourceIdentifier)
-                        if let x509_parser::extensions::GeneralName::URI(uri) = name {
-                            if uri.starts_with(&expected_prefix) {
-                                return Some(uri.to_string());
-                            }
-                        }
+            {
+                for name in &san.general_names {
+                    // x509_parser uses URI variant (not UniformResourceIdentifier)
+                    if let x509_parser::extensions::GeneralName::URI(uri) = name
+                        && uri.starts_with(&expected_prefix)
+                    {
+                        return Some(uri.to_string());
                     }
                 }
             }

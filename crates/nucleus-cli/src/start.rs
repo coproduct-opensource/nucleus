@@ -2,7 +2,7 @@
 //!
 //! Ensures the Lima VM is running and starts nucleus-node service.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use std::process::Command;
 use std::thread;

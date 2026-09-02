@@ -18,8 +18,8 @@ use ed25519_dalek::SigningKey;
 use nucleus_econ_kernels::extracted::pigou_aeneas::{
     pigouvian_re_weight, pigouvian_re_weight_multi_dim,
 };
-use nucleus_econ_kernels::{effective_minus_pigou_micro, PigouvianRates};
-use nucleus_externality::{sign_claim, ExternalityProfile, ResourceDim, SignedExternalityClaim};
+use nucleus_econ_kernels::{PigouvianRates, effective_minus_pigou_micro};
+use nucleus_externality::{ExternalityProfile, ResourceDim, SignedExternalityClaim, sign_claim};
 use proptest::prelude::*;
 
 /// Build a single-dimension externality profile with `units_micro =

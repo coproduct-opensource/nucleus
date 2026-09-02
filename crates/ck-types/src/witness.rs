@@ -121,7 +121,7 @@ impl SignatureVerifier {
     pub fn verify(&self, bundle: &WitnessBundle) -> Result<(), Vec<String>> {
         if self.trusted_keys.is_empty() {
             return Err(vec![
-                "No trusted keys configured — rejecting (fail-closed)".to_string()
+                "No trusted keys configured — rejecting (fail-closed)".to_string(),
             ]);
         }
 

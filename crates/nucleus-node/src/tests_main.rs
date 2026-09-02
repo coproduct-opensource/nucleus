@@ -133,7 +133,7 @@ async fn vmm_preflight_refuses_output_without_a_version() {
 }
 // ── Egress chain: correspondence with the Lean confinement theorem ────────
 
-use crate::net::{egress_chain, model_chain, ResolvedDnsEntry, RuleKind};
+use crate::net::{ResolvedDnsEntry, RuleKind, egress_chain, model_chain};
 use nucleus_ifc_kernel::extracted::egress as eg;
 
 fn spec_from(deny: &[&str], allow: &[&str]) -> nucleus_spec::NetworkSpec {
@@ -258,7 +258,7 @@ fn an_ipv6_rule_falls_outside_the_model_rather_than_being_assumed_safe() {
 
 // ── Identity is gated on egress confinement ───────────────────────────────
 
-use crate::net::{decide_identity_grant, IdentityGrant};
+use crate::net::{IdentityGrant, decide_identity_grant};
 
 fn net_spec(allow: &[&str]) -> nucleus_spec::NetworkSpec {
     serde_json::from_str(&format!(
@@ -404,7 +404,7 @@ fn dns_entry(host: &str, a: u8, b: u8, c: u8, d: u8) -> ResolvedDnsEntry {
 /// re-opening of the channel.
 #[test]
 fn the_dns_proxy_has_no_upstream_and_cannot_forward() {
-    use crate::net::{dnsmasq_config, DNS_FORWARDING_DIRECTIVES};
+    use crate::net::{DNS_FORWARDING_DIRECTIVES, dnsmasq_config};
     let config = dnsmasq_config(
         std::net::Ipv4Addr::new(10, 200, 0, 2),
         &[dns_entry("api.example.test", 93, 184, 216, 34)],
@@ -443,7 +443,7 @@ fn only_allowlisted_names_get_an_answer() {
 /// wrong, and it is the one where getting it wrong is a wide-open resolver.
 #[test]
 fn an_empty_allowlist_answers_nothing_rather_than_forwarding() {
-    use crate::net::{dnsmasq_config, DNS_FORWARDING_DIRECTIVES};
+    use crate::net::{DNS_FORWARDING_DIRECTIVES, dnsmasq_config};
     let config = dnsmasq_config(std::net::Ipv4Addr::new(10, 200, 0, 2), &[]);
     assert!(!config.lines().any(|l| l.starts_with("address=/")));
     for directive in DNS_FORWARDING_DIRECTIVES {
@@ -607,9 +607,11 @@ async fn admit_posture_refuses_a_lying_digest() {
     let spec = posture_spec(Some(&label), Some(&path));
     // Even trusting the LIE, the measurement mismatch must refuse.
     let reg = posture::PostureRegistry::from_operator_str(&format!("identity_nondelivery@{lie}"));
-    assert!(posture::admit_posture(&spec, Uuid::new_v4(), &reg)
-        .await
-        .is_err());
+    assert!(
+        posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -620,9 +622,11 @@ async fn admit_posture_refuses_an_untrusted_artifact() {
     let label = format!("identity_nondelivery@{digest}");
     let spec = posture_spec(Some(&label), Some(&path));
     let reg = posture::PostureRegistry::default();
-    assert!(posture::admit_posture(&spec, Uuid::new_v4(), &reg)
-        .await
-        .is_err());
+    assert!(
+        posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -632,9 +636,11 @@ async fn admit_posture_refuses_a_claim_with_no_image_to_measure() {
     let label = format!("identity_nondelivery@{}", "a".repeat(64));
     let spec = posture_spec(Some(&label), None);
     let reg = posture::PostureRegistry::from_operator_str(&label);
-    assert!(posture::admit_posture(&spec, Uuid::new_v4(), &reg)
-        .await
-        .is_err());
+    assert!(
+        posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+            .await
+            .is_err()
+    );
 }
 
 /// The perturbation the plan calls for: flipping one byte of the artifact
@@ -647,9 +653,11 @@ async fn admit_posture_one_byte_of_drift_reds_the_gate() {
     let reg = posture::PostureRegistry::from_operator_str(&label);
     // As built, admitted.
     let spec = posture_spec(Some(&label), Some(&path));
-    assert!(posture::admit_posture(&spec, Uuid::new_v4(), &reg)
-        .await
-        .is_ok());
+    assert!(
+        posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+            .await
+            .is_ok()
+    );
     // Rewrite the rootfs with one byte changed: same claim, same registry, but
     // the measurement no longer matches.
     tokio::fs::write(&path, b"artifact v2").await.unwrap();

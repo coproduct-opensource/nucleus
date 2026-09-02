@@ -17,7 +17,7 @@
 
 use std::process::Command as ProcessCommand;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
 /// mode: monotonicity + `may_not_modify`, signatures skipped). Exits the process
 /// with code 1 on rejection so CI fails the PR.
 fn policy_gate(base: &str, candidate: &str, changed_files: Option<&str>) -> Result<()> {
-    use ck_kernel::{gate_manifest_amendment, GateMode};
+    use ck_kernel::{GateMode, gate_manifest_amendment};
     use ck_types::{AdmissionDecision, PolicyManifest};
 
     let base_src =
@@ -187,10 +187,10 @@ fn collect_sh(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Strin
                 continue;
             }
             collect_sh(root, &path, out)?;
-        } else if name.ends_with(".sh") {
-            if let Ok(rel) = path.strip_prefix(root) {
-                out.push(rel.to_string_lossy().into_owned());
-            }
+        } else if name.ends_with(".sh")
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            out.push(rel.to_string_lossy().into_owned());
         }
     }
     Ok(())

@@ -46,7 +46,7 @@ use nucleus_externality::{ExternalityProfile, ResourceDim};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::vcg::{run_vcg, Clearing, IntegerBid, IntegerProposal, VcgError};
+use crate::vcg::{Clearing, IntegerBid, IntegerProposal, VcgError, run_vcg};
 
 // ── Tier-1 published λ defaults (governance parameters) ─────────────────
 //

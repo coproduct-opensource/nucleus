@@ -149,16 +149,16 @@ pub async fn verify_sandbox(
     }
 
     // Tier 3: Try orchestrator token
-    if let Some(ref token) = config.sandbox_token {
-        if !token.is_empty() {
-            match try_orchestrator_token(token, &config.auth_secret) {
-                Ok(proof) => {
-                    info!("sandbox proof established: {proof}");
-                    return Ok(proof);
-                }
-                Err(e) => {
-                    warn!("orchestrator token invalid: {e}");
-                }
+    if let Some(ref token) = config.sandbox_token
+        && !token.is_empty()
+    {
+        match try_orchestrator_token(token, &config.auth_secret) {
+            Ok(proof) => {
+                info!("sandbox proof established: {proof}");
+                return Ok(proof);
+            }
+            Err(e) => {
+                warn!("orchestrator token invalid: {e}");
             }
         }
     }
@@ -338,10 +338,10 @@ fn extract_spiffe_id(cert: &x509_parser::prelude::X509Certificate<'_>) -> Option
     for ext in cert.extensions() {
         if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
             for name in &san.general_names {
-                if let GeneralName::URI(uri) = name {
-                    if uri.starts_with("spiffe://") {
-                        return Some(uri.to_string());
-                    }
+                if let GeneralName::URI(uri) = name
+                    && uri.starts_with("spiffe://")
+                {
+                    return Some(uri.to_string());
                 }
             }
         }
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_expired_token_rejected() {
-        use hmac::{digest::KeyInit, Mac};
+        use hmac::{Mac, digest::KeyInit};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let secret = b"test-secret";

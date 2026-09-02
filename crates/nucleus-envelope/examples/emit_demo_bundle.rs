@@ -10,10 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
-use nucleus_envelope::{verify_bundle, Bundle, BundleBuilder, TrustAnchor};
+use nucleus_envelope::{Bundle, BundleBuilder, TrustAnchor, verify_bundle};
 use nucleus_lineage::{
-    edge_content_hash, CallSpiffeId, Ed25519Witness, EdgeKind, EdgeSigner, Jwks, LineageEdge,
-    LineageSink, LocalIssuer, MerkleConfig, MerkleSink, Proof,
+    CallSpiffeId, Ed25519Witness, EdgeKind, EdgeSigner, Jwks, LineageEdge, LineageSink,
+    LocalIssuer, MerkleConfig, MerkleSink, Proof, edge_content_hash,
 };
 
 fn pod() -> CallSpiffeId {

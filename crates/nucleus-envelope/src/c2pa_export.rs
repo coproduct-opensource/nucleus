@@ -27,7 +27,7 @@
 //! [`Bundle::export_c2pa_manifest_with_signer`].
 
 use c2pa::assertions::DataHash;
-use c2pa::{hash_stream_by_alg, Builder, EphemeralSigner, HashRange, Signer};
+use c2pa::{Builder, EphemeralSigner, HashRange, Signer, hash_stream_by_alg};
 use thiserror::Error;
 
 use crate::bundle::Bundle;

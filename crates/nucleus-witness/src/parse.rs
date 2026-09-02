@@ -21,8 +21,8 @@
 //! [c2sp.org/tlog-witness]: https://c2sp.org/tlog-witness
 //! [c2sp.org/signed-note]: https://c2sp.org/signed-note
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use nucleus_lineage::{parse_signature_line, ParsedSignatureLine, SIG_LINE_PREFIX};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use nucleus_lineage::{ParsedSignatureLine, SIG_LINE_PREFIX, parse_signature_line};
 use thiserror::Error;
 
 /// The maximum number of consistency-proof lines a client may send
@@ -292,8 +292,8 @@ fn split_keep_offsets(s: &str) -> Vec<(&str, usize)> {
 mod tests {
     use super::*;
     use nucleus_lineage::{
-        ed25519_key_id, format_checkpoint_body, format_signature_line, Ed25519Witness,
-        SIG_TYPE_ED25519,
+        Ed25519Witness, SIG_TYPE_ED25519, ed25519_key_id, format_checkpoint_body,
+        format_signature_line,
     };
 
     /// Build a well-formed add-checkpoint body signed by `log_key` under

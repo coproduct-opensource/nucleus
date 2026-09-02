@@ -18,7 +18,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use nucleus_github_oidc::{GitHubOidcConfig, GitHubOidcValidator, OidcError};
 use nucleus_oidc_core::DiscoveryKeyResolver;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

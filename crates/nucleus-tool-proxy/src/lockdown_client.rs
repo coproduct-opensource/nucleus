@@ -9,18 +9,18 @@
 //! - HMAC auth on every gRPC call (x-nucleus-timestamp/signature/method)
 //! - Scope filtering on tool-proxy side (conservative: locks on unknown scopes)
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hmac::{digest::KeyInit, Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use nucleus_proto::nucleus_node::node_service_client::NodeServiceClient;
 use nucleus_proto::nucleus_node::{LockdownAck, LockdownCommand};
 use sha2::Sha256;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
-use tonic::Request;
 
 /// Configuration for the lockdown streaming watcher.
 pub struct LockdownWatcherConfig {

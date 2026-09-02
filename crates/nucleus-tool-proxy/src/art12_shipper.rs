@@ -30,10 +30,10 @@
 //! would mean executing operations whose evidence is only in a place the pod
 //! controls.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use hmac::{digest::KeyInit, Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use sha2::Sha256;
 
 /// How many records may be in flight before the shipper calls it a failure.

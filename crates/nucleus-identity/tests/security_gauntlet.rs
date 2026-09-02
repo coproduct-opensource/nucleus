@@ -14,7 +14,7 @@
 //! - SPIFFE security: https://tag-security.cncf.io/community/assessments/projects/spiffe-spire/self-assessment/
 
 use nucleus_identity::{
-    ca::CaClient, CsrOptions, Error, Identity, IdentityVerifier, SelfSignedCa, TrustDomainVerifier,
+    CsrOptions, Error, Identity, IdentityVerifier, SelfSignedCa, TrustDomainVerifier, ca::CaClient,
 };
 use proptest::prelude::*;
 use std::time::Duration;

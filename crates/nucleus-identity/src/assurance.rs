@@ -25,8 +25,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::attestation::{verify_attested_svid, AttestationRequirements, LaunchAttestation};
 use crate::Result;
+use crate::attestation::{AttestationRequirements, LaunchAttestation, verify_attested_svid};
 
 /// Normalized assurance level, comparable across attestation roots.
 ///
@@ -354,12 +354,16 @@ mod tests {
 
         // Absent + require → Err (fail-closed); absent + !require → Ok(None).
         let (plain, _) = mint_chain(false).await;
-        assert!(backend
-            .verify_svid(&plain, &AttestationRequirements::any(), true)
-            .is_err());
-        assert!(backend
-            .verify_svid(&plain, &AttestationRequirements::any(), false)
-            .expect("absent-not-required ok")
-            .is_none());
+        assert!(
+            backend
+                .verify_svid(&plain, &AttestationRequirements::any(), true)
+                .is_err()
+        );
+        assert!(
+            backend
+                .verify_svid(&plain, &AttestationRequirements::any(), false)
+                .expect("absent-not-required ok")
+                .is_none()
+        );
     }
 }

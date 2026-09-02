@@ -478,11 +478,13 @@ mod tests {
     /// the check is not simply refusing every configuration.
     #[test]
     fn an_allowlist_that_does_not_reach_the_upstream_is_accepted() {
-        assert!(reject_bypassable_upstreams(
-            &[spec()],
-            &["registry.example".to_string(), "deps.example".to_string()]
-        )
-        .is_ok());
+        assert!(
+            reject_bypassable_upstreams(
+                &[spec()],
+                &["registry.example".to_string(), "deps.example".to_string()]
+            )
+            .is_ok()
+        );
         assert!(reject_bypassable_upstreams(&[spec()], &[]).is_ok());
     }
 

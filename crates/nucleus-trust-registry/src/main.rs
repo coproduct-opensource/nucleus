@@ -21,8 +21,8 @@ use clap::{Parser, Subcommand};
 use nucleus_lineage::checkpoint::Ed25519Witness;
 use nucleus_oidc_core::Jwks;
 use nucleus_trust_registry::{
-    check_no_silent_rotation, check_pr_diff, compile, verify_proof_of_control, DomainEnrollment,
-    SealedLog, TrustLog,
+    DomainEnrollment, SealedLog, TrustLog, check_no_silent_rotation, check_pr_diff, compile,
+    verify_proof_of_control,
 };
 use nucleus_witness::cosign::WitnessKey;
 

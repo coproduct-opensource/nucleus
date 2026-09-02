@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use ed25519_dalek::SigningKey;
 use nucleus_provenance_memory::{SignedTaskRef, TokenError, TokenScope};
 use portcullis_core::discharge::{
-    preflight_action, ActionTerm, DischargedBundle, PreflightResult, VerifiedScope,
+    ActionTerm, DischargedBundle, PreflightResult, VerifiedScope, preflight_action,
 };
 use portcullis_core::flow::NodeKind;
 use portcullis_core::ifc_api::FlowTracker;
@@ -38,8 +38,8 @@ use portcullis_core::labeled::{self, Labeled};
 use portcullis_core::{CapabilityLattice, CapabilityLevel, IFCLabel, Operation, SinkClass};
 
 use crate::{
-    production_effects, AgentSpawnEffect, EffectError, FileEffect, GitEffect, ShellEffect,
-    ShellOutput, WebEffect,
+    AgentSpawnEffect, EffectError, FileEffect, GitEffect, ShellEffect, ShellOutput, WebEffect,
+    production_effects,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

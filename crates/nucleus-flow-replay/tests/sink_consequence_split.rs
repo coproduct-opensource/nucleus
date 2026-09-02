@@ -22,7 +22,7 @@
 
 use std::collections::BTreeMap;
 
-use nucleus_flow_replay::{parse_corpus, replay, StepOutcome};
+use nucleus_flow_replay::{StepOutcome, parse_corpus, replay};
 
 fn sweep() -> Vec<nucleus_flow_replay::Trace> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -138,7 +138,7 @@ fn report_refusal_split_by_sink_consequence() {
 /// be evaluated against the same corpus the ceiling was measured on.
 #[test]
 fn report_what_grading_would_change() {
-    use portcullis::exposure_core::{graded_taint_response, TaintResponse};
+    use portcullis::exposure_core::{TaintResponse, graded_taint_response};
 
     let (tainted, clean) = measure();
     let clean_verdict: BTreeMap<&str, &str> = clean

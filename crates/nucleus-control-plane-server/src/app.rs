@@ -3,9 +3,9 @@
 use std::time::Duration;
 
 use axum::{
+    Router,
     http::StatusCode,
     routing::{get, post},
-    Router,
 };
 use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer, trace::TraceLayer};
 

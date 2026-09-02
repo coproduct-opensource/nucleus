@@ -44,7 +44,7 @@ use crate::attestation::LaunchAttestation;
 use crate::ca::CaClient;
 use crate::certificate::{Certificate, PrivateKey, TrustBundle, WorkloadCertificate};
 use crate::identity::Identity;
-use crate::{oid, Error, Result};
+use crate::{Error, Result, oid};
 use async_trait::async_trait;
 use rcgen::PublicKeyData;
 use rcgen::{
@@ -173,10 +173,10 @@ impl SelfSignedCa {
             for ext in extensions {
                 if let ParsedExtension::SubjectAlternativeName(san) = ext {
                     for name in &san.general_names {
-                        if let GeneralName::URI(uri) = name {
-                            if uri.starts_with("spiffe://") {
-                                return Ok(uri.to_string());
-                            }
+                        if let GeneralName::URI(uri) = name
+                            && uri.starts_with("spiffe://")
+                        {
+                            return Ok(uri.to_string());
                         }
                     }
                 }
@@ -491,11 +491,11 @@ use x509_parser::oid_registry::asn1_rs::oid;
 /// Detect the rcgen SignatureAlgorithm from an x509_parser AlgorithmIdentifier.
 fn detect_algorithm(alg: &AlgorithmIdentifier<'_>) -> Option<&'static SignatureAlgorithm> {
     // Known OIDs for public key algorithms
-    let rsa_oid = oid!(1.2.840 .113549 .1 .1 .1); // RSA encryption
-    let ec_oid = oid!(1.2.840 .10045 .2 .1); // id-ecPublicKey
-    let ed25519_oid = oid!(1.3.101 .112); // Ed25519
-    let secp256r1_oid = oid!(1.2.840 .10045 .3 .1 .7); // secp256r1/prime256v1
-    let secp384r1_oid = oid!(1.3.132 .0 .34); // secp384r1
+    let rsa_oid = oid!(1.2.840.113549.1.1.1); // RSA encryption
+    let ec_oid = oid!(1.2.840.10045.2.1); // id-ecPublicKey
+    let ed25519_oid = oid!(1.3.101.112); // Ed25519
+    let secp256r1_oid = oid!(1.2.840.10045.3.1.7); // secp256r1/prime256v1
+    let secp384r1_oid = oid!(1.3.132.0.34); // secp384r1
 
     // Check for Ed25519
     if alg.algorithm == ed25519_oid {
@@ -510,14 +510,14 @@ fn detect_algorithm(alg: &AlgorithmIdentifier<'_>) -> Option<&'static SignatureA
     // Check for EC keys - need to check the curve parameter
     if alg.algorithm == ec_oid {
         // Parse parameters to determine curve
-        if let Some(params) = &alg.parameters {
-            if let Ok(curve_oid) = params.as_oid() {
-                if curve_oid == secp256r1_oid {
-                    return Some(&rcgen::PKCS_ECDSA_P256_SHA256);
-                }
-                if curve_oid == secp384r1_oid {
-                    return Some(&rcgen::PKCS_ECDSA_P384_SHA384);
-                }
+        if let Some(params) = &alg.parameters
+            && let Ok(curve_oid) = params.as_oid()
+        {
+            if curve_oid == secp256r1_oid {
+                return Some(&rcgen::PKCS_ECDSA_P256_SHA256);
+            }
+            if curve_oid == secp384r1_oid {
+                return Some(&rcgen::PKCS_ECDSA_P384_SHA384);
             }
         }
     }
@@ -1085,7 +1085,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sign_fused_csr_embeds_fingerprint() {
-        use crate::attestation::{extract_permission_fingerprint, LaunchAttestation};
+        use crate::attestation::{LaunchAttestation, extract_permission_fingerprint};
 
         let ca = SelfSignedCa::new("nucleus.local").unwrap();
         let identity = Identity::new("nucleus.local", "default", "fused-agent");
@@ -1155,7 +1155,7 @@ mod tests {
     #[tokio::test]
     async fn a_mediator_key_binding_extension_is_surfaced_by_the_verifier() {
         use crate::assurance::{SelfMeasuredBackend, SvidAttestationBackend};
-        use crate::attestation::{extract_mediation_key_binding, AttestationRequirements};
+        use crate::attestation::{AttestationRequirements, extract_mediation_key_binding};
 
         let ca = SelfSignedCa::new("nucleus.local").unwrap();
         let identity = Identity::new("nucleus.local", "default", "mediator-agent");
@@ -1201,7 +1201,7 @@ mod tests {
     #[tokio::test]
     async fn sign_attested_and_bound_csr_embeds_a_verifiable_binding() {
         use crate::assurance::{SelfMeasuredBackend, SvidAttestationBackend};
-        use crate::attestation::{extract_mediation_key_binding, AttestationRequirements};
+        use crate::attestation::{AttestationRequirements, extract_mediation_key_binding};
         use crate::ca::CaClient;
 
         let ca = SelfSignedCa::new("nucleus.local").unwrap();

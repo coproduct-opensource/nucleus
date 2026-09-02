@@ -28,8 +28,8 @@
 //! ```
 
 use portcullis_core::{
-    delegation::DelegationScope, AuthorityLevel, ConfLevel, DerivationClass, Freshness, IFCLabel,
-    IntegLevel, ProvenanceSet, SinkClass,
+    AuthorityLevel, ConfLevel, DerivationClass, Freshness, IFCLabel, IntegLevel, ProvenanceSet,
+    SinkClass, delegation::DelegationScope,
 };
 use x509_parser::prelude::*;
 
@@ -174,7 +174,7 @@ pub fn extract_peer_ifc(
 ) -> Option<Result<(IFCLabel, DelegationScope), ExtensionError>> {
     let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
 
-    let target_oid = x509_parser::oid_registry::asn1_rs::oid!(1.3.6 .1 .4 .1 .57212 .1 .3);
+    let target_oid = x509_parser::oid_registry::asn1_rs::oid!(1.3.6.1.4.1.57212.1.3);
 
     for ext in cert.extensions() {
         if ext.oid == target_oid {

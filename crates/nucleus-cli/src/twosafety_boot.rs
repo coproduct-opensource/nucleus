@@ -51,14 +51,14 @@
 //! [`TwoSafetyError::ControlDidNotFire`] as its own outcome rather than as a
 //! pass.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nucleus_client::sign_http_headers;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::provision::{Tier2Host, HOST_ARTIFACTS_DIR, HOST_STATE_DIR, NODE_ENV_PATH};
+use crate::provision::{HOST_ARTIFACTS_DIR, HOST_STATE_DIR, NODE_ENV_PATH, Tier2Host};
 use crate::twosafety::{self, Boot, CheckFailure, RunArtifacts, RunFacts, TwoSafetyError};
 
 /// The environment variable the secret rides into the node's process.
@@ -696,10 +696,10 @@ impl PodBoot {
         };
         let deadline = Instant::now() + BOOT_DEADLINE;
         loop {
-            if let Ok(body) = std::fs::read_to_string(&path) {
-                if body.contains(BOOT_COMPLETE_MARKER) {
-                    break;
-                }
+            if let Ok(body) = std::fs::read_to_string(&path)
+                && body.contains(BOOT_COMPLETE_MARKER)
+            {
+                break;
             }
             if Instant::now() >= deadline {
                 let tail = std::fs::read_to_string(&path).unwrap_or_default();

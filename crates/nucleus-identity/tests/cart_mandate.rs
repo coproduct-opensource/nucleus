@@ -11,14 +11,14 @@
 //! interesting claim is UNOBTAINABILITY, so most of this file is attempts to
 //! forge one.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use nucleus_identity::JsonWebKey;
 use nucleus_identity::approval_bundle::{
     ApprovalBundleBuilder, ApprovalBundleClaims, ApprovalBundleVerifier,
 };
-use nucleus_identity::JsonWebKey;
 use nucleus_recompute::cart::{
-    cart_content_hash_hex, verify_mandate_covers_cart, Cart, CartItem, CartOutcome,
+    Cart, CartItem, CartOutcome, cart_content_hash_hex, verify_mandate_covers_cart,
 };
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair};

@@ -5,10 +5,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use nucleus_verifier_service::{
-    app::{with_rate_limit, AppState},
+    VerifierSigner,
+    app::{AppState, with_rate_limit},
     build_app, connect_and_migrate,
     merkle::MerkleLog,
-    retention, VerifierSigner,
+    retention,
 };
 use std::net::SocketAddr;
 use tokio::sync::RwLock;

@@ -175,8 +175,8 @@ mod tests {
     /// hostile thread-level contention. Exactly one admit, K-1 rejects.
     #[test]
     fn parallel_presentations_of_same_jti_admit_exactly_one() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         const K: usize = 100;
         let cache = Arc::new(JtiCache::new());

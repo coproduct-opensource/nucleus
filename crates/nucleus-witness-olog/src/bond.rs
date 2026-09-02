@@ -53,13 +53,13 @@
 //!   (`nucleus-econ-kernels/lean/Nucleus/WitnessOlog.lean::ForkCost.staying_dominates`,
 //!   axioms `[propext, Quot.sound]`-only) — see [`FORK_COST_THEOREM_MODELED`].
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use nucleus_econ_kernels::{route_to_commons, CommonsAllocation, CommonsError, CommonsShare};
+use nucleus_econ_kernels::{CommonsAllocation, CommonsError, CommonsShare, route_to_commons};
 
 use crate::functor::WitnessDigest;
 

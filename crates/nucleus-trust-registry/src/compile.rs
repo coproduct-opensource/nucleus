@@ -12,7 +12,7 @@ use nucleus_oidc_core::spiffe_federation::SpiffeBundle;
 
 use crate::error::RegistryError;
 use crate::metadata::{
-    DomainEnrollment, DomainMetadata, BUNDLE_FILE, DOMAINS_SUBDIR, METADATA_FILE,
+    BUNDLE_FILE, DOMAINS_SUBDIR, DomainEnrollment, DomainMetadata, METADATA_FILE,
 };
 
 /// One compiled binding: everything the federation layer + the
@@ -168,14 +168,14 @@ pub fn check_no_silent_rotation(
     trust_domain: &str,
     proof_owner_id: u64,
 ) -> Result<(), RegistryError> {
-    if let Some(existing) = incumbent.bindings.get(trust_domain) {
-        if existing.metadata.owner_id != proof_owner_id {
-            return Err(RegistryError::SilentRotation {
-                trust_domain: trust_domain.to_string(),
-                incumbent: existing.metadata.owner_id,
-                proof: proof_owner_id,
-            });
-        }
+    if let Some(existing) = incumbent.bindings.get(trust_domain)
+        && existing.metadata.owner_id != proof_owner_id
+    {
+        return Err(RegistryError::SilentRotation {
+            trust_domain: trust_domain.to_string(),
+            incumbent: existing.metadata.owner_id,
+            proof: proof_owner_id,
+        });
     }
     Ok(())
 }

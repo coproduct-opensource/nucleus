@@ -29,7 +29,7 @@ use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{RwLock, watch};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -256,12 +256,11 @@ impl<C: CaClient + 'static> SecretManager<C> {
 
             // Check rate limiting
             if let Some(SessionCertState::Unavailable { last_attempt, .. }) = certs.get(&cache_key)
+                && last_attempt.elapsed() < MIN_REFRESH_INTERVAL
             {
-                if last_attempt.elapsed() < MIN_REFRESH_INTERVAL {
-                    return Err(Error::Internal(
-                        "refresh rate limited; try again later".to_string(),
-                    ));
-                }
+                return Err(Error::Internal(
+                    "refresh rate limited; try again later".to_string(),
+                ));
             }
 
             certs.insert(cache_key.clone(), SessionCertState::Initializing(rx));
@@ -450,12 +449,12 @@ impl<C: CaClient + 'static> SecretManager<C> {
             }
 
             // Check rate limiting
-            if let Some(CertState::Unavailable { last_attempt, .. }) = certs.get(identity) {
-                if last_attempt.elapsed() < MIN_REFRESH_INTERVAL {
-                    return Err(Error::Internal(
-                        "refresh rate limited; try again later".to_string(),
-                    ));
-                }
+            if let Some(CertState::Unavailable { last_attempt, .. }) = certs.get(identity)
+                && last_attempt.elapsed() < MIN_REFRESH_INTERVAL
+            {
+                return Err(Error::Internal(
+                    "refresh rate limited; try again later".to_string(),
+                ));
             }
 
             certs.insert(identity.clone(), CertState::Initializing(rx));
@@ -553,8 +552,8 @@ impl<C: CaClient> std::fmt::Debug for SecretManager<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::SessionIdentity;
     use crate::SelfSignedCa;
+    use crate::session::SessionIdentity;
 
     #[tokio::test]
     async fn test_fetch_certificate() {

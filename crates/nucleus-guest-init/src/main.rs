@@ -7,7 +7,7 @@ use std::process::Command;
 mod identity;
 
 #[cfg(target_os = "linux")]
-use nix::mount::{mount, MsFlags};
+use nix::mount::{MsFlags, mount};
 #[cfg(target_os = "linux")]
 use nix::sys::stat::umask;
 
@@ -752,10 +752,10 @@ fn command_exists(name: &str) -> bool {
 fn parse_cmdline_secret(cmdline: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     for token in cmdline.split_whitespace() {
-        if let Some(value) = token.strip_prefix(&prefix) {
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
+        if let Some(value) = token.strip_prefix(&prefix)
+            && !value.is_empty()
+        {
+            return Some(value.to_string());
         }
     }
     None

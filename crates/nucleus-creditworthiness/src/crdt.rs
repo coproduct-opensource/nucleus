@@ -494,7 +494,7 @@ mod tests {
 #[cfg(all(test, feature = "recompute"))]
 mod recompute_tests {
     use super::*;
-    use nucleus_econ_kernels::{classify, refund, route_to_commons, seller_gross, CommonsShare};
+    use nucleus_econ_kernels::{CommonsShare, classify, refund, route_to_commons, seller_gross};
     use nucleus_recompute::{ClearingReceipt, CommonsClaim, SettlementClaim};
 
     /// A genuinely-honest settlement receipt (outputs computed by the same proven

@@ -22,7 +22,7 @@
 // the regenerated file; until then it points to the hand-translated
 // mirror whose freshness `coproduct-opensource/aeneas-ci@v1` guards.
 use nucleus_econ_kernels::extracted::vcg_aeneas::greedy_pack;
-use nucleus_econ_kernels::{run_vcg, IntegerBid, IntegerProposal};
+use nucleus_econ_kernels::{IntegerBid, IntegerProposal, run_vcg};
 use proptest::prelude::*;
 use std::collections::HashMap;
 

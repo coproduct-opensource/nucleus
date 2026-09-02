@@ -23,7 +23,7 @@
 //! produce authentication failures that read like clock skew, on a path where
 //! the actual cause is an encoding mismatch two crates away.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use nucleus_spec::tier2_artifacts::{self, Tier2Artifact};
 use nucleus_spec::vmm_version;
 use sha2::{Digest, Sha256};
@@ -386,10 +386,10 @@ fn local_build_candidates(artifact: Tier2Artifact, arch: &str) -> Vec<PathBuf> {
     if let Some(manifest_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
+        && manifest_root.is_dir()
+        && !roots.contains(&manifest_root.to_path_buf())
     {
-        if manifest_root.is_dir() && !roots.contains(&manifest_root.to_path_buf()) {
-            roots.push(manifest_root.to_path_buf());
-        }
+        roots.push(manifest_root.to_path_buf());
     }
     // `find(is_file)` at the call sites picks the first that exists, so listing
     // several roots is how a candidate list earns its plural.
@@ -475,7 +475,9 @@ pub fn install_tier2_artifacts(
             println!("      build provenance verified (gh attestation verify)");
         } else {
             println!("      digest matches the release API; build provenance NOT checked");
-            println!("      (install the gh CLI for a provenance check that the release API cannot fake)");
+            println!(
+                "      (install the gh CLI for a provenance check that the release API cannot fake)"
+            );
         }
         install_one_local(host, *artifact, &local)?;
     }

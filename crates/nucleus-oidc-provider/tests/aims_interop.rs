@@ -25,11 +25,11 @@
 //! does not include concrete sample tokens to pin against; when -01
 //! lands with examples, those go here as test #7+.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use nucleus_lineage::CallSpiffeId;
 use nucleus_oidc_provider::issuer::{JwtIssuer, MintRequest};
-use nucleus_oidc_provider::keystore::{rfc7638_kid, InMemoryKeyStore, JwtKeyStore};
+use nucleus_oidc_provider::keystore::{InMemoryKeyStore, JwtKeyStore, rfc7638_kid};
 use std::sync::Arc;
 use std::time::Duration;
 

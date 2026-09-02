@@ -63,8 +63,8 @@
 
 use std::collections::BTreeSet;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair};
@@ -631,10 +631,12 @@ mod tests {
         let verifier = ApprovalBundleVerifier::new();
         let result = verifier.verify(&jws, &jwk, &wrong_hash);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("manifest hash mismatch"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("manifest hash mismatch")
+        );
     }
 
     #[test]
@@ -707,10 +709,12 @@ mod tests {
             .build(&key);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("at least one operation"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("at least one operation")
+        );
     }
 
     #[test]
@@ -779,10 +783,12 @@ mod tests {
         // Unapproved operation fails
         let result = verifier.verify_operation(&jws, &jwk, &manifest_hash, "git_push");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("not in approved set"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not in approved set")
+        );
     }
 
     #[test]

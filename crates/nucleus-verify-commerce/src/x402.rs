@@ -6,8 +6,8 @@
 //! intentionally tolerant (and documented) rather than pinned to one shape — a
 //! deployment can always construct [`PaymentProof`] directly instead.
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::Value;
 
 use crate::{CommerceError, PaymentProof};

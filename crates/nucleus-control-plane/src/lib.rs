@@ -27,7 +27,7 @@ pub mod session_writer;
 pub mod spec;
 pub mod state;
 
-pub use executor::{execute_job, ExecuteJobError};
+pub use executor::{ExecuteJobError, execute_job};
 pub use runner::{JobRunner, JobRunnerError, MockJobRunner};
 pub use session_writer::{SessionWriter, SessionWriterError};
 pub use spec::{AgentDriverRef, Destination, InputRef, JobSpec};

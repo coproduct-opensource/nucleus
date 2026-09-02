@@ -27,7 +27,9 @@ pub enum RegistryError {
     /// host equals the trust domain, or otherwise looks inferred). SPIFFE
     /// forbids inferred bindings; the operator MUST pin an explicit,
     /// out-of-band endpoint.
-    #[error("inferred binding rejected: endpoint host {host:?} is derived from trust domain {trust_domain:?}")]
+    #[error(
+        "inferred binding rejected: endpoint host {host:?} is derived from trust domain {trust_domain:?}"
+    )]
     InferredBinding { host: String, trust_domain: String },
 
     /// The `profile` value was not a supported SPIFFE Federation profile
@@ -63,7 +65,9 @@ pub enum RegistryError {
     /// A PR changes an existing domain's bundle but the new proof's
     /// numeric owner_id differs from the recorded incumbent owner_id
     /// (silent-rotation / takeover attempt).
-    #[error("silent rotation rejected for {trust_domain:?}: incumbent owner_id {incumbent} != proof owner_id {proof}")]
+    #[error(
+        "silent rotation rejected for {trust_domain:?}: incumbent owner_id {incumbent} != proof owner_id {proof}"
+    )]
     SilentRotation {
         trust_domain: String,
         incumbent: u64,

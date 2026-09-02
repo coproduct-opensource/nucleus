@@ -21,9 +21,9 @@
 /// module docs for the honesty-tier separation and TCB caveat.
 pub mod extracted;
 
+use ck_types::ConstitutionalInvariant;
 use ck_types::manifest::PolicyManifest;
 use ck_types::witness::PolicyDiffReport;
-use ck_types::ConstitutionalInvariant;
 
 /// Result of checking an ordinary amendment for constitutional compliance.
 #[derive(Debug, Clone)]
@@ -197,10 +197,11 @@ mod tests {
         child.capabilities.network_allow.insert("evil.com".into());
         let v = check_monotonicity(&parent, &child);
         assert!(!v.passed);
-        assert!(v
-            .diff
-            .violated_invariants
-            .contains(&ConstitutionalInvariant::CapabilityNonEscalation));
+        assert!(
+            v.diff
+                .violated_invariants
+                .contains(&ConstitutionalInvariant::CapabilityNonEscalation)
+        );
         assert!(v.diff.capability_escalations[0].contains("evil.com"));
     }
 
@@ -214,10 +215,11 @@ mod tests {
             .insert("exfiltrate.io".into());
         let v = check_monotonicity(&parent, &child);
         assert!(!v.passed);
-        assert!(v
-            .diff
-            .violated_invariants
-            .contains(&ConstitutionalInvariant::IoConfinement));
+        assert!(
+            v.diff
+                .violated_invariants
+                .contains(&ConstitutionalInvariant::IoConfinement)
+        );
         // Detailed escalation report should mention the specific domain
         assert!(
             v.diff
@@ -236,10 +238,11 @@ mod tests {
         child.budget_bounds.max_dollar_spend_millicents = 999_999;
         let v = check_monotonicity(&parent, &child);
         assert!(!v.passed);
-        assert!(v
-            .diff
-            .violated_invariants
-            .contains(&ConstitutionalInvariant::ResourceBoundedness));
+        assert!(
+            v.diff
+                .violated_invariants
+                .contains(&ConstitutionalInvariant::ResourceBoundedness)
+        );
     }
 
     #[test]
@@ -252,10 +255,11 @@ mod tests {
             .remove("kani_pass");
         let v = check_monotonicity(&parent, &child);
         assert!(!v.passed);
-        assert!(v
-            .diff
-            .violated_invariants
-            .contains(&ConstitutionalInvariant::GovernanceMonotonicity));
+        assert!(
+            v.diff
+                .violated_invariants
+                .contains(&ConstitutionalInvariant::GovernanceMonotonicity)
+        );
         assert!(v.diff.proof_requirement_drops[0].contains("kani_pass"));
     }
 
@@ -312,15 +316,17 @@ mod tests {
             "COUP: disarming amendment must now be REJECTED, got passed=true: {:?}",
             v.diff
         );
-        assert!(v
-            .diff
-            .violated_invariants
-            .contains(&ConstitutionalInvariant::AmendmentRulesMonotonicity));
-        assert!(v
-            .diff
-            .amendment_rule_weakenings
-            .iter()
-            .any(|w| w.contains("require_monotone_capabilities")));
+        assert!(
+            v.diff
+                .violated_invariants
+                .contains(&ConstitutionalInvariant::AmendmentRulesMonotonicity)
+        );
+        assert!(
+            v.diff
+                .amendment_rule_weakenings
+                .iter()
+                .any(|w| w.contains("require_monotone_capabilities"))
+        );
     }
 
     #[test]
@@ -341,10 +347,11 @@ mod tests {
                 "disarming {disarm} flag must be rejected: {:?}",
                 v.diff
             );
-            assert!(v
-                .diff
-                .violated_invariants
-                .contains(&ConstitutionalInvariant::AmendmentRulesMonotonicity));
+            assert!(
+                v.diff
+                    .violated_invariants
+                    .contains(&ConstitutionalInvariant::AmendmentRulesMonotonicity)
+            );
         }
     }
 
@@ -365,10 +372,11 @@ mod tests {
             "anti-coup is unconditional: weakening io must be caught regardless of cap flag: {:?}",
             v.diff
         );
-        assert!(v
-            .diff
-            .violated_invariants
-            .contains(&ConstitutionalInvariant::AmendmentRulesMonotonicity));
+        assert!(
+            v.diff
+                .violated_invariants
+                .contains(&ConstitutionalInvariant::AmendmentRulesMonotonicity)
+        );
     }
 
     #[test]

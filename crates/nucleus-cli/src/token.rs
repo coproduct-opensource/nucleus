@@ -20,10 +20,10 @@ use chrono::{Duration, Utc};
 use clap::{Args, Subcommand};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 
+use portcullis::PermissionLattice;
 use portcullis::certificate::LatticeCertificate;
 use portcullis::profile::ProfileRegistry;
 use portcullis::token::AttenuationToken;
-use portcullis::PermissionLattice;
 
 // ── CLI args ─────────────────────────────────────────────────────────
 

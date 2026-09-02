@@ -73,25 +73,25 @@ pub mod verify;
 #[cfg(feature = "c2pa")]
 pub use c2pa_export::{C2paExportError, NUCLEUS_C2PA_ASSERTION_LABEL};
 pub use interop::in_toto::{
-    DsseEnvelope, DsseSignature, InTotoError, ResourceDescriptor, Statement,
-    DSSE_INTOTO_PAYLOAD_TYPE, IN_TOTO_STATEMENT_TYPE, NUCLEUS_PREDICATE_TYPE, NUCLEUS_SUBJECT_NAME,
+    DSSE_INTOTO_PAYLOAD_TYPE, DsseEnvelope, DsseSignature, IN_TOTO_STATEMENT_TYPE, InTotoError,
+    NUCLEUS_PREDICATE_TYPE, NUCLEUS_SUBJECT_NAME, ResourceDescriptor, Statement,
 };
 pub use interop::sigstore::{
-    PublicKeyIdentifier, SigstoreBundle, TimestampVerificationData, VerificationMaterial,
-    SIGSTORE_BUNDLE_V03_MEDIA_TYPE,
+    PublicKeyIdentifier, SIGSTORE_BUNDLE_V03_MEDIA_TYPE, SigstoreBundle, TimestampVerificationData,
+    VerificationMaterial,
 };
 pub use interop::slsa::{
-    BuildDefinition, Builder as SlsaBuilder, Metadata as SlsaMetadata, Provenance, RunDetails,
-    NUCLEUS_BUILD_TYPE, SLSA_PROVENANCE_V1_PREDICATE_TYPE,
+    BuildDefinition, Builder as SlsaBuilder, Metadata as SlsaMetadata, NUCLEUS_BUILD_TYPE,
+    Provenance, RunDetails, SLSA_PROVENANCE_V1_PREDICATE_TYPE,
 };
 
 pub use binding::{
-    payload_hash, signed_bytes as binding_signed_bytes, BindingError, PayloadBinding,
-    NUCLEUS_BUNDLE_PAYLOAD_TYPE,
+    BindingError, NUCLEUS_BUNDLE_PAYLOAD_TYPE, PayloadBinding, payload_hash,
+    signed_bytes as binding_signed_bytes,
 };
 pub use bundle::{
-    canonical_bundle_hash, Bundle, BundleBuilder, BundleError, EdgeInclusionProof, Envelope,
-    EnvelopeAttestation, EnvelopeMeta, MerkleAnchor,
+    Bundle, BundleBuilder, BundleError, EdgeInclusionProof, Envelope, EnvelopeAttestation,
+    EnvelopeMeta, MerkleAnchor, canonical_bundle_hash,
 };
-pub use extract::{extract_session_subgraph, SessionSubgraph};
-pub use verify::{verify_bundle, TrustAnchor, VerificationReport, VerifyBundleError};
+pub use extract::{SessionSubgraph, extract_session_subgraph};
+pub use verify::{TrustAnchor, VerificationReport, VerifyBundleError, verify_bundle};

@@ -102,8 +102,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::card::{
-        AgentCapabilities, AgentCardSignature, AgentInterface, MutualTlsSecurityScheme,
-        SecurityScheme, A2A_PROTOCOL_VERSION,
+        A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCardSignature, AgentInterface,
+        MutualTlsSecurityScheme, SecurityScheme,
     };
 
     /// RFC 8785 Appendix B reference vector. Pins our JCS implementation
@@ -256,9 +256,11 @@ mod tests {
             .insert("futureField".to_string(), serde_json::json!("v1.1"));
         let with_unknown = canonicalize_received(&doc).unwrap();
         assert_ne!(baseline, with_unknown);
-        assert!(String::from_utf8(with_unknown)
-            .unwrap()
-            .contains(r#""futureField":"v1.1""#));
+        assert!(
+            String::from_utf8(with_unknown)
+                .unwrap()
+                .contains(r#""futureField":"v1.1""#)
+        );
     }
 
     #[test]

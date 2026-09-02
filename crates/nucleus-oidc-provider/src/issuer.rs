@@ -30,8 +30,8 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use nucleus_lineage::CallSpiffeId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -743,10 +743,12 @@ mod tests {
             .unwrap();
         assert!(minted.subject.as_str().starts_with(parent.as_str()));
         assert!(minted.subject.as_str().contains("/call/"));
-        assert!(minted
-            .subject
-            .as_str()
-            .contains("/tool/outbound_http/sha256:"));
+        assert!(
+            minted
+                .subject
+                .as_str()
+                .contains("/tool/outbound_http/sha256:")
+        );
     }
 
     #[test]

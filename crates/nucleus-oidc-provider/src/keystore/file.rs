@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
 use super::memory::DEFAULT_GRACE_WINDOW;
-use super::{rfc7638_kid, JwtKeyStore, KeyStoreError, RotateOutcome, SignedBytes, VerifyKey};
+use super::{JwtKeyStore, KeyStoreError, RotateOutcome, SignedBytes, VerifyKey, rfc7638_kid};
 
 /// File-backed, encrypted-at-rest key store.
 /// (#55 LOW-3) Hard cap on the verify-set's grace-window entries. With

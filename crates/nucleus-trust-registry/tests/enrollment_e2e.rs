@@ -15,12 +15,12 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use nucleus_lineage::checkpoint::Ed25519Witness;
 use nucleus_oidc_core::Jwks;
 use nucleus_trust_registry::{
-    build_federation_store, check_no_silent_rotation, check_pr_diff, compile, tlog,
-    verify_proof_of_control, DomainMetadata, RegistryError, TrustLog,
+    DomainMetadata, RegistryError, TrustLog, build_federation_store, check_no_silent_rotation,
+    check_pr_diff, compile, tlog, verify_proof_of_control,
 };
 use nucleus_witness::cosign::WitnessKey;
 use serde_json::json;

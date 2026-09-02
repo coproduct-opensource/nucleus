@@ -5,17 +5,17 @@
 
 use axum::{
     body::Body,
-    http::{header, Method, Request, StatusCode},
+    http::{Method, Request, StatusCode, header},
 };
 use base64::Engine as _;
 use http_body_util::BodyExt;
 use nucleus_control_plane::{
-    execute_job, AgentDriverRef, Destination, InputRef, JobSpec, MockJobRunner,
+    AgentDriverRef, Destination, InputRef, JobSpec, MockJobRunner, execute_job,
 };
 use nucleus_envelope::Bundle;
 use nucleus_lineage::{CallSpiffeId, InMemorySink, Jwks, LocalIssuer};
 use nucleus_verifier_service::{app::AppState, build_app};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// Build a real, signed bundle so the verifier sees genuine input.
@@ -775,10 +775,12 @@ async fn well_known_configuration_describes_service_correctly() {
     assert_eq!(body["endpoints"]["log_sth"], "/v1/log/sth");
     assert_eq!(body["sth"]["signed"], true);
     assert_eq!(body["sth"]["signing_algorithm"], "EdDSA");
-    assert!(body["sth"]["domain_separator"]
-        .as_str()
-        .unwrap()
-        .starts_with("nucleus-verifier-sth/"));
+    assert!(
+        body["sth"]["domain_separator"]
+            .as_str()
+            .unwrap()
+            .starts_with("nucleus-verifier-sth/")
+    );
     assert_eq!(body["persistence"]["enabled"], true);
     assert_eq!(body["persistence"]["bundle_lookup_supported"], true);
     assert_eq!(body["persistence"]["transparency_log_supported"], true);
@@ -802,11 +804,11 @@ async fn well_known_agent_card_returns_404_without_card() {
 #[tokio::test]
 async fn well_known_agent_card_verifies_against_matching_key() {
     use nucleus_agent_card::{
-        sign_card, verify_card, AgentCapabilities, AgentCard, AgentInterface, JsonWebKey,
-        NucleusClaims, A2A_PROTOCOL_VERSION,
+        A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCard, AgentInterface, JsonWebKey,
+        NucleusClaims, sign_card, verify_card,
     };
     use ring::rand::SystemRandom;
-    use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
     use std::sync::Arc;
 
     // Out-of-band card-signing key (resolved by the caller separately).
@@ -1589,7 +1591,7 @@ async fn credit_authenticated_standing_matches_stateless_post() {
 async fn clearing_verify_recomputes_and_catches_forgery_under_valid_signature() {
     use ed25519_dalek::SigningKey;
     use nucleus_receipt::{Receipt, Session};
-    use nucleus_recompute::{envelope::to_economic_projection, issue_settlement, ClearingReceipt};
+    use nucleus_recompute::{ClearingReceipt, envelope::to_economic_projection, issue_settlement};
 
     let sk = SigningKey::from_bytes(&[7u8; 32]);
     let vk_hex = hex::encode(sk.verifying_key().to_bytes());
@@ -1660,7 +1662,7 @@ async fn payout_verify_endpoint_verifies_honest_and_rejects_a_skim() {
     use nucleus_econ_kernels::commons::CommonsShare;
     use nucleus_receipt::{Receipt, Session};
     use nucleus_recompute::issue_settlement;
-    use nucleus_recompute::payout::{envelope::to_payout_projection, issue_payout, Attribution};
+    use nucleus_recompute::payout::{Attribution, envelope::to_payout_projection, issue_payout};
 
     let sk = SigningKey::from_bytes(&[9u8; 32]);
     let vk_hex = hex::encode(sk.verifying_key().to_bytes());

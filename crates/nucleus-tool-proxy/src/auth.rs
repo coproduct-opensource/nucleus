@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::HeaderMap;
-use hmac::{digest::KeyInit, Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use nucleus_client::drand::{self, DrandConfig, DrandFailMode};
 use sha2::Sha256;
 
@@ -259,57 +259,57 @@ pub fn verify_http_with_drand(
         .and_then(|s| s.parse::<u64>().ok());
 
     // Handle drand verification if configured
-    if let Some(ref drand_config) = auth.drand_config {
-        if drand_config.enabled {
-            match drand_round {
-                Some(round) => {
-                    // Validate round is current
-                    let expected = drand::current_expected_round();
-                    if !drand::validate_round(round, drand_config.round_tolerance) {
-                        return Err(AuthError::DrandRoundExpired {
-                            provided: round,
-                            expected,
-                            tolerance: drand_config.round_tolerance,
-                        });
-                    }
-
-                    // Build message with drand round prefix
-                    let round_str = round.to_string();
-                    let mut message = Vec::with_capacity(
-                        round_str.len() + ts.len() + actor_value.len() + 3 + body.len(),
-                    );
-                    message.extend_from_slice(round_str.as_bytes());
-                    message.push(b'.');
-                    message.extend_from_slice(ts.as_bytes());
-                    message.push(b'.');
-                    message.extend_from_slice(actor_value.as_bytes());
-                    message.push(b'.');
-                    message.extend_from_slice(body);
-
-                    verify_signature(auth.secret(), &message, sig)?;
-
-                    return Ok(AuthContext {
-                        actor,
-                        timestamp,
-                        drand_round: Some(round),
-                        spiffe_id: None,
-                        auth_method: AuthMethod::HmacDrand,
-                        identity_binding: IdentityBinding::PolicyOnly,
+    if let Some(ref drand_config) = auth.drand_config
+        && drand_config.enabled
+    {
+        match drand_round {
+            Some(round) => {
+                // Validate round is current
+                let expected = drand::current_expected_round();
+                if !drand::validate_round(round, drand_config.round_tolerance) {
+                    return Err(AuthError::DrandRoundExpired {
+                        provided: round,
+                        expected,
+                        tolerance: drand_config.round_tolerance,
                     });
                 }
-                None => {
-                    // No round provided - behavior depends on fail mode
-                    match drand_config.fail_mode {
-                        DrandFailMode::Strict => {
-                            return Err(AuthError::DrandRequired);
-                        }
-                        DrandFailMode::Cached => {
-                            // In cached mode, we allow fallback to non-drand verification
-                            // but this should only happen during brief drand outages
-                            tracing::warn!(
-                                "drand anchoring enabled but no round provided, accepting without anchoring (cached mode)"
-                            );
-                        }
+
+                // Build message with drand round prefix
+                let round_str = round.to_string();
+                let mut message = Vec::with_capacity(
+                    round_str.len() + ts.len() + actor_value.len() + 3 + body.len(),
+                );
+                message.extend_from_slice(round_str.as_bytes());
+                message.push(b'.');
+                message.extend_from_slice(ts.as_bytes());
+                message.push(b'.');
+                message.extend_from_slice(actor_value.as_bytes());
+                message.push(b'.');
+                message.extend_from_slice(body);
+
+                verify_signature(auth.secret(), &message, sig)?;
+
+                return Ok(AuthContext {
+                    actor,
+                    timestamp,
+                    drand_round: Some(round),
+                    spiffe_id: None,
+                    auth_method: AuthMethod::HmacDrand,
+                    identity_binding: IdentityBinding::PolicyOnly,
+                });
+            }
+            None => {
+                // No round provided - behavior depends on fail mode
+                match drand_config.fail_mode {
+                    DrandFailMode::Strict => {
+                        return Err(AuthError::DrandRequired);
+                    }
+                    DrandFailMode::Cached => {
+                        // In cached mode, we allow fallback to non-drand verification
+                        // but this should only happen during brief drand outages
+                        tracing::warn!(
+                            "drand anchoring enabled but no round provided, accepting without anchoring (cached mode)"
+                        );
                     }
                 }
             }
@@ -423,39 +423,39 @@ pub fn verify_http_with_ed25519_drand(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
-    if let Some(ref drand_config) = verifier.drand_config {
-        if drand_config.enabled {
-            match drand_round {
-                Some(round) => {
-                    let expected = drand::current_expected_round();
-                    if !drand::validate_round(round, drand_config.round_tolerance) {
-                        return Err(AuthError::DrandRoundExpired {
-                            provided: round,
-                            expected,
-                            tolerance: drand_config.round_tolerance,
-                        });
-                    }
-                    let message = signed_message(format!("{round}.{ts}.{actor_value}."), body);
-                    verify_ed25519_any(&verifier.keys, &message, sig)?;
-                    return Ok(AuthContext {
-                        actor,
-                        timestamp,
-                        drand_round: Some(round),
-                        spiffe_id: None,
-                        auth_method: AuthMethod::Ed25519Drand,
-                        identity_binding: IdentityBinding::PolicyOnly,
+    if let Some(ref drand_config) = verifier.drand_config
+        && drand_config.enabled
+    {
+        match drand_round {
+            Some(round) => {
+                let expected = drand::current_expected_round();
+                if !drand::validate_round(round, drand_config.round_tolerance) {
+                    return Err(AuthError::DrandRoundExpired {
+                        provided: round,
+                        expected,
+                        tolerance: drand_config.round_tolerance,
                     });
                 }
-                None => match drand_config.fail_mode {
-                    DrandFailMode::Strict => return Err(AuthError::DrandRequired),
-                    DrandFailMode::Cached => {
-                        tracing::warn!(
-                            "drand anchoring enabled but no round provided, accepting \
-                             signature without anchoring (cached mode)"
-                        );
-                    }
-                },
+                let message = signed_message(format!("{round}.{ts}.{actor_value}."), body);
+                verify_ed25519_any(&verifier.keys, &message, sig)?;
+                return Ok(AuthContext {
+                    actor,
+                    timestamp,
+                    drand_round: Some(round),
+                    spiffe_id: None,
+                    auth_method: AuthMethod::Ed25519Drand,
+                    identity_binding: IdentityBinding::PolicyOnly,
+                });
             }
+            None => match drand_config.fail_mode {
+                DrandFailMode::Strict => return Err(AuthError::DrandRequired),
+                DrandFailMode::Cached => {
+                    tracing::warn!(
+                        "drand anchoring enabled but no round provided, accepting \
+                             signature without anchoring (cached mode)"
+                    );
+                }
+            },
         }
     }
 
@@ -629,10 +629,10 @@ pub fn extract_spiffe_id_from_extensions(extensions: &axum::http::Extensions) ->
     use crate::mtls::{ClientCertInfo, MtlsConnectInfo};
 
     // Try MtlsConnectInfo first (standard path)
-    if let Some(info) = extensions.get::<MtlsConnectInfo>() {
-        if let Some(ref cert) = info.client_cert {
-            return cert.spiffe_id.clone();
-        }
+    if let Some(info) = extensions.get::<MtlsConnectInfo>()
+        && let Some(ref cert) = info.client_cert
+    {
+        return cert.spiffe_id.clone();
     }
 
     // Fall back to direct ClientCertInfo

@@ -18,11 +18,11 @@
 
 use axum::{
     extract::State,
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -97,16 +97,16 @@ pub async fn handler(
     let etag = compute_etag(&keys);
 
     // Conditional GET — same etag → 304 with required header echo.
-    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
-        if let Ok(s) = if_none_match.to_str() {
-            // Per RFC 9110 §13.1.2, If-None-Match may be `*` or a comma-
-            // separated list of etags. We do exact-match against a
-            // single etag and ignore the wildcard / multi-tag forms in
-            // v1 — neither is required for JWKS polling and both add
-            // surface for misuse.
-            if s == etag {
-                return Ok(not_modified(&etag));
-            }
+    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH)
+        && let Ok(s) = if_none_match.to_str()
+    {
+        // Per RFC 9110 §13.1.2, If-None-Match may be `*` or a comma-
+        // separated list of etags. We do exact-match against a
+        // single etag and ignore the wildcard / multi-tag forms in
+        // v1 — neither is required for JWKS polling and both add
+        // surface for misuse.
+        if s == etag {
+            return Ok(not_modified(&etag));
         }
     }
 

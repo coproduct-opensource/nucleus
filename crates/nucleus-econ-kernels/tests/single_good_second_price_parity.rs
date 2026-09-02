@@ -37,7 +37,7 @@
 #![deny(clippy::cast_possible_truncation)]
 
 use nucleus_econ_kernels::extracted::vcg_aeneas::max_bid;
-use nucleus_econ_kernels::{run_vcg, IntegerBid, IntegerProposal};
+use nucleus_econ_kernels::{IntegerBid, IntegerProposal, run_vcg};
 use proptest::prelude::*;
 
 /// Build the single-good regime: one shared proposal of cost `C`,

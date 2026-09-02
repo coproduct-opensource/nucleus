@@ -3,7 +3,7 @@
 //! Two things are checked here, and the second matters more than the first.
 
 use nucleus_commerce_conformance::{
-    corpus, corpus_covers_both_directions, evaluate, export_vectors, Expect, Property,
+    Expect, Property, corpus, corpus_covers_both_directions, evaluate, export_vectors,
 };
 
 /// Nucleus's own implementation must reach every case's required verdict. If
@@ -24,13 +24,13 @@ fn nucleus_itself_conforms() {
         }
         // Where the verdict alone cannot distinguish conforming from broken,
         // the reason is pinned too.
-        if let Some(want) = case.expect_reason_contains {
-            if !reason.contains(want) {
-                wrong.push(format!(
+        if let Some(want) = case.expect_reason_contains
+            && !reason.contains(want)
+        {
+            wrong.push(format!(
                     "  {}: verdict right but reason wrong — expected it to mention `{want}`, got {reason}",
                     case.name
                 ));
-            }
         }
     }
     assert!(
@@ -145,7 +145,7 @@ fn the_exported_vectors_are_complete_and_parseable() {
 /// If someone later "tidies" the corpus to round numbers, this reds.
 #[test]
 fn a_payout_vector_exercises_integer_division_dust() {
-    use nucleus_commerce_conformance::{corpus, CaseInput};
+    use nucleus_commerce_conformance::{CaseInput, corpus};
 
     let dusty = corpus().into_iter().any(|c| {
         let CaseInput::Payout(p) = &c.input else {

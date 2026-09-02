@@ -3,9 +3,9 @@
 //! path a customer/verifier would follow.
 
 use nucleus_control_plane::{
-    execute_job, AgentDriverRef, Destination, InputRef, JobSpec, MockJobRunner,
+    AgentDriverRef, Destination, InputRef, JobSpec, MockJobRunner, execute_job,
 };
-use nucleus_envelope::{verify_bundle, Bundle, TrustAnchor};
+use nucleus_envelope::{Bundle, TrustAnchor, verify_bundle};
 use nucleus_lineage::{CallSpiffeId, JsonlSink, Jwks, LocalIssuer};
 use tempfile::tempdir;
 

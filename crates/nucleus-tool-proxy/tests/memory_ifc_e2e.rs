@@ -15,10 +15,10 @@
 
 use ed25519_dalek::SigningKey;
 use nucleus_provenance_memory::{
-    declassify, memory_ifc_label, recompute::derive_label, ConfLevel, ContentHash,
-    DeclassifyWitness, DerivationClass, IntegLevel, MemoryAuthority, MemoryDerivation, MemoryLabel,
-    MemoryRecord, ProvenanceMemorySet, RecomputeVerdict, SchemaType, SignedDeclassify, SourceClass,
-    TransformRegistry,
+    ConfLevel, ContentHash, DeclassifyWitness, DerivationClass, IntegLevel, MemoryAuthority,
+    MemoryDerivation, MemoryLabel, MemoryRecord, ProvenanceMemorySet, RecomputeVerdict, SchemaType,
+    SignedDeclassify, SourceClass, TransformRegistry, declassify, memory_ifc_label,
+    recompute::derive_label,
 };
 use portcullis::exposure_core::ifc_egress_denial;
 use portcullis::flow_graph::{FlowGraph, ReleaseAuth};

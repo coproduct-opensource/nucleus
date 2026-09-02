@@ -2,16 +2,16 @@
 
 use chrono::{DateTime, Utc};
 use nucleus_lineage::{
-    edge_content_hash, CallSpiffeId, EdgeSigner, IdError, IssuerError, Jwks, LineageEdge,
-    LineageSink, MerkleProver, SignedTreeHead, WitnessClient,
+    CallSpiffeId, EdgeSigner, IdError, IssuerError, Jwks, LineageEdge, LineageSink, MerkleProver,
+    SignedTreeHead, WitnessClient, edge_content_hash,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::binding::{
-    payload_hash, signed_bytes as binding_signed_bytes, BindingError, PayloadBinding,
-    NUCLEUS_BUNDLE_PAYLOAD_TYPE,
+    BindingError, NUCLEUS_BUNDLE_PAYLOAD_TYPE, PayloadBinding, payload_hash,
+    signed_bytes as binding_signed_bytes,
 };
 use crate::extract;
 
@@ -146,12 +146,11 @@ pub fn canonical_bundle_hash(bundle: &Bundle) -> [u8; 32] {
     h.update(b"\n");
     // Edge count + last edge's prev_hash bind the chain head.
     h.update((bundle.envelope.edges.len() as u64).to_le_bytes());
-    if let Some(last) = bundle.envelope.edges.last() {
-        if let Some(proof) = &last.proof {
-            if let Some(prev) = &proof.prev_hash {
-                h.update(prev);
-            }
-        }
+    if let Some(last) = bundle.envelope.edges.last()
+        && let Some(proof) = &last.proof
+        && let Some(prev) = &proof.prev_hash
+    {
+        h.update(prev);
     }
     h.update(b"\n");
     // Canonicalize the payload via serde_json default ordering.
@@ -384,10 +383,10 @@ impl<'a> BundleBuilder<'a> {
         if subgraph.edges.is_empty() && !self.allow_empty {
             return Err(BundleError::EmptySession(self.session_root.to_string()));
         }
-        if self.require_signed {
-            if let Some(index) = subgraph.edges.iter().position(|e| e.proof.is_none()) {
-                return Err(BundleError::UnsignedEdge { index });
-            }
+        if self.require_signed
+            && let Some(index) = subgraph.edges.iter().position(|e| e.proof.is_none())
+        {
+            return Err(BundleError::UnsignedEdge { index });
         }
 
         // v2: if a Merkle prover was supplied, gather inclusion proofs

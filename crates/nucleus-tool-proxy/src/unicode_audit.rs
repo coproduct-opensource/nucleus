@@ -229,9 +229,11 @@ mod tests {
         let result = audit_invisible_unicode(content);
         assert!(result.has_invisible_chars);
         assert_eq!(result.invisible_char_count, 1);
-        assert!(result
-            .categories
-            .contains(&InvisibleCategory::ZeroWidthSpace));
+        assert!(
+            result
+                .categories
+                .contains(&InvisibleCategory::ZeroWidthSpace)
+        );
     }
 
     #[test]
@@ -240,13 +242,17 @@ mod tests {
         let result = audit_invisible_unicode(content);
         assert!(result.has_invisible_chars);
         assert_eq!(result.invisible_char_count, 3);
-        assert!(result
-            .categories
-            .contains(&InvisibleCategory::ZeroWidthJoiner));
+        assert!(
+            result
+                .categories
+                .contains(&InvisibleCategory::ZeroWidthJoiner)
+        );
         assert!(result.categories.contains(&InvisibleCategory::BidiControl));
-        assert!(result
-            .categories
-            .contains(&InvisibleCategory::VariationSelector));
+        assert!(
+            result
+                .categories
+                .contains(&InvisibleCategory::VariationSelector)
+        );
     }
 
     #[test]
@@ -292,9 +298,11 @@ mod tests {
         let content = "no\u{2060}break";
         let result = audit_invisible_unicode(content);
         assert!(result.has_invisible_chars);
-        assert!(result
-            .categories
-            .contains(&InvisibleCategory::InvisibleOperator));
+        assert!(
+            result
+                .categories
+                .contains(&InvisibleCategory::InvisibleOperator)
+        );
     }
 
     #[test]
@@ -319,8 +327,10 @@ mod tests {
         let result = audit_invisible_unicode(content);
         assert!(result.has_invisible_chars);
         assert_eq!(result.invisible_char_count, 6);
-        assert!(result
-            .categories
-            .contains(&InvisibleCategory::ZeroWidthJoiner));
+        assert!(
+            result
+                .categories
+                .contains(&InvisibleCategory::ZeroWidthJoiner)
+        );
     }
 }

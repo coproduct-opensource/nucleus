@@ -33,12 +33,12 @@
 //! (R2) computes `λ_k * units_micro` in `u128` then saturates to
 //! `u64` — no floats anywhere.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::dim::{ResourceDim, RESOURCE_DIM_DOMAIN};
+use crate::dim::{RESOURCE_DIM_DOMAIN, ResourceDim};
 
 /// One signed externality claim from a designated oracle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -14,9 +14,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use nucleus_oidc_core::spiffe_federation::{FederatesWith, FederationStore, Profile, SpiffeBundle};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use nucleus_oidc_core::OidcError;
+use nucleus_oidc_core::spiffe_federation::{FederatesWith, FederationStore, Profile, SpiffeBundle};
 use serde_json::json;
 
 // ---- federated domain's P-256 JWT-SVID key ----

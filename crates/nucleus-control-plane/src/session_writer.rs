@@ -8,8 +8,8 @@
 use std::sync::Mutex;
 
 use nucleus_lineage::{
-    canonical_edge_bytes, edge_content_hash, EdgeSigner, IssuerError, LineageEdge, LineageSink,
-    Proof, SinkError,
+    EdgeSigner, IssuerError, LineageEdge, LineageSink, Proof, SinkError, canonical_edge_bytes,
+    edge_content_hash,
 };
 use thiserror::Error;
 
@@ -108,7 +108,7 @@ impl<'a> SessionWriter<'a> {
 mod tests {
     use super::*;
     use nucleus_lineage::{
-        verify_chain, CallSpiffeId, EdgeKind, InMemorySink, Jwks, LineageEdge, LocalIssuer,
+        CallSpiffeId, EdgeKind, InMemorySink, Jwks, LineageEdge, LocalIssuer, verify_chain,
     };
 
     fn pod() -> CallSpiffeId {

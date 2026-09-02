@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-use portcullis::art12_record::{Actor, Art12Record, DenyInfo, ART12_SCHEMA_VERSION};
+use portcullis::art12_record::{ART12_SCHEMA_VERSION, Actor, Art12Record, DenyInfo};
 
 /// Mirrors `Art12Log::append_inner`: assign chain fields, sign the canonical
 /// preimage, then hash it. Kept deliberately close to the writer so a divergence
@@ -29,7 +29,7 @@ fn append_like_the_writer(
     draft.prev_hash = prev_hash.to_string();
     let preimage = draft.canonical_preimage();
     draft.signature = {
-        use hmac::{digest::KeyInit, Hmac, Mac};
+        use hmac::{Hmac, Mac, digest::KeyInit};
         use sha2::Sha256;
         let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac accepts any key length");
         mac.update(preimage.as_bytes());
@@ -159,7 +159,7 @@ fn the_text_output_prints_what_was_not_established() {
 fn the_signed_head_round_trips_through_the_cli() {
     use ed25519_dalek::{Signer as _, SigningKey};
     use portcullis::art12_record::{
-        art12_attestation_preimage, Art12Attestation, ART12_ATTESTATION_KIND,
+        ART12_ATTESTATION_KIND, Art12Attestation, art12_attestation_preimage,
     };
 
     let dir = tempfile::tempdir().unwrap();

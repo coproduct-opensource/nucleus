@@ -56,11 +56,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use nucleus_econ_kernels::{
-    commons::{route_to_commons, CommonsAllocation, CommonsError, CommonsShare},
+    commons::{CommonsAllocation, CommonsError, CommonsShare, route_to_commons},
     settlement::seller_gross,
 };
 
-use crate::{mismatch, verify_receipt, ClearingReceipt, RecomputeOutcome};
+use crate::{ClearingReceipt, RecomputeOutcome, mismatch, verify_receipt};
 
 /// Domain separator for the canonical payout bytes (versioned).
 const PAYOUT_DOMAIN: &[u8] = b"nucleus-recompute/payout-receipt/v1\0";
@@ -424,7 +424,7 @@ mod tests {
 /// would have been a wider change to a sealed sum for no additional guarantee.
 #[cfg(feature = "envelope")]
 pub mod envelope {
-    use super::{verify_payout, PayoutClaim};
+    use super::{PayoutClaim, verify_payout};
     use nucleus_receipt::Projection;
 
     /// The inner discriminant for a payout body inside `Projection::Economic`.
@@ -475,12 +475,12 @@ pub mod envelope {
             Some(other) => {
                 return Err(PayoutNarrowError::NotPayout {
                     found: other.to_string(),
-                })
+                });
             }
             None => {
                 return Err(PayoutNarrowError::NotPayout {
                     found: "<missing>".to_string(),
-                })
+                });
             }
         }
         let payout = body.get("payout").ok_or_else(|| {

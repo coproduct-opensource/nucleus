@@ -5,17 +5,17 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::{
-    extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
     Json,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use chrono::Utc;
 use futures_util::Stream;
-use nucleus_control_plane::{execute_job, JobId, JobOutcome, JobSpec, JobState};
+use nucleus_control_plane::{JobId, JobOutcome, JobSpec, JobState, execute_job};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

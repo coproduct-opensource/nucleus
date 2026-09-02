@@ -9,8 +9,8 @@ use std::path::Path;
 use serde::Deserialize;
 use url::{Host, Url};
 
-use crate::finding::{Finding, McpConfigSummary, Severity};
 use crate::AuditError;
+use crate::finding::{Finding, McpConfigSummary, Severity};
 
 // --- Serde structs for MCP config ---
 
@@ -76,8 +76,7 @@ fn known_mcp_server_risk(package_name: &str) -> Option<McpServerRisk> {
                 severity: Severity::Medium,
                 private_data: true,
                 exfil_capable: false,
-                description:
-                    "Database MCP server provides read/write access to database contents. \
+                description: "Database MCP server provides read/write access to database contents. \
                     Queries could expose sensitive data (PII, credentials, business data).",
             })
         }
@@ -87,8 +86,7 @@ fn known_mcp_server_risk(package_name: &str) -> Option<McpServerRisk> {
             severity: Severity::Medium,
             private_data: true,
             exfil_capable: false,
-            description:
-                "Filesystem MCP server provides read/write access to the local filesystem. \
+            description: "Filesystem MCP server provides read/write access to the local filesystem. \
                 Can read credentials, SSH keys, and other sensitive files.",
         }),
         // VCS servers — code access, some with push capability

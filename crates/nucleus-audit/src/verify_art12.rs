@@ -38,7 +38,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use ed25519_dalek::{Signature, VerifyingKey};
-use portcullis::art12_record::{Art12Attestation, Art12Record, ART12_SCHEMA_VERSION};
+use portcullis::art12_record::{ART12_SCHEMA_VERSION, Art12Attestation, Art12Record};
 use serde::Serialize;
 
 use crate::AuditError;
@@ -505,7 +505,7 @@ mod tests {
     // ── executor attestation ────────────────────────────────────────────────
 
     use ed25519_dalek::{Signer as _, SigningKey};
-    use portcullis::art12_record::{art12_attestation_preimage, ART12_ATTESTATION_KIND};
+    use portcullis::art12_record::{ART12_ATTESTATION_KIND, art12_attestation_preimage};
 
     fn attest(chain_head: &str, key: &SigningKey) -> Art12Attestation {
         let preimage = art12_attestation_preimage("sess", chain_head, 2, 0, "exec-1");
@@ -528,12 +528,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).unwrap();
         let key = SigningKey::from_bytes(&[3u8; 32]);
-        assert!(check_attestation(
-            &attest(&report.chain_head, &key),
-            &report.chain_head,
-            &key.verifying_key()
-        )
-        .is_ok());
+        assert!(
+            check_attestation(
+                &attest(&report.chain_head, &key),
+                &report.chain_head,
+                &key.verifying_key()
+            )
+            .is_ok()
+        );
     }
 
     /// **The property the export exists for.** A pod that rewrites its log after

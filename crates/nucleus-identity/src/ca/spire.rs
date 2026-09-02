@@ -72,8 +72,8 @@ use crate::certificate::{Certificate, PrivateKey, TrustBundle, WorkloadCertifica
 use crate::identity::Identity;
 use crate::{Error, Result};
 use async_trait::async_trait;
-use spiffe::workload_api::WorkloadApiClient;
 use spiffe::X509Svid;
+use spiffe::workload_api::WorkloadApiClient;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 

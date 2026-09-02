@@ -60,7 +60,7 @@ pub mod token;
 /// previous local stub (task #42 hardening landed in both impls).
 pub use nucleus_oidc_core::JtiCache;
 
-pub use app::{build_app, AppState};
+pub use app::{AppState, build_app};
 pub use error::OidcApiError;
 pub use federation::{
     Decision, DenyReason, FederationError, FederationRegistry, FederationRule, FederationRules,
