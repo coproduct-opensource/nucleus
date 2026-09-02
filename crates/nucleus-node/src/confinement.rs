@@ -153,6 +153,31 @@ pub(crate) async fn attest(pod_dir: &Path, spec: &PodSpec, pod_id: &str) -> Resu
     Err(problem)
 }
 
+/// Health, then attestation — the single gate a pod passes to be called up.
+///
+/// Named `gate` and not `health_then_attest` for a dull reason worth recording:
+/// the longer name pushed the call site in `main.rs` past rustfmt's width, and
+/// the resulting second line broke the file's line ceiling.
+///
+/// One function so the two can never drift apart: a caller cannot get liveness
+/// without confinement by forgetting the second call, which is exactly how the
+/// original gap would grow back.
+pub(crate) async fn gate(
+    addr: std::net::SocketAddr,
+    pod_dir: &Path,
+    spec: &PodSpec,
+    pod_id: uuid::Uuid,
+) -> Result<(), crate::ApiError> {
+    // `wait_for_proxy_health` moved into `guest_diagnosis` (#2355), which also
+    // enriches a timeout with the guest console's actual cause. Both halves read
+    // the same console: one to explain why the pod never came up, this one to
+    // require it proved its fence.
+    crate::guest_diagnosis::wait_for_proxy_health(addr, &pod_dir.join("firecracker.log")).await?;
+    attest(pod_dir, spec, &pod_id.to_string())
+        .await
+        .map_err(crate::ApiError::Driver)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,29 +232,4 @@ mod tests {
             Verdict::NotApplicable
         );
     }
-}
-
-/// Health, then attestation — the single gate a pod passes to be called up.
-///
-/// Named `gate` and not `health_then_attest` for a dull reason worth recording:
-/// the longer name pushed the call site in `main.rs` past rustfmt's width, and
-/// the resulting second line broke the file's line ceiling.
-///
-/// One function so the two can never drift apart: a caller cannot get liveness
-/// without confinement by forgetting the second call, which is exactly how the
-/// original gap would grow back.
-pub(crate) async fn gate(
-    addr: std::net::SocketAddr,
-    pod_dir: &Path,
-    spec: &PodSpec,
-    pod_id: uuid::Uuid,
-) -> Result<(), crate::ApiError> {
-    // `wait_for_proxy_health` moved into `guest_diagnosis` (#2355), which also
-    // enriches a timeout with the guest console's actual cause. Both halves read
-    // the same console: one to explain why the pod never came up, this one to
-    // require it proved its fence.
-    crate::guest_diagnosis::wait_for_proxy_health(addr, &pod_dir.join("firecracker.log")).await?;
-    attest(pod_dir, spec, &pod_id.to_string())
-        .await
-        .map_err(crate::ApiError::Driver)
 }

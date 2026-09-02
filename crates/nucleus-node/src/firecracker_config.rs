@@ -1202,15 +1202,11 @@ mod tests {
         let bridge = src
             .find("WorkloadApiVsockBridge::start")
             .expect("the bridge start site");
-        // The health wait now sits inside `net::confinement::gate`, which also
-        // requires the guest's egress attestation. The ordering this guards is
-        // unchanged — the bridge must still come first — so the needle follows
-        // the call site rather than the old function name.
         let health = src
             // The health wait now sits inside `net::confinement::gate`, which
             // also requires the guest's egress attestation. The ordering this
             // guards is unchanged — the bridge must still come first — so the
-            // needle follows the call site.
+            // needle follows the call site rather than the function name.
             .find("confinement::gate(health_addr")
             .expect("the health/attestation gate site");
         assert!(
