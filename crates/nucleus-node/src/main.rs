@@ -2836,8 +2836,7 @@ async fn spawn_firecracker_pod(
             (None, None, None)
         };
 
-        let console = pod_dir.join("firecracker.log");
-        if let Err(err) = guest_diagnosis::wait_for_proxy_health(health_addr, &console).await {
+        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id).await {
             if let Some(proxy) = signed_proxy {
                 proxy.shutdown().await;
             }

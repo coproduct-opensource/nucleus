@@ -1,5 +1,17 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+/// Boot-time attestation that the fence this module applies is actually in
+/// force on a given pod.
+///
+/// Declared from `net` rather than `main.rs` for two reasons, one principled
+/// and one practical: egress confinement is a network property and belongs
+/// beside the code that applies it, and `main.rs` sits exactly on its
+/// line-count ceiling, so a `mod` line there would have to displace something
+/// else. The file stays separate because it is a distinct concern from route
+/// and rule construction.
+#[path = "confinement.rs"]
+pub(crate) mod confinement;
+
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
