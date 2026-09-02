@@ -3174,9 +3174,6 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 /// one.
 pub(crate) const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[tracing::instrument(skip_all, fields(boot.stage = "proxy.health_wait"))]
-
 async fn serve_grpc(
     state: NodeState,
     listen: String,
