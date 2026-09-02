@@ -64,6 +64,12 @@ provision:
         dnsmasq \
         e2fsprogs
 
+      # br_netfilter: net::setup_network sets net.bridge.bridge-nf-call-iptables,
+      # and /proc/sys/net/bridge only exists once this module is loaded. Without
+      # it every pod spec with a `network` block fails mid-launch (#2382).
+      modprobe br_netfilter || true
+      echo br_netfilter > /etc/modules-load.d/nucleus.conf
+
       mkdir -p /var/lib/nucleus/artifacts
       mkdir -p /var/lib/nucleus/pods
       mkdir -p /var/log/nucleus

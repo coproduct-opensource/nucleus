@@ -123,3 +123,9 @@ jobs:
       # entirely, and none of the specs CI boots has one.
       - name: run_netns argv names a program
         run: bash ci/netns-argv-names-a-program.sh
+      # br_netfilter was present by accident on hosts running Docker/containerd.
+      # These templates disable containerd deliberately, which removed the thing
+      # that had been loading it, and every pod with a `network` block began
+      # failing mid-launch on a bare `sysctl: cannot stat` (#2382).
+      - name: br_netfilter is a declared dependency
+        run: bash ci/br-netfilter-is-declared.sh
