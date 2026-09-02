@@ -16,7 +16,34 @@ pub const DEFAULT_WORKLOAD_API_PORT: u32 = 15012;
 const VMADDR_CID_HOST: u32 = 2;
 
 /// Directory to store identity files.
-const IDENTITY_DIR: &str = "/etc/nucleus/identity";
+/// The SVID lives on a tmpfs, NOT on the rootfs.
+///
+/// # Why not /etc
+///
+/// A pod booted with `spec.image.read_only: true` -- which `nucleus setup`
+/// writes into config.toml as "recommended" and `nucleus run` defaults to --
+/// could not boot at all: the guest died here with
+/// `failed to write certificate: Read-only file system (os error 30)` (#2373).
+///
+/// Weakening the default was the wrong repair. A per-boot credential is
+/// **runtime state**, not configuration: /etc is for static config that survives
+/// a boot, /run is defined as variable data that must be cleared at boot. The
+/// SVID was in the wrong place, and the read-only rootfs was right to refuse it.
+///
+/// # What this buys beyond booting
+///
+/// `/run` is one of the tmpfs mounts guest-init makes before this runs, so the
+/// private key now lives in guest RAM and never reaches the rootfs block device.
+/// It cannot outlive the microVM or be recovered from a disk image.
+///
+/// This matches the read-only-base + tmpfs-write-layer pattern Firecracker
+/// itself documents for ephemeral guests, scoped to the one directory the guest
+/// actually writes rather than an overlayfs over the whole root.
+///
+/// The confidentiality property is unchanged: it rests on mode-0600 and uid
+/// distinctness (`reject_credential_readable_workload` is a uid check), never on
+/// the path string.
+const IDENTITY_DIR: &str = "/run/nucleus/identity";
 
 /// Response from FETCH_SVID command.
 #[derive(Debug, serde::Deserialize)]
@@ -565,6 +592,68 @@ mod caller_identity_tests {
     fn a_response_without_a_token_is_refused() {
         assert!(
             parse_caller_identity(r#"{"pod_id":"11111111-1111-4111-8111-111111111111"}"#).is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod identity_location_tests {
+    use super::IDENTITY_DIR;
+
+    /// Is `dir` inside one of the guest's tmpfs mounts?
+    fn on_a_tmpfs_mount(dir: &str) -> bool {
+        crate::GUEST_MOUNTS
+            .iter()
+            .filter(|m| m.fstype == "tmpfs")
+            .any(|m| dir.starts_with(&format!("{}/", m.target)))
+    }
+
+    /// The bug in #2373: a `read_only: true` rootfs could not boot, because the
+    /// SVID was written to `/etc/nucleus/identity` on the root block device.
+    ///
+    /// Pinning this to a tmpfs mount is what keeps the fix from silently
+    /// reverting. A path under `/etc` compiles and passes every other test in
+    /// this crate; it only fails on a real read-only boot, which no unit test
+    /// performs.
+    #[test]
+    fn the_svid_directory_lives_on_a_tmpfs_mount() {
+        assert!(
+            on_a_tmpfs_mount(IDENTITY_DIR),
+            "IDENTITY_DIR ({IDENTITY_DIR}) is not under any tmpfs mount in \
+             GUEST_MOUNTS, so writing the SVID there fails on a read-only \
+             rootfs — the #2373 boot failure"
+        );
+    }
+
+    /// Non-vacuity for the test above.
+    ///
+    /// If `on_a_tmpfs_mount` returned true for anything, the assertion would
+    /// pass no matter where the SVID went. So require it to REJECT the exact
+    /// location that caused the bug.
+    #[test]
+    fn the_old_location_would_still_be_rejected() {
+        assert!(
+            !on_a_tmpfs_mount("/etc/nucleus/identity"),
+            "the tmpfs check accepts the path that caused #2373, so it proves nothing"
+        );
+    }
+
+    /// `/run` must be mounted BEFORE the SVID is fetched, or the write lands on
+    /// the (read-only) rootfs underneath the future mountpoint.
+    #[test]
+    fn the_identity_mount_is_declared_in_guest_mounts() {
+        let mount = crate::GUEST_MOUNTS
+            .iter()
+            .filter(|m| m.fstype == "tmpfs")
+            .find(|m| IDENTITY_DIR.starts_with(&format!("{}/", m.target)))
+            .expect("no tmpfs mount covers IDENTITY_DIR");
+        // GUEST_MOUNTS is mounted in main() before identity::fetch_identity is
+        // called; this pins the entry that ordering depends on.
+        assert_eq!(mount.fstype, "tmpfs");
+        assert!(
+            mount.nosuid && mount.nodev,
+            "{} must stay hardened",
+            mount.target
         );
     }
 }

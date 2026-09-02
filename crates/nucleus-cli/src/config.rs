@@ -224,7 +224,13 @@ impl Default for FirecrackerConfig {
         Self {
             kernel_path: default_kernel_path(),
             rootfs_path: default_rootfs_path(),
-            scratch_path: Some(default_scratch_path()),
+            // None, not "scratch.ext4". `nucleus setup` installs only vmlinux
+            // and rootfs.ext4 into the artifacts dir, and nothing in the CLI
+            // reads this value -- `scratch_path()` has no callers. Naming a
+            // file that is never created and never used sent a user hunting for
+            // a scratch disk to explain why a read-only pod would not boot
+            // (#2373); the real cause was the SVID write path, now on tmpfs.
+            scratch_path: None,
             vsock_cid: default_vsock_cid(),
             vsock_port: default_vsock_port(),
             rootfs_read_only: true,
@@ -237,9 +243,6 @@ fn default_kernel_path() -> String {
 }
 fn default_rootfs_path() -> String {
     "rootfs.ext4".to_string()
-}
-fn default_scratch_path() -> String {
-    "scratch.ext4".to_string()
 }
 fn default_vsock_cid() -> u32 {
     3
@@ -376,6 +379,47 @@ pub fn show(config_path: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every artifact the default config NAMES must be one `nucleus setup`
+    /// actually installs.
+    ///
+    /// The default used to name `scratch.ext4`, which setup never creates and
+    /// no code reads. A user debugging why a `read_only: true` pod would not
+    /// boot found that line and reasonably concluded a missing scratch disk was
+    /// the cause (#2373). It was not — the SVID write path was — but the config
+    /// had pointed at a file that does not exist.
+    #[test]
+    fn the_default_config_names_only_artifacts_setup_installs() {
+        // What provision::install_tier2_artifacts puts in the artifacts dir.
+        const INSTALLED: &[&str] = &["vmlinux", "rootfs.ext4"];
+        let fc = FirecrackerConfig::default();
+
+        let mut named = vec![fc.kernel_path.clone(), fc.rootfs_path.clone()];
+        named.extend(fc.scratch_path.clone());
+
+        for path in &named {
+            assert!(
+                INSTALLED.contains(&path.as_str()),
+                "default config names {path:?}, which `nucleus setup` does not install"
+            );
+        }
+
+        // Non-vacuity: the check must reject the value that caused the confusion,
+        // or it would pass for any string.
+        assert!(
+            !INSTALLED.contains(&"scratch.ext4"),
+            "this test proves nothing if scratch.ext4 counts as installed"
+        );
+    }
+
+    /// The read-only default is deliberate and must stay true: it is the whole
+    /// security posture the config advertises as "recommended", and #2373 was
+    /// fixed by making it WORK (SVID on tmpfs), not by weakening it.
+    #[test]
+    fn the_rootfs_read_only_default_stays_on() {
+        assert!(FirecrackerConfig::default().rootfs_read_only);
+    }
+
     use super::*;
 
     /// The defect this pins: `setup` wrote `~/Library/Application
