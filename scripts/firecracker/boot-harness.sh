@@ -114,8 +114,38 @@ echo "              one pod launches at a time without the jailer."
 
 # ── Building the inputs ────────────────────────────────────────────────────
 #
-# On a macOS workstation, build in a container and copy only the artifacts in —
-# no Rust toolchain is needed on the KVM host:
+# On a macOS workstation you can build everything NATIVELY — no Docker, no Linux
+# VM for the build itself. Verified on Apple Silicon:
+#
+#   brew install e2fsprogs                      # mke2fs; keg-only, so:
+#   export PATH="$(brew --prefix e2fsprogs)/sbin:$PATH"
+#   cargo install cargo-zigbuild && brew install zig
+#   rustup target add aarch64-unknown-linux-musl
+#   cargo zigbuild --target aarch64-unknown-linux-musl --release \
+#     -p nucleus-guest-init -p nucleus-tool-proxy -p nucleus-net-probe \
+#     -p nucleus-workload-probe -p nucleus-egress-probe \
+#     -p nucleus-podlist-probe -p nucleus-adversary-probe
+#   ARCH=aarch64 DEBIAN_TARBALL=/path/to/debian-arm64.tar.gz \
+#     bash scripts/firecracker/build-rootfs.sh
+#
+# Two things make this work. `mke2fs -d` populates the image from a directory
+# without a loop mount, so no Linux kernel is needed to WRITE an ext4; and zig
+# supplies the musl cross-linker, so no musl-gcc is needed to BUILD for Linux.
+#
+# The Debian base needs no Docker either — the layer is a gzipped tar in a
+# registry, and its sha256 is the manifest digest, so the download is verifiable:
+#
+#   TOK=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io\
+#   &scope=repository:arm64v8/debian:pull" | jq -r .token)
+#   # ...fetch the index, select platform.architecture == "arm64", GET that
+#   # manifest, then GET .layers[0].digest from /v2/<repo>/blobs/<digest>.
+#
+# Do NOT put ROOTFS_DIR on a bind mount / virtiofs share: `mke2fs -d` calls
+# llistxattr on every file and those syscalls fail there, with an error that
+# reads like a dangling symlink ("while listing attributes of awk"). A native
+# macOS path is fine; inside a container, use the container filesystem.
+#
+# The container route below still works and is what CI effectively does:
 #
 #   docker run --rm -v "$PWD":/w -w /w rust:1.93-slim bash -c '
 #     apt-get update -qq && apt-get install -y -qq musl-tools e2fsprogs ca-certificates
