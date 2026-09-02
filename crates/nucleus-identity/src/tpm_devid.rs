@@ -1090,6 +1090,99 @@ impl ResidencyEvidence {
     }
 }
 
+/// Hardware-rooting evidence carried in the `.1.5` extension: the EK certificate
+/// chain, plus the AK↔EK binding tuple the issuer established at enrolment.
+///
+/// The two halves have different trust properties and that is deliberate:
+/// `ek_cert_der`/`intermediates` are re-verified by the relying party against
+/// its OWN pinned roots, while `ak_name_sha256`/`ek_spki_sha256` are vouched for
+/// by the issuer's signature over the certificate — credential activation is
+/// interactive and cannot be replayed from an artifact. See [`oid`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HardwareRootingEvidence {
+    /// The endorsement key certificate (DER), as issued by the TPM manufacturer.
+    pub ek_cert_der: Vec<u8>,
+    /// Any intermediates between `ek_cert_der` and a pinned root.
+    pub intermediates: Vec<Vec<u8>>,
+    /// SHA-256 of the AK Name the issuer activated a credential against.
+    pub ak_name_sha256: [u8; 32],
+    /// SHA-256 of the EK SubjectPublicKeyInfo that answered the activation.
+    pub ek_spki_sha256: [u8; 32],
+}
+
+const HW_ROOTING_EVIDENCE_V1: u8 = 1;
+
+impl HardwareRootingEvidence {
+    /// Encodes as the `.1.5` extension value. Same shape as
+    /// [`ResidencyEvidence::encode`]: a version byte then `u16`-length-prefixed
+    /// fields, with a `u16` count for the intermediates.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = vec![HW_ROOTING_EVIDENCE_V1];
+        out.extend_from_slice(&(self.ek_cert_der.len() as u16).to_be_bytes());
+        out.extend_from_slice(&self.ek_cert_der);
+        out.extend_from_slice(&(self.intermediates.len() as u16).to_be_bytes());
+        for i in &self.intermediates {
+            out.extend_from_slice(&(i.len() as u16).to_be_bytes());
+            out.extend_from_slice(i);
+        }
+        out.extend_from_slice(&self.ak_name_sha256);
+        out.extend_from_slice(&self.ek_spki_sha256);
+        out
+    }
+
+    /// Parses an extension value produced by [`Self::encode`].
+    pub fn parse(value: &[u8]) -> Result<Self> {
+        let mut r = Reader::new(value);
+        if r.take(1)?[0] != HW_ROOTING_EVIDENCE_V1 {
+            return Err(vfail("hardware-rooting evidence: unsupported version"));
+        }
+        let ek_cert_der = r.tpm2b()?.to_vec();
+        let count = u16::from_be_bytes(
+            r.take(2)?
+                .try_into()
+                .map_err(|_| vfail("hardware-rooting evidence: truncated intermediate count"))?,
+        ) as usize;
+        // A cert chain is small; a large count here is malformed input, not a
+        // deep chain, and allocating on it would be a denial-of-service door.
+        if count > 8 {
+            return Err(vfail(
+                "hardware-rooting evidence: implausible intermediate count",
+            ));
+        }
+        let mut intermediates = Vec::with_capacity(count);
+        for _ in 0..count {
+            intermediates.push(r.tpm2b()?.to_vec());
+        }
+        let ak_name_sha256: [u8; 32] = r
+            .take(32)?
+            .try_into()
+            .map_err(|_| vfail("hardware-rooting evidence: bad ak_name_sha256"))?;
+        let ek_spki_sha256: [u8; 32] = r
+            .take(32)?
+            .try_into()
+            .map_err(|_| vfail("hardware-rooting evidence: bad ek_spki_sha256"))?;
+        Ok(Self {
+            ek_cert_der,
+            intermediates,
+            ak_name_sha256,
+            ek_spki_sha256,
+        })
+    }
+}
+
+/// Extracts hardware-rooting evidence from an X.509 certificate (DER), if present.
+pub fn extract_hardware_rooting_evidence(cert_der: &[u8]) -> Option<HardwareRootingEvidence> {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+
+    let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
+    for ext in cert.extensions() {
+        if ext.oid.as_bytes() == oid::OID_NUCLEUS_TPM_HW_ROOTING_BYTES {
+            return HardwareRootingEvidence::parse(ext.value).ok();
+        }
+    }
+    None
+}
+
 /// Extracts TPM-residency evidence from an X.509 certificate (DER), if present.
 pub fn extract_residency_evidence(cert_der: &[u8]) -> Option<ResidencyEvidence> {
     use x509_parser::prelude::{FromDer, X509Certificate};
@@ -1217,6 +1310,61 @@ impl SvidAttestationBackend for TpmDevidBackend {
 /// manufacturer-signed EK (a later increment), so an `L2Device` floor currently
 /// refuses **every** SVID — correct fail-closed behavior, not a defect.
 pub fn effective_assurance(cert_der: &[u8], launch_verified: bool) -> Result<AssuranceLevel> {
+    // An EMPTY trust store is exactly the old behaviour: no pinned manufacturer
+    // root, so hardware rooting cannot be established and L2 stays unreachable.
+    // Keeping this signature delegating means every existing caller is bit-for-bit
+    // unchanged, and "an empty store proves nothing" is literal rather than a
+    // comment.
+    effective_assurance_with_roots(cert_der, launch_verified, &EkTrustStore::new())
+}
+
+/// [`effective_assurance`], with the relying party's OWN pinned manufacturer roots.
+///
+/// This is the only path that can reach [`AssuranceLevel::L2Device`]. It stays a
+/// single decision function on purpose: `spiffe-hail` and the tool-proxy
+/// relying-party gate must not be able to disagree about a peer's level, so
+/// there is one place that decides and everything else calls it.
+///
+/// The EK chain is verified against `store` — the *verifier's* roots, never the
+/// issuer's opinion. With an empty store this returns exactly what
+/// [`effective_assurance`] returns.
+pub fn effective_assurance_with_roots(
+    cert_der: &[u8],
+    launch_verified: bool,
+    store: &EkTrustStore,
+) -> Result<AssuranceLevel> {
+    let base_level = effective_assurance_residency_only(cert_der, launch_verified)?;
+
+    // No pinned roots, or no hardware-rooting evidence: nothing further to prove.
+    if store.is_empty() {
+        return Ok(base_level);
+    }
+    let Some(hw) = extract_hardware_rooting_evidence(cert_der) else {
+        return Ok(base_level);
+    };
+    // A residency proof is required: compose_l2 roots hardware in a
+    // *non-exportable* key, so hardware evidence without residency establishes
+    // nothing and must not silently pass as L2.
+    let Some(residency) = TpmDevidBackend::verify_leaf_der(cert_der, false)? else {
+        return Ok(base_level);
+    };
+
+    // Present-but-invalid is an error, never a downgrade: a certificate carrying
+    // a broken EK chain is making a claim it cannot support, which is worse than
+    // making none.
+    let ek = verify_ek_chain(&hw.ek_cert_der, &hw.intermediates, store)?;
+    let binding = AkEkBound {
+        ak_name_sha256: hw.ak_name_sha256,
+        ek_spki_sha256: hw.ek_spki_sha256,
+    };
+    let l2 = compose_l2(&residency, &ek, &binding)?;
+    Ok(base_level.max(l2.assurance))
+}
+
+fn effective_assurance_residency_only(
+    cert_der: &[u8],
+    launch_verified: bool,
+) -> Result<AssuranceLevel> {
     let base = if launch_verified {
         AssuranceLevel::L1Software
     } else {
@@ -1385,6 +1533,117 @@ mod tests {
                 ));
         }
         params.signed_by(&spki, &issuer).unwrap().pem()
+    }
+
+    /// Adds the `.1.5` hardware-rooting extension alongside residency.
+    fn build_cert_with_hw(
+        leaf_point: &[u8],
+        residency_ext: Option<&[u8]>,
+        hw_ext: Option<&[u8]>,
+    ) -> String {
+        use rcgen::{
+            BasicConstraints, CertificateParams, CustomExtension, IsCa, Issuer, KeyPair,
+            PKCS_ECDSA_P256_SHA256,
+        };
+        let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let issuer = Issuer::from_params(&ca_params, &ca_key);
+
+        let spki = RawSpki(p256_spki_der(leaf_point));
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        if let Some(value) = residency_ext {
+            params
+                .custom_extensions
+                .push(CustomExtension::from_oid_content(
+                    oid::OID_NUCLEUS_TPM_RESIDENCY_TUPLE,
+                    value.to_vec(),
+                ));
+        }
+        if let Some(value) = hw_ext {
+            params
+                .custom_extensions
+                .push(CustomExtension::from_oid_content(
+                    oid::OID_NUCLEUS_TPM_HW_ROOTING_TUPLE,
+                    value.to_vec(),
+                ));
+        }
+        params.signed_by(&spki, &issuer).unwrap().pem()
+    }
+
+    fn hw_evidence() -> HardwareRootingEvidence {
+        HardwareRootingEvidence {
+            ek_cert_der: vec![0x30, 0x03, 0x02, 0x01, 0x00],
+            intermediates: vec![],
+            ak_name_sha256: [7u8; 32],
+            ek_spki_sha256: [9u8; 32],
+        }
+    }
+
+    #[test]
+    fn hardware_rooting_evidence_roundtrips() {
+        let ev = hw_evidence();
+        let parsed = HardwareRootingEvidence::parse(&ev.encode()).expect("roundtrip");
+        assert_eq!(parsed, ev);
+    }
+
+    /// A malformed intermediate count must not be turned into a huge allocation.
+    #[test]
+    fn hardware_rooting_evidence_refuses_an_implausible_chain() {
+        let mut bad = hw_evidence().encode();
+        // Overwrite the intermediate count (after version + u16 len + cert).
+        let at = 1 + 2 + hw_evidence().ek_cert_der.len();
+        bad[at] = 0xff;
+        bad[at + 1] = 0xff;
+        assert!(HardwareRootingEvidence::parse(&bad).is_err());
+    }
+
+    /// THE NEGATIVE CONTROL. With no pinned manufacturer root, a certificate
+    /// carrying hardware-rooting evidence must NOT reach L2 — an empty store
+    /// proves nothing, and this is the property the whole rung rests on. If this
+    /// ever passes, the L2 gate is decorative.
+    #[test]
+    fn an_empty_trust_store_cannot_reach_l2() {
+        let pem = build_cert_with_hw(
+            &point_of(&subj_pub()),
+            Some(&evidence().encode()),
+            Some(&hw_evidence().encode()),
+        );
+        let der = crate::certificate::Certificate::from_pem(&pem)
+            .unwrap()
+            .der()
+            .to_vec();
+
+        let empty = EkTrustStore::new();
+        let level = effective_assurance_with_roots(&der, false, &empty).expect("assurance");
+        assert!(
+            level < AssuranceLevel::L2Device,
+            "an empty trust store must not reach L2, got {level:?}"
+        );
+
+        // And the legacy entry point, which is the empty-store case by construction.
+        let legacy = effective_assurance(&der, false).expect("assurance");
+        assert_eq!(
+            legacy, level,
+            "effective_assurance must be the empty-store case"
+        );
+    }
+
+    /// Hardware evidence WITHOUT a residency proof must not reach L2 either:
+    /// `compose_l2` roots hardware in a non-exportable key, so there would be
+    /// nothing to root. Guards the path where a caller supplies only the new
+    /// extension.
+    #[test]
+    fn hardware_evidence_without_residency_does_not_reach_l2() {
+        let pem = build_cert_with_hw(&point_of(&subj_pub()), None, Some(&hw_evidence().encode()));
+        let der = crate::certificate::Certificate::from_pem(&pem)
+            .unwrap()
+            .der()
+            .to_vec();
+        let mut store = EkTrustStore::new();
+        store.pin_root("test-mfr", vec![0x30, 0x03, 0x02, 0x01, 0x00]);
+        let level = effective_assurance_with_roots(&der, false, &store).expect("assurance");
+        assert!(level < AssuranceLevel::L2Device, "got {level:?}");
     }
 
     #[test]
