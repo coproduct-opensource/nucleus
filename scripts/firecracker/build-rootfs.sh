@@ -387,14 +387,58 @@ cp "$POD_SPEC" "$ROOTFS_DIR/etc/nucleus/pod.yaml"
 #
 # Copied from the build host rather than apt-installed, so the rootfs build stays
 # offline and needs no package manager inside the target tree.
-if [ -d /etc/ssl/certs ] && [ -s /etc/ssl/certs/ca-certificates.crt ]; then
+# The source path is NOT universal. Debian/Ubuntu keep the bundle at
+# /etc/ssl/certs/ca-certificates.crt; macOS ships /etc/ssl/cert.pem and has no
+# such file, so hardcoding the Debian path made an Apple Silicon build print a
+# warning and emit an image that panics as PID 1 with
+# `failed to build HTTP client: builder error` -- the exact failure this block
+# exists to prevent, reintroduced by the lookup rather than the copy.
+CA_BUNDLE_SRC="${CA_BUNDLE_SRC:-}"
+if [ -z "$CA_BUNDLE_SRC" ]; then
+    for candidate in \
+        /etc/ssl/certs/ca-certificates.crt \
+        /etc/pki/tls/certs/ca-bundle.crt \
+        /etc/ssl/cert.pem \
+        "${HOMEBREW_PREFIX:-/opt/homebrew}/etc/ca-certificates/cert.pem"
+    do
+        [ -s "$candidate" ] && { CA_BUNDLE_SRC="$candidate"; break; }
+    done
+fi
+
+if [ -n "$CA_BUNDLE_SRC" ]; then
+    # An explicitly-set CA_BUNDLE_SRC that does not exist must say so. Without
+    # this the `cp` below fails under `set -e` and the build dies on a bare
+    # "No such file or directory" naming a path the caller has to guess at.
+    if [ ! -s "$CA_BUNDLE_SRC" ]; then
+        echo "ERROR: CA_BUNDLE_SRC='$CA_BUNDLE_SRC' does not exist or is empty." >&2
+        exit 1
+    fi
     mkdir -p "$ROOTFS_DIR/etc/ssl/certs"
-    cp /etc/ssl/certs/ca-certificates.crt "$ROOTFS_DIR/etc/ssl/certs/ca-certificates.crt"
-    echo "Installed CA bundle from build host"
-else
-    echo "WARNING: no CA bundle at /etc/ssl/certs/ca-certificates.crt on the build host." >&2
+    cp "$CA_BUNDLE_SRC" "$ROOTFS_DIR/etc/ssl/certs/ca-certificates.crt"
+    # `-s` only proves non-empty. A truncated or non-PEM file is non-empty and
+    # would sail through to the same PID 1 panic, so count actual certificates.
+    ca_count=$(grep -c 'BEGIN CERTIFICATE' "$ROOTFS_DIR/etc/ssl/certs/ca-certificates.crt" || true)
+    if [ "${ca_count:-0}" -lt 1 ]; then
+        echo "ERROR: $CA_BUNDLE_SRC contains no PEM certificates." >&2
+        exit 1
+    fi
+    echo "Installed CA bundle from build host: $CA_BUNDLE_SRC ($ca_count certificates)"
+elif [ "${ALLOW_NO_CA_BUNDLE:-0}" = "1" ]; then
+    echo "WARNING: no CA bundle found; ALLOW_NO_CA_BUNDLE=1 so continuing." >&2
     echo "         The guest tool-proxy will refuse to start with drand enabled." >&2
-    echo "         Install ca-certificates on the build host, or build with drand off." >&2
+else
+    # Hard failure, not a warning. The old warning produced a rootfs that looked
+    # built and could never boot; a build that cannot succeed should not exit 0.
+    echo "ERROR: no CA bundle found on the build host. Looked in:" >&2
+    echo "         /etc/ssl/certs/ca-certificates.crt   (Debian/Ubuntu)" >&2
+    echo "         /etc/pki/tls/certs/ca-bundle.crt     (RHEL/Fedora)" >&2
+    echo "         /etc/ssl/cert.pem                    (macOS, Alpine)" >&2
+    echo "         \$HOMEBREW_PREFIX/etc/ca-certificates/cert.pem" >&2
+    echo "       The tool-proxy is PID 1 and builds an HTTPS client at startup," >&2
+    echo "       so without a CA store the microVM panics instead of booting." >&2
+    echo "       Point CA_BUNDLE_SRC at a bundle, or set ALLOW_NO_CA_BUNDLE=1 if" >&2
+    echo "       you are deliberately building an image with drand disabled." >&2
+    exit 1
 fi
 
 # Copy network policy files if provided
