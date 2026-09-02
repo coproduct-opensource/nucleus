@@ -41,6 +41,11 @@ pub enum ApprovalSigning {
     /// Ed25519 with the node's approval signing key — Firecracker pods, which
     /// verify against the PUBLIC half (`nucleus.approval_pubkeys`) and hold
     /// no approval secret at all.
+    // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
+    // On other hosts it is genuinely dead, and CI builds release binaries with
+    // `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
+    // error that fails the macOS release job. Same pattern as `boot_trace`/`cgroup`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Ed25519(Arc<ed25519_dalek::SigningKey>),
 }
 

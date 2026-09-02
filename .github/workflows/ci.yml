@@ -73,6 +73,30 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # The macOS build was exercised ONCE PER RELEASE and nowhere else:
+  # release.yml was the only workflow with a `macos-` runner. Both Darwin jobs
+  # in v2.2.0 failed on seven `dead_code` errors that had been there for
+  # months — the Firecracker spawn path is `cfg(target_os = "linux")`, so items
+  # it reaches are genuinely dead elsewhere, and setup-rust-toolchain sets
+  # `RUSTFLAGS=-D warnings` by default, which promotes them.
+  #
+  # Building the same crates release.yml publishes, on the same OS, means a
+  # macOS-only regression fails a PR instead of a release. One job: the point is
+  # coverage, not a matrix.
+  darwin-build:
+    name: Build (macOS, release crates)
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: true
+      # Deliberately NOT overriding rustflags: the default `-D warnings` is the
+      # condition that fails the release, so the gate must run under it too.
+      - name: Build the crates release.yml publishes
+        run: cargo build -p nucleus-node -p nucleus-cli -p nucleus-mcp -p nucleus-audit
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest

@@ -42,6 +42,11 @@ pub struct IdentityManager {
     /// Registry mapping pod IDs to their launch attestations.
     attestation_registry: Arc<RwLock<HashMap<String, LaunchAttestation>>>,
     /// Default certificate TTL.
+    // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
+    // On other hosts it is genuinely dead, and CI builds release binaries with
+    // `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
+    // error that fails the macOS release job.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     cert_ttl: Duration,
     /// Base directory holding each pod's node-side state (`<dir>/<pod_id>/…`),
     /// where the node records `mediator-pubkey.hex` when it mints the pod's
@@ -107,6 +112,11 @@ impl IdentityManager {
     /// node minted for it, read from `mediator-pubkey.hex`. `None` when no binding
     /// dir is configured or the file is absent/malformed — issuance then falls back
     /// to an attestation-only SVID rather than failing.
+    // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
+    // On other hosts it is genuinely dead, and CI builds release binaries with
+    // `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
+    // error that fails the macOS release job. Same pattern as `boot_trace`/`cgroup`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn mediation_binding_for(&self, pod_id: &str) -> Option<[u8; 32]> {
         use sha2::{Digest, Sha256};
         let dir = self.mediation_binding_dir.as_ref()?;
@@ -322,6 +332,11 @@ impl IdentityManager {
     /// cache so the served `FETCH_SVID` path returns the *attested* cert rather than
     /// a plain one. If no attestation is registered, falls back to a standard cert.
     #[tracing::instrument(skip_all, fields(boot.stage = "cert.issue"))]
+    // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
+    // On other hosts it is genuinely dead, and CI builds release binaries with
+    // `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
+    // error that fails the macOS release job.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub async fn fetch_attested_certificate(
         &self,
         identity: &Identity,
