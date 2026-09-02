@@ -61,10 +61,12 @@ pub use attestation::{
     AttestationRequirements, LaunchAttestation, extract_launch_attestation, verify_attested_svid,
 };
 pub use ca::{CaClient, SelfSignedCa};
+#[cfg(feature = "spire")]
+pub use ca::{DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV, SpireCaClient, auto_detect_ca};
 pub use certificate::{
-    spiffe_uri_from_parsed_svid, spiffe_uri_from_svid, TrustBundle, WorkloadCertificate,
+    TrustBundle, WorkloadCertificate, spiffe_uri_from_parsed_svid, spiffe_uri_from_svid,
 };
-pub use cross_agent::{join_cross_agent, CrossAgentExchange, CrossAgentReceipt};
+pub use cross_agent::{CrossAgentExchange, CrossAgentReceipt, join_cross_agent};
 pub use csr::{CertSign, CsrOptions};
 pub use did::{DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod, did_web_to_url};
 pub use did_binding::{BindingProof, BindingVerification, SpiffeDidBinding};
