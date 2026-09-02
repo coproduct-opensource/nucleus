@@ -1202,12 +1202,17 @@ mod tests {
         let bridge = src
             .find("WorkloadApiVsockBridge::start")
             .expect("the bridge start site");
+        // The health wait now sits inside `net::confinement::gate`, which also
+        // requires the guest's egress attestation. The ordering this guards is
+        // unchanged — the bridge must still come first — so the needle follows
+        // the call site rather than the old function name.
         let health = src
-            // Needle without the closing paren: the call gained a `console`
-            // argument and this guard failed on the punctuation rather than on
-            // the ordering it exists to protect.
-            .find("wait_for_proxy_health(health_addr")
-            .expect("the health check site");
+            // The health wait now sits inside `net::confinement::gate`, which
+            // also requires the guest's egress attestation. The ordering this
+            // guards is unchanged — the bridge must still come first — so the
+            // needle follows the call site.
+            .find("confinement::gate(health_addr")
+            .expect("the health/attestation gate site");
         assert!(
             bridge < health,
             "the workload API bridge must start BEFORE the proxy health check — the guest \
