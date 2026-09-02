@@ -38,7 +38,15 @@ for l in $LINTS; do FLAGS+=(-W "$l"); done
 # report the failures rather than letting either disappear.
 RAW=$(mktemp)
 set +e
-cargo clippy --workspace --all-targets --keep-going --message-format=json -- "${FLAGS[@]}" >"$RAW" 2>/dev/null
+# RUSTFLAGS is cleared for the MEASUREMENT run. CI (setup-rust-toolchain)
+# exports `-D warnings`, which promotes the tracked cast lints from `warning`
+# to `error` — and the jq below selects on level. The count came back 0 on CI
+# for exactly that reason while reading 457 locally: not a clean tree, an
+# ambient flag leaking into a measurement.
+#
+# Counting is not gating. This script decides pass/fail from the count against
+# the ceiling; it must not also inherit someone else's promotion policy.
+RUSTFLAGS= cargo clippy --workspace --all-targets --keep-going --message-format=json -- "${FLAGS[@]}" >"$RAW" 2>/dev/null
 set -e
 
 FAILED=$(jq -r 'select(.reason=="compiler-message") | .message
@@ -50,7 +58,7 @@ FAILED=$(jq -r 'select(.reason=="compiler-message") | .message
 # rebuilds varies -- consecutive runs reported 406 then 404 on an unchanged
 # tree before this dedupe.
 COUNT=$(jq -r 'select(.reason=="compiler-message") | .message
-           | select(.level=="warning")
+           | select(.level=="warning" or .level=="error")
            | select((.code.code // "") | startswith("clippy::cast"))
            | (.spans[] | select(.is_primary)) as $s
            | "\($s.file_name):\($s.line_start):\($s.column_start):\(.code.code)"' "$RAW" \
