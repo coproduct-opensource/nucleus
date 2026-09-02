@@ -66,6 +66,21 @@ fi
 case "${1:---count}" in
   --count) echo "$COUNT" ;;
   --strict)
+    # NON-VACUITY FLOOR. A count of zero is not "the code got clean" — this
+    # workspace has hundreds of tracked cast sites. Zero means the measurement
+    # failed: clippy produced no countable output, which happens when the build
+    # errors out before analysing anything. Without this, the ratchet PASSES on
+    # a broken build, which is a gate that cannot go red.
+    #
+    # Found by its own falsifier (`ratchet-falsifier` in clippy-ratchet.yml):
+    # setting the ceiling to 0 should have RED-ed and did not, because 0 > 0 is
+    # false. The falsifier earned itself on its first CI run.
+    if [ "$COUNT" -eq 0 ]; then
+      echo "::error::the ratcheted-lint count came back 0, which this workspace \
+cannot honestly produce. The clippy run failed to yield countable output — \
+treat this as a broken measurement, not a clean tree."
+      exit 1
+    fi
     CEILING=$(grep '^ceiling' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
     echo "ratcheted clippy violations: $COUNT (ceiling $CEILING)"
     if [ "$COUNT" -gt "$CEILING" ]; then
