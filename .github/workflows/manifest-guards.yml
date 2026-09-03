@@ -65,6 +65,13 @@ jobs:
       - name: Vendor neutrality (no claude/anthropic/openai in source)
         run: bash ci/no-vendor-strings.sh
 
+      # Move B deleted nucleus-node's HMAC auth tier in favor of mandatory
+      # mTLS. A categorical denylist, matching the house pattern
+      # `snapshot::PER_POD_SECRET_KEYS` uses for retired per-pod secrets: the
+      # retired symbols must not silently reappear.
+      - name: No retired HMAC auth symbols (Move B)
+        run: scripts/check-no-hmac-auth.sh
+
       # release.yml built 3 of the 7 guest binaries the rootfs needs, so the
       # rootfs job failed on the first missing one. It only surfaces when a
       # release is cut, which is why it survived from July to v2.2.0.

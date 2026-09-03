@@ -6,7 +6,7 @@
 //! one more block in an already-long function.
 //!
 //! Move B: this used to have a plaintext default (HMAC auth) and an opt-in
-//! `--http-mtls-self-issued` mTLS mode. HMAC has no fallback any more, so
+//! `--http-mtls-self-issued` mTLS mode. HMAC has no fallback any more, so // hmac-allow: historical, flag removed by Move B
 //! mTLS is the only mode left — the flag that used to select it is gone.
 
 use crate::{ApiError, NodeState};

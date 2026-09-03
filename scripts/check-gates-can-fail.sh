@@ -322,6 +322,12 @@ perturb_declassify_value_unbind() {
     fi
 }
 
+perturb_no_hmac_auth() {
+    # Reintroduce a retired symbol — the exact regression this gate exists to
+    # catch (a deleted HMAC auth tier silently coming back).
+    echo 'const _GATE_PROBE: &str = "NUCLEUS_NODE_AUTH_SECRET";' >> "$1"
+}
+
 perturb_extracted_callsite() {
     local f="$1"
     # Break the live call to the extracted ident_may_deliver predicate (the FM-5
@@ -376,6 +382,10 @@ probe check-declassify-value-bound.sh "" crates/portcullis/src/flow_graph.rs \
 probe check-extracted-callsites.sh "" crates/nucleus-tool-proxy/src/workload.rs \
       "the live ident_may_deliver call site removed" \
       perturb_extracted_callsite
+
+probe check-no-hmac-auth.sh "" crates/nucleus-node/src/auth.rs \
+      "a retired NUCLEUS_NODE_AUTH_SECRET reference reintroduced" \
+      perturb_no_hmac_auth
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #

@@ -6,7 +6,7 @@ use sha2::Sha256;
 /// Context from a successfully authenticated request.
 ///
 /// Move B deleted the HMAC tier this used to also carry
-/// (`AuthMethod::Hmac`/`AuthContext::from_hmac`) — mTLS with SPIFFE is the
+/// (`AuthMethod::Hmac`/`AuthContext::from_hmac`) — mTLS with SPIFFE is the // hmac-allow: historical, describes what Move B deleted
 /// only authentication method left, so the `AuthMethod` enum indirection
 /// this struct used to wrap is gone too. See `docs/production-delta.md` and
 /// the `move-b-delete-hmac` branch history for what this replaced.

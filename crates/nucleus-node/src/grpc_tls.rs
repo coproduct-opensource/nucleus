@@ -11,9 +11,11 @@
 //! 2. Clients must present a valid certificate signed by the trust bundle
 //! 3. Client SPIFFE ID is extracted and can be used for authorization
 //!
-//! When server-only TLS is used:
-//! 1. Server presents its certificate to clients
-//! 2. No client authentication is required (HMAC auth still applies)
+//! Server-only TLS (no client cert required) is still an option via explicit
+//! `--grpc-tls-cert`/`--grpc-tls-key` with no `--grpc-tls-ca` — but Move B
+//! deleted the HMAC fallback that combination used to leave client auth to,
+//! so `main.rs`'s `serve_grpc` refuses to start with that configuration: no
+//! caller could ever authenticate.
 //!
 //! # Configuration
 //!
@@ -82,7 +84,7 @@ impl GrpcTlsConfig {
 
     /// Creates a TLS configuration from a nucleus-identity WorkloadCertificate.
     ///
-    /// Live path: `--grpc-tls-self-issued` in `main.rs` uses this with the
+    /// Live path: `--grpc-tls-self-issued` in `main.rs` uses this with the // hmac-allow: historical, flag removed by Move B
     /// node's own SVID (`IdentityManager::node_certificate`). Also usable
     /// with a SPIRE-obtained certificate once that integration is wired.
     pub fn from_workload_cert(

@@ -230,12 +230,14 @@ impl IdentityManager {
     /// (server-only), this is full mTLS: `nucleus_identity::mtls::MtlsListener`
     /// always requires a client certificate (`TlsServerConfig::build_acceptor`
     /// builds its verifier without `allow_unauthenticated`) — so a caller with
-    /// no SVID cannot connect at all. Correct once the CLI has one (Move A
-    /// step 5); until then, `--http-mtls-self-issued` is an opt-in mode an
-    /// operator enables knowing that. Using THIS manager's own CA as the
-    /// trust root (rather than requiring separately-provisioned trust-bundle
-    /// files, as the tool-proxy's `--trust-bundle` does) is deliberate: once
-    /// step 5 lands, the CLI's SVID is issued by this same CA, so no further
+    /// no SVID cannot connect at all. This was gated behind an opt-in
+    /// `--http-mtls-self-issued` flag until the CLI had an SVID of its own // hmac-allow: historical, flag removed by Move B
+    /// to present (Move A step 5); Move B made it the unconditional default
+    /// once that precondition held and deleted the flag along with the
+    /// HMAC fallback it used to leave in place. Using THIS manager's own CA
+    /// as the trust root (rather than requiring separately-provisioned
+    /// trust-bundle files, as the tool-proxy's `--trust-bundle` does) is
+    /// deliberate: the CLI's SVID is issued by this same CA, so no further
     /// wiring is needed here for the trust relationship to already be correct.
     pub async fn self_issued_http_mtls_config(
         &self,
@@ -249,11 +251,12 @@ impl IdentityManager {
     }
 
     /// Wraps `tcp_listener` in a self-issued mTLS listener built from
-    /// [`Self::self_issued_http_mtls_config`]. What `--http-mtls-self-issued`
-    /// uses to build the transport before `axum::serve` runs — kept here
-    /// rather than inline in `main.rs`'s already-large boot sequence, since
-    /// "how do I present myself over TLS" is this type's own responsibility,
-    /// the same reasoning as [`Self::node_certificate`].
+    /// [`Self::self_issued_http_mtls_config`]. What `http_serve::serve` uses
+    /// to build the transport before `axum::serve` runs (unconditionally,
+    /// since Move B — see this fn's own doc comment) — kept here rather
+    /// than inline in `main.rs`'s already-large boot sequence, since "how
+    /// do I present myself over TLS" is this type's own responsibility, the
+    /// same reasoning as [`Self::node_certificate`].
     pub async fn self_issued_http_mtls_listener(
         &self,
         tcp_listener: tokio::net::TcpListener,
@@ -422,8 +425,8 @@ impl IdentityManager {
     /// Fetches a certificate for the given identity, returning the certificate.
     ///
     /// Uses the cache if available, otherwise generates a new certificate.
-    /// Live path: `--grpc-tls-self-issued` reaches this via
-    /// [`Self::node_certificate`].
+    /// Live path: gRPC TLS setup (`main.rs`, unconditional since Move B)
+    /// reaches this via [`Self::node_certificate`].
     pub async fn fetch_certificate(
         &self,
         identity: &Identity,
@@ -785,7 +788,7 @@ mod tests {
 
     /// The node's own identity is stable (a pure function of trust domain,
     /// not of generated material) and `node_certificate` mints under it.
-    /// This is what `--grpc-tls-self-issued` relies on in `main.rs`.
+    /// This is what gRPC's self-issued mTLS setup relies on in `main.rs`.
     #[tokio::test]
     async fn node_certificate_is_minted_under_the_stable_node_identity() {
         let manager = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
@@ -836,7 +839,7 @@ mod tests {
         );
     }
 
-    /// The property `--http-mtls-self-issued` depends on, proven with a REAL
+    /// The property `http_serve::serve`'s self-issued mTLS depends on, proven with a REAL
     /// TLS handshake rather than inspecting the config's fields: a peer whose
     /// certificate was minted by this SAME CA (a pod, say) completes a full
     /// mTLS handshake against the config `self_issued_http_mtls_config`

@@ -838,7 +838,7 @@ async fn main() -> Result<(), ApiError> {
             // identity — the mandatory default now that HMAC has no
             // fallback (Move B). `identity_manager` is always constructed
             // (see above), so this cannot fail for lack of one; the
-            // `--grpc-tls-self-issued` flag that used to gate this is
+            // `--grpc-tls-self-issued` flag that used to gate this is // hmac-allow: historical, flag removed by Move B
             // accepted for compatibility but has no effect any more — this
             // path is not optional.
             (None, None) => {
