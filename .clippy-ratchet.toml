@@ -27,6 +27,6 @@ lints = [
 # push to main snaps this down to the real count (457 measured here, three
 # identical consecutive runs), so an over-generous seed
 # self-corrects within one commit rather than hiding a regression forever.
-ceiling = 470
+ceiling = 466
 target = 0
 step = 5
