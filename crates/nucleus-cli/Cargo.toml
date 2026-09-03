@@ -65,6 +65,16 @@ shellexpand = "3.1"
 dirs = "6.0"
 uuid = { workspace = true }
 ureq = { workspace = true }
+# mTLS against a node started with --http-mtls-self-issued (Move A step 5).
+# ureq's TLS API validates a server cert's hostname against DNS/IP SANs with
+# no way to skip only that check — but the node's self-issued SVID carries
+# only a SPIFFE URI SAN, so ureq always rejects it. reqwest independently
+# supports skipping hostname verification while still validating the chain
+# against a pinned CA root, which is the correct primitive for SPIFFE
+# identity (not hostname-based). Same feature set as nucleus-sdk's own
+# (already-working) mTLS path. The plaintext/HMAC default stays on ureq,
+# unchanged.
+reqwest = { workspace = true, features = ["rustls-no-provider", "json"] }
 rand = "0.10"
 chrono = { workspace = true, features = ["serde"] }
 hex = { workspace = true }
