@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/nucleus-perf",  # Dev-only: pod concurrency + start-latency measurement
     "crates/portcullis",  # Policy: quotient lattice types
     "crates/nucleus-policy-kernel", # PCA: reference monitor (decide / governance_monotone)
     "crates/nucleus-policy-cert",   # PCA: recompute-verifiable certificates (R1)

@@ -1,0 +1,500 @@
+//! `podburst` — launch N real pods at once and measure what the host does.
+//!
+//! The numbers this prints are meant to survive scrutiny, so a few choices are
+//! deliberate:
+//!
+//! * **Submit latency and time-to-running are reported separately.** The first
+//!   is how long the node takes to accept the request; the second includes the
+//!   microVM actually booting. Collapsing them hides which half is slow.
+//! * **Configured and resident memory are reported separately.** Firecracker
+//!   backs guest RAM on demand, so a 512 MiB pod does not occupy 512 MiB.
+//!   Multiplying the configured size by the pod count over-estimates the true
+//!   requirement, usually by a lot.
+//! * **Pods that never reach Running are counted, not dropped.** A burst that
+//!   "succeeds" in 200 ms because half of it failed is the failure mode this
+//!   harness exists to catch, so `failed` is a first-class column.
+//! * **Percentiles, not just a mean.** Under contention the tail is the story.
+
+use std::collections::BTreeMap;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(name = "nucleus-perf", about = "Measure real pod concurrency and start latency")]
+enum Cli {
+    /// Launch N pods simultaneously, ramping through several values of N.
+    Podburst(Burst),
+}
+
+#[derive(Parser)]
+struct Burst {
+    /// Node base URL.
+    #[arg(long, default_value = "http://127.0.0.1:8080")]
+    url: String,
+    /// Hex-encoded auth secret for request signing.
+    #[arg(long, env = "NUCLEUS_AUTH_SECRET")]
+    auth_secret: String,
+    /// Actor name recorded on each signed request.
+    #[arg(long, default_value = "nucleus-perf")]
+    actor: String,
+    /// Pod spec used as the template for every pod in the burst.
+    #[arg(long)]
+    spec: String,
+    /// Concurrency levels to ramp through.
+    #[arg(long, default_value = "1,5,10,25,50")]
+    counts: String,
+    /// Give up waiting for a pod to reach Running after this many seconds.
+    #[arg(long, default_value = "120")]
+    timeout_secs: u64,
+    /// Give each pod a distinct guest CID. Off by default, and normally wrong:
+    /// vsock CIDs are per-VM, so varying them makes guests bind a CID they do
+    /// not own. Kept as a flag so the failure stays reproducible.
+    #[arg(long)]
+    vary_cid: bool,
+    /// First guest CID to hand out when --vary-cid is set.
+    #[arg(long, default_value = "100")]
+    base_cid: u32,
+    /// Emit one JSON object per level as well as the table.
+    #[arg(long)]
+    json: bool,
+}
+
+fn main() -> Result<()> {
+    let Cli::Podburst(b) = Cli::parse();
+    // The node uses the hex secret string DIRECTLY as HMAC key bytes -- it does
+    // not decode it (see nucleus-cli load_auth_secret). Decoding here yields a
+    // 32-byte key against the node's 64-byte one and every request 401s.
+    let secret = b.auth_secret.trim().as_bytes().to_vec();
+    let template: serde_json::Value = {
+        let raw = std::fs::read_to_string(&b.spec)
+            .with_context(|| format!("reading spec {}", &b.spec))?;
+        serde_yaml::from_str(&raw).with_context(|| format!("parsing spec {}", &b.spec))?
+    };
+
+    let counts: Vec<usize> = b
+        .counts
+        .split(',')
+        .map(|s| s.trim().parse::<usize>().context("--counts must be integers"))
+        .collect::<Result<_>>()?;
+
+    let configured_mib = template
+        .pointer("/spec/resources/memory_mib")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(512);
+
+    println!(
+        "host: {} cpus, {} MiB total | pod: {} MiB configured\n",
+        num_cpus(),
+        meminfo_kb("MemTotal").unwrap_or(0) / 1024,
+        configured_mib
+    );
+    println!(
+        "{:>5} {:>8} {:>9} {:>9} {:>9} {:>9} {:>8} {:>10} {:>9}",
+        "N", "started", "failed", "sub_p50", "run_p50", "run_p90", "run_max", "rss_total", "rss_each"
+    );
+
+    // Preflight: prove the credential works on a GET with an empty body BEFORE
+    // launching a burst. Without this, a bad secret is indistinguishable from a
+    // host that cannot boot pods -- every pod just "fails" and the table lies.
+    match list_pods(&b.url, &secret, &b.actor) {
+        Ok(p) => println!("preflight: authenticated, {} pod(s) already present\n", p.len()),
+        Err(e) => bail!("preflight failed -- the node rejected a signed request: {e}"),
+    }
+
+    let mut rows = Vec::new();
+    for n in counts {
+        let row = run_level(&b, &secret, &template, n, configured_mib)?;
+        println!(
+            "{:>5} {:>8} {:>9} {:>8}m {:>8}m {:>8}m {:>8}m {:>9}M {:>8}M",
+            row.n,
+            row.started,
+            row.failed,
+            row.submit_p50,
+            row.run_p50,
+            row.run_p90,
+            row.run_max,
+            row.rss_total_mib,
+            row.rss_each_mib
+        );
+        if b.json {
+            println!("{}", serde_json::to_string(&row.to_json())?);
+        }
+        rows.push(row);
+        // Let the host settle so the next level starts from a clean baseline.
+        std::thread::sleep(Duration::from_secs(3));
+    }
+
+    summarise(&rows, configured_mib);
+    Ok(())
+}
+
+struct Row {
+    n: usize,
+    started: usize,
+    failed: usize,
+    submit_p50: u128,
+    run_p50: u128,
+    run_p90: u128,
+    run_max: u128,
+    rss_total_mib: u64,
+    rss_each_mib: u64,
+}
+
+impl Row {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "n": self.n,
+            "started": self.started,
+            "failed": self.failed,
+            "submit_ms_p50": self.submit_p50,
+            "run_ms_p50": self.run_p50,
+            "run_ms_p90": self.run_p90,
+            "run_ms_max": self.run_max,
+            "rss_total_mib": self.rss_total_mib,
+            "rss_each_mib": self.rss_each_mib,
+        })
+    }
+}
+
+fn run_level(
+    b: &Burst,
+    secret: &[u8],
+    template: &serde_json::Value,
+    n: usize,
+    configured_mib: u64,
+) -> Result<Row> {
+    // Build every spec up front: work done before the clock starts must not be
+    // charged to the burst.
+    let specs: Vec<(String, String)> = (0..n)
+        .map(|i| {
+            let name = format!("perf-{n}-{i}");
+            let mut s = template.clone();
+            set(&mut s, "/metadata/name", serde_json::json!(name.clone()));
+            // Do NOT vary guest_cid. Each microVM owns its own vsock device, so
+            // the CID is per-VM, not host-global: every pod can and should keep
+            // the template's value. Handing pod N a distinct CID makes the guest
+            // bind a listener to a CID its own VM does not have, which fails with
+            // EADDRNOTAVAIL, kills PID 1 and panics the guest kernel. Measured:
+            // cid=3 boots, cid=4 and cid=100 panic, while three pods sharing
+            // cid=3 run concurrently without complaint.
+            if b.vary_cid {
+                set(&mut s, "/spec/vsock/guest_cid", serde_json::json!(b.base_cid + i as u32));
+            }
+            set(
+                &mut s,
+                "/spec/cgroup/path",
+                serde_json::json!(format!("/sys/fs/cgroup/nucleus/{name}")),
+            );
+            (name, serde_json::to_string(&s).unwrap_or_default())
+        })
+        .collect();
+
+    let (tx, rx) = mpsc::channel();
+    let start = Instant::now();
+    let mut handles = Vec::new();
+    for (name, body) in specs {
+        let url = format!("{}/v1/pods", b.url);
+        let actor = b.actor.clone();
+        let secret = secret.to_vec();
+        let tx = tx.clone();
+        handles.push(std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let res = post_pod(&url, &secret, &actor, &body);
+            let submit_ms = t0.elapsed().as_millis();
+            let _ = tx.send((name, res, submit_ms));
+        }));
+    }
+    drop(tx);
+
+    let mut submits = Vec::new();
+    let mut ids = BTreeMap::new();
+    let mut failed = 0usize;
+    let mut first_err: Option<String> = None;
+    for (name, res, submit_ms) in rx {
+        submits.push(submit_ms);
+        match res {
+            Ok(id) => {
+                ids.insert(id, name);
+            }
+            Err(e) => {
+                failed += 1;
+                if first_err.is_none() {
+                    first_err = Some(e.to_string());
+                }
+            }
+        }
+    }
+    for h in handles {
+        let _ = h.join();
+    }
+
+    // Wait for the pods to actually run, polling the list endpoint so one
+    // request covers the whole burst.
+    let mut running_at: BTreeMap<String, u128> = BTreeMap::new();
+    let deadline = Instant::now() + Duration::from_secs(b.timeout_secs);
+    while running_at.len() < ids.len() && Instant::now() < deadline {
+        if let Ok(list) = list_pods(&b.url, secret, &b.actor) {
+            for p in list {
+                let (Some(id), Some(state)) = (
+                    p.get("id").and_then(|v| v.as_str()),
+                    p.get("state").and_then(|v| v.as_str()),
+                ) else {
+                    continue;
+                };
+                if ids.contains_key(id)
+                    && !running_at.contains_key(id)
+                    && is_live(state)
+                {
+                    running_at.insert(id.to_string(), start.elapsed().as_millis());
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let rss_total = firecracker_rss_kb() / 1024;
+    let live = firecracker_count();
+    let started = running_at.len();
+    failed += ids.len() - started;
+
+    let mut runs: Vec<u128> = running_at.values().copied().collect();
+    runs.sort_unstable();
+    submits.sort_unstable();
+
+    // Tear down before the next level so memory and CPU return to baseline.
+    for id in ids.keys() {
+        let _ = cancel_pod(&b.url, secret, &b.actor, id);
+    }
+    wait_for_drain(Duration::from_secs(60));
+
+    if let Some(e) = &first_err {
+        println!("      first failure: {e}");
+    }
+    let _ = configured_mib;
+    Ok(Row {
+        n,
+        started,
+        failed,
+        submit_p50: pct(&submits, 50),
+        run_p50: pct(&runs, 50),
+        run_p90: pct(&runs, 90),
+        run_max: runs.last().copied().unwrap_or(0),
+        rss_total_mib: rss_total,
+        rss_each_mib: if live > 0 { rss_total / live as u64 } else { 0 },
+    })
+}
+
+/// A pod counts as started once it is no longer pending: the microVM is up.
+fn is_live(state: &str) -> bool {
+    let s = state.to_ascii_lowercase();
+    s.contains("running") || s.contains("ready") || s.contains("succeeded") || s.contains("completed")
+}
+
+fn summarise(rows: &[Row], configured_mib: u64) {
+    let Some(best) = rows.iter().filter(|r| r.failed == 0).max_by_key(|r| r.n) else {
+        println!("\nNo level completed without failures.");
+        return;
+    };
+    println!("\n-- what this host actually did --");
+    println!("  largest clean burst: {} pods", best.n);
+    if best.rss_each_mib > 0 {
+        let avail = meminfo_kb("MemTotal").unwrap_or(0) / 1024;
+        println!(
+            "  resident per pod:    {} MiB (configured {} MiB -- {}x over-estimate)",
+            best.rss_each_mib,
+            configured_mib,
+            configured_mib / best.rss_each_mib.max(1)
+        );
+        println!(
+            "  100 pods would need: ~{} MiB resident, host has {} MiB",
+            best.rss_each_mib * 100,
+            avail
+        );
+    }
+    if let Some(f) = rows.iter().find(|r| r.failed > 0) {
+        println!("  first level with failures: N={} ({} failed)", f.n, f.failed);
+    }
+}
+
+// ---- transport -------------------------------------------------------------
+
+/// `http_status_as_error(false)` is deliberate. ureq's default turns a 4xx into
+/// a transport `Err` and discards the body -- which is exactly where the node
+/// explains itself ("no such policy profile", "cannot open rootfs"). Reporting
+/// "status 400" instead of the node's own sentence turns a precise diagnosis
+/// into a guess, and this harness exists to diagnose.
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+fn signed_request(
+    req: ureq::RequestBuilder<ureq::typestate::WithBody>,
+    secret: &[u8],
+    actor: &str,
+    body: &[u8],
+) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+    let signed = nucleus_client::sign_http_headers(secret, Some(actor), body);
+    let mut req = req;
+    for (k, v) in &signed.headers {
+        req = req.header(k, v);
+    }
+    req
+}
+
+fn post_pod(url: &str, secret: &[u8], actor: &str, body: &str) -> Result<String> {
+    let req = agent().post(url).header("content-type", "application/json");
+    let mut resp = signed_request(req, secret, actor, body.as_bytes())
+        .send(body)
+        .map_err(|e| anyhow::anyhow!("create pod: {e}"))?;
+    let status = resp.status();
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    if !status.is_success() {
+        bail!("create pod: HTTP {status}: {}", text.trim());
+    }
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("create pod: unparseable response: {text}"))?;
+    v.get("id")
+        .or_else(|| v.get("pod_id"))
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("no pod id in response: {v}"))
+}
+
+fn list_pods(url: &str, secret: &[u8], actor: &str) -> Result<Vec<serde_json::Value>> {
+    let endpoint = format!("{url}/v1/pods");
+    let signed = nucleus_client::sign_http_headers(secret, Some(actor), b"");
+    let mut req = agent().get(&endpoint);
+    for (k, v) in &signed.headers {
+        req = req.header(k, v);
+    }
+    let mut resp = req.call().map_err(|e| anyhow::anyhow!("list pods: {e}"))?;
+    // `http_status_as_error(false)` means a 401 arrives as a normal response.
+    // Parsing it as JSON and finding no "pods" key yields an empty list, which
+    // reads as "the node is up and idle" -- a false pass that turns an auth
+    // failure into a plausible zero. Check the status.
+    let status = resp.status();
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    if !status.is_success() {
+        bail!("list pods: HTTP {status}: {}", text.trim());
+    }
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("list pods: unparseable response: {text}"))?;
+    Ok(v.get("pods")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .or_else(|| v.as_array().cloned())
+        .unwrap_or_default())
+}
+
+fn cancel_pod(url: &str, secret: &[u8], actor: &str, id: &str) -> Result<()> {
+    let endpoint = format!("{url}/v1/pods/{id}/cancel");
+    let req = agent().post(&endpoint);
+    let mut resp = signed_request(req, secret, actor, b"")
+        .send("")
+        .map_err(|e| anyhow::anyhow!("cancel: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        bail!("cancel: HTTP {status}: {}", text.trim());
+    }
+    Ok(())
+}
+
+// ---- host observation ------------------------------------------------------
+
+fn wait_for_drain(limit: Duration) {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline && firecracker_count() > 0 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn for_each_firecracker(mut f: impl FnMut(&str)) {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for e in entries.flatten() {
+        let pid = e.file_name();
+        let Some(pid) = pid.to_str() else { continue };
+        if !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+            if comm.trim() == "firecracker" {
+                f(pid);
+            }
+        }
+    }
+}
+
+fn firecracker_count() -> usize {
+    let mut n = 0;
+    for_each_firecracker(|_| n += 1);
+    n
+}
+
+/// Summed resident set size of every Firecracker process, in KiB.
+fn firecracker_rss_kb() -> u64 {
+    let mut total = 0;
+    for_each_firecracker(|pid| {
+        if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("VmRSS:") {
+                    total += rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(0);
+                }
+            }
+        }
+    });
+    total
+}
+
+fn meminfo_kb(key: &str) -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix(key) {
+            if let Some(rest) = rest.strip_prefix(':') {
+                return rest.split_whitespace().next()?.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+fn num_cpus() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+// ---- small helpers ---------------------------------------------------------
+
+fn pct(sorted: &[u128], p: usize) -> u128 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = (sorted.len() * p).div_ceil(100).saturating_sub(1);
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn set(v: &mut serde_json::Value, ptr: &str, val: serde_json::Value) {
+    // Create missing intermediate objects so a template that omits, say,
+    // `spec.vsock` still gets a distinct CID rather than silently sharing one.
+    let parts: Vec<&str> = ptr.trim_start_matches('/').split('/').collect();
+    let mut cur = v;
+    for p in &parts[..parts.len() - 1] {
+        if !cur.get(*p).map(serde_json::Value::is_object).unwrap_or(false) {
+            cur[*p] = serde_json::json!({});
+        }
+        cur = cur.get_mut(*p).expect("just inserted");
+    }
+    cur[parts[parts.len() - 1]] = val;
+}
+
