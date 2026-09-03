@@ -84,7 +84,7 @@ pub fn check_url_allowlist(url_allow: &[String], url: &str) -> Result<(), String
 
     let allowed = url_allow
         .iter()
-        .any(|pattern| crate::url_glob_match(pattern, url));
+        .any(|pattern| crate::url_allow::url_glob_match(pattern, url));
 
     if allowed {
         Ok(())
