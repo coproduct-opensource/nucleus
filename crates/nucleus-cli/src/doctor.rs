@@ -340,6 +340,43 @@ fn check_lima() -> bool {
             },
         );
 
+        // br_netfilter, checked here for the same reason /dev/kvm is: it is a
+        // hard requirement that fails LATE and cryptically. Without it a pod
+        // whose spec has a `network` block dies mid-launch on
+        // `sysctl: cannot stat /proc/sys/net/bridge/...` after the veth pair,
+        // bridge and tap already exist (#2382).
+        //
+        // A warning, not an error: pods with no `network` block never touch
+        // this path, so the VM is genuinely usable without it.
+        let brnf_check = Command::new("limactl")
+            .args([
+                "shell",
+                &vm_name(),
+                "--",
+                "test",
+                "-e",
+                "/proc/sys/net/bridge/bridge-nf-call-iptables",
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        print_check(
+            "br_netfilter in VM",
+            if brnf_check {
+                Status::Ok
+            } else {
+                Status::Warning
+            },
+            if brnf_check {
+                "loaded (pods with a network block can be filtered)"
+            } else {
+                "MISSING - a pod spec with a `network` block will fail mid-launch. \
+                 Fix: limactl shell nucleus -- sudo modprobe br_netfilter && \
+                 echo br_netfilter | sudo tee /etc/modules-load.d/nucleus.conf"
+            },
+        );
+
         // Check Firecracker version in VM
         let fc_output = Command::new("limactl")
             .args(["shell", &vm_name(), "--", "firecracker", "--version"])

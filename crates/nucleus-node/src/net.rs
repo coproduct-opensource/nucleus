@@ -495,6 +495,7 @@ pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
     ensure_command("ip")?;
     ensure_command("iptables")?;
     ensure_command("sysctl")?;
+    ensure_bridge_netfilter()?;
 
     // Two subnets now, and the split is the whole point:
     //   * the LINK subnet (index-derived) addresses the veth pair, both ends of
@@ -1099,6 +1100,47 @@ fn invalid_entry(entry: &str) -> ApiError {
     ))
 }
 
+/// The file whose existence proves `br_netfilter` is loaded.
+///
+/// `setup_network` sets `net.bridge.bridge-nf-call-iptables`, and the whole
+/// `/proc/sys/net/bridge` tree only appears once the module is in the kernel.
+pub(crate) const BRIDGE_NF_PROBE: &str = "/proc/sys/net/bridge/bridge-nf-call-iptables";
+
+/// What to tell the operator when `br_netfilter` is missing.
+///
+/// Pure and not cfg-gated, so the message is testable on a host with no such
+/// kernel. The message is the point: the raw failure was
+///
+///     sysctl: cannot stat /proc/sys/net/bridge/bridge-nf-call-iptables:
+///     No such file or directory
+///
+/// surfacing mid-launch from inside a half-built namespace, naming a path
+/// instead of the module, and offering no remedy (#2382).
+pub(crate) fn bridge_netfilter_remedy() -> String {
+    format!(
+        "the br_netfilter kernel module is not loaded, so {BRIDGE_NF_PROBE} does not \
+         exist and this pod's bridge cannot be filtered by iptables.\n\
+         Load it now:      sudo modprobe br_netfilter\n\
+         Persist a reboot: echo br_netfilter | sudo tee /etc/modules-load.d/nucleus.conf\n\
+         `nucleus setup` provisions both on the Lima VM; a host provisioned before \
+         that, or any other Linux host, needs them once."
+    )
+}
+
+/// Refuse BEFORE any interface exists.
+///
+/// Checked here rather than at the failing `sysctl` because by then the veth
+/// pair, bridge and tap are already built, and the operator gets a `cannot stat`
+/// from inside a namespace that is about to be torn down. kubeadm makes the same
+/// check a preflight for the same reason.
+#[cfg(target_os = "linux")]
+fn ensure_bridge_netfilter() -> Result<(), ApiError> {
+    if std::path::Path::new(BRIDGE_NF_PROBE).exists() {
+        return Ok(());
+    }
+    Err(ApiError::Driver(bridge_netfilter_remedy()))
+}
+
 #[cfg(target_os = "linux")]
 fn ensure_command(command: &str) -> Result<(), ApiError> {
     let mut cmd = Command::new(command);
@@ -1503,6 +1545,57 @@ mod tests {
             }
             .render(),
             vec!["ip", "route", "add", "default", "via", "10.0.0.1"],
+        );
+    }
+
+    // ── br_netfilter preflight (#2382) ───────────────────────────────────────
+
+    /// The raw failure named a PATH and offered no remedy:
+    ///
+    ///     sysctl: cannot stat /proc/sys/net/bridge/bridge-nf-call-iptables:
+    ///     No such file or directory
+    ///
+    /// An operator reading that has to know that this path implies a kernel
+    /// module, and which one. The message must close that gap itself.
+    #[test]
+    fn the_br_netfilter_message_names_the_module_and_how_to_fix_it() {
+        let m = super::bridge_netfilter_remedy();
+        assert!(
+            m.contains("br_netfilter"),
+            "must name the module, not just the path"
+        );
+        assert!(
+            m.contains("modprobe br_netfilter"),
+            "must give the command to run now"
+        );
+        assert!(
+            m.contains("/etc/modules-load.d"),
+            "must say how to survive a reboot -- a bare modprobe does not persist, \
+             which is how this was rediscovered after a VM restart"
+        );
+    }
+
+    /// Non-vacuity: the assertions above must be capable of failing. A message
+    /// that merely echoed the sysctl path would satisfy none of them.
+    #[test]
+    fn the_bare_sysctl_error_would_not_satisfy_that_test() {
+        let bare = format!(
+            "sysctl: cannot stat {}: No such file",
+            super::BRIDGE_NF_PROBE
+        );
+        assert!(!bare.contains("modprobe br_netfilter"));
+        assert!(!bare.contains("/etc/modules-load.d"));
+    }
+
+    /// The probe path and the sysctl the code actually sets must agree. If
+    /// someone changed the sysctl to an ip6tables-only key, this preflight would
+    /// be checking a file unrelated to what fails.
+    #[test]
+    fn the_preflight_probes_the_tree_the_sysctl_writes_into() {
+        assert!(
+            super::BRIDGE_NF_PROBE.starts_with("/proc/sys/net/bridge/"),
+            "the preflight must probe the /proc/sys/net/bridge tree that \
+             net.bridge.bridge-nf-call-iptables lives in"
         );
     }
 
