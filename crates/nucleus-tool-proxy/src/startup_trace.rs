@@ -107,14 +107,19 @@ struct Milestone {
 /// Records how long each phase of tool-proxy startup took.
 pub(crate) struct Startup {
     start: Instant,
+    /// When the last milestone ended, so a checkpoint can measure the stretch
+    /// since it rather than since process start.
+    last: Instant,
     milestones: Vec<Milestone>,
 }
 
 impl Startup {
     /// Start the clock. Call as the first statement of `main`.
     pub(crate) fn new() -> Self {
+        let now = Instant::now();
         Self {
-            start: Instant::now(),
+            start: now,
+            last: now,
             milestones: Vec::new(),
         }
     }
@@ -143,7 +148,33 @@ impl Startup {
             self.start.elapsed().as_millis()
         );
         self.milestones.push(Milestone { name, millis });
+        // Reset the checkpoint clock too, so a later `mark` measures the stretch
+        // AFTER this phase rather than counting this phase again. Without this,
+        // marks and timed phases overlap and the milestones stop partitioning
+        // the timeline -- the sum could exceed the total.
+        self.last = Instant::now();
         out
+    }
+
+    /// Record the stretch since the previous milestone, without wrapping a call.
+    ///
+    /// `timed` needs a future to wrap. Most of startup is straight-line
+    /// statements with `?` and `await` interleaved, which cannot be wrapped
+    /// without restructuring code that has nothing to do with measurement -- so
+    /// those stretches went unmeasured, and `unaccounted` was 83% of the trace.
+    /// A checkpoint attributes the same time with one inserted line and no
+    /// change to control flow.
+    ///
+    /// Measures from the last milestone, not from process start, so consecutive
+    /// checkpoints partition the timeline instead of nesting.
+    pub(crate) fn mark(&mut self, name: &'static str) {
+        let millis = self.last.elapsed().as_millis();
+        self.last = Instant::now();
+        println!(
+            "nucleus-startup-phase {name}={millis}ms at={}ms",
+            self.start.elapsed().as_millis()
+        );
+        self.milestones.push(Milestone { name, millis });
     }
 
     /// The breakdown, as one line on the console the host captures.
