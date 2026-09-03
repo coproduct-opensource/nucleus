@@ -15,7 +15,8 @@ guest rootfs and harness must be built from one tree; skew presents as
 | # | status | date | evidence |
 | --- | --- | --- | --- |
 | 1 | PASS | 2026-09-02 | Ramp on 4 vCPU / 7.9 GiB: N=1 5,580ms 1/1 · N=5 10,902ms 5/5 · N=10 0/10 · N=25 0/25 · N=50 5/50. RSS 50 MiB/pod vs 512 MiB configured (10x). All N>=10 failures were `proxy health check timed out after 30s`, not capacity. With the timeout raised: N=10 → 10/10 in 74s, confirming the wall is a fixed timeout under CPU contention. Guest startup `unaccounted=76,081ms of 85,858ms` (89%). |
-| 2 | TODO | | |
+| 2 | FAIL | 2026-09-02 | `toolcall` implemented and runs. Pod up in **3,011 ms** clean (vs 5,580 ms under load). glob 200 in 197ms; both refusals correct (`.ssh/id_rsa` 403 `path_denied`, uncredentialed `web_fetch` 403). Read FAILED: the sandbox root contains only `audit`, and reading it is 403 `path_denied` -- it is the audit-log directory, correctly blocked as sensitive. **There is no file in the sandbox a `codegen` pod may read**, so the read path cannot be proven without first creating one. Write is also blocked: 403 `approval_required` -- `write_files` is `LowRisk` in `codegen`, which needs an approval token via `/v1/approve`. |
+| 2b | TODO | | Unblock: bake a readable fixture into the rootfs, OR implement the `/v1/approve` signing path so iteration 3 can write the file iteration 2 reads. Prefer the fixture -- it keeps read and write independent. |
 | 3 | TODO | | |
 | 4 | TODO | | |
 | 5 | TODO | | |

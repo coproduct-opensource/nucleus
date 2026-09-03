@@ -30,7 +30,12 @@ Measured 2026-09-02 on aarch64 / KVM / 4 vCPU / 7.9 GiB, with
 | guest startup accounted for by instrumentation | **11%** (`unaccounted=76,081ms of 85,858ms`) |
 
 A tool call that takes 5.6 seconds is unusable; a plausible target is **under
-250 ms p50**. That is the gap this rubric closes — roughly 20x — and the last
+250 ms p50**. That target is not arbitrary: production agent
+sandboxes in 2026 restore Firecracker snapshots in 5-30 ms (E2B advertises
+sub-30 ms cold starts), and 90-200 ms is widely treated as the ceiling for a
+tool call that should feel instant. 250 ms is therefore a conservative first
+target, not an ambitious one -- Stage C exists to reach the range the field
+already operates in. That is the gap this rubric closes — roughly 20x — and the last
 row explains why nobody has closed it yet: **89% of guest startup is untimed**,
 so optimisation today is guesswork.
 
@@ -71,8 +76,8 @@ Latency is irrelevant until each shape works. No optimisation in this stage.
 | # | Iteration | Done when |
 | --- | --- | --- |
 | 1 | **Baseline, recorded.** Run the ramp 1,5,10,25 and commit the numbers to the ledger. | Ledger holds a table with `started`, `failed`, p50 and RSS for each N. |
-| 2 | **File read in a pod.** One pod, reads a host-provided path, returns bytes. | Content matches a host-side checksum; a path outside the mount is refused. |
-| 3 | **File write in a pod.** Write, then prove the host sees it. | Host reads back the exact bytes; a write outside the writable root is refused. |
+| 2 | **File read in a pod.** One pod reads a path the sandbox permits and returns its bytes. | A 200 with non-empty contents, and a path outside the permitted set refused with `path_denied`. **Not** "matches a host-side checksum": the sandbox is a disk image, not a host mount, so the host can neither place a file in it nor read one out. Needs a readable fixture to exist at all -- see ledger row 2b. |
+| 3 | **File write in a pod.** Write, then read the same bytes back through the guest. | Round trip returns exactly what was written; a write outside the writable root is refused. Requires the `/v1/approve` path: `write_files` is `LowRisk` in `codegen`, so an unapproved write is refused with `approval_required` (measured). |
 | 4 | **Command execution.** Run `argv` with no shell, capture stdout/stderr/exit. | Exit code and both streams round-trip; a denied binary is refused by policy, not by absence. |
 | 5 | **Search.** Run a tree-wide search, return matches. | Matches equal a host-side run over the same tree. |
 | 6 | **Network fetch under the default-deny fence.** | An allowed host resolves; a denied host is refused *and the refusal is attributable to the fence*, not to DNS failure. |
