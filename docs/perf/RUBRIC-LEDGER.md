@@ -28,7 +28,7 @@ guest rootfs and harness must be built from one tree; skew presents as
 | 10 | TODO | | |
 | 11 | PASS | 2026-09-03 | Named, with milliseconds rather than adjectives: **state_build 109ms** (attestation verifier, node client, delegation ceiling, credential loading), **runtime_build 92ms**, **args_parse 68ms** (49 clap args, all using `env =`). Together 269ms of a 458ms boot. Next three: sandbox_proof 35ms, router_build 32ms, tracing_init 21ms. Caveat recorded honestly -- `mark` measures wall-clock, and on a 1-vCPU guest a single sample cannot separate CPU cost from descheduling, so these rank the phases rather than prove their CPU cost. |
 | 12 | TODO | | |
-| 13 | TODO | | |
+| 13 | PARTIAL | 2026-09-03 | The measured failure is gone; the clause it was written around is met. With NO explicit override, **N=10 goes 0/10 -> 10/10 in 74.6s** (#2415, health budget scales with live microVMs, capped 8x). Regression side clean: N=1 3,011 -> 3,013ms, N=5 10,902 -> 10,384ms -- both inside the +/-3% run-to-run noise, so scaling the deadline did not disturb the uncontended path. `largest clean burst` 5 -> 10. **Still PARTIAL**: iteration 13 asks for edge-triggered readiness, and this is an adaptive deadline instead -- the host still polls. N=25/50 unmeasured against this change, so the ceiling has moved, not gone. |
 | 14 | TODO | | |
 | 15 | TODO | | |
 | 16 | TODO | | |
