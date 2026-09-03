@@ -40,6 +40,7 @@ pub mod dpop;
 pub mod identity;
 pub mod ifc_extension;
 pub mod manager;
+pub mod mtls;
 pub mod oid;
 pub mod session;
 pub mod spiffe_workload_api;

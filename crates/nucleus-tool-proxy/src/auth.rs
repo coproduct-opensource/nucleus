@@ -626,7 +626,7 @@ pub fn select_auth_tier(
 ///
 /// Returns the SPIFFE ID if present and valid, None otherwise.
 pub fn extract_spiffe_id_from_extensions(extensions: &axum::http::Extensions) -> Option<String> {
-    use crate::mtls::{ClientCertInfo, MtlsConnectInfo};
+    use nucleus_identity::mtls::{ClientCertInfo, MtlsConnectInfo};
 
     // Try MtlsConnectInfo first (standard path)
     if let Some(info) = extensions.get::<MtlsConnectInfo>()

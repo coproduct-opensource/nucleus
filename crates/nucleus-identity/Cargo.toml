@@ -45,6 +45,13 @@ cfb-mode = { version = "0.9", optional = true }
 tokio = { workspace = true, features = ["sync", "time", "io-util", "net", "rt", "macros", "fs"] }
 tokio-rustls = { workspace = true }
 async-trait = "0.1"
+# For the `mtls` module: a custom `axum::serve::Listener` doing the TLS
+# handshake itself (the current idiom — axum's own `ListenerExt::handshake`
+# formalizes the same pattern) so client-cert extraction lands in
+# `MtlsConnectInfo` before any handler runs. Promoted from nucleus-tool-proxy
+# so nucleus-node can share the SAME listener rather than a second copy that
+# drifts from it.
+axum = { workspace = true }
 
 # Serialization
 prost = { workspace = true }

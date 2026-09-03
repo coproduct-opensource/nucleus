@@ -1,7 +1,11 @@
-//! mTLS server support for tool-proxy.
+//! Shared mTLS server support: TLS-wrapped axum serving with client
+//! certificate extraction for SPIFFE identity and attestation verification.
 //!
-//! This module provides TLS-wrapped axum serving with client certificate
-//! extraction for SPIFFE identity and attestation verification.
+//! Promoted here from `nucleus-tool-proxy` (which now re-exports it) so a
+//! second copy is structurally impossible rather than merely undesirable —
+//! `nucleus-node`'s HTTP mTLS listener uses this same code. Two divergent
+//! mTLS listeners, each accreting its own fixes, is exactly the shape of
+//! defect this promotion exists to close off.
 //!
 //! # Security Model
 //!
@@ -18,10 +22,9 @@
 //! serve_mtls(listener, app, mtls_config).await?;
 //! ```
 
-#[allow(unused_imports)]
+use crate::{TlsServerConfig, TrustBundle, WorkloadCertificate};
 use axum::Router;
 use axum::extract::connect_info::Connected;
-use nucleus_identity::{TlsServerConfig, TrustBundle, WorkloadCertificate};
 use std::io;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
@@ -47,14 +50,13 @@ impl MtlsConfig {
     }
 
     /// Builds a TLS acceptor from this configuration.
-    pub fn build_acceptor(&self) -> Result<tokio_rustls::TlsAcceptor, nucleus_identity::Error> {
+    pub fn build_acceptor(&self) -> Result<tokio_rustls::TlsAcceptor, crate::Error> {
         TlsServerConfig::new(self.server_cert.clone(), self.trust_bundle.clone()).build_acceptor()
     }
 }
 
 /// Client certificate information extracted from mTLS handshake.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct ClientCertInfo {
     /// The DER-encoded client certificate.
     pub cert_der: Vec<u8>,
@@ -62,7 +64,6 @@ pub struct ClientCertInfo {
     pub spiffe_id: Option<String>,
 }
 
-#[allow(dead_code)]
 impl ClientCertInfo {
     /// Creates a new ClientCertInfo from a DER-encoded certificate.
     pub fn from_der(cert_der: Vec<u8>) -> Self {
@@ -90,7 +91,7 @@ fn extract_spiffe_id(cert_der: &[u8]) -> Option<String> {
     // with any other component about who a peer is. The local copy this
     // replaced returned the FIRST `spiffe://` SAN, so a certificate naming two
     // identities was accepted and resolved by DER encoding order.
-    nucleus_identity::spiffe_uri_from_svid(cert_der).ok()
+    crate::spiffe_uri_from_svid(cert_der).ok()
 }
 
 /// Custom axum listener that wraps TCP connections with TLS and extracts client certs.
@@ -99,13 +100,9 @@ pub struct MtlsListener {
     tls_acceptor: tokio_rustls::TlsAcceptor,
 }
 
-#[allow(dead_code)]
 impl MtlsListener {
     /// Creates a new mTLS listener.
-    pub fn new(
-        tcp_listener: TcpListener,
-        config: &MtlsConfig,
-    ) -> Result<Self, nucleus_identity::Error> {
+    pub fn new(tcp_listener: TcpListener, config: &MtlsConfig) -> Result<Self, crate::Error> {
         let tls_acceptor = config.build_acceptor()?;
         Ok(Self {
             tcp_listener,
@@ -121,7 +118,6 @@ impl MtlsListener {
 
 /// Connection info that includes both peer address and client certificate.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct MtlsConnectInfo {
     /// The peer socket address.
     pub peer_addr: SocketAddr,
@@ -135,7 +131,6 @@ pub struct MtlsStream {
     connect_info: MtlsConnectInfo,
 }
 
-#[allow(dead_code)]
 impl MtlsStream {
     /// Returns the client certificate info, if present.
     pub fn client_cert(&self) -> Option<&ClientCertInfo> {
@@ -287,7 +282,6 @@ fn extract_client_cert_from_tls(tls_stream: &TlsStream<TcpStream>) -> Option<Cli
 ///
 /// This function wraps TCP connections with TLS, requiring and verifying
 /// client certificates against the configured trust bundle.
-#[allow(dead_code)]
 pub async fn serve_mtls(
     listener: TcpListener,
     app: Router,
@@ -313,7 +307,6 @@ impl<'a> Connected<axum::serve::IncomingStream<'a, MtlsListener>> for MtlsConnec
 }
 
 /// Extension trait to access client certificate from axum request extensions.
-#[allow(dead_code)]
 pub trait ClientCertExt {
     /// Gets the client certificate info from the request, if present.
     fn client_cert(&self) -> Option<&ClientCertInfo>;
@@ -352,7 +345,7 @@ mod tests {
     #[tokio::test]
     async fn test_mtls_config_creation() {
         // Test that MtlsConfig can be created with valid certificates
-        use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa};
+        use crate::{CaClient, CsrOptions, Identity, SelfSignedCa};
         use std::time::Duration;
 
         let trust_domain = "test.nucleus.local";
@@ -383,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn test_extract_spiffe_id_from_valid_cert() {
         // Generate a certificate with a SPIFFE ID and verify extraction
-        use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa};
+        use crate::{CaClient, CsrOptions, Identity, SelfSignedCa};
         use std::time::Duration;
 
         let trust_domain = "test.nucleus.local";
@@ -415,7 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_cert_info_with_valid_cert() {
-        use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa};
+        use crate::{CaClient, CsrOptions, Identity, SelfSignedCa};
         use std::time::Duration;
 
         let trust_domain = "mtls.nucleus.local";
