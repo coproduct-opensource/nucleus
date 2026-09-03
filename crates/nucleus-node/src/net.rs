@@ -2121,7 +2121,12 @@ impl NetnsGuard {
         self.name = None;
     }
 
-    /// The namespace still under guard, for tests and logging.
+    /// The namespace still under guard.
+    ///
+    /// Test-only: the runtime path never asks, it only arms and disarms. Kept
+    /// so the tests can assert the guard's state without reaching into the
+    /// private field.
+    #[cfg(test)]
     pub fn armed_name(&self) -> Option<&str> {
         self.name.as_deref()
     }
