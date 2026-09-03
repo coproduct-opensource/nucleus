@@ -287,10 +287,16 @@ jobs:
           # the target.
           rustup target add x86_64-unknown-linux-musl
           rustup target list --installed | grep -q x86_64-unknown-linux-musl
+          # The rootfs packages are DERIVED, never listed here. This list was
+          # hand-maintained and missing nucleus-podlist-probe, so the rootfs this
+          # job boots silently had no podlist probe in it -- the THIRD copy of the
+          # same drift, after release.yml (#2366) and cross-build.sh (#2377).
+          # One derivation now feeds all three.
+          rootfs_pkgs=$(bash scripts/cross-build.sh --list-packages | sed 's/^/-p /' | tr '\n' ' ')
+          echo "rootfs packages: $rootfs_pkgs"
+          # shellcheck disable=SC2086
           cargo build --release --target x86_64-unknown-linux-musl \
-            -p nucleus-cli -p nucleus-node -p nucleus-guest-init \
-            -p nucleus-tool-proxy -p nucleus-net-probe -p nucleus-workload-probe \
-            -p nucleus-egress-probe -p nucleus-adversary-probe
+            -p nucleus-cli -p nucleus-node $rootfs_pkgs
 
       - name: Build the guest rootfs
         run: |

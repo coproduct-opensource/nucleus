@@ -301,6 +301,26 @@ if [ ! -f "$EGRESS_PROBE_BIN" ]; then
     exit 1
 fi
 
+# Hard requirements, not `[ -f ]` copies.
+#
+# These two were copied only if they happened to exist, so a rootfs missing them
+# built successfully and shipped quietly without them (#2377). The CI gate
+# ci/release-builds-rootfs-inputs.sh already treats all seven binaries as needed;
+# this makes the script agree with the gate instead of disagreeing silently.
+#
+# ALLOW_MISSING_PROBES=1 is the deliberate escape hatch for building a stripped
+# image on purpose. Absence should be a choice someone made, not an accident.
+if [ "${ALLOW_MISSING_PROBES:-0}" != "1" ]; then
+    for probe in "$PODLIST_PROBE_BIN" "$ADVERSARY_PROBE_BIN"; do
+        if [ ! -f "$probe" ]; then
+            echo "Missing $probe" >&2
+            echo "Build with: scripts/cross-build.sh --arch $ARCH" >&2
+            echo "  (set ALLOW_MISSING_PROBES=1 to build an image without it on purpose)" >&2
+            exit 1
+        fi
+    done
+fi
+
 if [ ! -f "$POD_SPEC" ]; then
     echo "Missing $POD_SPEC" >&2
     exit 1
