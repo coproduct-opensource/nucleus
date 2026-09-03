@@ -670,16 +670,33 @@ fn toolcall(t: ToolCall) -> Result<()> {
     // would mean the read path answers without serving the sandbox, which is
     // precisely the failure worth catching.
     if let Some(target) = matches.first() {
-        let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": target}))?;
-        let contents = serde_json::from_str::<serde_json::Value>(&b)
-            .ok()
-            .and_then(|v| {
-                v.get("contents")
-                    .and_then(|c| c.as_str())
-                    .map(str::to_string)
-            });
-        let ok = (200..300).contains(&st) && contents.is_some();
-        report(&format!("read {target}"), st, ms, ok, &b, &mut failures);
+        // `glob` answers with names, and `read` has to accept one of them. Which
+        // form it accepts is the question: the lattice joins a relative path to
+        // work_dir, so several spellings SHOULD name the same file. Probe them
+        // rather than assume, and report each -- if glob hands back a name that
+        // read refuses in every form, the two disagree and that is the bug.
+        let forms = [
+            target.to_string(),
+            format!("./{target}"),
+            format!("/work/{target}"),
+        ];
+        let mut any_ok = false;
+        for form in &forms {
+            let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": form}))?;
+            let contents = serde_json::from_str::<serde_json::Value>(&b)
+                .ok()
+                .and_then(|v| {
+                    v.get("contents")
+                        .and_then(|c| c.as_str())
+                        .map(str::to_string)
+                });
+            let ok = (200..300).contains(&st) && contents.is_some();
+            any_ok |= ok;
+            report(&format!("read {form}"), st, ms, ok, &b, &mut Vec::new());
+        }
+        if !any_ok {
+            failures.push(format!("read {target} (no path form accepted)"));
+        }
     } else {
         failures.push("read (no glob match to read)".to_string());
     }
