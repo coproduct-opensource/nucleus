@@ -13869,6 +13869,7 @@ dependencies = [
  "ck-kernel",
  "ck-types",
  "clap",
+ "serde",
  "serde_json",
 ]
 
