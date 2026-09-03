@@ -50,34 +50,90 @@ jobs:
             exit 0
           fi
 
-          CEILING=$(grep '^ceiling' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
-          TARGET=$(grep '^target' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
-          STEP=$(grep '^step' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
-          FILE_PATH=$(grep '^path' "$RATCHET_FILE" | head -1 | sed 's/.*= *"//' | sed 's/"//')
+          # Iterate EVERY [[files]] entry, not just the first.
+          #
+          # This job used to read `grep '^ceiling' | head -1`, which matches
+          # the global [ratchet] block (first in the file) rather than any
+          # specific [[files]] entry, and `grep '^path' | head -1`, which
+          # grabs the FIRST [[files]] entry's path regardless. The two
+          # numbers only ever lined up because [ratchet]'s defaults happened
+          # to equal kernel.rs's own values — so this job could only ever
+          # propose a decrement for kernel.rs, silently, and would have kept
+          # doing so even after that coincidence stopped holding. Same defect
+          # class, same fix, as clippy-ratchet.yml's ratchet-down job (#2417):
+          # a control that only watches the first of several entries is not
+          # watching the others at all.
+          ENTRIES=$(awk '
+              /^\[\[files\]\]/ { infile = 1; path = ""; ceiling = ""; target = ""; step = ""; next }
+              /^\[/ && !/^\[\[files\]\]/ { infile = 0 }
+              infile && /^path[ \t]*=/    { gsub(/.*= *"|"/, ""); path = $0 }
+              infile && /^ceiling[ \t]*=/ { gsub(/.*= */, ""); ceiling = $0 }
+              infile && /^target[ \t]*=/  { gsub(/.*= */, ""); target = $0 }
+              infile && /^step[ \t]*=/    { gsub(/.*= */, ""); step = $0
+                                             if (path != "" && ceiling != "" && step != "")
+                                               print path, ceiling, target, step }
+          ' "$RATCHET_FILE")
 
-          ACTUAL=$(wc -l < "$FILE_PATH" | tr -d ' ')
-
-          # New ceiling: max(actual, ceiling - step, target)
-          NEW_CEILING=$((CEILING - STEP))
-          if [[ "$ACTUAL" -lt "$NEW_CEILING" ]]; then
-            # File is already smaller than the ratcheted ceiling — snap to actual
-            NEW_CEILING=$ACTUAL
+          if [[ -z "$ENTRIES" ]]; then
+            echo "ERROR: could not parse any [[files]] entry from $RATCHET_FILE"
+            exit 1
           fi
-          if [[ "$NEW_CEILING" -lt "$TARGET" ]]; then
-            NEW_CEILING=$TARGET
+
+          any_proposed=false
+          while read -r FILE_PATH CEILING TARGET STEP; do
+            [[ -z "$FILE_PATH" ]] && continue
+            if [[ ! -f "$FILE_PATH" ]]; then
+              echo "ERROR: monitored file not found: $FILE_PATH"
+              exit 1
+            fi
+
+            ACTUAL=$(wc -l < "$FILE_PATH" | tr -d ' ')
+
+            # New ceiling: max(actual, ceiling - step, target), never above
+            # the CURRENT ceiling. That last clamp is not redundant: when a
+            # file has already beaten its own target (kernel.rs, at 2465
+            # against ceiling 2479 / target 2500), the plain
+            # max(actual, ceiling-step, target) computes 2500 — a proposal
+            # to RAISE the ceiling, from a job named "ratchet DOWN". Caught
+            # by running this against the real config while fixing the
+            # only-reads-the-first-entry bug above: kernel.rs is the file
+            # that exposed it, but the bug is in the formula, not specific
+            # to that file — any file that ever overshoots its target would
+            # trip it.
+            NEW_CEILING=$((CEILING - STEP))
+            if [[ "$ACTUAL" -lt "$NEW_CEILING" ]]; then
+              # File is already smaller than the ratcheted ceiling — snap to actual
+              NEW_CEILING=$ACTUAL
+            fi
+            if [[ "$NEW_CEILING" -lt "$TARGET" ]]; then
+              NEW_CEILING=$TARGET
+            fi
+            if [[ "$NEW_CEILING" -gt "$CEILING" ]]; then
+              NEW_CEILING=$CEILING
+            fi
+
+            if [[ "$NEW_CEILING" -eq "$CEILING" ]]; then
+              echo "$FILE_PATH: ceiling unchanged at $CEILING (file: $ACTUAL lines)"
+              continue
+            fi
+
+            any_proposed=true
+            echo "$FILE_PATH: $CEILING -> $NEW_CEILING (file: $ACTUAL lines, target: $TARGET)"
+
+            # Direct pushes to main are rejected (GH006) under the
+            # 25-required-context branch protection, and a bot push can't
+            # go through the merge queue. The ENFORCING job is "Check
+            # line ceiling" on PRs; this job only PROPOSES decrements — land
+            # ceiling updates via an ordinary PR editing $RATCHET_FILE.
+            echo "::notice::Ratchet decrement available for $FILE_PATH: $CEILING -> $NEW_CEILING (file at $ACTUAL lines). Land it via a PR editing $RATCHET_FILE."
+          done <<< "$ENTRIES"
+
+          if [[ "$any_proposed" == "false" ]]; then
+            echo "No file has room to ratchet down."
           fi
 
-          if [[ "$NEW_CEILING" -eq "$CEILING" ]]; then
-            echo "Ceiling unchanged at $CEILING (file: $ACTUAL lines)"
-            exit 0
-          fi
-
-          echo "Ratcheting: $CEILING -> $NEW_CEILING (file: $ACTUAL lines, target: $TARGET)"
-          sed -i "s/^ceiling = $CEILING/ceiling = $NEW_CEILING/" "$RATCHET_FILE"
-
-          # Direct pushes to main are rejected (GH006) under the
-          # 25-required-context branch protection, and a bot push can't
-          # go through the merge queue. The ENFORCING job is "Check
-          # line ceiling" on PRs; this job now only PROPOSES the
-          # decrement — land ceiling updates via an ordinary PR.
-          echo "::notice::Ratchet decrement available: $CEILING -> $NEW_CEILING (file at $ACTUAL lines). Land it via a PR editing $RATCHET_FILE."
+          # The sweep's default_ceiling (crates/*/src/**/*.rs files with no
+          # [[files]] entry) is a static per-file cap, not a per-file
+          # decrement campaign — there is no single "actual" to ratchet it
+          # against, so it is deliberately not proposed here. Lowering it is
+          # a manual, reviewed decision in a PR, same as raising it.
