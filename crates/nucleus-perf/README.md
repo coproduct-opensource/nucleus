@@ -17,3 +17,21 @@ direction.
         --spec examples/openclaw-demo/firecracker-pod.yaml \
         --counts 1,5,10,25,50 \
         --auth-secret "$SECRET"
+
+## symmetry
+
+Cross-pod isolation is quadratic: proving that 50 pods cannot see each other
+naively means 2450 ordered pairs, each a booted microVM. If the pods are truly
+interchangeable then `S_n` acts on the system, the pairs form a single orbit,
+and one representative settles it.
+
+That reduction is only sound when the symmetry actually holds, so this refuses
+to assume it — it verifies equivariance first and reports which happened:
+
+    cargo run -p nucleus-perf -- symmetry --n 50
+
+Verification is against a two-element generating set for `S_n` rather than all
+`n!` elements, which is what makes it affordable. A test closes that set and
+counts `n!` to confirm the generators really do generate the whole group; if
+they generated a proper subgroup the check would certify a symmetry the system
+does not have.
