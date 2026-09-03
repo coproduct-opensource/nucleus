@@ -331,18 +331,45 @@ fn parse_max_repetition(range: &str) -> Option<usize> {
 /// assert_eq!(sanitized, "failed to read [sandbox]/secrets/token.txt");
 /// ```
 pub fn sanitize_error_message(message: &str, sandbox_root: Option<&Path>) -> String {
+    sanitize_error_message_with(message, sandbox_root, std::env::var("HOME").ok().as_deref())
+}
+
+/// A prefix worth redacting. `/` and the empty string are NOT.
+///
+/// `replace("/", "[home]")` rewrites every separator in the message, so a
+/// process whose `HOME` is `/` — the normal case for a guest running as root —
+/// turns every path it reports into noise. Measured in a real pod:
+/// `path './audit'` came back as `path '.[home]audit'`.
+///
+/// Redaction exists to avoid leaking layout. Replacing the root directory leaks
+/// nothing and costs the reader the whole message.
+fn is_meaningful_prefix(p: &str) -> bool {
+    let p = p.trim();
+    !p.is_empty() && p != "/" && p.len() > 1
+}
+
+/// Testable core: `home` is passed in rather than read from the environment, so
+/// the degenerate cases can be checked without mutating process state.
+fn sanitize_error_message_with(
+    message: &str,
+    sandbox_root: Option<&Path>,
+    home: Option<&str>,
+) -> String {
     let mut result = message.to_string();
 
     // Replace sandbox root first (most specific)
     if let Some(root) = sandbox_root
         && let Some(root_str) = root.to_str()
+        && is_meaningful_prefix(root_str)
     {
         result = result.replace(root_str, "[sandbox]");
     }
 
     // Replace home directory
-    if let Ok(home) = std::env::var("HOME") {
-        result = result.replace(&home, "[home]");
+    if let Some(home) = home
+        && is_meaningful_prefix(home)
+    {
+        result = result.replace(home, "[home]");
     }
 
     // Replace any remaining absolute paths with placeholders
@@ -360,8 +387,18 @@ fn sanitize_absolute_paths(s: &str) -> String {
     let mut path_start = 0;
 
     while let Some(c) = chars.next() {
+        // A `/` only begins an ABSOLUTE path at a token boundary. Without this,
+        // the `/` inside a relative path starts one: `./audit` was reported back
+        // as `.[path]`, redacting the caller's own argument and leaving no way to
+        // tell which path was refused. Echoing back what the caller just sent
+        // leaks no host layout — it already knows what it asked for.
+        let after_token_char = result
+            .chars()
+            .last()
+            .is_some_and(|p| p.is_alphanumeric() || p == '.' || p == '-' || p == '_' || p == '/');
         if !in_path
             && c == '/'
+            && !after_token_char
             && chars
                 .peek()
                 .is_some_and(|&nc| nc.is_alphabetic() || nc == '_')
@@ -575,5 +612,71 @@ mod tests {
         // Both paths should be sanitized
         assert!(!sanitized.contains("/source/file"));
         assert!(!sanitized.contains("/dest/file"));
+    }
+}
+
+#[cfg(test)]
+mod home_redaction_tests {
+    use super::*;
+
+    /// The bug, as measured in a real pod. A guest running as root has `HOME=/`,
+    /// and redacting it rewrote every separator: the proxy reported
+    /// `path '.[home]audit'` for `./audit`, so the operator could not tell which
+    /// path had been refused.
+    #[test]
+    fn a_root_home_does_not_eat_every_separator() {
+        let msg = "access denied: path './audit' blocked by policy";
+        let out = sanitize_error_message_with(msg, None, Some("/"));
+        assert!(
+            out.contains("./audit"),
+            "the caller must still see which path was refused, got {out:?}"
+        );
+        assert!(!out.contains("[home]"), "got {out:?}");
+    }
+
+    /// The same hazard through the other argument.
+    #[test]
+    fn a_root_sandbox_root_does_not_eat_every_separator() {
+        let msg = "sandbox escape: path '/work/audit' resolves outside sandbox root";
+        let out = sanitize_error_message_with(msg, Some(Path::new("/")), None);
+        assert!(
+            !out.contains("[sandbox]work[sandbox]"),
+            "a `/` sandbox root must not be substituted separator-by-separator, got {out:?}"
+        );
+    }
+
+    /// Non-vacuity: redaction must still happen for a real home directory.
+    /// Without this, "stop redacting entirely" would satisfy the tests above.
+    #[test]
+    fn a_real_home_is_still_redacted() {
+        let msg = "failed to read /home/agent/.ssh/id_rsa";
+        let out = sanitize_error_message_with(msg, None, Some("/home/agent"));
+        assert!(out.contains("[home]"), "got {out:?}");
+        assert!(!out.contains("/home/agent"), "got {out:?}");
+    }
+
+    /// An empty HOME is the other degenerate value: `replace("", ...)` splices
+    /// the placeholder between every character.
+    #[test]
+    fn an_empty_home_is_not_spliced_between_every_character() {
+        let msg = "path './audit' blocked";
+        let out = sanitize_error_message_with(msg, None, Some(""));
+        assert_eq!(out, msg, "an empty HOME must be ignored, got {out:?}");
+    }
+
+    /// A relative path is not an absolute one. This is the second half of the
+    /// bug: the scanner entered path mode at the `/` in `./audit`.
+    #[test]
+    fn a_relative_path_is_not_redacted_as_an_absolute_one() {
+        let out = sanitize_error_message_with("read ./src/main.rs failed", None, None);
+        assert!(out.contains("./src/main.rs"), "got {out:?}");
+    }
+
+    /// Non-vacuity for the above: a genuine absolute path must STILL be redacted.
+    #[test]
+    fn a_genuine_absolute_path_is_still_redacted() {
+        let out = sanitize_error_message_with("failed to open /var/lib/nucleus/state", None, None);
+        assert!(out.contains("[path]"), "got {out:?}");
+        assert!(!out.contains("/var/lib/nucleus"), "got {out:?}");
     }
 }
