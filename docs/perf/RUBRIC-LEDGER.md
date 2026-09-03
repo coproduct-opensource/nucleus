@@ -22,9 +22,9 @@ guest rootfs and harness must be built from one tree; skew presents as
 | 4 | TODO | | |
 | 5 | TODO | | |
 | 6 | TODO | | |
-| 7 | TODO | | |
-| 8 | TODO | | |
-| 9 | TODO | | |
+| 7 | PASS | 2026-09-03 | Refusals now carry a cause, and an errno no longer masquerades as one. Fourteen sites in `sandbox.rs` mapped EVERY filesystem error to `PathDenied`, so a live pod reported `access denied: path 'audit': Is a directory (os error 21)` with `kind=path_denied` and a 403 -- nothing had denied anything. Now classified by what the OS said: `PermissionDenied` -> `PathDenied` 403 (a real denial), `NotFound` -> 404, else 400. Same defect Linux hit from the other side (apparmor returned ENOENT when it denied). #2407, merged. Prerequisite was #2401, which made the reason visible at all -- before that this could not be judged. |
+| 8 | PARTIAL | 2026-09-03 | Leak classes measured on a host with ZERO live Firecrackers: **2 leaked netns** (`nuc-f45b3cc8`, `nuc-59c6d719`), 0 cgroups, 0 taps, 189 state dirs. The two namespaces were exactly the pods whose guests kernel-panicked; every clean boot reaped its own -- so cleanup ran on the paths somebody remembered, and not on the late ones (config-serialise, health-wait). Fixed with a drop guard rather than more enumerated arms (#2408). The 189 state dirs are audit material (`lifecycle.log`, receipts) with no rotation policy -- a separate RETENTION question, deliberately not "fixed" by deleting audit data. 20-call sequence still to run. |
+| 9 | PASS | 2026-09-03 | `unaccounted` 83% -> **13.5%** (target <15%). 398/477ms -> 94/443ms (#2410, checkpoints for stretches `timed` cannot wrap) -> 62/458ms (#2411, the 36ms `router_build` hole plus splitting the biggest phase). Attribution: state_build=109ms, runtime_build=92ms, args_parse=68ms, sandbox_proof=35ms, router_build=32ms, tracing_init=21ms, crypto_provider=14ms. **Those first three are 269ms of 458ms and are the Stage C targets.** |
 | 10 | TODO | | |
 | 11 | TODO | | |
 | 12 | TODO | | |

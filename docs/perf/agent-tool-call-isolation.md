@@ -27,7 +27,12 @@ Measured 2026-09-02 on aarch64 / KVM / 4 vCPU / 7.9 GiB, with
 | resident memory per pod | **50 MiB** (512 MiB configured — 10x over-estimate) |
 | N=10 with the stock 30s health timeout | 0/10 started |
 | N=10 with the timeout raised | 10/10 started, 74 s |
-| guest startup accounted for by instrumentation | **11%** (`unaccounted=76,081ms of 85,858ms`) |
+| guest startup accounted for by instrumentation | **86.5%** as of 2026-09-03 (`unaccounted=62ms of 458ms`). Was 11% when this rubric was written; see ledger row 9. |
+
+**Update 2026-09-03:** the last row is now 86.5% -- iteration 9 is met, and the
+boot breaks down as state_build 109ms, runtime_build 92ms, args_parse 68ms,
+sandbox_proof 35ms, router_build 32ms. Those first three are 269ms of a 458ms
+boot and are where Stage C should aim.
 
 A tool call that takes 5.6 seconds is unusable; a plausible target is **under
 250 ms p50**. That target is not arbitrary: production agent
@@ -93,7 +98,7 @@ Optimising while 89% of the boot is untimed is guessing. This stage buys sight.
 | 9 | **Close the instrumentation gap.** Add spans until `unaccounted` is under 15% of guest startup. | `nucleus-startup-trace` shows `unaccounted` < 15%. |
 | 10 | **Split the host-side timeline.** Attribute submit → running across admission, Firecracker spawn, kernel, guest init, health check. | Every phase has a number; they sum to within 10% of the total. |
 | 11 | **Name the top three costs.** | Ledger names them with measured milliseconds, not adjectives. |
-| 12 | **Batch the guest vsock handshake.** The boot path makes four-plus sequential fetches (identity, broker secret, mediation key, caller token, pod id, session token). | One round trip carries them all; measured saving recorded; each item still verified as before. |
+| 12 | ~~**Batch the guest vsock handshake.**~~ **DROPPED — refuted by measurement.** | The five sequential fetches were timed (#2409) and cost **26 ms of a 458 ms boot, about 5%**. Batching them has a 26 ms ceiling, so it is not worth the protocol change. Also measured: `handshake_total` is 85 ms, so 59 ms of it is the work BETWEEN the fetches, not the transport. Kept in the table rather than deleted -- the reasoning that made it look worthwhile is the useful part, and deleting it invites someone to propose it again. |
 | 13 | **Take the health check off the hot path.** A fixed 30 s poll gates every start. | Readiness is edge-triggered or the guest announces itself; N=10 passes with the *stock* timeout. |
 | 14 | **Per-call latency budget.** Publish a budget that sums to the target. | Budget committed; every line has an owner phase from #10. |
 | 15 | **A latency regression gate.** | CI fails when single-pod p50 regresses >20% against the ledger. |
