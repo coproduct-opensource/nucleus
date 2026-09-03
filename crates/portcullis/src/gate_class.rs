@@ -211,6 +211,7 @@ mod tests {
             },
             DenyReason::PathBlocked {
                 path: "/x".to_string(),
+                denial: None,
             },
             DenyReason::CommandBlocked {
                 command: "rm".to_string(),

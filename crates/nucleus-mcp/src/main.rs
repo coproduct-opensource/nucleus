@@ -521,7 +521,10 @@ fn format_deny_reason(reason: &DenyReason) -> String {
             format!("budget exhausted (remaining: ${remaining_usd})")
         }
         DenyReason::TimeExpired { expired_at } => format!("session expired at {expired_at}"),
-        DenyReason::PathBlocked { path } => format!("path blocked: {path}"),
+        DenyReason::PathBlocked { path, denial } => match denial {
+            Some(d) => format!("path blocked: {path} -- {d}"),
+            None => format!("path blocked: {path}"),
+        },
         DenyReason::CommandBlocked { command } => format!("command blocked: {command}"),
         DenyReason::IsolationInsufficient { required, actual } => {
             format!("isolation insufficient: required {required}, got {actual}")

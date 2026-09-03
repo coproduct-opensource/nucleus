@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 /// it. These three cases are genuinely different problems with genuinely
 /// different fixes, and the lattice already distinguishes them internally.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "denial", rename_all = "snake_case"))]
 pub enum PathDenial {
     /// The path normalised to somewhere outside `work_dir`, or could not be
     /// normalised at all. Carries the sandbox root when one is configured.

@@ -10,7 +10,12 @@ pub type Result<T> = std::result::Result<T, NucleusError>;
 #[derive(Error, Debug)]
 pub enum NucleusError {
     /// Path access denied by policy.
-    #[error("access denied: path '{path}' blocked by policy")]
+    //
+    // `reason` is rendered. It was collected at fifteen sites and displayed at
+    // none: every caller built a sentence explaining the refusal and the
+    // formatter replaced it with "blocked by policy", which names no rule and
+    // sends the reader to a blocklist that may have had nothing to do with it.
+    #[error("access denied: path '{path}': {reason}")]
     PathDenied {
         /// The path that was denied.
         path: PathBuf,

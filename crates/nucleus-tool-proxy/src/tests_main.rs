@@ -830,6 +830,7 @@ fn a_blocked_path_is_not_reported_as_a_capability_of_never() {
         ".ssh/id_rsa",
         DenyReason::PathBlocked {
             path: ".ssh/id_rsa".to_string(),
+            denial: None,
         },
     );
     let msg = err.to_string();
@@ -1386,4 +1387,69 @@ mod phase2_flowgraph_switch {
         );
         assert!(r.is_ok(), "a clean graph must serve the verdict; got {r:?}");
     }
+}
+
+/// When the lattice said WHICH restriction refused the path, the caller must be
+/// told. "blocked by the path lattice" names a layer, and the three things that
+/// layer can mean have three different fixes -- a reader given only the layer
+/// goes and inspects the blocklist even when the blocklist was not involved.
+#[test]
+fn a_path_denial_reports_the_rule_that_fired() {
+    let err = kernel_denial_to_api_error(
+        Operation::ReadFiles,
+        ".ssh/id_rsa",
+        DenyReason::PathBlocked {
+            path: ".ssh/id_rsa".to_string(),
+            denial: Some(portcullis::PathDenial::MatchedBlockedPattern {
+                pattern: "**/.ssh/**".to_string(),
+            }),
+        },
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("**/.ssh/**"),
+        "the matched glob is the diagnosis; there are ~30 in the default set: {msg}"
+    );
+}
+
+/// The sandbox root is host layout. A guest can map the blocklist by probing
+/// paths whatever we tell it, but it cannot otherwise learn where the sandbox
+/// lives -- so an escape denial names the condition and withholds the root.
+#[test]
+fn a_sandbox_escape_denial_does_not_leak_the_root() {
+    let err = kernel_denial_to_api_error(
+        Operation::ReadFiles,
+        "/work/audit",
+        DenyReason::PathBlocked {
+            path: "/work/audit".to_string(),
+            denial: Some(portcullis::PathDenial::EscapesSandbox {
+                work_dir: Some("/var/lib/nucleus/sandbox/abc123".to_string()),
+            }),
+        },
+    );
+    let msg = err.to_string();
+    assert!(
+        !msg.contains("/var/lib/nucleus"),
+        "the sandbox root must not reach the caller: {msg}"
+    );
+    assert!(
+        msg.contains("outside the sandbox"),
+        "it must still say what went wrong: {msg}"
+    );
+}
+
+/// Non-vacuity for the pair above: with no structured reason the caller still
+/// gets the old sentence rather than an empty one. A payload written before
+/// this field existed deserializes with `denial: None`.
+#[test]
+fn a_denial_without_a_reason_still_says_something() {
+    let err = kernel_denial_to_api_error(
+        Operation::ReadFiles,
+        "x",
+        DenyReason::PathBlocked {
+            path: "x".to_string(),
+            denial: None,
+        },
+    );
+    assert!(err.to_string().contains("path lattice"), "{err}");
 }
