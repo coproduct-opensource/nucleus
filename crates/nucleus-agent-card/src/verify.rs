@@ -172,6 +172,80 @@ pub fn verify_card_signature_json(
 /// from layer 1), or — explicitly labelled as nucleus claims POLICY
 /// failures, not signature failures — a missing/malformed nucleus
 /// extension or an empty/malformed `trust_jwks` (layer 2).
+/// Bind a verified card to the peer that presented it.
+///
+/// # The gap this closes
+///
+/// A2A v1.0 added signed Agent Cards, and this crate implements them: a card
+/// carries a JWS over its RFC 8785 canonicalization, and [`verify_card`] checks
+/// it. But a valid signature proves only that SOMEONE HOLDING THAT KEY wrote
+/// the card. It does not prove the peer handing it to you is the agent the card
+/// describes.
+///
+/// The A2A specification is explicit about advertising authentication schemes
+/// and silent on how a card is bound to the connection it arrives over. So a
+/// correctly signed card is replayable: fetch a legitimate agent's public card,
+/// present it as your own, and every signature check passes.
+///
+/// `card.spiffe_id` is what the card CLAIMS to be. `peer_spiffe_id` is what the
+/// peer PROVED via its X.509-SVID. This refuses unless they are the same
+/// agent — which is the whole content of "Agent Card ↔ SPIFFE binding"
+/// (#1642).
+///
+/// # Why the peer id is a parameter
+///
+/// The caller has the peer certificate; extracting a SPIFFE URI from it is
+/// `nucleus_identity::spiffe_uri_from_svid`, which already refuses a
+/// certificate carrying two identities. Taking the extracted URI keeps this
+/// function pure, testable without a PKI, and free of a dependency on the
+/// identity crate.
+///
+/// # Errors
+///
+/// Everything [`verify_card`] returns, plus [`Error::Verify`] when the card's
+/// declared SPIFFE ID is not the peer's.
+pub fn verify_card_bound_to_peer(
+    card: &AgentCard,
+    resolved_key: &JsonWebKey,
+    peer_spiffe_id: &str,
+) -> Result<VerifiedCard> {
+    let verified = verify_card(card, resolved_key)?;
+    bind_to_peer(verified, peer_spiffe_id)
+}
+
+/// The binding decision on its own: pure, total, no I/O.
+///
+/// Split out so the comparison can be tested directly, and so a caller that
+/// already holds a [`VerifiedCard`] does not have to re-verify a signature to
+/// bind it.
+///
+/// # Errors
+///
+/// [`Error::Verify`] when the card's declared SPIFFE ID is not the peer's, or
+/// when either side is empty — an empty id must never compare equal to another
+/// empty id and let an unidentified peer through.
+pub fn bind_to_peer(verified: VerifiedCard, peer_spiffe_id: &str) -> Result<VerifiedCard> {
+    let declared = verified.claims.spiffe_id.trim();
+    let presented = peer_spiffe_id.trim();
+
+    if declared.is_empty() || presented.is_empty() {
+        return Err(Error::Verify(format!(
+            "Agent Card binding: refusing an empty SPIFFE id (card declared {declared:?}, \
+             peer presented {presented:?}). Two empty ids are not a match; they are two \
+             unidentified parties."
+        )));
+    }
+    if declared != presented {
+        return Err(Error::Verify(format!(
+            "Agent Card binding: the card declares {declared:?} but the peer proved \
+             {presented:?}. A valid signature only shows the card was signed by its key \
+             holder — it does not show this peer is that agent, so a legitimate card \
+             replayed by a different peer verifies and must still be refused."
+        )));
+    }
+    Ok(verified)
+}
+
 pub fn verify_card(card: &AgentCard, resolved_key: &JsonWebKey) -> Result<VerifiedCard> {
     verify_card_signature(card, resolved_key)?;
     apply_nucleus_policy(card.clone())
@@ -406,6 +480,74 @@ mod tests {
             runtime_guarantees: None,
         })
         .unwrap()
+    }
+
+    // ── Agent Card ↔ SPIFFE peer binding (#1642) ─────────────────────────
+
+    /// A card that has already passed signature verification, carrying the
+    /// SPIFFE id it CLAIMS. Constructed directly: `bind_to_peer` is the pure
+    /// decision, and making a real JWS here would test the signature path
+    /// again rather than the binding.
+    fn verified_claiming(spiffe_id: &str) -> VerifiedCard {
+        let card = card_with(ed25519_jwks());
+        let mut claims = card
+            .nucleus_claims()
+            .expect("claims parse")
+            .expect("the test card carries nucleus claims");
+        claims.spiffe_id = spiffe_id.to_string();
+        VerifiedCard { card, claims }
+    }
+
+    const PEER: &str = "spiffe://prod.example.com/ns/agents/sa/coder";
+
+    #[test]
+    fn a_card_whose_declared_id_is_the_peers_binds() {
+        assert!(bind_to_peer(verified_claiming(PEER), PEER).is_ok());
+    }
+
+    /// The attack the binding exists for: a legitimate, correctly signed card
+    /// replayed by a different peer. Every signature check passes; only the
+    /// binding refuses.
+    #[test]
+    fn a_valid_card_replayed_by_another_peer_is_refused() {
+        let err = bind_to_peer(
+            verified_claiming(PEER),
+            "spiffe://prod.example.com/ns/agents/sa/attacker",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("attacker"),
+            "the message must name what the peer proved"
+        );
+        assert!(
+            msg.contains("does not show this peer is that agent"),
+            "the message must say why a valid signature is not enough: {msg}"
+        );
+    }
+
+    /// Two empty ids are two unidentified parties, not a match. Without this,
+    /// a card with no declared id would bind to a peer with no proven id and
+    /// the check would pass on the case it least should.
+    #[test]
+    fn empty_ids_never_bind_to_each_other() {
+        assert!(bind_to_peer(verified_claiming(""), "").is_err());
+        assert!(bind_to_peer(verified_claiming(PEER), "").is_err());
+        assert!(bind_to_peer(verified_claiming(""), PEER).is_err());
+    }
+
+    /// Surrounding whitespace is not an identity difference; a trailing newline
+    /// from a header or file read must not fail a legitimate binding.
+    #[test]
+    fn whitespace_around_an_id_does_not_change_who_it_is() {
+        assert!(bind_to_peer(verified_claiming(PEER), &format!("  {PEER}\n")).is_ok());
+    }
+
+    /// Non-vacuity: the comparison must be able to reject. If `bind_to_peer`
+    /// accepted everything, every test above except the negatives would pass.
+    #[test]
+    fn the_binding_distinguishes_ids_that_differ_only_at_the_end() {
+        assert!(bind_to_peer(verified_claiming(PEER), &format!("{PEER}2")).is_err());
     }
 
     #[test]
