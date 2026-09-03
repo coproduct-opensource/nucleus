@@ -306,21 +306,38 @@ impl<'a> Connected<axum::serve::IncomingStream<'a, MtlsListener>> for MtlsConnec
     }
 }
 
-/// Extension trait to access client certificate from axum request extensions.
-pub trait ClientCertExt {
-    /// Gets the client certificate info from the request, if present.
-    fn client_cert(&self) -> Option<&ClientCertInfo>;
-}
-
-impl<B> ClientCertExt for axum::http::Request<B> {
-    fn client_cert(&self) -> Option<&ClientCertInfo> {
-        // Try to get from MtlsConnectInfo first
-        if let Some(info) = self.extensions().get::<MtlsConnectInfo>() {
-            return info.client_cert.as_ref();
-        }
-        // Fall back to direct ClientCertInfo
-        self.extensions().get::<ClientCertInfo>()
-    }
+/// Extracts the peer's SPIFFE ID from a SERVED request's extensions.
+///
+/// Reads `axum::extract::ConnectInfo<MtlsConnectInfo>` — what
+/// `into_make_service_with_connect_info::<MtlsConnectInfo>()` actually
+/// inserts. `AddExtension` (axum's internal service that does the insertion)
+/// keys the extensions map by the type it was HANDED, which is
+/// `ConnectInfo<MtlsConnectInfo>`, never bare `MtlsConnectInfo` — confirmed by
+/// booting a real `MtlsListener` behind `axum::serve` and inspecting a live
+/// request's extensions from inside a handler (`nucleus-tool-proxy`'s
+/// `tests/mtls_connect_info_probe.rs`, since deleted once this landed).
+///
+/// A previous version of this logic (`ClientCertExt`, removed here, and a
+/// duplicate that lived in `nucleus-tool-proxy::auth` before this promotion)
+/// read `extensions.get::<MtlsConnectInfo>()` — the bare, un-wrapped type —
+/// and so ALWAYS returned `None` against a real served request, even for a
+/// client whose certificate the TLS handshake had genuinely verified. No
+/// existing test caught this: every test exercising the extraction called it
+/// with hand-built `Extensions` or a directly-constructed `MtlsConnectInfo`,
+/// never through axum's actual `into_make_service_with_connect_info` path —
+/// see `mtls_extraction_survives_the_real_serving_pipeline` below for the
+/// regression test that would have failed against the old code.
+///
+/// The practical effect while this was broken: `AuthTier::SpiffeMtls` could
+/// never actually be selected by a real mTLS connection in
+/// `nucleus-tool-proxy`, so `--zero-prompt` (which requires exactly that
+/// auth method) was unreachable even with `--mtls` correctly configured and
+/// a valid client certificate presented.
+pub fn extract_spiffe_id_from_extensions(extensions: &axum::http::Extensions) -> Option<String> {
+    extensions
+        .get::<axum::extract::ConnectInfo<MtlsConnectInfo>>()
+        .and_then(|info| info.0.client_cert.as_ref())
+        .and_then(|cert| cert.spiffe_id.clone())
 }
 
 #[cfg(test)]
@@ -457,5 +474,121 @@ mod tests {
         let cloned = info.clone();
         assert_eq!(cloned.peer_addr, peer);
         assert!(cloned.client_cert.is_some());
+    }
+
+    /// Every other test in this module checks `extract_spiffe_id_from_extensions`
+    /// (or its predecessors) against hand-built `Extensions` or a directly
+    /// constructed `MtlsConnectInfo` — none of them go through axum's actual
+    /// `into_make_service_with_connect_info` machinery. That gap is exactly
+    /// what let the bare-vs-`ConnectInfo`-wrapped defect described on
+    /// `extract_spiffe_id_from_extensions` ship unnoticed. This test closes
+    /// it: a REAL `MtlsListener` behind `axum::serve`, a REAL mTLS client
+    /// connection, and a handler that calls the function under test on the
+    /// request it actually received.
+    #[tokio::test]
+    async fn mtls_extraction_survives_the_real_serving_pipeline() {
+        use crate::{CaClient, CsrOptions, Identity, SelfSignedCa, TlsClientConfig};
+        use axum::Router;
+        use axum::extract::Request;
+        use axum::routing::get;
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let trust_domain = "pipeline.nucleus.local";
+        let ca = SelfSignedCa::new(trust_domain).unwrap();
+        let trust_bundle = ca.trust_bundle().clone();
+
+        let server_identity = Identity::new(trust_domain, "servers", "pipeline-server");
+        let server_csr = CsrOptions::new(server_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let server_cert = ca
+            .sign_csr(
+                server_csr.csr(),
+                server_csr.private_key(),
+                &server_identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        let client_identity = Identity::new(trust_domain, "agents", "pipeline-client");
+        let client_csr = CsrOptions::new(client_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let client_cert = ca
+            .sign_csr(
+                client_csr.csr(),
+                client_csr.private_key(),
+                &client_identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+        let expected_spiffe_id = client_identity.to_spiffe_uri();
+
+        // The handler calls the EXACT function under test on a REQUEST IT
+        // ACTUALLY RECEIVED, not on extensions the test assembled by hand.
+        let app = Router::new().route(
+            "/probe",
+            get(|req: Request| async move {
+                extract_spiffe_id_from_extensions(req.extensions())
+                    .unwrap_or_else(|| "NONE".to_string())
+            }),
+        );
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let mtls_config = MtlsConfig::new(server_cert, trust_bundle.clone());
+        let mtls_listener = MtlsListener::new(tcp_listener, &mtls_config).unwrap();
+
+        let server_handle = tokio::spawn(async move {
+            axum::serve(
+                mtls_listener,
+                app.into_make_service_with_connect_info::<MtlsConnectInfo>(),
+            )
+            .await
+        });
+
+        // Poll for the listener rather than a fixed sleep: `server_handle` is
+        // spawned above and needs a scheduler turn before `accept()` is live.
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let connector = TlsClientConfig::new(client_cert, trust_bundle)
+            .with_spiffe_trust_domain(trust_domain)
+            .build_connector()
+            .unwrap();
+        let server_name =
+            rustls::pki_types::ServerName::try_from(trust_domain.to_string()).unwrap();
+        let mut tls = connector.connect(server_name, stream).await.unwrap();
+
+        tls.write_all(
+            format!("GET /probe HTTP/1.1\r\nHost: {trust_domain}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+
+        let mut resp = Vec::new();
+        tls.read_to_end(&mut resp).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp);
+
+        server_handle.abort();
+
+        assert!(
+            resp.contains(&expected_spiffe_id),
+            "handler did not see the SPIFFE ID through the real serving pipeline: {resp}"
+        );
+        assert!(
+            !resp.contains("NONE"),
+            "extraction returned None against a real, correctly-verified mTLS connection: {resp}"
+        );
     }
 }
