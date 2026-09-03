@@ -633,9 +633,19 @@ async fn main() -> Result<(), ApiError> {
     // Initialize identity manager (optional, enabled if socket path is specified)
     let identity_manager = if let Some(ref socket_path) = args.identity_workload_api_socket {
         let cert_ttl = Duration::from_secs(args.identity_cert_ttl_secs);
-        let manager = identity::IdentityManager::new(&args.identity_trust_domain, cert_ttl)
-            .map_err(|e| ApiError::Driver(format!("failed to create identity manager: {e}")))?
-            .with_mediation_binding_dir(args.state_dir.join("pods"));
+        // `new_with_persistent_ca`, not `new`: the node is long-lived, and
+        // `new` mints a fresh in-memory root on every call. A node that used
+        // `new` here would silently invalidate every SVID it had issued on
+        // its own next restart — the CA root is the trust anchor mTLS peers
+        // verify against, so its identity changing is not cosmetic. See
+        // `SelfSignedCa::load_or_create` for the persistence contract.
+        let manager = identity::IdentityManager::new_with_persistent_ca(
+            &args.identity_trust_domain,
+            cert_ttl,
+            &args.state_dir.join("ca"),
+        )
+        .map_err(|e| ApiError::Driver(format!("failed to create identity manager: {e}")))?
+        .with_mediation_binding_dir(args.state_dir.join("pods"));
 
         // Retired: it served an arbitrary pod's SVID to any local connector.
         // Rationale and the gate live in `identity.rs::retired_surface_tests`.

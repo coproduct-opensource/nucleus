@@ -61,12 +61,48 @@ pub struct IdentityManager {
 impl IdentityManager {
     /// Creates a new identity manager with a self-signed CA.
     ///
-    /// For production, this should be replaced with a SPIRE CA client.
+    /// **The CA root this mints is EPHEMERAL** — a fresh key generated in
+    /// memory, gone on process exit. Every SVID this CA issues stops
+    /// verifying the moment the process restarts, because a new root is not
+    /// the same trust anchor as the old one. Fine for a short-lived process
+    /// (a test, a one-shot CLI invocation); wrong for a node daemon, which is
+    /// why [`Self::new_with_persistent_ca`] exists. For production, this
+    /// should eventually be replaced with a SPIRE CA client.
+    ///
+    /// The node binary itself now calls only `new_with_persistent_ca`, so
+    /// this is unreachable outside `#[cfg(test)]` — where the ~20 call sites
+    /// in this file and `workload_api_vsock.rs` are. Kept as the ergonomic
+    /// constructor for test setup that does not want a tempdir per case.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(trust_domain: impl Into<String>, cert_ttl: Duration) -> Result<Self, String> {
         let trust_domain = trust_domain.into();
         let ca: Arc<dyn CaClient> = Arc::new(
             SelfSignedCa::new(&trust_domain)
                 .map_err(|e| format!("failed to create self-signed CA: {e}"))?,
+        );
+        Ok(Self::with_ca(trust_domain, cert_ttl, ca))
+    }
+
+    /// Creates an identity manager whose CA root survives a process restart.
+    ///
+    /// Loads the root from `ca_dir` (`ca-cert.pem` + `ca-key.pem`), or mints
+    /// and persists a fresh one on first run — see
+    /// [`SelfSignedCa::load_or_create`] for the persistence contract,
+    /// including why a corrupt or partial pair is a hard error rather than a
+    /// silent regeneration.
+    ///
+    /// This is the constructor the node daemon uses. [`Self::new`] remains
+    /// for short-lived callers (tests, one-shot CLI invocations) that do not
+    /// need the root to outlive the process.
+    pub fn new_with_persistent_ca(
+        trust_domain: impl Into<String>,
+        cert_ttl: Duration,
+        ca_dir: &std::path::Path,
+    ) -> Result<Self, String> {
+        let trust_domain = trust_domain.into();
+        let ca: Arc<dyn CaClient> = Arc::new(
+            SelfSignedCa::load_or_create(&trust_domain, ca_dir)
+                .map_err(|e| format!("failed to load or create persistent CA: {e}"))?,
         );
         Ok(Self::with_ca(trust_domain, cert_ttl, ca))
     }
@@ -632,6 +668,47 @@ mod tests {
     async fn test_identity_manager_creation() {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         assert_eq!(manager.trust_domain(), "test.local");
+    }
+
+    /// `new_with_persistent_ca` is what the node binary actually calls now.
+    /// The property that matters: a second manager built against the SAME
+    /// directory issues SVIDs a client trusting the FIRST manager's root
+    /// still accepts -- i.e. it is the same trust anchor, not merely a
+    /// second CA that happens to look similar. Covers the wiring in
+    /// `main.rs`; `SelfSignedCa`'s own persistence contract is covered in
+    /// `nucleus-identity`'s `ca::self_signed::tests::persistence`.
+    #[tokio::test]
+    async fn a_node_restart_keeps_issuing_under_the_same_root() {
+        use nucleus_identity::certificate::Certificate;
+        use nucleus_identity::{TrustBundle, verify_svid_chain};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca_dir = dir.path().join("ca");
+
+        let first = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &ca_dir,
+        )
+        .unwrap();
+        let first_root_pem = first.ca.trust_bundle().roots()[0].to_pem().to_string();
+        let first_bundle = TrustBundle::new(vec![Certificate::from_pem(&first_root_pem).unwrap()]);
+
+        // Simulates a restart: a fresh `IdentityManager` built from scratch
+        // against the same directory, as `main.rs` does on every boot.
+        let second = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &ca_dir,
+        )
+        .unwrap();
+
+        let identity = second.identity_for_pod(Uuid::new_v4(), "default", "post-restart-service");
+        let cert = second.fetch_certificate(&identity).await.unwrap();
+
+        verify_svid_chain(cert.leaf(), &first_bundle).expect(
+            "an SVID issued after a simulated restart must verify against the pre-restart root",
+        );
     }
 
     /// C9 Phase 0: a CA injected via `with_ca` (as `Arc<dyn CaClient>`) flows through

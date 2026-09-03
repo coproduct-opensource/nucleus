@@ -51,6 +51,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, CustomExtension, DistinguishedName, DnType,
     ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType, SignatureAlgorithm,
 };
+use std::path::Path;
 use std::time::Duration;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use x509_parser::certification_request::X509CertificationRequest;
@@ -58,14 +59,19 @@ use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 use x509_parser::x509::AlgorithmIdentifier;
 
+/// Basename of the persisted root certificate, under the directory passed to
+/// [`SelfSignedCa::load_or_create`].
+const CA_CERT_FILE: &str = "ca-cert.pem";
+/// Basename of the persisted root private key, under the same directory.
+/// Written with `0o600` on Unix — see [`SelfSignedCa::persist`].
+const CA_KEY_FILE: &str = "ca-key.pem";
+
 /// A self-signed Certificate Authority for development and testing.
 pub struct SelfSignedCa {
     /// The trust domain this CA serves.
     trust_domain: String,
     /// The root CA key pair.
     root_key: KeyPair,
-    /// The root CA certificate parameters (needed for creating Issuer).
-    root_params: CertificateParams,
     /// The root certificate in our Certificate type.
     root_certificate: Certificate,
     /// Trust bundle containing just the root cert.
@@ -111,9 +117,11 @@ impl SelfSignedCa {
             .map_err(|e| Error::CaSigning(format!("invalid CA SAN: {e}")))?;
         params.subject_alt_names = vec![SanType::URI(ca_san)];
 
-        // Self-sign the certificate
+        // Self-sign the certificate. `params` is not retained afterward: signing
+        // reconstructs an `Issuer` from the persisted root cert PEM instead (see
+        // `issuer()`), which is what lets a loaded CA and a freshly created one
+        // behave identically from here on.
         let root_cert = params
-            .clone()
             .self_signed(&root_key)
             .map_err(|e| Error::CaSigning(format!("root cert generation failed: {e}")))?;
 
@@ -124,10 +132,116 @@ impl SelfSignedCa {
         Ok(Self {
             trust_domain,
             root_key,
-            root_params: params,
             root_certificate,
             trust_bundle,
         })
+    }
+
+    /// Reconstructs a CA from a previously issued root certificate and its key,
+    /// both PEM-encoded. Used by [`Self::load_or_create`] to restore a
+    /// persisted root; also usable directly by a caller that stores the pair
+    /// elsewhere (a secret manager, an HSM-backed key with an exported cert).
+    ///
+    /// The result is indistinguishable from one built by [`Self::new`]: both
+    /// derive their signing `Issuer` from `root_cert_pem` at each signing call
+    /// (see [`Self::issuer`]), so nothing downstream can tell a loaded root
+    /// from a freshly minted one.
+    pub fn from_pem(
+        trust_domain: impl Into<String>,
+        root_cert_pem: &str,
+        root_key_pem: &str,
+    ) -> Result<Self> {
+        let trust_domain = trust_domain.into();
+        let root_key = KeyPair::from_pem(root_key_pem)
+            .map_err(|e| Error::CaSigning(format!("failed to load CA root key: {e}")))?;
+        let root_certificate = Certificate::from_pem(root_cert_pem)?;
+        let trust_bundle = TrustBundle::new(vec![root_certificate.clone()]);
+
+        Ok(Self {
+            trust_domain,
+            root_key,
+            root_certificate,
+            trust_bundle,
+        })
+    }
+
+    /// Loads a CA root persisted under `dir` (`ca-cert.pem` + `ca-key.pem`), or
+    /// creates and persists a fresh one if neither file exists.
+    ///
+    /// This is the constructor a long-lived node should use instead of
+    /// [`Self::new`]. `new` mints a fresh root key on every call, so a node
+    /// that called it directly on each restart would silently invalidate every
+    /// SVID it had ever issued — the CA root is the trust anchor mTLS peers
+    /// verify against, so its identity changing is not a cosmetic detail.
+    ///
+    /// An existing-but-unreadable or partial pair (one file present, the other
+    /// missing) is a **hard error**, not a fall-through to regeneration:
+    /// silently minting a new root on a read failure would have the same
+    /// blast radius as never persisting at all, just with a log line instead
+    /// of a comment explaining why nothing worked. An operator who wants a
+    /// fresh root removes both files themselves — this function does not
+    /// second-guess that.
+    pub fn load_or_create(trust_domain: impl Into<String>, dir: &Path) -> Result<Self> {
+        let trust_domain = trust_domain.into();
+        let cert_path = dir.join(CA_CERT_FILE);
+        let key_path = dir.join(CA_KEY_FILE);
+        let cert_exists = cert_path.exists();
+        let key_exists = key_path.exists();
+
+        if cert_exists != key_exists {
+            return Err(Error::Internal(format!(
+                "CA root at {} is incomplete ({} exists={cert_exists}, {} exists={key_exists}) \
+                 — refusing to guess which file is authoritative; restore the missing file or \
+                 remove both to mint a fresh root",
+                dir.display(),
+                CA_CERT_FILE,
+                CA_KEY_FILE,
+            )));
+        }
+
+        if cert_exists {
+            let cert_pem = std::fs::read_to_string(&cert_path)?;
+            let key_pem = std::fs::read_to_string(&key_path)?;
+            return Self::from_pem(trust_domain, &cert_pem, &key_pem).map_err(|e| {
+                Error::Internal(format!(
+                    "CA root at {} is unreadable ({e}) — NOT regenerating: a fresh root would \
+                     silently invalidate every SVID this CA has issued. Remove {} and {} \
+                     yourself to mint a new one.",
+                    dir.display(),
+                    CA_CERT_FILE,
+                    CA_KEY_FILE,
+                ))
+            });
+        }
+
+        std::fs::create_dir_all(dir)?;
+        let ca = Self::new(&trust_domain)?;
+        ca.persist(&cert_path, &key_path)?;
+        Ok(ca)
+    }
+
+    /// Writes the root cert and key to the given paths, restricting the key
+    /// file to `0o600` on Unix. Called once, by [`Self::load_or_create`] on
+    /// the create path — never on the load path, so re-loading an existing
+    /// root never rewrites it.
+    fn persist(&self, cert_path: &Path, key_path: &Path) -> Result<()> {
+        std::fs::write(cert_path, self.root_cert_pem())?;
+        std::fs::write(key_path, self.root_key_pem())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    }
+
+    /// Reconstructs a signing [`rcgen::Issuer`] from the root certificate's PEM
+    /// and the root key, rather than from `CertificateParams` kept in memory.
+    /// This is what makes [`Self::from_pem`] produce a CA indistinguishable
+    /// from [`Self::new`]'s: both sign through this same reconstruction.
+    fn issuer(&self) -> Result<rcgen::Issuer<'_, &KeyPair>> {
+        rcgen::Issuer::from_ca_cert_pem(self.root_certificate.to_pem(), &self.root_key)
+            .map_err(|e| Error::CaSigning(format!("failed to reconstruct CA issuer: {e}")))
     }
 
     /// Returns the PEM-encoded root certificate.
@@ -329,8 +443,9 @@ impl SelfSignedCa {
         // Add custom extensions (e.g., attestation)
         params.custom_extensions = custom_extensions;
 
-        // Create an issuer from the root CA params and key
-        let issuer = rcgen::Issuer::from_params(&self.root_params, &self.root_key);
+        // Reconstructed from the persisted root cert PEM, not from
+        // `CertificateParams` kept in memory -- see `Self::issuer`.
+        let issuer = self.issuer()?;
 
         // Sign the certificate with the workload's key pair
         let signed_cert = params
@@ -456,8 +571,9 @@ impl SelfSignedCa {
         params.not_before = now;
         params.not_after = now + ttl_duration;
 
-        // Create an issuer from the root CA params and key
-        let issuer = rcgen::Issuer::from_params(&self.root_params, &self.root_key);
+        // Reconstructed from the persisted root cert PEM, not from
+        // `CertificateParams` kept in memory -- see `Self::issuer`.
+        let issuer = self.issuer()?;
 
         // Sign the certificate using the public key from the CSR
         let signed_cert = params
@@ -1293,5 +1409,114 @@ mod tests {
         let content = ext.content();
         assert!(!content.is_empty());
         assert_eq!(content[0], 0x30, "DER should start with SEQUENCE tag");
+    }
+
+    /// Persistence module. This is the property the whole change exists for:
+    /// a node that restarts must keep signing SVIDs under the SAME root, or
+    /// mTLS peers that cached the old root reject the new one silently on
+    /// every subsequent restart — the failure mode described in
+    /// `SelfSignedCa::load_or_create`'s doc comment.
+    mod persistence {
+        use super::*;
+
+        /// The property that matters: a CA loaded back from disk signs
+        /// certificates a client trusting the FIRST instance's root still
+        /// accepts. Comparing PEM equality would only prove serialization
+        /// round-trips; this proves the two instances are the same trust
+        /// anchor, by running the SAME webpki chain verification a real mTLS
+        /// peer would (`did_builder::verify_svid_chain`) against a trust
+        /// bundle built from the pre-reload instance's root.
+        #[tokio::test]
+        async fn a_reloaded_ca_signs_under_the_same_root() {
+            let dir = tempfile::tempdir().unwrap();
+
+            let first = SelfSignedCa::load_or_create("nucleus.local", dir.path()).unwrap();
+            let first_root_pem = first.root_cert_pem();
+            let first_bundle =
+                TrustBundle::new(vec![Certificate::from_pem(&first_root_pem).unwrap()]);
+
+            let second = SelfSignedCa::load_or_create("nucleus.local", dir.path()).unwrap();
+            assert_eq!(
+                second.root_cert_pem(),
+                first_root_pem,
+                "second load_or_create must return the SAME root, not mint a new one"
+            );
+
+            // Sign with the reloaded instance, verify against the trust bundle
+            // built from the ORIGINAL (pre-reload) instance's root -- proving
+            // they are the same anchor, not merely two instances with
+            // identical-looking PEM.
+            let identity = Identity::new("nucleus.local", "default", "reloaded-signer");
+            let cert_sign = crate::CsrOptions::new(identity.to_spiffe_uri())
+                .generate()
+                .unwrap();
+            let key_pair = KeyPair::from_pem(cert_sign.private_key()).unwrap();
+            let chain = second
+                .sign_with_keypair(&key_pair, &identity, Duration::from_secs(3600))
+                .unwrap();
+
+            crate::did_builder::verify_svid_chain(&chain[0], &first_bundle)
+                .expect("a cert signed after reload must verify against the pre-reload bundle");
+        }
+
+        /// A partial pair (cert present, key deleted -- or vice versa) is a
+        /// hard error, not a silent fresh mint. Simulates a crash or a manual
+        /// mistake mid-rotation.
+        #[test]
+        fn a_partial_pair_is_refused_not_regenerated() {
+            let dir = tempfile::tempdir().unwrap();
+            let ca = SelfSignedCa::load_or_create("nucleus.local", dir.path()).unwrap();
+            drop(ca);
+
+            std::fs::remove_file(dir.path().join(CA_KEY_FILE)).unwrap();
+            assert!(dir.path().join(CA_CERT_FILE).exists());
+
+            let err = SelfSignedCa::load_or_create("nucleus.local", dir.path())
+                .expect_err("a cert with no matching key must not silently mint a fresh root");
+            assert!(
+                err.to_string().contains("incomplete"),
+                "unexpected error: {err}"
+            );
+        }
+
+        /// A corrupt key file is also a hard error, not a fall-through to
+        /// regeneration -- the failure mode this whole module exists to close.
+        #[test]
+        fn a_corrupt_key_file_is_refused_not_regenerated() {
+            let dir = tempfile::tempdir().unwrap();
+            let ca = SelfSignedCa::load_or_create("nucleus.local", dir.path()).unwrap();
+            let original_root = ca.root_cert_pem();
+            drop(ca);
+
+            std::fs::write(dir.path().join(CA_KEY_FILE), b"not a key").unwrap();
+
+            let err = SelfSignedCa::load_or_create("nucleus.local", dir.path())
+                .expect_err("a corrupt key file must not silently mint a fresh root");
+            assert!(
+                err.to_string().contains("NOT regenerating"),
+                "unexpected error: {err}"
+            );
+
+            // And the untouched cert file proves nothing was overwritten as a
+            // side effect of the failed load attempt.
+            let cert_on_disk = std::fs::read_to_string(dir.path().join(CA_CERT_FILE)).unwrap();
+            assert_eq!(cert_on_disk, original_root);
+        }
+
+        /// The key file lands with owner-only permissions.
+        #[cfg(unix)]
+        #[test]
+        fn the_persisted_key_file_is_owner_only() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().unwrap();
+            let _ca = SelfSignedCa::load_or_create("nucleus.local", dir.path()).unwrap();
+
+            let mode = std::fs::metadata(dir.path().join(CA_KEY_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "key file mode was {mode:o}");
+        }
     }
 }
