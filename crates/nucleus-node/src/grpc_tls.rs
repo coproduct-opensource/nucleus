@@ -121,14 +121,17 @@ impl GrpcTlsConfig {
         })
     }
 
-    /// Builds a server-only gRPC TLS config from the node's own self-issued
-    /// SVID (`--grpc-tls-self-issued`), instead of externally-provided cert
-    /// files.
+    /// Builds an mTLS gRPC config from the node's own self-issued SVID —
+    /// the default now that HMAC has no fallback to fall back to (Move B).
     ///
-    /// Always `trust_bundle: None` (server-only, not mTLS): the CLI has no
-    /// SVID of its own to present yet, so requiring one here would refuse
-    /// every existing client. HMAC auth still applies on top, same as the
-    /// plaintext default this opts out of.
+    /// Passes the node's own trust bundle as `client_ca`, requiring a client
+    /// certificate signed by the SAME CA: tool-proxy's SVID (fetched via
+    /// guest-init, Move B) is issued by this node's CA, so this refuses
+    /// nothing a real caller presents. Server-only TLS (no client cert
+    /// required) used to be the default here because the CLI had no SVID of
+    /// its own yet and HMAC covered client authentication instead — both
+    /// preconditions are gone: the CLI mints its own identity now (Move A
+    /// step 6) and there is no HMAC left to cover for a missing client cert.
     pub async fn from_node_identity(
         manager: &crate::identity::IdentityManager,
     ) -> Result<Self, TlsConfigError> {
@@ -136,10 +139,10 @@ impl GrpcTlsConfig {
             .node_certificate()
             .await
             .map_err(TlsConfigError::Certificate)?;
-        let config = Self::from_workload_cert(&cert, None)?;
+        let config = Self::from_workload_cert(&cert, Some(manager.trust_bundle()))?;
         info!(
             node_identity = %manager.node_identity().to_spiffe_uri(),
-            "gRPC self-issued TLS enabled (server-only)"
+            "gRPC self-issued mTLS enabled"
         );
         Ok(config)
     }

@@ -44,7 +44,7 @@ mod pod_api;
 mod pod_caller_identity;
 mod workload_api_protocol;
 mod workload_api_vsock;
-use auth::{AuthConfig, AuthError, AuthorizationError};
+use auth::{AuthError, AuthorizationError};
 mod boot_trace;
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
 // On any other host every item here is genuinely dead, and CI builds release
@@ -198,12 +198,6 @@ struct Args {
     #[arg(long, env = "NUCLEUS_CONTAINER_MAX_PODS", default_value_t = 10)]
     container_max_pods: usize,
 
-    /// Shared secret for HMAC request signing.
-    #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
-    auth_secret: String,
-    /// Maximum allowed clock skew (seconds) for signed requests.
-    #[arg(long, env = "NUCLEUS_NODE_AUTH_MAX_SKEW_SECS", default_value_t = 30)]
-    auth_max_skew_secs: u64,
     /// Shared secret for signing tool-proxy requests from the host.
     #[arg(long, env = "NUCLEUS_NODE_PROXY_AUTH_SECRET")]
     proxy_auth_secret: String,
@@ -284,32 +278,6 @@ struct Args {
     /// When set, clients must present valid certificates signed by this CA.
     #[arg(long, env = "NUCLEUS_NODE_GRPC_TLS_CA")]
     grpc_tls_ca: Option<PathBuf>,
-    /// Serve gRPC TLS using the node's OWN SPIFFE identity instead of
-    /// externally-provided cert files, when neither `--grpc-tls-cert` nor
-    /// `--grpc-tls-key` is set. Requires `--identity-workload-api-socket` (the
-    /// flag that enables the identity manager). Server-only TLS, not mTLS:
-    /// clients are not required to present a certificate — HMAC auth still
-    /// applies, same as the plaintext default. This does not change what an
-    /// unset default does; it opts a node into a self-issued alternative.
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_GRPC_TLS_SELF_ISSUED",
-        default_value_t = false
-    )]
-    grpc_tls_self_issued: bool,
-    /// Serve the HTTP API over mTLS using the node's own SPIFFE identity,
-    /// instead of the plaintext default. Requires
-    /// `--identity-workload-api-socket`. Unlike `--grpc-tls-self-issued` this
-    /// IS full mTLS (a client certificate is required), so no existing caller
-    /// can connect until the CLI has an SVID of its own — see
-    /// `IdentityManager::self_issued_http_mtls_listener` for why that's
-    /// deliberate. Off by default.
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_HTTP_MTLS_SELF_ISSUED",
-        default_value_t = false
-    )]
-    http_mtls_self_issued: bool,
 
     // GitHub OIDC configuration
     /// Enable GitHub OIDC token exchange for CI/CD authentication.
@@ -374,7 +342,6 @@ struct NodeState {
     jailer_gid: u32,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     network_allocator: Arc<net::NetworkAllocator>,
-    auth: AuthConfig,
     /// Node HTTP listen address (for orchestrator pod management back-references).
     #[cfg(feature = "local-driver")]
     listen_addr: String,
@@ -612,9 +579,6 @@ impl IntoResponse for ApiError {
             ApiError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Serde(_) => StatusCode::BAD_REQUEST,
             ApiError::Driver(_) => StatusCode::BAD_REQUEST,
-            // Capacity is a server condition, not a credential problem: the
-            // caller should retry, not re-authenticate.
-            ApiError::Auth(AuthError::ReplayCapacity) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Auth(_) => StatusCode::UNAUTHORIZED,
             ApiError::Authorization(_) => StatusCode::FORBIDDEN,
             ApiError::Body(_) => StatusCode::BAD_REQUEST,
@@ -644,11 +608,6 @@ async fn main() -> Result<(), ApiError> {
                 .to_string(),
         ));
     }
-    if args.auth_secret.trim().is_empty() {
-        return Err(ApiError::Driver(
-            "node auth secret is required (set NUCLEUS_NODE_AUTH_SECRET)".to_string(),
-        ));
-    }
     if args.proxy_auth_secret.trim().is_empty() {
         return Err(ApiError::Driver(
             "proxy auth secret is required (set NUCLEUS_NODE_PROXY_AUTH_SECRET)".to_string(),
@@ -660,8 +619,14 @@ async fn main() -> Result<(), ApiError> {
         ));
     }
 
-    // Initialize identity manager (optional, enabled if socket path is specified)
-    let identity_manager = if let Some(ref socket_path) = args.identity_workload_api_socket {
+    // Initialize identity manager. Unconditional (Move B) — HTTP and gRPC
+    // both require mTLS now, so an identity manager is not optional
+    // infrastructure any more; it's what the node presents ITS OWN identity
+    // with. `--identity-workload-api-socket` used to gate this construction,
+    // but the socket it names was never opened either way (#2197) — the flag
+    // is accepted for compatibility and kept for documentation purposes, not
+    // consulted here any more.
+    let identity_manager = {
         let cert_ttl = Duration::from_secs(args.identity_cert_ttl_secs);
         // `new_with_persistent_ca`, not `new`: the node is long-lived, and
         // `new` mints a fresh in-memory root on every call. A node that used
@@ -676,15 +641,6 @@ async fn main() -> Result<(), ApiError> {
         )
         .map_err(|e| ApiError::Driver(format!("failed to create identity manager: {e}")))?
         .with_mediation_binding_dir(args.state_dir.join("pods"));
-
-        // Retired: it served an arbitrary pod's SVID to any local connector.
-        // Rationale and the gate live in `identity.rs::retired_surface_tests`.
-        tracing::warn!(
-            socket = %socket_path.display(),
-            "the node-wide Unix workload API socket is retired and was NOT opened \
-             (#2197); per-pod SVIDs are served over the per-pod vsock bridge. This \
-             flag is accepted for compatibility and has no other effect."
-        );
 
         // Repopulate the registry from the pods already on disk. Without this a
         // node restart orphaned every running pod from its own identity (#1641):
@@ -710,8 +666,6 @@ async fn main() -> Result<(), ApiError> {
             args.identity_trust_domain
         );
         Some(manager)
-    } else {
-        None
     };
 
     // Build drand config if enabled
@@ -782,10 +736,6 @@ async fn main() -> Result<(), ApiError> {
         jailer_uid: args.jailer_uid,
         jailer_gid: args.jailer_gid,
         network_allocator: Arc::new(net::NetworkAllocator::new()),
-        auth: AuthConfig::new(
-            args.auth_secret.as_bytes(),
-            Duration::from_secs(args.auth_max_skew_secs),
-        ),
         #[cfg(feature = "local-driver")]
         listen_addr: args.listen.clone(),
         proxy_auth_secret: args.proxy_auth_secret.clone(),
@@ -872,7 +822,7 @@ async fn main() -> Result<(), ApiError> {
                     Ok(config) => {
                         let mode = if config.mtls_enabled() { "mTLS" } else { "TLS" };
                         info!("gRPC {} enabled", mode);
-                        Some(config)
+                        config
                     }
                     Err(e) => {
                         return Err(ApiError::Driver(format!("gRPC TLS config failed: {e}")));
@@ -884,23 +834,24 @@ async fn main() -> Result<(), ApiError> {
                     "both --grpc-tls-cert and --grpc-tls-key must be provided for TLS".to_string(),
                 ));
             }
-            (None, None) if args.grpc_tls_self_issued => match &state.identity_manager {
-                Some(manager) => Some(
-                    grpc_tls::GrpcTlsConfig::from_node_identity(manager)
-                        .await
-                        .map_err(|e| {
-                            ApiError::Driver(format!("gRPC self-issued TLS config failed: {e}"))
-                        })?,
-                ),
-                None => {
-                    return Err(ApiError::Driver(
-                        "--grpc-tls-self-issued requires --identity-workload-api-socket \
-                         (no identity manager configured)"
-                            .to_string(),
-                    ));
-                }
-            },
-            (None, None) => None,
+            // No explicit cert/key files: self-issue from the node's own
+            // identity — the mandatory default now that HMAC has no
+            // fallback (Move B). `identity_manager` is always constructed
+            // (see above), so this cannot fail for lack of one; the
+            // `--grpc-tls-self-issued` flag that used to gate this is
+            // accepted for compatibility but has no effect any more — this
+            // path is not optional.
+            (None, None) => {
+                let manager = state
+                    .identity_manager
+                    .as_ref()
+                    .expect("identity_manager is unconditionally constructed above (Move B)");
+                grpc_tls::GrpcTlsConfig::from_node_identity(manager)
+                    .await
+                    .map_err(|e| {
+                        ApiError::Driver(format!("gRPC self-issued TLS config failed: {e}"))
+                    })?
+            }
         };
 
         let grpc_state = state.clone();
@@ -913,7 +864,7 @@ async fn main() -> Result<(), ApiError> {
 
     start_pod_reaper(state.clone());
 
-    http_serve::serve(&state, &args.listen, args.http_mtls_self_issued, app).await?;
+    http_serve::serve(&state, &args.listen, app).await?;
 
     Ok(())
 }
@@ -1156,7 +1107,7 @@ async fn auth_middleware(
     let bytes = to_bytes(body, MAX_AUTH_BODY_BYTES)
         .await
         .map_err(|e| ApiError::Body(e.to_string()))?;
-    let context = auth::resolve_http_auth(&state, &parts, &bytes)?;
+    let context = auth::resolve_http_auth(&state, &parts)?;
 
     // WHICH POD is calling, when the caller can prove it. See
     // `pod_caller_identity::identify_from_headers` for why this cannot change a
@@ -3291,26 +3242,32 @@ pub(crate) const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
 async fn serve_grpc(
     state: NodeState,
     listen: String,
-    tls_config: Option<grpc_tls::GrpcTlsConfig>,
+    tls_config: grpc_tls::GrpcTlsConfig,
 ) -> Result<(), ApiError> {
     let addr: SocketAddr = listen
         .parse()
         .map_err(|e| ApiError::Driver(format!("invalid grpc listen addr: {e}")))?;
-    let auth_config = state.auth.clone();
-    let mtls_enabled = tls_config.as_ref().is_some_and(|c| c.mtls_enabled());
+    // Every caller building `tls_config` from `--grpc-tls-cert`/`--grpc-tls-key`
+    // must also pass `--grpc-tls-ca` (enforced at the call site building this
+    // value) or the self-issued default (always mTLS, see
+    // `GrpcTlsConfig::from_node_identity`) — so this is always true in
+    // practice. Asserted rather than assumed: HMAC has no fallback any more
+    // (Move B), so a caller lacking a client cert would otherwise be
+    // silently unauthenticatable instead of loudly refused at startup.
+    let mtls_enabled = tls_config.mtls_enabled();
+    if !mtls_enabled {
+        return Err(ApiError::Driver(
+            "gRPC TLS is configured without a client CA (--grpc-tls-ca) — with no HMAC \
+             fallback, no caller could ever authenticate. Pass --grpc-tls-ca, or omit \
+             --grpc-tls-cert/--grpc-tls-key to use the self-issued mTLS default."
+                .to_string(),
+        ));
+    }
 
     let service =
         NodeServiceServer::with_interceptor(GrpcService { state }, move |mut req: Request<()>| {
-            // Authenticate the request using mTLS (preferred) or HMAC (fallback)
-            let method = req
-                .metadata()
-                .get("x-nucleus-method")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("unknown");
-
-            let auth_ctx =
-                auth::authenticate_grpc_request(&req, method, &auth_config, mtls_enabled)
-                    .map_err(|e| Status::unauthenticated(e.to_string()))?;
+            let auth_ctx = auth::authenticate_grpc_request(&req)
+                .map_err(|e| Status::unauthenticated(e.to_string()))?;
 
             // Store the auth context in request extensions for use in handlers
             req.extensions_mut().insert(auth_ctx);
@@ -3318,23 +3275,12 @@ async fn serve_grpc(
             Ok(req)
         });
 
-    let mut server = tonic::transport::Server::builder();
+    let server_tls_config = tls_config.build_server_tls_config();
+    let mut server = tonic::transport::Server::builder()
+        .tls_config(server_tls_config)
+        .map_err(|e| ApiError::Driver(format!("gRPC TLS setup failed: {e}")))?;
 
-    // Apply TLS configuration if provided
-    if let Some(tls) = tls_config {
-        let tls_config = tls.build_server_tls_config();
-        server = server
-            .tls_config(tls_config)
-            .map_err(|e| ApiError::Driver(format!("gRPC TLS setup failed: {e}")))?;
-
-        let mode = if mtls_enabled { "mTLS" } else { "TLS" };
-        info!("nucleus-node grpc listening on {} ({})", addr, mode);
-    } else {
-        info!(
-            "nucleus-node grpc listening on {} (no TLS - HMAC auth required)",
-            addr
-        );
-    }
+    info!("nucleus-node grpc listening on {} (mTLS)", addr);
 
     server
         .add_service(service)
