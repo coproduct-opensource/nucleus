@@ -87,7 +87,7 @@ Latency is irrelevant until each shape works. No optimisation in this stage.
 | 5 | **Search.** Run a tree-wide search, return matches. | Matches equal a host-side run over the same tree. |
 | 6 | **Network fetch under the default-deny fence.** | An allowed host resolves; a denied host is refused *and the refusal is attributable to the fence*, not to DNS failure. |
 | 7 | **Refusals are policy, not accident.** For each class above, one denied variant. | Every refusal carries a policy reason; none is a bare timeout or a missing file. |
-| 8 | **One session, many calls.** 20 mixed calls in sequence, each its own pod. | 20/20 succeed; no leaked microVM, netns, cgroup or state dir afterwards. |
+| 8 | **One session, many calls.** 20 mixed calls in sequence, each its own pod, **each torn down before the next call starts**. | 20/20 succeed; no leaked microVM, netns, cgroup or state dir afterwards. |
 
 ## Stage B — make the cost visible (9–16)
 
