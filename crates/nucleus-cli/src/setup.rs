@@ -220,7 +220,7 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
     // Firecracker and a kernel and no way to run nucleus.
     if !args.skip_artifacts {
         println!("\nInstalling Tier 2 components...");
-        provision_tier2_host(&args, &platform)?;
+        provision_tier2_host(&args, &platform).await?;
     } else {
         println!("\nSkipping component install (--skip-artifacts) — Tier 2 will not work.");
     }
@@ -668,7 +668,7 @@ fn tier2_arch(platform: &Platform) -> Result<&'static str> {
 /// `nucleus_spec::vmm_version`. Nothing is named by a literal in this file, and
 /// nothing is named by the Lima template — which is how the three provisioners
 /// came to disagree, one of them on a URL that 404s.
-fn provision_tier2_host(args: &SetupArgs, platform: &Platform) -> Result<()> {
+async fn provision_tier2_host(args: &SetupArgs, platform: &Platform) -> Result<()> {
     let Some(host) = tier2_host_for(args, platform) else {
         println!("  No Tier 2 host on this platform — nothing to install.");
         return Ok(());
@@ -692,6 +692,29 @@ fn provision_tier2_host(args: &SetupArgs, platform: &Platform) -> Result<()> {
     // guest leak sweep has something real to fail to find, and rotating it every
     // run means a value that DID leak once cannot keep passing later (#2372).
     let canary = hex::encode(rand::random::<[u8; 16]>());
+
+    // Seeds the node's CA (before install_node_service starts its unit, so
+    // the node's own first boot loads this root rather than creating its
+    // own) and mints this CLI's client identity from it — Move A step 5's
+    // --tls-cert/--tls-key/--trust-bundle material. "nucleus.local" matches
+    // nucleus-node's own --identity-trust-domain default; the two must
+    // agree; there is no --trust-domain flag on `setup` yet to diverge.
+    let mtls = provision::provision_mtls_identity(&host, "nucleus.local").await?;
+    println!("  mTLS identity provisioned:");
+    println!("    client cert:   {}", mtls.cli_cert.display());
+    println!("    client key:    {}", mtls.cli_key.display());
+    println!("    trust bundle:  {}", mtls.trust_bundle.display());
+    println!(
+        "    Use with: nucleus node --tls-cert {} --tls-key {} --trust-bundle {} ...",
+        mtls.cli_cert.display(),
+        mtls.cli_key.display(),
+        mtls.trust_bundle.display()
+    );
+    println!(
+        "    (opt-in: the node still serves plaintext/HMAC by default — pass \
+         --http-mtls-self-issued to the node to require this.)"
+    );
+
     provision::install_node_service(
         &host,
         &provision::node_env_body(&auth, &proxy, &approval, &canary),

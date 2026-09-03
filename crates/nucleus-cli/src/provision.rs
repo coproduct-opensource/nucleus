@@ -586,6 +586,162 @@ pub fn node_unit_body() -> String {
     )
 }
 
+/// Where the node persists its CA root (`SelfSignedCa::load_or_create`,
+/// `IdentityManager::new_with_persistent_ca`) — `{HOST_STATE_DIR}/ca`, since
+/// `node_env_body` points `NUCLEUS_NODE_STATE_DIR` at `HOST_STATE_DIR`.
+const HOST_CA_DIR: &str = "/var/lib/nucleus/state/ca";
+
+/// This CLI's own mTLS identity, and the trust bundle that verifies the
+/// node's self-issued certificate — the paths `--tls-cert`/`--tls-key`/
+/// `--trust-bundle` on `nucleus node` want.
+pub struct MtlsIdentityPaths {
+    pub cli_cert: PathBuf,
+    pub cli_key: PathBuf,
+    pub trust_bundle: PathBuf,
+}
+
+/// Seeds the node's CA root on `host` and mints this CLI's own client
+/// identity from it — the material Move A step 5's `--tls-cert`/`--tls-key`/
+/// `--trust-bundle` flags need, which nothing produced before this function
+/// existed.
+///
+/// # Why the CA is seeded here rather than left to the node's own first boot
+///
+/// `IdentityManager::new_with_persistent_ca` already persists a CA root on
+/// first boot via `SelfSignedCa::load_or_create` — so a provisioned node
+/// gets ONE eventually either way. But this CLI's own certificate must be
+/// signed by that SAME root, and minting it requires the CA to already
+/// exist. Waiting for the node's first boot to create it would mean either
+/// running `setup` twice (once to let the node create the CA, again to mint
+/// a matching client cert) or an operator's first `nucleus node` invocation
+/// racing the node's own startup. Generating it HERE, before
+/// `install_node_service` starts the unit, means the node's very first boot
+/// finds a root already in place (`load_or_create`'s load path, not its
+/// create path) and this CLI's cert is valid from that first boot onward.
+///
+/// # Idempotent re-runs
+///
+/// If `{HOST_CA_DIR}` already holds a root — a previous `setup` run, or a
+/// node that has already booted at least once — that EXACT root is loaded
+/// and reused, never regenerated. Minting a fresh CA on a re-run would
+/// silently invalidate every certificate (the node's own, and any
+/// previously-provisioned CLI identity) issued under the old one, the same
+/// failure mode `SelfSignedCa::load_or_create`'s own doc comment describes
+/// for the node itself.
+pub async fn provision_mtls_identity(
+    host: &Tier2Host,
+    trust_domain: &str,
+) -> Result<MtlsIdentityPaths> {
+    let ca = load_or_seed_host_ca(host, trust_domain)?;
+    mint_cli_identity(&ca, trust_domain, &crate::config::Config::identity_dir()?).await
+}
+
+/// The `Tier2Host`-touching half: load the CA root already at `HOST_CA_DIR`
+/// on `host`, or generate one and write it there. Split out from
+/// [`provision_mtls_identity`] because it runs real shell commands (via
+/// `Tier2Host::sh`) and so is exercised by review and by reusing
+/// `install_node_service`'s already-proven heredoc-write pattern, not by a
+/// unit test — see [`mint_cli_identity`] for the half that IS unit-tested.
+fn load_or_seed_host_ca(
+    host: &Tier2Host,
+    trust_domain: &str,
+) -> Result<nucleus_identity::SelfSignedCa> {
+    use nucleus_identity::SelfSignedCa;
+
+    let cert_path = format!("{HOST_CA_DIR}/ca-cert.pem");
+    let key_path = format!("{HOST_CA_DIR}/ca-key.pem");
+    if host.test(&format!("test -f {cert_path} -a -f {key_path}")) {
+        let cert_pem = host.sh(&format!("cat {cert_path}"))?;
+        let key_pem = host.sh(&format!("cat {key_path}"))?;
+        SelfSignedCa::from_pem(trust_domain, &cert_pem, &key_pem).map_err(|e| {
+            anyhow!(
+                "CA root at {HOST_CA_DIR} on {} is unreadable: {e}",
+                host.describe()
+            )
+        })
+    } else {
+        let ca = SelfSignedCa::new(trust_domain)
+            .map_err(|e| anyhow!("failed to generate a new CA root: {e}"))?;
+        host.sh(&format!(
+            "set -e
+             mkdir -p {HOST_CA_DIR}
+             umask 077
+             cat > {cert_path} <<'NUCLEUS_CA_CERT_EOF'
+{}NUCLEUS_CA_CERT_EOF
+             cat > {key_path} <<'NUCLEUS_CA_KEY_EOF'
+{}NUCLEUS_CA_KEY_EOF
+             chmod 0600 {key_path}",
+            ca.root_cert_pem(),
+            ca.root_key_pem(),
+        ))?;
+        Ok(ca)
+    }
+}
+
+/// The pure half: mint this CLI's identity from an already-materialized CA
+/// and write it under `identity_dir`. No `Tier2Host` involved — takes
+/// `identity_dir` as a parameter rather than reading
+/// `Config::identity_dir()` itself specifically so a test can point it at a
+/// tempdir instead of `~/.config/nucleus/identity`.
+async fn mint_cli_identity(
+    ca: &nucleus_identity::SelfSignedCa,
+    trust_domain: &str,
+    identity_dir: &Path,
+) -> Result<MtlsIdentityPaths> {
+    use nucleus_identity::{CaClient, CsrOptions, Identity};
+
+    // The CLI's own identity: distinct from any pod's (`ns/<pod-namespace>`)
+    // and from the node's own self-issued one (`ns/system/sa/node`, see
+    // `IdentityManager::node_identity`) — `ns/system/sa/cli` names this
+    // operator's own long-lived credential.
+    let identity = Identity::new(trust_domain, "system", "cli");
+    let csr = CsrOptions::new(identity.to_spiffe_uri())
+        .generate()
+        .map_err(|e| anyhow!("failed to generate a CSR for the CLI's identity: {e}"))?;
+    // 90 days, not a pod's 1-hour default: this is an operator's own
+    // credential, not re-minted per session, and 90 days matches the
+    // existing secret-rotation reminder convention (`keychain::ROTATION_DAYS`).
+    let cert = ca
+        .sign_csr(
+            csr.csr(),
+            csr.private_key(),
+            &identity,
+            std::time::Duration::from_secs(90 * 24 * 3600),
+        )
+        .await
+        .map_err(|e| anyhow!("failed to sign the CLI's identity: {e}"))?;
+
+    std::fs::create_dir_all(identity_dir)
+        .with_context(|| format!("failed to create {}", identity_dir.display()))?;
+    let cli_cert = identity_dir.join("cli-cert.pem");
+    let cli_key = identity_dir.join("cli-key.pem");
+    let trust_bundle_path = identity_dir.join("trust-bundle.pem");
+
+    std::fs::write(&cli_cert, cert.chain_pem())
+        .with_context(|| format!("failed to write {}", cli_cert.display()))?;
+    std::fs::write(&cli_key, cert.private_key_pem())
+        .with_context(|| format!("failed to write {}", cli_key.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli_key, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to restrict permissions on {}", cli_key.display()))?;
+    }
+
+    // The trust bundle IS the CA's own root cert — a single-entry bundle
+    // today, written as one because `--trust-bundle` accepts a concatenated
+    // PEM bundle in general (matching tool-proxy/node's own `--trust-bundle`
+    // convention), not because this CA ever issues more than one root.
+    std::fs::write(&trust_bundle_path, ca.root_cert_pem())
+        .with_context(|| format!("failed to write {}", trust_bundle_path.display()))?;
+
+    Ok(MtlsIdentityPaths {
+        cli_cert,
+        cli_key,
+        trust_bundle: trust_bundle_path,
+    })
+}
+
 /// Write the node's environment file and unit onto `host`.
 ///
 /// The env file is written through a `0600` temp file created by the same
@@ -826,5 +982,152 @@ mod tests {
                 "{artifact:?} has no local build path, so Auto can never find it"
             );
         }
+    }
+
+    // ── mTLS identity provisioning (Move A step 6) ──────────────────────────
+
+    #[tokio::test]
+    async fn mint_cli_identity_writes_all_three_files_with_the_right_identity() {
+        use nucleus_identity::SelfSignedCa;
+
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let paths = mint_cli_identity(&ca, "nucleus.local", dir.path())
+            .await
+            .unwrap();
+
+        assert!(paths.cli_cert.exists());
+        assert!(paths.cli_key.exists());
+        assert!(paths.trust_bundle.exists());
+
+        // A PEM cert is base64-encoded DER, so the SPIFFE URI never appears
+        // as literal text in the file — must parse the SAN out properly,
+        // the same way any real relying party would.
+        let cert_pem = std::fs::read_to_string(&paths.cli_cert).unwrap();
+        let der = nucleus_identity::certificate::Certificate::from_pem(&cert_pem)
+            .unwrap()
+            .der()
+            .to_vec();
+        let spiffe_id = nucleus_identity::spiffe_uri_from_svid(&der).unwrap();
+        assert_eq!(
+            spiffe_id, "spiffe://nucleus.local/ns/system/sa/cli",
+            "minted cert should carry the CLI's own identity, not a pod's or the node's"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&paths.trust_bundle).unwrap(),
+            ca.root_cert_pem(),
+            "the trust bundle IS the CA's own root, unmodified"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mint_cli_identity_key_file_is_owner_only() {
+        use nucleus_identity::SelfSignedCa;
+        use std::os::unix::fs::PermissionsExt;
+
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(mint_cli_identity(&ca, "nucleus.local", dir.path()))
+            .unwrap();
+
+        let mode = std::fs::metadata(&paths.cli_key)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "key file mode was {mode:o}");
+    }
+
+    /// The property step 6 exists for, proven with a REAL mTLS handshake
+    /// rather than by inspecting the minted files: the exact PEM files
+    /// `mint_cli_identity` writes to disk are read back and used to build a
+    /// reqwest client (the same construction `node::create_client`'s mTLS
+    /// branch does — kept self-contained here rather than reaching into
+    /// that module's private test internals) against a real
+    /// `nucleus_identity::TlsServerConfig` server signed by the SAME CA —
+    /// the shape a provisioned node's own self-issued listener has.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn provisioned_identity_completes_a_real_handshake_against_the_node() {
+        use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa, TlsServerConfig};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let trust_domain = "provision-e2e-test.nucleus.local";
+        let ca = SelfSignedCa::new(trust_domain).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Exactly what `provision_mtls_identity` produces, minus the
+        // Tier2Host round trip -- the CA itself is already in hand here,
+        // same as `load_or_seed_host_ca` would return.
+        let paths = mint_cli_identity(&ca, trust_domain, dir.path())
+            .await
+            .unwrap();
+
+        // The node's own self-issued server cert, from the SAME CA --
+        // mirrors `IdentityManager::node_certificate`.
+        let server_identity = Identity::new(trust_domain, "system", "node");
+        let server_csr = CsrOptions::new(server_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let server_cert = ca
+            .sign_csr(
+                server_csr.csr(),
+                server_csr.private_key(),
+                &server_identity,
+                std::time::Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+        let trust_bundle = ca.trust_bundle().clone();
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer) = tcp_listener.accept().await.unwrap();
+            let acceptor = TlsServerConfig::new(server_cert, trust_bundle)
+                .build_acceptor()
+                .unwrap();
+            let mut tls = acceptor.accept(stream).await.unwrap();
+            let mut buf = [0u8; 1024];
+            let n = tls.read(&mut buf).await.unwrap();
+            assert!(String::from_utf8_lossy(&buf[..n]).starts_with("GET /v1/health"));
+            tls.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}",
+            )
+            .await
+            .unwrap();
+        });
+
+        // Read back exactly what was written to disk -- proving the FILES
+        // are usable, not just the in-memory `WorkloadCertificate`.
+        let mut identity_pem = std::fs::read(&paths.cli_cert).unwrap();
+        identity_pem.push(b'\n');
+        identity_pem.extend(std::fs::read(&paths.cli_key).unwrap());
+        let bundle_pem = std::fs::read(&paths.trust_bundle).unwrap();
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let identity = reqwest::Identity::from_pem(&identity_pem).unwrap();
+        let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem).unwrap();
+        let client = reqwest::Client::builder()
+            .identity(identity)
+            .tls_certs_only(roots)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get(format!("https://{addr}/v1/health"))
+            .send()
+            .await
+            .expect(
+                "provisioned identity must complete a real handshake with a node cert \
+                 from the same CA",
+            );
+        assert_eq!(resp.status(), 200);
+
+        server_handle.await.unwrap();
     }
 }
