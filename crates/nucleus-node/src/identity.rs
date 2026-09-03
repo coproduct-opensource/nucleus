@@ -192,6 +192,36 @@ impl IdentityManager {
         Identity::new(&self.trust_domain, namespace, sa)
     }
 
+    /// The node's own SPIFFE identity: `spiffe://<trust_domain>/ns/system/sa/node`.
+    ///
+    /// Stable across restarts by construction (it is a pure function of
+    /// `trust_domain`, not of any generated material), so a certificate
+    /// minted under it is reusable across a restart as long as the CA root
+    /// is also persisted — see [`Self::new_with_persistent_ca`]. Namespace
+    /// `system` / service account `node` deliberately does not collide with
+    /// any pod identity (`identity_for_pod` uses the pod's own namespace) or
+    /// with `AuthorizationPolicy`'s orchestrator/CI-CD prefixes in `auth.rs`,
+    /// which describe CLIENTS this node accepts, not the node's own identity.
+    pub fn node_identity(&self) -> Identity {
+        Identity::new(&self.trust_domain, "system", "node")
+    }
+
+    /// Fetches (minting and caching on first call) the node's own workload
+    /// certificate, signed by this manager's CA. Reuses `SecretManager`'s
+    /// existing cache and refresh machinery — same path pod certificates
+    /// take, just for [`Self::node_identity`] instead of a pod's.
+    ///
+    /// This is what makes the node's own SVID as durable as the CA root
+    /// itself: the identity is fixed, the CA persists (see
+    /// [`Self::new_with_persistent_ca`]), so a certificate minted under it
+    /// verifies across a restart for any peer that cached the CA's trust
+    /// bundle — not just for the process that happened to mint it.
+    pub async fn node_certificate(
+        &self,
+    ) -> Result<std::sync::Arc<nucleus_identity::WorkloadCertificate>, String> {
+        self.fetch_certificate(&self.node_identity()).await
+    }
+
     /// Rebuild the VM registry from the pods already on disk.
     ///
     /// # Why derive instead of journalling
@@ -351,7 +381,8 @@ impl IdentityManager {
     /// Fetches a certificate for the given identity, returning the certificate.
     ///
     /// Uses the cache if available, otherwise generates a new certificate.
-    #[allow(dead_code)]
+    /// Live path: `--grpc-tls-self-issued` reaches this via
+    /// [`Self::node_certificate`].
     pub async fn fetch_certificate(
         &self,
         identity: &Identity,
@@ -708,6 +739,59 @@ mod tests {
 
         verify_svid_chain(cert.leaf(), &first_bundle).expect(
             "an SVID issued after a simulated restart must verify against the pre-restart root",
+        );
+    }
+
+    /// The node's own identity is stable (a pure function of trust domain,
+    /// not of generated material) and `node_certificate` mints under it.
+    /// This is what `--grpc-tls-self-issued` relies on in `main.rs`.
+    #[tokio::test]
+    async fn node_certificate_is_minted_under_the_stable_node_identity() {
+        let manager = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
+
+        let identity = manager.node_identity();
+        assert_eq!(
+            identity.to_spiffe_uri(),
+            "spiffe://nucleus.local/ns/system/sa/node"
+        );
+
+        let cert = manager.node_certificate().await.unwrap();
+        assert_eq!(cert.identity(), &identity);
+    }
+
+    /// Combines the node-identity and CA-persistence properties: a
+    /// self-issued cert minted AFTER a simulated restart verifies against a
+    /// trust bundle built from the PRE-restart root, because both the
+    /// identity (pure function of trust domain) and the CA root (persisted,
+    /// see `a_node_restart_keeps_issuing_under_the_same_root`) survive it.
+    #[tokio::test]
+    async fn a_self_issued_node_certificate_survives_a_restart() {
+        use nucleus_identity::certificate::Certificate;
+        use nucleus_identity::{TrustBundle, verify_svid_chain};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca_dir = dir.path().join("ca");
+
+        let first = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &ca_dir,
+        )
+        .unwrap();
+        let first_root_pem = first.ca().trust_bundle().roots()[0].to_pem().to_string();
+        let first_bundle = TrustBundle::new(vec![Certificate::from_pem(&first_root_pem).unwrap()]);
+
+        let second = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &ca_dir,
+        )
+        .unwrap();
+        let cert = second.node_certificate().await.unwrap();
+
+        verify_svid_chain(cert.leaf(), &first_bundle).expect(
+            "a self-issued node cert minted after a simulated restart must verify against \
+             the pre-restart root",
         );
     }
 
