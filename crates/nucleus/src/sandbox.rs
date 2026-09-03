@@ -231,10 +231,7 @@ impl Sandbox {
 
         self.root
             .open_with(path, options)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Create a new file for writing.
@@ -278,10 +275,7 @@ impl Sandbox {
 
         self.root
             .create(path)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Read a file's contents as bytes.
@@ -321,10 +315,9 @@ impl Sandbox {
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
-        self.root.read(path).map_err(|e| NucleusError::PathDenied {
-            path: path.to_path_buf(),
-            reason: e.to_string(),
-        })
+        self.root
+            .read(path)
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Read a file's contents as a string.
@@ -370,10 +363,7 @@ impl Sandbox {
 
         self.root
             .read_to_string(path)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Write bytes to a file (creates if needed, truncates if exists).
@@ -476,10 +466,7 @@ impl Sandbox {
 
         self.root
             .write(path, contents)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Create a directory.
@@ -521,10 +508,7 @@ impl Sandbox {
 
         self.root
             .create_dir(path)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Create a directory and all parent directories.
@@ -566,10 +550,7 @@ impl Sandbox {
 
         self.root
             .create_dir_all(path)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Remove a file.
@@ -611,10 +592,7 @@ impl Sandbox {
 
         self.root
             .remove_file(path)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Remove an empty directory.
@@ -656,10 +634,7 @@ impl Sandbox {
 
         self.root
             .remove_dir(path)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Check if a path exists within the sandbox.
@@ -719,10 +694,7 @@ impl Sandbox {
         self.check_policy(path)?;
         self.root
             .read_to_string(path)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
     /// Check if a path is allowed by the policy.
@@ -880,10 +852,7 @@ impl Sandbox {
         let subdir = self
             .root
             .open_dir(path)
-            .map_err(|e| NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })?;
+            .map_err(|e| classify_path_io(path.to_path_buf(), &e))?;
 
         Ok(Sandbox {
             receipts: Arc::new(portcullis_effects::receipt::ReceiptLog::new()),
@@ -1295,5 +1264,69 @@ mod tests {
             )
             .unwrap();
         assert_eq!(contents, "nested");
+    }
+}
+
+/// Classify a filesystem error against a path.
+///
+/// Only an OS **permission** denial is reported as a denial. Everything else —
+/// the file is absent, the path is a directory, the name is not valid UTF-8 —
+/// is a fact about the filesystem, and calling it "access denied" sends the
+/// reader to a policy that had no part in it.
+///
+/// This mattered in practice: reading the one entry a pod's sandbox contained
+/// returned `access denied: path 'audit': Is a directory (os error 21)` with
+/// `kind: path_denied`. The sandbox was simply empty of files, and the message
+/// said the policy had refused.
+pub(crate) fn classify_path_io(path: impl Into<PathBuf>, e: &std::io::Error) -> NucleusError {
+    let path = path.into();
+    match e.kind() {
+        // The OS itself refused. That IS a denial.
+        std::io::ErrorKind::PermissionDenied => NucleusError::PathDenied {
+            path,
+            reason: e.to_string(),
+        },
+        std::io::ErrorKind::NotFound => NucleusError::PathNotFound { path },
+        _ => NucleusError::PathUnusable {
+            path,
+            reason: e.to_string(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod path_io_classification {
+    use super::*;
+    use std::io::{Error, ErrorKind};
+
+    /// An absent file is not a refusal. Reported as one, it sends the reader to
+    /// a policy that had nothing to do with it.
+    #[test]
+    fn a_missing_file_is_not_access_denied() {
+        let e = classify_path_io("x.txt", &Error::new(ErrorKind::NotFound, "no such file"));
+        assert!(matches!(e, NucleusError::PathNotFound { .. }), "{e}");
+        assert!(!e.to_string().contains("access denied"), "{e}");
+    }
+
+    /// The case measured on a live pod: the sandbox's only entry was a
+    /// directory, and reading it reported a policy denial.
+    #[test]
+    fn a_directory_read_as_a_file_is_not_access_denied() {
+        let e = classify_path_io("audit", &Error::other("Is a directory (os error 21)"));
+        assert!(matches!(e, NucleusError::PathUnusable { .. }), "{e}");
+        assert!(!e.to_string().contains("access denied"), "{e}");
+    }
+
+    /// Non-vacuity: a real OS permission denial MUST still read as a denial.
+    /// Without this, "never say access denied" would satisfy both tests above
+    /// and would hide genuine refusals.
+    #[test]
+    fn an_os_permission_denial_is_still_access_denied() {
+        let e = classify_path_io(
+            "secret",
+            &Error::new(ErrorKind::PermissionDenied, "permission denied"),
+        );
+        assert!(matches!(e, NucleusError::PathDenied { .. }), "{e}");
+        assert!(e.to_string().contains("access denied"), "{e}");
     }
 }

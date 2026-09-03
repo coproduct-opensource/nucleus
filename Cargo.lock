@@ -6693,6 +6693,7 @@ name = "nucleus-client"
 version = "1.0.0"
 dependencies = [
  "drand-verify",
+ "ed25519-dalek 3.0.0",
  "hex",
  "hmac 0.13.0",
  "reqwest 0.13.4",
@@ -7269,6 +7270,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ed25519-dalek 3.0.0",
  "hex",
  "nucleus-client",
  "portcullis",

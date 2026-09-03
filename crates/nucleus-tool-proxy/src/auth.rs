@@ -1257,3 +1257,96 @@ mod ed25519_approval_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod client_signer_interop {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderName, HeaderValue};
+    use nucleus_client::sign_approval_headers_ed25519;
+
+    fn headers_from(signed: &nucleus_client::DrandSignedHeaders) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in &signed.headers {
+            h.insert(
+                HeaderName::from_bytes(k.as_bytes()).expect("static header name"),
+                HeaderValue::from_str(v).expect("ascii header value"),
+            );
+        }
+        h
+    }
+
+    /// The client's Ed25519 approval signer must produce something THIS verifier
+    /// accepts.
+    ///
+    /// Testing the signer against a message the test rebuilds itself would only
+    /// prove the signer agrees with the test. The point of putting this here is
+    /// that it runs against the real `verify_http_with_ed25519_drand` — if the
+    /// two ever disagree about the message bytes, the header names, or the
+    /// signature encoding, this fails rather than a live pod failing.
+    #[test]
+    fn the_client_ed25519_signer_satisfies_this_verifier() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let pubkey_hex = hex::encode(key.verifying_key().to_bytes());
+        let body = br#"{"operation":"WriteFiles x.txt","count":1}"#;
+        let round = drand::current_expected_round();
+
+        let signed = sign_approval_headers_ed25519(&key, round, Some("nucleus-perf"), body);
+        let verifier = ApprovalVerifier::from_hex_list(
+            &pubkey_hex,
+            Duration::from_secs(60),
+            Some(DrandConfig::default()),
+        )
+        .expect("one well-formed key");
+
+        let ctx = verify_http_with_ed25519_drand(&headers_from(&signed), body, &verifier)
+            .expect("the client's signature must verify");
+        assert_eq!(ctx.actor, Some("nucleus-perf".to_string()));
+    }
+
+    /// Non-vacuity: a signature from a DIFFERENT key must be refused. Without
+    /// this, a verifier that accepted anything would pass the test above.
+    #[test]
+    fn a_signature_from_an_unconfigured_key_is_refused() {
+        let signer = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let other = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let body = b"body";
+        let round = drand::current_expected_round();
+
+        let signed = sign_approval_headers_ed25519(&signer, round, Some("a"), body);
+        let verifier = ApprovalVerifier::from_hex_list(
+            &hex::encode(other.verifying_key().to_bytes()),
+            Duration::from_secs(60),
+            Some(DrandConfig::default()),
+        )
+        .expect("one well-formed key");
+
+        assert!(
+            verify_http_with_ed25519_drand(&headers_from(&signed), body, &verifier).is_err(),
+            "a key the operator did not configure must not approve anything"
+        );
+    }
+
+    /// The HMAC helper must NOT satisfy the Ed25519 verifier. This pins the gap
+    /// that motivated the new function: `sign_approval_headers` looks like the
+    /// way to sign an approval and cannot approve on a Firecracker pod, where
+    /// approver pubkeys are always configured.
+    #[test]
+    fn the_hmac_helper_does_not_satisfy_the_ed25519_verifier() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let body = b"body";
+        let round = drand::current_expected_round();
+
+        let hmac_signed = nucleus_client::sign_approval_headers(b"shared", round, Some("a"), body);
+        let verifier = ApprovalVerifier::from_hex_list(
+            &hex::encode(key.verifying_key().to_bytes()),
+            Duration::from_secs(60),
+            Some(DrandConfig::default()),
+        )
+        .expect("one well-formed key");
+
+        assert!(
+            verify_http_with_ed25519_drand(&headers_from(&hmac_signed), body, &verifier).is_err(),
+            "an HMAC signature must not pass an Ed25519 approval gate"
+        );
+    }
+}

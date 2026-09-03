@@ -1237,6 +1237,18 @@ impl IntoResponse for ApiError {
             ApiError::Nucleus(NucleusError::PathDenied { .. }) => {
                 (StatusCode::FORBIDDEN, "path_denied", None, None)
             }
+            // Filesystem facts, NOT authorization outcomes. 404/400 rather than
+            // 403 so a caller can tell "the policy refused you" from "that file
+            // is not there" and "that is a directory". Reported as 403
+            // `path_denied`, an absent file sends the reader to a policy that
+            // had no part in it -- measured on a live pod, where the sandbox's
+            // only entry was a directory and reading it said "access denied".
+            ApiError::Nucleus(NucleusError::PathNotFound { .. }) => {
+                (StatusCode::NOT_FOUND, "path_not_found", None, None)
+            }
+            ApiError::Nucleus(NucleusError::PathUnusable { .. }) => {
+                (StatusCode::BAD_REQUEST, "path_unusable", None, None)
+            }
             ApiError::Nucleus(NucleusError::SandboxEscape { .. }) => {
                 (StatusCode::FORBIDDEN, "sandbox_escape", None, None)
             }
@@ -3084,10 +3096,40 @@ async fn write_file(
         Ok(()) => {}
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-            if check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path))
-                || state.approvals.consume(&op)
-            {
-                let approval = state.runtime.sandbox().request_approval(op.clone())?;
+            //
+            // The two ways this can refuse are indistinguishable from outside:
+            // "no grant was found" and "a grant was found, then the sandbox
+            // approver refused anyway" both surface as the same
+            // `ApprovalRequired` with the same operation string. That ambiguity
+            // cost four wrong diagnoses of #2406, so the distinction is logged.
+            //
+            // Worth knowing what this arm does NOT cover. `http_kernel_decide`
+            // runs earlier and can return `requires_approval` from mediation,
+            // which propagates before `sandbox.write` is ever called — so a
+            // grant made through `/v1/approve` never reaches this registry at
+            // all. That is #2406, and it is why adding the log here proved the
+            // point by staying silent.
+            //
+            // Note also the grant is consumed TWICE per attempt when this arm IS
+            // reached: once here, and again inside `request_approval`, whose
+            // approver is `move |req| approvals.consume(req.operation())`.
+            let policy_ok =
+                check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path));
+            let pre_granted = !policy_ok && state.approvals.consume(&op);
+            if policy_ok || pre_granted {
+                let approval = match state.runtime.sandbox().request_approval(op.clone()) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!(
+                            operation = %op,
+                            policy_ok,
+                            pre_granted,
+                            "a grant was accepted here but the sandbox approver then refused; \
+                             the grant is consumed twice per attempt"
+                        );
+                        return Err(e.into());
+                    }
+                };
                 let approved_dt = {
                     let mut kernel = state.kernel.lock().await;
                     kernel.issue_approved_token(operation, &format!("approved: write {}", path))

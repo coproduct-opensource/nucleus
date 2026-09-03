@@ -20,4 +20,7 @@ serde_yaml = { workspace = true }
 ureq = { workspace = true }
 nucleus-client = { path = "../nucleus-client" }
 portcullis = { path = "../portcullis", features = ["spec", "dlc"] }
+# Approvals on a real pod are Ed25519; `pkcs8` loads the node's persisted
+# approval signing key from its DER file.
+ed25519-dalek = { workspace = true, features = ["pkcs8", "alloc"] }
 hex = { workspace = true }
