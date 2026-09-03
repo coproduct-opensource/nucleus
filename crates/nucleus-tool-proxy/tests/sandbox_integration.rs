@@ -12,8 +12,10 @@ fn exits_78_without_sandbox_proof() {
     let output = Command::new(bin)
         .arg("--auth-secret")
         .arg("test-secret")
-        .arg("--approval-secret")
-        .arg("test-approval-secret")
+        // Move B removed the legacy `--approval-secret` HMAC fallback; the
+        // approval endpoint now requires `--approval-pubkeys` instead, but
+        // the sandbox-proof gate this test exercises runs and exits BEFORE
+        // that check, so neither is needed here.
         .arg("--spec")
         .arg("/dev/null")
         // Ensure no sandbox-related env vars leak from the test environment

@@ -131,13 +131,10 @@ struct Args {
     /// See `art12_shipper` for why this is fail-closed and why it matters.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ART12_SHIP_URL")]
     art12_ship_url: Option<String>,
-    /// Approval authority secret (separate from tool auth). Legacy: superseded
-    /// by `--approval-pubkeys` wherever that is set. Empty means "not
-    /// provisioned", which is fatal at startup unless pubkeys are.
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", default_value = "")]
-    approval_secret: String,
-    /// Comma-separated 64-char-hex Ed25519 approver PUBLIC keys. When set,
-    /// `/v1/approve` accepts ONLY an approver's signature (drand-anchored);
+    /// Comma-separated 64-char-hex Ed25519 approver PUBLIC keys. Move B: this
+    /// is now REQUIRED — the legacy `NUCLEUS_TOOL_PROXY_APPROVAL_SECRET`
+    /// shared-secret fallback is gone, so `/v1/approve` accepts ONLY an
+    /// approver's signature (drand-anchored);
     /// no approval secret exists in the guest to steal. This is how
     /// Firecracker pods are provisioned (`nucleus.approval_pubkeys` — a
     /// verification key is safe on the world-readable cmdline, and it is
@@ -362,13 +359,29 @@ pub(crate) struct AppState {
     /// expressible. It becomes real when the log gains durable backing. See
     /// `docs/production-delta.md`, "Receipt log resilience (FM-3)".
     receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
+    /// The residual shared-secret tier (`AuthTier::Hmac`). NOT deleted by
+    /// Move B, unlike the node's and the approval endpoint's HMAC tiers: this
+    /// one authenticates same-guest loopback callers (an in-guest `workload:`
+    /// child process, and — on the local/container drivers, which have no
+    /// vsock at all — the primary agent traffic itself, relayed through
+    /// `nucleus-node`'s `SignedProxy`). `HostVsock` does NOT cover this case:
+    /// `pod_mgmt::peer_is_host` accepts only `VMADDR_CID_HOST`, and a
+    /// same-guest loopback caller arrives as `VMADDR_CID_LOCAL` — a
+    /// deliberately different, weaker guarantee (same trust domain, not "is
+    /// the host"). Replacing it needs either per-workload SVIDs or vsock mTLS
+    /// (explicitly out of scope — see the mTLS-migration plan's "No mTLS over
+    /// vsock" risk note), so it stays until that follow-up lands.
     auth: AuthConfig,
-    approval_auth: AuthConfig,
-    /// Approver PUBLIC keys for signature-based approvals. `Some` makes the
-    /// Ed25519 tier the ONLY way into `/v1/approve` (the HMAC approval tier
-    /// becomes unreachable — see `auth::select_auth_tier`); `None` keeps the
-    /// legacy shared-secret tier for env-provisioned container pods. Holding
-    /// only verifying keys, the guest cannot forge what it checks.
+    /// Approver PUBLIC keys for signature-based approvals. Move B: this is now
+    /// the ONLY way into `/v1/approve` — the legacy HMAC shared-secret tier
+    /// (`AuthTier::ApprovalHmacDrand`) is gone, so a pod with no pubkeys
+    /// configured has no approval endpoint at all (fatal at startup, not a
+    /// silent `None` fallback — see the `approval_verifier` construction in
+    /// `main()`). Holding only verifying keys, the guest cannot forge what it
+    /// checks. Unlike `auth` above, this one WAS safe to delete outright: the
+    /// production (Firecracker) driver already used Ed25519 exclusively for
+    /// approvals, so only the local/container drivers' approval flow is
+    /// affected — an accepted, documented break, not a live regression.
     approval_verifier: Option<auth::ApprovalVerifier>,
     /// True when this server was started on a vsock listener that accepts only
     /// the host (`pod_mgmt::peer_is_host`).
@@ -1484,6 +1497,8 @@ async fn main() -> Result<(), ApiError> {
     let runtime = runtime.with_approver(Arc::new(approver))?;
     st.mark("runtime_build");
 
+    // NOT deleted by Move B — see `AppState::auth`'s doc comment for why the
+    // residual same-guest-loopback tier stays.
     let auth = AuthConfig::new(
         args.auth_secret.as_bytes(),
         Duration::from_secs(args.auth_max_skew_secs),
@@ -1508,24 +1523,12 @@ async fn main() -> Result<(), ApiError> {
         None
     };
 
-    let approval_auth = {
-        let config = AuthConfig::new(
-            args.approval_secret.as_bytes(),
-            Duration::from_secs(args.auth_max_skew_secs),
-        );
-        if let Some(ref drand) = drand_config {
-            config.with_drand(drand.clone())
-        } else {
-            config
-        }
-    };
-
     // Signature-based approvals: approver PUBLIC keys, drand-anchored. A
     // malformed key list is fatal HERE, not skipped — silently verifying
     // against fewer keys than configured surfaces as unexplained refusals far
-    // from the cause. And a pod with NEITHER pubkeys nor a secret has an
-    // approval endpoint nobody can authenticate to; that is a provisioning
-    // error, and startup is where it should stop.
+    // from the cause. Move B: there is no HMAC shared-secret approval tier
+    // left to fall back to, so a pod with no pubkeys configured has NO
+    // approval endpoint at all — also fatal at startup, not a silent `None`.
     let approval_verifier = match args.approval_pubkeys.as_deref() {
         Some(raw) if !raw.trim().is_empty() => {
             match auth::ApprovalVerifier::from_hex_list(
@@ -1548,15 +1551,12 @@ async fn main() -> Result<(), ApiError> {
             }
         }
         _ => {
-            if args.approval_secret.trim().is_empty() {
-                eprintln!(
-                    "FATAL: no approval authority is provisioned — set \
-                     NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS (signature-based) or \
-                     NUCLEUS_TOOL_PROXY_APPROVAL_SECRET (legacy shared secret)"
-                );
-                std::process::exit(78);
-            }
-            None
+            eprintln!(
+                "FATAL: no approval authority is provisioned — set \
+                 NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS (the legacy \
+                 NUCLEUS_TOOL_PROXY_APPROVAL_SECRET shared-secret fallback was removed in Move B)"
+            );
+            std::process::exit(78);
         }
     };
 
@@ -1573,7 +1573,7 @@ async fn main() -> Result<(), ApiError> {
     let web_fetch_max_bytes = web_fetch_cfg.max_bytes;
 
     let audit = st
-        .timed("audit_log", build_audit_log(&args, &auth, &dns_allow))
+        .timed("audit_log", build_audit_log(&args, &dns_allow))
         .await?;
 
     // Client re-checks every redirect hop against the allowlists (see
@@ -1844,7 +1844,6 @@ async fn main() -> Result<(), ApiError> {
         approvals,
         audit,
         auth,
-        approval_auth,
         approval_verifier,
         host_verified_transport: vsock_binding.is_some(),
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
@@ -2388,10 +2387,11 @@ async fn auth_middleware(
         ),
         if auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some() {
             auth::AuthTier::SpiffeMtls
-        } else if parts.uri.path() == APPROVE_PATH && state.approval_verifier.is_some() {
-            auth::AuthTier::ApprovalEd25519Drand
         } else if parts.uri.path() == APPROVE_PATH {
-            auth::AuthTier::ApprovalHmacDrand
+            // `approval_verifier` is always `Some` in practice — `main()`
+            // refuses to start otherwise (Move B deleted the HMAC approval
+            // fallback) — so this is the only reachable approval-path arm.
+            auth::AuthTier::ApprovalEd25519Drand
         } else if state.host_verified_transport {
             auth::AuthTier::HostVsock
         } else {
@@ -2410,15 +2410,14 @@ async fn auth_middleware(
             );
             auth::verify_spiffe_mtls(&spiffe_id)
         } else if parts.uri.path() == APPROVE_PATH {
-            // Signature tier FIRST, and exclusively: when approver public keys
-            // are configured, the shared-secret HMAC must not remain an
-            // alternative way in — any residual copy of the old secret would
-            // still forge approvals and the keys would have removed nothing.
-            let ctx = if let Some(ref verifier) = state.approval_verifier {
-                auth::verify_http_with_ed25519_drand(&parts.headers, &bytes, verifier)?
-            } else {
-                auth::verify_http_with_drand(&parts.headers, &bytes, &state.approval_auth)?
-            };
+            // Move B deleted the HMAC approval fallback (`ApprovalHmacDrand`):
+            // `main()` refuses to start a pod with an approval endpoint and no
+            // approver pubkeys, so `approval_verifier` is always `Some` here.
+            let verifier = state.approval_verifier.as_ref().expect(
+                "an approval_verifier always exists on the approve path — \
+                 main() exits at startup otherwise (Move B)",
+            );
+            let ctx = auth::verify_http_with_ed25519_drand(&parts.headers, &bytes, verifier)?;
             if ctx.drand_round.is_some() {
                 tracing::info!(
                     drand_round = ctx.drand_round,
@@ -4477,11 +4476,7 @@ fn resolve_approval_expiry(
 
 // Pod management handlers live in pod_mgmt.rs
 
-async fn build_audit_log(
-    args: &Args,
-    auth: &AuthConfig,
-    dns_allow: &[String],
-) -> Result<Arc<AuditLog>, ApiError> {
+async fn build_audit_log(args: &Args, dns_allow: &[String]) -> Result<Arc<AuditLog>, ApiError> {
     let path = args.audit_log.clone();
 
     // Ensure parent directory exists (e.g., /var/log/nucleus/ or the pod state dir).
@@ -4497,10 +4492,28 @@ async fn build_audit_log(
         })?;
     }
 
+    // Move B: this used to fall back to `auth_secret` — the same key that
+    // signed request auth — when no `--audit-secret` was given. `auth_secret`
+    // is gone, and reusing it here was never principled anyway: the audit
+    // chain's key and the request-auth key protect different things and
+    // reusing one for both means a leak of either compromises both. A
+    // process-local random key is at least as good for THIS log's actual
+    // property (in-process tamper evidence — see the doc on `AuditLog`'s
+    // `secret` field) and introduces no cross-purpose secret reuse.
     let secret = if let Some(secret) = args.audit_secret.as_ref() {
         secret.as_bytes().to_vec()
     } else {
-        auth.secret().to_vec()
+        use ring::rand::SecureRandom;
+        let rng = ring::rand::SystemRandom::new();
+        let mut key = vec![0u8; 32];
+        rng.fill(&mut key)
+            .map_err(|_| ApiError::Spec("failed to generate audit log key".to_string()))?;
+        warn!(
+            "no --audit-secret configured; generated a random process-local audit log key \
+             (the hash chain is still tamper-evident within this process's lifetime, but \
+             cannot be independently re-verified after a restart)"
+        );
+        key
     };
 
     let last_hash = load_last_hash(&path).unwrap_or_default();
