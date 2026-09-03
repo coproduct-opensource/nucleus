@@ -1237,6 +1237,18 @@ impl IntoResponse for ApiError {
             ApiError::Nucleus(NucleusError::PathDenied { .. }) => {
                 (StatusCode::FORBIDDEN, "path_denied", None, None)
             }
+            // Filesystem facts, NOT authorization outcomes. 404/400 rather than
+            // 403 so a caller can tell "the policy refused you" from "that file
+            // is not there" and "that is a directory". Reported as 403
+            // `path_denied`, an absent file sends the reader to a policy that
+            // had no part in it -- measured on a live pod, where the sandbox's
+            // only entry was a directory and reading it said "access denied".
+            ApiError::Nucleus(NucleusError::PathNotFound { .. }) => {
+                (StatusCode::NOT_FOUND, "path_not_found", None, None)
+            }
+            ApiError::Nucleus(NucleusError::PathUnusable { .. }) => {
+                (StatusCode::BAD_REQUEST, "path_unusable", None, None)
+            }
             ApiError::Nucleus(NucleusError::SandboxEscape { .. }) => {
                 (StatusCode::FORBIDDEN, "sandbox_escape", None, None)
             }
