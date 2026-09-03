@@ -607,29 +607,29 @@ fn toolcall(t: ToolCall) -> Result<()> {
     let mut failures = Vec::new();
     println!("{:<26} {:>7} {:>7}  verdict", "check", "status", "ms");
 
-    let (st, _b, ms) = tool_call(&proxy, "write", serde_json::json!({"path": path, "contents": payload}))?;
+    let (st, b, ms) = tool_call(&proxy, "write", serde_json::json!({"path": path, "contents": payload}))?;
     let ok = (200..300).contains(&st);
-    report("write allowed path", st, ms, ok, &mut failures);
+    report("write allowed path", st, ms, ok, &b, &mut failures);
 
     let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": path}))?;
     let got = serde_json::from_str::<serde_json::Value>(&b)
         .ok()
         .and_then(|v| v.get("contents").and_then(|c| c.as_str()).map(str::to_string));
     let ok = (200..300).contains(&st) && got.as_deref() == Some(payload.as_str());
-    report("read back == written", st, ms, ok, &mut failures);
+    report("read back == written", st, ms, ok, &b, &mut failures);
     if !ok {
         println!("      expected {payload:?}\n      got      {got:?}");
     }
 
     // The refusal half. A pod that serves this is not isolating anything.
-    let (st, _b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": FORBIDDEN_READ}))?;
+    let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": FORBIDDEN_READ}))?;
     let ok = !(200..300).contains(&st);
-    report("forbidden read refused", st, ms, ok, &mut failures);
+    report("forbidden read refused", st, ms, ok, &b, &mut failures);
 
     // Uncredentialed operation: admission must refuse it even though the pod runs.
-    let (st, _b, ms) = tool_call(&proxy, "web_fetch", serde_json::json!({"url": "http://127.0.0.1/"}))?;
+    let (st, b, ms) = tool_call(&proxy, "web_fetch", serde_json::json!({"url": "http://127.0.0.1/"}))?;
     let ok = !(200..300).contains(&st);
-    report("uncredentialed refused", st, ms, ok, &mut failures);
+    report("uncredentialed refused", st, ms, ok, &b, &mut failures);
 
     let _ = cancel_pod(&t.url, &secret, &t.actor, &id);
 
@@ -641,12 +641,16 @@ fn toolcall(t: ToolCall) -> Result<()> {
     }
 }
 
-fn report(name: &str, status: u16, ms: u128, ok: bool, failures: &mut Vec<String>) {
+fn report(name: &str, status: u16, ms: u128, ok: bool, body: &str, failures: &mut Vec<String>) {
     println!(
         "{name:<26} {status:>7} {ms:>7}  {}",
         if ok { "ok" } else { "FAILED" }
     );
     if !ok {
+        // The body is the whole value on a refusal: the proxy names the capability
+        // and the rule. Printing only the status turns a precise diagnosis into a
+        // guess -- the same mistake this harness already made once with the node.
+        println!("      {}", body.trim());
         failures.push(name.to_string());
     }
 }
