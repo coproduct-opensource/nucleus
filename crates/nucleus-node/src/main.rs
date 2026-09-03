@@ -44,7 +44,7 @@ mod pod_api;
 mod pod_caller_identity;
 mod workload_api_protocol;
 mod workload_api_vsock;
-use auth::{AuthConfig, AuthError};
+use auth::{AuthConfig, AuthError, AuthorizationError};
 mod boot_trace;
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
 // On any other host every item here is genuinely dead, and CI builds release
@@ -598,6 +598,8 @@ enum ApiError {
     Driver(String),
     #[error("auth error: {0}")]
     Auth(#[from] AuthError),
+    #[error("authorization error: {0}")]
+    Authorization(#[from] AuthorizationError), // authenticated, not permitted
     #[error("request body error: {0}")]
     Body(String),
 }
@@ -614,6 +616,7 @@ impl IntoResponse for ApiError {
             // caller should retry, not re-authenticate.
             ApiError::Auth(AuthError::ReplayCapacity) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Auth(_) => StatusCode::UNAUTHORIZED,
+            ApiError::Authorization(_) => StatusCode::FORBIDDEN,
             ApiError::Body(_) => StatusCode::BAD_REQUEST,
         };
         let body = Json(ErrorBody {
@@ -1153,7 +1156,7 @@ async fn auth_middleware(
     let bytes = to_bytes(body, MAX_AUTH_BODY_BYTES)
         .await
         .map_err(|e| ApiError::Body(e.to_string()))?;
-    let context = auth::verify_http(&parts.headers, &bytes, &state.auth)?;
+    let context = auth::resolve_http_auth(&state, &parts, &bytes)?;
 
     // WHICH POD is calling, when the caller can prove it. See
     // `pod_caller_identity::identify_from_headers` for why this cannot change a

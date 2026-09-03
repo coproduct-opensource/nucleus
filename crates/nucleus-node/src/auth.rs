@@ -217,7 +217,10 @@ impl AuthContext {
     }
 
     /// Creates a new auth context from SPIFFE/mTLS verification.
-    #[allow(dead_code)]
+    ///
+    /// Was already live via the gRPC interceptor (`authenticate_grpc_request`)
+    /// before [`spiffe_context_for_request`] gave HTTP the same path — the
+    /// `#[allow(dead_code)]` this carried was already stale.
     pub fn from_spiffe(spiffe_id: String) -> Self {
         // Extract actor from SPIFFE path (last segment)
         let actor = spiffe_id
@@ -674,6 +677,89 @@ pub fn get_auth_context<T>(request: &tonic::Request<T>) -> Option<&AuthContext> 
     request.extensions().get::<AuthContext>()
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// HTTP AUTHORIZATION — the SPIFFE branch (Move A step 4)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Maps an HTTP method + path to the [`Operation`] a SPIFFE-authenticated
+/// caller must be authorized for. `None` means no operation matches — the
+/// SPIFFE path refuses fail-closed rather than guessing, so a route added to
+/// `authenticated_routes` in `main.rs` without a matching entry here is
+/// refused for SPIFFE callers rather than silently authorized.
+///
+/// This crate's HTTP API has exactly four protected routes; matched here by
+/// fixed segment shape rather than axum's own routing algebra, which is
+/// adequate at this size and not meant to generalize further. Kept in sync
+/// with `main.rs`'s `authenticated_routes` table by hand — the two tables
+/// must agree, and nothing enforces that but this comment and the tests
+/// below, which assert against the literal route strings.
+pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Operation> {
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match (method, segments.as_slice()) {
+        (&axum::http::Method::POST, ["v1", "pods"]) => Some(Operation::CreatePod),
+        (&axum::http::Method::GET, ["v1", "pods"]) => Some(Operation::ListPods),
+        (&axum::http::Method::GET, ["v1", "pods", _id, "logs"]) => Some(Operation::StreamLogs),
+        (&axum::http::Method::POST, ["v1", "pods", _id, "cancel"]) => Some(Operation::CancelPod),
+        _ => None,
+    }
+}
+
+/// Resolves the auth context for an HTTP request from a verified SPIFFE
+/// peer, if one is present.
+///
+/// `Ok(None)` means no SPIFFE peer was found — NOT an error at this layer:
+/// the caller (`main.rs`'s `auth_middleware`) falls through to `verify_http`
+/// (HMAC) exactly as it did before this function existed. This is what
+/// makes the SPIFFE branch additive rather than a behavior change to the
+/// plaintext default: `extract_spiffe_id_from_extensions` can only find
+/// anything when the connection came through the node's mTLS listener
+/// (`--http-mtls-self-issued`), which the plaintext default never uses.
+///
+/// `Err` only when a SPIFFE peer WAS present but is not authorized — either
+/// the route has no mapped [`Operation`], or [`AuthorizationPolicy::authorize`]
+/// itself refuses (wrong trust domain, unrecognized identity). Routes
+/// `policy.authorize` — the SAME policy [`authorize_grpc_operation`] uses —
+/// so HTTP and gRPC share one authorization rule instead of two.
+pub fn spiffe_context_for_request(
+    policy: &AuthorizationPolicy,
+    method: &axum::http::Method,
+    path: &str,
+    extensions: &axum::http::Extensions,
+) -> Result<Option<AuthContext>, AuthorizationError> {
+    let Some(spiffe_id) = nucleus_identity::mtls::extract_spiffe_id_from_extensions(extensions)
+    else {
+        return Ok(None);
+    };
+    let ctx = AuthContext::from_spiffe(spiffe_id.clone());
+    let operation = operation_for_route(method, path).ok_or(AuthorizationError::NotAuthorized {
+        identity: spiffe_id,
+        operation: format!("{method} {path}"),
+    })?;
+    policy.authorize(&ctx, operation)?;
+    Ok(Some(ctx))
+}
+
+/// Resolves the auth context for an incoming HTTP request: a verified SPIFFE
+/// peer if present and authorized ([`spiffe_context_for_request`]), else HMAC
+/// via [`verify_http`]. The one call `auth_middleware` needs — kept here,
+/// not inline in `main.rs`, so the ratchet-tracked file doesn't grow for
+/// wiring that belongs to this module anyway.
+pub fn resolve_http_auth(
+    state: &crate::NodeState,
+    parts: &axum::http::request::Parts,
+    body: &[u8],
+) -> Result<AuthContext, crate::ApiError> {
+    match spiffe_context_for_request(
+        &state.authz_policy,
+        &parts.method,
+        parts.uri.path(),
+        &parts.extensions,
+    )? {
+        Some(ctx) => Ok(ctx),
+        None => Ok(verify_http(&parts.headers, body, &state.auth)?),
+    }
+}
+
 /// Check authorization for a gRPC operation.
 ///
 /// This is a convenience function that extracts the auth context from the request
@@ -954,4 +1040,122 @@ mod tests {
         );
         assert!(policy.authorize(&ctx, Operation::CreatePod).is_ok());
     }
+
+    // ── HTTP SPIFFE branch (Move A step 4) ─────────────────────────────────
+
+    /// Exhaustive against `main.rs`'s `authenticated_routes` table: every
+    /// route that table declares must map here, and nothing else should.
+    #[test]
+    fn operation_for_route_matches_every_declared_route_and_nothing_else() {
+        use axum::http::Method;
+
+        assert_eq!(
+            operation_for_route(&Method::POST, "/v1/pods"),
+            Some(Operation::CreatePod)
+        );
+        assert_eq!(
+            operation_for_route(&Method::GET, "/v1/pods"),
+            Some(Operation::ListPods)
+        );
+        assert_eq!(
+            operation_for_route(&Method::GET, "/v1/pods/abc-123/logs"),
+            Some(Operation::StreamLogs)
+        );
+        assert_eq!(
+            operation_for_route(&Method::POST, "/v1/pods/abc-123/cancel"),
+            Some(Operation::CancelPod)
+        );
+
+        // Wrong method on a real route.
+        assert_eq!(operation_for_route(&Method::DELETE, "/v1/pods"), None);
+        // A route this middleware doesn't protect (see `public_routes`).
+        assert_eq!(operation_for_route(&Method::GET, "/v1/health"), None);
+        // Unmapped nested path.
+        assert_eq!(
+            operation_for_route(&Method::GET, "/v1/pods/abc-123/receipt"),
+            None
+        );
+    }
+
+    /// Builds a `ConnectInfo<MtlsConnectInfo>` the way axum's own
+    /// `into_make_service_with_connect_info` would, carrying `spiffe_id`.
+    /// The pipeline-delivery question itself (does axum actually hand a
+    /// handler this exact wrapped type) is covered by
+    /// `nucleus_identity::mtls::mtls_extraction_survives_the_real_serving_pipeline`;
+    /// this tests the NEW logic layered on top of that primitive.
+    fn extensions_with_spiffe_id(spiffe_id: &str) -> axum::http::Extensions {
+        use nucleus_identity::mtls::{ClientCertInfo, MtlsConnectInfo};
+        let mut extensions = axum::http::Extensions::new();
+        extensions.insert(axum::extract::ConnectInfo(MtlsConnectInfo {
+            peer_addr: "127.0.0.1:0".parse().unwrap(),
+            client_cert: Some(ClientCertInfo {
+                cert_der: vec![],
+                spiffe_id: Some(spiffe_id.to_string()),
+            }),
+        }));
+        extensions
+    }
+
+    #[test]
+    fn spiffe_context_for_request_is_none_without_a_peer() {
+        // No SPIFFE peer -- Ok(None), NOT an error, so the caller falls
+        // through to HMAC. This is the property that keeps the branch
+        // additive to the plaintext default.
+        let policy = AuthorizationPolicy::new("nucleus.local");
+        let result = spiffe_context_for_request(
+            &policy,
+            &axum::http::Method::POST,
+            "/v1/pods",
+            &axum::http::Extensions::new(),
+        );
+        assert!(matches!(result, Ok(None)));
+    }
+
+    #[test]
+    fn spiffe_context_for_request_authorizes_a_real_peer() {
+        let policy = AuthorizationPolicy::new("nucleus.local");
+        let extensions = extensions_with_spiffe_id("spiffe://nucleus.local/ns/default/sa/orch");
+
+        let ctx =
+            spiffe_context_for_request(&policy, &axum::http::Method::POST, "/v1/pods", &extensions)
+                .unwrap()
+                .expect("a real SPIFFE peer must produce Some(context)");
+        assert!(matches!(ctx.method, AuthMethod::Spiffe { .. }));
+    }
+
+    #[test]
+    fn spiffe_context_for_request_refuses_an_unmapped_route() {
+        let policy = AuthorizationPolicy::new("nucleus.local");
+        // An orchestrator identity that WOULD be authorized for any mapped
+        // operation -- proving the refusal is about the route, not the peer.
+        let extensions = extensions_with_spiffe_id("spiffe://nucleus.local/ns/default/sa/orch");
+
+        let err = spiffe_context_for_request(
+            &policy,
+            &axum::http::Method::DELETE,
+            "/v1/pods/abc-123",
+            &extensions,
+        )
+        .expect_err("an unmapped route must be refused, not silently authorized");
+        assert!(matches!(err, AuthorizationError::NotAuthorized { .. }));
+    }
+
+    #[test]
+    fn spiffe_context_for_request_refuses_wrong_trust_domain() {
+        let policy = AuthorizationPolicy::new("nucleus.local");
+        let extensions = extensions_with_spiffe_id("spiffe://attacker.example/ns/default/sa/x");
+
+        let err =
+            spiffe_context_for_request(&policy, &axum::http::Method::POST, "/v1/pods", &extensions)
+                .expect_err("a peer from the wrong trust domain must be refused");
+        assert!(matches!(err, AuthorizationError::WrongTrustDomain { .. }));
+    }
+
+    // `resolve_http_auth` itself is not separately unit-tested: it is a
+    // trivial 5-line pass-through (`spiffe_context_for_request` ->
+    // `Some(ctx)` or -> `verify_http`), and needs a full `NodeState` to call
+    // (no test constructor exists, and building one is disproportionate to
+    // what this function adds). The interesting logic — routing, trust
+    // domain checks, the fail-closed unmapped-route refusal — lives in
+    // `spiffe_context_for_request`, tested above.
 }

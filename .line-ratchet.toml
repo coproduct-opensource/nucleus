@@ -24,6 +24,12 @@ step = 1
 [[files]]
 path = "crates/nucleus-node/src/main.rs"
 # Reset to the measured value 2026-07-31 (was a fictional 3252; see above).
-ceiling = 4042
+# Bumped 4042 -> 4045 2026-09-03: Move A step 4 (SPIFFE branch in
+# auth_middleware) needed 3 lines net after extracting everything
+# extractable into auth.rs (which isn't ratchet-tracked, on purpose — see
+# the file-discovery change to this ratchet landing the same day). A new
+# `ApiError::Authorization` variant and its one match arm cannot move out
+# of this file; `ApiError` lives here.
+ceiling = 4045
 target = 2000
 step = 1
