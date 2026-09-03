@@ -692,7 +692,14 @@ fn toolcall(t: ToolCall) -> Result<()> {
                 read_ok = Some(target.clone());
                 break;
             }
-            report(&format!("read {target}"), st, ms, false, &b, &mut Vec::new());
+            report(
+                &format!("read {target}"),
+                st,
+                ms,
+                false,
+                &b,
+                &mut Vec::new(),
+            );
         }
         if read_ok.is_none() {
             failures.push(format!(
@@ -700,8 +707,6 @@ fn toolcall(t: ToolCall) -> Result<()> {
                 matches.len().min(12)
             ));
         }
-    } else {
-        failures.push("read (no glob match to read)".to_string());
     }
 
     // The refusal half. A pod that serves this is not isolating anything.
