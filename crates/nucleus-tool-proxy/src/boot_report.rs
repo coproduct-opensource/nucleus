@@ -5,7 +5,7 @@ use std::time::Duration;
 use tracing::warn;
 
 use crate::AuditEntry;
-use crate::{now_unix, ApiError, AppState};
+use crate::{ApiError, AppState, now_unix};
 
 /// [`emit_boot_report`] under a deadline, because the audit log anchors every
 /// entry to the drand beacon and a pod cannot reach it.

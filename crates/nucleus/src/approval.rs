@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::error::{NucleusError, Result};
-use hmac::{digest::KeyInit, Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use parking_lot::Mutex;
 use sha2::Sha256;
 use uuid::Uuid;

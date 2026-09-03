@@ -35,13 +35,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use nucleus_econ_kernels::{
-    classify, refund, route_to_commons, run_vcg, seller_gross, Clearing, CommonsAllocation,
-    CommonsError, CommonsShare, IntegerBid, IntegerProposal, VcgError, Verdict,
+    Clearing, CommonsAllocation, CommonsError, CommonsShare, IntegerBid, IntegerProposal, VcgError,
+    Verdict, classify, refund, route_to_commons, run_vcg, seller_gross,
 };
 // The Aeneas-extracted integrity primitives the D1 non-interference theorem is
 // proven over. `verify_ifc_trace`'s anti-laundering check is the runtime witness
 // of that theorem, so it recomputes via these exact functions.
-use portcullis_core::extracted::ifc_integrity::{imeet, IntegLevel};
+use portcullis_core::extracted::ifc_integrity::{IntegLevel, imeet};
 
 /// Payout — the split of a cleared amount among the parties that earned it.
 ///
@@ -391,12 +391,12 @@ pub mod envelope {
             Some(other) => {
                 return Err(NarrowError::NotClearing {
                     found: other.to_string(),
-                })
+                });
             }
             None => {
                 return Err(NarrowError::NotClearing {
                     found: "<missing>".to_string(),
-                })
+                });
             }
         }
         let receipt = body
@@ -462,7 +462,7 @@ pub mod envelope {
 #[cfg(all(test, feature = "envelope"))]
 mod e2e_enforcement_tests {
     use super::*;
-    use crate::envelope::{to_economic_projection, verify_signed_clearing, SignedClearingVerdict};
+    use crate::envelope::{SignedClearingVerdict, to_economic_projection, verify_signed_clearing};
     use nucleus_econ_kernels::CommonsShare;
     use nucleus_receipt::{Projection, Receipt, Session};
 
@@ -669,12 +669,12 @@ pub mod ifc_flow {
             Some(other) => {
                 return Err(IfcNarrowError::NotIfcDecision {
                     found: other.to_string(),
-                })
+                });
             }
             None => {
                 return Err(IfcNarrowError::NotIfcDecision {
                     found: "<missing>".to_string(),
-                })
+                });
             }
         }
         let cert = body.get("certificate").ok_or_else(|| {
@@ -900,7 +900,7 @@ mod tests {
     mod envelope_tests {
         use super::*;
         use crate::envelope::{
-            clearing_from_projection, to_economic_projection, NarrowError, ECONOMIC_CLEARING_KIND,
+            ECONOMIC_CLEARING_KIND, NarrowError, clearing_from_projection, to_economic_projection,
         };
         use nucleus_receipt::{Projection, Receipt, ReceiptError, Session};
 
@@ -1303,7 +1303,7 @@ pub fn verify_ifc_trace(hops: &[IfcHop]) -> TraceOutcome {
 #[cfg(all(test, feature = "ifc-envelope"))]
 mod ifc_envelope_tests {
     use crate::ifc_flow::{
-        ifc_certificate_from_projection, to_flow_projection, IfcNarrowError, FLOW_IFC_DECISION_KIND,
+        FLOW_IFC_DECISION_KIND, IfcNarrowError, ifc_certificate_from_projection, to_flow_projection,
     };
     use nucleus_ifc::decision::{DeclaredInput, FlowDeclaration, IfcVerdict};
     use nucleus_receipt::{Projection, Receipt, ReceiptError, Session};

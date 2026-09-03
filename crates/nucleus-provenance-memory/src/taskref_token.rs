@@ -59,8 +59,8 @@
 //! runtime-threading (PR2) obligation, flagged here so it cannot be lost.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use portcullis_core::delegation::DelegationScope;
 use portcullis_core::Operation;
+use portcullis_core::delegation::DelegationScope;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

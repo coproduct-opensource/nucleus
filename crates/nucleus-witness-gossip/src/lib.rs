@@ -135,10 +135,10 @@ pub fn collect_verified_names(
 ) -> HashSet<String> {
     let mut verified_names = HashSet::new();
     for head in heads {
-        if let Some(pubkey) = policy_keys.get(&head.witness_name) {
-            if verify_head(head, pubkey) {
-                verified_names.insert(head.witness_name.clone());
-            }
+        if let Some(pubkey) = policy_keys.get(&head.witness_name)
+            && verify_head(head, pubkey)
+        {
+            verified_names.insert(head.witness_name.clone());
         }
     }
     verified_names
@@ -147,7 +147,7 @@ pub fn collect_verified_names(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     use nucleus_lineage::policy::Policy;
 
     /// Mint a real head by cosigning `note_body` with `wk`, then parsing

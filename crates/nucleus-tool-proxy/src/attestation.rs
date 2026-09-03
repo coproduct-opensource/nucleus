@@ -495,7 +495,7 @@ fn extract_attestation_from_cert(cert_der: &[u8]) -> Result<Option<LaunchAttesta
 
 /// Decode standard base64 to bytes.
 pub(crate) fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
     STANDARD
         .decode(input)
         .map_err(|e| format!("base64 decode error: {e}"))
@@ -504,7 +504,7 @@ pub(crate) fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
 /// Encode bytes to standard base64.
 #[cfg(test)]
 pub(crate) fn base64_encode(input: &[u8]) -> String {
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
     STANDARD.encode(input)
 }
 

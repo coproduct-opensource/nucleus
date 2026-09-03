@@ -20,10 +20,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    http::{header, Method, StatusCode},
+    Json, Router,
+    http::{Method, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::Serialize;
 use tower::limit::ConcurrencyLimitLayer;

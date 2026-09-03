@@ -3,7 +3,7 @@
 //! Integer-only, deterministic, no-panic, no-overflow guarantees are exercised here.
 
 use nucleus_oracle::{
-    summarize, CountPair, GradeReceipt, KofN, PortfolioSummary, QuarantineReason,
+    CountPair, GradeReceipt, KofN, PortfolioSummary, QuarantineReason, summarize,
 };
 
 /// Fixture per the contract's construction pattern.

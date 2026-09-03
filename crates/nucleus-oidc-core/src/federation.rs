@@ -24,8 +24,8 @@
 
 use std::sync::Arc;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 
 use crate::error::OidcError;
@@ -250,9 +250,10 @@ mod tests {
     #[test]
     fn synthetic_uid_none_for_unknown_issuer() {
         let reg = FederationRegistry::new();
-        assert!(reg
-            .synthetic_uid("https://unknown.example/", "scope")
-            .is_none());
+        assert!(
+            reg.synthetic_uid("https://unknown.example/", "scope")
+                .is_none()
+        );
     }
 
     #[test]

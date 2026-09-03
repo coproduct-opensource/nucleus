@@ -1,6 +1,6 @@
 //! Run command - Execute tasks via tool-proxy (enforced by default)
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nucleus_client::sign_http_headers;
 use nucleus_spec::{
@@ -334,10 +334,10 @@ fn load_permission_config(path: &str) -> Result<PermissionLattice> {
     let config: toml::Value = toml::from_str(&content)?;
 
     // Check for profile key
-    if let Some(profile) = config.get("profile").and_then(|v| v.as_str()) {
-        if let Some(lattice) = profiles::resolve(profile) {
-            return Ok(lattice);
-        }
+    if let Some(profile) = config.get("profile").and_then(|v| v.as_str())
+        && let Some(lattice) = profiles::resolve(profile)
+    {
+        return Ok(lattice);
     }
 
     // Default to restrictive
@@ -354,14 +354,12 @@ fn resolve_binary_path(path: &str) -> Result<PathBuf> {
         && !path.contains(std::path::MAIN_SEPARATOR)
         && !path.contains('/')
         && !path.contains('\\')
+        && let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
     {
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let sibling = dir.join(path);
-                if sibling.exists() {
-                    return Ok(sibling);
-                }
-            }
+        let sibling = dir.join(path);
+        if sibling.exists() {
+            return Ok(sibling);
         }
     }
 
@@ -1092,10 +1090,12 @@ mod tests {
             MediationGuard::establish(&allowed).expect("all-MCP tool set must mint the guard");
         assert_eq!(guard.allowed_tools(), allowed.as_slice());
         // Every tool that reaches the agent is lattice-routed.
-        assert!(guard
-            .allowed_tools()
-            .iter()
-            .all(|t| t.starts_with(NUCLEUS_MCP_TOOL_PREFIX)));
+        assert!(
+            guard
+                .allowed_tools()
+                .iter()
+                .all(|t| t.starts_with(NUCLEUS_MCP_TOOL_PREFIX))
+        );
     }
 
     #[test]

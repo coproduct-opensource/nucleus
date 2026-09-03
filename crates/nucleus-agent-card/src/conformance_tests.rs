@@ -6,19 +6,19 @@
 //! Gated on `feature = "sign"` like the round-trip suite — the negative
 //! cases hand-craft signatures.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::SystemRandom;
-use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
 
 use std::collections::BTreeMap;
 
 use crate::card::{
-    AgentCapabilities, AgentCard, AgentCardSignature, AgentInterface, ApiKeySecurityScheme,
-    AuthorizationCodeOAuthFlow, ClientCredentialsOAuthFlow, DeviceCodeOAuthFlow,
-    HttpAuthSecurityScheme, ImplicitOAuthFlow, MutualTlsSecurityScheme, NucleusClaims,
-    OAuth2SecurityScheme, OAuthFlows, OpenIdConnectSecurityScheme, PasswordOAuthFlow,
-    SecurityScheme, A2A_PROTOCOL_VERSION,
+    A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCard, AgentCardSignature, AgentInterface,
+    ApiKeySecurityScheme, AuthorizationCodeOAuthFlow, ClientCredentialsOAuthFlow,
+    DeviceCodeOAuthFlow, HttpAuthSecurityScheme, ImplicitOAuthFlow, MutualTlsSecurityScheme,
+    NucleusClaims, OAuth2SecurityScheme, OAuthFlows, OpenIdConnectSecurityScheme,
+    PasswordOAuthFlow, SecurityScheme,
 };
 use crate::jcs::{canonicalize, canonicalize_received};
 use crate::jwk::JsonWebKey;

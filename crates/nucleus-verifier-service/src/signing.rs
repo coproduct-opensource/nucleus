@@ -15,8 +15,8 @@
 
 use std::fmt;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey, SECRET_KEY_LENGTH};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
+use ed25519_dalek::{SECRET_KEY_LENGTH, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 /// Canonical domain separator for STH signing. Bumping this string

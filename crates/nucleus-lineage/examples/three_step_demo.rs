@@ -30,10 +30,10 @@ use std::env;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use jsonwebtoken::{decode, Algorithm, Validation};
+use jsonwebtoken::{Algorithm, Validation, decode};
 use nucleus_lineage::{
-    canonical_edge_bytes, edge_content_hash, CallSpiffeId, EdgeKind, EdgeSigner, IdentityFetcher,
-    JsonlSink, Jwks, LineageEdge, LineageSink, LocalIssuer, Proof, SvidClaims,
+    CallSpiffeId, EdgeKind, EdgeSigner, IdentityFetcher, JsonlSink, Jwks, LineageEdge, LineageSink,
+    LocalIssuer, Proof, SvidClaims, canonical_edge_bytes, edge_content_hash,
 };
 
 const POD_TRUST_DOMAIN: &str = "demo.nucleus.local";
@@ -262,7 +262,7 @@ fn call_mock_llm_via_jwks(
 
     // Build a jsonwebtoken DecodingKey from the raw Ed25519 public key
     // bytes. `from_ed_components` takes a base64url-encoded 32-byte key.
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let decoding_key =
         jsonwebtoken::DecodingKey::from_ed_components(&URL_SAFE_NO_PAD.encode(vk.as_bytes()))?;
 

@@ -17,10 +17,10 @@ use nucleus_identity::ca::CaClient;
 use nucleus_identity::did::ServiceEndpoint;
 use nucleus_identity::did_resolver::{CachingDidResolver, DidResolver, InMemoryDidResolver};
 use nucleus_identity::dpop::{DpopProofBuilder, DpopVerifier};
-use nucleus_identity::webfinger::{parse_webfinger_resource, WebFingerResponse};
+use nucleus_identity::webfinger::{WebFingerResponse, parse_webfinger_resource};
 use nucleus_identity::{
-    build_binding, build_did_document, extract_svid_material, verify_binding, CsrOptions, Identity,
-    SelfSignedCa,
+    CsrOptions, Identity, SelfSignedCa, build_binding, build_did_document, extract_svid_material,
+    verify_binding,
 };
 use ring::signature::KeyPair;
 

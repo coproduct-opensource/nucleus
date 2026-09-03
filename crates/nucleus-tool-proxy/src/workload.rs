@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 
 use nucleus_ifc_kernel::extracted::identity::{
-    ident_may_deliver, mat_label, MaterialKind, Principal,
+    MaterialKind, Principal, ident_may_deliver, mat_label,
 };
 use nucleus_ifc_kernel::extracted::ifc_confidentiality::ConfLevel;
 use nucleus_spec::WorkloadSpec;
@@ -993,8 +993,14 @@ mod tests {
     async fn the_spawned_child_does_not_inherit_the_capability() {
         // Put the capability in THIS process's environment, exactly as
         // `guest-init` puts it in the proxy's before exec.
-        std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", "leaked-capability");
-        std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_PORT", "1027");
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", "leaked-capability") };
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_PORT", "1027") };
 
         let dir = tempfile::tempdir().expect("tempdir");
         let f_env = dir.path().join("child.env");
@@ -1026,8 +1032,14 @@ mod tests {
         assert!(status.success(), "the child must actually run: {status:?}");
         let observed = std::fs::read_to_string(&f_env).expect("the child wrote its environment");
 
-        std::env::remove_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET");
-        std::env::remove_var("NUCLEUS_TOOL_PROXY_BROKER_PORT");
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::remove_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET") };
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::remove_var("NUCLEUS_TOOL_PROXY_BROKER_PORT") };
 
         assert!(
             !observed.contains("leaked-capability"),
@@ -1199,7 +1211,7 @@ mod tests {
     // model refuses AND the overlay omits. Neither side proves the other; the
     // pointwise agreement is the claim.
 
-    use nucleus_ifc_kernel::extracted::identity::{ident_may_deliver, MaterialKind, Principal};
+    use nucleus_ifc_kernel::extracted::identity::{MaterialKind, Principal, ident_may_deliver};
 
     /// An INDEPENDENT oracle for the production `env_key_material` classifier —
     /// deliberately a different structure (an exact-match lookup table plus two

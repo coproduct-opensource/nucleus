@@ -81,7 +81,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use nucleus_externality::{canonical_externality_bytes, ExternalityProfile};
+use nucleus_externality::{ExternalityProfile, canonical_externality_bytes};
 
 use crate::vcg::IntegerBid;
 
@@ -440,7 +440,7 @@ pub fn audit_commit_ack(ack: &CommitAck, published_set: &[BidCommitment]) -> Omi
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use nucleus_externality::{sign_claim, ResourceDim, SignedExternalityClaim};
+    use nucleus_externality::{ResourceDim, SignedExternalityClaim, sign_claim};
 
     fn mk_profile(units: u64) -> ExternalityProfile {
         let sk = SigningKey::from_bytes(&[7u8; 32]);

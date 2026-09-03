@@ -232,11 +232,7 @@ fn emit(line: &str) {
 }
 
 fn yn(b: bool) -> &'static str {
-    if b {
-        "yes"
-    } else {
-        "no"
-    }
+    if b { "yes" } else { "no" }
 }
 
 fn env_var(key: &str) -> Option<String> {

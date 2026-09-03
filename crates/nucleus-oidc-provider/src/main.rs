@@ -6,11 +6,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use nucleus_oidc_provider::{
-    app::{build_app, AppState},
+    JtiCache,
+    app::{AppState, build_app},
     federation::FederationRegistry,
     issuer::JwtIssuer,
     keystore::{InMemoryKeyStore, JwtKeyStore},
-    JtiCache,
 };
 
 #[derive(Parser, Debug)]

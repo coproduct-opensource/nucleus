@@ -4,7 +4,7 @@
 //! then launches the agent CLI in interactive mode with only sandboxed tools
 //! visible. All tool calls flow through the permission lattice.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nucleus_spec::{CredentialsSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec};
 use portcullis::PermissionLattice;
@@ -19,7 +19,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::profiles;
-use crate::run::{build_mcp_allowed_tools, write_mcp_config, McpEnvConfig};
+use crate::run::{McpEnvConfig, build_mcp_allowed_tools, write_mcp_config};
 
 /// Launch an interactive agent session with nucleus as the security context.
 ///
@@ -356,14 +356,12 @@ fn resolve_binary_path(path: &str) -> Result<PathBuf> {
         && !path.contains(std::path::MAIN_SEPARATOR)
         && !path.contains('/')
         && !path.contains('\\')
+        && let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
     {
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let sibling = dir.join(path);
-                if sibling.exists() {
-                    return Ok(sibling);
-                }
-            }
+        let sibling = dir.join(path);
+        if sibling.exists() {
+            return Ok(sibling);
         }
     }
 
@@ -376,10 +374,10 @@ fn load_permission_config(path: &str) -> Result<PermissionLattice> {
     let content = fs::read_to_string(&expanded)?;
     let config: toml::Value = toml::from_str(&content)?;
 
-    if let Some(profile) = config.get("profile").and_then(|v| v.as_str()) {
-        if let Some(lattice) = profiles::resolve(profile) {
-            return Ok(lattice);
-        }
+    if let Some(profile) = config.get("profile").and_then(|v| v.as_str())
+        && let Some(lattice) = profiles::resolve(profile)
+    {
+        return Ok(lattice);
     }
 
     Ok(PermissionLattice::restrictive())

@@ -38,7 +38,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use ed25519_dalek::{Signature, VerifyingKey};
-use portcullis::art12_record::{Art12Attestation, Art12Record, ART12_SCHEMA_VERSION};
+use portcullis::art12_record::{ART12_SCHEMA_VERSION, Art12Attestation, Art12Record};
 use serde::Serialize;
 
 use crate::AuditError;
@@ -221,16 +221,16 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
 
         // The first record chains from the writer's genesis anchor, which this
         // verifier does not know; from the second on, the chain is checked.
-        if let Some(prev) = &prev_hash {
-            if &rec.prev_hash != prev {
-                return Err(AuditError::Invalid {
-                    line: line_no,
-                    message: format!(
-                        "prev_hash mismatch (expected {prev}, got {}) -- the chain is broken here",
-                        rec.prev_hash
-                    ),
-                });
-            }
+        if let Some(prev) = &prev_hash
+            && &rec.prev_hash != prev
+        {
+            return Err(AuditError::Invalid {
+                line: line_no,
+                message: format!(
+                    "prev_hash mismatch (expected {prev}, got {}) -- the chain is broken here",
+                    rec.prev_hash
+                ),
+            });
         }
 
         // Recompute from the record's OWN fields. Any tampered field changes the
@@ -505,7 +505,7 @@ mod tests {
     // ── executor attestation ────────────────────────────────────────────────
 
     use ed25519_dalek::{Signer as _, SigningKey};
-    use portcullis::art12_record::{art12_attestation_preimage, ART12_ATTESTATION_KIND};
+    use portcullis::art12_record::{ART12_ATTESTATION_KIND, art12_attestation_preimage};
 
     fn attest(chain_head: &str, key: &SigningKey) -> Art12Attestation {
         let preimage = art12_attestation_preimage("sess", chain_head, 2, 0, "exec-1");
@@ -528,12 +528,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).unwrap();
         let key = SigningKey::from_bytes(&[3u8; 32]);
-        assert!(check_attestation(
-            &attest(&report.chain_head, &key),
-            &report.chain_head,
-            &key.verifying_key()
-        )
-        .is_ok());
+        assert!(
+            check_attestation(
+                &attest(&report.chain_head, &key),
+                &report.chain_head,
+                &key.verifying_key()
+            )
+            .is_ok()
+        );
     }
 
     /// **The property the export exists for.** A pod that rewrites its log after

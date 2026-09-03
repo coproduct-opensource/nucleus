@@ -221,17 +221,19 @@ spec:
         assert!(!yaml.contains("super-secret-token-value"));
         // The second store is empty — every value was already taken.
         use nucleus_cred_broker::{AuthorizedRequest, PodIdentity};
-        assert!(second
-            .for_request(
-                &AuthorizedRequest {
-                    expires_at_unix: NOW + nucleus_cred_broker::APPROVAL_TTL_SECS,
-                    pod_identity: PodIdentity::observed_by_host("p"),
-                    operation: "o".into(),
-                    target: "LLM_API_TOKEN".into(),
-                },
-                NOW
-            )
-            .is_err());
+        assert!(
+            second
+                .for_request(
+                    &AuthorizedRequest {
+                        expires_at_unix: NOW + nucleus_cred_broker::APPROVAL_TTL_SECS,
+                        pod_identity: PodIdentity::observed_by_host("p"),
+                        operation: "o".into(),
+                        target: "LLM_API_TOKEN".into(),
+                    },
+                    NOW
+                )
+                .is_err()
+        );
     }
 
     /// A spec with no credentials is handled without ceremony.

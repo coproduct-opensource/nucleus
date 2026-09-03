@@ -8,8 +8,8 @@
 //!    migrated to YAML)
 
 use anyhow::Result;
-use portcullis::profile::ProfileRegistry;
 use portcullis::PermissionLattice;
+use portcullis::profile::ProfileRegistry;
 
 /// Resolve a profile name to a [`PermissionLattice`].
 ///
@@ -23,10 +23,10 @@ pub fn resolve(name: &str) -> Option<PermissionLattice> {
     }
 
     // 2. Try short aliases → canonical names
-    if let Some(canonical) = resolve_alias(name) {
-        if let Ok(lattice) = registry.resolve(canonical) {
-            return Some(lattice);
-        }
+    if let Some(canonical) = resolve_alias(name)
+        && let Ok(lattice) = registry.resolve(canonical)
+    {
+        return Some(lattice);
     }
 
     // 3. Legacy profiles not (yet) in the registry

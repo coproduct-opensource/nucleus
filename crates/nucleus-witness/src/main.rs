@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use nucleus_witness::{
-    app::build_app, server::WitnessState, InMemoryStore, TrustedLogKey, WitnessKey,
+    InMemoryStore, TrustedLogKey, WitnessKey, app::build_app, server::WitnessState,
 };
 
 /// C2SP tlog-witness server.

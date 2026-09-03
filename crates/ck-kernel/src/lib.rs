@@ -16,7 +16,7 @@ mod lineage;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod test_harness;
 
-pub use gate::{gate_manifest_amendment, GateMode, GateOutcome};
+pub use gate::{GateMode, GateOutcome, gate_manifest_amendment};
 // Re-export the pure monotonicity engine for fast preflight callers.
 pub use ck_policy::check_monotonicity;
 
@@ -192,17 +192,17 @@ impl Kernel {
         // 1.5. Dual-DAG enforcement: ordinary amendments must parent from
         //      the latest admitted node. This prevents out-of-band commits
         //      from silently becoming constitutional lineage ancestors.
-        if let Some(latest) = self.lineage.latest_admitted_digest() {
-            if candidate.parent_digest != latest {
-                reasons.push(RejectionReason {
-                    invariant: ConstitutionalInvariant::GovernanceMonotonicity,
-                    message: format!(
-                        "Ordinary amendment must parent from latest admitted node {}; got {}",
-                        latest, candidate.parent_digest
-                    ),
-                });
-                return AdmissionDecision::Rejected { reasons };
-            }
+        if let Some(latest) = self.lineage.latest_admitted_digest()
+            && candidate.parent_digest != latest
+        {
+            reasons.push(RejectionReason {
+                invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                message: format!(
+                    "Ordinary amendment must parent from latest admitted node {}; got {}",
+                    latest, candidate.parent_digest
+                ),
+            });
+            return AdmissionDecision::Rejected { reasons };
         }
 
         // 2. Patch class must be well-formed
@@ -272,16 +272,15 @@ impl Kernel {
         // 4.5. Policy continuity: witness.policy_before must match the parent's
         //      admitted policy. This prevents an attacker from lying about the
         //      parent's policy to smuggle in escalations.
-        if let Some(parent_policy) = self.admitted_policies.get(candidate.parent_digest.as_str()) {
-            if candidate.witness.policy_before != *parent_policy {
-                reasons.push(RejectionReason {
-                    invariant: ConstitutionalInvariant::GovernanceMonotonicity,
-                    message:
-                        "witness.policy_before does not match parent's admitted policy (forgery?)"
-                            .into(),
-                });
-                return AdmissionDecision::Rejected { reasons };
-            }
+        if let Some(parent_policy) = self.admitted_policies.get(candidate.parent_digest.as_str())
+            && candidate.witness.policy_before != *parent_policy
+        {
+            reasons.push(RejectionReason {
+                invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                message: "witness.policy_before does not match parent's admitted policy (forgery?)"
+                    .into(),
+            });
+            return AdmissionDecision::Rejected { reasons };
         }
         // If no stored policy (genesis or restored kernel), trust the witness.
         // Production kernels should restore policies alongside lineage records.
@@ -474,17 +473,17 @@ impl Kernel {
         }
 
         // 3. Parent must be latest (dual-DAG)
-        if let Some(latest) = self.lineage.latest_admitted_digest() {
-            if candidate.parent_digest != latest {
-                reasons.push(RejectionReason {
-                    invariant: ConstitutionalInvariant::GovernanceMonotonicity,
-                    message: format!(
-                        "Constitutional amendment must parent from latest: {} != {}",
-                        latest, candidate.parent_digest
-                    ),
-                });
-                return AdmissionDecision::Rejected { reasons };
-            }
+        if let Some(latest) = self.lineage.latest_admitted_digest()
+            && candidate.parent_digest != latest
+        {
+            reasons.push(RejectionReason {
+                invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                message: format!(
+                    "Constitutional amendment must parent from latest: {} != {}",
+                    latest, candidate.parent_digest
+                ),
+            });
+            return AdmissionDecision::Rejected { reasons };
         }
 
         // 4. Human signature threshold + cryptographic verification
@@ -869,9 +868,11 @@ mod tests {
 
         assert!(matches!(result, AdmissionDecision::Rejected { .. }));
         if let AdmissionDecision::Rejected { reasons } = result {
-            assert!(reasons
-                .iter()
-                .any(|r| r.invariant == ConstitutionalInvariant::CapabilityNonEscalation));
+            assert!(
+                reasons
+                    .iter()
+                    .any(|r| r.invariant == ConstitutionalInvariant::CapabilityNonEscalation)
+            );
         }
     }
 

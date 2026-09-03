@@ -81,7 +81,7 @@ pub mod record;
 pub mod taskref_token;
 
 pub use crdt::ProvenanceMemorySet;
-pub use declassify::{declassify, DeclassifyError, DeclassifyWitness, SignedDeclassify};
+pub use declassify::{DeclassifyError, DeclassifyWitness, SignedDeclassify, declassify};
 pub use hash::ContentHash;
 pub use ifc::memory_ifc_label;
 pub use lineage::memory_lineage_edge;

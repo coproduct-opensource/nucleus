@@ -12,20 +12,20 @@
 //! (e.g. SPIFFE-Workload-API-backed) and publishes the matching JWKS
 //! out-of-band; the buyer resolves the seller's JWKS the same way.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::SystemRandom;
-use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
 
 use nucleus_agent_card::{
-    sign_card, AgentCapabilities, AgentCard, AgentInterface, JsonWebKey, NucleusClaims,
-    A2A_PROTOCOL_VERSION,
+    A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCard, AgentInterface, JsonWebKey, NucleusClaims,
+    sign_card,
 };
 use nucleus_envelope::{Bundle, TrustAnchor};
 use nucleus_lineage::{CallSpiffeId, Jwks, LocalIssuer};
 use nucleus_verify_commerce::{
-    serve_verified, verify_receipt_bundle, AgentCardVerifier, CallerClaims, CommerceRequest,
-    EnvelopeReceiptIssuer, PaymentProof,
+    AgentCardVerifier, CallerClaims, CommerceRequest, EnvelopeReceiptIssuer, PaymentProof,
+    serve_verified, verify_receipt_bundle,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

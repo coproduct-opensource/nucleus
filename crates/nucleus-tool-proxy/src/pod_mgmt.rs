@@ -1,18 +1,18 @@
 #![allow(clippy::disallowed_types)] // #1216 exempt: vsock endpoint setup (infrastructure)
-                                    // =============================================================================
-                                    // Pod Management Handlers (orchestrator mode)
-                                    // =============================================================================
-                                    //
-                                    // Extracted from main.rs to reduce file size. These handlers allow the
-                                    // tool-proxy to orchestrate sub-pods via nucleus-node.
+// =============================================================================
+// Pod Management Handlers (orchestrator mode)
+// =============================================================================
+//
+// Extracted from main.rs to reduce file size. These handlers allow the
+// tool-proxy to orchestrate sub-pods via nucleus-node.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use axum::extract::State;
-use axum::http::HeaderMap;
 use axum::Json;
 use axum::Router;
+use axum::extract::State;
+use axum::http::HeaderMap;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use tracing::info;
@@ -25,7 +25,7 @@ use nucleus_spec::{BudgetModelSpec, PodSpec};
 use portcullis::verdict_sink::{VerdictContext, VerdictOutcome};
 
 use crate::node_client;
-use crate::{actor_from_auth, ApiError, AppState, PodRuntime};
+use crate::{ApiError, AppState, PodRuntime, actor_from_auth};
 
 // ---------------------------------------------------------------------------
 // Request/Response types
@@ -673,9 +673,9 @@ mod ifc_gate_tests {
     //! by `sub_pod_ifc_gate` being a private fn called only from `create_sub_pod`
     //! (dropping the call makes it dead code → warnings-denied build fails).
     use super::sub_pod_ifc_gate;
-    use crate::{ingest_content_hash, ApiError};
-    use nucleus::portcullis::flow_graph::FlowGraph;
+    use crate::{ApiError, ingest_content_hash};
     use nucleus::portcullis::NodeKind;
+    use nucleus::portcullis::flow_graph::FlowGraph;
 
     #[test]
     fn tainted_parent_is_denied_sub_pod() {
@@ -713,7 +713,7 @@ mod ifc_gate_tests {
 
 #[cfg(test)]
 mod vsock_peer_tests {
-    use super::{peer_is_host, VMADDR_CID_HOST, VMADDR_CID_LOCAL};
+    use super::{VMADDR_CID_HOST, VMADDR_CID_LOCAL, peer_is_host};
 
     /// The host, and only the host, may drive the control plane.
     #[test]

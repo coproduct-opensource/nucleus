@@ -21,7 +21,7 @@ use portcullis::flow_graph::{FlowGraph, FlowGraphError};
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::{ingest_content_hash, AppState};
+use crate::{AppState, ingest_content_hash};
 
 /// Observe a data-ingest node in the session flow graph after a *successful*
 /// read/fetch (#1633), mirroring the MCP server. `WebContent` is an adversarial

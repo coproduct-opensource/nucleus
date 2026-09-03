@@ -26,7 +26,7 @@ use rustls::pki_types::{CertificateDer, ServerName, TrustAnchor, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{DigitallySignedStruct, DistinguishedName, RootCertStore, SignatureScheme};
 use std::sync::Arc;
-use webpki::{anchor_from_trusted_cert, EndEntityCert, KeyUsage};
+use webpki::{EndEntityCert, KeyUsage, anchor_from_trusted_cert};
 
 /// Verifies that client certificates have valid SPIFFE identities in the trust domain.
 ///
@@ -403,8 +403,8 @@ pub fn extract_identity(cert_der: &[u8]) -> Result<Identity> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ca::CaClient;
     use crate::SelfSignedCa;
+    use crate::ca::CaClient;
     use std::time::Duration;
 
     #[tokio::test]

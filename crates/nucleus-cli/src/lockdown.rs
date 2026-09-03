@@ -10,7 +10,7 @@
 //! 2. Falls back to writing a local signal file if gRPC is unavailable
 //! 3. Both paths result in tool-proxy blocking all tool calls
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::Args;
 use tracing::{info, warn};
 
@@ -57,7 +57,7 @@ fn lockdown_signal_path() -> std::path::PathBuf {
 /// The key is derived from the machine ID + a fixed salt — not a secret,
 /// but sufficient to prevent casual tampering by other local users.
 fn signal_hmac(body: &[u8]) -> String {
-    use hmac::{digest::KeyInit, Hmac, Mac};
+    use hmac::{Hmac, Mac, digest::KeyInit};
     use sha2::Sha256;
 
     // Machine-local key: hostname + uid — prevents cross-user forgery

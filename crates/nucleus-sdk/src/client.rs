@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
+use crate::Error;
 use crate::auth::{AuthStrategy, MtlsConfig};
 use crate::intent::{Intent, IntentProfile, IntentSession};
 use crate::node::NodeClient;
 use crate::proxy::ProxyClient;
-use crate::Error;
 
 /// Unified facade for nucleus services.
 ///
@@ -208,9 +208,10 @@ mod tests {
             Err(e) => e,
             Ok(_) => unreachable!(),
         };
-        assert!(err
-            .to_string()
-            .contains("at least one of proxy_url or node_url"));
+        assert!(
+            err.to_string()
+                .contains("at least one of proxy_url or node_url")
+        );
     }
 
     #[test]

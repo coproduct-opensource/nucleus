@@ -9,18 +9,18 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use axum::body::{to_bytes, Body};
+use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use ct_merkle::mem_backed_tree::MemoryBackedTree;
 use nucleus_lineage::{
-    ed25519_key_id, format_checkpoint_body, format_signature_line, Ed25519Witness, Policy,
-    SIG_TYPE_ED25519,
+    Ed25519Witness, Policy, SIG_TYPE_ED25519, ed25519_key_id, format_checkpoint_body,
+    format_signature_line,
 };
 use nucleus_witness::cosign::verify_cosign_line;
 use nucleus_witness::store::CosignedPosition;
 use nucleus_witness::{
-    app::build_app, decide, Decision, InMemoryStore, TrustedLogKey, WitnessKey, WitnessState,
+    Decision, InMemoryStore, TrustedLogKey, WitnessKey, WitnessState, app::build_app, decide,
 };
 use sha2::Sha256;
 use tower::ServiceExt; // for oneshot

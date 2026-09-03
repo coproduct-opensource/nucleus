@@ -36,7 +36,7 @@ use crate::ca::CaClient;
 use crate::certificate::{TrustBundle, WorkloadCertificate};
 use crate::identity::Identity;
 use crate::manager::SecretManager;
-use crate::tls::{server_name_from_trust_domain, TlsClientConfig, TlsServerConfig};
+use crate::tls::{TlsClientConfig, TlsServerConfig, server_name_from_trust_domain};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::path::Path;

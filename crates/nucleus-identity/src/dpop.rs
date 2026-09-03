@@ -62,8 +62,8 @@
 //! assert_eq!(claims.htm, "POST");
 //! ```
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair};
@@ -704,9 +704,11 @@ mod tests {
         let verifier = DpopVerifier::new();
 
         // Two parts (missing signature)
-        assert!(verifier
-            .verify("only.two", &jwk, "GET", "https://x.com")
-            .is_err());
+        assert!(
+            verifier
+                .verify("only.two", &jwk, "GET", "https://x.com")
+                .is_err()
+        );
 
         // Empty string
         assert!(verifier.verify("", &jwk, "GET", "https://x.com").is_err());

@@ -137,7 +137,7 @@ fn wrap_dsse(dsse: DsseEnvelope) -> SigstoreBundle {
 mod tests {
     use super::*;
     use crate::bundle::BundleBuilder;
-    use ed25519_dalek::{Signer as Ed25519Signer, SigningKey, SECRET_KEY_LENGTH};
+    use ed25519_dalek::{SECRET_KEY_LENGTH, Signer as Ed25519Signer, SigningKey};
     use nucleus_lineage::{
         CallSpiffeId, EdgeKind, InMemorySink, IssuerError, Jwks, LineageEdge, LineageSink,
     };
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn slsa_bundle_dsse_envelope_carries_slsa_statement() {
-        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
         let signer = TestSigner::new("kid");
         let b = fixture_bundle().to_sigstore_bundle_slsa(&signer).unwrap();
         let payload_bytes = B64.decode(&b.dsse_envelope.payload).unwrap();
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn intoto_bundle_dsse_envelope_carries_nucleus_statement() {
-        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
         let signer = TestSigner::new("kid");
         let b = fixture_bundle().to_sigstore_bundle_intoto(&signer).unwrap();
         let payload_bytes = B64.decode(&b.dsse_envelope.payload).unwrap();

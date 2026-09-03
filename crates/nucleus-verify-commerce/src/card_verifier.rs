@@ -1,7 +1,7 @@
 //! [`AgentCardVerifier`] — verify a signed A2A v1.0 Agent Card.
 
 use async_trait::async_trait;
-use nucleus_agent_card::{verify_card_json, JsonWebKey};
+use nucleus_agent_card::{JsonWebKey, verify_card_json};
 
 use crate::{CallerClaims, CallerVerifier, CommerceError, VerifiedCaller};
 
@@ -57,14 +57,14 @@ impl CallerVerifier for AgentCardVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use nucleus_agent_card::{
-        sign_card, AgentCapabilities, AgentCard, AgentInterface, NucleusClaims,
-        A2A_PROTOCOL_VERSION,
+        A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCard, AgentInterface, NucleusClaims,
+        sign_card,
     };
     use ring::rand::SystemRandom;
-    use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
 
     /// Fresh P-256 keypair: (PKCS#8 DER, matching public JWK).
     fn p256_keypair() -> (Vec<u8>, JsonWebKey) {

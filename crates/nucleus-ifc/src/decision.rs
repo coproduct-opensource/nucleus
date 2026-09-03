@@ -511,9 +511,10 @@ mod tests {
     #[test]
     fn certify_carries_backing_theorem_and_honest_scope() {
         let cert = FlowDeclaration::new([DeclaredInput::UserPrompt]).certify();
-        assert!(cert
-            .backed_by_theorem
-            .contains("integrity_sink_never_admitted"));
+        assert!(
+            cert.backed_by_theorem
+                .contains("integrity_sink_never_admitted")
+        );
         assert_eq!(
             cert.proof_scope.integrity_axis,
             ProofStatus::ExtractedKernelChecked
@@ -804,9 +805,9 @@ mod tests {
     /// `imeet` (the `irun_step` the D1 unwinding theorem inducts over). Egress is
     /// integrity-admitted iff the result is at least `Untrusted` (not `Adversarial`).
     fn extracted_integrity_admits(inputs: &[DeclaredInput]) -> bool {
+        use portcullis_core::IntegLevel;
         use portcullis_core::extracted::ifc_integrity as ext;
         use portcullis_core::flow::intrinsic_label;
-        use portcullis_core::IntegLevel;
 
         fn to_ext(i: IntegLevel) -> ext::IntegLevel {
             match i {

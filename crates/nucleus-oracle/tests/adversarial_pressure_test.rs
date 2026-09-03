@@ -15,7 +15,7 @@
 //! * a NONDETERMINISTIC submission is structurally QUARANTINED by the k-of-n
 //!   determinism gate and mints zero load-bearing credit.
 
-use nucleus_oracle::{grade, grade_rubric_inputs, GradingBundle, QuarantineReason};
+use nucleus_oracle::{GradingBundle, QuarantineReason, grade, grade_rubric_inputs};
 
 fn load(name: &str) -> GradingBundle {
     let path = format!(

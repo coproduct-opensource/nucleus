@@ -27,8 +27,8 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use nucleus_lineage::{
-    edge_content_hash, verify_chain, Ed25519Witness, InclusionProof, Jwks, LineageEdge, RootHash,
-    VerifyError,
+    Ed25519Witness, InclusionProof, Jwks, LineageEdge, RootHash, VerifyError, edge_content_hash,
+    verify_chain,
 };
 use sha2::Sha256;
 use thiserror::Error;
@@ -1090,12 +1090,12 @@ fn verify_merkle_anchor(
                 if matched_witnesses.contains(trusted) {
                     continue;
                 }
-                if let Ok(vk) = VerifyingKey::from_bytes(trusted) {
-                    if vk.verify_strict(signed_bytes, &sig).is_ok() {
-                        matched_witnesses.insert(*trusted);
-                        matched_this_cosig = true;
-                        break;
-                    }
+                if let Ok(vk) = VerifyingKey::from_bytes(trusted)
+                    && vk.verify_strict(signed_bytes, &sig).is_ok()
+                {
+                    matched_witnesses.insert(*trusted);
+                    matched_this_cosig = true;
+                    break;
                 }
             }
             // HIGH-2 diagnostic: a C2SP-kind cosig that didn't match

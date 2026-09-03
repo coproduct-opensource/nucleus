@@ -6,8 +6,8 @@
 //! When the `otel` feature is active, spans flow to OTLP backends as
 //! proper OpenTelemetry spans with parent-child relationships.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use portcullis::trace_monitor::TraceMonitor;
 use portcullis::verdict_sink::{
@@ -325,11 +325,7 @@ impl VerdictSink for ToolProxyVerdictSink {
         // allowed (see the `dlc_provisioned` field docs for why that implies
         // the credential check passed); otherwise the span says so honestly.
         let dlc_admission = if self.dlc_provisioned {
-            if is_ok {
-                "admitted"
-            } else {
-                "not-admitted"
-            }
+            if is_ok { "admitted" } else { "not-admitted" }
         } else {
             "unprovisioned"
         };

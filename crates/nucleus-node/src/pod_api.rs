@@ -10,8 +10,8 @@
 //! Nothing about the behaviour changes in this move.
 
 use crate::{ApiError, NodeState, PodHandle, PodInfo};
-use axum::extract::{Extension, Path as AxumPath, State};
 use axum::Json;
+use axum::extract::{Extension, Path as AxumPath, State};
 use std::sync::Arc;
 use uuid::Uuid;
 

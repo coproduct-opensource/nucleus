@@ -3,8 +3,8 @@ use super::*;
 // unit tests use it as a concise fixture vehicle. The tool-proxy no longer wires
 // it into AppState (Phase 2 retirement), so import it directly here.
 use crate::mediation::kernel_denial_to_api_error;
-use nucleus::portcullis::kernel::DenyReason;
 use nucleus::portcullis::FlowTracker;
+use nucleus::portcullis::kernel::DenyReason;
 
 #[test]
 fn test_rate_limiter_allows_burst() {
@@ -758,7 +758,7 @@ mod ingest_content_address {
 /// that code; GREEN now (pinned-key + fail-closed).
 #[test]
 fn approval_bundle_requires_pinned_trusted_key_not_header_self_trust() {
-    use nucleus_identity::approval_bundle::{compute_manifest_hash, ApprovalBundleBuilder};
+    use nucleus_identity::approval_bundle::{ApprovalBundleBuilder, compute_manifest_hash};
 
     let spec = "pod: spec yaml";
     let manifest_hash = compute_manifest_hash(spec.as_bytes());

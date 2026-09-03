@@ -57,7 +57,7 @@ pub trait IdentityFetcher: Send + Sync {
     /// returned string is a compact JWS (three base64url segments separated
     /// by `.`).
     fn fetch_jwt_svid(&self, subject: &CallSpiffeId, audience: &str)
-        -> Result<String, IssuerError>;
+    -> Result<String, IssuerError>;
 
     /// Optional kind hint; defaults to `None`. Issuers may attach this to
     /// the `nucleus_kind` claim.

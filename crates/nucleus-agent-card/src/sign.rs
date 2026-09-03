@@ -11,8 +11,8 @@
 //! wire placement. The protected header carries `alg`, `typ: "JOSE"` and
 //! `kid` as §8.4.2 requires.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use crate::card::{AgentCard, AgentCardSignature};
 use crate::jcs::canonicalize;

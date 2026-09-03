@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use nucleus_identity::ca::CaClient;
 use nucleus_identity::manager::SecretManager;
-use nucleus_identity::spiffe_workload_api::{serve_uds, SpiffeWorkloadApiService};
+use nucleus_identity::spiffe_workload_api::{SpiffeWorkloadApiService, serve_uds};
 use nucleus_identity::{Identity, SelfSignedCa};
 
 async fn start_server(sock: &std::path::Path) -> Identity {

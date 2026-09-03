@@ -36,8 +36,8 @@ use sha2::Digest;
 
 use crate::bundle::Bundle;
 use crate::interop::in_toto::{
-    DsseEnvelope, InTotoError, ResourceDescriptor, Statement, IN_TOTO_STATEMENT_TYPE,
-    NUCLEUS_SUBJECT_NAME,
+    DsseEnvelope, IN_TOTO_STATEMENT_TYPE, InTotoError, NUCLEUS_SUBJECT_NAME, ResourceDescriptor,
+    Statement,
 };
 
 /// SLSA Provenance v1 predicate type URI.
@@ -240,7 +240,7 @@ impl Bundle {
             &[&statement_bytes],
         );
         let signature = signer.sign(&pae)?;
-        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
         Ok(DsseEnvelope {
             payload_type: super::in_toto::DSSE_INTOTO_PAYLOAD_TYPE.to_string(),
             payload: B64.encode(&statement_bytes),
@@ -264,7 +264,7 @@ fn sha256_digest_from_spiffe_uri(uri: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::bundle::BundleBuilder;
-    use ed25519_dalek::{Signer as Ed25519Signer, SigningKey, SECRET_KEY_LENGTH};
+    use ed25519_dalek::{SECRET_KEY_LENGTH, Signer as Ed25519Signer, SigningKey};
     use nucleus_lineage::{
         CallSpiffeId, EdgeKind, InMemorySink, IssuerError, Jwks, LineageEdge, LineageSink,
     };
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn slsa_dsse_signature_verifies() {
-        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
         let signer = TestSigner::new();
         let env = fixture_bundle().to_slsa_dsse(&signer).unwrap();
         let payload_bytes = B64.decode(&env.payload).unwrap();

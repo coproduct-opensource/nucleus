@@ -22,9 +22,9 @@
 //! see only `error: "server_error"`, never internal state.
 
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -245,10 +245,12 @@ mod tests {
         )
         .await;
         assert_eq!(v["error"], "unsupported_grant_type");
-        assert!(v["error_description"]
-            .as_str()
-            .unwrap_or("")
-            .contains("authorization_code"));
+        assert!(
+            v["error_description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("authorization_code")
+        );
     }
 
     #[tokio::test]

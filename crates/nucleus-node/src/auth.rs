@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::HeaderMap;
-use hmac::{digest::KeyInit, Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use sha2::Sha256;
 use tonic::metadata::MetadataMap;
 use tracing::warn;

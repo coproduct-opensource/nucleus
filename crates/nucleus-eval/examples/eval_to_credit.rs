@@ -6,8 +6,8 @@
 
 use nucleus_creditworthiness::Polarity;
 use nucleus_eval::{
-    credit_file_from_runs, mint_event, receipt_hash_hex, Attested, DeterministicCheck, EvalCase,
-    EvalRun,
+    Attested, DeterministicCheck, EvalCase, EvalRun, credit_file_from_runs, mint_event,
+    receipt_hash_hex,
 };
 
 /// Build a run whose recorded cases genuinely yield `produced_passes` of `total`,

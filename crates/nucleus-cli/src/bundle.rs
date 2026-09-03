@@ -21,15 +21,15 @@
 //!
 //! [`Bundle`]: nucleus_envelope::Bundle
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use iroh::{endpoint::presets, protocol::Router, Endpoint};
-use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobFormat, BlobsProtocol};
+use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use iroh_blobs::{BlobFormat, BlobsProtocol, store::mem::MemStore, ticket::BlobTicket};
 
-use nucleus_bundle_cas::{fetch_bundle, publish_bundle, BundleHash};
+use nucleus_bundle_cas::{BundleHash, fetch_bundle, publish_bundle};
 use nucleus_envelope::Bundle;
 
 use crate::envelope_verify::{trust_anchor_from_jwks_file, verify_and_report};

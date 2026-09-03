@@ -15,9 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nucleus_lineage::{
-    canonical_sth_bytes, checkpoint_signed_bytes, ed25519_key_id, format_signature_line,
-    parse_signature_line, C2spHttpWitnessClient, Cosignature, CosignatureKind, Ed25519Witness,
-    SignedTreeHead, TreeWitness, WitnessClient, SIG_LINE_PREFIX, SIG_TYPE_ED25519,
+    C2spHttpWitnessClient, Cosignature, CosignatureKind, Ed25519Witness, SIG_LINE_PREFIX,
+    SIG_TYPE_ED25519, SignedTreeHead, TreeWitness, WitnessClient, canonical_sth_bytes,
+    checkpoint_signed_bytes, ed25519_key_id, format_signature_line, parse_signature_line,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
@@ -82,7 +82,7 @@ impl Respond for C2spWitnessHandler {
             None => return ResponseTemplate::new(400).set_body_string("missing tree size"),
         };
         let root_bytes = match root_b64.and_then(|b| {
-            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
             STANDARD.decode(b).ok()
         }) {
             Some(b) if b.len() == 32 => {
@@ -559,7 +559,7 @@ impl wiremock::Respond for C2spStatefulHandler {
             None => return wiremock::ResponseTemplate::new(400).set_body_string("no origin"),
         };
         let size = size.unwrap_or(0);
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
         let root_bytes: [u8; 32] = match root_b64.and_then(|b| STANDARD.decode(b).ok()) {
             Some(b) if b.len() == 32 => {
                 let mut arr = [0u8; 32];
@@ -773,7 +773,7 @@ async fn c2sp_stateful_client_recovers_from_409_with_retry() {
             let o = origin_seen.unwrap();
             assert_eq!(o, self.origin);
             let s = size.unwrap();
-            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
             let rb = root_b64.unwrap();
             let raw = STANDARD.decode(rb).unwrap();
             let mut root = [0u8; 32];
@@ -961,7 +961,7 @@ async fn c2sp_concurrent_cosigns_serialize_without_spurious_409() {
                 return wiremock::ResponseTemplate::new(404).set_body_string("origin");
             }
             let s = size.unwrap();
-            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
             let rb = root_b64.unwrap();
             let raw = STANDARD.decode(rb).unwrap();
             let mut root = [0u8; 32];

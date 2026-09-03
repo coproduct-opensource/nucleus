@@ -32,8 +32,8 @@ use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::assurance::{assess_rung, AssuranceRung};
-use crate::claim::{verify_claim, ClaimError, SignedExternalityClaim};
+use crate::assurance::{AssuranceRung, assess_rung};
+use crate::claim::{ClaimError, SignedExternalityClaim, verify_claim};
 use crate::dim::ResourceDim;
 
 /// TEE vendor whose quote format applies. The vendor selects the
@@ -408,13 +408,15 @@ mod tests {
             envelope: fixture_envelope(1_000),
         };
         let vk = oracle_sk().verifying_key();
-        assert!(verify_vca_claim_rung(
-            &vca,
-            &vk,
-            "spiffe://nucleus.io/ns/agents/sa/a1",
-            1_700_000_000_000_001,
-        )
-        .is_err());
+        assert!(
+            verify_vca_claim_rung(
+                &vca,
+                &vk,
+                "spiffe://nucleus.io/ns/agents/sa/a1",
+                1_700_000_000_000_001,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -444,9 +446,10 @@ mod tests {
         let mut reg = OracleRegistry::new();
         let vk = oracle_sk().verifying_key();
         assert!(reg.is_empty());
-        assert!(reg
-            .register(ResourceDim::GpuSeconds, "gpu-oracle", vk)
-            .is_none());
+        assert!(
+            reg.register(ResourceDim::GpuSeconds, "gpu-oracle", vk)
+                .is_none()
+        );
         assert_eq!(reg.len(), 1);
         let got = reg.lookup(ResourceDim::GpuSeconds, "gpu-oracle").unwrap();
         assert_eq!(got.as_bytes(), vk.as_bytes());
@@ -458,9 +461,10 @@ mod tests {
         let vk = oracle_sk().verifying_key();
         reg.register(ResourceDim::GpuSeconds, "gpu-oracle", vk);
         // Wrong dim — different (dim, kid) key.
-        assert!(reg
-            .lookup(ResourceDim::GridCarbonGramsCo2, "gpu-oracle")
-            .is_none());
+        assert!(
+            reg.lookup(ResourceDim::GridCarbonGramsCo2, "gpu-oracle")
+                .is_none()
+        );
         // Wrong kid.
         assert!(reg.lookup(ResourceDim::GpuSeconds, "other-kid").is_none());
     }

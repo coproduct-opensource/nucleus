@@ -22,10 +22,10 @@
 
 use ed25519_dalek::SigningKey;
 use nucleus_econ_kernels::{
-    compute_commitment, run_vcg, run_vcg_with_externalities, verify_reveal, BidOpening, IntegerBid,
-    IntegerProposal, PigouvianRates,
+    BidOpening, IntegerBid, IntegerProposal, PigouvianRates, compute_commitment, run_vcg,
+    run_vcg_with_externalities, verify_reveal,
 };
-use nucleus_externality::{sign_claim, ExternalityProfile, ResourceDim, SignedExternalityClaim};
+use nucleus_externality::{ExternalityProfile, ResourceDim, SignedExternalityClaim, sign_claim};
 use proptest::prelude::*;
 
 const CHAIN_ID: u64 = 8453; // Base mainnet chain id, as a domain tag

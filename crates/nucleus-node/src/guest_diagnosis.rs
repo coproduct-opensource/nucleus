@@ -58,8 +58,7 @@ struct Signature {
 const SIGNATURES: &[Signature] = &[
     Signature {
         marker: "missing approval secret",
-        explanation:
-            "the guest rootfs PREDATES this node. #2214 (2026-08-08) replaced the guest's \
+        explanation: "the guest rootfs PREDATES this node. #2214 (2026-08-08) replaced the guest's \
              shared approval secret with Ed25519 verification against the node's public key, \
              so this node sends `nucleus.approval_pubkeys` and no longer sends \
              `nucleus.approval_secret` — which this rootfs's guest-init still requires. \
@@ -89,8 +88,7 @@ const SIGNATURES: &[Signature] = &[
     // Least specific: always present when init dies, so it must sort last.
     Signature {
         marker: "Attempted to kill init",
-        explanation:
-            "PID 1 exited, so the guest kernel panicked. The lines immediately above this \
+        explanation: "PID 1 exited, so the guest kernel panicked. The lines immediately above this \
              in the console are the actual cause.",
     },
 ];

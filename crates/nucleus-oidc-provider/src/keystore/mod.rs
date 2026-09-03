@@ -184,9 +184,11 @@ mod tests {
         // No padding character.
         assert!(!kid_a.contains('='));
         // URL-safe alphabet only.
-        assert!(kid_a
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(
+            kid_a
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
     }
 
     #[test]

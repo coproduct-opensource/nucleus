@@ -2,7 +2,7 @@
 //!
 //! Cleanly shuts down nucleus-node and related services.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use std::process::Command;
 

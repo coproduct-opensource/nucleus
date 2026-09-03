@@ -314,7 +314,7 @@ fn derive_kid(verifying_key: &VerifyingKey) -> String {
     let mut h = Sha256::new();
     h.update(verifying_key.as_bytes());
     let digest = h.finalize();
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     URL_SAFE_NO_PAD.encode(&digest[..12])
 }
 
@@ -329,7 +329,7 @@ fn hex_decode_32(hex_str: &str) -> Option<[u8; 32]> {
 }
 
 mod base64_bytes {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(v: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {

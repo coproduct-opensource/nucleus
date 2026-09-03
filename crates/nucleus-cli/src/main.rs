@@ -19,7 +19,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::info;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod audit;
 mod bundle;

@@ -492,22 +492,20 @@ fn check_secrets() -> bool {
         );
 
         // Check rotation status
-        if exists {
-            if let Ok(Some(metadata)) = keychain::MetadataStore::get(*kind) {
-                let days = metadata.days_until_rotation();
-                if days <= 0 {
-                    print_check(
-                        &format!("  {} rotation", kind.account_name()),
-                        Status::Warning,
-                        "overdue",
-                    );
-                } else if days <= 14 {
-                    print_check(
-                        &format!("  {} rotation", kind.account_name()),
-                        Status::Warning,
-                        &format!("due in {} days", days),
-                    );
-                }
+        if exists && let Ok(Some(metadata)) = keychain::MetadataStore::get(*kind) {
+            let days = metadata.days_until_rotation();
+            if days <= 0 {
+                print_check(
+                    &format!("  {} rotation", kind.account_name()),
+                    Status::Warning,
+                    "overdue",
+                );
+            } else if days <= 14 {
+                print_check(
+                    &format!("  {} rotation", kind.account_name()),
+                    Status::Warning,
+                    &format!("due in {} days", days),
+                );
             }
         }
     }

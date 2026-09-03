@@ -430,12 +430,12 @@ fn enable() -> Result<()> {
 
 fn which_hook() -> Result<PathBuf> {
     // Check same directory as nucleus binary
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join(crate::constants::HOOK_BINARY_NAME);
-            if sibling.exists() {
-                return Ok(sibling);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let sibling = dir.join(crate::constants::HOOK_BINARY_NAME);
+        if sibling.exists() {
+            return Ok(sibling);
         }
     }
 
@@ -443,12 +443,11 @@ fn which_hook() -> Result<PathBuf> {
     if let Ok(output) = std::process::Command::new("which")
         .arg(crate::constants::HOOK_BINARY_NAME)
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
-            }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Ok(PathBuf::from(path));
         }
     }
 
@@ -493,31 +492,31 @@ fn status() -> Result<()> {
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
 
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                let ops = json
-                    .get("allowed_ops")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                let flow_obs = json
-                    .get("flow_observations")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                let profile = json
-                    .get("profile")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
+        if let Ok(content) = fs::read_to_string(&path)
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+        {
+            let ops = json
+                .get("allowed_ops")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let flow_obs = json
+                .get("flow_observations")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let profile = json
+                .get("profile")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
 
-                println!(
-                    "  {} — profile: {}, ops: {}, flow nodes: {}",
-                    &session_id[..8.min(session_id.len())],
-                    profile,
-                    ops,
-                    flow_obs
-                );
-            }
+            println!(
+                "  {} — profile: {}, ops: {}, flow nodes: {}",
+                &session_id[..8.min(session_id.len())],
+                profile,
+                ops,
+                flow_obs
+            );
         }
     }
 

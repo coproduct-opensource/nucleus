@@ -26,7 +26,7 @@
 //! conservation violation, green otherwise), one less dependency on
 //! the substrate's build closure.
 
-use nucleus_econ_kernels::{run_vcg, IntegerBid, IntegerProposal};
+use nucleus_econ_kernels::{IntegerBid, IntegerProposal, run_vcg};
 
 /// Number of random VCG clearings to exercise. The acceptance ask
 /// is 10_000 fixtures; we hold that line in the loop bound below.

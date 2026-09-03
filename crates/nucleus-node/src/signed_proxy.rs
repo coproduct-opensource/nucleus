@@ -2,16 +2,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::body::{to_bytes, Body};
+use axum::Router;
+use axum::body::{Body, to_bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::any;
-use axum::Router;
 use http_body_util::{BodyExt, Full};
+use hyper::Request;
 use hyper::body::Incoming;
 use hyper::client::conn::http1;
-use hyper::Request;
 use hyper_util::rt::TokioIo;
 use nucleus_client::drand::{DrandClient, DrandConfig, DrandFailMode};
 use tokio::net::{TcpListener, TcpStream};
@@ -225,7 +225,9 @@ async fn proxy_handler(
                             // Cached mode fallback: the DrandClient already tried to use
                             // its cache, so if we're here, the cache is too old.
                             // We fall back to non-drand signing as a last resort.
-                            warn!("drand unavailable and cache expired, falling back to non-anchored signing: {e}");
+                            warn!(
+                                "drand unavailable and cache expired, falling back to non-anchored signing: {e}"
+                            );
                             (sign_approval(None), None)
                         }
                     }
@@ -430,9 +432,10 @@ mod tests {
         let sig_hex = hex::encode(key.sign(&message).to_bytes());
         let sig_bytes: [u8; 64] = hex::decode(&sig_hex).unwrap().try_into().unwrap();
         let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-        assert!(key
-            .verifying_key()
-            .verify_strict(&message, &signature)
-            .is_ok());
+        assert!(
+            key.verifying_key()
+                .verify_strict(&message, &signature)
+                .is_ok()
+        );
     }
 }

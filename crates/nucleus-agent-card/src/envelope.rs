@@ -172,12 +172,12 @@ pub fn card_claims_from_projection(projection: &Projection) -> Result<CardClaims
         Some(other) => {
             return Err(NarrowError::NotAgentCard {
                 found: other.to_string(),
-            })
+            });
         }
         None => {
             return Err(NarrowError::NotAgentCard {
                 found: "<missing>".to_string(),
-            })
+            });
         }
     }
     let card = body
@@ -190,8 +190,8 @@ pub fn card_claims_from_projection(projection: &Projection) -> Result<CardClaims
 mod tests {
     use super::*;
     use crate::card::{
-        AgentCapabilities, AgentCard, AgentInterface, EnforcementRule, NucleusClaims,
-        A2A_PROTOCOL_VERSION,
+        A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCard, AgentInterface, EnforcementRule,
+        NucleusClaims,
     };
 
     fn sample_profile() -> RuntimeGuaranteeProfile {

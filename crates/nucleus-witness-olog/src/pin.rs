@@ -34,12 +34,12 @@
 //! fact's content (that is the witness/recompute layer). It is the relying-party
 //! half of the CT/Sigstore model, stated without overclaim.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ct_merkle::{ConsistencyProof, InclusionProof, RootHash};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use sha2::digest::Output;
 use sha2::Sha256;
+use sha2::digest::Output;
 use thiserror::Error;
 
 /// Domain tag for a checkpoint's canonical signing bytes (versioned).

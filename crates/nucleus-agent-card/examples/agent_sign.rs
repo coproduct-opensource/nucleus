@@ -14,15 +14,15 @@
 //! `nucleus-fly-oidc`); the signing + verification are identical. The profile is
 //! ATTESTATION, not enforcement — see `RuntimeGuaranteeProfile`.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::SystemRandom;
-use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
 
 use nucleus_agent_card::{
-    sign_card, verify_card, AgentCapabilities, AgentCard, AgentInterface, EnforcementRule,
-    JsonWebKey, NucleusClaims, RuntimeGuaranteeProfile, A2A_PROTOCOL_VERSION,
-    NUCLEUS_EXTENSION_URI,
+    A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCard, AgentInterface, EnforcementRule,
+    JsonWebKey, NUCLEUS_EXTENSION_URI, NucleusClaims, RuntimeGuaranteeProfile, sign_card,
+    verify_card,
 };
 use nucleus_lineage::{Jwks, LocalIssuer};
 

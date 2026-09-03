@@ -9,7 +9,7 @@
 //! - Audit logging for credential access
 
 #[cfg_attr(target_os = "macos", allow(unused_imports))]
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

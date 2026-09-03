@@ -12,7 +12,7 @@
 //! the corresponding properties of `concat` on receipt batches.
 
 use nucleus_oracle::{
-    summarize, CountPair, GradeReceipt, KofN, PortfolioSummary, QuarantineReason,
+    CountPair, GradeReceipt, KofN, PortfolioSummary, QuarantineReason, summarize,
 };
 
 /// Contract fixture (verbatim from CONTRACT.md).
@@ -167,7 +167,7 @@ fn permille_recomputed_not_averaged() {
     // use asymmetric totals.
     let a = summarize(&[receipt("a0", 1, 10, false)]); // 100 permille
     let b = summarize(&[receipt("b0", 990, 1000, false)]); // 990 permille
-                                                           // averaged permille would be 545; pooled = floor(1000*991/1010) = 981.
+    // averaged permille would be 545; pooled = floor(1000*991/1010) = 981.
     let merged = a.merge(&b);
     let pooled = summarize(&[receipt("a0", 1, 10, false), receipt("b0", 990, 1000, false)]);
     assert_eq!(

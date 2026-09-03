@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::body::{to_bytes, Body};
+use axum::body::{Body, to_bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{middleware, Json, Router};
+use axum::{Json, Router, middleware};
 use clap::Parser;
 use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeTraceLink};
 use nucleus::portcullis::kernel::{DecisionToken, Kernel};
@@ -67,7 +67,7 @@ use auth::{AuthConfig, AuthError};
 use base64::Engine as _;
 use mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
-use nucleus_identity::approval_bundle::{compute_manifest_hash, ApprovalBundleVerifier};
+use nucleus_identity::approval_bundle::{ApprovalBundleVerifier, compute_manifest_hash};
 use policy::PolicyEngine;
 
 #[derive(Parser, Debug)]
@@ -1283,7 +1283,7 @@ impl IntoResponse for ApiError {
             }
             ApiError::Escalation(_) => (StatusCode::FORBIDDEN, "escalation_denied", None, None),
             ApiError::Validation(_) => (StatusCode::BAD_REQUEST, "validation_error", None, None),
-            ApiError::PermissionDenied(ref info) => (
+            ApiError::PermissionDenied(info) => (
                 StatusCode::PAYMENT_REQUIRED,
                 "permission_denied",
                 None,
@@ -1332,10 +1332,10 @@ fn console_line(msg: &str) {
     use std::io::Write;
     let line = format!("{msg}\n");
     for dev in ["/dev/kmsg", "/dev/console"] {
-        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(dev) {
-            if f.write_all(line.as_bytes()).is_ok() {
-                return;
-            }
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(dev)
+            && f.write_all(line.as_bytes()).is_ok()
+        {
+            return;
         }
     }
     eprint!("{line}");
@@ -1431,15 +1431,15 @@ async fn main() -> Result<(), ApiError> {
     // The node-auth secret defaults to `auth_secret` when unset, but an explicitly
     // provided EMPTY `--node-auth-secret` would be a world-known key for node
     // requests — refuse it too (fail-closed).
-    if let Some(ref node_secret) = args.node_auth_secret {
-        if node_secret.trim().is_empty() {
-            error!(
-                "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET is empty — refusing to start: an empty HMAC \
+    if let Some(ref node_secret) = args.node_auth_secret
+        && node_secret.trim().is_empty()
+    {
+        error!(
+            "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET is empty — refusing to start: an empty HMAC \
                  key makes node request auth forgeable (fail-closed). Unset it to inherit \
                  the main auth secret instead."
-            );
-            std::process::exit(1);
-        }
+        );
+        std::process::exit(1);
     }
 
     // === Sandbox Proof Gate ===
@@ -2467,34 +2467,35 @@ async fn auth_middleware(
     };
 
     // If the bid was fully denied (no dimensions granted), return 402 with pricing
-    if let Some(ref grant) = permission_grant {
-        if !grant.denied.is_empty() && grant.granted.is_empty() {
-            let total_price: f64 = grant.denied.iter().map(|d| d.price).sum();
-            let denied_dims = grant
-                .denied
-                .iter()
-                .map(|d| nucleus_spec::DeniedDimensionInfo {
-                    dimension: d.dimension.label().to_string(),
-                    price_usd: d.price,
-                })
-                .collect();
-            let reason = grant
-                .denied
-                .iter()
-                .map(|d| format!("{} λ={:.2}", d.dimension.label(), d.price))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let payment_info = nucleus_spec::PaymentRequiredInfo {
-                amount_usd: total_price,
-                reason,
-                kind: nucleus_spec::PaymentRequiredKind::PermissionDenied {
-                    denied_dimensions: denied_dims,
-                },
-                recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
-                resource: Some(parts.uri.path().to_string()),
-            };
-            return Err(ApiError::PermissionDenied(payment_info));
-        }
+    if let Some(ref grant) = permission_grant
+        && !grant.denied.is_empty()
+        && grant.granted.is_empty()
+    {
+        let total_price: f64 = grant.denied.iter().map(|d| d.price).sum();
+        let denied_dims = grant
+            .denied
+            .iter()
+            .map(|d| nucleus_spec::DeniedDimensionInfo {
+                dimension: d.dimension.label().to_string(),
+                price_usd: d.price,
+            })
+            .collect();
+        let reason = grant
+            .denied
+            .iter()
+            .map(|d| format!("{} λ={:.2}", d.dimension.label(), d.price))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let payment_info = nucleus_spec::PaymentRequiredInfo {
+            amount_usd: total_price,
+            reason,
+            kind: nucleus_spec::PaymentRequiredKind::PermissionDenied {
+                denied_dimensions: denied_dims,
+            },
+            recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
+            resource: Some(parts.uri.path().to_string()),
+        };
+        return Err(ApiError::PermissionDenied(payment_info));
     }
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
@@ -2606,16 +2607,16 @@ fn evaluate_delegation_cert_with_identity(
     // CRITICAL SECURITY CHECK (Layer 1): If we have an authenticated identity (mTLS),
     // verify that the delegation certificate's leaf identity matches.
     // This prevents privilege escalation where agent-A presents agent-B's cert.
-    if let Some(spiffe_id) = authenticated_spiffe_id {
-        if verified.leaf_identity != spiffe_id {
-            tracing::warn!(
-                authenticated_id = %spiffe_id,
-                cert_leaf_id = %verified.leaf_identity,
-                event = "identity_mismatch_rejected",
-                "delegation cert leaf_identity does not match authenticated SPIFFE ID"
-            );
-            return None;
-        }
+    if let Some(spiffe_id) = authenticated_spiffe_id
+        && verified.leaf_identity != spiffe_id
+    {
+        tracing::warn!(
+            authenticated_id = %spiffe_id,
+            cert_leaf_id = %verified.leaf_identity,
+            event = "identity_mismatch_rejected",
+            "delegation cert leaf_identity does not match authenticated SPIFFE ID"
+        );
+        return None;
     }
 
     // Layer 3: Extract fused identity from X.509 permission fingerprint extension.
@@ -2629,10 +2630,10 @@ fn evaluate_delegation_cert_with_identity(
     let mut grant = market.evaluate_bid(&bid);
 
     // Layer 3: If fused identity present, verify fingerprint and elevate trust.
-    if let Some(ref mut fi) = fused {
-        if identity_fusion::verify_delegation_against_fingerprint(fi, &cert, &verified) {
-            grant = identity_fusion::elevate_grant_trust(&grant);
-        }
+    if let Some(ref mut fi) = fused
+        && identity_fusion::verify_delegation_against_fingerprint(fi, &cert, &verified)
+    {
+        grant = identity_fusion::elevate_grant_trust(&grant);
     }
 
     let effective = cert_bridge::intersect_grant_with_certificate(&grant, &verified);
@@ -3113,7 +3114,7 @@ async fn write_file(
                         _ => {
                             return Err(ApiError::IfcDenied(
                                 "approved write failed re-discharge".to_string(),
-                            ))
+                            ));
                         }
                     }
                 };
@@ -3243,22 +3244,22 @@ async fn run_command(
         }
         return Err(ApiError::Validation(e));
     }
-    if let Some(ref dir) = req.directory {
-        if let Err(e) = validation::validate_path(dir) {
-            if let Err(e) = sink.record(VerdictContext {
-                operation,
-                subject: display_command.clone(),
-                outcome: VerdictOutcome::Deny {
-                    reason: format!("validation: {e}"),
-                },
-                actor,
-                policy_rule: None,
-                extensions: BTreeMap::new(),
-            }) {
-                warn!(error = %e, "verdict recording failed -- audit gap");
-            }
-            return Err(ApiError::Validation(e));
+    if let Some(ref dir) = req.directory
+        && let Err(e) = validation::validate_path(dir)
+    {
+        if let Err(e) = sink.record(VerdictContext {
+            operation,
+            subject: display_command.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: format!("validation: {e}"),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
         }
+        return Err(ApiError::Validation(e));
     }
 
     // Kernel mediation + IFC flow consult — obtain DecisionToken for executor I/O.
@@ -3378,7 +3379,7 @@ async fn run_command(
                             _ => {
                                 return Err(ApiError::Body(
                                     "approved retry failed re-discharge".to_string(),
-                                ))
+                                ));
                             }
                         }
                     }),
@@ -4335,10 +4336,10 @@ pub(crate) fn deserialize_trace_chain(
         let mut trace_link = SpiffeTraceLink::new(&link.spiffe_id, permissions, link.drand_round)
             .with_reason(&link.reason);
 
-        if let Some(expires_at) = link.expires_at {
-            if let Some(dt) = Utc.timestamp_opt(expires_at as i64, 0).single() {
-                trace_link = trace_link.with_expiry(dt);
-            }
+        if let Some(expires_at) = link.expires_at
+            && let Some(dt) = Utc.timestamp_opt(expires_at as i64, 0).single()
+        {
+            trace_link = trace_link.with_expiry(dt);
         }
 
         // SECURITY: Log client-provided ID for audit but NEVER use it
@@ -4441,15 +4442,15 @@ async fn build_audit_log(
 
     // Ensure parent directory exists (e.g., /var/log/nucleus/ or the pod state dir).
     // Without this, the first write silently fails when the parent is missing.
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                ApiError::Spec(format!(
-                    "failed to create audit log directory {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            ApiError::Spec(format!(
+                "failed to create audit log directory {}: {e}",
+                parent.display()
+            ))
+        })?;
     }
 
     let secret = if let Some(secret) = args.audit_secret.as_ref() {
@@ -4558,7 +4559,7 @@ fn parse_and_verify_lockdown_signal(content: &str, current_state: bool) -> bool 
         whoami::username().unwrap_or_else(|_| "unknown".to_string()),
     );
 
-    use hmac::{digest::KeyInit, Hmac, Mac};
+    use hmac::{Hmac, Mac, digest::KeyInit};
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key_material.as_bytes()).expect("hmac");
     mac.update(body.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
@@ -4856,10 +4857,10 @@ mod panic_net_tests {
     //! must keep serving afterwards. Exercises the real `fail_closed_panic_response`
     //! handler behind the same OUTERMOST `CatchPanicLayer` wiring as the server.
     use super::fail_closed_panic_response;
+    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
-    use axum::Router;
     use tower::ServiceExt;
     use tower_http::catch_panic::CatchPanicLayer;
 

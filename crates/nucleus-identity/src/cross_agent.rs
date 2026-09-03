@@ -269,14 +269,18 @@ mod tests {
         // Integrity: min(Trusted, Trusted) = Trusted (both trusted)
         assert_eq!(exchange.joined_label.integrity, IntegLevel::Trusted);
         // Provenance: USER ∪ TOOL
-        assert!(exchange
-            .joined_label
-            .provenance
-            .contains(ProvenanceSet::USER));
-        assert!(exchange
-            .joined_label
-            .provenance
-            .contains(ProvenanceSet::TOOL));
+        assert!(
+            exchange
+                .joined_label
+                .provenance
+                .contains(ProvenanceSet::USER)
+        );
+        assert!(
+            exchange
+                .joined_label
+                .provenance
+                .contains(ProvenanceSet::TOOL)
+        );
         // Authority: min(Directive, Suggestive) = Suggestive
         assert_eq!(exchange.joined_label.authority, AuthorityLevel::Suggestive,);
         // Derivation: join(Deterministic, AIDerived) = AIDerived
@@ -318,10 +322,12 @@ mod tests {
         // Confidentiality: max(Internal, Public) = Internal
         assert_eq!(exchange.joined_label.confidentiality, ConfLevel::Internal,);
         // Provenance: USER ∪ EMPTY = USER
-        assert!(exchange
-            .joined_label
-            .provenance
-            .contains(ProvenanceSet::USER));
+        assert!(
+            exchange
+                .joined_label
+                .provenance
+                .contains(ProvenanceSet::USER)
+        );
     }
 
     #[test]

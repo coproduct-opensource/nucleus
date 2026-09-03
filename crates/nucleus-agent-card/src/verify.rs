@@ -47,8 +47,8 @@
 //! *attacker* supplied is "verified garbage": the math passes but it
 //! proves nothing about who the agent is.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use crate::card::{AgentCard, AgentCardSignature, NucleusClaims};
 use crate::jcs::canonicalize_received;
@@ -357,7 +357,7 @@ fn reject_unusable_jwks(jwks: &nucleus_lineage::Jwks) -> std::result::Result<(),
 mod tests {
     use super::*;
     use crate::card::{
-        AgentCapabilities, AgentCardSignature, AgentInterface, A2A_PROTOCOL_VERSION,
+        A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCardSignature, AgentInterface,
     };
 
     fn ed25519_jwks() -> nucleus_lineage::Jwks {

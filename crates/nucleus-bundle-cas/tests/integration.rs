@@ -5,16 +5,16 @@
 //! are the point: they prove a peer cannot substitute content, and that
 //! BLAKE3 transport-integrity is INDEPENDENT of envelope provenance.
 
-use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, RelayMode};
-use iroh_blobs::{store::mem::MemStore, BlobsProtocol};
+use iroh::{Endpoint, EndpointAddr, RelayMode, endpoint::presets, protocol::Router};
+use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
 
 use nucleus_bundle_cas::{
-    blake3_bundle_hash, fetch_bundle, publish_bundle, BundleHash, FetchError,
+    BundleHash, FetchError, blake3_bundle_hash, fetch_bundle, publish_bundle,
 };
-use nucleus_envelope::{verify_bundle, Bundle, BundleBuilder, TrustAnchor, VerifyBundleError};
+use nucleus_envelope::{Bundle, BundleBuilder, TrustAnchor, VerifyBundleError, verify_bundle};
 use nucleus_lineage::{
-    canonical_edge_bytes, edge_content_hash, CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink,
-    Jwks, LineageEdge, LineageSink, LocalIssuer, Proof,
+    CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink, Jwks, LineageEdge, LineageSink, LocalIssuer,
+    Proof, canonical_edge_bytes, edge_content_hash,
 };
 
 fn pod() -> CallSpiffeId {

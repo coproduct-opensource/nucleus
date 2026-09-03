@@ -8,8 +8,8 @@
 
 use std::collections::HashMap;
 
-use crate::proxy::ProxyClient;
 use crate::Error;
+use crate::proxy::ProxyClient;
 
 /// User-facing intent describing what an agent session will do.
 ///

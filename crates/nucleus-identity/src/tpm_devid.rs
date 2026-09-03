@@ -28,7 +28,7 @@ use crate::assurance::{
     AssuranceLevel, AttestedSubject, Claim, SvidAttestationBackend, VerifiedAttestation,
 };
 use crate::attestation::AttestationRequirements;
-use crate::{oid, Error, Result};
+use crate::{Error, Result, oid};
 use rustls::pki_types::{CertificateDer, UnixTime};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -113,10 +113,10 @@ fn parse_certify_attest(attest: &[u8]) -> Result<CertifyInfo> {
     }
     let qualified_signer = r.tpm2b()?.to_vec(); // TPM2B_NAME qualifiedSigner
     let _extra_data = r.tpm2b()?; // TPM2B_DATA extraData
-                                  // TPMS_CLOCK_INFO: clock(8) resetCount(4) restartCount(4) safe(1) = 17
+    // TPMS_CLOCK_INFO: clock(8) resetCount(4) restartCount(4) safe(1) = 17
     r.take(17)?;
     r.take(8)?; // UINT64 firmwareVersion
-                // TPMU_ATTEST (certify) = TPMS_CERTIFY_INFO { name, qualifiedName }
+    // TPMU_ATTEST (certify) = TPMS_CERTIFY_INFO { name, qualifiedName }
     let certified_name = r.tpm2b()?.to_vec();
     let _qualified_name = r.tpm2b()?;
     Ok(CertifyInfo {
@@ -164,7 +164,7 @@ fn parse_ecc_public(pub2b: &[u8]) -> Result<PublicKey> {
         }
     }
     let _curve_id = r.u16()?; // TPMI_ECC_CURVE
-                              // kdf: TPMT_KDF_SCHEME { scheme; [details] }
+    // kdf: TPMT_KDF_SCHEME { scheme; [details] }
     if r.u16()? != TPM_ALG_NULL {
         r.u16()?; // hash for the kdf
     }
@@ -617,7 +617,7 @@ pub fn make_credential_ecc(
     ak_name: &[u8],
     secret: &[u8],
 ) -> Result<CredentialChallenge> {
-    use ring::agreement::{agree_ephemeral, EphemeralPrivateKey, UnparsedPublicKey, ECDH_P256};
+    use ring::agreement::{ECDH_P256, EphemeralPrivateKey, UnparsedPublicKey, agree_ephemeral};
 
     if secret.len() > 32 {
         return Err(vfail("credential secret exceeds the SHA-256 digest size"));
@@ -762,7 +762,7 @@ pub fn compose_l2(
 
 #[cfg(test)]
 mod l2_composition_tests {
-    use super::{compose_l2, sha256_32, AkEkBound, EkIdentity};
+    use super::{AkEkBound, EkIdentity, compose_l2, sha256_32};
     use crate::assurance::{AssuranceLevel, AttestedSubject, Claim, VerifiedAttestation};
     use std::collections::BTreeSet;
 
@@ -920,7 +920,7 @@ mod credential_activation_tests {
 
 #[cfg(test)]
 mod ek_chain_tests {
-    use super::{verify_ek_chain, EkTrustStore};
+    use super::{EkTrustStore, verify_ek_chain};
     use rcgen::{
         BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     };
@@ -1245,7 +1245,7 @@ impl TpmDevidBackend {
             None if require_attestation => {
                 return Err(vfail(
                     "served SVID carries no TPM residency evidence (fail-closed)",
-                ))
+                ));
             }
             None => return Ok(None),
         };
@@ -1684,13 +1684,17 @@ mod tests {
     #[test]
     fn backend_fails_closed_when_evidence_absent() {
         let pem = build_cert(&point_of(&subj_pub()), None);
-        assert!(TpmDevidBackend
-            .verify_svid(&pem, &AttestationRequirements::any(), true)
-            .is_err());
-        assert!(TpmDevidBackend
-            .verify_svid(&pem, &AttestationRequirements::any(), false)
-            .expect("absent-not-required ok")
-            .is_none());
+        assert!(
+            TpmDevidBackend
+                .verify_svid(&pem, &AttestationRequirements::any(), true)
+                .is_err()
+        );
+        assert!(
+            TpmDevidBackend
+                .verify_svid(&pem, &AttestationRequirements::any(), false)
+                .expect("absent-not-required ok")
+                .is_none()
+        );
     }
 
     // ── Inc 2 (live floor): effective_assurance for a relying-party gate ───────

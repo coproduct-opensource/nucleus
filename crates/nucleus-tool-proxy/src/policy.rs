@@ -17,9 +17,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use portcullis::PermissionLattice;
 use portcullis::escalation::{EscalationPolicy, EscalationPolicySet};
 use portcullis::identity::{IdentityPolicy, IdentityPolicySet};
-use portcullis::PermissionLattice;
 use serde::{Deserialize, Serialize};
 
 /// Policy configuration loaded from YAML.
@@ -421,9 +421,11 @@ policies:
         let engine = PolicyEngine::from_config(&config);
 
         // No default set, so unmatched should return None
-        assert!(engine
-            .permissions_for("spiffe://nucleus.local/ns/dev/sa/coder-001")
-            .is_none());
+        assert!(
+            engine
+                .permissions_for("spiffe://nucleus.local/ns/dev/sa/coder-001")
+                .is_none()
+        );
     }
 
     #[test]
@@ -431,9 +433,11 @@ policies:
         let engine = PolicyEngine::disabled();
 
         // Should never return permissions when disabled
-        assert!(engine
-            .permissions_for("spiffe://nucleus.local/ns/default/sa/coder-001")
-            .is_none());
+        assert!(
+            engine
+                .permissions_for("spiffe://nucleus.local/ns/default/sa/coder-001")
+                .is_none()
+        );
         assert!(!engine.is_zero_prompt_enabled());
     }
 

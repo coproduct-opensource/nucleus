@@ -26,8 +26,8 @@ use nucleus_oidc_core::Jwks;
 /// `NUCLEUS_LINEAGE_KEY` (base64-encoded PKCS#8 DER). Returns `None` when
 /// neither is set (the caller then fails closed, or falls back under
 /// `insecure-dev`). Most-paranoid #6.
-fn load_production_signer(
-) -> Option<Result<nucleus_lineage::Pkcs8FileSigner, nucleus_lineage::IssuerError>> {
+fn load_production_signer()
+-> Option<Result<nucleus_lineage::Pkcs8FileSigner, nucleus_lineage::IssuerError>> {
     use nucleus_lineage::Pkcs8FileSigner;
     if let Ok(path) = std::env::var("NUCLEUS_LINEAGE_KEY_PEM") {
         return Some(Pkcs8FileSigner::from_pkcs8_pem_file(std::path::Path::new(

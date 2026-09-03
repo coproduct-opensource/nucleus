@@ -25,9 +25,9 @@ use std::sync::Arc;
 use base64::Engine as _;
 use ed25519_dalek::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
 use ed25519_dalek::{Signer as _, SigningKey};
-use hmac::{digest::KeyInit, Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use nucleus_spec::{PodSpec, PolicySpec};
-use portcullis::enforcement::{require_isolation, BackendCapability};
+use portcullis::enforcement::{BackendCapability, require_isolation};
 use portcullis::{IsolationLattice, PermissionLattice, TrustProfile};
 
 use serde::{Deserialize, Serialize};
@@ -759,7 +759,7 @@ pub struct ReceiptReport {
 // renderings that agree today break the first time either side gains a field —
 // and they break by rejecting authentic evidence, which is the worst direction.
 pub use portcullis::art12_record::{
-    art12_attestation_preimage, Art12Attestation, ART12_ATTESTATION_KIND,
+    ART12_ATTESTATION_KIND, Art12Attestation, art12_attestation_preimage,
 };
 
 /// Sign the Article 12 chain head with the executor key.
@@ -1310,10 +1310,11 @@ mod tests {
             "exec-1",
         );
         let bytes: [u8; 64] = hex::decode(&att.signature).unwrap().try_into().unwrap();
-        assert!(key
-            .verifying_key()
-            .verify(preimage.as_bytes(), &Signature::from_bytes(&bytes))
-            .is_ok());
+        assert!(
+            key.verifying_key()
+                .verify(preimage.as_bytes(), &Signature::from_bytes(&bytes))
+                .is_ok()
+        );
     }
 
     fn observed(head: &str, records: u64) -> crate::art12_collector::ObservedChain {
@@ -1854,9 +1855,10 @@ mod tests {
 
         // Signature must be 64 lowercase hex chars (32 bytes)
         assert_eq!(sig.len(), 64);
-        assert!(sig
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(
+            sig.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        );
 
         // Re-computing with the same inputs must yield the same signature (deterministic)
         let sig2 = hmac_sha256_hex(secret, body);

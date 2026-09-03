@@ -68,4 +68,4 @@ pub mod market;
 
 pub use bid::{DeniedDimension, PermissionBid, PermissionGrant};
 pub use dimension::{PermissionDimension, TrustTier};
-pub use market::{compute_lambda, DimensionState, PermissionConstraintState, PermissionMarket};
+pub use market::{DimensionState, PermissionConstraintState, PermissionMarket, compute_lambda};

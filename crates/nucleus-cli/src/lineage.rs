@@ -4,14 +4,14 @@
 //! and renders the parent-chain (or full subtree) of a target call ID in
 //! one of three formats: indented text (default), JSON, or Graphviz DOT.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Args, ValueEnum};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use nucleus_lineage::{
-    edge_content_hash, verify_proof, CallSpiffeId, JsonlSink, Jwks, LineageEdge, LineageSink,
-    VerifyError,
+    CallSpiffeId, JsonlSink, Jwks, LineageEdge, LineageSink, VerifyError, edge_content_hash,
+    verify_proof,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]

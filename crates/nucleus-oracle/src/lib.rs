@@ -84,7 +84,7 @@ use nucleus_eval::EvalCase;
 use nucleus_rubric::{Criterion, Provenance};
 
 mod summary;
-pub use summary::{summarize, PortfolioSummary};
+pub use summary::{PortfolioSummary, summarize};
 
 /// Versioned, domain-separated tag prefixed to the canonical receipt bytes before
 /// hashing — the `RECEIPT_DOMAIN` discipline re-applied from `nucleus-eval` /
@@ -882,21 +882,27 @@ mod tests {
         // No RecomputeVerified criterion at all — the gate refuses load-bearing
         // credit even though the recomputed pass-rate is perfect.
         assert!(!inputs.mints_load_bearing());
-        assert!(inputs
-            .dimensions()
-            .iter()
-            .all(|d| !d.criterion.provenance.is_load_bearing()));
+        assert!(
+            inputs
+                .dimensions()
+                .iter()
+                .all(|d| !d.criterion.provenance.is_load_bearing())
+        );
         // The exact-pass criterion id is absent.
         assert!(!inputs.criteria.iter().any(|c| c.id == CRITERION_EXACT_PASS));
         // The carried inert dimensions are still emitted.
-        assert!(inputs
-            .criteria
-            .iter()
-            .any(|c| c.id == CRITERION_MR_COVERAGE));
-        assert!(inputs
-            .criteria
-            .iter()
-            .any(|c| c.id == CRITERION_MUTATION_KILL));
+        assert!(
+            inputs
+                .criteria
+                .iter()
+                .any(|c| c.id == CRITERION_MR_COVERAGE)
+        );
+        assert!(
+            inputs
+                .criteria
+                .iter()
+                .any(|c| c.id == CRITERION_MUTATION_KILL)
+        );
         assert_eq!(inputs.quarantine, r.quarantine);
     }
 

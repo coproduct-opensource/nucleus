@@ -279,7 +279,10 @@ impl std::fmt::Display for Misalignment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Misalignment::UnmappedCriterion { a_id } => {
-                write!(f, "criterion {a_id} of A has no image in the translation map")
+                write!(
+                    f,
+                    "criterion {a_id} of A has no image in the translation map"
+                )
             }
             Misalignment::TargetCriterionMissing { a_id, b_id } => write!(
                 f,
@@ -603,7 +606,7 @@ mod tests {
         assert!(s.has_object("correctness"));
         assert!(s.has_object(ARTIFACT_OBJECT));
         assert_eq!(s.objects.len(), 4); // 3 criteria + Artifact
-                                        // grade_of:correctness : correctness → Artifact
+        // grade_of:correctness : correctness → Artifact
         assert_eq!(
             s.morphism_endpoints("grade_of:correctness"),
             Some(("correctness", ARTIFACT_OBJECT))

@@ -22,13 +22,13 @@ mod spire;
 pub use self_signed::SelfSignedCa;
 #[cfg(feature = "spire")]
 pub use spire::{
-    auto_detect_ca, auto_detect_ca_strict, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV,
+    DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV, SpireCaClient, auto_detect_ca, auto_detect_ca_strict,
 };
 
+use crate::Result;
 use crate::attestation::LaunchAttestation;
 use crate::certificate::WorkloadCertificate;
 use crate::identity::Identity;
-use crate::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;

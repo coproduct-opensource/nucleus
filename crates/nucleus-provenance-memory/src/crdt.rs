@@ -22,7 +22,7 @@ use portcullis_core::memory::MemoryLabel;
 
 use crate::hash::ContentHash;
 use crate::recompute::{
-    conf_join, integ_meet, verify_admission, RecomputeMemory, RecomputeVerdict,
+    RecomputeMemory, RecomputeVerdict, conf_join, integ_meet, verify_admission,
 };
 use crate::record::MemoryRecord;
 
@@ -125,7 +125,7 @@ impl ProvenanceMemorySet {
                     None => {
                         return RecomputeVerdict::Invalid {
                             reason: format!("missing cited parent {}", h.to_hex()),
-                        }
+                        };
                     }
                 }
             }

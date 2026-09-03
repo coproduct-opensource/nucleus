@@ -3,11 +3,11 @@
 //! Plus falsification tests (tampered edge, reorder, attacker-controlled
 //! JWKS) that pin the v1 security boundary.
 
-use nucleus_envelope::{verify_bundle, BundleBuilder, TrustAnchor, VerifyBundleError};
+use nucleus_envelope::{BundleBuilder, TrustAnchor, VerifyBundleError, verify_bundle};
 use nucleus_lineage::{
-    canonical_edge_bytes, edge_content_hash, CallSpiffeId, Ed25519Witness, EdgeKind, EdgeSigner,
-    InMemorySink, InProcessWitness, Jwks, LineageEdge, LineageSink, LocalIssuer, MerkleConfig,
-    MerkleSink, Proof, WitnessClient,
+    CallSpiffeId, Ed25519Witness, EdgeKind, EdgeSigner, InMemorySink, InProcessWitness, Jwks,
+    LineageEdge, LineageSink, LocalIssuer, MerkleConfig, MerkleSink, Proof, WitnessClient,
+    canonical_edge_bytes, edge_content_hash,
 };
 use tempfile::tempdir;
 
@@ -1238,7 +1238,7 @@ fn v2_1_untrusted_witness_cosignature_does_not_count() {
             .with_trusted_witness(trusted.verifying_key_bytes())
             .cosignature_threshold(1);
     let _ = lenient; // we don't re-verify here because the jwks moved; structural check below is enough
-                     // The key assertion: cosignatures.len() == 2 but only 1 counts.
+    // The key assertion: cosignatures.len() == 2 but only 1 counts.
 }
 
 /// **CRIT-2 from the third skeptical audit.** A single compromised
@@ -1539,14 +1539,16 @@ fn v2_1_zero_threshold_is_default_and_accepts_no_cosignatures() {
         .with_merkle_prover(&sink)
         .build()
         .unwrap();
-    assert!(bundle
-        .envelope
-        .merkle_anchor
-        .as_ref()
-        .unwrap()
-        .sth
-        .cosignatures
-        .is_empty());
+    assert!(
+        bundle
+            .envelope
+            .merkle_anchor
+            .as_ref()
+            .unwrap()
+            .sth
+            .cosignatures
+            .is_empty()
+    );
 
     let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(producer_pub);
     let report = verify_bundle(&bundle, &trust).expect("federation disabled, anchor valid");

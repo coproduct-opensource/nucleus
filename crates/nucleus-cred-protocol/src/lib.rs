@@ -46,7 +46,7 @@ pub mod frame {
     /// layer that knows whether it is writing to a socket or a buffer.
     #[must_use]
     pub fn sign(key: &[u8], payload: &str) -> String {
-        use hmac::{digest::KeyInit, Hmac, Mac};
+        use hmac::{Hmac, Mac, digest::KeyInit};
         use sha2::Sha256;
         let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key)
             // HMAC accepts a key of any length, so this cannot fail for any
@@ -86,7 +86,7 @@ pub mod frame {
     /// much of a guessed signature was right, and a guest can retry freely.
     #[must_use]
     pub fn is_authentic(frame: &str, key: Option<&[u8]>) -> bool {
-        use hmac::{digest::KeyInit, Hmac, Mac};
+        use hmac::{Hmac, Mac, digest::KeyInit};
         use sha2::Sha256;
 
         let Some(key) = key else {

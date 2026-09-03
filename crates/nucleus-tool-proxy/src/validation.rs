@@ -167,13 +167,13 @@ pub fn validate_command_args(args: &[String]) -> ValidationResult<()> {
 
 /// Validate stdin input.
 pub fn validate_stdin(stdin: Option<&str>) -> ValidationResult<()> {
-    if let Some(input) = stdin {
-        if input.len() > MAX_STDIN_LENGTH {
-            return Err(ValidationError::StdinTooLong {
-                length: input.len(),
-                limit: MAX_STDIN_LENGTH,
-            });
-        }
+    if let Some(input) = stdin
+        && input.len() > MAX_STDIN_LENGTH
+    {
+        return Err(ValidationError::StdinTooLong {
+            length: input.len(),
+            limit: MAX_STDIN_LENGTH,
+        });
     }
     Ok(())
 }
@@ -231,12 +231,11 @@ fn has_catastrophic_backtracking(pattern: &str) -> bool {
             }
             ')' => {
                 // Check if group with quantifier is followed by another quantifier
-                if has_quantifier_in_group {
-                    if let Some(&next_char) = next {
-                        if is_quantifier(next_char) {
-                            return true; // Nested quantifier pattern like (a+)+
-                        }
-                    }
+                if has_quantifier_in_group
+                    && let Some(&next_char) = next
+                    && is_quantifier(next_char)
+                {
+                    return true; // Nested quantifier pattern like (a+)+
                 }
                 group_depth = group_depth.saturating_sub(1);
                 has_quantifier_in_group = false;
@@ -246,10 +245,11 @@ fn has_catastrophic_backtracking(pattern: &str) -> bool {
                     has_quantifier_in_group = true;
                 }
                 // Check for consecutive quantifiers like a+? (but not ** which is glob)
-                if let Some(&next_char) = next {
-                    if is_quantifier(next_char) && next_char != '*' {
-                        return true; // Patterns like a++, a+?, etc.
-                    }
+                if let Some(&next_char) = next
+                    && is_quantifier(next_char)
+                    && next_char != '*'
+                {
+                    return true; // Patterns like a++, a+?, etc.
                 }
             }
             '*' => {
@@ -273,10 +273,10 @@ fn has_catastrophic_backtracking(pattern: &str) -> bool {
                 // Check for excessive repetition like {1000,}
                 if let Some(end) = pattern[i..].find('}') {
                     let range = &pattern[i + 1..i + end];
-                    if let Some(max) = parse_max_repetition(range) {
-                        if max > 100 {
-                            return true;
-                        }
+                    if let Some(max) = parse_max_repetition(range)
+                        && max > 100
+                    {
+                        return true;
                     }
                 }
                 if group_depth > 0 {
@@ -334,10 +334,10 @@ pub fn sanitize_error_message(message: &str, sandbox_root: Option<&Path>) -> Str
     let mut result = message.to_string();
 
     // Replace sandbox root first (most specific)
-    if let Some(root) = sandbox_root {
-        if let Some(root_str) = root.to_str() {
-            result = result.replace(root_str, "[sandbox]");
-        }
+    if let Some(root) = sandbox_root
+        && let Some(root_str) = root.to_str()
+    {
+        result = result.replace(root_str, "[sandbox]");
     }
 
     // Replace home directory

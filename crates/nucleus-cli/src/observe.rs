@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use portcullis::observe::{format_summary, parse_jsonl_observations, ObserveSession};
+use portcullis::observe::{ObserveSession, format_summary, parse_jsonl_observations};
 
 /// Observe agent behavior and generate a minimal policy profile.
 #[derive(Args)]

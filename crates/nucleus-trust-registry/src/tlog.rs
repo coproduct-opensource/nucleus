@@ -41,7 +41,7 @@ use ct_merkle::mem_backed_tree::MemoryBackedTree;
 use ct_merkle::{InclusionProof, RootHash};
 use nucleus_lineage::checkpoint::{Ed25519Witness, SignedTreeHead, TreeWitness};
 use nucleus_lineage::signed_note::format_checkpoint_body;
-use nucleus_witness::cosign::{verify_cosign_line, WitnessKey};
+use nucleus_witness::cosign::{WitnessKey, verify_cosign_line};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

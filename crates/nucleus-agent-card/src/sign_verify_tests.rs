@@ -2,13 +2,13 @@
 //! because they exercise [`crate::sign::sign_card`]; verification itself
 //! is always available.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::SystemRandom;
-use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
 
 use crate::card::{
-    AgentCapabilities, AgentCard, AgentInterface, NucleusClaims, A2A_PROTOCOL_VERSION,
+    A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCard, AgentInterface, NucleusClaims,
 };
 use crate::jcs::canonicalize;
 use crate::jwk::JsonWebKey;

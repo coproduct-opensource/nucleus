@@ -30,8 +30,8 @@
 //! most once) is enforced by the kernel's spent-signature ledger and proven as
 //! the absorbing `declass_step` machine.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
 use crate::{ApiError, AppState};

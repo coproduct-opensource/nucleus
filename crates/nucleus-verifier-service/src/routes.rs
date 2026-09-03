@@ -1,10 +1,10 @@
 //! Route handlers.
 
-use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, HeaderValue};
-use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
-use nucleus_envelope::{canonical_bundle_hash, verify_bundle, Bundle, TrustAnchor};
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, HeaderValue, header};
+use axum::response::{Html, IntoResponse, Response};
+use nucleus_envelope::{Bundle, TrustAnchor, canonical_bundle_hash, verify_bundle};
 use nucleus_lineage::Jwks;
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,7 @@ use crate::error::VerifyApiError;
 use crate::log as txlog;
 use crate::signing::canonical_sth_bytes;
 use axum::extract::Query;
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 
 /// **HIGH-1 (#1648 / audit) fix.** Defense-in-depth cap on the number of
 /// trusted-witness keys a single verify request may declare. Each entry
@@ -339,8 +339,8 @@ pub async fn clearing_verify(
     State(_state): State<AppState>,
     Json(req): Json<ClearingVerifyRequest>,
 ) -> Result<Json<ClearingVerifyResponse>, VerifyApiError> {
-    use nucleus_recompute::envelope::{verify_signed_clearing, SignedClearingVerdict};
     use nucleus_recompute::RecomputeOutcome;
+    use nucleus_recompute::envelope::{SignedClearingVerdict, verify_signed_clearing};
 
     let bytes = hex::decode(req.verifying_key_hex.trim().trim_start_matches("0x"))
         .map_err(|e| VerifyApiError::BadRequest(format!("verifying_key_hex invalid: {e}")))?;
@@ -410,8 +410,8 @@ pub async fn payout_verify(
     State(_state): State<AppState>,
     Json(req): Json<PayoutVerifyRequest>,
 ) -> Result<Json<PayoutVerifyResponse>, VerifyApiError> {
-    use nucleus_recompute::payout::envelope::{verify_signed_payout, SignedPayoutVerdict};
     use nucleus_recompute::RecomputeOutcome;
+    use nucleus_recompute::payout::envelope::{SignedPayoutVerdict, verify_signed_payout};
 
     let bytes = hex::decode(req.verifying_key_hex.trim().trim_start_matches("0x"))
         .map_err(|e| VerifyApiError::BadRequest(format!("verifying_key_hex invalid: {e}")))?;

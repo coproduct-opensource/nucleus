@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -79,23 +79,23 @@ impl Jwk {
     /// behavior). Used by the walker to honor JWKS rotation: a key only
     /// verifies edges whose timestamp is inside the window it was published for.
     fn check_validity_window(&self, at: DateTime<Utc>) -> Result<(), VerifyError> {
-        if let Some(nbf) = self.not_before {
-            if at < nbf {
-                return Err(VerifyError::KeyNotYetValid {
-                    kid: self.kid.clone(),
-                    ts: at,
-                    not_before: nbf,
-                });
-            }
+        if let Some(nbf) = self.not_before
+            && at < nbf
+        {
+            return Err(VerifyError::KeyNotYetValid {
+                kid: self.kid.clone(),
+                ts: at,
+                not_before: nbf,
+            });
         }
-        if let Some(exp) = self.not_after {
-            if at > exp {
-                return Err(VerifyError::KeyExpired {
-                    kid: self.kid.clone(),
-                    ts: at,
-                    not_after: exp,
-                });
-            }
+        if let Some(exp) = self.not_after
+            && at > exp
+        {
+            return Err(VerifyError::KeyExpired {
+                kid: self.kid.clone(),
+                ts: at,
+                not_after: exp,
+            });
         }
         Ok(())
     }
@@ -166,13 +166,13 @@ impl Jwks {
                 crv: jwk.crv.clone().unwrap_or_default(),
             });
         }
-        if let Some(alg) = jwk.alg.as_deref() {
-            if alg != "EdDSA" {
-                return Err(VerifyError::UnsupportedAlg {
-                    kid: kid.to_string(),
-                    alg: alg.to_string(),
-                });
-            }
+        if let Some(alg) = jwk.alg.as_deref()
+            && alg != "EdDSA"
+        {
+            return Err(VerifyError::UnsupportedAlg {
+                kid: kid.to_string(),
+                alg: alg.to_string(),
+            });
         }
         let x_b64 = jwk.x.as_deref().ok_or_else(|| VerifyError::MalformedKey {
             kid: kid.to_string(),
@@ -321,10 +321,10 @@ pub fn total_pigouvian_micro_usd(edges: &[crate::LineageEdge]) -> i128 {
     for edge in edges {
         match &edge.kind {
             crate::EdgeKind::Externality { .. } => {
-                if let Some(s) = edge.attrs.get("pigou_charge_micro_usd") {
-                    if let Ok(v) = s.parse::<u64>() {
-                        net = net.saturating_add(i128::from(v));
-                    }
+                if let Some(s) = edge.attrs.get("pigou_charge_micro_usd")
+                    && let Ok(v) = s.parse::<u64>()
+                {
+                    net = net.saturating_add(i128::from(v));
                 }
             }
             crate::EdgeKind::WelfareRebate { micro_usd, .. } => {
@@ -414,7 +414,7 @@ mod tests {
     use crate::id::CallSpiffeId;
     use crate::issuer::EdgeSigner;
     use crate::local_issuer::LocalIssuer;
-    use crate::proof::{canonical_edge_bytes, edge_content_hash, Proof};
+    use crate::proof::{Proof, canonical_edge_bytes, edge_content_hash};
 
     fn pod() -> CallSpiffeId {
         CallSpiffeId::pod("prod.example.com", "agents", "coder").unwrap()

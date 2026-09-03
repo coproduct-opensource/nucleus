@@ -25,7 +25,7 @@
 use portcullis::action_term::ActionTerm;
 use portcullis::gate_class::{self, GateClass};
 use portcullis::kernel::{DenyReason, Kernel, Verdict};
-use portcullis::{default_sink_class, FlowTracker, NodeKind, Operation, PermissionLattice};
+use portcullis::{FlowTracker, NodeKind, Operation, PermissionLattice, default_sink_class};
 use serde::{Deserialize, Serialize};
 
 /// One recorded step of an agent episode.
@@ -228,13 +228,13 @@ pub fn replay(steps: &[TraceStep]) -> (Vec<StepOutcome>, ReplaySummary) {
         // contribute taint. Getting this backwards would let a denied web fetch
         // poison the rest of the session and inflate the very number this crate
         // is trying to measure.
-        if matches!(decision.verdict, Verdict::Allow) {
-            if let Some(kind) = step.ingest {
-                let bytes = step.content.as_deref().unwrap_or("").as_bytes();
-                // A dropped observation poisons the session by design; surface it
-                // rather than silently continuing with an unprovable taint state.
-                let _ = flow.observe_with_content_hash(kind, content_hash(bytes));
-            }
+        if matches!(decision.verdict, Verdict::Allow)
+            && let Some(kind) = step.ingest
+        {
+            let bytes = step.content.as_deref().unwrap_or("").as_bytes();
+            // A dropped observation poisons the session by design; surface it
+            // rather than silently continuing with an unprovable taint state.
+            let _ = flow.observe_with_content_hash(kind, content_hash(bytes));
         }
     }
 

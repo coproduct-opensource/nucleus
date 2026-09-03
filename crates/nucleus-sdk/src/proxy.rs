@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::auth::AuthStrategy;
 use crate::auth::MtlsConfig;
-use crate::error::{from_error_payload, Error};
+use crate::error::{Error, from_error_payload};
 
 /// Output from a `/v1/run` command execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]

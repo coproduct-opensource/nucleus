@@ -27,9 +27,9 @@
 //!
 //! Sigsum-style algorithm-prefixed root encoding is NOT supported.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use nucleus_lineage::{
-    ed25519_key_id, format_checkpoint_body, parse_signature_line, SIG_TYPE_ED25519,
+    SIG_TYPE_ED25519, ed25519_key_id, format_checkpoint_body, parse_signature_line,
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ fn kat_checkpoint_body_byte_layout_matches_reference_dialect() {
     // Hash = 32 bytes of value 0x00 — easy to inspect.
     let body = format_checkpoint_body("Log", 123, &[0u8; 32]).unwrap();
     let expected_root_b64 = STANDARD.encode([0u8; 32]); // "AAAA...AAAA="
-                                                        // Expected: "Log\n123\n<base64-of-32-zeros>\n"
+    // Expected: "Log\n123\n<base64-of-32-zeros>\n"
     assert_eq!(body, format!("Log\n123\n{expected_root_b64}\n"));
     // Verify the structural pattern: 3 newlines, no extra whitespace.
     assert_eq!(body.matches('\n').count(), 3);

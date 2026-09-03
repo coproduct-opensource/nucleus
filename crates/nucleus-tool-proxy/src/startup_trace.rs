@@ -57,8 +57,8 @@
 
 use std::time::Instant;
 
-use crate::attestation::AttestationConfig;
 use crate::Args;
+use crate::attestation::AttestationConfig;
 
 /// Assemble the attestation verifier's config from the CLI args.
 ///

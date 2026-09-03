@@ -54,7 +54,7 @@ pub mod parse;
 pub mod server;
 pub mod store;
 
-pub use cosign::{verify_cosign_line, CosignVerifyError, WitnessKey};
-pub use parse::{parse_add_checkpoint, AddCheckpointRequest, Checkpoint, ParseError};
-pub use server::{add_checkpoint_handler, decide, Decision, WitnessState};
+pub use cosign::{CosignVerifyError, WitnessKey, verify_cosign_line};
+pub use parse::{AddCheckpointRequest, Checkpoint, ParseError, parse_add_checkpoint};
+pub use server::{Decision, WitnessState, add_checkpoint_handler, decide};
 pub use store::{CosignedPosition, InMemoryStore, OriginRecord, OriginStore, TrustedLogKey};

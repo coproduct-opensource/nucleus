@@ -10,12 +10,12 @@
 
 use nucleus_econ_kernels::commons::CommonsShare;
 use nucleus_recompute::offer::{
-    disclosure_hash_hex, offer_content_hash_hex, verify_offer, Offer, Sponsorship, SponsorshipKind,
-    Terms,
+    Offer, Sponsorship, SponsorshipKind, Terms, disclosure_hash_hex, offer_content_hash_hex,
+    verify_offer,
 };
-use nucleus_recompute::payout::{issue_payout, verify_payout, Attribution};
+use nucleus_recompute::payout::{Attribution, issue_payout, verify_payout};
 use nucleus_recompute::settlement_attestation::{
-    issue_settlement_attestation, verify_settlement, verify_settlement_set, SettlementSetOutcome,
+    SettlementSetOutcome, issue_settlement_attestation, verify_settlement, verify_settlement_set,
 };
 use nucleus_recompute::{issue_settlement, verify_receipt};
 
@@ -123,7 +123,9 @@ fn main() {
     }
     match verify_settlement_set(partial, &payout) {
         SettlementSetOutcome::Unsettled { destinations } => {
-            println!("  pay 2 of 3            → Unsettled {destinations:?}  (each receipt verified alone!)");
+            println!(
+                "  pay 2 of 3            → Unsettled {destinations:?}  (each receipt verified alone!)"
+            );
         }
         other => println!("  pay 2 of 3            → {other:?}"),
     }

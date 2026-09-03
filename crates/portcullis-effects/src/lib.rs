@@ -2342,9 +2342,10 @@ mod tests {
     #[test]
     fn allow_list_path_prefix_enforcement() {
         let fx = AllowListEffects::new().allow_path("/workspace/src");
-        assert!(fx
-            .read(Path::new("/workspace/src/main.rs"), read_auth())
-            .is_ok());
+        assert!(
+            fx.read(Path::new("/workspace/src/main.rs"), read_auth())
+                .is_ok()
+        );
         assert!(matches!(
             fx.read(Path::new("/etc/passwd"), read_auth()),
             Err(EffectError::PathViolation(_))

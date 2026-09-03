@@ -258,7 +258,7 @@ fn kind_tag(kind: &EdgeKind) -> &'static str {
 // ── serde helpers ───────────────────────────────────────────────────────
 
 mod base64_bytes {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(v: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
@@ -598,9 +598,11 @@ mod tests {
         let edge = LineageEdge::pod_admit(pod());
         let bytes = canonical_edge_bytes(&edge, None);
         // child + kind tag should be present
-        assert!(bytes
-            .windows(7)
-            .any(|w| w == b"agents/" || w == b"sa/code" || w.starts_with(b"spiffe:")));
+        assert!(
+            bytes
+                .windows(7)
+                .any(|w| w == b"agents/" || w == b"sa/code" || w.starts_with(b"spiffe:"))
+        );
     }
 
     // ── Additive-compatibility invariant ────────────────────────────────
