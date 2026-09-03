@@ -89,6 +89,23 @@ provision:
         dnsmasq \
         e2fsprogs
 
+      # br_netfilter is a DEPENDENCY, not hygiene. `net::setup_network` sets
+      # net.bridge.bridge-nf-call-iptables, and the whole /proc/sys/net/bridge
+      # tree only exists once this module is loaded — so without it every pod
+      # spec carrying a `network` block failed mid-launch with a bare
+      # `sysctl: cannot stat` (#2382).
+      #
+      # It used to be present by accident: hosts running Docker or containerd
+      # get it loaded for their own bridge networking. This template disables
+      # containerd on purpose (a Firecracker host needs neither), which removed
+      # the thing that had been loading it. An undeclared dependency borrowed
+      # from whatever else happened to be running.
+      #
+      # modprobe for this boot, modules-load.d so it survives a restart. Both,
+      # because the VM does get stopped and started.
+      modprobe br_netfilter || true
+      echo br_netfilter > /etc/modules-load.d/nucleus.conf
+
       mkdir -p /var/lib/nucleus/artifacts /var/lib/nucleus/pods /var/log/nucleus
 
       # Firecracker, the kernel, the rootfs and nucleus-node are installed by
