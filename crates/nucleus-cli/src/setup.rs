@@ -246,7 +246,7 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
     // with no nucleus-node and no nucleus rootfs — measured 2026-07-29.
     let host = tier2_host_for(&args, &platform);
     if let (Some(host), false) = (host, args.skip_verify) {
-        if let Err(e) = crate::verify::verify_tier2(&host, &args.vm_name) {
+        if let Err(e) = crate::verify::verify_tier2(&host, &args.vm_name).await {
             print_setup_summary(&args, &platform, false);
             // Do NOT name a cause here. This runs for ANY verification failure,
             // and asserting "the pod could not boot" was wrong on a run where the

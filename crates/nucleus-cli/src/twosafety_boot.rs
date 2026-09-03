@@ -53,7 +53,6 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
-use nucleus_client::sign_http_headers;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -75,8 +74,10 @@ const CANARY_ENV_KEY: &str = "NUCLEUS_E2E_CANARY";
 /// measures the harness rather than provoking the runtime.
 const PLANT_KEY: &str = "nucleus.twosafety_canary";
 
-/// The node's HTTP address on the machine running the experiment.
-const NODE_URL: &str = "http://127.0.0.1:8080";
+/// The node's HTTP address on the machine running the experiment. `https://`
+/// since Move B: the node's HTTP listener requires mTLS unconditionally,
+/// with no plaintext/HMAC fallback left.
+const NODE_URL: &str = "https://127.0.0.1:8080";
 
 /// The subcommand name clap derives from `Commands::TwoSafety`, used when this
 /// command re-invokes itself inside the Lima VM.
@@ -138,7 +139,16 @@ pub async fn execute(args: TwoSafetyArgs) -> Result<()> {
     if !args.here && !cfg!(target_os = "linux") {
         return delegate_to_lima(&args.vm_name);
     }
-    run_here()
+    // `run_here` calls the node over mTLS with `reqwest::blocking` (Move B:
+    // the node's HTTP listener has no HMAC fallback left, and `PodBoot`'s
+    // `Boot` trait impl is a sync fn — see `PodBoot::create_pod`/`await_node`
+    // for why a blocking client, not an async one, is the right shape here).
+    // `reqwest::blocking` builds its own runtime internally and PANICS if
+    // constructed directly inside an async task's worker thread ("cannot
+    // drop a runtime in a context where blocking is not allowed") —
+    // `block_in_place` moves this whole synchronous call off the async
+    // worker pool for its duration, which is what makes that safe.
+    tokio::task::block_in_place(run_here)
 }
 
 /// Re-invoke inside the Lima VM, where `/dev/kvm` and the artifacts are.
@@ -310,8 +320,15 @@ fn run_here() -> Result<()> {
 /// A [`Boot`] that boots real pods on a host with KVM.
 pub struct PodBoot {
     host: Tier2Host,
-    /// The node's HMAC secret, read once so a restart cannot race it.
-    auth_secret: String,
+    /// mTLS client presenting the identity `nucleus setup` provisioned. Move
+    /// B deleted the node's HMAC tier this used to be an `auth_secret:
+    /// String` for — see `provision::mtls_client_from_provisioned_identity`.
+    /// `reqwest::blocking`, not the async client `verify.rs` uses: `PodBoot`
+    /// implements the sync `Boot` trait (`twosafety.rs`), and converting
+    /// that trait to async to match would be a much larger change for no
+    /// benefit here — see `execute`'s `block_in_place` wrapper for why a
+    /// blocking client is safe to build from this async binary's call site.
+    mtls_client: reqwest::blocking::Client,
     state_dir: PathBuf,
     chroot_base: PathBuf,
     /// `basename` of the Firecracker binary — the jailer's second path segment.
@@ -354,9 +371,8 @@ impl PodBoot {
             .with_context(|| format!("cannot read {NODE_ENV_PATH}; run: nucleus setup"))?;
         let value = |key: &str| env_value(&env, key);
 
-        let auth_secret = value("NUCLEUS_NODE_AUTH_SECRET").ok_or_else(|| {
-            anyhow!("{NODE_ENV_PATH} has no NUCLEUS_NODE_AUTH_SECRET; run: nucleus setup")
-        })?;
+        let mtls_client = crate::provision::mtls_blocking_client_from_provisioned_identity()
+            .context("failed to build an mTLS client for the node")?;
         let state_dir = PathBuf::from(
             value("NUCLEUS_NODE_STATE_DIR").unwrap_or_else(|| HOST_STATE_DIR.to_string()),
         );
@@ -378,7 +394,7 @@ impl PodBoot {
 
         Ok(PodBoot {
             host,
-            auth_secret,
+            mtls_client,
             state_dir,
             chroot_base,
             exec_name,
@@ -514,8 +530,10 @@ impl PodBoot {
     fn await_node(&self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
-            if ureq::get(&format!("{NODE_URL}/v1/health"))
-                .call()
+            if self
+                .mtls_client
+                .get(format!("{NODE_URL}/v1/health"))
+                .send()
                 .map(|r| r.status().is_success())
                 .unwrap_or(false)
             {
@@ -559,31 +577,17 @@ impl PodBoot {
         );
 
         // A 4xx must arrive as data: the node's refusals explain themselves in
-        // the body, and ureq's default discards it.
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .build()
-            .into();
-        let mut request = agent
+        // the body, and treating a 4xx as a transport error would discard it.
+        let response = self
+            .mtls_client
             .post(format!("{NODE_URL}/v1/pods"))
-            .header("content-type", "application/json");
-        let signed = sign_http_headers(
-            self.auth_secret.as_bytes(),
-            Some("nucleus-twosafety"),
-            body.as_bytes(),
-        );
-        for (key, value) in signed.headers {
-            request = request.header(&key, &value);
-        }
-        let mut response = request
-            .send(body.as_bytes())
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
             .map_err(|e| anyhow!("the node refused to create a pod: {e}"))?;
         if !response.status().is_success() {
             let status = response.status();
-            let detail = response
-                .body_mut()
-                .read_to_string()
-                .unwrap_or_else(|_| "<no body>".to_string());
+            let detail = response.text().unwrap_or_else(|_| "<no body>".to_string());
             bail!("pod creation returned {status}: {}", detail.trim());
         }
         #[derive(serde::Deserialize)]
@@ -591,8 +595,7 @@ impl PodBoot {
             id: Option<String>,
         }
         let parsed: CreatePodResponse = response
-            .body_mut()
-            .read_json()
+            .json()
             .context("the node's response was not the JSON we expected")?;
         parsed
             .id
@@ -604,16 +607,10 @@ impl PodBoot {
     /// Best-effort: a pod that already exited returns 404, which is the desired
     /// end state and not a failure.
     fn cancel_pod(&self, id: &str) {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .build()
-            .into();
-        let mut request = agent.post(format!("{NODE_URL}/v1/pods/{id}/cancel"));
-        let signed = sign_http_headers(self.auth_secret.as_bytes(), Some("nucleus-twosafety"), b"");
-        for (key, value) in signed.headers {
-            request = request.header(&key, &value);
-        }
-        let _ = request.send(b"" as &[u8]);
+        let _ = self
+            .mtls_client
+            .post(format!("{NODE_URL}/v1/pods/{id}/cancel"))
+            .send();
     }
 
     fn console_path(&self, id: &str) -> PathBuf {
@@ -896,9 +893,15 @@ mod tests {
     }
 
     fn booter(dir: &std::path::Path, planted: Vec<PlantedRun>) -> PodBoot {
+        // Even a client that will never send a request installs TLS
+        // internals eagerly on the `rustls-no-provider` feature.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         PodBoot {
             host: Tier2Host::Local,
-            auth_secret: "unused".into(),
+            // Unused by these tests — they exercise attribution/snapshot
+            // logic, never make a real request — so a default client with
+            // no identity is fine.
+            mtls_client: reqwest::blocking::Client::new(),
             state_dir: dir.to_path_buf(),
             chroot_base: dir.to_path_buf(),
             exec_name: "firecracker".into(),
