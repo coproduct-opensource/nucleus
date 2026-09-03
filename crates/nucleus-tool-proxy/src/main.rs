@@ -57,6 +57,7 @@ mod startup_trace;
 mod telemetry;
 #[allow(dead_code)]
 mod unicode_audit;
+mod url_allow;
 mod validation;
 mod verdict_sink;
 mod web_fetch_policy;
@@ -697,51 +698,6 @@ fn is_expired(expires_at_unix: Option<u64>) -> bool {
         Some(ts) => ts <= now_unix(),
         None => false,
     }
-}
-
-/// Simple URL glob matcher for `url_allow` patterns.
-///
-/// - `*` matches any sequence of characters except `/`
-/// - `**` matches any sequence of characters including `/`
-/// - All other characters match literally.
-pub(crate) fn url_glob_match(pattern: &str, url: &str) -> bool {
-    url_glob_match_inner(pattern.as_bytes(), url.as_bytes())
-}
-
-fn url_glob_match_inner(pattern: &[u8], text: &[u8]) -> bool {
-    if pattern.is_empty() {
-        return text.is_empty();
-    }
-    if pattern.len() >= 2 && pattern[0] == b'*' && pattern[1] == b'*' {
-        // `**` — match any number of chars (including `/`)
-        let rest = &pattern[2..];
-        for i in 0..=text.len() {
-            if url_glob_match_inner(rest, &text[i..]) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if pattern[0] == b'*' {
-        // `*` — match any number of non-`/` chars
-        let rest = &pattern[1..];
-        for i in 0..=text.len() {
-            if i > 0 && text[i - 1] == b'/' {
-                break;
-            }
-            if url_glob_match_inner(rest, &text[i..]) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if text.is_empty() {
-        return false;
-    }
-    if pattern[0] == text[0] {
-        return url_glob_match_inner(&pattern[1..], &text[1..]);
-    }
-    false
 }
 
 /// Load and verify a signed approval bundle from the NUCLEUS_APPROVAL_BUNDLE env var.
