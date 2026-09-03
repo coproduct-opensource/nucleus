@@ -163,12 +163,27 @@ fn decide_with_flow_mapped(
                 ?operation,
                 subject,
                 exposure = decision.exposure_transition.post_count,
-                "HTTP kernel requires approval (no auto-approve channel)"
+                "HTTP kernel requires approval — a /v1/approve grant does NOT \
+                 satisfy this layer (#2406)"
             );
-            // `approval_required`, which the response mapping already models and
-            // which tells the caller something true and actionable: this is not
-            // "you may never do this", it is "this needs an approval you have
-            // not presented".
+            // `approval_required`, which the response mapping already models.
+            //
+            // The caller is NOT told how to satisfy it, and the honest reason is
+            // that presenting one does not work. `/v1/approve` writes into
+            // `ApprovalRegistry`, and this decision never reads that registry:
+            // the refusal happens in `http_kernel_decide`, which returns before
+            // `sandbox.write` and therefore before the only code that consults
+            // grants. An operator who grants an approval here gets a 200 and no
+            // effect (#2406).
+            //
+            // The operation key is the SAME string the registry is keyed on, so
+            // the two layers agree about what is being approved and disagree
+            // only about who reads it — which is what makes this look like a
+            // working approval flow right up until the retry.
+            //
+            // Deliberately not enriched with that explanation: this field is
+            // echoed to the caller as the response's `operation`, and callers
+            // feed it back to `/v1/approve` verbatim.
             Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("{operation:?} {subject}"),
             }))
