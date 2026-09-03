@@ -72,6 +72,24 @@ pub fn svid_cert_path() -> String {
     format!("{IDENTITY_DIR}/svid.pem")
 }
 
+/// Where [`fetch_identity`] writes the SVID private key. Same reasoning as
+/// [`svid_cert_path`]: fetched and not advertised is fetched for nothing —
+/// the tool-proxy's own outbound calls to nucleus-node (`node_client.rs`,
+/// `lockdown_client.rs`) need this to present the pod's identity as an mTLS
+/// client, and until it is exported via `NUCLEUS_IDENTITY_KEY` there is no
+/// way for that code to find it without hardcoding `IDENTITY_DIR`.
+pub fn svid_key_path() -> String {
+    format!("{IDENTITY_DIR}/svid.key")
+}
+
+/// Where [`fetch_identity`] writes the trust bundle — the node's own CA
+/// root, needed to verify the node's self-issued server certificate the
+/// same way [`svid_key_path`] is needed to present the pod's own identity.
+/// Exported as `NUCLEUS_IDENTITY_TRUST_BUNDLE`.
+pub fn trust_bundle_path() -> String {
+    format!("{IDENTITY_DIR}/bundle.pem")
+}
+
 /// The three values a session capability token comprises.
 ///
 /// Named to match what the tool-proxy reads from its environment —
