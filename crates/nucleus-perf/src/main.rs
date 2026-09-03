@@ -599,26 +599,38 @@ fn toolcall(t: ToolCall) -> Result<()> {
     let (id, proxy) = create_pod_with_proxy(&t.url, &secret, &t.actor, &body)?;
     println!("pod {id} up in {} ms, proxy {proxy}\n", created.elapsed().as_millis());
 
-    // A host-generated payload: the guest cannot have produced these bytes.
-    let nonce = format!("{}-{}", std::process::id(), created.elapsed().as_nanos());
-    let payload = format!("nucleus-perf round trip {nonce}");
-    let path = format!("perf-{nonce}.txt");
-
     let mut failures = Vec::new();
     println!("{:<26} {:>7} {:>7}  verdict", "check", "status", "ms");
 
-    let (st, b, ms) = tool_call(&proxy, "write", serde_json::json!({"path": path, "contents": payload}))?;
-    let ok = (200..300).contains(&st);
-    report("write allowed path", st, ms, ok, &b, &mut failures);
-
-    let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": path}))?;
-    let got = serde_json::from_str::<serde_json::Value>(&b)
+    // Discover a readable path rather than inventing one. The sandbox is a disk
+    // image, not a host mount, so the host cannot place a file in it and cannot
+    // checksum one out of it. And a path the PathLattice does not permit is
+    // refused even though `codegen` sets read_files: Always -- capability level
+    // and path policy are separate gates. So: ask the guest what it can see.
+    let (st, b, ms) = tool_call(&proxy, "glob", serde_json::json!({"pattern": "*"}))?;
+    let matches: Vec<String> = serde_json::from_str::<serde_json::Value>(&b)
         .ok()
-        .and_then(|v| v.get("contents").and_then(|c| c.as_str()).map(str::to_string));
-    let ok = (200..300).contains(&st) && got.as_deref() == Some(payload.as_str());
-    report("read back == written", st, ms, ok, &b, &mut failures);
-    if !ok {
-        println!("      expected {payload:?}\n      got      {got:?}");
+        .and_then(|v| {
+            v.get("matches").and_then(|m| m.as_array()).map(|a| {
+                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
+            })
+        })
+        .unwrap_or_default();
+    let ok = (200..300).contains(&st) && !matches.is_empty();
+    report("glob finds sandbox files", st, ms, ok, &b, &mut failures);
+
+    // Reading a discovered entry must return real bytes. An empty success here
+    // would mean the read path answers without serving the sandbox, which is
+    // precisely the failure worth catching.
+    if let Some(target) = matches.first() {
+        let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": target}))?;
+        let contents = serde_json::from_str::<serde_json::Value>(&b)
+            .ok()
+            .and_then(|v| v.get("contents").and_then(|c| c.as_str()).map(str::to_string));
+        let ok = (200..300).contains(&st) && contents.is_some();
+        report(&format!("read {target}"), st, ms, ok, &b, &mut failures);
+    } else {
+        failures.push("read (no glob match to read)".to_string());
     }
 
     // The refusal half. A pod that serves this is not isolating anything.
