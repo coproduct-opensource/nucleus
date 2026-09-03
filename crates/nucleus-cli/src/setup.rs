@@ -784,11 +784,13 @@ memory_gib = {memory}
 disk_gib = {disk}
 
 [node]
-# nucleus-node endpoint (forwarded from Lima VM)
-url = "http://127.0.0.1:8080"
-# gRPC endpoint for internal communication
-grpc_url = "http://127.0.0.1:9180"
-# Actor name for signed requests
+# nucleus-node endpoint (forwarded from Lima VM). mTLS-only since Move B —
+# there is no plaintext/HMAC fallback.
+url = "https://127.0.0.1:8080"
+# gRPC endpoint for internal communication (also mTLS-only since Move B)
+grpc_url = "https://127.0.0.1:9180"
+# Actor name recorded on requests (used only by the HMAC fallback path, for
+# a node not yet migrated past Move B)
 actor = "nucleus-cli"
 
 [firecracker]

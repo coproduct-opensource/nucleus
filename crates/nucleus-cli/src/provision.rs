@@ -641,6 +641,25 @@ fn read_provisioned_identity_pems() -> Result<(Vec<u8>, Vec<u8>)> {
     Ok((identity_pem, bundle_pem))
 }
 
+/// `Some` client when an identity is actually provisioned, `None` (not an
+/// error) when it isn't — for a caller that has another way to authenticate
+/// to fall back to (`run.rs`'s `resolve_config`, still supporting an
+/// explicit `--node-auth-secret` for a not-yet-migrated node). Contrast
+/// [`mtls_client_from_provisioned_identity`], which errors when the
+/// identity is missing because its callers have no fallback to offer.
+pub fn mtls_client_if_provisioned() -> Result<Option<reqwest::Client>> {
+    let Ok(dir) = crate::config::Config::identity_dir() else {
+        return Ok(None);
+    };
+    if !(dir.join("cli-cert.pem").is_file()
+        && dir.join("cli-key.pem").is_file()
+        && dir.join("trust-bundle.pem").is_file())
+    {
+        return Ok(None);
+    }
+    mtls_client_from_provisioned_identity().map(Some)
+}
+
 pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
     let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
 
