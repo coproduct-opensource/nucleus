@@ -129,3 +129,10 @@ jobs:
       # failing mid-launch on a bare `sysctl: cannot stat` (#2382).
       - name: br_netfilter is a declared dependency
         run: bash ci/br-netfilter-is-declared.sh
+      # The `-noop` twins carry the SAME workflow name so a required status
+      # context is reported on every PR. That makes `${{ github.workflow }}`
+      # identical for both files, and every one of the ten pairs built its
+      # concurrency group from it — so the twins cancelled each other, and a
+      # cancelled check-run turns the PR's rollup FAILURE with nothing broken.
+      - name: twin workflows have distinct concurrency groups
+        run: bash ci/twin-workflows-have-distinct-concurrency.sh
