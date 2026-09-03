@@ -625,23 +625,16 @@ pub fn select_auth_tier(
 /// Check if a request has valid SPIFFE mTLS credentials.
 ///
 /// Returns the SPIFFE ID if present and valid, None otherwise.
-pub fn extract_spiffe_id_from_extensions(extensions: &axum::http::Extensions) -> Option<String> {
-    use crate::mtls::{ClientCertInfo, MtlsConnectInfo};
-
-    // Try MtlsConnectInfo first (standard path)
-    if let Some(info) = extensions.get::<MtlsConnectInfo>()
-        && let Some(ref cert) = info.client_cert
-    {
-        return cert.spiffe_id.clone();
-    }
-
-    // Fall back to direct ClientCertInfo
-    if let Some(cert) = extensions.get::<ClientCertInfo>() {
-        return cert.spiffe_id.clone();
-    }
-
-    None
-}
+///
+/// A thin re-export, not a second implementation: this used to read
+/// `extensions.get::<MtlsConnectInfo>()` (the bare type) directly, which
+/// never matches what `into_make_service_with_connect_info` actually
+/// inserts (`ConnectInfo<MtlsConnectInfo>`, the wrapped type) — so
+/// `AuthTier::SpiffeMtls` could never be selected by a genuine mTLS
+/// connection, silently. See `nucleus_identity::mtls::extract_spiffe_id_from_extensions`
+/// for the fix, the regression test that proves it against a real served
+/// request, and a demonstration that the test fails against the old code.
+pub use nucleus_identity::mtls::extract_spiffe_id_from_extensions;
 
 fn header_value<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a str, AuthError> {
     headers

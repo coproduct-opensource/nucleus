@@ -46,7 +46,6 @@ mod lockdown_client;
 mod mcp;
 mod mediation;
 mod memory;
-mod mtls;
 mod node_client;
 mod pod_mgmt;
 mod policy;
@@ -66,9 +65,9 @@ mod workload;
 use attestation::AttestationVerifier;
 use auth::{AuthConfig, AuthError};
 use base64::Engine as _;
-use mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
 use nucleus_identity::approval_bundle::{ApprovalBundleVerifier, compute_manifest_hash};
+use nucleus_identity::mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 use policy::PolicyEngine;
 
 #[derive(Parser, Debug)]

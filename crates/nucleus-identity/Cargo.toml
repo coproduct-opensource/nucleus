@@ -28,7 +28,11 @@ nucleus-proto = { path = "../nucleus-proto" }
 tonic = { workspace = true }
 tokio-stream = { version = "0.1", features = ["net"] }
 # Crypto
-rcgen = "0.14"
+# x509-parser feature: reconstructs a signing `Issuer` from a persisted root
+# cert's DER (`Issuer::from_ca_cert_pem`) so the CA root can survive a process
+# restart. Without it, `SelfSignedCa` can only sign with the `CertificateParams`
+# it built in-memory at construction, which is why the root was ephemeral.
+rcgen = { version = "0.14", features = ["x509-parser"] }
 rustls = { workspace = true }
 x509-parser = { workspace = true }
 ring = "0.17"
@@ -41,6 +45,13 @@ cfb-mode = { version = "0.9", optional = true }
 tokio = { workspace = true, features = ["sync", "time", "io-util", "net", "rt", "macros", "fs"] }
 tokio-rustls = { workspace = true }
 async-trait = "0.1"
+# For the `mtls` module: a custom `axum::serve::Listener` doing the TLS
+# handshake itself (the current idiom — axum's own `ListenerExt::handshake`
+# formalizes the same pattern) so client-cert extraction lands in
+# `MtlsConnectInfo` before any handler runs. Promoted from nucleus-tool-proxy
+# so nucleus-node can share the SAME listener rather than a second copy that
+# drifts from it.
+axum = { workspace = true }
 
 # Serialization
 prost = { workspace = true }

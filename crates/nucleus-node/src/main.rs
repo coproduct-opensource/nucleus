@@ -34,6 +34,7 @@ mod auth;
 mod firecracker_config;
 mod grpc_tls;
 mod guest_diagnosis;
+mod http_serve;
 mod identity;
 mod lockdown;
 mod mediation;
@@ -283,6 +284,32 @@ struct Args {
     /// When set, clients must present valid certificates signed by this CA.
     #[arg(long, env = "NUCLEUS_NODE_GRPC_TLS_CA")]
     grpc_tls_ca: Option<PathBuf>,
+    /// Serve gRPC TLS using the node's OWN SPIFFE identity instead of
+    /// externally-provided cert files, when neither `--grpc-tls-cert` nor
+    /// `--grpc-tls-key` is set. Requires `--identity-workload-api-socket` (the
+    /// flag that enables the identity manager). Server-only TLS, not mTLS:
+    /// clients are not required to present a certificate — HMAC auth still
+    /// applies, same as the plaintext default. This does not change what an
+    /// unset default does; it opts a node into a self-issued alternative.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_GRPC_TLS_SELF_ISSUED",
+        default_value_t = false
+    )]
+    grpc_tls_self_issued: bool,
+    /// Serve the HTTP API over mTLS using the node's own SPIFFE identity,
+    /// instead of the plaintext default. Requires
+    /// `--identity-workload-api-socket`. Unlike `--grpc-tls-self-issued` this
+    /// IS full mTLS (a client certificate is required), so no existing caller
+    /// can connect until the CLI has an SVID of its own — see
+    /// `IdentityManager::self_issued_http_mtls_listener` for why that's
+    /// deliberate. Off by default.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_HTTP_MTLS_SELF_ISSUED",
+        default_value_t = false
+    )]
+    http_mtls_self_issued: bool,
 
     // GitHub OIDC configuration
     /// Enable GitHub OIDC token exchange for CI/CD authentication.
@@ -633,9 +660,19 @@ async fn main() -> Result<(), ApiError> {
     // Initialize identity manager (optional, enabled if socket path is specified)
     let identity_manager = if let Some(ref socket_path) = args.identity_workload_api_socket {
         let cert_ttl = Duration::from_secs(args.identity_cert_ttl_secs);
-        let manager = identity::IdentityManager::new(&args.identity_trust_domain, cert_ttl)
-            .map_err(|e| ApiError::Driver(format!("failed to create identity manager: {e}")))?
-            .with_mediation_binding_dir(args.state_dir.join("pods"));
+        // `new_with_persistent_ca`, not `new`: the node is long-lived, and
+        // `new` mints a fresh in-memory root on every call. A node that used
+        // `new` here would silently invalidate every SVID it had issued on
+        // its own next restart — the CA root is the trust anchor mTLS peers
+        // verify against, so its identity changing is not cosmetic. See
+        // `SelfSignedCa::load_or_create` for the persistence contract.
+        let manager = identity::IdentityManager::new_with_persistent_ca(
+            &args.identity_trust_domain,
+            cert_ttl,
+            &args.state_dir.join("ca"),
+        )
+        .map_err(|e| ApiError::Driver(format!("failed to create identity manager: {e}")))?
+        .with_mediation_binding_dir(args.state_dir.join("pods"));
 
         // Retired: it served an arbitrary pod's SVID to any local connector.
         // Rationale and the gate live in `identity.rs::retired_surface_tests`.
@@ -844,6 +881,22 @@ async fn main() -> Result<(), ApiError> {
                     "both --grpc-tls-cert and --grpc-tls-key must be provided for TLS".to_string(),
                 ));
             }
+            (None, None) if args.grpc_tls_self_issued => match &state.identity_manager {
+                Some(manager) => Some(
+                    grpc_tls::GrpcTlsConfig::from_node_identity(manager)
+                        .await
+                        .map_err(|e| {
+                            ApiError::Driver(format!("gRPC self-issued TLS config failed: {e}"))
+                        })?,
+                ),
+                None => {
+                    return Err(ApiError::Driver(
+                        "--grpc-tls-self-issued requires --identity-workload-api-socket \
+                         (no identity manager configured)"
+                            .to_string(),
+                    ));
+                }
+            },
             (None, None) => None,
         };
 
@@ -857,9 +910,7 @@ async fn main() -> Result<(), ApiError> {
 
     start_pod_reaper(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-    info!("nucleus-node listening on {}", args.listen);
-    axum::serve(listener, app).await?;
+    http_serve::serve(&state, &args.listen, args.http_mtls_self_issued, app).await?;
 
     Ok(())
 }

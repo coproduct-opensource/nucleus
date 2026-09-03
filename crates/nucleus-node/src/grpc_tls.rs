@@ -37,7 +37,6 @@ pub struct GrpcTlsConfig {
 
 /// Error type for TLS configuration.
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)] // Certificate variant may be used for future validation errors
 pub enum TlsConfigError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -83,8 +82,9 @@ impl GrpcTlsConfig {
 
     /// Creates a TLS configuration from a nucleus-identity WorkloadCertificate.
     ///
-    /// This is useful when using SPIRE to obtain certificates dynamically.
-    #[allow(dead_code)] // Used in tests, will be used when SPIRE integration is wired
+    /// Live path: `--grpc-tls-self-issued` in `main.rs` uses this with the
+    /// node's own SVID (`IdentityManager::node_certificate`). Also usable
+    /// with a SPIRE-obtained certificate once that integration is wired.
     pub fn from_workload_cert(
         cert: &WorkloadCertificate,
         trust_bundle: Option<&TrustBundle>,
@@ -119,6 +119,29 @@ impl GrpcTlsConfig {
             server_identity,
             client_ca,
         })
+    }
+
+    /// Builds a server-only gRPC TLS config from the node's own self-issued
+    /// SVID (`--grpc-tls-self-issued`), instead of externally-provided cert
+    /// files.
+    ///
+    /// Always `trust_bundle: None` (server-only, not mTLS): the CLI has no
+    /// SVID of its own to present yet, so requiring one here would refuse
+    /// every existing client. HMAC auth still applies on top, same as the
+    /// plaintext default this opts out of.
+    pub async fn from_node_identity(
+        manager: &crate::identity::IdentityManager,
+    ) -> Result<Self, TlsConfigError> {
+        let cert = manager
+            .node_certificate()
+            .await
+            .map_err(TlsConfigError::Certificate)?;
+        let config = Self::from_workload_cert(&cert, None)?;
+        info!(
+            node_identity = %manager.node_identity().to_spiffe_uri(),
+            "gRPC self-issued TLS enabled (server-only)"
+        );
+        Ok(config)
     }
 
     /// Builds a tonic ServerTlsConfig from this configuration.

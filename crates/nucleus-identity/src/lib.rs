@@ -40,6 +40,7 @@ pub mod dpop;
 pub mod identity;
 pub mod ifc_extension;
 pub mod manager;
+pub mod mtls;
 pub mod oid;
 pub mod session;
 pub mod spiffe_workload_api;
@@ -73,6 +74,7 @@ pub use did::{DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod, did_
 pub use did_binding::{BindingProof, BindingVerification, SpiffeDidBinding};
 pub use did_builder::{
     SvidMaterial, build_binding, build_did_document, extract_svid_material, verify_binding,
+    verify_svid_chain,
 };
 pub use did_crypto::{
     cert_fingerprint, chain_from_base64url, chain_to_base64url, extract_ec_p256_jwk,

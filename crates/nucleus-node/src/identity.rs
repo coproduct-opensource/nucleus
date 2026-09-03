@@ -61,12 +61,48 @@ pub struct IdentityManager {
 impl IdentityManager {
     /// Creates a new identity manager with a self-signed CA.
     ///
-    /// For production, this should be replaced with a SPIRE CA client.
+    /// **The CA root this mints is EPHEMERAL** — a fresh key generated in
+    /// memory, gone on process exit. Every SVID this CA issues stops
+    /// verifying the moment the process restarts, because a new root is not
+    /// the same trust anchor as the old one. Fine for a short-lived process
+    /// (a test, a one-shot CLI invocation); wrong for a node daemon, which is
+    /// why [`Self::new_with_persistent_ca`] exists. For production, this
+    /// should eventually be replaced with a SPIRE CA client.
+    ///
+    /// The node binary itself now calls only `new_with_persistent_ca`, so
+    /// this is unreachable outside `#[cfg(test)]` — where the ~20 call sites
+    /// in this file and `workload_api_vsock.rs` are. Kept as the ergonomic
+    /// constructor for test setup that does not want a tempdir per case.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(trust_domain: impl Into<String>, cert_ttl: Duration) -> Result<Self, String> {
         let trust_domain = trust_domain.into();
         let ca: Arc<dyn CaClient> = Arc::new(
             SelfSignedCa::new(&trust_domain)
                 .map_err(|e| format!("failed to create self-signed CA: {e}"))?,
+        );
+        Ok(Self::with_ca(trust_domain, cert_ttl, ca))
+    }
+
+    /// Creates an identity manager whose CA root survives a process restart.
+    ///
+    /// Loads the root from `ca_dir` (`ca-cert.pem` + `ca-key.pem`), or mints
+    /// and persists a fresh one on first run — see
+    /// [`SelfSignedCa::load_or_create`] for the persistence contract,
+    /// including why a corrupt or partial pair is a hard error rather than a
+    /// silent regeneration.
+    ///
+    /// This is the constructor the node daemon uses. [`Self::new`] remains
+    /// for short-lived callers (tests, one-shot CLI invocations) that do not
+    /// need the root to outlive the process.
+    pub fn new_with_persistent_ca(
+        trust_domain: impl Into<String>,
+        cert_ttl: Duration,
+        ca_dir: &std::path::Path,
+    ) -> Result<Self, String> {
+        let trust_domain = trust_domain.into();
+        let ca: Arc<dyn CaClient> = Arc::new(
+            SelfSignedCa::load_or_create(&trust_domain, ca_dir)
+                .map_err(|e| format!("failed to load or create persistent CA: {e}"))?,
         );
         Ok(Self::with_ca(trust_domain, cert_ttl, ca))
     }
@@ -154,6 +190,77 @@ impl IdentityManager {
             service_account.to_string()
         };
         Identity::new(&self.trust_domain, namespace, sa)
+    }
+
+    /// The node's own SPIFFE identity: `spiffe://<trust_domain>/ns/system/sa/node`.
+    ///
+    /// Stable across restarts by construction (it is a pure function of
+    /// `trust_domain`, not of any generated material), so a certificate
+    /// minted under it is reusable across a restart as long as the CA root
+    /// is also persisted — see [`Self::new_with_persistent_ca`]. Namespace
+    /// `system` / service account `node` deliberately does not collide with
+    /// any pod identity (`identity_for_pod` uses the pod's own namespace) or
+    /// with `AuthorizationPolicy`'s orchestrator/CI-CD prefixes in `auth.rs`,
+    /// which describe CLIENTS this node accepts, not the node's own identity.
+    pub fn node_identity(&self) -> Identity {
+        Identity::new(&self.trust_domain, "system", "node")
+    }
+
+    /// Fetches (minting and caching on first call) the node's own workload
+    /// certificate, signed by this manager's CA. Reuses `SecretManager`'s
+    /// existing cache and refresh machinery — same path pod certificates
+    /// take, just for [`Self::node_identity`] instead of a pod's.
+    ///
+    /// This is what makes the node's own SVID as durable as the CA root
+    /// itself: the identity is fixed, the CA persists (see
+    /// [`Self::new_with_persistent_ca`]), so a certificate minted under it
+    /// verifies across a restart for any peer that cached the CA's trust
+    /// bundle — not just for the process that happened to mint it.
+    pub async fn node_certificate(
+        &self,
+    ) -> Result<std::sync::Arc<nucleus_identity::WorkloadCertificate>, String> {
+        self.fetch_certificate(&self.node_identity()).await
+    }
+
+    /// Builds a self-issued mTLS config for the node's HTTP API: the node's
+    /// own certificate as server identity, and this CA's trust bundle as the
+    /// root a client certificate must chain to.
+    ///
+    /// Unlike [`crate::grpc_tls::GrpcTlsConfig::from_node_identity`]
+    /// (server-only), this is full mTLS: `nucleus_identity::mtls::MtlsListener`
+    /// always requires a client certificate (`TlsServerConfig::build_acceptor`
+    /// builds its verifier without `allow_unauthenticated`) — so a caller with
+    /// no SVID cannot connect at all. Correct once the CLI has one (Move A
+    /// step 5); until then, `--http-mtls-self-issued` is an opt-in mode an
+    /// operator enables knowing that. Using THIS manager's own CA as the
+    /// trust root (rather than requiring separately-provisioned trust-bundle
+    /// files, as the tool-proxy's `--trust-bundle` does) is deliberate: once
+    /// step 5 lands, the CLI's SVID is issued by this same CA, so no further
+    /// wiring is needed here for the trust relationship to already be correct.
+    pub async fn self_issued_http_mtls_config(
+        &self,
+    ) -> Result<nucleus_identity::mtls::MtlsConfig, String> {
+        let cert = self.node_certificate().await?;
+        let trust_bundle = self.ca().trust_bundle().clone();
+        Ok(nucleus_identity::mtls::MtlsConfig::new(
+            (*cert).clone(),
+            trust_bundle,
+        ))
+    }
+
+    /// Wraps `tcp_listener` in a self-issued mTLS listener built from
+    /// [`Self::self_issued_http_mtls_config`]. What `--http-mtls-self-issued`
+    /// uses to build the transport before `axum::serve` runs — kept here
+    /// rather than inline in `main.rs`'s already-large boot sequence, since
+    /// "how do I present myself over TLS" is this type's own responsibility,
+    /// the same reasoning as [`Self::node_certificate`].
+    pub async fn self_issued_http_mtls_listener(
+        &self,
+        tcp_listener: tokio::net::TcpListener,
+    ) -> Result<nucleus_identity::mtls::MtlsListener, String> {
+        let mtls_config = self.self_issued_http_mtls_config().await?;
+        nucleus_identity::mtls::MtlsListener::new(tcp_listener, &mtls_config)
+            .map_err(|e| format!("failed to create HTTP mTLS listener: {e}"))
     }
 
     /// Rebuild the VM registry from the pods already on disk.
@@ -315,7 +422,8 @@ impl IdentityManager {
     /// Fetches a certificate for the given identity, returning the certificate.
     ///
     /// Uses the cache if available, otherwise generates a new certificate.
-    #[allow(dead_code)]
+    /// Live path: `--grpc-tls-self-issued` reaches this via
+    /// [`Self::node_certificate`].
     pub async fn fetch_certificate(
         &self,
         identity: &Identity,
@@ -632,6 +740,213 @@ mod tests {
     async fn test_identity_manager_creation() {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         assert_eq!(manager.trust_domain(), "test.local");
+    }
+
+    /// `new_with_persistent_ca` is what the node binary actually calls now.
+    /// The property that matters: a second manager built against the SAME
+    /// directory issues SVIDs a client trusting the FIRST manager's root
+    /// still accepts -- i.e. it is the same trust anchor, not merely a
+    /// second CA that happens to look similar. Covers the wiring in
+    /// `main.rs`; `SelfSignedCa`'s own persistence contract is covered in
+    /// `nucleus-identity`'s `ca::self_signed::tests::persistence`.
+    #[tokio::test]
+    async fn a_node_restart_keeps_issuing_under_the_same_root() {
+        use nucleus_identity::certificate::Certificate;
+        use nucleus_identity::{TrustBundle, verify_svid_chain};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca_dir = dir.path().join("ca");
+
+        let first = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &ca_dir,
+        )
+        .unwrap();
+        let first_root_pem = first.ca.trust_bundle().roots()[0].to_pem().to_string();
+        let first_bundle = TrustBundle::new(vec![Certificate::from_pem(&first_root_pem).unwrap()]);
+
+        // Simulates a restart: a fresh `IdentityManager` built from scratch
+        // against the same directory, as `main.rs` does on every boot.
+        let second = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &ca_dir,
+        )
+        .unwrap();
+
+        let identity = second.identity_for_pod(Uuid::new_v4(), "default", "post-restart-service");
+        let cert = second.fetch_certificate(&identity).await.unwrap();
+
+        verify_svid_chain(cert.leaf(), &first_bundle).expect(
+            "an SVID issued after a simulated restart must verify against the pre-restart root",
+        );
+    }
+
+    /// The node's own identity is stable (a pure function of trust domain,
+    /// not of generated material) and `node_certificate` mints under it.
+    /// This is what `--grpc-tls-self-issued` relies on in `main.rs`.
+    #[tokio::test]
+    async fn node_certificate_is_minted_under_the_stable_node_identity() {
+        let manager = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
+
+        let identity = manager.node_identity();
+        assert_eq!(
+            identity.to_spiffe_uri(),
+            "spiffe://nucleus.local/ns/system/sa/node"
+        );
+
+        let cert = manager.node_certificate().await.unwrap();
+        assert_eq!(cert.identity(), &identity);
+    }
+
+    /// Combines the node-identity and CA-persistence properties: a
+    /// self-issued cert minted AFTER a simulated restart verifies against a
+    /// trust bundle built from the PRE-restart root, because both the
+    /// identity (pure function of trust domain) and the CA root (persisted,
+    /// see `a_node_restart_keeps_issuing_under_the_same_root`) survive it.
+    #[tokio::test]
+    async fn a_self_issued_node_certificate_survives_a_restart() {
+        use nucleus_identity::certificate::Certificate;
+        use nucleus_identity::{TrustBundle, verify_svid_chain};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca_dir = dir.path().join("ca");
+
+        let first = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &ca_dir,
+        )
+        .unwrap();
+        let first_root_pem = first.ca().trust_bundle().roots()[0].to_pem().to_string();
+        let first_bundle = TrustBundle::new(vec![Certificate::from_pem(&first_root_pem).unwrap()]);
+
+        let second = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &ca_dir,
+        )
+        .unwrap();
+        let cert = second.node_certificate().await.unwrap();
+
+        verify_svid_chain(cert.leaf(), &first_bundle).expect(
+            "a self-issued node cert minted after a simulated restart must verify against \
+             the pre-restart root",
+        );
+    }
+
+    /// The property `--http-mtls-self-issued` depends on, proven with a REAL
+    /// TLS handshake rather than inspecting the config's fields: a peer whose
+    /// certificate was minted by this SAME CA (a pod, say) completes a full
+    /// mTLS handshake against the config `self_issued_http_mtls_config`
+    /// builds; a peer from an unrelated CA is refused. Satisfy-before-refute:
+    /// the positive case is checked first, so a config that accepts nothing
+    /// could not pass this by accident.
+    #[tokio::test]
+    async fn self_issued_http_mtls_config_accepts_same_ca_and_refuses_a_stranger() {
+        use nucleus_identity::{
+            CaClient, CsrOptions, SelfSignedCa, TlsClientConfig, TlsServerConfig,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &dir.path().join("ca"),
+        )
+        .unwrap();
+        let mtls_config = manager.self_issued_http_mtls_config().await.unwrap();
+
+        // A peer minted by the SAME CA -- the shape a real pod SVID has.
+        let same_ca_identity = manager.identity_for_pod(Uuid::new_v4(), "default", "same-ca-peer");
+        let same_ca_cert = manager.fetch_certificate(&same_ca_identity).await.unwrap();
+
+        // --- positive: same-CA peer completes a real handshake ---
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server_cert = mtls_config.server_cert.clone();
+            let server_trust_bundle = mtls_config.trust_bundle.clone();
+            let server_handle = tokio::spawn(async move {
+                let (stream, _peer) = listener.accept().await.unwrap();
+                let acceptor = TlsServerConfig::new(server_cert, server_trust_bundle)
+                    .build_acceptor()
+                    .unwrap();
+                let mut tls = acceptor.accept(stream).await.unwrap();
+                let mut buf = [0u8; 5];
+                tls.read_exact(&mut buf).await.unwrap();
+                assert_eq!(&buf, b"hello");
+                tls.write_all(b"ok").await.unwrap();
+            });
+
+            let client_trust_bundle = mtls_config.trust_bundle.clone();
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let connector = TlsClientConfig::new((*same_ca_cert).clone(), client_trust_bundle)
+                .with_spiffe_trust_domain("nucleus.local")
+                .build_connector()
+                .unwrap();
+            let server_name =
+                rustls::pki_types::ServerName::try_from("nucleus.local".to_string()).unwrap();
+            let mut tls = connector
+                .connect(server_name, stream)
+                .await
+                .expect("a peer certified by the SAME CA must complete the handshake");
+            tls.write_all(b"hello").await.unwrap();
+            let mut buf = [0u8; 2];
+            tls.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"ok");
+
+            server_handle.await.unwrap();
+        }
+
+        // --- negative: a stranger from an unrelated CA is refused ---
+        {
+            let stranger_ca = SelfSignedCa::new("nucleus.local").unwrap();
+            let stranger_identity = Identity::new("nucleus.local", "default", "stranger");
+            let stranger_csr = CsrOptions::new(stranger_identity.to_spiffe_uri())
+                .generate()
+                .unwrap();
+            let stranger_cert = stranger_ca
+                .sign_csr(
+                    stranger_csr.csr(),
+                    stranger_csr.private_key(),
+                    &stranger_identity,
+                    Duration::from_secs(3600),
+                )
+                .await
+                .unwrap();
+            let stranger_trust_bundle = stranger_ca.trust_bundle().clone();
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server_cert = mtls_config.server_cert.clone();
+            let server_trust_bundle = mtls_config.trust_bundle.clone();
+            let server_handle = tokio::spawn(async move {
+                let (stream, _peer) = listener.accept().await.unwrap();
+                let acceptor = TlsServerConfig::new(server_cert, server_trust_bundle)
+                    .build_acceptor()
+                    .unwrap();
+                let result = acceptor.accept(stream).await;
+                assert!(result.is_err(), "a stranger's certificate must be refused");
+            });
+
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let connector = TlsClientConfig::new(stranger_cert, stranger_trust_bundle)
+                .with_spiffe_trust_domain("nucleus.local")
+                .build_connector()
+                .unwrap();
+            let server_name =
+                rustls::pki_types::ServerName::try_from("nucleus.local".to_string()).unwrap();
+            // Either side may be the one that observes the failure first
+            // (the stranger's trust bundle doesn't contain the real server's
+            // CA either) -- both outcomes are the property under test.
+            let _ = connector.connect(server_name, stream).await;
+
+            server_handle.await.unwrap();
+        }
     }
 
     /// C9 Phase 0: a CA injected via `with_ca` (as `Arc<dyn CaClient>`) flows through

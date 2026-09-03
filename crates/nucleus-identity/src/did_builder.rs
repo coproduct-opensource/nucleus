@@ -343,7 +343,12 @@ pub fn verify_binding(
 ///
 /// Checks that the leaf certificate's issuer matches one of the root
 /// certificates in the trust bundle by verifying the signature.
-fn verify_svid_chain(
+///
+/// `pub` rather than private: `ca::self_signed`'s persistence tests, and
+/// `nucleus-node`'s equivalent restart test, reuse this to prove a
+/// reloaded/restarted CA signs under the SAME root as the original instance,
+/// using real webpki chain verification rather than a PEM string comparison.
+pub fn verify_svid_chain(
     leaf: &Certificate,
     trust_bundle: &TrustBundle,
 ) -> std::result::Result<(), String> {
