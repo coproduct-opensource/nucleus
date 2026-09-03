@@ -7264,6 +7264,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-perf"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hex",
+ "nucleus-client",
+ "portcullis",
+ "serde_json",
+ "serde_yaml",
+ "ureq",
+]
+
+[[package]]
 name = "nucleus-permission-market"
 version = "1.0.0"
 dependencies = [
