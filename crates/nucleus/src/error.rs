@@ -23,6 +23,29 @@ pub enum NucleusError {
         reason: String,
     },
 
+    /// The path does not exist.
+    ///
+    /// Distinct from `PathDenied` on purpose: a caller told "access denied"
+    /// reasonably concludes policy refused, and goes looking at a policy that
+    /// had nothing to do with it. Linux hit the same taxonomy confusion from
+    /// the other side -- apparmor once returned ENOENT for a denial, which read
+    /// as "the binary is missing" rather than "apparmor stopped you".
+    #[error("path not found: '{path}'")]
+    PathNotFound {
+        /// The path that does not exist.
+        path: PathBuf,
+    },
+
+    /// The path exists but cannot be used as asked -- a directory read as a
+    /// file, a broken symlink, a bad encoding. Not a policy decision.
+    #[error("path '{path}' cannot be used: {reason}")]
+    PathUnusable {
+        /// The path in question.
+        path: PathBuf,
+        /// The underlying reason, verbatim from the OS.
+        reason: String,
+    },
+
     /// Path escapes sandbox.
     #[error("sandbox escape: path '{path}' resolves outside sandbox root")]
     SandboxEscape {
