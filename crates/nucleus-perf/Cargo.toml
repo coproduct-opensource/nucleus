@@ -19,3 +19,5 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 ureq = { workspace = true }
 nucleus-client = { path = "../nucleus-client" }
+portcullis = { path = "../portcullis", features = ["spec", "dlc"] }
+hex = { workspace = true }

@@ -27,6 +27,24 @@ use clap::Parser;
 enum Cli {
     /// Launch N pods simultaneously, ramping through several values of N.
     Podburst(Burst),
+    /// Run agent tool calls inside a pod and check what came back.
+    Toolcall(ToolCall),
+}
+
+#[derive(Parser)]
+struct ToolCall {
+    /// Node base URL.
+    #[arg(long, default_value = "http://127.0.0.1:8080")]
+    url: String,
+    /// Hex-encoded auth secret for request signing.
+    #[arg(long, env = "NUCLEUS_AUTH_SECRET")]
+    auth_secret: String,
+    /// Actor name recorded on each signed request.
+    #[arg(long, default_value = "nucleus-perf")]
+    actor: String,
+    /// Pod spec used as the template.
+    #[arg(long)]
+    spec: String,
 }
 
 #[derive(Parser)]
@@ -63,7 +81,13 @@ struct Burst {
 }
 
 fn main() -> Result<()> {
-    let Cli::Podburst(b) = Cli::parse();
+    match Cli::parse() {
+        Cli::Podburst(b) => podburst(b),
+        Cli::Toolcall(t) => toolcall(t),
+    }
+}
+
+fn podburst(b: Burst) -> Result<()> {
     // The node uses the hex secret string DIRECTLY as HMAC key bytes -- it does
     // not decode it (see nucleus-cli load_auth_secret). Decoding here yields a
     // 32-byte key against the node's 64-byte one and every request 401s.
@@ -498,3 +522,163 @@ fn set(v: &mut serde_json::Value, ptr: &str, val: serde_json::Value) {
     cur[parts[parts.len() - 1]] = val;
 }
 
+
+// ---- tool calls in pods (rubric stage A) -----------------------------------
+
+/// Mint DLC-D admission for exactly the operations a scenario invokes.
+///
+/// The issuer key is a throwaway from `/dev/urandom`: it never outlives the run
+/// and its only power is over the one ephemeral pod. Crediting ONLY the
+/// operations under test is deliberate — an uncredentialed operation must still
+/// be refused, and that refusal is half of what each iteration proves.
+fn mint_admission(ops: &[&str]) -> Result<(String, String)> {
+    use std::io::Read as _;
+    let mut seed = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .context("no /dev/urandom on this host")?
+        .read_exact(&mut seed)
+        .context("could not read 32 bytes of randomness")?;
+    let mut issuer = String::new();
+    let mut creds = Vec::new();
+    for op in ops {
+        let (pk, sig) = portcullis::says_admission::mint_credential(&seed, op);
+        issuer = hex::encode(pk);
+        creds.push(format!("{op}={}", hex::encode(&sig.bytes)));
+    }
+    Ok((issuer, creds.join(",")))
+}
+
+/// POST a tool call to a pod's own tool-proxy. No auth headers: admission is
+/// carried by the pod spec's `dlc_*` labels, established before the pod ran.
+fn tool_call(
+    proxy: &str,
+    route: &str,
+    body: serde_json::Value,
+) -> Result<(u16, String, u128)> {
+    let payload = body.to_string();
+    let t0 = Instant::now();
+    let mut resp = agent()
+        .post(format!("{proxy}/v1/{route}"))
+        .header("content-type", "application/json")
+        .send(payload.as_bytes())
+        .map_err(|e| anyhow::anyhow!("tool-proxy did not answer /v1/{route}: {e}"))?;
+    let status = resp.status().as_u16();
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    Ok((status, text, t0.elapsed().as_millis()))
+}
+
+/// A read every profile must refuse. Matched by two independent rules in
+/// `PathLattice::block_sensitive`, so a refusal here is policy, not absence.
+const FORBIDDEN_READ: &str = ".ssh/id_rsa";
+
+/// Rubric stage A: run agent tool calls inside a pod and check the answers.
+///
+/// The pod's sandbox is a disk image, not a host mount, so "does the host see
+/// the same bytes" cannot be asked directly. The round trip is the honest
+/// substitute: the HOST generates a payload, the guest writes it, the guest
+/// reads it back, and the host compares. That proves the read path returns real
+/// bytes from the sandbox rather than a plausible-looking empty success.
+fn toolcall(t: ToolCall) -> Result<()> {
+    let secret = t.auth_secret.trim().as_bytes().to_vec();
+    let mut spec: serde_json::Value = {
+        let raw = std::fs::read_to_string(&t.spec)
+            .with_context(|| format!("reading spec {}", &t.spec))?;
+        serde_yaml::from_str(&raw).with_context(|| format!("parsing spec {}", &t.spec))?
+    };
+
+    // Credential ONLY what the scenarios invoke. `web_fetch` is deliberately
+    // uncredentialed so the refusal check cannot pass by accident.
+    let (issuer, creds) = mint_admission(&["read_files", "write_files", "glob_search"])?;
+    set(&mut spec, "/metadata/name", serde_json::json!("perf-toolcall"));
+    set(&mut spec, "/metadata/labels/dlc_trusted_keys", serde_json::json!(issuer));
+    set(&mut spec, "/metadata/labels/dlc_issuer", serde_json::json!(issuer));
+    set(&mut spec, "/metadata/labels/dlc_credentials", serde_json::json!(creds));
+
+    let body = serde_json::to_string(&spec)?;
+    let created = Instant::now();
+    let (id, proxy) = create_pod_with_proxy(&t.url, &secret, &t.actor, &body)?;
+    println!("pod {id} up in {} ms, proxy {proxy}\n", created.elapsed().as_millis());
+
+    // A host-generated payload: the guest cannot have produced these bytes.
+    let nonce = format!("{}-{}", std::process::id(), created.elapsed().as_nanos());
+    let payload = format!("nucleus-perf round trip {nonce}");
+    let path = format!("perf-{nonce}.txt");
+
+    let mut failures = Vec::new();
+    println!("{:<26} {:>7} {:>7}  verdict", "check", "status", "ms");
+
+    let (st, _b, ms) = tool_call(&proxy, "write", serde_json::json!({"path": path, "contents": payload}))?;
+    let ok = (200..300).contains(&st);
+    report("write allowed path", st, ms, ok, &mut failures);
+
+    let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": path}))?;
+    let got = serde_json::from_str::<serde_json::Value>(&b)
+        .ok()
+        .and_then(|v| v.get("contents").and_then(|c| c.as_str()).map(str::to_string));
+    let ok = (200..300).contains(&st) && got.as_deref() == Some(payload.as_str());
+    report("read back == written", st, ms, ok, &mut failures);
+    if !ok {
+        println!("      expected {payload:?}\n      got      {got:?}");
+    }
+
+    // The refusal half. A pod that serves this is not isolating anything.
+    let (st, _b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": FORBIDDEN_READ}))?;
+    let ok = !(200..300).contains(&st);
+    report("forbidden read refused", st, ms, ok, &mut failures);
+
+    // Uncredentialed operation: admission must refuse it even though the pod runs.
+    let (st, _b, ms) = tool_call(&proxy, "web_fetch", serde_json::json!({"url": "http://127.0.0.1/"}))?;
+    let ok = !(200..300).contains(&st);
+    report("uncredentialed refused", st, ms, ok, &mut failures);
+
+    let _ = cancel_pod(&t.url, &secret, &t.actor, &id);
+
+    if failures.is_empty() {
+        println!("\nall checks passed");
+        Ok(())
+    } else {
+        bail!("{} check(s) failed: {}", failures.len(), failures.join(", "));
+    }
+}
+
+fn report(name: &str, status: u16, ms: u128, ok: bool, failures: &mut Vec<String>) {
+    println!(
+        "{name:<26} {status:>7} {ms:>7}  {}",
+        if ok { "ok" } else { "FAILED" }
+    );
+    if !ok {
+        failures.push(name.to_string());
+    }
+}
+
+/// Create a pod and return both its id and the address of its own tool-proxy.
+fn create_pod_with_proxy(
+    url: &str,
+    secret: &[u8],
+    actor: &str,
+    body: &str,
+) -> Result<(String, String)> {
+    let endpoint = format!("{url}/v1/pods");
+    let req = agent().post(&endpoint).header("content-type", "application/json");
+    let mut resp = signed_request(req, secret, actor, body.as_bytes())
+        .send(body)
+        .map_err(|e| anyhow::anyhow!("create pod: {e}"))?;
+    let status = resp.status();
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    if !status.is_success() {
+        bail!("create pod: HTTP {status}: {}", text.trim());
+    }
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("create pod: unparseable response: {text}"))?;
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| anyhow::anyhow!("no pod id in response: {v}"))?
+        .to_string();
+    let proxy = v
+        .get("proxy_addr")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| anyhow::anyhow!("no proxy_addr in response: {v}"))?
+        .to_string();
+    Ok((id, proxy))
+}
