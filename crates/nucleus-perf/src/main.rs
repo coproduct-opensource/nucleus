@@ -23,7 +23,10 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "nucleus-perf", about = "Measure real pod concurrency and start latency")]
+#[command(
+    name = "nucleus-perf",
+    about = "Measure real pod concurrency and start latency"
+)]
 enum Cli {
     /// Launch N pods simultaneously, ramping through several values of N.
     Podburst(Burst),
@@ -101,7 +104,11 @@ fn podburst(b: Burst) -> Result<()> {
     let counts: Vec<usize> = b
         .counts
         .split(',')
-        .map(|s| s.trim().parse::<usize>().context("--counts must be integers"))
+        .map(|s| {
+            s.trim()
+                .parse::<usize>()
+                .context("--counts must be integers")
+        })
         .collect::<Result<_>>()?;
 
     let configured_mib = template
@@ -117,14 +124,25 @@ fn podburst(b: Burst) -> Result<()> {
     );
     println!(
         "{:>5} {:>8} {:>9} {:>9} {:>9} {:>9} {:>8} {:>10} {:>9}",
-        "N", "started", "failed", "sub_p50", "run_p50", "run_p90", "run_max", "rss_total", "rss_each"
+        "N",
+        "started",
+        "failed",
+        "sub_p50",
+        "run_p50",
+        "run_p90",
+        "run_max",
+        "rss_total",
+        "rss_each"
     );
 
     // Preflight: prove the credential works on a GET with an empty body BEFORE
     // launching a burst. Without this, a bad secret is indistinguishable from a
     // host that cannot boot pods -- every pod just "fails" and the table lies.
     match list_pods(&b.url, &secret, &b.actor) {
-        Ok(p) => println!("preflight: authenticated, {} pod(s) already present\n", p.len()),
+        Ok(p) => println!(
+            "preflight: authenticated, {} pod(s) already present\n",
+            p.len()
+        ),
         Err(e) => bail!("preflight failed -- the node rejected a signed request: {e}"),
     }
 
@@ -205,7 +223,11 @@ fn run_level(
             // cid=3 boots, cid=4 and cid=100 panic, while three pods sharing
             // cid=3 run concurrently without complaint.
             if b.vary_cid {
-                set(&mut s, "/spec/vsock/guest_cid", serde_json::json!(b.base_cid + i as u32));
+                set(
+                    &mut s,
+                    "/spec/vsock/guest_cid",
+                    serde_json::json!(b.base_cid + i as u32),
+                );
             }
             set(
                 &mut s,
@@ -268,10 +290,7 @@ fn run_level(
                 ) else {
                     continue;
                 };
-                if ids.contains_key(id)
-                    && !running_at.contains_key(id)
-                    && is_live(state)
-                {
+                if ids.contains_key(id) && !running_at.contains_key(id) && is_live(state) {
                     running_at.insert(id.to_string(), start.elapsed().as_millis());
                 }
             }
@@ -314,7 +333,10 @@ fn run_level(
 /// A pod counts as started once it is no longer pending: the microVM is up.
 fn is_live(state: &str) -> bool {
     let s = state.to_ascii_lowercase();
-    s.contains("running") || s.contains("ready") || s.contains("succeeded") || s.contains("completed")
+    s.contains("running")
+        || s.contains("ready")
+        || s.contains("succeeded")
+        || s.contains("completed")
 }
 
 fn summarise(rows: &[Row], configured_mib: u64) {
@@ -339,7 +361,10 @@ fn summarise(rows: &[Row], configured_mib: u64) {
         );
     }
     if let Some(f) = rows.iter().find(|r| r.failed > 0) {
-        println!("  first level with failures: N={} ({} failed)", f.n, f.failed);
+        println!(
+            "  first level with failures: N={} ({} failed)",
+            f.n, f.failed
+        );
     }
 }
 
@@ -495,7 +520,9 @@ fn meminfo_kb(key: &str) -> Option<u64> {
 }
 
 fn num_cpus() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 // ---- small helpers ---------------------------------------------------------
@@ -514,14 +541,17 @@ fn set(v: &mut serde_json::Value, ptr: &str, val: serde_json::Value) {
     let parts: Vec<&str> = ptr.trim_start_matches('/').split('/').collect();
     let mut cur = v;
     for p in &parts[..parts.len() - 1] {
-        if !cur.get(*p).map(serde_json::Value::is_object).unwrap_or(false) {
+        if !cur
+            .get(*p)
+            .map(serde_json::Value::is_object)
+            .unwrap_or(false)
+        {
             cur[*p] = serde_json::json!({});
         }
         cur = cur.get_mut(*p).expect("just inserted");
     }
     cur[parts[parts.len() - 1]] = val;
 }
-
 
 // ---- tool calls in pods (rubric stage A) -----------------------------------
 
@@ -550,11 +580,7 @@ fn mint_admission(ops: &[&str]) -> Result<(String, String)> {
 
 /// POST a tool call to a pod's own tool-proxy. No auth headers: admission is
 /// carried by the pod spec's `dlc_*` labels, established before the pod ran.
-fn tool_call(
-    proxy: &str,
-    route: &str,
-    body: serde_json::Value,
-) -> Result<(u16, String, u128)> {
+fn tool_call(proxy: &str, route: &str, body: serde_json::Value) -> Result<(u16, String, u128)> {
     let payload = body.to_string();
     let t0 = Instant::now();
     let mut resp = agent()
@@ -589,15 +615,34 @@ fn toolcall(t: ToolCall) -> Result<()> {
     // Credential ONLY what the scenarios invoke. `web_fetch` is deliberately
     // uncredentialed so the refusal check cannot pass by accident.
     let (issuer, creds) = mint_admission(&["read_files", "write_files", "glob_search"])?;
-    set(&mut spec, "/metadata/name", serde_json::json!("perf-toolcall"));
-    set(&mut spec, "/metadata/labels/dlc_trusted_keys", serde_json::json!(issuer));
-    set(&mut spec, "/metadata/labels/dlc_issuer", serde_json::json!(issuer));
-    set(&mut spec, "/metadata/labels/dlc_credentials", serde_json::json!(creds));
+    set(
+        &mut spec,
+        "/metadata/name",
+        serde_json::json!("perf-toolcall"),
+    );
+    set(
+        &mut spec,
+        "/metadata/labels/dlc_trusted_keys",
+        serde_json::json!(issuer),
+    );
+    set(
+        &mut spec,
+        "/metadata/labels/dlc_issuer",
+        serde_json::json!(issuer),
+    );
+    set(
+        &mut spec,
+        "/metadata/labels/dlc_credentials",
+        serde_json::json!(creds),
+    );
 
     let body = serde_json::to_string(&spec)?;
     let created = Instant::now();
     let (id, proxy) = create_pod_with_proxy(&t.url, &secret, &t.actor, &body)?;
-    println!("pod {id} up in {} ms, proxy {proxy}\n", created.elapsed().as_millis());
+    println!(
+        "pod {id} up in {} ms, proxy {proxy}\n",
+        created.elapsed().as_millis()
+    );
 
     let mut failures = Vec::new();
     println!("{:<26} {:>7} {:>7}  verdict", "check", "status", "ms");
@@ -612,7 +657,9 @@ fn toolcall(t: ToolCall) -> Result<()> {
         .ok()
         .and_then(|v| {
             v.get("matches").and_then(|m| m.as_array()).map(|a| {
-                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
             })
         })
         .unwrap_or_default();
@@ -626,7 +673,11 @@ fn toolcall(t: ToolCall) -> Result<()> {
         let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": target}))?;
         let contents = serde_json::from_str::<serde_json::Value>(&b)
             .ok()
-            .and_then(|v| v.get("contents").and_then(|c| c.as_str()).map(str::to_string));
+            .and_then(|v| {
+                v.get("contents")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string)
+            });
         let ok = (200..300).contains(&st) && contents.is_some();
         report(&format!("read {target}"), st, ms, ok, &b, &mut failures);
     } else {
@@ -639,7 +690,11 @@ fn toolcall(t: ToolCall) -> Result<()> {
     report("forbidden read refused", st, ms, ok, &b, &mut failures);
 
     // Uncredentialed operation: admission must refuse it even though the pod runs.
-    let (st, b, ms) = tool_call(&proxy, "web_fetch", serde_json::json!({"url": "http://127.0.0.1/"}))?;
+    let (st, b, ms) = tool_call(
+        &proxy,
+        "web_fetch",
+        serde_json::json!({"url": "http://127.0.0.1/"}),
+    )?;
     let ok = !(200..300).contains(&st);
     report("uncredentialed refused", st, ms, ok, &b, &mut failures);
 
@@ -649,7 +704,11 @@ fn toolcall(t: ToolCall) -> Result<()> {
         println!("\nall checks passed");
         Ok(())
     } else {
-        bail!("{} check(s) failed: {}", failures.len(), failures.join(", "));
+        bail!(
+            "{} check(s) failed: {}",
+            failures.len(),
+            failures.join(", ")
+        );
     }
 }
 
@@ -675,7 +734,9 @@ fn create_pod_with_proxy(
     body: &str,
 ) -> Result<(String, String)> {
     let endpoint = format!("{url}/v1/pods");
-    let req = agent().post(&endpoint).header("content-type", "application/json");
+    let req = agent()
+        .post(&endpoint)
+        .header("content-type", "application/json");
     let mut resp = signed_request(req, secret, actor, body.as_bytes())
         .send(body)
         .map_err(|e| anyhow::anyhow!("create pod: {e}"))?;
