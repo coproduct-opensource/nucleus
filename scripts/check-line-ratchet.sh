@@ -79,6 +79,72 @@ while read -r FILE_PATH CEILING TARGET; do
     echo ""
 done <<< "$ENTRIES"
 
+echo "═══════════════════════════════════════════════════════════════════"
+echo "Sweep: every crates/*/src/**/*.rs file NOT explicitly listed above"
+echo "═══════════════════════════════════════════════════════════════════"
+#
+# Until this section existed, the ratchet enforced exactly the three files
+# an [[files]] entry named — three, out of the several hundred .rs files in
+# the workspace. A file that grew unbounded outside those three was
+# invisible to this gate, the same shape of blind spot the header comment
+# above already documents for "only the first entry": a control that only
+# watches what someone remembered to list is not really watching. Found
+# while a legitimate, well-justified change (the mTLS SPIFFE auth branch)
+# routed its new logic into `auth.rs` specifically because that file had
+# no ceiling at all — the untracked sibling of a tracked file is exactly
+# where bloat hides from a partial gate.
+#
+# DEFAULT_CEILING applies to every swept file that has no [[files]] entry
+# of its own. It is deliberately generous (2500 — see the seeding rationale
+# below) rather than tuned per-file: the three explicit entries above exist
+# because someone is actively watching or shrinking those specific files;
+# the sweep's job is only to make sure nothing ELSE grows unnoticed, not to
+# impose an extraction campaign on the other several hundred files that
+# have never needed one.
+DEFAULT_CEILING=$(awk '
+    /^\[ratchet\]/ { inratchet = 1; next }
+    /^\[/           { inratchet = 0 }
+    inratchet && /^default_ceiling[ \t]*=/ { gsub(/.*= */, ""); print; exit }
+' "$RATCHET_FILE")
+
+if [[ -z "$DEFAULT_CEILING" ]]; then
+    echo "ERROR: [ratchet] has no default_ceiling — cannot sweep untracked files"
+    exit 1
+fi
+
+# The explicitly-covered paths, so the sweep does not re-check (and cannot
+# double-count a violation for) a file that already has its own [[files]]
+# entry above, however permissive or strict that entry is.
+EXPLICIT_PATHS=$(printf '%s\n' "$ENTRIES" | awk '{print $1}')
+
+swept=0
+swept_violations=0
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    if printf '%s\n' "$EXPLICIT_PATHS" | grep -qxF "$f"; then
+        continue
+    fi
+    swept=$((swept + 1))
+    actual=$(wc -l < "$f" | tr -d ' ')
+    if [[ "$actual" -gt "$DEFAULT_CEILING" ]]; then
+        echo "VIOLATION: $f has $actual lines (default ceiling: $DEFAULT_CEILING)"
+        echo "  Either extract code to get back under the default, or — if this"
+        echo "  file legitimately needs more room and someone is going to watch"
+        echo "  it — give it its own [[files]] entry in $RATCHET_FILE seeded at"
+        echo "  its measured size, the same way the three tracked files got theirs."
+        swept_violations=$((swept_violations + 1))
+        violations=$((violations + 1))
+    fi
+done < <(find crates -path '*/src/*' -name '*.rs' -not -path '*/target/*' 2>/dev/null | sort)
+
+if [[ "$swept_violations" -eq 0 ]]; then
+    echo "OK: $swept files swept, all <= $DEFAULT_CEILING lines"
+else
+    echo ""
+    echo "$swept_violations of $swept swept files exceed the default ceiling ($DEFAULT_CEILING)"
+fi
+echo ""
+
 if [[ "$violations" -gt 0 && "$STRICT" == "true" ]]; then
     exit 1
 fi

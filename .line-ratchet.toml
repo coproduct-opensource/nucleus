@@ -4,6 +4,15 @@
 ceiling = 2479
 target = 2500
 step = 1
+# Ceiling applied to every crates/*/src/**/*.rs file with NO [[files]] entry
+# of its own — added 2026-09-03 so the gate covers the whole workspace
+# instead of the three files someone happened to list. Seeded at 2500
+# (matching kernel.rs's own longstanding target/ceiling) after measuring
+# the current tree: exactly 3 files exceed it, and each got its own
+# [[files]] entry below rather than being silently exempted. See
+# `scripts/check-line-ratchet.sh`'s sweep section for the mechanism and the
+# full rationale.
+default_ceiling = 2500
 
 # nucleus-claude-hook removed (moved to nucleus-code product repo)
 
@@ -27,3 +36,28 @@ path = "crates/nucleus-node/src/main.rs"
 ceiling = 4042
 target = 2000
 step = 1
+
+# The three entries below were added 2026-09-03 when the sweep (see
+# `default_ceiling` above) started covering every crates/*/src/**/*.rs file:
+# each already exceeded the 2500 default on the day coverage began. Seeded
+# at their measured size, same convention as the entries above — nobody is
+# actively shrinking these yet, so `step = 0` rather than implying a
+# campaign that isn't happening; raise `step` when one starts.
+
+[[files]]
+path = "crates/portcullis-effects/src/runtime.rs"
+ceiling = 2891
+target = 2500
+step = 0
+
+[[files]]
+path = "crates/portcullis-effects/src/lib.rs"
+ceiling = 2813
+target = 2500
+step = 0
+
+[[files]]
+path = "crates/nucleus-audit/src/main.rs"
+ceiling = 2627
+target = 2500
+step = 0
