@@ -283,6 +283,19 @@ struct Args {
     /// When set, clients must present valid certificates signed by this CA.
     #[arg(long, env = "NUCLEUS_NODE_GRPC_TLS_CA")]
     grpc_tls_ca: Option<PathBuf>,
+    /// Serve gRPC TLS using the node's OWN SPIFFE identity instead of
+    /// externally-provided cert files, when neither `--grpc-tls-cert` nor
+    /// `--grpc-tls-key` is set. Requires `--identity-workload-api-socket` (the
+    /// flag that enables the identity manager). Server-only TLS, not mTLS:
+    /// clients are not required to present a certificate — HMAC auth still
+    /// applies, same as the plaintext default. This does not change what an
+    /// unset default does; it opts a node into a self-issued alternative.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_GRPC_TLS_SELF_ISSUED",
+        default_value_t = false
+    )]
+    grpc_tls_self_issued: bool,
 
     // GitHub OIDC configuration
     /// Enable GitHub OIDC token exchange for CI/CD authentication.
@@ -854,6 +867,22 @@ async fn main() -> Result<(), ApiError> {
                     "both --grpc-tls-cert and --grpc-tls-key must be provided for TLS".to_string(),
                 ));
             }
+            (None, None) if args.grpc_tls_self_issued => match &state.identity_manager {
+                Some(manager) => Some(
+                    grpc_tls::GrpcTlsConfig::from_node_identity(manager)
+                        .await
+                        .map_err(|e| {
+                            ApiError::Driver(format!("gRPC self-issued TLS config failed: {e}"))
+                        })?,
+                ),
+                None => {
+                    return Err(ApiError::Driver(
+                        "--grpc-tls-self-issued requires --identity-workload-api-socket \
+                         (no identity manager configured)"
+                            .to_string(),
+                    ));
+                }
+            },
             (None, None) => None,
         };
 
