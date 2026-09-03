@@ -36,11 +36,18 @@ pub enum PathDenial {
 impl std::fmt::Display for PathDenial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EscapesSandbox { work_dir: Some(w) } => {
-                write!(f, "resolves outside the sandbox root {w}")
-            }
-            Self::EscapesSandbox { work_dir: None } => {
-                write!(f, "could not be normalised")
+            // Deliberately does NOT print `work_dir`. This string is destined for
+            // whoever asked — inside a pod, that is the untrusted guest — and the
+            // sandbox root is host layout. The field stays on the value for
+            // host-side logging; only the rendering withholds it.
+            //
+            // Not theoretical: the tool-proxy's only production call is
+            // `sanitize_error_message(msg, None)`, so the `[sandbox]` redaction
+            // branch never runs, and the generic absolute-path fallback only
+            // rewrites runs longer than five characters — `/work` is exactly
+            // five and would have travelled verbatim.
+            Self::EscapesSandbox { .. } => {
+                write!(f, "resolves outside the sandbox root")
             }
             Self::MatchedBlockedPattern { pattern } => {
                 write!(f, "matched the blocked pattern `{pattern}`")
@@ -885,5 +892,48 @@ mod deny_reason_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod denial_display_tests {
+    use super::*;
+
+    /// The rendered denial is destined for whoever asked. Inside a pod that is
+    /// the untrusted guest, so the sandbox root — host layout — must not appear
+    /// in it, even though the value carries it for host-side logging.
+    #[test]
+    fn the_rendered_escape_does_not_leak_the_sandbox_root() {
+        let d = PathDenial::EscapesSandbox {
+            work_dir: Some("/var/lib/nucleus/sandbox/abc123".to_string()),
+        };
+        let shown = d.to_string();
+        assert!(
+            !shown.contains("/var/lib/nucleus"),
+            "the sandbox root must not reach the rendered message, got {shown:?}"
+        );
+        assert!(
+            shown.contains("outside the sandbox"),
+            "it must still say what went wrong, got {shown:?}"
+        );
+        // The structured field is still there for the host to log.
+        match d {
+            PathDenial::EscapesSandbox { work_dir } => {
+                assert_eq!(work_dir.as_deref(), Some("/var/lib/nucleus/sandbox/abc123"))
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// A blocked GLOB is policy, not layout, and naming it is the whole point —
+    /// there are ~30 in the default set. This is the counterweight to the test
+    /// above: withholding everything would be just as unactionable as before.
+    #[test]
+    fn the_rendered_block_names_the_pattern() {
+        let shown = PathDenial::MatchedBlockedPattern {
+            pattern: "**/.ssh/**".to_string(),
+        }
+        .to_string();
+        assert!(shown.contains("**/.ssh/**"), "got {shown:?}");
     }
 }
