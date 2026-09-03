@@ -139,14 +139,15 @@ fn scan_podspec_dir(dir: &Path, result: &mut DiscoveredConfigs) {
         if !path.is_file() {
             continue;
         }
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if ext == "yaml" || ext == "yml" {
-                // Quick check: does it look like a nucleus PodSpec?
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if content.contains("nucleus") && content.contains("Pod") {
-                        result.pod_specs.push(path);
-                    }
-                }
+        if let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && (ext == "yaml" || ext == "yml")
+        {
+            // Quick check: does it look like a nucleus PodSpec?
+            if let Ok(content) = std::fs::read_to_string(&path)
+                && content.contains("nucleus")
+                && content.contains("Pod")
+            {
+                result.pod_specs.push(path);
             }
         }
     }

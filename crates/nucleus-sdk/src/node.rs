@@ -6,13 +6,13 @@
 use std::sync::Arc;
 
 use nucleus_proto::nucleus_node::{
-    self, node_service_client::NodeServiceClient, CreatePodRequest, Empty, GetPodRequest,
-    GetReceiptRequest, PodId, StreamLogsRequest, WatchPodRequest,
+    self, CreatePodRequest, Empty, GetPodRequest, GetReceiptRequest, PodId, StreamLogsRequest,
+    WatchPodRequest, node_service_client::NodeServiceClient,
 };
 use tonic::transport::Channel;
 
-use crate::auth::AuthStrategy;
 use crate::Error;
+use crate::auth::AuthStrategy;
 
 /// Information about a pod returned by the node service.
 #[derive(Debug, Clone)]

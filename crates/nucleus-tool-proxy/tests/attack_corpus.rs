@@ -15,9 +15,9 @@
 //! probes ONE layer (the IFC flows_to relation); a vector marked `known_gap` is a tracked
 //! finding where that layer does not yet match the intended policy.
 
-use portcullis_core::flow::{intrinsic_label, NodeKind};
-use portcullis_core::flow_algebra::FlowState;
 use portcullis_core::SinkClass;
+use portcullis_core::flow::{NodeKind, intrinsic_label};
+use portcullis_core::flow_algebra::FlowState;
 use serde::Deserialize;
 
 const NOW: u64 = 1_900_000_000; // fixed; flows_to (not flows_to_at) ignores freshness

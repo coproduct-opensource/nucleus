@@ -62,7 +62,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use thiserror::Error;
 
-use crate::ledger::{verify_chain, LedgerEntry};
+use crate::ledger::{LedgerEntry, verify_chain};
 use crate::{CreditEvent, CreditFile};
 
 /// `(identity, seq) -> JSON(LedgerEntry)`. Tuple keys sort lexicographically, so

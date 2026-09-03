@@ -221,10 +221,10 @@ pub fn verify_chain(entries: &[LedgerEntry]) -> Result<(), ChainError> {
     let mut prev: Option<&LedgerEntry> = None;
     let mut expected_seq: u64 = 0;
     for e in entries {
-        if let Some(p) = prev {
-            if p.identity != e.identity {
-                return Err(ChainError::IdentityMismatch);
-            }
+        if let Some(p) = prev
+            && p.identity != e.identity
+        {
+            return Err(ChainError::IdentityMismatch);
         }
         if e.seq != expected_seq {
             return Err(ChainError::SeqGap {
@@ -385,8 +385,8 @@ mod tests {
         let mut a = build_chain("agent-a", 2);
         let b = build_chain("agent-b", 1);
         a.push(b.into_iter().next().unwrap()); // a foreign entry spliced in
-                                               // Identity is the most fundamental invariant, so it is checked first:
-                                               // a foreign-identity entry is caught as IdentityMismatch.
+        // Identity is the most fundamental invariant, so it is checked first:
+        // a foreign-identity entry is caught as IdentityMismatch.
         assert_eq!(verify_chain(&a), Err(ChainError::IdentityMismatch));
     }
 

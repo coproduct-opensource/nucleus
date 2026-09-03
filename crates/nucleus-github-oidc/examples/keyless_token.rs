@@ -13,7 +13,7 @@
 //!   cargo run -p nucleus-github-oidc --features token-exchange --example keyless_token
 //! ```
 
-use nucleus_github_oidc::token_exchange::{exchange_jwt_bearer, GRANT_JWT_BEARER};
+use nucleus_github_oidc::token_exchange::{GRANT_JWT_BEARER, exchange_jwt_bearer};
 
 #[tokio::main]
 async fn main() {

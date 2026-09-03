@@ -5,8 +5,8 @@
 
 use nucleus_eval::EvalCase;
 use nucleus_oracle::{
-    grade, grade_rubric_inputs, DeterminismPinning, GradingBundle, HeldOutRecompute,
-    MetamorphicCheck, MetamorphicRelation, MutantOutcome, MutationAdequacy,
+    DeterminismPinning, GradingBundle, HeldOutRecompute, MetamorphicCheck, MetamorphicRelation,
+    MutantOutcome, MutationAdequacy, grade, grade_rubric_inputs,
 };
 
 fn held_out_case(id: &str, produced: &str, expected: &str) -> EvalCase {

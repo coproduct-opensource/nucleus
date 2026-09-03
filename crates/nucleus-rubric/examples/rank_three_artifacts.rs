@@ -10,8 +10,8 @@
 
 use nucleus_creditworthiness::CreditFile;
 use nucleus_rubric::{
-    counterfactual, faithful_total, pareto_front, rank, winner, Criterion, Provenance, Rubric,
-    Scorecard,
+    Criterion, Provenance, Rubric, Scorecard, counterfactual, faithful_total, pareto_front, rank,
+    winner,
 };
 
 fn main() {

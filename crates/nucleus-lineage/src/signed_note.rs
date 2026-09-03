@@ -228,7 +228,7 @@ pub fn format_checkpoint_body(
     tree_size: u64,
     root_hash: &[u8; 32],
 ) -> Result<String, SignedNoteError> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     validate_origin(origin)?;
     let root_b64 = STANDARD.encode(root_hash);
     Ok(format!("{origin}\n{tree_size}\n{root_b64}\n"))
@@ -260,7 +260,7 @@ pub fn format_signature_line(
     key_id: &[u8; 4],
     signature: &[u8],
 ) -> Result<String, SignedNoteError> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     validate_key_name(key_name)?;
     let mut payload = Vec::with_capacity(4 + signature.len());
     payload.extend_from_slice(key_id);
@@ -293,7 +293,7 @@ pub struct ParsedSignatureLine {
 /// check while displaying as the trusted name in UIs that don't
 /// Unicode-normalize.
 pub fn parse_signature_line(line: &str) -> Result<ParsedSignatureLine, SignedNoteError> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     let rest = line
         .strip_prefix(SIG_LINE_PREFIX)
         .ok_or(SignedNoteError::MissingPrefix)?;
@@ -341,7 +341,7 @@ mod tests {
         // Pubkey portion (after the 1-byte sig type 0x01) is the
         // last 32 bytes of the base64 payload "Aeky...3U2k" minus the
         // leading 0x01 sig-type byte.
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
         let raw = STANDARD
             .decode("AekyeRrm56hApGFkyQR4ZCbV54Id2LKaANYcrnKv3U2k")
             .unwrap();
@@ -358,7 +358,7 @@ mod tests {
         let body = format_checkpoint_body("nucleus.example.com/log42", 5, &[0x42u8; 32]).unwrap();
         // Hand-computed reference: lines separated by single \n,
         // base64 of 32-byte root.
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
         let expected_root = STANDARD.encode([0x42u8; 32]);
         assert_eq!(
             body,
@@ -486,7 +486,7 @@ mod tests {
         // Build a signature line whose key_name contains NBSP.
         // The line passes the ASCII-space count (still exactly one),
         // but the key_name validator must catch the NBSP.
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
         let mut payload = vec![0x12, 0x34, 0x56, 0x78];
         payload.extend_from_slice(&[0xAAu8; 64]);
         let line = format!(

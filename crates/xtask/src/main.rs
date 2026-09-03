@@ -17,7 +17,7 @@
 
 use std::process::Command as ProcessCommand;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -62,7 +62,21 @@ enum Command {
         #[arg(long)]
         changed_files: Option<String>,
     },
+    /// Turn observed CANCELLED workflow runs into a SAFE set of re-runs.
+    ///
+    /// Re-running a run makes it new, so `cancel-in-progress` cancels its
+    /// sibling in the same concurrency group. Re-running two runs of the SAME
+    /// workflow on one PR therefore makes each cancel the other and the number
+    /// of cancelled checks goes up.
+    ///
+    /// Reads `[{"pr":N,"workflow":"...","run_id":N}, ...]` on stdin and prints
+    /// one run id per line: at most one per (pr, workflow), never dropping a
+    /// workflow. The constraint is the map key, so the unsafe batch is not a
+    /// value this can emit.
+    RerunPlan,
 }
+
+mod rerun_plan;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
@@ -73,6 +87,7 @@ fn main() -> Result<()> {
             candidate,
             changed_files,
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
+        Command::RerunPlan => rerun_plan_cmd(),
     }
 }
 
@@ -80,7 +95,7 @@ fn main() -> Result<()> {
 /// mode: monotonicity + `may_not_modify`, signatures skipped). Exits the process
 /// with code 1 on rejection so CI fails the PR.
 fn policy_gate(base: &str, candidate: &str, changed_files: Option<&str>) -> Result<()> {
-    use ck_kernel::{gate_manifest_amendment, GateMode};
+    use ck_kernel::{GateMode, gate_manifest_amendment};
     use ck_types::{AdmissionDecision, PolicyManifest};
 
     let base_src =
@@ -187,10 +202,10 @@ fn collect_sh(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Strin
                 continue;
             }
             collect_sh(root, &path, out)?;
-        } else if name.ends_with(".sh") {
-            if let Ok(rel) = path.strip_prefix(root) {
-                out.push(rel.to_string_lossy().into_owned());
-            }
+        } else if name.ends_with(".sh")
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            out.push(rel.to_string_lossy().into_owned());
         }
     }
     Ok(())
@@ -275,6 +290,54 @@ fn check_isolation() -> Result<()> {
             failed.join(", ")
         ))
     }
+}
+
+/// Read observed cancelled runs on stdin, print a safe re-run set.
+///
+/// The observation is I/O and belongs to the caller (`gh api graphql …`); this
+/// is only the decision, which is why it is testable with no network.
+fn rerun_plan_cmd() -> Result<()> {
+    use std::io::Read;
+    let mut raw = String::new();
+    std::io::stdin().read_to_string(&mut raw)?;
+
+    #[derive(serde::Deserialize)]
+    struct Observed {
+        pr: u64,
+        workflow: String,
+        run_id: u64,
+    }
+    let observed: Vec<Observed> = serde_json::from_str(&raw).map_err(|e| {
+        anyhow::anyhow!("stdin is not a JSON array of {{pr, workflow, run_id}}: {e}")
+    })?;
+
+    let plan = rerun_plan::RerunPlan::from_observed(observed.into_iter().map(|o| {
+        rerun_plan::CancelledRun {
+            pr: o.pr,
+            workflow: o.workflow,
+            run_id: o.run_id,
+        }
+    }));
+
+    if plan.is_empty() {
+        eprintln!("rerun-plan: nothing cancelled — no re-runs needed");
+        return Ok(());
+    }
+
+    for id in plan.run_ids() {
+        println!("{id}");
+    }
+    // Report the COVERAGE, not just the count: the failure a naive dedupe
+    // introduces is dropping a workflow entirely, and that is invisible in a
+    // number.
+    for k in plan.keys() {
+        eprintln!("  #{} {}", k.pr, k.workflow);
+    }
+    eprintln!(
+        "rerun-plan: {} run(s), at most one per (pr, workflow)",
+        plan.len()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

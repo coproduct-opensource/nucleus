@@ -110,7 +110,9 @@ pub enum NucleusError {
 
     /// Subprocess execution refused because the achieved isolation is weaker than
     /// the policy's required minimum. Never silently downgrade (most-paranoid #2).
-    #[error("isolation insufficient: policy requires [{required}] but the spawn path provides only [{achieved}]")]
+    #[error(
+        "isolation insufficient: policy requires [{required}] but the spawn path provides only [{achieved}]"
+    )]
     IsolationInsufficient {
         /// The isolation the policy demands (`effective_minimum_isolation`).
         required: String,

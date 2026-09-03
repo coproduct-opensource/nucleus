@@ -182,10 +182,12 @@ fn check_file_descriptors(fails: &mut Vec<String>) {
     };
     let mut fds: Vec<u32> = Vec::new();
     for entry in entries.flatten() {
-        if let Some(name) = entry.file_name().to_str() {
-            if let Ok(fd) = name.parse::<u32>() {
-                fds.push(fd);
-            }
+        // Let-chain: clippy's `collapsible_if` fires on the nested form under
+        // edition 2024, and CI runs -D warnings.
+        if let Some(name) = entry.file_name().to_str()
+            && let Ok(fd) = name.parse::<u32>()
+        {
+            fds.push(fd);
         }
     }
     fds.sort_unstable();

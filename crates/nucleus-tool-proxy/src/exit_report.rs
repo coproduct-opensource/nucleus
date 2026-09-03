@@ -5,7 +5,7 @@
 //! captures the audit chain tail, writing this as the final audit log entry.
 //! The host (nucleus-node) reads this to build an `ExecutionReceipt`.
 
-use nucleus_spec::{sha256_bytes_hex, ExitReport};
+use nucleus_spec::{ExitReport, sha256_bytes_hex};
 use portcullis::trace_monitor::TraceMonitor;
 use sha2::{Digest, Sha256};
 use std::path::Path;

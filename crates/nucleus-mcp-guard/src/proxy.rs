@@ -220,6 +220,7 @@ pub fn decide_upstream(
     line: &str,
     mode: Mode,
     blocked: &HashSet<String>,
+    pinned: &HashSet<String>,
     monitor: &Mutex<SessionMonitor>,
     pending: &Mutex<HashMap<String, String>>,
 ) -> Upstream {
@@ -245,21 +246,60 @@ pub fn decide_upstream(
         }
     }
 
-    // 2. The trifecta gate on the egress itself. Runs in both modes: observing
-    //    must still produce the finding, or the report would depend on the mode.
-    if refusal.is_none() {
+    // 2. A tool nobody advertised. `blocked` is a known-BAD list: it holds tools
+    //    that were listed and then mutated. A call naming a tool that was never
+    //    in any `tools/list` is not on that list, so it used to be forwarded --
+    //    the guard's whole integrity story rests on having seen the descriptor,
+    //    and here it had seen none.
+    //
+    //    MCP has no tool-definition integrity mechanism of its own: no
+    //    signature, no version a client must pin, no notification when a
+    //    definition changes. Pinning what was advertised is therefore the only
+    //    basis for approving a call, and a call outside the pinned catalogue has
+    //    no basis at all.
+    //
+    //    Refused only when the catalogue is NON-EMPTY. An empty registry means
+    //    no `tools/list` has been seen yet, which is a different and weaker
+    //    finding than "called something outside a known set" -- and refusing
+    //    every call before the first listing would break enforce mode at
+    //    startup rather than secure it.
+    if refusal.is_none() && !pinned.contains(name) {
+        let reason = if pinned.is_empty() {
+            format!(
+                "tool `{name}` was called before any tools/list was seen, so no \
+                 descriptor was ever pinned for it"
+            )
+        } else {
+            format!(
+                "tool `{name}` is not in the pinned catalogue of {} advertised tool(s); \
+                 nothing pinned its descriptor, so there is no approved definition to \
+                 check the call against",
+                pinned.len()
+            )
+        };
+        eprintln!("[mcp-guard] /!\\ {reason}");
         if let Ok(mut m) = monitor.lock() {
-            if let Some(f) = m.observe_call(name) {
-                eprintln!(
-                    "[mcp-guard] /!\\ egress flagged: `{}` while holding [{}] — {}",
-                    f.sink_tool,
-                    f.verdict.declared_inputs.join(" + "),
-                    f.verdict.reason
-                );
-                if mode.enforces() {
-                    refusal = Some(deny_reply(&id, &f.verdict.reason));
-                }
-            }
+            m.observe_untrusted_metadata(name);
+        }
+        if mode.enforces() && !pinned.is_empty() {
+            refusal = Some(deny_reply(&id, &reason));
+        }
+    }
+
+    // 3. The trifecta gate on the egress itself. Runs in both modes: observing
+    //    must still produce the finding, or the report would depend on the mode.
+    if refusal.is_none()
+        && let Ok(mut m) = monitor.lock()
+        && let Some(f) = m.observe_call(name)
+    {
+        eprintln!(
+            "[mcp-guard] /!\\ egress flagged: `{}` while holding [{}] — {}",
+            f.sink_tool,
+            f.verdict.declared_inputs.join(" + "),
+            f.verdict.reason
+        );
+        if mode.enforces() {
+            refusal = Some(deny_reply(&id, &f.verdict.reason));
         }
     }
 
@@ -290,12 +330,12 @@ pub fn handle_downstream(
         return;
     };
     // The discovery channel.
-    if let Some(tools) = parse_tools_list(&v) {
-        if let Ok(mut reg) = registry.lock() {
-            let bad = vet_tools_list(&mut reg, monitor, &tools, pin_file);
-            if let Ok(mut b) = blocked.lock() {
-                b.extend(bad);
-            }
+    if let Some(tools) = parse_tools_list(&v)
+        && let Ok(mut reg) = registry.lock()
+    {
+        let bad = vet_tools_list(&mut reg, monitor, &tools, pin_file);
+        if let Ok(mut b) = blocked.lock() {
+            b.extend(bad);
         }
     }
     // The call channel.
@@ -304,10 +344,10 @@ pub fn handle_downstream(
             .lock()
             .ok()
             .and_then(|mut p| p.remove(&id.to_string()));
-        if let Some(name) = name {
-            if let Ok(mut m) = monitor.lock() {
-                m.observe_result(&name);
-            }
+        if let Some(name) = name
+            && let Ok(mut m) = monitor.lock()
+        {
+            m.observe_result(&name);
         }
     }
 }
@@ -352,13 +392,22 @@ pub async fn run_stdio_proxy_with(
     let mon_a = monitor.clone();
     let pend_a = pending.clone();
     let blocked_a = blocked.clone();
+    let registry_a = registry.clone();
     let up = tokio::spawn(async move {
         let mut lines = BufReader::new(tokio::io::stdin()).lines();
         let mut agent_out = tokio::io::stdout();
         while let Ok(Some(line)) = lines.next_line().await {
             let snapshot = blocked_a.lock().map(|b| b.clone()).unwrap_or_default();
+            // The pinned catalogue as of this line. Snapshotted the same way as
+            // `blocked` so a concurrent tools/list cannot hold the lock across
+            // the decision.
+            let pinned: HashSet<String> = registry_a
+                .lock()
+                .map(|r| r.pinned_names().into_iter().collect())
+                .unwrap_or_default();
             // Enforced denial: answer the agent, never touch the server.
-            if let Upstream::Refuse(err) = decide_upstream(&line, mode, &snapshot, &mon_a, &pend_a)
+            if let Upstream::Refuse(err) =
+                decide_upstream(&line, mode, &snapshot, &pinned, &mon_a, &pend_a)
             {
                 if agent_out.write_all(err.as_bytes()).await.is_err()
                     || agent_out.write_all(b"\n").await.is_err()
@@ -533,7 +582,9 @@ mod tests {
                 "method":"tools/call","params":{"name":"read_file"}
             })
             .to_string();
-            let d1 = decide_upstream(&call, mode, &snapshot, &monitor, &pending);
+            let pinned: HashSet<String> =
+                ["read_file".to_string(), "send_email".to_string()].into();
+            let d1 = decide_upstream(&call, mode, &snapshot, &pinned, &monitor, &pending);
 
             // 4. …and then tries to send data outward.
             let egress = serde_json::json!({
@@ -541,7 +592,7 @@ mod tests {
                 "method":"tools/call","params":{"name":"send_email"}
             })
             .to_string();
-            let d2 = decide_upstream(&egress, mode, &snapshot, &monitor, &pending);
+            let d2 = decide_upstream(&egress, mode, &snapshot, &pinned, &monitor, &pending);
 
             let flagged = monitor.lock().unwrap().exfiltration_possible();
             (vec![d1, d2], flagged)
@@ -592,9 +643,119 @@ mod tests {
         })
         .to_string();
         assert_eq!(
-            decide_upstream(&call, Mode::Enforce, &snapshot, &monitor, &pending),
+            decide_upstream(
+                &call,
+                Mode::Enforce,
+                &snapshot,
+                &["read_file".to_string()].into(),
+                &monitor,
+                &pending
+            ),
             Upstream::Forward,
             "a pinned, unmutated tool must still be callable under --enforce"
+        );
+    }
+
+    // ── calls outside the pinned catalogue (#1637) ───────────────────────────
+
+    fn call_line(tool: &str) -> String {
+        serde_json::json!({
+            "jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":tool}
+        })
+        .to_string()
+    }
+
+    /// The hole: `blocked` is a known-BAD list, so a tool that was never
+    /// advertised is not on it and used to be forwarded. MCP has no tool-
+    /// definition integrity of its own, so the pinned catalogue is the only
+    /// basis for approving a call.
+    #[test]
+    fn a_call_to_a_tool_that_was_never_advertised_is_refused() {
+        let monitor = Mutex::new(SessionMonitor::new(Classifier::default()));
+        let pending = Mutex::new(HashMap::new());
+        let blocked: HashSet<String> = HashSet::new();
+        let pinned: HashSet<String> = ["read_file".to_string()].into();
+
+        let d = decide_upstream(
+            &call_line("exfiltrate"),
+            Mode::Enforce,
+            &blocked,
+            &pinned,
+            &monitor,
+            &pending,
+        );
+        assert!(
+            matches!(d, Upstream::Refuse(_)),
+            "a tool outside the pinned catalogue has no approved descriptor"
+        );
+    }
+
+    /// Non-vacuity: the refusal must be about the catalogue, not about refusing
+    /// everything. A tool that IS pinned still goes through.
+    #[test]
+    fn a_pinned_tool_is_still_forwarded() {
+        let monitor = Mutex::new(SessionMonitor::new(Classifier::default()));
+        let pending = Mutex::new(HashMap::new());
+        let blocked: HashSet<String> = HashSet::new();
+        let pinned: HashSet<String> = ["read_file".to_string()].into();
+
+        assert_eq!(
+            decide_upstream(
+                &call_line("read_file"),
+                Mode::Enforce,
+                &blocked,
+                &pinned,
+                &monitor,
+                &pending
+            ),
+            Upstream::Forward
+        );
+    }
+
+    /// An EMPTY catalogue means no `tools/list` has been seen yet. That is a
+    /// weaker finding than "outside a known set", and refusing every call before
+    /// the first listing would break enforce mode at startup rather than secure
+    /// it. Reported, not refused.
+    #[test]
+    fn a_call_before_any_listing_is_reported_but_not_refused() {
+        let monitor = Mutex::new(SessionMonitor::new(Classifier::default()));
+        let pending = Mutex::new(HashMap::new());
+        let empty: HashSet<String> = HashSet::new();
+
+        assert_eq!(
+            decide_upstream(
+                &call_line("anything"),
+                Mode::Enforce,
+                &empty,
+                &empty,
+                &monitor,
+                &pending
+            ),
+            Upstream::Forward,
+            "an empty catalogue means nothing was listed yet, not that the tool is rogue"
+        );
+    }
+
+    /// Observe mode reports the same finding without blocking — the report must
+    /// not depend on the mode, or observing would under-report.
+    #[test]
+    fn observe_mode_reports_an_unpinned_call_without_blocking() {
+        let monitor = Mutex::new(SessionMonitor::new(Classifier::default()));
+        let pending = Mutex::new(HashMap::new());
+        let blocked: HashSet<String> = HashSet::new();
+        let pinned: HashSet<String> = ["read_file".to_string()].into();
+
+        assert_eq!(
+            decide_upstream(
+                &call_line("exfiltrate"),
+                Mode::Observe,
+                &blocked,
+                &pinned,
+                &monitor,
+                &pending
+            ),
+            Upstream::Forward,
+            "observe never blocks"
         );
     }
 
@@ -609,7 +770,7 @@ mod tests {
             "not json at all",
         ] {
             assert_eq!(
-                decide_upstream(line, Mode::Enforce, &blocked, &monitor, &pending),
+                decide_upstream(line, Mode::Enforce, &blocked, &blocked, &monitor, &pending),
                 Upstream::Forward,
                 "the proxy must stay transparent to: {line}"
             );

@@ -149,16 +149,16 @@ pub async fn verify_sandbox(
     }
 
     // Tier 3: Try orchestrator token
-    if let Some(ref token) = config.sandbox_token {
-        if !token.is_empty() {
-            match try_orchestrator_token(token, &config.auth_secret) {
-                Ok(proof) => {
-                    info!("sandbox proof established: {proof}");
-                    return Ok(proof);
-                }
-                Err(e) => {
-                    warn!("orchestrator token invalid: {e}");
-                }
+    if let Some(ref token) = config.sandbox_token
+        && !token.is_empty()
+    {
+        match try_orchestrator_token(token, &config.auth_secret) {
+            Ok(proof) => {
+                info!("sandbox proof established: {proof}");
+                return Ok(proof);
+            }
+            Err(e) => {
+                warn!("orchestrator token invalid: {e}");
             }
         }
     }
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_expired_token_rejected() {
-        use hmac::{digest::KeyInit, Mac};
+        use hmac::{Mac, digest::KeyInit};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let secret = b"test-secret";

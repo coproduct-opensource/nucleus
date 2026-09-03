@@ -55,11 +55,7 @@ pub fn check_dns_allowlist(dns_allow: &[String], host: &str, port: u16) -> Resul
         }
     });
 
-    if allowed {
-        Ok(())
-    } else {
-        Err(host_port)
-    }
+    if allowed { Ok(()) } else { Err(host_port) }
 }
 
 /// Split a pattern into (host, port), handling IPv6 bracket notation.

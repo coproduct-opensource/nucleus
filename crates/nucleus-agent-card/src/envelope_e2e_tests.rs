@@ -6,16 +6,16 @@
 //! Gated on `sign` (to produce a genuinely signed card) AND `envelope`
 //! (the lift/narrow seam under test).
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::SystemRandom;
-use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
 
 use crate::card::{
-    AgentCapabilities, AgentCard, AgentInterface, EnforcementRule, NucleusClaims,
-    RuntimeGuaranteeProfile, A2A_PROTOCOL_VERSION,
+    A2A_PROTOCOL_VERSION, AgentCapabilities, AgentCard, AgentInterface, EnforcementRule,
+    NucleusClaims, RuntimeGuaranteeProfile,
 };
-use crate::envelope::{card_claims_from_projection, to_capability_projection, CardClaims};
+use crate::envelope::{CardClaims, card_claims_from_projection, to_capability_projection};
 use crate::jwk::JsonWebKey;
 use crate::sign::sign_card;
 use crate::verify::verify_card;

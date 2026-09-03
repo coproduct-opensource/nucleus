@@ -59,9 +59,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
 
 use crate::error::OidcError;
@@ -409,13 +409,13 @@ impl FederationStore {
         // Anti-rollback (HARDENING beyond the spec SHOULD): require a
         // strictly-increasing sequence. Keep the existing good key set on
         // rejection — never blank it.
-        if let Some(last) = state.last_accepted_seq {
-            if bundle.spiffe_sequence <= last {
-                return Err(OidcError::BundleRollback {
-                    fetched: bundle.spiffe_sequence,
-                    last,
-                });
-            }
+        if let Some(last) = state.last_accepted_seq
+            && bundle.spiffe_sequence <= last
+        {
+            return Err(OidcError::BundleRollback {
+                fetched: bundle.spiffe_sequence,
+                last,
+            });
         }
 
         state.keys = bundle.jwt_svid_keys();

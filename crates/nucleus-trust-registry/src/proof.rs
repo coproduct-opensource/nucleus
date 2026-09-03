@@ -26,7 +26,7 @@
 //! The verifying key is selected from the supplied GitHub JWKS by `kid`
 //! only; nothing in the token chooses its own key.
 
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use nucleus_oidc_core::Jwks;
 use serde::Deserialize;
 
@@ -145,7 +145,7 @@ pub fn verify_proof_of_control(
         other => {
             return Err(RegistryError::ProofOfControl(format!(
                 "GitHub OIDC key type {other:?} not usable for RS256"
-            )))
+            )));
         }
     };
 

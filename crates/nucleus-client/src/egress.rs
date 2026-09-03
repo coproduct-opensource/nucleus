@@ -113,10 +113,11 @@ impl EgressPolicy {
             if let Some(suffix) = p.strip_prefix("*.") {
                 // `*.example.com` matches `api.example.com`, and must NOT match
                 // `example.com` itself nor `notexample.com`.
-                if let Some(rest) = host.strip_suffix(suffix) {
-                    if rest.ends_with('.') && rest.len() > 1 {
-                        return Some(Admitted { host });
-                    }
+                if let Some(rest) = host.strip_suffix(suffix)
+                    && rest.ends_with('.')
+                    && rest.len() > 1
+                {
+                    return Some(Admitted { host });
                 }
             }
         }

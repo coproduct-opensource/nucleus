@@ -167,22 +167,23 @@ pub fn clear_combinatorial_2good(
 
         // Welfare of OTHER winners in the chosen allocation.
         let mut w_others: u128 = 0;
-        if let Some(a_idx) = win_a_idx {
-            if a_idx != excluded_idx {
-                if win_b_idx == Some(a_idx) {
-                    // Bundle win — the welfare is v_ab, but if it's
-                    // the bundle winner who isn't excluded, that's
-                    // their *full* contribution.
-                    w_others += u128::from(bids[a_idx].v_ab_micro_usd);
-                } else {
-                    w_others += u128::from(bids[a_idx].v_a_micro_usd);
-                }
+        if let Some(a_idx) = win_a_idx
+            && a_idx != excluded_idx
+        {
+            if win_b_idx == Some(a_idx) {
+                // Bundle win — the welfare is v_ab, but if it's
+                // the bundle winner who isn't excluded, that's
+                // their *full* contribution.
+                w_others += u128::from(bids[a_idx].v_ab_micro_usd);
+            } else {
+                w_others += u128::from(bids[a_idx].v_a_micro_usd);
             }
         }
-        if let Some(b_idx) = win_b_idx {
-            if b_idx != excluded_idx && win_b_idx != win_a_idx {
-                w_others += u128::from(bids[b_idx].v_b_micro_usd);
-            }
+        if let Some(b_idx) = win_b_idx
+            && b_idx != excluded_idx
+            && win_b_idx != win_a_idx
+        {
+            w_others += u128::from(bids[b_idx].v_b_micro_usd);
         }
         w_without.saturating_sub(w_others)
     };

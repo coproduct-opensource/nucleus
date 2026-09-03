@@ -2,15 +2,15 @@
 
 use nucleus_envelope::{Bundle, BundleBuilder, TrustAnchor};
 use nucleus_lineage::{
-    canonical_edge_bytes, CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink, Jwks, LineageEdge,
-    LineageSink, LocalIssuer, Proof,
+    CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink, Jwks, LineageEdge, LineageSink, LocalIssuer,
+    Proof, canonical_edge_bytes,
 };
 
 /// Deterministic issuer secret seed.
 const FIXTURE_ISSUER_SEED: [u8; 32] = [0x42; 32];
 
 pub fn known_good_issuer() -> LocalIssuer {
-    use ed25519_dalek::{SigningKey, SECRET_KEY_LENGTH};
+    use ed25519_dalek::{SECRET_KEY_LENGTH, SigningKey};
     let mut bytes = [0u8; SECRET_KEY_LENGTH];
     bytes.copy_from_slice(&FIXTURE_ISSUER_SEED);
     let sk = SigningKey::from_bytes(&bytes);

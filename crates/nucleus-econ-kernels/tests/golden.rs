@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 use nucleus_econ_kernels::{
-    classify, refund, route_to_commons, run_vcg, seller_gross, CommonsShare, IntegerBid,
-    IntegerProposal, Verdict,
+    CommonsShare, IntegerBid, IntegerProposal, Verdict, classify, refund, route_to_commons,
+    run_vcg, seller_gross,
 };
 use serde_json::Value;
 

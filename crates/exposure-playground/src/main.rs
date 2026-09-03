@@ -9,9 +9,9 @@ use std::time::Duration;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 use exposure_playground::app::{App, MeetSide, Screen};
 use exposure_playground::ui;
@@ -49,28 +49,27 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         terminal.draw(|f| ui::draw(f, app))?;
 
         // Poll for events with timeout
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                // Global quit keys
-                if key.code == KeyCode::Char('q')
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
-                {
-                    return Ok(());
-                }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            // Global quit keys
+            if key.code == KeyCode::Char('q')
+                || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+            {
+                return Ok(());
+            }
 
-                // Handle input based on current screen
-                match app.screen {
-                    Screen::UninhabitableState => handle_uninhabitable_input(app, key.code),
-                    Screen::TraceChain => handle_trace_input(app, key.code),
-                    Screen::Attacks => handle_attacks_input(app, key.code),
-                    Screen::Matrix => handle_matrix_input(app, key.code),
-                    Screen::Hasse => handle_hasse_input(app, key.code),
-                    Screen::Meet => handle_meet_input(app, key.code),
-                    Screen::ChainBuilder => handle_chain_builder_input(app, key.code),
-                    Screen::DelegationForest => handle_delegation_forest_input(app, key.code),
-                    Screen::Help => handle_help_input(app, key.code),
-                }
+            // Handle input based on current screen
+            match app.screen {
+                Screen::UninhabitableState => handle_uninhabitable_input(app, key.code),
+                Screen::TraceChain => handle_trace_input(app, key.code),
+                Screen::Attacks => handle_attacks_input(app, key.code),
+                Screen::Matrix => handle_matrix_input(app, key.code),
+                Screen::Hasse => handle_hasse_input(app, key.code),
+                Screen::Meet => handle_meet_input(app, key.code),
+                Screen::ChainBuilder => handle_chain_builder_input(app, key.code),
+                Screen::DelegationForest => handle_delegation_forest_input(app, key.code),
+                Screen::Help => handle_help_input(app, key.code),
             }
         }
     }

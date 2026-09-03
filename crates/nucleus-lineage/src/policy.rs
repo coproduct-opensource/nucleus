@@ -222,15 +222,15 @@ impl Policy {
                     // A decimal threshold larger than the member count is
                     // unsatisfiable; reject early so an operator notices
                     // the typo instead of silently never-quorum-ing.
-                    if let Threshold::K(k) = threshold {
-                        if k > members.len() {
-                            return Err(PolicyError::ThresholdExceedsMembers {
-                                line,
-                                name,
-                                k,
-                                members: members.len(),
-                            });
-                        }
+                    if let Threshold::K(k) = threshold
+                        && k > members.len()
+                    {
+                        return Err(PolicyError::ThresholdExceedsMembers {
+                            line,
+                            name,
+                            k,
+                            members: members.len(),
+                        });
                     }
                     groups.insert(
                         name.clone(),

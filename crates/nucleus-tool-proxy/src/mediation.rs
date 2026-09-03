@@ -9,11 +9,11 @@
 use nucleus::portcullis::kernel::DenyReason;
 use nucleus::portcullis::{CapabilityLevel, Operation};
 
+use nucleus::NucleusError;
 use nucleus::portcullis::action_term::ActionTerm;
 use nucleus::portcullis::flow_graph::FlowGraph;
 use nucleus::portcullis::kernel::{Decision, DecisionToken, Kernel, Verdict};
 use nucleus::portcullis::verdict_sink::{ActorIdentity, VerdictSink};
-use nucleus::NucleusError;
 use tracing::{info, warn};
 
 use crate::ApiError;

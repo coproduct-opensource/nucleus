@@ -16,9 +16,9 @@
 //!   lives in `nucleus-oidc-core::Jwk::public_key()`; CLI wire-up is
 //!   straightforward but deferred to keep this iteration tight.
 
-use anyhow::{anyhow, Context, Result};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 

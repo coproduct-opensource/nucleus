@@ -11,7 +11,7 @@
 
 use nucleus_econ_kernels::extracted::{commons_aeneas, settlement_aeneas};
 use nucleus_econ_kernels::{
-    classify, refund, route_to_commons, seller_gross, CommonsShare, Verdict,
+    CommonsShare, Verdict, classify, refund, route_to_commons, seller_gross,
 };
 use proptest::prelude::*;
 

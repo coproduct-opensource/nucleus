@@ -7,7 +7,7 @@ use std::process::Command;
 mod identity;
 
 #[cfg(target_os = "linux")]
-use nix::mount::{mount, MsFlags};
+use nix::mount::{MsFlags, mount};
 #[cfg(target_os = "linux")]
 use nix::sys::stat::umask;
 
@@ -56,6 +56,27 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    // The environment the tool-proxy is exec'd with, collected rather than
+    // written into THIS process's environment.
+    //
+    // These 28 values used to be `std::env::set_var`. Two things were wrong
+    // with that. Edition 2024 makes `set_var` unsafe — mutating the environment
+    // races any concurrent reader — so keeping it meant 28 `unsafe` blocks.
+    // And several of these are secrets (broker secret, mediation signing key,
+    // AWS secret key, task token): writing them into init's own environment
+    // published them to `/proc/self/environ` and to EVERY later child, when
+    // only the tool-proxy needs them. `Command::envs` scopes them to the one
+    // process that does.
+    //
+    // Order is preserved, which matters: NUCLEUS_TASK_TOKEN is written twice
+    // and the later value must still win, exactly as it did with set_var.
+    let mut child_env: Vec<(std::ffi::OsString, std::ffi::OsString)> = Vec::new();
+    macro_rules! export {
+        ($k:expr, $v:expr) => {
+            child_env.push(($k.into(), $v.into()))
+        };
+    }
+
     #[cfg(target_os = "linux")]
     {
         let _ = umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
@@ -112,7 +133,7 @@ fn run() -> Result<(), String> {
                 // early enough for the fetch to SUCCEED. Before that the fetch
                 // always failed, so this gap was invisible: the pod died one
                 // step earlier for a different reason.
-                std::env::set_var("NUCLEUS_IDENTITY_CERT", identity::svid_cert_path());
+                export!("NUCLEUS_IDENTITY_CERT", identity::svid_cert_path());
             }
             Err(err) => {
                 eprintln!("failed to fetch identity: {err}");
@@ -142,12 +163,12 @@ fn run() -> Result<(), String> {
     if let Some(port) = workload_api_port {
         match identity::fetch_broker_secret(port) {
             Ok(cap) => {
-                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", &cap.secret);
+                export!("NUCLEUS_TOOL_PROXY_BROKER_SECRET", &cap.secret);
                 // The port is NOT a secret — it is where to connect — so unlike
                 // the key it is safe to log, and worth logging: a proxy that
                 // cannot reach the broker looks identical to one that was never
                 // given a capability.
-                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_PORT", cap.port.to_string());
+                export!("NUCLEUS_TOOL_PROXY_BROKER_PORT", cap.port.to_string());
                 // Presence only for the secret — never the value, never its length.
                 eprintln!(
                     "fetched broker capability over vsock (broker port {})",
@@ -164,8 +185,8 @@ fn run() -> Result<(), String> {
         // The key VALUE is never logged — only its presence.
         match identity::fetch_mediation_key(port) {
             Ok(Some(mk)) => {
-                std::env::set_var("NUCLEUS_MEDIATION_SIGNING_KEY", &mk.signing_key);
-                std::env::set_var("NUCLEUS_MEDIATION_SPIFFE_ID", &mk.spiffe_id);
+                export!("NUCLEUS_MEDIATION_SIGNING_KEY", &mk.signing_key);
+                export!("NUCLEUS_MEDIATION_SPIFFE_ID", &mk.spiffe_id);
                 eprintln!("fetched mediation signing key over vsock (receipts enabled)");
             }
             Ok(None) => eprintln!("no mediation key provisioned — receipts disabled"),
@@ -183,10 +204,10 @@ fn run() -> Result<(), String> {
         // failure mode is audit degradation, which the proxy logs.
         match identity::fetch_audit_credentials(port) {
             Ok(Some(creds)) => {
-                std::env::set_var("AWS_ACCESS_KEY_ID", &creds.access_key_id);
-                std::env::set_var("AWS_SECRET_ACCESS_KEY", &creds.secret_access_key);
+                export!("AWS_ACCESS_KEY_ID", &creds.access_key_id);
+                export!("AWS_SECRET_ACCESS_KEY", &creds.secret_access_key);
                 if let Some(token) = &creds.session_token {
-                    std::env::set_var("AWS_SESSION_TOKEN", token);
+                    export!("AWS_SESSION_TOKEN", token);
                 }
                 // Presence only — never the values, never their length.
                 eprintln!("fetched audit-sink credentials over vsock");
@@ -206,14 +227,14 @@ fn run() -> Result<(), String> {
         match identity::fetch_pod_caller_token(port) {
             Ok(id) => {
                 eprintln!("fetched pod caller token over vsock");
-                std::env::set_var("NUCLEUS_POD_CALLER_TOKEN", id.token);
+                export!("NUCLEUS_POD_CALLER_TOKEN", id.token);
                 // The node verifies the (pod_id, token) PAIR; set the id only when
                 // the same socket served it, so a token is never presented without
                 // the id it was minted with. A legacy node serves no id, leaving
                 // the pod unidentified exactly as before (fail-closed to operator).
                 if let Some(pod_id) = id.pod_id {
                     eprintln!("fetched pod id over vsock");
-                    std::env::set_var("NUCLEUS_POD_ID", pod_id);
+                    export!("NUCLEUS_POD_ID", pod_id);
                 }
             }
             Err(err) => {
@@ -226,9 +247,9 @@ fn run() -> Result<(), String> {
 
         match identity::fetch_task_token(port) {
             Ok(Some(t)) => {
-                std::env::set_var("NUCLEUS_TASK_TOKEN", &t.token);
-                std::env::set_var("NUCLEUS_TASK_TOKEN_NONCE", &t.nonce);
-                std::env::set_var("NUCLEUS_TASK_TOKEN_ISSUER", &t.issuer);
+                export!("NUCLEUS_TASK_TOKEN", &t.token);
+                export!("NUCLEUS_TASK_TOKEN_NONCE", &t.nonce);
+                export!("NUCLEUS_TASK_TOKEN_ISSUER", &t.issuer);
                 token_from_vsock = true;
                 eprintln!("fetched session task token over vsock");
             }
@@ -271,7 +292,7 @@ fn run() -> Result<(), String> {
     // signatures; the secret is legacy for pods still provisioned with one.
     let approval_pubkeys = parse_cmdline_secret(&cmdline, "nucleus.approval_pubkeys");
     if let Some(ref keys) = approval_pubkeys {
-        std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS", keys);
+        export!("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS", keys);
     }
 
     let approval_secret = parse_cmdline_secret(&cmdline, "nucleus.approval_secret")
@@ -288,10 +309,10 @@ fn run() -> Result<(), String> {
     }
 
     if let Some(auth_secret) = auth_secret {
-        std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
+        export!("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
     }
     if let Some(approval_secret) = approval_secret {
-        std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
+        export!("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
     }
 
     // Sandbox token is optional — Tier 3 fallback when SVID doesn't carry
@@ -304,9 +325,9 @@ fn run() -> Result<(), String> {
     if let Some(port) = workload_api_port {
         match identity::fetch_dlc_admission(port) {
             Ok(Some(m)) => {
-                std::env::set_var("NUCLEUS_DLC_TRUSTED_KEYS", &m.trusted_keys);
-                std::env::set_var("NUCLEUS_DLC_ISSUER", &m.issuer);
-                std::env::set_var("NUCLEUS_DLC_CREDENTIALS", &m.credentials);
+                export!("NUCLEUS_DLC_TRUSTED_KEYS", &m.trusted_keys);
+                export!("NUCLEUS_DLC_ISSUER", &m.issuer);
+                export!("NUCLEUS_DLC_CREDENTIALS", &m.credentials);
                 eprintln!("fetched DLC admission provisioning over the workload API");
             }
             Ok(None) => {}
@@ -317,7 +338,7 @@ fn run() -> Result<(), String> {
     if let Some(sandbox_token) = parse_cmdline_secret(&cmdline, "nucleus.sandbox_token")
         .or_else(|| read_secret("/etc/nucleus/sandbox.token"))
     {
-        std::env::set_var("NUCLEUS_SANDBOX_TOKEN", sandbox_token);
+        export!("NUCLEUS_SANDBOX_TOKEN", sandbox_token);
     }
 
     // Live-path session capability token (optional). The node injects it on the
@@ -338,12 +359,12 @@ fn run() -> Result<(), String> {
             .and_then(|b| String::from_utf8(b).ok())
         {
             Some(token_json) => {
-                std::env::set_var("NUCLEUS_TASK_TOKEN", token_json);
+                export!("NUCLEUS_TASK_TOKEN", token_json);
                 if let Some(nonce) = parse_cmdline_secret(&cmdline, "nucleus.task_token_nonce") {
-                    std::env::set_var("NUCLEUS_TASK_TOKEN_NONCE", nonce);
+                    export!("NUCLEUS_TASK_TOKEN_NONCE", nonce);
                 }
                 if let Some(issuer) = parse_cmdline_secret(&cmdline, "nucleus.task_token_issuer") {
-                    std::env::set_var("NUCLEUS_TASK_TOKEN_ISSUER", issuer);
+                    export!("NUCLEUS_TASK_TOKEN_ISSUER", issuer);
                 }
             }
             None => {
@@ -375,7 +396,7 @@ fn run() -> Result<(), String> {
         ),
     ] {
         if let Some(val) = parse_cmdline_secret(&cmdline, arg) {
-            std::env::set_var(env_var, val);
+            export!(env_var, val);
         }
     }
 
@@ -383,14 +404,14 @@ fn run() -> Result<(), String> {
     // fetched over the workload API above, before any workload exists. Only
     // the region remains here: per-fleet configuration, not a secret.
     if let Some(val) = parse_cmdline_secret(&cmdline, "nucleus.aws_default_region") {
-        std::env::set_var("AWS_DEFAULT_REGION", val);
+        export!("AWS_DEFAULT_REGION", val);
     }
 
     let audit_path = resolve_audit_path();
-    std::env::set_var("NUCLEUS_TOOL_PROXY_AUDIT_LOG", audit_path.clone());
-    std::env::set_var("NUCLEUS_TOOL_PROXY_BOOT_ACTOR", "guest-init");
+    export!("NUCLEUS_TOOL_PROXY_AUDIT_LOG", audit_path.clone());
+    export!("NUCLEUS_TOOL_PROXY_BOOT_ACTOR", "guest-init");
     if let Some(report) = build_boot_report(&spec_path, net_config.as_ref(), &audit_path) {
-        std::env::set_var("NUCLEUS_TOOL_PROXY_BOOT_REPORT", report);
+        export!("NUCLEUS_TOOL_PROXY_BOOT_REPORT", report);
     }
 
     remount_root_ro()?;
@@ -416,7 +437,7 @@ fn run() -> Result<(), String> {
     // Anything that makes the guest bind a TCP socket — a spec without vsock, a
     // second listener, a health endpoint on 127.0.0.1 — reintroduces the need,
     // and `EADDRNOTAVAIL` from PID 1 panics the kernel rather than logging.
-    exec_proxy(&spec_path);
+    exec_proxy(&spec_path, child_env);
     Ok(())
 }
 
@@ -683,7 +704,7 @@ fn attest_egress_confinement() {
     }
 }
 
-fn exec_proxy(spec_path: &str) {
+fn exec_proxy(spec_path: &str, child_env: Vec<(std::ffi::OsString, std::ffi::OsString)>) {
     // Article 12 record-keeping ON for the live path (EU AI Act Art. 12): every
     // mediation verdict is recorded, and — when a mediator key was delivered
     // (`fetch_mediation_key` above) — signed into a MediationReceipt. The log
@@ -698,6 +719,8 @@ fn exec_proxy(spec_path: &str) {
         .arg(spec_path)
         .arg("--art12-log")
         .arg("/run/nucleus/art12.jsonl")
+        // Scoped to this child: see `child_env` above.
+        .envs(child_env)
         .exec();
     eprintln!("failed to exec {PROXY_BIN}: {err}");
 }
@@ -784,10 +807,10 @@ fn command_exists(name: &str) -> bool {
 fn parse_cmdline_secret(cmdline: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     for token in cmdline.split_whitespace() {
-        if let Some(value) = token.strip_prefix(&prefix) {
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
+        if let Some(value) = token.strip_prefix(&prefix)
+            && !value.is_empty()
+        {
+            return Some(value.to_string());
         }
     }
     None

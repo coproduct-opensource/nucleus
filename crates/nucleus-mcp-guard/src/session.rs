@@ -81,10 +81,10 @@ impl SessionMonitor {
     /// Observe a tool **result**. A [`ToolRole::Source`] adds its data class to the
     /// session taint (deduped).
     pub fn observe_result(&mut self, tool: &str) {
-        if let ToolRole::Source { input } = self.classifier.classify(tool) {
-            if !self.seen.contains(&input) {
-                self.seen.push(input);
-            }
+        if let ToolRole::Source { input } = self.classifier.classify(tool)
+            && !self.seen.contains(&input)
+        {
+            self.seen.push(input);
         }
     }
 

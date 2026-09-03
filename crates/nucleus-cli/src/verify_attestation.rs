@@ -19,7 +19,7 @@
 //! identity, so the guarantee is conditional: *IF you trust this node's key, THEN
 //! the pod ran an artifact with these measurements.*
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nucleus_identity::{
     AttestationRequirements, Claim, SelfMeasuredBackend, SvidAttestationBackend,
@@ -182,13 +182,15 @@ mod tests {
         let (f, att) = mint(true).await;
 
         // Positive control — correct measurement verifies (non-vacuous).
-        assert!(execute(args(
-            &f,
-            att.kernel_hash(),
-            att.rootfs_hash(),
-            att.config_hash()
-        ))
-        .is_ok());
+        assert!(
+            execute(args(
+                &f,
+                att.kernel_hash(),
+                att.rootfs_hash(),
+                att.config_hash()
+            ))
+            .is_ok()
+        );
 
         // Drift — one wrong expected hash reds the CLI verdict.
         let mut wrong = *att.kernel_hash();
@@ -197,13 +199,15 @@ mod tests {
 
         // Absent — a plain cert with require_attestation fails closed.
         let (plain, _) = mint(false).await;
-        assert!(execute(args(
-            &plain,
-            att.kernel_hash(),
-            att.rootfs_hash(),
-            att.config_hash()
-        ))
-        .is_err());
+        assert!(
+            execute(args(
+                &plain,
+                att.kernel_hash(),
+                att.rootfs_hash(),
+                att.config_hash()
+            ))
+            .is_err()
+        );
     }
 
     #[test]

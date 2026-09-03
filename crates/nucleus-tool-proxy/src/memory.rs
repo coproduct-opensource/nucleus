@@ -21,11 +21,11 @@
 //! lives in the two `*_core` functions so it is unit-testable without a full
 //! `AppState`.
 
-use nucleus::portcullis::flow_graph::{FlowGraph, ReleaseAuth};
 use nucleus::portcullis::NodeKind;
+use nucleus::portcullis::flow_graph::{FlowGraph, ReleaseAuth};
 use nucleus_provenance_memory::{
-    declassify, memory_ifc_label, ContentHash, MemoryDerivation, MemoryLabel, MemoryRecord,
-    ProvenanceMemorySet, RecomputeMemory, RecomputeVerdict, SchemaType, SignedDeclassify,
+    ContentHash, MemoryDerivation, MemoryLabel, MemoryRecord, ProvenanceMemorySet, RecomputeMemory,
+    RecomputeVerdict, SchemaType, SignedDeclassify, declassify, memory_ifc_label,
 };
 use serde::{Deserialize, Serialize};
 
@@ -254,7 +254,7 @@ pub fn memory_recall_core(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nucleus_provenance_memory::{recompute::derive_label, SourceClass, TransformRegistry};
+    use nucleus_provenance_memory::{SourceClass, TransformRegistry, recompute::derive_label};
     use sha2::{Digest, Sha256};
 
     fn sha256(bytes: &[u8]) -> [u8; 32] {
@@ -392,8 +392,8 @@ mod tests {
     #[test]
     fn recall_release_flips_the_flowgraph_egress_verdict() {
         use ed25519_dalek::SigningKey;
-        use nucleus::portcullis::exposure_core::ifc_egress_denial;
         use nucleus::portcullis::Operation;
+        use nucleus::portcullis::exposure_core::ifc_egress_denial;
         use nucleus_provenance_memory::{
             DeclassifyWitness, DerivationClass, MemoryAuthority, RecomputeVerdict, SignedDeclassify,
         };

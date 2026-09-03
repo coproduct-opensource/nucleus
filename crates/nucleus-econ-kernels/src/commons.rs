@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(allocs[0].amount_micro, 600_000); // 60%
         assert_eq!(allocs[1].amount_micro, 250_000); // 25%
         assert_eq!(allocs[2].amount_micro, 150_000); // 15%
-                                                     // dusty pool: 100 µ over 60/25/15 → 60/25/15, dust 0 here; test a dusty one
+        // dusty pool: 100 µ over 60/25/15 → 60/25/15, dust 0 here; test a dusty one
         let d = route_to_commons(7, &example_splits()).unwrap();
         assert_eq!(total_routed(&d), 7);
         // 7*6000/10000=4, 7*2500/10000=1, 7*1500/10000=1 → 6; dust 1 → first=5

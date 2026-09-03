@@ -23,8 +23,8 @@
 
 use nucleus_control_plane::{AgentDriverRef, Destination, InputRef, JobId, JobSpec, JobState};
 use nucleus_proto::control_plane::{
-    job_service_server::JobService, JobIdMessage, JobStatus, JobStatusCode, JobSubmission,
-    SubmittedJob,
+    JobIdMessage, JobStatus, JobStatusCode, JobSubmission, SubmittedJob,
+    job_service_server::JobService,
 };
 use tonic::{Request, Response, Status};
 

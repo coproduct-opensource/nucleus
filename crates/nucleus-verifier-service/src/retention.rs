@@ -137,7 +137,7 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{connect_and_migrate, record_verification, VerificationRecord};
+    use crate::db::{VerificationRecord, connect_and_migrate, record_verification};
 
     async fn fresh_pool() -> SqlitePool {
         connect_and_migrate("sqlite::memory:").await.unwrap()

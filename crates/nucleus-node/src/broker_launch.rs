@@ -567,9 +567,15 @@ mod store_population {
     #[test]
     fn a_configured_upstream_with_a_set_variable_is_reachable_by_name() {
         let var = "NUCLEUS_TEST_STORE_POP_HAPPY";
-        std::env::set_var(var, "node-side-token");
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::set_var(var, "node-side-token") };
         let store = store_from_node_environment(&[upstream("model-api", var)]);
-        std::env::remove_var(var);
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::remove_var(var) };
 
         assert_eq!(
             brokered(&store, "model-api").as_deref(),
@@ -594,9 +600,15 @@ mod store_population {
     #[test]
     fn an_empty_variable_registers_nothing() {
         let var = "NUCLEUS_TEST_STORE_POP_EMPTY";
-        std::env::set_var(var, "");
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::set_var(var, "") };
         let store = store_from_node_environment(&[upstream("model-api", var)]);
-        std::env::remove_var(var);
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::remove_var(var) };
         assert_eq!(
             brokered(&store, "model-api"),
             None,
@@ -609,12 +621,18 @@ mod store_population {
     #[test]
     fn one_missing_credential_does_not_discard_the_rest() {
         let var = "NUCLEUS_TEST_STORE_POP_PARTIAL";
-        std::env::set_var(var, "present");
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::set_var(var, "present") };
         let store = store_from_node_environment(&[
             upstream("has-one", var),
             upstream("has-none", "NUCLEUS_TEST_STORE_POP_PARTIAL_MISSING"),
         ]);
-        std::env::remove_var(var);
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+        // reader. Sound here because this runs before any thread that reads the
+        // environment is spawned.
+        unsafe { std::env::remove_var(var) };
 
         assert_eq!(brokered(&store, "has-one").as_deref(), Some("present"));
         assert_eq!(brokered(&store, "has-none"), None);

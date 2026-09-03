@@ -217,7 +217,7 @@ fn decide(response: &str, self_id: &str) -> Verdict {
         Err(e) => {
             return Verdict::Fail {
                 reason: format!("reply is not valid JSON ({e}) — got {trimmed:?}"),
-            }
+            };
         }
     };
 
@@ -244,7 +244,7 @@ fn decide(response: &str, self_id: &str) -> Verdict {
             None => {
                 return Verdict::Fail {
                     reason: format!("a listing entry has no string `id` field — got {entry}"),
-                }
+                };
             }
         }
     }
@@ -262,7 +262,7 @@ fn decide(response: &str, self_id: &str) -> Verdict {
 
 #[cfg(test)]
 mod tests {
-    use super::{decide, parse_pod_id, resolve_self_id, Verdict};
+    use super::{Verdict, decide, parse_pod_id, resolve_self_id};
 
     const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";

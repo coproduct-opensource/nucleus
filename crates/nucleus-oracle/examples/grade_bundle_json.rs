@@ -11,7 +11,7 @@
 //!
 //! Run: `cargo run -p nucleus-oracle --example grade_bundle_json -- bundle1.json [bundle2.json ...]`
 
-use nucleus_oracle::{grade, grade_rubric_inputs, GradingBundle};
+use nucleus_oracle::{GradingBundle, grade, grade_rubric_inputs};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {

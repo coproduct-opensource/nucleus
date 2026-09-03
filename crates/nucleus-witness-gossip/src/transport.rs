@@ -35,8 +35,8 @@
 //!   [`Event::Received`] carries a [`iroh_gossip::api::Message`] whose
 //!   `content: Bytes` is the raw datagram.
 
-use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::TopicId;
+use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use n0_future::StreamExt;
 
 use crate::SignedWitnessHead;
@@ -163,7 +163,7 @@ pub async fn next_head(receiver: &mut GossipReceiver) -> Option<SignedWitnessHea
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     use nucleus_witness::WitnessKey;
 
     const NOTE: &[u8] = b"nucleus.example/log\n5\ncm9vdA==\n";
@@ -250,9 +250,9 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "live QUIC between two iroh endpoints; compiled in CI, run manually"]
-    async fn two_node_gossip_carries_head_consumer_then_verifies(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        use iroh::{endpoint::presets, protocol::Router, Endpoint};
+    async fn two_node_gossip_carries_head_consumer_then_verifies()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use iroh::{Endpoint, endpoint::presets, protocol::Router};
         use iroh_gossip::Gossip;
 
         // A real cosigned head and the key the CONSUMER trusts (slice 1).

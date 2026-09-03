@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use ed25519_dalek::SigningKey;
 use nucleus_provenance_memory::{SignedTaskRef, TokenError, TokenScope};
 use portcullis_core::discharge::{
-    preflight_action, ActionTerm, DischargedBundle, PreflightResult, VerifiedScope,
+    ActionTerm, DischargedBundle, PreflightResult, VerifiedScope, preflight_action,
 };
 use portcullis_core::flow::NodeKind;
 use portcullis_core::ifc_api::FlowTracker;
@@ -38,8 +38,8 @@ use portcullis_core::labeled::{self, Labeled};
 use portcullis_core::{CapabilityLattice, CapabilityLevel, IFCLabel, Operation, SinkClass};
 
 use crate::{
-    production_effects, AgentSpawnEffect, EffectError, FileEffect, GitEffect, ShellEffect,
-    ShellOutput, WebEffect,
+    AgentSpawnEffect, EffectError, FileEffect, GitEffect, ShellEffect, ShellOutput, WebEffect,
+    production_effects,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -691,8 +691,14 @@ impl NucleusRuntime {
         &mut self,
         _token: &UnmediatedAccess,
         proof: DischargedBundle,
+        // `+ use<>` is edition-2024 precise capturing. An RPIT there now captures
+        // every in-scope lifetime, including the `&mut self`, which would keep the
+        // runtime mutably borrowed for as long as the returned effects live --
+        // making `rt.flow_tracker()` unusable afterwards. The value borrows
+        // nothing (`production_effects` takes an owned clone of the policy), so
+        // capturing nothing is both correct and what the 2021 behaviour was.
     ) -> Result<
-        impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect,
+        impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect + use<>,
         RuntimeError,
     > {
         // `preflight_unmediated` discharges against the strictest egress sink,

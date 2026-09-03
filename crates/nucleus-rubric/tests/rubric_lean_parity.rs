@@ -49,7 +49,7 @@
 #![deny(clippy::float_arithmetic)]
 
 use nucleus_rubric::{
-    dominates, faithful_total, pareto_front, winner, Criterion, Provenance, Rubric, Scorecard,
+    Criterion, Provenance, Rubric, Scorecard, dominates, faithful_total, pareto_front, winner,
 };
 use proptest::prelude::*;
 

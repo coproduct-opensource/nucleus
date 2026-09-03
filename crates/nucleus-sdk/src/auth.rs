@@ -141,10 +141,10 @@ impl MtlsConfig {
                 self.key_path
             )));
         }
-        if let Some(ca) = &self.ca_bundle {
-            if !Path::new(ca).exists() {
-                return Err(crate::Error::Config(format!("CA bundle not found: {}", ca)));
-            }
+        if let Some(ca) = &self.ca_bundle
+            && !Path::new(ca).exists()
+        {
+            return Err(crate::Error::Config(format!("CA bundle not found: {}", ca)));
         }
         Ok(())
     }
@@ -216,9 +216,11 @@ mod tests {
         let config = MtlsConfig::new("/nonexistent/cert.pem", "/nonexistent/key.pem");
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("cert file not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("cert file not found")
+        );
     }
 }

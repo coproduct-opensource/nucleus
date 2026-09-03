@@ -56,7 +56,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-use crate::payout::{payout_content_hash_hex, PayoutClaim};
+use crate::payout::{PayoutClaim, payout_content_hash_hex};
 
 /// Domain separator for the canonical settlement-attestation bytes (versioned).
 const SETTLEMENT_DOMAIN: &[u8] = b"nucleus-recompute/settlement-attestation/v1\0";

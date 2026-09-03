@@ -187,7 +187,7 @@ pub enum WitnessError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey, SECRET_KEY_LENGTH};
+    use ed25519_dalek::{SECRET_KEY_LENGTH, Signer, SigningKey};
 
     fn fixture_signer(seed: u8) -> (SigningKey, String) {
         let key = SigningKey::from_bytes(&[seed; SECRET_KEY_LENGTH]);

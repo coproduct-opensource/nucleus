@@ -59,12 +59,12 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // The record TYPE and its canonical preimage live in `portcullis` so the writer
 // here and the verifier in `nucleus-audit` share one definition.
-use portcullis::art12_record::{Art12Record, ART12_SCHEMA_VERSION};
+use portcullis::art12_record::{ART12_SCHEMA_VERSION, Art12Record};
 
 /// What went wrong writing a record.
 #[derive(Debug)]
@@ -122,10 +122,10 @@ impl Art12Log {
         genesis_prev_hash: String,
         console_mirror: bool,
     ) -> Result<Self, Art12Error> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(Art12Error::Io)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(Art12Error::Io)?;
         }
         let file = OpenOptions::new()
             .create(true)

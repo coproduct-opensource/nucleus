@@ -192,12 +192,12 @@ fn rule_name_from_category(category: &str) -> String {
 ///
 /// Titles with source look like `[path/to/file.yaml] Original title`.
 fn extract_source_path(finding: &Finding) -> Option<String> {
-    if finding.title.starts_with('[') {
-        if let Some(end) = finding.title.find(']') {
-            let path = finding.title[1..end].trim().to_string();
-            if !path.is_empty() {
-                return Some(path);
-            }
+    if finding.title.starts_with('[')
+        && let Some(end) = finding.title.find(']')
+    {
+        let path = finding.title[1..end].trim().to_string();
+        if !path.is_empty() {
+            return Some(path);
         }
     }
     None

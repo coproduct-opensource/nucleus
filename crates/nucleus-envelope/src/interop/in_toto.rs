@@ -40,7 +40,7 @@
 
 use std::collections::BTreeMap;
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use nucleus_lineage::{EdgeSigner, IssuerError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -187,7 +187,7 @@ pub fn dsse_payload_bytes(env: &DsseEnvelope) -> Result<Vec<u8>, base64::DecodeE
 mod tests {
     use super::*;
     use crate::bundle::BundleBuilder;
-    use ed25519_dalek::{Signer as Ed25519Signer, SigningKey, VerifyingKey, SECRET_KEY_LENGTH};
+    use ed25519_dalek::{SECRET_KEY_LENGTH, Signer as Ed25519Signer, SigningKey, VerifyingKey};
     use nucleus_lineage::{CallSpiffeId, EdgeKind, InMemorySink, Jwks, LineageEdge, LineageSink};
 
     /// Toy signer for tests — wraps a SigningKey + kid.

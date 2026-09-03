@@ -46,7 +46,7 @@
 use std::collections::BTreeMap;
 
 use nucleus_econ_kernels::route_to_commons;
-use nucleus_recompute::{verify_receipt, ClearingReceipt, RecomputeOutcome};
+use nucleus_recompute::{ClearingReceipt, RecomputeOutcome, verify_receipt};
 
 /// Per-destination routed total, micro-USD — one row of the audit view.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -193,7 +193,7 @@ pub fn commons_ledger_view(receipts: &[ClearingReceipt]) -> CommonsLedgerView {
 
 #[cfg(test)]
 mod tests {
-    use nucleus_econ_kernels::{classify, refund, route_to_commons, seller_gross, CommonsShare};
+    use nucleus_econ_kernels::{CommonsShare, classify, refund, route_to_commons, seller_gross};
     use nucleus_recompute::{ClearingReceipt, CommonsClaim, SettlementClaim};
 
     use super::*;

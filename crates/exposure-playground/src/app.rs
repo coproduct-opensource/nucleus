@@ -1,9 +1,9 @@
 //! Application state and logic.
 
 use portcullis::{
-    escalation::{SpiffeTraceChain, SpiffeTraceLink},
     CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, PermissionLattice,
     StateRisk,
+    escalation::{SpiffeTraceChain, SpiffeTraceLink},
 };
 
 use crate::demo::{ATTACK_SCENARIOS, PRESETS};
@@ -362,17 +362,17 @@ impl HasseState {
 
     /// Select second node for meet and compute result.
     pub fn select_meet_second(&mut self) -> Option<PermissionLattice> {
-        if self.meet_mode {
-            if let Some(first) = self.meet_first {
-                let presets = &*crate::demo::PERMISSION_PRESETS;
-                let second = self.selected_node;
-                let left = &presets[first].1;
-                let right = &presets[second].1;
-                let result = left.meet(right);
-                self.meet_mode = false;
-                self.meet_first = None;
-                return Some(result);
-            }
+        if self.meet_mode
+            && let Some(first) = self.meet_first
+        {
+            let presets = &*crate::demo::PERMISSION_PRESETS;
+            let second = self.selected_node;
+            let left = &presets[first].1;
+            let right = &presets[second].1;
+            let result = left.meet(right);
+            self.meet_mode = false;
+            self.meet_first = None;
+            return Some(result);
         }
         None
     }
@@ -800,11 +800,11 @@ impl DelegationForestState {
                 .filter(|&&c| !self.nodes[c].spiffe_id.is_empty())
                 .copied()
                 .collect();
-            if let Some(pos) = siblings.iter().position(|&s| s == self.selected_node) {
-                if pos + 1 < siblings.len() {
-                    self.selected_node = siblings[pos + 1];
-                    self.escalation_status = None;
-                }
+            if let Some(pos) = siblings.iter().position(|&s| s == self.selected_node)
+                && pos + 1 < siblings.len()
+            {
+                self.selected_node = siblings[pos + 1];
+                self.escalation_status = None;
             }
         }
     }
@@ -818,11 +818,11 @@ impl DelegationForestState {
                 .filter(|&&c| !self.nodes[c].spiffe_id.is_empty())
                 .copied()
                 .collect();
-            if let Some(pos) = siblings.iter().position(|&s| s == self.selected_node) {
-                if pos > 0 {
-                    self.selected_node = siblings[pos - 1];
-                    self.escalation_status = None;
-                }
+            if let Some(pos) = siblings.iter().position(|&s| s == self.selected_node)
+                && pos > 0
+            {
+                self.selected_node = siblings[pos - 1];
+                self.escalation_status = None;
             }
         }
     }

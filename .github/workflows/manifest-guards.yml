@@ -109,6 +109,13 @@ jobs:
       # `spiffe://` SAN, which the X.509-SVID standard requires be rejected.
       - name: One X.509-SVID validator
         run: bash ci/one-svid-validator.sh
+      # `wait_for_proxy_health` moved modules and its boot.stage attribute stayed
+      # behind, silently reattaching to `serve_grpc` — so the largest span in a
+      # pod launch had no instrumentation and 92% of the boot trace was
+      # `unaccounted` (#2374). Rust binds attributes to the next item regardless
+      # of the blank line between them, so nothing failed.
+      - name: boot.stage spans annotate the item they measure
+        run: bash ci/boot-stage-spans-are-attached.sh
       # `ip netns exec <ns> <argv>` runs argv IN the namespace and inserts no
       # program name. Ten call sites passed bare ip SUBCOMMANDS, so the exec hit
       # coreutils `link(1)` and every pod with a `network` block failed to launch

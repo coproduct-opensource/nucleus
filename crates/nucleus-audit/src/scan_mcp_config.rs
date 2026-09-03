@@ -9,8 +9,8 @@ use std::path::Path;
 use serde::Deserialize;
 use url::{Host, Url};
 
-use crate::finding::{Finding, McpConfigSummary, Severity};
 use crate::AuditError;
+use crate::finding::{Finding, McpConfigSummary, Severity};
 
 // --- Serde structs for MCP config ---
 
@@ -76,8 +76,7 @@ fn known_mcp_server_risk(package_name: &str) -> Option<McpServerRisk> {
                 severity: Severity::Medium,
                 private_data: true,
                 exfil_capable: false,
-                description:
-                    "Database MCP server provides read/write access to database contents. \
+                description: "Database MCP server provides read/write access to database contents. \
                     Queries could expose sensitive data (PII, credentials, business data).",
             })
         }
@@ -87,8 +86,7 @@ fn known_mcp_server_risk(package_name: &str) -> Option<McpServerRisk> {
             severity: Severity::Medium,
             private_data: true,
             exfil_capable: false,
-            description:
-                "Filesystem MCP server provides read/write access to the local filesystem. \
+            description: "Filesystem MCP server provides read/write access to the local filesystem. \
                 Can read credentials, SSH keys, and other sensitive files.",
         }),
         // VCS servers — code access, some with push capability
@@ -191,22 +189,21 @@ pub fn scan_mcp_config(path: &Path) -> Result<(Vec<Finding>, McpConfigSummary), 
         let mut has_creds = false;
 
         // --- HTTP server analysis ---
-        if is_http {
-            if let Some(url) = &server.url {
-                if !is_loopback_url(url) {
-                    findings.push(Finding {
-                        severity: Severity::Medium,
-                        category: "network".to_string(),
-                        title: format!("External MCP server '{}': {}", name, url),
-                        description: format!(
-                            "MCP server '{}' connects to an external URL. This exposes \
+        if is_http
+            && let Some(url) = &server.url
+            && !is_loopback_url(url)
+        {
+            findings.push(Finding {
+                severity: Severity::Medium,
+                category: "network".to_string(),
+                title: format!("External MCP server '{}': {}", name, url),
+                description: format!(
+                    "MCP server '{}' connects to an external URL. This exposes \
                              tool calls and context to a remote endpoint. Ensure the \
                              server is trusted and the connection is encrypted.",
-                            name
-                        ),
-                    });
-                }
-            }
+                    name
+                ),
+            });
         }
 
         // --- Credential analysis in env ---
@@ -270,19 +267,19 @@ pub fn scan_mcp_config(path: &Path) -> Result<(Vec<Finding>, McpConfigSummary), 
         }
 
         // --- Dangerous commands ---
-        if let Some(cmd) = &server.command {
-            if let Some(reason) = dangerous_command_reason(cmd, server.args.as_deref()) {
-                findings.push(Finding {
-                    severity: Severity::High,
-                    category: "execution".to_string(),
-                    title: format!("Dangerous command in MCP server '{}': {}", name, cmd),
-                    description: format!(
-                        "MCP server '{}' uses '{}' which enables arbitrary \
+        if let Some(cmd) = &server.command
+            && let Some(reason) = dangerous_command_reason(cmd, server.args.as_deref())
+        {
+            findings.push(Finding {
+                severity: Severity::High,
+                category: "execution".to_string(),
+                title: format!("Dangerous command in MCP server '{}': {}", name, cmd),
+                description: format!(
+                    "MCP server '{}' uses '{}' which enables arbitrary \
                          code execution. Prefer specific, scoped commands.",
-                        name, reason
-                    ),
-                });
-            }
+                    name, reason
+                ),
+            });
         }
 
         // --- Suspicious args ---
@@ -304,69 +301,66 @@ pub fn scan_mcp_config(path: &Path) -> Result<(Vec<Finding>, McpConfigSummary), 
         }
 
         // --- Well-known MCP server classification ---
-        if let Some(args) = &server.args {
-            if let Some(package) = extract_npx_package(args) {
-                // Check against known server registry
-                if let Some(risk) = known_mcp_server_risk(package) {
-                    let mut desc = format!(
-                        "MCP server '{}' uses known package '{}' (category: {}). {}",
-                        name, package, risk.category, risk.description
-                    );
-                    if risk.private_data && risk.exfil_capable {
-                        desc.push_str(
-                            " This server provides BOTH private data access and \
+        if let Some(args) = &server.args
+            && let Some(package) = extract_npx_package(args)
+        {
+            // Check against known server registry
+            if let Some(risk) = known_mcp_server_risk(package) {
+                let mut desc = format!(
+                    "MCP server '{}' uses known package '{}' (category: {}). {}",
+                    name, package, risk.category, risk.description
+                );
+                if risk.private_data && risk.exfil_capable {
+                    desc.push_str(
+                        " This server provides BOTH private data access and \
                              exfiltration capability — two exposure legs in one server.",
-                        );
-                    }
-                    findings.push(Finding {
-                        severity: risk.severity,
-                        category: format!("mcp_{}", risk.category),
-                        title: format!(
-                            "{} access via MCP server '{}'",
-                            capitalize(risk.category),
-                            name
-                        ),
-                        description: desc,
-                    });
+                    );
                 }
+                findings.push(Finding {
+                    severity: risk.severity,
+                    category: format!("mcp_{}", risk.category),
+                    title: format!(
+                        "{} access via MCP server '{}'",
+                        capitalize(risk.category),
+                        name
+                    ),
+                    description: desc,
+                });
+            }
 
-                // npx -y supply chain risk
-                let is_npx = server.command.as_deref().is_some_and(|c| c.contains("npx"));
-                if is_npx && has_npx_auto_install(args) {
-                    if is_official_mcp_package(package) {
-                        findings.push(Finding {
-                            severity: Severity::Low,
-                            category: "supply_chain".to_string(),
-                            title: format!(
-                                "Auto-install official MCP package in '{}': {}",
-                                name, package
-                            ),
-                            description: format!(
-                                "MCP server '{}' uses 'npx -y {}' to auto-install without \
+            // npx -y supply chain risk
+            let is_npx = server.command.as_deref().is_some_and(|c| c.contains("npx"));
+            if is_npx && has_npx_auto_install(args) {
+                if is_official_mcp_package(package) {
+                    findings.push(Finding {
+                        severity: Severity::Low,
+                        category: "supply_chain".to_string(),
+                        title: format!(
+                            "Auto-install official MCP package in '{}': {}",
+                            name, package
+                        ),
+                        description: format!(
+                            "MCP server '{}' uses 'npx -y {}' to auto-install without \
                                  confirmation. While this is an official @modelcontextprotocol \
                                  package, pinning to a specific version is recommended to \
                                  prevent supply chain attacks via package takeover.",
-                                name, package
-                            ),
-                        });
-                    } else {
-                        findings.push(Finding {
-                            severity: Severity::Medium,
-                            category: "supply_chain".to_string(),
-                            title: format!(
-                                "Auto-install unknown package in '{}': {}",
-                                name, package
-                            ),
-                            description: format!(
-                                "MCP server '{}' uses 'npx -y {}' to auto-install a \
+                            name, package
+                        ),
+                    });
+                } else {
+                    findings.push(Finding {
+                        severity: Severity::Medium,
+                        category: "supply_chain".to_string(),
+                        title: format!("Auto-install unknown package in '{}': {}", name, package),
+                        description: format!(
+                            "MCP server '{}' uses 'npx -y {}' to auto-install a \
                                  non-official package without confirmation. This executes \
                                  arbitrary code from npm on every invocation. The package \
                                  could be compromised or typosquatted. Pin to a known version \
                                  or install globally instead.",
-                                name, package
-                            ),
-                        });
-                    }
+                            name, package
+                        ),
+                    });
                 }
             }
         }

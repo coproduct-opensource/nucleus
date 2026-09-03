@@ -40,10 +40,10 @@ pub mod jwks;
 pub mod spiffe_federation;
 
 pub use error::OidcError;
-pub use federation::{peek_jwt_issuer, sanitize_scope, FederationRegistry, IssuerProvider};
+pub use federation::{FederationRegistry, IssuerProvider, peek_jwt_issuer, sanitize_scope};
 pub use jti_cache::JtiCache;
 pub use jwks::{DiscoveryKeyResolver, Jwk, JwkPublicKey, Jwks, KeyResolver, StaticKeyResolver};
 pub use spiffe_federation::{
-    BundleFetcher, FederatesWith, FederationStore, Profile, SpiffeBundle, SpiffeId, ALLOWED_ALGS,
-    DEFAULT_REFRESH_SECS,
+    ALLOWED_ALGS, BundleFetcher, DEFAULT_REFRESH_SECS, FederatesWith, FederationStore, Profile,
+    SpiffeBundle, SpiffeId,
 };

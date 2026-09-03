@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
-use axum::{middleware, Json, Router};
+use axum::{Json, Router, middleware};
 use clap::Parser;
 use driver::DriverKind;
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
@@ -45,6 +45,10 @@ mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod boot_trace;
+// Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
+// On any other host every item here is genuinely dead, and CI builds release
+// binaries with `RUSTFLAGS=-D warnings`, so the warning is an error that fails the
+// macOS release job. Same pattern as `boot_trace`/`cgroup`.
 mod broker;
 mod broker_launch;
 mod broker_perform;
@@ -55,6 +59,8 @@ mod cred_split;
 mod driver;
 mod envelope_frame;
 mod guest_socket;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod host_requirements;
 mod lifecycle;
 mod net;
 mod posture;
@@ -639,6 +645,22 @@ async fn main() -> Result<(), ApiError> {
              (#2197); per-pod SVIDs are served over the per-pod vsock bridge. This \
              flag is accepted for compatibility and has no other effect."
         );
+
+        // Repopulate the registry from the pods already on disk. Without this a
+        // node restart orphaned every running pod from its own identity (#1641):
+        // the registry is in-memory and nothing refilled it, so a live pod could
+        // no longer resolve the SVID it had been issued.
+        //
+        // Derived from `state_dir/pods/*/pod.yaml` rather than from a journal, so
+        // it cannot disagree with the directory that already says which pods
+        // exist. See `rebuild_registry_from_disk`.
+        let restored = manager.rebuild_registry_from_disk(&args.state_dir).await;
+        if restored > 0 {
+            info!(
+                "restored {restored} pod identities from {}",
+                args.state_dir.display()
+            );
+        }
 
         // Refresh still runs: it maintains the certs the vsock bridge serves.
         manager.start_refresh_loop();
@@ -1327,7 +1349,12 @@ impl FirecrackerPod {
             }
         }
 
-        if let (Some(ref identity), Some(ref manager)) = (&self.identity, &self.identity_manager) {
+        // A let-chain (edition 2024) rather than a tuple of Options: it says the
+        // same thing without building a throwaway tuple, and the explicit `ref`
+        // bindings the tuple form needed are gone.
+        if let Some(identity) = &self.identity
+            && let Some(manager) = &self.identity_manager
+        {
             manager
                 .release_pod(self.identity_registry_key.as_deref(), identity)
                 .await;
@@ -1806,16 +1833,14 @@ async fn spawn_container_pod(
 
     // In direct mode, extract the task from the raw YAML (task is not in the typed
     // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
-    if !proxy_mode {
-        if let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(&spec_yaml) {
-            if let Some(task) = raw
-                .get("spec")
-                .and_then(|s| s.get("task"))
-                .and_then(|t| t.as_str())
-            {
-                env.push(format!("NUCLEUS_TASK={task}"));
-            }
-        }
+    if !proxy_mode
+        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(&spec_yaml)
+        && let Some(task) = raw
+            .get("spec")
+            .and_then(|s| s.get("task"))
+            .and_then(|t| t.as_str())
+    {
+        env.push(format!("NUCLEUS_TASK={task}"));
     }
 
     let pod_dir_abs = pod_dir
@@ -2065,7 +2090,7 @@ async fn wait_for_container_announce(
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[tracing::instrument(skip_all, fields(boot.stage = "vmm.preflight"))]
 async fn vmm_preflight(firecracker_path: &Path) -> nucleus_spec::vmm_version::VmmVerdict {
-    use nucleus_spec::vmm_version::{judge, VmmVerdict};
+    use nucleus_spec::vmm_version::{VmmVerdict, judge};
 
     // Fully qualified: the `Command` import is feature/platform-gated, and this
     // function deliberately is not.
@@ -2104,10 +2129,25 @@ async fn spawn_firecracker_pod(
 
     #[cfg(target_os = "linux")]
     {
-        if !Path::new("/dev/kvm").exists() {
-            return Err(ApiError::Driver(
-                "firecracker requires /dev/kvm (KVM not available)".to_string(),
-            ));
+        // Everything the host must provide, checked BEFORE anything is built.
+        //
+        // This used to be a bare /dev/kvm check. Two other hard requirements were
+        // discovered only by failing at the moment they were used:
+        // /dev/vhost-vsock was checked nowhere in the node, so its absence
+        // surfaced ~3s later as `vsock socket not found` naming a socket path
+        // rather than a kernel module; and CAP_NET_ADMIN was never checked, so
+        // networking failed partway through setup_network with a namespace, a
+        // veth pair and a bridge already created.
+        //
+        // See `host_requirements` for the table and why the decision is split
+        // from the observation.
+        let needs_network = spec.spec.network.is_some();
+        let missing = host_requirements::unmet(
+            &host_requirements::requirements(needs_network),
+            host_requirements::observe,
+        );
+        if !missing.is_empty() {
+            return Err(ApiError::Driver(host_requirements::explain(&missing)));
         }
 
         // REFUSE A VMM WITH A KNOWN GUEST ESCAPE.
@@ -2730,7 +2770,9 @@ async fn spawn_firecracker_pod(
                         .fetch_attested_certificate(&identity, &pod_id_str)
                         .await
                     {
-                        tracing::warn!("pod {id} serves a PLAIN (unattested) SVID; attesting relying parties refuse it: {e}");
+                        tracing::warn!(
+                            "pod {id} serves a PLAIN (unattested) SVID; attesting relying parties refuse it: {e}"
+                        );
                     }
                 }
                 Err(e) => {
@@ -3043,7 +3085,9 @@ fn build_github_oidc(args: &Args) -> Option<Arc<oidc::GitHubOidcValidator>> {
 
     // Require at least one allowed repo or org
     if config.allowed_repos.is_empty() && config.allowed_orgs.is_empty() {
-        error!("GitHub OIDC enabled but no repos or orgs allowed. Set --oidc-github-allowed-repos or --oidc-github-allowed-orgs");
+        error!(
+            "GitHub OIDC enabled but no repos or orgs allowed. Set --oidc-github-allowed-repos or --oidc-github-allowed-orgs"
+        );
         return None;
     }
 
@@ -3104,17 +3148,17 @@ fn start_pod_reaper(state: NodeState) {
             // Cascade cancel: kill children of exited parent pods
             if !exited_ids.is_empty() {
                 for pod in &pods {
-                    if let Some(parent_id) = pod.parent_pod_id {
-                        if exited_ids.contains(&parent_id) {
-                            let child_state = pod.status().await;
-                            if matches!(child_state, PodState::Running) {
-                                info!(
-                                    "cascading cancel: killing child pod {} (parent {} exited)",
-                                    pod.id, parent_id
-                                );
-                                if let Err(e) = pod.cancel().await {
-                                    error!("failed to cascade cancel pod {}: {}", pod.id, e);
-                                }
+                    if let Some(parent_id) = pod.parent_pod_id
+                        && exited_ids.contains(&parent_id)
+                    {
+                        let child_state = pod.status().await;
+                        if matches!(child_state, PodState::Running) {
+                            info!(
+                                "cascading cancel: killing child pod {} (parent {} exited)",
+                                pod.id, parent_id
+                            );
+                            if let Err(e) = pod.cancel().await {
+                                error!("failed to cascade cancel pod {}: {}", pod.id, e);
                             }
                         }
                     }
@@ -3173,9 +3217,6 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 /// is fixed. It is not a workaround for that defect and should not be read as
 /// one.
 pub(crate) const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
-
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[tracing::instrument(skip_all, fields(boot.stage = "proxy.health_wait"))]
 
 async fn serve_grpc(
     state: NodeState,

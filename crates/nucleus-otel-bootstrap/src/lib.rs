@@ -35,14 +35,14 @@
 
 use anyhow::{Context, Result};
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use opentelemetry_sdk::Resource;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 /// Process-lifetime guard. Dropping it flushes pending spans to the
 /// collector. Always hold this in `main` until the server finishes
@@ -123,7 +123,7 @@ pub fn init(service_name: &str) -> Result<OtelGuard> {
 /// layer to the subscriber it installs.
 pub fn otel_layer<S>(
     service_name: &str,
-) -> Result<Option<(impl tracing_subscriber::Layer<S>, OtelGuard)>>
+) -> Result<Option<(impl tracing_subscriber::Layer<S> + use<S>, OtelGuard)>>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
@@ -135,10 +135,14 @@ where
 
 /// Shared exporter wiring: propagator, OTLP gRPC exporter, resource,
 /// provider. Sets the global propagator and tracer provider as side effects.
+// `+ use<S>` is edition-2024 precise capturing: an RPIT there captures every
+// in-scope lifetime by default, which would make the returned layer borrow
+// `service_name`/`endpoint`. It borrows neither -- the strings are copied into
+// the exporter config -- so the captures are restricted to the type parameter.
 fn build_otel_layer<S>(
     service_name: &str,
     endpoint: &str,
-) -> Result<(impl tracing_subscriber::Layer<S>, OtelGuard)>
+) -> Result<(impl tracing_subscriber::Layer<S> + use<S>, OtelGuard)>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {

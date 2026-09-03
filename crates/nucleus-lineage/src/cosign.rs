@@ -33,7 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::checkpoint::{
-    canonical_sth_bytes, Ed25519Witness, SignedTreeHead, TreeWitness, WitnessError,
+    Ed25519Witness, SignedTreeHead, TreeWitness, WitnessError, canonical_sth_bytes,
 };
 
 /// An additional signature on a [`SignedTreeHead`] from an external
@@ -218,7 +218,7 @@ fn hex_decode_32(hex_str: &str) -> Option<[u8; 32]> {
 }
 
 mod base64_bytes {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(v: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
@@ -479,8 +479,8 @@ mod c2sp_http {
     use super::{Cosignature, CosignatureKind, Ed25519Witness, SignedTreeHead, WitnessError};
     use crate::prover::MerkleProver;
     use crate::signed_note::{
-        checkpoint_signed_bytes, ed25519_key_id, format_signature_line, parse_signature_line,
-        SIG_LINE_PREFIX, SIG_TYPE_ED25519,
+        SIG_LINE_PREFIX, SIG_TYPE_ED25519, checkpoint_signed_bytes, ed25519_key_id,
+        format_signature_line, parse_signature_line,
     };
 
     const DEFAULT_TIMEOUT_MS: u64 = 10_000;
@@ -665,7 +665,7 @@ mod c2sp_http {
             sth: &SignedTreeHead,
             prev_tree_size: u64,
         ) -> Result<Vec<u8>, WitnessError> {
-            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
 
             let root = hex_decode_32(&sth.root_hash_hex)
                 .ok_or_else(|| WitnessError::Backend("malformed root_hash_hex in STH".into()))?;

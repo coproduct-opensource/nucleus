@@ -26,6 +26,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::Result;
 use crate::certificate::{Certificate, TrustBundle, WorkloadCertificate};
 use crate::did::{DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod};
 use crate::did_binding::{BindingProof, BindingVerification, SpiffeDidBinding};
@@ -33,7 +34,6 @@ use crate::did_crypto::{
     cert_fingerprint, chain_from_base64url, chain_to_base64url, extract_ec_p256_jwk,
     jws_sign_es256, jws_verify_es256,
 };
-use crate::Result;
 
 /// Material extracted from an SVID (X.509 SPIFFE Verifiable Identity Document).
 ///
@@ -228,12 +228,12 @@ pub fn verify_binding(
         Ok(_) => {
             return BindingVerification::Failed {
                 reason: "attestation chain is empty".into(),
-            }
+            };
         }
         Err(e) => {
             return BindingVerification::Failed {
                 reason: format!("failed to decode attestation chain: {e}"),
-            }
+            };
         }
     };
 
@@ -256,7 +256,7 @@ pub fn verify_binding(
         Err(e) => {
             return BindingVerification::Failed {
                 reason: format!("failed to extract SVID public key: {e}"),
-            }
+            };
         }
     };
 
@@ -266,7 +266,7 @@ pub fn verify_binding(
             Err(e) => {
                 return BindingVerification::Failed {
                     reason: format!("SVID signature over DID failed: {e}"),
-                }
+                };
             }
         };
 
@@ -292,7 +292,7 @@ pub fn verify_binding(
                     "DID verification method '{}' not found in DID document",
                     binding.binding_proof.did_key_id
                 ),
-            }
+            };
         }
     };
 
@@ -304,7 +304,7 @@ pub fn verify_binding(
         Err(e) => {
             return BindingVerification::Failed {
                 reason: format!("DID signature over SPIFFE ID failed: {e}"),
-            }
+            };
         }
     };
 
@@ -376,10 +376,10 @@ fn verify_svid_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CsrOptions;
     use crate::ca::{CaClient, SelfSignedCa};
     use crate::did_crypto::{extract_ec_p256_jwk, jws_sign_es256, jws_verify_es256};
     use crate::identity::Identity;
-    use crate::CsrOptions;
     use base64::Engine;
     use ring::signature::KeyPair as _;
     use std::time::Duration;

@@ -18,9 +18,9 @@
 //! serve_mtls(listener, app, mtls_config).await?;
 //! ```
 
-use axum::extract::connect_info::Connected;
 #[allow(unused_imports)]
 use axum::Router;
+use axum::extract::connect_info::Connected;
 use nucleus_identity::{TlsServerConfig, TrustBundle, WorkloadCertificate};
 use std::io;
 use std::net::SocketAddr;

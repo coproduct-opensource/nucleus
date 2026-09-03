@@ -334,23 +334,24 @@ fn scrub(s: &str, facts: &RunFacts, warrant: Option<&Warrant>) -> String {
 /// it mattered.
 fn strip_leading_timestamp(line: &str) -> &str {
     // `[   1.234567] ...` — the kernel's printk clock.
-    if let Some(rest) = line.strip_prefix('[') {
-        if let Some((clock, tail)) = rest.split_once(']') {
-            if !clock.is_empty()
-                && clock
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || c == '.' || c == ' ')
-            {
-                return tail.trim_start();
-            }
-        }
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some((clock, tail)) = rest.split_once(']')
+        && !clock.is_empty()
+        && clock
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ' ')
+    {
+        return tail.trim_start();
     }
     // `2026-08-03T12:34:56.789Z ...` — the node's structured logs.
     let b = line.as_bytes();
-    if b.len() > 20 && b[4] == b'-' && b[7] == b'-' && b[10] == b'T' {
-        if let Some(sp) = line.find(' ') {
-            return line[sp + 1..].trim_start();
-        }
+    if b.len() > 20
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b'T'
+        && let Some(sp) = line.find(' ')
+    {
+        return line[sp + 1..].trim_start();
     }
     line
 }
@@ -843,10 +844,10 @@ fn erase_run_scoped_token_fields(token: &mut serde_json::Value) {
             continue;
         };
         erase_number_array(claim.get_mut("nonce"), "<TASK-TOKEN-NONCE>");
-        if let Some(issued_at) = claim.get_mut("issued_at") {
-            if issued_at.is_number() {
-                *issued_at = serde_json::Value::String("<TASK-TOKEN-ISSUED-AT>".to_string());
-            }
+        if let Some(issued_at) = claim.get_mut("issued_at")
+            && issued_at.is_number()
+        {
+            *issued_at = serde_json::Value::String("<TASK-TOKEN-ISSUED-AT>".to_string());
         }
     }
 }
@@ -2096,7 +2097,9 @@ mod collection {
             let c = write(
                 d.path(),
                 &format!("config{n}.json"),
-                &format!("{{\"boot_args\":\"console=ttyS0 nucleus.x={secret}\",\"vsock\":{{\"guest_cid\":{cid}}}}}"),
+                &format!(
+                    "{{\"boot_args\":\"console=ttyS0 nucleus.x={secret}\",\"vsock\":{{\"guest_cid\":{cid}}}}}"
+                ),
             );
             let l = write(d.path(), &format!("log{n}.log"), "[    0.1] boot");
             (c, l)

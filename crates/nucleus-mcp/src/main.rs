@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use nucleus_client::sign_http_headers;
 use nucleus_spec::PodSpec;
@@ -7,7 +7,7 @@ use portcullis::{CapabilityLevel, Operation, PermissionLattice};
 use portcullis_core::flow::NodeKind;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -639,8 +639,10 @@ impl TraceWriter {
 
     /// Write a single decision as a JSONL line.
     fn record(&self, decision: &Decision) {
-        if let Some(ref f) = self.file {
-            if let Ok(line) = serde_json::to_string(decision) {
+        if let Some(ref f) = self.file
+            && let Ok(line) = serde_json::to_string(decision)
+        {
+            {
                 let mut writer = f.borrow_mut();
                 let _ = writeln!(writer, "{line}");
                 let _ = writer.flush();
@@ -1591,7 +1593,7 @@ mod tests {
         assert!(names.contains(&"grep"));
         assert!(names.contains(&"web_search"));
         assert!(names.contains(&"read")); // restrictive allows read
-                                          // Restrictive denies write/run
+        // Restrictive denies write/run
         assert!(!names.contains(&"write"));
         assert!(!names.contains(&"run"));
     }

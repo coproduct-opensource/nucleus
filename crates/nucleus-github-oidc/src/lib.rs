@@ -33,9 +33,9 @@ pub mod extracted;
 pub mod token_exchange;
 mod validator;
 
-pub use claims::{derive_spiffe_id, GitHubClaims};
+pub use claims::{GitHubClaims, derive_spiffe_id};
 pub use validator::{
-    GitHubOidcConfig, GitHubOidcValidator, ValidatedGitHubIdentity, GITHUB_ISSUER,
+    GITHUB_ISSUER, GitHubOidcConfig, GitHubOidcValidator, ValidatedGitHubIdentity,
 };
 
 // Re-export shared OIDC primitives so downstream callers only need one

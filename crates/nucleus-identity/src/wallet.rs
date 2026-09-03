@@ -95,10 +95,10 @@ impl InMemoryWalletRegistry {
         if let Ok(map_str) = std::env::var("NUCLEUS_WALLET_MAP") {
             for pair in map_str.split(',') {
                 let parts: Vec<&str> = pair.splitn(2, '=').collect();
-                if parts.len() == 2 {
-                    if let Ok(identity) = Identity::from_spiffe_uri(parts[0].trim()) {
-                        registry.register_wallet(&identity, WalletAddress::new(parts[1].trim()));
-                    }
+                if parts.len() == 2
+                    && let Ok(identity) = Identity::from_spiffe_uri(parts[0].trim())
+                {
+                    registry.register_wallet(&identity, WalletAddress::new(parts[1].trim()));
                 }
             }
         }

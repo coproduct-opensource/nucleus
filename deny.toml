@@ -130,6 +130,38 @@ wildcards = "warn"
 # manifest.
 deny = [
   { name = "nucleus-cred-broker", wrappers = ["nucleus-node"] },
+  # ONE ed25519 line, enforced rather than merely pinned.
+  #
+  # The workspace pins `ed25519-dalek = "=3.0.0"` precisely so first-party
+  # crates, iroh and the rest converge on one implementation. That pin does not
+  # hold on its own: `multiple-versions = "warn"` above means a second version
+  # is a warning nobody fails on, and the lockfile has quietly carried
+  # ed25519-dalek 2.2.0 alongside 3.0.0 (#1628). A signing library resolved
+  # twice means two implementations of the same primitive in one binary, and the
+  # version pin said otherwise.
+  #
+  # `multiple-versions = true` here makes THIS crate a hard failure while the
+  # global setting stays a warning, so the rule does not turn every unrelated
+  # duplicate in the tree into a blocker.
+  { name = "ed25519-dalek", deny-multiple-versions = true },
+]
+
+# The one duplicate that exists today, listed rather than tolerated silently.
+#
+# ed25519-dalek 2.2.0 reaches this workspace through delegation_calc:
+#
+#     ed25519-dalek 2.2.0 -> dlc-crypto -> dlc-d -> portcullis -> nucleus…
+#
+# Nothing here can fix it: the version lives in delegation_calc's manifest.
+# coproduct-opensource/delegation_calc#148 bumps it to 3 (one line; that repo's
+# whole suite passes), and once it merges the fix here is to move this repo's
+# `rev =` pin forward and DELETE this skip — at which point the deny rule above
+# starts binding for real.
+#
+# Listed with an exact version so a THIRD version, or a different crate arriving
+# at 2.x, is not covered by it and fails immediately.
+skip = [
+  { name = "ed25519-dalek", version = "=2.2.0" },
 ]
 
 [licenses]

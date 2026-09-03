@@ -4,18 +4,18 @@ mod delegation_forest;
 
 use portcullis::{CapabilityLevel, Operation, PermissionLattice, StateRisk};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        canvas::{Canvas, Line as CanvasLine},
         Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap,
+        canvas::{Canvas, Line as CanvasLine},
     },
-    Frame,
 };
 
 use crate::app::{App, MeetSide, Screen, SelectedCapability};
-use crate::demo::{get_hasse_edges, preset_descriptions, ATTACK_SCENARIOS, PERMISSION_PRESETS};
+use crate::demo::{ATTACK_SCENARIOS, PERMISSION_PRESETS, get_hasse_edges, preset_descriptions};
 
 /// Main draw function that dispatches to the current screen.
 pub fn draw(f: &mut Frame, app: &App) {

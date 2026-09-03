@@ -11,12 +11,12 @@
 //!
 //! [`Bundle`]: nucleus_envelope::Bundle
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use std::io::Read;
 use std::path::PathBuf;
 
-use nucleus_envelope::{verify_bundle, Bundle, TrustAnchor, VerificationReport};
+use nucleus_envelope::{Bundle, TrustAnchor, VerificationReport, verify_bundle};
 use nucleus_lineage::Jwks;
 
 #[derive(Args, Debug)]
@@ -99,7 +99,7 @@ pub fn execute(args: EnvelopeVerifyArgs) -> Result<()> {
             return Err(anyhow!(
                 "must specify --trust-jwks <path> (production) or --self-check (audit-only); \
                  see `nucleus envelope-verify --help` and crate docs on trust model"
-            ))
+            ));
         }
         (Some(_), true) => unreachable!("clap conflicts_with"),
     };
@@ -240,22 +240,22 @@ fn emit_json_report(bundle: &Bundle, report: &VerificationReport) -> Result<()> 
 /// base64 (44/43 chars) encodings; both decode to exactly 32 bytes.
 /// Same shape as `lineage_verify::read_witness_pubkey`.
 fn read_witness_pubkey(path: &std::path::Path) -> Result<[u8; 32]> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     let raw = std::fs::read_to_string(path)?;
     let trimmed = raw.trim();
-    if let Ok(b) = hex::decode(trimmed) {
-        if b.len() == 32 {
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&b);
-            return Ok(out);
-        }
+    if let Ok(b) = hex::decode(trimmed)
+        && b.len() == 32
+    {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&b);
+        return Ok(out);
     }
-    if let Ok(b) = STANDARD.decode(trimmed) {
-        if b.len() == 32 {
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&b);
-            return Ok(out);
-        }
+    if let Ok(b) = STANDARD.decode(trimmed)
+        && b.len() == 32
+    {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&b);
+        return Ok(out);
     }
     Err(anyhow!(
         "witness pubkey file at {} did not parse as a 32-byte hex or base64 Ed25519 public key",

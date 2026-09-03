@@ -54,8 +54,8 @@ pub use ct_merkle::{ConsistencyProof, InclusionProof, InclusionVerifError, RootH
 pub mod local_issuer;
 
 pub use checkpoint::{
-    canonical_sth_bytes, Ed25519Witness, SignedTreeHead, TreeWitness, VerifyOnlyWitness,
-    WitnessError,
+    Ed25519Witness, SignedTreeHead, TreeWitness, VerifyOnlyWitness, WitnessError,
+    canonical_sth_bytes,
 };
 #[cfg(feature = "http")]
 pub use cosign::{C2spHttpWitnessClient, HttpWitnessClient};
@@ -64,21 +64,22 @@ pub use edge::{EdgeKind, LineageEdge, SourceClass, VerifierAttestation};
 pub use file_signer::Pkcs8FileSigner;
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
 pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SigningProvider, SvidClaims};
-pub use merkle::{read_checkpoints, verify_log, MerkleConfig, MerkleError, MerkleSink};
+pub use merkle::{MerkleConfig, MerkleError, MerkleSink, read_checkpoints, verify_log};
 pub use policy::{Group, Log, Policy, PolicyError, Threshold, Witness};
-pub use proof::{canonical_edge_bytes, edge_content_hash, Proof};
+pub use proof::{Proof, canonical_edge_bytes, edge_content_hash};
 pub use prover::MerkleProver;
 pub use signed_note::{
-    checkpoint_signed_bytes, ed25519_key_id, format_checkpoint_body, format_signature_line,
-    parse_signature_line, validate_key_name, validate_origin, ParsedSignatureLine, SignedNoteError,
-    MAX_KEY_NAME_LEN, MAX_ORIGIN_LEN, SIG_LINE_PREFIX, SIG_TYPE_COSIGNATURE, SIG_TYPE_ED25519,
+    MAX_KEY_NAME_LEN, MAX_ORIGIN_LEN, ParsedSignatureLine, SIG_LINE_PREFIX, SIG_TYPE_COSIGNATURE,
+    SIG_TYPE_ED25519, SignedNoteError, checkpoint_signed_bytes, ed25519_key_id,
+    format_checkpoint_body, format_signature_line, parse_signature_line, validate_key_name,
+    validate_origin,
 };
 #[cfg(feature = "sink-io")]
 pub use sink::JsonlSink;
 pub use sink::{InMemorySink, LineageSink, SinkError};
 pub use verify::{
-    total_pigouvian_micro_usd, verify_chain, verify_proof, Jwk, Jwks, StaticKeyResolver,
-    VerifyError,
+    Jwk, Jwks, StaticKeyResolver, VerifyError, total_pigouvian_micro_usd, verify_chain,
+    verify_proof,
 };
 
 #[cfg(feature = "insecure-local-issuer")]

@@ -210,6 +210,24 @@ impl ToolSchemaRegistry {
             .collect::<String>()
     }
 
+    /// Is this tool one whose descriptor was pinned?
+    ///
+    /// Membership only — the caller has a tool NAME and no descriptor, which is
+    /// the situation at `tools/call` time. `verify_tool` cannot help there: it
+    /// needs the description and schema, and a call carries neither.
+    ///
+    /// This is what lets a guard refuse a call to a tool it never saw
+    /// advertised, rather than only refusing tools it saw advertised and then
+    /// mutated.
+    pub fn is_pinned(&self, name: &str) -> bool {
+        self.approved.contains_key(name)
+    }
+
+    /// Every pinned tool name, for callers that need a snapshot.
+    pub fn pinned_names(&self) -> Vec<String> {
+        self.approved.keys().cloned().collect()
+    }
+
     /// SHA-256 hash of the entire approved tool set.
     ///
     /// Suitable for embedding in delegation certificates to attest which

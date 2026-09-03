@@ -206,8 +206,8 @@ use portcullis::PermissionLattice;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::broker_perform::{
-    GuestAsk, IdempotencyLedger, PerformContext, UpstreamCall, UpstreamResponse,
-    MAX_PERFORM_FRAME_BYTES,
+    GuestAsk, IdempotencyLedger, MAX_PERFORM_FRAME_BYTES, PerformContext, UpstreamCall,
+    UpstreamResponse,
 };
 
 /// How long one guest connection may take from accept to answered.
@@ -554,7 +554,7 @@ mod serving_tests {
 
     /// Sign a payload the way the tool-proxy will: `<hex-hmac> <payload>`.
     fn sign(payload: &str, secret: &[u8]) -> String {
-        use hmac::{digest::KeyInit, Hmac, Mac};
+        use hmac::{Hmac, Mac, digest::KeyInit};
         use sha2::Sha256;
         let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac key");
         mac.update(payload.as_bytes());
@@ -1549,7 +1549,7 @@ mod listener_lifecycle_tests {
         .to_string();
         // Signed under the SAME capability `start` was handed above.
         let frame = {
-            use hmac::{digest::KeyInit, Hmac, Mac};
+            use hmac::{Hmac, Mac, digest::KeyInit};
             use sha2::Sha256;
             let mut mac = Hmac::<Sha256>::new_from_slice(TEST_SECRET).expect("hmac key");
             mac.update(payload.as_bytes());
@@ -1577,7 +1577,7 @@ mod listener_tests {
 
     /// Sign as the tool-proxy will: `<hex-hmac> <payload>`.
     fn sign(payload: &str) -> String {
-        use hmac::{digest::KeyInit, Hmac, Mac};
+        use hmac::{Hmac, Mac, digest::KeyInit};
         use sha2::Sha256;
         let mut mac = Hmac::<Sha256>::new_from_slice(TEST_SECRET).expect("hmac key");
         mac.update(payload.as_bytes());

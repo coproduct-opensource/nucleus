@@ -99,7 +99,7 @@ impl JtiCache {
             // Evict the entry that would expire soonest.
             if let Some(oldest_kid) = used
                 .iter()
-                .min_by_key(|(_, &exp)| exp)
+                .min_by_key(|&(_, &exp)| exp)
                 .map(|(k, _)| k.clone())
             {
                 used.remove(&oldest_kid);
@@ -175,8 +175,8 @@ mod tests {
     /// hostile thread-level contention. Exactly one admit, K-1 rejects.
     #[test]
     fn parallel_presentations_of_same_jti_admit_exactly_one() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         const K: usize = 100;
         let cache = Arc::new(JtiCache::new());

@@ -85,13 +85,13 @@ pub mod proof;
 pub mod tlog;
 
 pub use compile::{
-    check_no_silent_rotation, check_pr_diff, compile, CompiledBinding, FederationSet,
+    CompiledBinding, FederationSet, check_no_silent_rotation, check_pr_diff, compile,
 };
 pub use error::RegistryError;
 pub use federation::{apply_to_store, build_federation_store};
-pub use metadata::{DomainEnrollment, DomainMetadata, DOMAINS_SUBDIR, PROFILE_HTTPS_WEB};
-pub use proof::{verify_proof_of_control, ProofClaims, GITHUB_ISSUER};
+pub use metadata::{DOMAINS_SUBDIR, DomainEnrollment, DomainMetadata, PROFILE_HTTPS_WEB};
+pub use proof::{GITHUB_ISSUER, ProofClaims, verify_proof_of_control};
 pub use tlog::{
-    binding_leaf, verify_binding_in_log, AppendedLeaf, SealedLog, StoredInclusion, TrustLog,
-    LOG_ORIGIN,
+    AppendedLeaf, LOG_ORIGIN, SealedLog, StoredInclusion, TrustLog, binding_leaf,
+    verify_binding_in_log,
 };

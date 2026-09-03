@@ -17,8 +17,8 @@
 //! iroh transport. Run: `cargo run -p nucleus-cli --example spiffe_iroh_spike`.
 
 use ed25519_dalek::SigningKey;
-use iroh::{endpoint::presets, Endpoint, SecretKey};
-use nucleus_node_binding::{sign_binding, verify_binding, NodeBinding};
+use iroh::{Endpoint, SecretKey, endpoint::presets};
+use nucleus_node_binding::{NodeBinding, sign_binding, verify_binding};
 
 const ALPN: &[u8] = b"nucleus-spiffe-hail/0";
 const PRINCIPAL: &str = "spiffe://demo/agent-x";

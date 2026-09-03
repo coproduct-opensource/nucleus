@@ -164,14 +164,14 @@ fn verify_chain(decisions: &[Decision]) -> Result<()> {
     // Sequence monotonicity (reorder/duplicate) — hard error, as before.
     let mut prev: Option<&Decision> = None;
     for (i, d) in decisions.iter().enumerate() {
-        if let Some(p) = prev {
-            if d.sequence <= p.sequence {
-                eprintln!(
-                    "INTEGRITY ERROR: decision {} has sequence {} but previous was {} (non-monotonic)",
-                    i, d.sequence, p.sequence
-                );
-                anyhow::bail!("chain integrity violation at decision {i}");
-            }
+        if let Some(p) = prev
+            && d.sequence <= p.sequence
+        {
+            eprintln!(
+                "INTEGRITY ERROR: decision {} has sequence {} but previous was {} (non-monotonic)",
+                i, d.sequence, p.sequence
+            );
+            anyhow::bail!("chain integrity violation at decision {i}");
         }
         prev = Some(d);
     }
@@ -260,8 +260,8 @@ fn render_text(decisions: &[&Decision], show_exposure: bool) {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use portcullis::kernel::ExposureTransition;
     use portcullis::Operation;
+    use portcullis::kernel::ExposureTransition;
     use uuid::Uuid;
 
     fn dec(seq: u64, pre: &str, post: &str) -> Decision {

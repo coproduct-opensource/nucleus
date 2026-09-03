@@ -32,7 +32,7 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
-use crate::vcg::{run_vcg, Clearing, IntegerBid, IntegerProposal, VcgError, WinningBid};
+use crate::vcg::{Clearing, IntegerBid, IntegerProposal, VcgError, WinningBid, run_vcg};
 
 /// Errors from `clear_heterogeneous`.
 #[derive(Debug, Error, PartialEq, Eq)]

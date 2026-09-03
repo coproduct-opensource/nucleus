@@ -108,14 +108,21 @@ mod tests {
     fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
         let _guard = ENV_LOCK.lock().unwrap();
         for (k, v) in vars {
+            // SAFETY: env mutation is unsafe as of edition 2024 because it races
+            // any concurrent reader. These tests hold ENV_LOCK for the whole
+            // with_env call, so no other test in this binary touches the
+            // environment concurrently.
             match v {
-                Some(val) => std::env::set_var(k, val),
-                None => std::env::remove_var(k),
+                Some(val) => unsafe { std::env::set_var(k, val) },
+                None => unsafe { std::env::remove_var(k) },
             }
         }
         f();
         for (k, _) in vars {
-            std::env::remove_var(k);
+            // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
+            // reader. Sound here because this runs before any thread that reads the
+            // environment is spawned.
+            unsafe { std::env::remove_var(k) };
         }
     }
 

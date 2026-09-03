@@ -27,13 +27,13 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use ct_merkle::{digest::Output, ConsistencyProof, RootHash};
+use ct_merkle::{ConsistencyProof, RootHash, digest::Output};
 use ed25519_dalek::{Signature, VerifyingKey};
-use nucleus_lineage::{checkpoint_signed_bytes, ed25519_key_id, SIG_TYPE_ED25519};
+use nucleus_lineage::{SIG_TYPE_ED25519, checkpoint_signed_bytes, ed25519_key_id};
 use sha2::Sha256;
 
 use crate::cosign::WitnessKey;
-use crate::parse::{parse_add_checkpoint, AddCheckpointRequest, Checkpoint, ParseError};
+use crate::parse::{AddCheckpointRequest, Checkpoint, ParseError, parse_add_checkpoint};
 use crate::store::{CosignedPosition, OriginRecord, OriginStore};
 
 /// Shared witness state for the axum handler.
@@ -133,12 +133,12 @@ pub fn decide(state: &WitnessState, body: &[u8], now_unix: u64) -> Decision {
         // No extension. The producer is re-presenting a checkpoint at
         // the same size we already cosigned; the roots MUST match or
         // it's a split-view conflict.
-        if let Some(prev) = last {
-            if prev.root != checkpoint.root {
-                return Decision::Conflict {
-                    last_cosigned_size: last_size,
-                };
-            }
+        if let Some(prev) = last
+            && prev.root != checkpoint.root
+        {
+            return Decision::Conflict {
+                last_cosigned_size: last_size,
+            };
         }
         // old_size == size == last_size with matching root (or
         // old_size == size == 0 first-submission empty-tree edge case):

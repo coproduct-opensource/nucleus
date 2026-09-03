@@ -44,9 +44,9 @@
 //! // Embed in certificate via CaClient::sign_attested_csr()
 //! ```
 
-use crate::{oid, Error, Result};
+use crate::{Error, Result, oid};
 use chrono::{DateTime, Utc};
-use ring::digest::{digest, SHA256};
+use ring::digest::{SHA256, digest};
 use std::path::Path;
 
 /// SHA-256 hash (32 bytes).

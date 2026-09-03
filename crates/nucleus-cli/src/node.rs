@@ -2,7 +2,7 @@
 //!
 //! Test utilities for nucleus-node HTTP and gRPC APIs.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use nucleus_client::sign_http_headers;
 use std::fs;

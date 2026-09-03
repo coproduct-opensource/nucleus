@@ -60,7 +60,7 @@ use nucleus_cred_protocol::{PerformReply, PerformRequest};
 use nucleus_spec::CredentialedEgressSpec;
 use portcullis::PermissionLattice;
 
-use crate::envelope_frame::{json_depth, FrameError, MAX_FIELD_BYTES, MAX_JSON_DEPTH};
+use crate::envelope_frame::{FrameError, MAX_FIELD_BYTES, MAX_JSON_DEPTH, json_depth};
 
 /// Largest frame the host will reassemble when a perform request is possible.
 ///

@@ -72,8 +72,8 @@ use crate::certificate::{Certificate, PrivateKey, TrustBundle, WorkloadCertifica
 use crate::identity::Identity;
 use crate::{Error, Result};
 use async_trait::async_trait;
-use spiffe::workload_api::WorkloadApiClient;
 use spiffe::X509Svid;
+use spiffe::workload_api::WorkloadApiClient;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -683,10 +683,17 @@ mod tests {
         let prev = std::env::var(SPIFFE_ENDPOINT_ENV).ok();
 
         // (1) Configured socket unreachable ⇒ refuse (not self-sign).
-        std::env::set_var(
-            SPIFFE_ENDPOINT_ENV,
-            "unix:///nonexistent/nucleus-spire.sock",
-        );
+        // SAFETY: edition 2024 makes env mutation unsafe -- it races any
+        // concurrent reader. The soundness argument is the one in this test's
+        // doc comment above: SPIFFE_ENDPOINT_SOCKET is mutated by this test and
+        // no other, both scenarios run sequentially inside it, and no lock is
+        // held across an `.await`. The original value is restored at the end.
+        unsafe {
+            std::env::set_var(
+                SPIFFE_ENDPOINT_ENV,
+                "unix:///nonexistent/nucleus-spire.sock",
+            )
+        };
         let bogus = auto_detect_ca_strict().await;
         assert!(
             bogus.is_err(),
@@ -694,7 +701,8 @@ mod tests {
         );
 
         // (2) No env configured + (on a dev/CI host) no default socket ⇒ refuse.
-        std::env::remove_var(SPIFFE_ENDPOINT_ENV);
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(SPIFFE_ENDPOINT_ENV) };
         let none = auto_detect_ca_strict().await;
         if !std::path::Path::new(DEFAULT_SPIRE_SOCKET).exists() {
             assert!(
@@ -703,9 +711,12 @@ mod tests {
             );
         }
 
-        match prev {
-            Some(v) => std::env::set_var(SPIFFE_ENDPOINT_ENV, v),
-            None => std::env::remove_var(SPIFFE_ENDPOINT_ENV),
+        // SAFETY: as above. Restores whatever the environment held on entry.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var(SPIFFE_ENDPOINT_ENV, v),
+                None => std::env::remove_var(SPIFFE_ENDPOINT_ENV),
+            }
         }
     }
 

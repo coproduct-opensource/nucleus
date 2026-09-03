@@ -11,11 +11,11 @@
 //! Any mismatch (signature, root, or checkpoint-ahead-of-log) returns
 //! non-zero; otherwise prints a one-line summary.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use std::path::PathBuf;
 
-use nucleus_lineage::{read_checkpoints, verify_log, Ed25519Witness, JsonlSink, TreeWitness};
+use nucleus_lineage::{Ed25519Witness, JsonlSink, TreeWitness, read_checkpoints, verify_log};
 
 #[derive(Args, Debug)]
 pub struct VerifyChainArgs {
@@ -71,23 +71,23 @@ pub fn execute(args: VerifyChainArgs) -> Result<()> {
 }
 
 fn read_witness_pubkey(path: &std::path::Path) -> Result<[u8; 32]> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     let raw = std::fs::read_to_string(path)?;
     let trimmed = raw.trim();
     // Try hex first (64 chars), then base64 (44-char standard or 43 url-safe).
-    if let Ok(b) = hex::decode(trimmed) {
-        if b.len() == 32 {
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&b);
-            return Ok(out);
-        }
+    if let Ok(b) = hex::decode(trimmed)
+        && b.len() == 32
+    {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&b);
+        return Ok(out);
     }
-    if let Ok(b) = STANDARD.decode(trimmed) {
-        if b.len() == 32 {
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&b);
-            return Ok(out);
-        }
+    if let Ok(b) = STANDARD.decode(trimmed)
+        && b.len() == 32
+    {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&b);
+        return Ok(out);
     }
     Err(anyhow!(
         "witness pubkey file at {} did not parse as a 32-byte hex or base64 Ed25519 public key",

@@ -15,7 +15,7 @@
 //! **declared inputs** (price / pool / budget), never a claimed output — so the
 //! weight itself can't be inflated by the very lie being caught.
 
-use nucleus_recompute::{content_hash_hex, verify_receipt, ClearingReceipt, RecomputeOutcome};
+use nucleus_recompute::{ClearingReceipt, RecomputeOutcome, content_hash_hex, verify_receipt};
 
 use crate::{CreditEvent, CreditFile};
 
@@ -87,7 +87,7 @@ pub fn credit_file_from_receipts(receipts: &[ClearingReceipt]) -> CreditFile {
 
 #[cfg(test)]
 mod tests {
-    use nucleus_econ_kernels::{classify, refund, route_to_commons, seller_gross, CommonsShare};
+    use nucleus_econ_kernels::{CommonsShare, classify, refund, route_to_commons, seller_gross};
     use nucleus_recompute::{ClearingReceipt, CommonsClaim, SettlementClaim};
     use nucleus_witness_olog::AmountMicro;
 
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(e.dimension, CreditDimension::Externality);
         assert_eq!(e.polarity, crate::Polarity::Credit);
         assert_eq!(e.weight_micro, 300_000); // pool_micro (declared input)
-                                             // It builds bond-substituting reputation now that externality is active.
+        // It builds bond-substituting reputation now that externality is active.
         let f = CreditFile::from_events(&[e]);
         assert_eq!(f.reputation_micro(), 300_000);
     }

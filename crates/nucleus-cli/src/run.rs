@@ -1,6 +1,6 @@
 //! Run command - Execute tasks via tool-proxy (enforced by default)
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nucleus_client::sign_http_headers;
 use nucleus_spec::{
@@ -138,10 +138,13 @@ pub struct RunArgs {
     pub timeout: u64,
 
     /// Model identifier to pass to the agent CLI.
-    // Intrinsic interop: the default is a real, non-neutralizable model id
-    // consumed verbatim by the external agent binary's `--model` flag.
-    #[arg(long, default_value = "claude-sonnet-4-20250514")]
-    pub model: String,
+    // Intrinsic interop: the flag name and any value are passed verbatim to the
+    // external agent binary's `--model` flag. Nucleus supplies NO default: which
+    // model to run is the orchestrator's decision, not the runtime's (CLAUDE.md),
+    // and a pinned vendor model id also rots the moment that model is retired.
+    // Unset means the agent binary applies its own default.
+    #[arg(long)]
+    pub model: Option<String>,
 
     /// Output format: text or json
     #[arg(long, default_value = "text")]
@@ -334,10 +337,10 @@ fn load_permission_config(path: &str) -> Result<PermissionLattice> {
     let config: toml::Value = toml::from_str(&content)?;
 
     // Check for profile key
-    if let Some(profile) = config.get("profile").and_then(|v| v.as_str()) {
-        if let Some(lattice) = profiles::resolve(profile) {
-            return Ok(lattice);
-        }
+    if let Some(profile) = config.get("profile").and_then(|v| v.as_str())
+        && let Some(lattice) = profiles::resolve(profile)
+    {
+        return Ok(lattice);
     }
 
     // Default to restrictive
@@ -354,14 +357,12 @@ fn resolve_binary_path(path: &str) -> Result<PathBuf> {
         && !path.contains(std::path::MAIN_SEPARATOR)
         && !path.contains('/')
         && !path.contains('\\')
+        && let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
     {
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let sibling = dir.join(path);
-                if sibling.exists() {
-                    return Ok(sibling);
-                }
-            }
+        let sibling = dir.join(path);
+        if sibling.exists() {
+            return Ok(sibling);
         }
     }
 
@@ -432,10 +433,11 @@ async fn run_hook(
     let start = Instant::now();
 
     let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
-    cmd.arg("--print")
-        .arg("--model")
-        .arg(&args.model)
-        .arg("--max-budget-usd")
+    cmd.arg("--print");
+    if let Some(model) = &args.model {
+        cmd.arg("--model").arg(model);
+    }
+    cmd.arg("--max-budget-usd")
         .arg(policy.budget.max_cost_usd.to_string())
         .arg("--settings")
         .arg(&settings_path)
@@ -564,7 +566,7 @@ async fn run_local(
 
     info!(
         allowed_tools = %allowed_tools.join(","),
-        model = %args.model,
+        model = args.model.as_deref().unwrap_or("<agent default>"),
         "Spawning agent CLI (local enforced mode)"
     );
 
@@ -714,7 +716,7 @@ async fn run_enforced(
 
     info!(
         allowed_tools = %allowed_tools.join(","),
-        model = %args.model,
+        model = args.model.as_deref().unwrap_or("<agent default>"),
         "Spawning agent CLI (enforced MCP mode)"
     );
 
@@ -961,10 +963,11 @@ fn run_agent_mcp(
     work_dir: &Path,
 ) -> Result<std::process::Output> {
     let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
-    cmd.arg("--print")
-        .arg("--model")
-        .arg(&args.model)
-        .arg("--mcp-config")
+    cmd.arg("--print");
+    if let Some(model) = &args.model {
+        cmd.arg("--model").arg(model);
+    }
+    cmd.arg("--mcp-config")
         .arg(mcp_config_path)
         // Allowed tools come ONLY from the confinement guard, which has already
         // vetted that every one routes through the PermissionLattice. There is
@@ -1092,10 +1095,12 @@ mod tests {
             MediationGuard::establish(&allowed).expect("all-MCP tool set must mint the guard");
         assert_eq!(guard.allowed_tools(), allowed.as_slice());
         // Every tool that reaches the agent is lattice-routed.
-        assert!(guard
-            .allowed_tools()
-            .iter()
-            .all(|t| t.starts_with(NUCLEUS_MCP_TOOL_PREFIX)));
+        assert!(
+            guard
+                .allowed_tools()
+                .iter()
+                .all(|t| t.starts_with(NUCLEUS_MCP_TOOL_PREFIX))
+        );
     }
 
     #[test]

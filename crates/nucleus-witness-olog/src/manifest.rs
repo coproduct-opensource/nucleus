@@ -8,7 +8,7 @@
 //! signed and append-only-log-friendly — the concrete step toward the
 //! self-proving-system north star. See `docs/rfcs/witness-olog-functor.md`.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use nucleus_externality::AssuranceRung;
 use serde::{Deserialize, Serialize};

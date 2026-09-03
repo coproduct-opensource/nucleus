@@ -5,7 +5,7 @@
 //! straight at the broken rule.
 
 use nucleus_oracle::{
-    summarize, CountPair, GradeReceipt, KofN, PortfolioSummary, QuarantineReason,
+    CountPair, GradeReceipt, KofN, PortfolioSummary, QuarantineReason, summarize,
 };
 
 // Contract fixture: build a receipt with a chosen exact-pass count pair.

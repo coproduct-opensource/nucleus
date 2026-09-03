@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use nucleus_mcp_guard::{analyze_session, proxy, Classifier, ClassifierConfig, SessionMonitor};
+use nucleus_mcp_guard::{Classifier, ClassifierConfig, SessionMonitor, analyze_session, proxy};
 use proxy::{GuardConfig, Mode};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

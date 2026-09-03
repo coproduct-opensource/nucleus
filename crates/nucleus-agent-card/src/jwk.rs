@@ -14,8 +14,8 @@
 //! parity across the two backends is pinned by the round-trip tests in
 //! `sign_verify_tests.rs`.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use p256::ecdsa::signature::Verifier as _;
 use p256::ecdsa::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};

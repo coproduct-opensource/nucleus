@@ -10,8 +10,8 @@
 use std::time::Duration;
 
 use nucleus_lineage::{
-    canonical_sth_bytes, Cosignature, Ed25519Witness, HttpWitnessClient, InProcessWitness,
-    SignedTreeHead, TreeWitness, WitnessClient,
+    Cosignature, Ed25519Witness, HttpWitnessClient, InProcessWitness, SignedTreeHead, TreeWitness,
+    WitnessClient, canonical_sth_bytes,
 };
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
