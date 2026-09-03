@@ -156,6 +156,85 @@ impl IdentityManager {
         Identity::new(&self.trust_domain, namespace, sa)
     }
 
+    /// Rebuild the VM registry from the pods already on disk.
+    ///
+    /// # Why derive instead of journalling
+    ///
+    /// A node restart used to orphan every running pod from the identity
+    /// registry: `VmRegistry` is an in-memory `HashMap` and nothing repopulated
+    /// it (#1641). The issue proposed appending each registration to a JSONL and
+    /// replaying it, with deriving from pod state as the alternative.
+    ///
+    /// Derivation wins here, and not only for having fewer moving parts. A
+    /// journal is a SECOND record of which pods exist, next to `state_dir/pods/`,
+    /// which is already the first. Two records that must agree is the shape that
+    /// drifts: a pod that dies leaves a stale line, a pod created between the
+    /// append and the crash leaves none, and the journal is then confidently
+    /// wrong in both directions. Deriving cannot disagree with the directory it
+    /// reads. It is also what kubelet does — re-discover running pods from the
+    /// runtime on restart rather than replay a log.
+    ///
+    /// Nothing new is written: `pod.yaml` is already persisted per pod, and the
+    /// identity is a pure function of it plus the node's trust domain.
+    ///
+    /// # It restores identity RESOLUTION, not liveness
+    ///
+    /// A pod directory can outlive its microVM, so this may register an identity
+    /// for a pod that is gone. That is deliberate, and the asymmetry is the
+    /// argument: a stale entry is inert, because the key is the pod's UUID and
+    /// nothing will ever present it again. A MISSING entry for a live pod is the
+    /// actual defect — the pod cannot resolve its own identity. Erring toward
+    /// registering is the fail-safe direction.
+    ///
+    /// Returns how many pods were restored.
+    pub async fn rebuild_registry_from_disk(&self, state_dir: &std::path::Path) -> usize {
+        let pods_dir = state_dir.join("pods");
+        let Ok(mut entries) = tokio::fs::read_dir(&pods_dir).await else {
+            return 0;
+        };
+
+        let mut restored = 0usize;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let dir = entry.path();
+            let Some(pod_id) = dir.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
+                continue;
+            };
+            // A directory with no spec is not a pod this node launched.
+            let Ok(yaml) = tokio::fs::read_to_string(dir.join("pod.yaml")).await else {
+                continue;
+            };
+            let Some(identity) = self.identity_from_spec_yaml(&pod_id, &yaml) else {
+                continue;
+            };
+            self.register_pod(pod_id, identity).await;
+            restored += 1;
+        }
+        restored
+    }
+
+    /// The identity a pod spec yields, derived exactly as the launch path does.
+    ///
+    /// Split out and kept pure so the restored identity can be tested against
+    /// the one `identity_for_pod` mints live. If these two ever disagree, a pod
+    /// would come back after a restart under a DIFFERENT SPIFFE ID than it had
+    /// before, which is worse than not coming back at all.
+    fn identity_from_spec_yaml(&self, pod_id: &str, yaml: &str) -> Option<Identity> {
+        let spec: serde_yaml::Value = serde_yaml::from_str(yaml).ok()?;
+        let meta = spec.get("metadata");
+        let namespace = meta
+            .and_then(|m| m.get("namespace"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("default");
+        let name = meta
+            .and_then(|m| m.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        // Mirrors identity_for_pod: an empty service account falls back to the
+        // pod id.
+        let sa = if name.is_empty() { pod_id } else { name };
+        Some(Identity::new(&self.trust_domain, namespace, sa))
+    }
+
     /// Registers a pod's identity in the VM registry.
     #[allow(dead_code)]
     pub async fn register_pod(&self, connection_id: impl Into<String>, identity: Identity) {
@@ -428,6 +507,116 @@ impl std::fmt::Debug for IdentityManager {
 
 #[cfg(test)]
 mod tests {
+
+    // ── registry survives a node restart (#1641) ─────────────────────────────
+
+    fn write_pod(state_dir: &std::path::Path, pod_id: &str, yaml: &str) {
+        let d = state_dir.join("pods").join(pod_id);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("pod.yaml"), yaml).unwrap();
+    }
+
+    /// The property that matters: a restored identity must be the SAME one the
+    /// launch path minted. If they differed, a pod would come back after a
+    /// restart under a different SPIFFE ID than it had before — worse than not
+    /// coming back at all, because the mismatch is silent.
+    #[tokio::test]
+    async fn a_restored_identity_equals_the_one_the_launch_path_mints() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pod_id = uuid::Uuid::new_v4();
+        write_pod(
+            tmp.path(),
+            &pod_id.to_string(),
+            "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: web\n  namespace: prod\n",
+        );
+
+        let m = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
+        let live = m.identity_for_pod(pod_id, "prod", "web");
+
+        assert_eq!(m.rebuild_registry_from_disk(tmp.path()).await, 1);
+        let restored = m
+            .vm_registry
+            .read()
+            .await
+            .get(&pod_id.to_string())
+            .cloned()
+            .expect("pod must be in the registry after a rebuild");
+
+        assert_eq!(
+            restored, live,
+            "a restored identity must match what the launch path mints for the same spec"
+        );
+    }
+
+    /// The launch path falls back to the pod id when the spec has no name. The
+    /// rebuild has to make the same choice or the SPIFFE ID changes.
+    #[tokio::test]
+    async fn a_spec_with_no_name_falls_back_to_the_pod_id_on_both_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pod_id = uuid::Uuid::new_v4();
+        write_pod(
+            tmp.path(),
+            &pod_id.to_string(),
+            "apiVersion: nucleus/v1\nkind: Pod\n",
+        );
+
+        let m = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
+        assert_eq!(m.rebuild_registry_from_disk(tmp.path()).await, 1);
+
+        let restored = m
+            .vm_registry
+            .read()
+            .await
+            .get(&pod_id.to_string())
+            .cloned()
+            .unwrap();
+        assert_eq!(restored, m.identity_for_pod(pod_id, "default", ""));
+    }
+
+    /// Non-vacuity. Without these, `rebuild` returning 0 on everything would
+    /// satisfy the tests above only by accident of them writing a pod first.
+    #[tokio::test]
+    async fn a_directory_with_no_pods_restores_nothing_and_does_not_fail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
+        // No pods/ dir at all — a fresh node.
+        assert_eq!(m.rebuild_registry_from_disk(tmp.path()).await, 0);
+
+        // A directory that is not a pod: present, but no spec to derive from.
+        std::fs::create_dir_all(tmp.path().join("pods").join("not-a-pod")).unwrap();
+        assert_eq!(
+            m.rebuild_registry_from_disk(tmp.path()).await,
+            0,
+            "a directory with no pod.yaml is not a pod this node launched"
+        );
+    }
+
+    /// Several pods, so the count is not passing on a single-entry special case.
+    #[tokio::test]
+    async fn every_pod_on_disk_comes_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ids: Vec<uuid::Uuid> = (0..3).map(|_| uuid::Uuid::new_v4()).collect();
+        for (n, id) in ids.iter().enumerate() {
+            write_pod(
+                tmp.path(),
+                &id.to_string(),
+                &format!("metadata:\n  name: pod{n}\n  namespace: ns{n}\n"),
+            );
+        }
+
+        let m = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
+        assert_eq!(m.rebuild_registry_from_disk(tmp.path()).await, 3);
+
+        let reg = m.vm_registry.read().await;
+        for (n, id) in ids.iter().enumerate() {
+            let got = reg.get(&id.to_string()).expect("every pod must come back");
+            assert_eq!(
+                got,
+                &m.identity_for_pod(*id, &format!("ns{n}"), &format!("pod{n}"))
+            );
+        }
+    }
+
     use super::*;
 
     #[tokio::test]

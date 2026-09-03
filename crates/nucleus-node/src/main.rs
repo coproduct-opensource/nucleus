@@ -640,6 +640,22 @@ async fn main() -> Result<(), ApiError> {
              flag is accepted for compatibility and has no other effect."
         );
 
+        // Repopulate the registry from the pods already on disk. Without this a
+        // node restart orphaned every running pod from its own identity (#1641):
+        // the registry is in-memory and nothing refilled it, so a live pod could
+        // no longer resolve the SVID it had been issued.
+        //
+        // Derived from `state_dir/pods/*/pod.yaml` rather than from a journal, so
+        // it cannot disagree with the directory that already says which pods
+        // exist. See `rebuild_registry_from_disk`.
+        let restored = manager.rebuild_registry_from_disk(&args.state_dir).await;
+        if restored > 0 {
+            info!(
+                "restored {restored} pod identities from {}",
+                args.state_dir.display()
+            );
+        }
+
         // Refresh still runs: it maintains the certs the vsock bridge serves.
         manager.start_refresh_loop();
 
