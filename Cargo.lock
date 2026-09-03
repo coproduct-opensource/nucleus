@@ -7270,6 +7270,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ed25519-dalek 3.0.0",
  "hex",
  "nucleus-client",
  "portcullis",
