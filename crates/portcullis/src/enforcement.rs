@@ -449,16 +449,47 @@ mod tests {
     /// policy decision.
     #[test]
     fn require_enforced_accepts_a_verified_portcullis_delegation() {
-        use crate::certificate::{SinkScope, VerifiedPermissions};
+        use crate::certificate::{verify_certificate, LatticeCertificate};
         use crate::PermissionLattice;
+        use chrono::{Duration, Utc};
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
 
-        let delegation = VerifiedPermissions::new(
+        // `VerifiedPermissions` is sealed (#2450): only `verify_certificate`
+        // produces one, so this test mints and delegates a REAL two-hop
+        // chain instead of constructing a `VerifiedPermissions` directly.
+        let rng = SystemRandom::new();
+        let root_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let root_key = Ed25519KeyPair::from_pkcs8(root_pkcs8.as_ref()).unwrap();
+        let root_pub = root_key.public_key().as_ref().to_vec();
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let (cert, holder_key) = LatticeCertificate::mint(
             PermissionLattice::restrictive(),
-            2,
-            "spiffe://nucleus.local/human/alice".into(),
-            "spiffe://nucleus.local/agent/coder-042".into(),
-            SinkScope::default(),
+            "spiffe://nucleus.local/human/alice".to_string(),
+            not_after,
+            &root_key,
+            &rng,
         );
+        let (cert, intermediate_key) = cert
+            .delegate(
+                &PermissionLattice::restrictive(),
+                "spiffe://nucleus.local/agent/intermediate".to_string(),
+                not_after,
+                &holder_key,
+                &rng,
+            )
+            .unwrap();
+        let (cert, _leaf_key) = cert
+            .delegate(
+                &PermissionLattice::restrictive(),
+                "spiffe://nucleus.local/agent/coder-042".to_string(),
+                not_after,
+                &intermediate_key,
+                &rng,
+            )
+            .unwrap();
+        let delegation = verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap();
 
         let authorized = require_enforced(
             delegation,
@@ -468,9 +499,9 @@ mod tests {
         .expect("a verified delegation + an enforceable posture → authorized");
 
         // The delegation rides through intact …
-        assert_eq!(authorized.authority.chain_depth, 2);
+        assert_eq!(authorized.authority.chain_depth(), 2);
         assert_eq!(
-            authorized.authority.leaf_identity,
+            authorized.authority.leaf_identity(),
             "spiffe://nucleus.local/agent/coder-042"
         );
         // … and the posture was strengthened (Filtered → Airgapped), not weakened.

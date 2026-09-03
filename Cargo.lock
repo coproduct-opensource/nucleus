@@ -7303,11 +7303,13 @@ dependencies = [
 name = "nucleus-policy-cert"
 version = "1.0.0"
 dependencies = [
+ "chrono",
  "dlc-core",
  "ed25519-dalek 3.0.0",
  "nucleus-policy-kernel",
  "portcullis",
  "proptest",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.10.9",

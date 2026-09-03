@@ -320,58 +320,58 @@ fn verify(args: VerifyArgs) -> Result<()> {
             let fingerprint = hex::encode(token.fingerprint());
             println!("Token VERIFIED");
             println!("{}", "=".repeat(50));
-            println!("Chain depth:       {}", verified.chain_depth);
-            println!("Root identity:     {}", verified.root_identity);
-            println!("Leaf identity:     {}", verified.leaf_identity);
+            println!("Chain depth:       {}", verified.chain_depth());
+            println!("Root identity:     {}", verified.root_identity());
+            println!("Leaf identity:     {}", verified.leaf_identity());
             println!("Fingerprint:       {}", fingerprint);
             println!("Effective perms:");
             println!(
                 "  read_files:      {:?}",
-                verified.effective.capabilities.read_files
+                verified.effective().capabilities.read_files
             );
             println!(
                 "  write_files:     {:?}",
-                verified.effective.capabilities.write_files
+                verified.effective().capabilities.write_files
             );
             println!(
                 "  edit_files:      {:?}",
-                verified.effective.capabilities.edit_files
+                verified.effective().capabilities.edit_files
             );
             println!(
                 "  run_bash:        {:?}",
-                verified.effective.capabilities.run_bash
+                verified.effective().capabilities.run_bash
             );
             println!(
                 "  glob_search:     {:?}",
-                verified.effective.capabilities.glob_search
+                verified.effective().capabilities.glob_search
             );
             println!(
                 "  grep_search:     {:?}",
-                verified.effective.capabilities.grep_search
+                verified.effective().capabilities.grep_search
             );
             println!(
                 "  web_search:      {:?}",
-                verified.effective.capabilities.web_search
+                verified.effective().capabilities.web_search
             );
             println!(
                 "  web_fetch:       {:?}",
-                verified.effective.capabilities.web_fetch
+                verified.effective().capabilities.web_fetch
             );
             println!(
                 "  git_commit:      {:?}",
-                verified.effective.capabilities.git_commit
+                verified.effective().capabilities.git_commit
             );
             println!(
                 "  git_push:        {:?}",
-                verified.effective.capabilities.git_push
+                verified.effective().capabilities.git_push
             );
             println!(
                 "  create_pr:       {:?}",
-                verified.effective.capabilities.create_pr
+                verified.effective().capabilities.create_pr
             );
             println!(
                 "  manage_pods:     {:?}",
-                verified.effective.capabilities.manage_pods
+                verified.effective().capabilities.manage_pods
             );
             Ok(())
         }
@@ -439,7 +439,7 @@ mod tests {
 
         // Token should verify
         let verified = token.verify_default(Utc::now()).unwrap();
-        assert_eq!(verified.root_identity, "spiffe://test/human/alice");
+        assert_eq!(verified.root_identity(), "spiffe://test/human/alice");
     }
 
     #[test]
@@ -463,12 +463,12 @@ mod tests {
 
         // local-dev profile should have read_files=Always
         assert_eq!(
-            verified.effective.capabilities.read_files,
+            verified.effective().capabilities.read_files,
             portcullis::CapabilityLevel::Always
         );
         // local-dev should NOT have web_fetch
         assert_eq!(
-            verified.effective.capabilities.web_fetch,
+            verified.effective().capabilities.web_fetch,
             portcullis::CapabilityLevel::Never
         );
     }
