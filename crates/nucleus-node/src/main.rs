@@ -2206,9 +2206,18 @@ async fn spawn_firecracker_pod(
                 "network policy requires --firecracker-netns=true".to_string(),
             ));
         }
+        // Declared OUT here on purpose. The namespace is made inside the block
+        // below but must survive until this function succeeds, so a guard scoped
+        // to that block would reap a live pod's namespace the moment the block
+        // ended — worse than the leak it exists to prevent.
+        let mut netns_guard: Option<net::NetnsGuard> = None;
         if netns_plan.create_netns {
             let name = net::netns_name(id);
             net::create_netns(&name).await?;
+            // Armed from here to the single success return. Every `?` and early
+            // `return` between the two now reaps, including ones added later by
+            // someone who never read this comment.
+            netns_guard = Some(net::NetnsGuard::new(&name));
 
             // Apply default-deny iptables policy BEFORE any process spawns.
             // This closes the race window where a process could exfiltrate
@@ -2980,6 +2989,13 @@ async fn spawn_firecracker_pod(
         };
 
         info!("spawned firecracker pod {}", id);
+
+        // The pod owns its namespace from here; the reaper tears it down when
+        // the pod exits. This is the ONLY path that reaches this line, so it is
+        // the only place the guard should stand down.
+        if let Some(guard) = netns_guard.take() {
+            guard.disarm();
+        }
 
         Ok((
             DriverState::Firecracker(Box::new(handle)),
