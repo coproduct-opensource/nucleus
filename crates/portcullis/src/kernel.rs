@@ -209,6 +209,13 @@ pub enum DenyReason {
     PathBlocked {
         /// The blocked path.
         path: String,
+        /// WHICH restriction refused it, when the lattice could say.
+        ///
+        /// Optional and `serde(default)` because `DenyReason` is a tagged wire
+        /// format: a payload written before this field existed must still
+        /// deserialize rather than becoming an error at a security boundary.
+        #[cfg_attr(feature = "serde", serde(default))]
+        denial: Option<crate::path::PathDenial>,
     },
     /// The command is blocked by command restrictions.
     CommandBlocked {
@@ -1408,17 +1415,24 @@ impl Kernel {
         }
 
         // 4. Path check (for file operations)
-        if is_path_operation(operation)
-            && !self
-                .effective
+        // Ask WHY rather than WHETHER: `deny_reason` is the same decision
+        // procedure `can_access` is a view of, so this neither changes the
+        // verdict nor adds a second check -- it keeps the evidence the lattice
+        // already computed instead of discarding it.
+        let path_denial = if is_path_operation(operation) {
+            self.effective
                 .paths
-                .can_access(std::path::Path::new(subject))
-        {
+                .deny_reason(std::path::Path::new(subject))
+        } else {
+            None
+        };
+        if let Some(denial) = path_denial {
             return self.record_with_exposure(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::PathBlocked {
                     path: subject.to_string(),
+                    denial: Some(denial),
                 }),
                 &pre_hash,
                 pre_exposure_count,

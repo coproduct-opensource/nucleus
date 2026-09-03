@@ -43,9 +43,20 @@ pub(crate) fn kernel_denial_to_api_error(
                 required: CapabilityLevel::LowRisk,
             })
         }
-        DenyReason::PathBlocked { path } => ApiError::Nucleus(NucleusError::PathDenied {
+        // The lattice says WHICH restriction refused this. "blocked by the path
+        // lattice" names a layer, and the three things that layer can mean have
+        // three different fixes -- a reader who is told only the layer goes and
+        // inspects the blocklist even when the blocklist was not involved.
+        //
+        // `PathDenial`'s own rendering is what reaches the caller, and it
+        // deliberately withholds the sandbox root while naming a matched glob:
+        // the guest can map the blocklist by probing paths regardless, but it
+        // cannot otherwise learn host layout.
+        DenyReason::PathBlocked { path, denial } => ApiError::Nucleus(NucleusError::PathDenied {
             path: std::path::PathBuf::from(path),
-            reason: "blocked by the path lattice".to_string(),
+            reason: denial
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "blocked by the path lattice".to_string()),
         }),
         DenyReason::CommandBlocked { command } => ApiError::Nucleus(NucleusError::CommandDenied {
             command,

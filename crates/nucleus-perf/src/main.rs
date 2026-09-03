@@ -652,7 +652,7 @@ fn toolcall(t: ToolCall) -> Result<()> {
     // checksum one out of it. And a path the PathLattice does not permit is
     // refused even though `codegen` sets read_files: Always -- capability level
     // and path policy are separate gates. So: ask the guest what it can see.
-    let (st, b, ms) = tool_call(&proxy, "glob", serde_json::json!({"pattern": "*"}))?;
+    let (st, b, ms) = tool_call(&proxy, "glob", serde_json::json!({"pattern": "**/*"}))?;
     let matches: Vec<String> = serde_json::from_str::<serde_json::Value>(&b)
         .ok()
         .and_then(|v| {
@@ -669,20 +669,17 @@ fn toolcall(t: ToolCall) -> Result<()> {
     // Reading a discovered entry must return real bytes. An empty success here
     // would mean the read path answers without serving the sandbox, which is
     // precisely the failure worth catching.
-    if let Some(target) = matches.first() {
-        // `glob` answers with names, and `read` has to accept one of them. Which
-        // form it accepts is the question: the lattice joins a relative path to
-        // work_dir, so several spellings SHOULD name the same file. Probe them
-        // rather than assume, and report each -- if glob hands back a name that
-        // read refuses in every form, the two disagree and that is the bug.
-        let forms = [
-            target.to_string(),
-            format!("./{target}"),
-            format!("/work/{target}"),
-        ];
-        let mut any_ok = false;
-        for form in &forms {
-            let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": form}))?;
+    if matches.is_empty() {
+        failures.push("read (glob returned nothing to read)".to_string());
+    } else {
+        // `glob` answers with names and some of them are DIRECTORIES. The first
+        // entry used to be `audit`, and reading it fails with `EISDIR` -- which
+        // for a long time was reported as "blocked by policy", so it read as a
+        // refusal rather than "that is a directory". Walk the matches until one
+        // yields bytes, and say which one did.
+        let mut read_ok = None;
+        for target in matches.iter().take(12) {
+            let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": target}))?;
             let contents = serde_json::from_str::<serde_json::Value>(&b)
                 .ok()
                 .and_then(|v| {
@@ -690,15 +687,26 @@ fn toolcall(t: ToolCall) -> Result<()> {
                         .and_then(|c| c.as_str())
                         .map(str::to_string)
                 });
-            let ok = (200..300).contains(&st) && contents.is_some();
-            any_ok |= ok;
-            report(&format!("read {form}"), st, ms, ok, &b, &mut Vec::new());
+            if (200..300).contains(&st) && contents.is_some() {
+                report(&format!("read {target}"), st, ms, true, &b, &mut failures);
+                read_ok = Some(target.clone());
+                break;
+            }
+            report(
+                &format!("read {target}"),
+                st,
+                ms,
+                false,
+                &b,
+                &mut Vec::new(),
+            );
         }
-        if !any_ok {
-            failures.push(format!("read {target} (no path form accepted)"));
+        if read_ok.is_none() {
+            failures.push(format!(
+                "read (none of {} globbed entries yielded bytes)",
+                matches.len().min(12)
+            ));
         }
-    } else {
-        failures.push("read (no glob match to read)".to_string());
     }
 
     // The refusal half. A pod that serves this is not isolating anything.

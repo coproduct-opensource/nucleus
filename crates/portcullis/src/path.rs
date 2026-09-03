@@ -6,6 +6,61 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// Why a path was refused.
+///
+/// The kernel reports a refusal as "blocked by the path lattice", which sends
+/// the reader to the blocklist even when the blocklist had nothing to do with
+/// it. These three cases are genuinely different problems with genuinely
+/// different fixes, and the lattice already distinguishes them internally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "denial", rename_all = "snake_case"))]
+pub enum PathDenial {
+    /// The path normalised to somewhere outside `work_dir`, or could not be
+    /// normalised at all. Carries the sandbox root when one is configured.
+    EscapesSandbox {
+        /// The configured sandbox root, if any.
+        work_dir: Option<String>,
+    },
+    /// A blocked glob matched. Carries WHICH one -- with ~30 patterns in the
+    /// default set, "some pattern matched" is not a diagnosis.
+    MatchedBlockedPattern {
+        /// The glob that matched.
+        pattern: String,
+    },
+    /// An allowlist is configured and nothing in it matched.
+    NotInAllowlist {
+        /// How many patterns were considered.
+        allowed: usize,
+    },
+}
+
+impl std::fmt::Display for PathDenial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // Deliberately does NOT print `work_dir`. This string is destined for
+            // whoever asked — inside a pod, that is the untrusted guest — and the
+            // sandbox root is host layout. The field stays on the value for
+            // host-side logging; only the rendering withholds it.
+            //
+            // Not theoretical: the tool-proxy's only production call is
+            // `sanitize_error_message(msg, None)`, so the `[sandbox]` redaction
+            // branch never runs, and the generic absolute-path fallback only
+            // rewrites runs longer than five characters — `/work` is exactly
+            // five and would have travelled verbatim.
+            Self::EscapesSandbox { .. } => {
+                write!(f, "resolves outside the sandbox root")
+            }
+            Self::MatchedBlockedPattern { pattern } => {
+                write!(f, "matched the blocked pattern `{pattern}`")
+            }
+            Self::NotInAllowlist { allowed } => {
+                write!(f, "matched none of the {allowed} allowed pattern(s)")
+            }
+        }
+    }
+}
+
 /// Path access lattice with allowed/blocked semantics.
 ///
 /// - `allowed`: Glob patterns for allowed paths. Empty means "all allowed".
@@ -182,12 +237,31 @@ impl PathLattice {
     /// 3. Checks blocked patterns (takes priority)
     /// 4. Checks allowed patterns (if any are set)
     pub fn can_access(&self, path: &Path) -> bool {
+        self.deny_reason(path).is_none()
+    }
+
+    /// Why this path is refused, or `None` if it is allowed.
+    ///
+    /// `can_access` answers yes/no, which is all the kernel needs to DECIDE but
+    /// not enough for it to EXPLAIN. A refusal currently reaches the caller as
+    /// "blocked by the path lattice", so an operator inspects the blocklist,
+    /// finds the path permitted there, and has learned nothing — the refusal
+    /// may equally have been a sandbox escape or a missing allowlist entry.
+    ///
+    /// `can_access` is defined in terms of this, so the two can never drift:
+    /// there is one decision procedure and the boolean is a view of it.
+    pub fn deny_reason(&self, path: &Path) -> Option<PathDenial> {
         // First, normalize and sandbox-check the path
         let canonical = match self.normalize_path(path) {
             Some(p) => p,
             None => {
                 // Path escapes sandbox or cannot be normalized - deny
-                return false;
+                return Some(PathDenial::EscapesSandbox {
+                    work_dir: self
+                        .work_dir
+                        .as_ref()
+                        .map(|w| w.to_string_lossy().into_owned()),
+                });
             }
         };
 
@@ -204,30 +278,36 @@ impl PathLattice {
         // ADDS blocks — it can never narrow the sandbox.
         for pattern in &self.blocked {
             if glob_match_ci(pattern, &path_str) || glob_match_ci(pattern, &original_str) {
-                return false;
+                return Some(PathDenial::MatchedBlockedPattern {
+                    pattern: pattern.clone(),
+                });
             }
 
             // Also check if any path component matches the pattern
             // This catches ".env" in "foo/.env/bar"
             if path_component_matches(path, pattern) || path_component_matches(&canonical, pattern)
             {
-                return false;
+                return Some(PathDenial::MatchedBlockedPattern {
+                    pattern: pattern.clone(),
+                });
             }
         }
 
         // If allowed is empty, all paths are allowed (that aren't blocked)
         if self.allowed.is_empty() {
-            return true;
+            return None;
         }
 
         // Check if path matches any allowed pattern
         for pattern in &self.allowed {
             if glob_match(pattern, &path_str) || glob_match(pattern, &original_str) {
-                return true;
+                return None;
             }
         }
 
-        false
+        Some(PathDenial::NotInAllowlist {
+            allowed: self.allowed.len(),
+        })
     }
 
     /// Check if this lattice is less than or equal to another.
@@ -723,5 +803,139 @@ mod tests {
             normalize_path_components(Path::new("../a/b")),
             PathBuf::from("a/b")
         );
+    }
+}
+
+#[cfg(test)]
+mod deny_reason_tests {
+    use super::*;
+
+    /// The refusal that started this: a pod reported `path 'audit' blocked by
+    /// policy`, sending the reader to a blocklist that permits `audit`.
+    /// The lattice must be able to say which of the three cases actually fired.
+    #[test]
+    fn a_blocked_pattern_names_itself() {
+        let l = PathLattice::block_sensitive();
+        match l.deny_reason(Path::new(".ssh/id_rsa")) {
+            Some(PathDenial::MatchedBlockedPattern { pattern }) => {
+                assert!(
+                    pattern.contains("ssh") || pattern.contains("id_rsa"),
+                    "the reported pattern must be the one that matched, got {pattern:?}"
+                );
+            }
+            other => panic!("expected a blocked-pattern denial, got {other:?}"),
+        }
+    }
+
+    /// A path outside the sandbox is a different problem with a different fix,
+    /// and must not be reported as though a blocklist entry matched.
+    #[test]
+    fn a_sandbox_escape_is_not_reported_as_a_blocked_pattern() {
+        let l = PathLattice::with_work_dir("/tmp/nucleus-sandbox-root");
+        match l.deny_reason(Path::new("/etc/shadow")) {
+            Some(PathDenial::EscapesSandbox { work_dir }) => {
+                assert_eq!(work_dir.as_deref(), Some("/tmp/nucleus-sandbox-root"));
+            }
+            other => panic!("expected a sandbox-escape denial, got {other:?}"),
+        }
+    }
+
+    /// An allowlist miss is the third case.
+    #[test]
+    fn an_allowlist_miss_says_so() {
+        let mut l = PathLattice::default();
+        l.allowed.insert("src/**".to_string());
+        match l.deny_reason(Path::new("docs/readme.md")) {
+            Some(PathDenial::NotInAllowlist { allowed }) => assert_eq!(allowed, 1),
+            other => panic!("expected an allowlist denial, got {other:?}"),
+        }
+    }
+
+    /// Non-vacuity: an ALLOWED path must produce no denial. Without this, a
+    /// `deny_reason` that always returned `Some` would satisfy the tests above
+    /// and would silently deny everything through `can_access`.
+    #[test]
+    fn an_allowed_path_has_no_denial() {
+        let l = PathLattice::block_sensitive();
+        for p in ["audit", "./audit", "perf-1.txt", "README.md"] {
+            assert_eq!(
+                l.deny_reason(Path::new(p)),
+                None,
+                "{p} is permitted by this lattice and must report no denial"
+            );
+        }
+    }
+
+    /// `can_access` is now a view of `deny_reason`, so they cannot disagree.
+    /// This pins that relationship rather than trusting it.
+    #[test]
+    fn can_access_agrees_with_deny_reason() {
+        let lattices = [
+            PathLattice::block_sensitive(),
+            PathLattice::with_work_dir("/tmp/sandbox"),
+            PathLattice::sandboxed_sensitive("/tmp/sandbox"),
+            PathLattice::default(),
+        ];
+        let paths = [
+            "audit",
+            "./audit",
+            ".ssh/id_rsa",
+            "/etc/shadow",
+            "../escape",
+            "README.md",
+        ];
+        for l in &lattices {
+            for p in &paths {
+                let path = Path::new(p);
+                assert_eq!(
+                    l.can_access(path),
+                    l.deny_reason(path).is_none(),
+                    "can_access and deny_reason disagree about {p}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod denial_display_tests {
+    use super::*;
+
+    /// The rendered denial is destined for whoever asked. Inside a pod that is
+    /// the untrusted guest, so the sandbox root — host layout — must not appear
+    /// in it, even though the value carries it for host-side logging.
+    #[test]
+    fn the_rendered_escape_does_not_leak_the_sandbox_root() {
+        let d = PathDenial::EscapesSandbox {
+            work_dir: Some("/var/lib/nucleus/sandbox/abc123".to_string()),
+        };
+        let shown = d.to_string();
+        assert!(
+            !shown.contains("/var/lib/nucleus"),
+            "the sandbox root must not reach the rendered message, got {shown:?}"
+        );
+        assert!(
+            shown.contains("outside the sandbox"),
+            "it must still say what went wrong, got {shown:?}"
+        );
+        // The structured field is still there for the host to log.
+        match d {
+            PathDenial::EscapesSandbox { work_dir } => {
+                assert_eq!(work_dir.as_deref(), Some("/var/lib/nucleus/sandbox/abc123"))
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// A blocked GLOB is policy, not layout, and naming it is the whole point —
+    /// there are ~30 in the default set. This is the counterweight to the test
+    /// above: withholding everything would be just as unactionable as before.
+    #[test]
+    fn the_rendered_block_names_the_pattern() {
+        let shown = PathDenial::MatchedBlockedPattern {
+            pattern: "**/.ssh/**".to_string(),
+        }
+        .to_string();
+        assert!(shown.contains("**/.ssh/**"), "got {shown:?}");
     }
 }
