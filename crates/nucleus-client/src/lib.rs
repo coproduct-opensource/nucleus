@@ -208,6 +208,48 @@ pub fn sign_grpc_headers(secret: &[u8], actor: Option<&str>, method: &str) -> Si
 /// // Headers include x-nucleus-drand-round
 /// assert!(headers.headers.iter().any(|(k, _)| k == "x-nucleus-drand-round"));
 /// ```
+/// Sign an approval with an Ed25519 approver key.
+///
+/// This is the one a real pod accepts. [`sign_approval_headers`] signs with
+/// HMAC, and a Firecracker pod never selects that tier: the node puts
+/// `nucleus.approval_pubkeys` on every pod's kernel cmdline, and
+/// `select_auth_tier` takes `ApprovalEd25519Drand` whenever approver keys are
+/// configured. The HMAC tier is reachable only when NONE are, so the HMAC
+/// helper cannot approve anything on a default deployment.
+///
+/// The message is identical to the HMAC variant -- `{round}.{timestamp}.{actor}.`
+/// followed by the body -- so only the primitive differs. The signature header
+/// carries 128 hex characters, and the verifier uses `verify_strict`, which
+/// rejects the small-order points a cofactored check would accept.
+pub fn sign_approval_headers_ed25519(
+    signing_key: &ed25519_dalek::SigningKey,
+    drand_round: u64,
+    actor: Option<&str>,
+    body: &[u8],
+) -> DrandSignedHeaders {
+    use ed25519_dalek::Signer as _;
+    let timestamp = now_unix();
+    let actor_value = actor.unwrap_or("");
+    let message = build_drand_message(drand_round, timestamp, actor_value, body);
+    let signature = hex::encode(signing_key.sign(&message).to_bytes());
+
+    let mut headers = vec![
+        ("x-nucleus-timestamp".to_string(), timestamp.to_string()),
+        ("x-nucleus-drand-round".to_string(), drand_round.to_string()),
+        ("x-nucleus-signature".to_string(), signature),
+    ];
+    if !actor_value.is_empty() {
+        headers.push(("x-nucleus-actor".to_string(), actor_value.to_string()));
+    }
+
+    DrandSignedHeaders {
+        timestamp,
+        drand_round,
+        actor: actor.map(|s| s.to_string()),
+        headers,
+    }
+}
+
 pub fn sign_approval_headers(
     secret: &[u8],
     drand_round: u64,

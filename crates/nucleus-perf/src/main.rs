@@ -59,6 +59,14 @@ struct ToolCall {
     /// Pod spec used as the template.
     #[arg(long)]
     spec: String,
+    /// PKCS8 DER Ed25519 approver key, normally the node's
+    /// `<state_dir>/approval_signing_key.der`.
+    ///
+    /// Supplying it lets the harness act as the human approver for operations
+    /// the profile rates `LowRisk`. Without it, an approval-gated call is
+    /// reported as refused rather than silently skipped.
+    #[arg(long)]
+    approval_key: Option<String>,
 }
 
 #[derive(Parser)]
@@ -721,6 +729,64 @@ fn toolcall(t: ToolCall) -> Result<()> {
         }
     }
 
+    // Write, approve, retry, read back.
+    //
+    // The sandbox of a bare pod contains no file this profile may read, so the
+    // only honest way to prove the read path serves real bytes is to put them
+    // there first. `write_files` is `LowRisk` under `codegen`, so the first
+    // attempt is refused pending approval -- which is the behaviour under test,
+    // not an obstacle to route around.
+    if let Some(key_path) = t.approval_key.as_deref() {
+        let key = load_approval_key(key_path)?;
+        let nonce = format!("{}-{}", std::process::id(), created.elapsed().as_nanos());
+        let path = format!("perf-{nonce}.txt");
+        let payload = format!("nucleus-perf round trip {nonce}");
+        let write_body = serde_json::json!({"path": path, "contents": payload});
+
+        // First attempt MUST be refused. A pod that writes without approval has
+        // a broken gate, so this is a check, not a probe.
+        let (st, b, ms) = tool_call(&proxy, "write", write_body.clone())?;
+        let needs_approval = approval_required_operation(&b);
+        report(
+            "unapproved write refused",
+            st,
+            ms,
+            needs_approval.is_some(),
+            &b,
+            &mut failures,
+        );
+
+        if let Some(operation) = needs_approval {
+            let (st, b) = approve_operation(&proxy, &key, &t.actor, &operation, &nonce)?;
+            let ok = (200..300).contains(&st);
+            report("approval accepted", st, 0, ok, &b, &mut failures);
+
+            if ok {
+                let (st, b, ms) = tool_call(&proxy, "write", write_body)?;
+                let ok = (200..300).contains(&st);
+                report("approved write succeeds", st, ms, ok, &b, &mut failures);
+
+                // The point of the whole sequence: bytes the HOST chose, written
+                // by the guest, read back through the guest.
+                let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": path}))?;
+                let got = serde_json::from_str::<serde_json::Value>(&b)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("contents")
+                            .and_then(|c| c.as_str())
+                            .map(str::to_string)
+                    });
+                let ok = (200..300).contains(&st) && got.as_deref() == Some(payload.as_str());
+                report("read back == written", st, ms, ok, &b, &mut failures);
+                if !ok {
+                    println!("      expected {payload:?}\n      got      {got:?}");
+                }
+            }
+        }
+    } else {
+        println!("(no --approval-key: the write round trip was not attempted)");
+    }
+
     // The refusal half. A pod that serves this is not isolating anything.
     let (st, b, ms) = tool_call(&proxy, "read", serde_json::json!({"path": FORBIDDEN_READ}))?;
     let ok = !(200..300).contains(&st);
@@ -852,4 +918,66 @@ fn symmetry_report(args: SymmetryArgs) -> Result<()> {
         allocation_sensitive.full_size
     );
     Ok(())
+}
+
+/// Act as the human approver for one operation.
+///
+/// `write_files` is `LowRisk` under the `codegen` profile, so the first attempt
+/// comes back 403 `approval_required` with the exact operation string in the
+/// body — `WriteFiles <path>`. Approvals are keyed on that string verbatim, so
+/// it is echoed rather than reconstructed: guessing the format would produce an
+/// approval that grants nothing and a retry that fails identically.
+///
+/// The signature is Ed25519 over `{round}.{timestamp}.{actor}.{body}`. A pod
+/// always has `nucleus.approval_pubkeys` on its cmdline, so it selects the
+/// Ed25519 tier; the HMAC helper cannot approve anything here.
+fn approve_operation(
+    proxy: &str,
+    key: &ed25519_dalek::SigningKey,
+    actor: &str,
+    operation: &str,
+    nonce: &str,
+) -> Result<(u16, String)> {
+    let body = serde_json::json!({
+        "operation": operation,
+        "count": 1,
+        "nonce": nonce,
+    })
+    .to_string();
+    let round = nucleus_client::drand::current_expected_round();
+    let signed =
+        nucleus_client::sign_approval_headers_ed25519(key, round, Some(actor), body.as_bytes());
+
+    let mut req = agent()
+        .post(format!("{proxy}/v1/approve"))
+        .header("content-type", "application/json");
+    for (k, v) in &signed.headers {
+        req = req.header(k, v);
+    }
+    let mut resp = req
+        .send(body.as_bytes())
+        .map_err(|e| anyhow::anyhow!("approve: {e}"))?;
+    let status = resp.status().as_u16();
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    Ok((status, text))
+}
+
+/// The operation string a 403 named as needing approval, if it did.
+fn approval_required_operation(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    if v.get("kind").and_then(|k| k.as_str()) != Some("approval_required") {
+        return None;
+    }
+    v.get("operation")
+        .and_then(|o| o.as_str())
+        .map(str::to_string)
+}
+
+/// Load the node's persisted Ed25519 approver key from its PKCS8 DER file.
+fn load_approval_key(path: &str) -> Result<ed25519_dalek::SigningKey> {
+    use ed25519_dalek::pkcs8::DecodePrivateKey as _;
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading approver key {path} (it is root-owned; copy it out)"))?;
+    ed25519_dalek::SigningKey::from_pkcs8_der(&bytes)
+        .map_err(|e| anyhow::anyhow!("{path} is not a PKCS8 Ed25519 key: {e}"))
 }
