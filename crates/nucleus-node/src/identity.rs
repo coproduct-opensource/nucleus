@@ -257,6 +257,15 @@ impl IdentityManager {
 
     /// Returns the trust bundle (root CA certificates).
     #[allow(dead_code)]
+    /// The underlying certificate manager.
+    ///
+    /// Exposed so the SPIFFE Workload API service can source SVIDs from the
+    /// SAME issuance and cache path as the JSON protocol, rather than opening a
+    /// second one. Two issuance paths would be two things to keep conformant.
+    pub fn secret_manager(&self) -> Arc<SecretManager<Arc<dyn CaClient>>> {
+        self.secret_manager.clone()
+    }
+
     pub fn trust_bundle(&self) -> &nucleus_identity::TrustBundle {
         self.ca.trust_bundle()
     }

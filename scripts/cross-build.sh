@@ -12,15 +12,50 @@ ARCH="${ARCH:-all}"
 # Use 'cross' tool by default, fall back to 'cargo' if cross isn't available
 USE_CROSS="${USE_CROSS:-auto}"
 
-# Packages to build for rootfs
-ROOTFS_PACKAGES=(
-    "nucleus-guest-init"
-    "nucleus-tool-proxy"
-    "nucleus-net-probe"
-    "nucleus-workload-probe"
-    "nucleus-egress-probe"
-    "nucleus-podlist-probe"
-)
+# Packages to build for the rootfs — DERIVED, never hand-listed.
+#
+# This used to be a literal array, and it was missing nucleus-adversary-probe
+# (#2377). build-rootfs.sh only hard-requires five of the seven binaries and
+# copies the rest with `[ -f ]`, so a rootfs built from the short list came out
+# exit-0 and simply had no adversary probe in it. build-rootfs.sh even points
+# users HERE ("Build with: scripts/cross-build.sh --arch $ARCH") four separate
+# times, so following the instructions produced the broken image.
+#
+# That is #2366 in the local path: release.yml had the same two-lists-in-two-
+# files shape and shipped a v2.1.0 rootfs with no egress probe.
+#
+# So there is now ONE list. build-rootfs.sh's `*_BIN` defaults name every binary
+# the rootfs wants, and both this script and ci/release-builds-rootfs-inputs.sh
+# read that same expression. Adding a probe to build-rootfs.sh is now sufficient;
+# nothing here has to be remembered.
+ROOTFS_SH="$ROOT_DIR/scripts/firecracker/build-rootfs.sh"
+if [ ! -f "$ROOTFS_SH" ]; then
+    echo "cross-build: cannot find $ROOTFS_SH to derive the package list from" >&2
+    exit 1
+fi
+
+# Read into the array with a while-read loop, NOT `mapfile`: mapfile is a bash 4
+# builtin and macOS ships bash 3.2, so `mapfile` would fail on exactly the local
+# build path this issue is about.
+ROOTFS_PACKAGES=()
+while IFS= read -r pkg; do
+    [ -n "$pkg" ] && ROOTFS_PACKAGES+=("$pkg")
+done < <(grep -oE 'release/nucleus-[a-z-]+' "$ROOTFS_SH" | sed 's|release/||' | sort -u)
+
+# Non-vacuity. An empty or tiny list would make this script "succeed" while
+# building nothing — the same silent shape the derivation exists to remove.
+if [ "${#ROOTFS_PACKAGES[@]}" -lt 5 ]; then
+    echo "cross-build: derived only ${#ROOTFS_PACKAGES[@]} package(s) from $ROOTFS_SH;" >&2
+    echo "  the parse is broken rather than the rootfs having shrunk." >&2
+    exit 1
+fi
+
+# `--list-packages` exists so the CI gate can compare what this script WOULD
+# build against what the rootfs needs, rather than pattern-matching the source.
+if [ "${1:-}" = "--list-packages" ]; then
+    printf '%s\n' "${ROOTFS_PACKAGES[@]}"
+    exit 0
+fi
 
 # Targets
 AARCH64_TARGET="aarch64-unknown-linux-musl"
