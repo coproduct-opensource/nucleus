@@ -705,14 +705,15 @@ async fn provision_tier2_host(args: &SetupArgs, platform: &Platform) -> Result<(
     println!("    client key:    {}", mtls.cli_key.display());
     println!("    trust bundle:  {}", mtls.trust_bundle.display());
     println!(
-        "    Use with: nucleus node --tls-cert {} --tls-key {} --trust-bundle {} ...",
+        "    `nucleus node` finds these automatically — no flags needed. To point at a \
+         different identity: --tls-cert {} --tls-key {} --trust-bundle {}",
         mtls.cli_cert.display(),
         mtls.cli_key.display(),
         mtls.trust_bundle.display()
     );
     println!(
-        "    (opt-in: the node still serves plaintext/HMAC by default — pass \
-         --http-mtls-self-issued to the node to require this.)"
+        "    (mTLS is mandatory on the node's HTTP API now — there is no plaintext/HMAC \
+         fallback to opt out of.)"
     );
 
     provision::install_node_service(

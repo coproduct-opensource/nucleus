@@ -13,10 +13,12 @@ use std::time::Duration;
 /// Interact with a running nucleus-node
 #[derive(Args, Debug)]
 pub struct NodeArgs {
-    /// nucleus-node HTTP URL
+    /// nucleus-node HTTP URL. `https://` since Move B: the node's HTTP
+    /// listener requires mTLS unconditionally now — there is no plaintext
+    /// mode left to default to.
     #[arg(
         long,
-        default_value = "http://127.0.0.1:8080",
+        default_value = "https://127.0.0.1:8080",
         env = "NUCLEUS_NODE_URL"
     )]
     pub url: String,
@@ -33,9 +35,12 @@ pub struct NodeArgs {
     #[arg(long, default_value = "nucleus-cli")]
     pub actor: String,
 
-    // === mTLS (Move A step 5) ===
-    /// Path to this CLI's client certificate (PEM), for mTLS against a node
-    /// started with `--http-mtls-self-issued`. Requires `--tls-key`.
+    // === mTLS (Move A step 5; mandatory on the node's side since Move B) ===
+    /// Path to this CLI's client certificate (PEM). Defaults to the identity
+    /// `nucleus setup` already provisioned (`~/.config/nucleus/identity/
+    /// cli-cert.pem`) when all three of `--tls-cert`/`--tls-key`/
+    /// `--trust-bundle` are unset and that identity exists — see
+    /// `apply_provisioned_identity_defaults`. Requires `--tls-key`.
     #[arg(long, env = "NUCLEUS_NODE_TLS_CERT")]
     pub tls_cert: Option<PathBuf>,
     /// Path to this CLI's client private key (PEM). Requires `--tls-cert`.
@@ -104,8 +109,52 @@ pub enum NodeCommand {
     },
 }
 
+/// Fills in `--tls-cert`/`--tls-key`/`--trust-bundle` from the identity
+/// `nucleus setup` already provisioned (Move A step 6:
+/// `provision::mint_cli_identity`), when the caller passed none of the
+/// three flags explicitly and all three provisioned files are present.
+///
+/// Move B made the node's HTTP listener mTLS-only, with no plaintext/HMAC
+/// mode left to fall back to — before this, every default `nucleus node`
+/// invocation on an otherwise fully set-up machine would silently attempt
+/// (and fail) the now-nonexistent plaintext path, because nothing pointed
+/// these flags at the identity `setup` already minted.
+///
+/// Only fills in the gap when ALL THREE flags are unset: a partial explicit
+/// set must still hit `load_mtls_config`'s "must all be provided together"
+/// error rather than being silently completed from defaults, and any flag
+/// the caller DID set must never be overridden.
+fn apply_provisioned_identity_defaults(args: &mut NodeArgs) {
+    if args.tls_cert.is_some() || args.tls_key.is_some() || args.trust_bundle.is_some() {
+        return;
+    }
+    let Ok(dir) = crate::config::Config::identity_dir() else {
+        return;
+    };
+    if let Some((cert, key, bundle)) = provisioned_identity_paths_in(&dir) {
+        args.tls_cert = Some(cert);
+        args.tls_key = Some(key);
+        args.trust_bundle = Some(bundle);
+    }
+}
+
+/// The directory-parameterized half of [`apply_provisioned_identity_defaults`]
+/// — split out so a test can point it at a tempdir instead of the real,
+/// non-overridable `Config::identity_dir()`. `Some` only when all three
+/// files `mint_cli_identity` writes are present; a partial set (e.g. a
+/// half-written identity from an interrupted `setup`) is treated the same
+/// as none, so `load_mtls_config`'s "must all be provided together" error
+/// still fires rather than a silently completed partial default.
+fn provisioned_identity_paths_in(dir: &std::path::Path) -> Option<(PathBuf, PathBuf, PathBuf)> {
+    let cert = dir.join("cli-cert.pem");
+    let key = dir.join("cli-key.pem");
+    let bundle = dir.join("trust-bundle.pem");
+    (cert.is_file() && key.is_file() && bundle.is_file()).then_some((cert, key, bundle))
+}
+
 /// Execute the node command
-pub async fn execute(args: NodeArgs) -> Result<()> {
+pub async fn execute(mut args: NodeArgs) -> Result<()> {
+    apply_provisioned_identity_defaults(&mut args);
     let agent = create_client(&args)?;
     let auth_secret = resolve_auth(&args)?;
 
@@ -669,6 +718,60 @@ mod tests {
             trust_bundle: None,
             command: NodeCommand::Health,
         }
+    }
+
+    // ── provisioned-identity defaults (Move B) ──────────────────────────────
+
+    #[test]
+    fn provisioned_identity_paths_are_found_when_all_three_files_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("cli-cert.pem"), "CERT").unwrap();
+        fs::write(dir.path().join("cli-key.pem"), "KEY").unwrap();
+        fs::write(dir.path().join("trust-bundle.pem"), "BUNDLE").unwrap();
+
+        let found = provisioned_identity_paths_in(dir.path());
+        assert_eq!(
+            found,
+            Some((
+                dir.path().join("cli-cert.pem"),
+                dir.path().join("cli-key.pem"),
+                dir.path().join("trust-bundle.pem"),
+            ))
+        );
+    }
+
+    #[test]
+    fn provisioned_identity_paths_are_none_when_nothing_was_provisioned() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(provisioned_identity_paths_in(dir.path()), None);
+    }
+
+    /// A half-written identity (an interrupted `setup`, say) must not be
+    /// treated as usable — only ALL THREE files present counts.
+    #[test]
+    fn provisioned_identity_paths_are_none_when_only_some_files_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("cli-cert.pem"), "CERT").unwrap();
+        fs::write(dir.path().join("cli-key.pem"), "KEY").unwrap();
+        // trust-bundle.pem deliberately missing.
+        assert_eq!(provisioned_identity_paths_in(dir.path()), None);
+    }
+
+    #[test]
+    fn apply_provisioned_identity_defaults_never_overrides_an_explicit_flag() {
+        // Even when the "provisioned" files would resolve to something else,
+        // an explicitly-set flag (any one of the three) must survive
+        // untouched — a partial explicit set is a configuration the caller
+        // asked for, not a gap to fill in.
+        let mut args = base_args();
+        let explicit = PathBuf::from("/explicit/cert.pem");
+        args.tls_cert = Some(explicit.clone());
+
+        apply_provisioned_identity_defaults(&mut args);
+
+        assert_eq!(args.tls_cert, Some(explicit));
+        assert_eq!(args.tls_key, None);
+        assert_eq!(args.trust_bundle, None);
     }
 
     #[test]
