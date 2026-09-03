@@ -45,6 +45,10 @@ mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod boot_trace;
+// Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
+// On any other host every item here is genuinely dead, and CI builds release
+// binaries with `RUSTFLAGS=-D warnings`, so the warning is an error that fails the
+// macOS release job. Same pattern as `boot_trace`/`cgroup`.
 mod broker;
 mod broker_launch;
 mod broker_perform;
@@ -55,6 +59,8 @@ mod cred_split;
 mod driver;
 mod envelope_frame;
 mod guest_socket;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod host_requirements;
 mod lifecycle;
 mod net;
 mod posture;
@@ -2104,10 +2110,25 @@ async fn spawn_firecracker_pod(
 
     #[cfg(target_os = "linux")]
     {
-        if !Path::new("/dev/kvm").exists() {
-            return Err(ApiError::Driver(
-                "firecracker requires /dev/kvm (KVM not available)".to_string(),
-            ));
+        // Everything the host must provide, checked BEFORE anything is built.
+        //
+        // This used to be a bare /dev/kvm check. Two other hard requirements were
+        // discovered only by failing at the moment they were used:
+        // /dev/vhost-vsock was checked nowhere in the node, so its absence
+        // surfaced ~3s later as `vsock socket not found` naming a socket path
+        // rather than a kernel module; and CAP_NET_ADMIN was never checked, so
+        // networking failed partway through setup_network with a namespace, a
+        // veth pair and a bridge already created.
+        //
+        // See `host_requirements` for the table and why the decision is split
+        // from the observation.
+        let needs_network = spec.spec.network.is_some();
+        let missing = host_requirements::unmet(
+            &host_requirements::requirements(needs_network),
+            host_requirements::observe,
+        );
+        if !missing.is_empty() {
+            return Err(ApiError::Driver(host_requirements::explain(&missing)));
         }
 
         // REFUSE A VMM WITH A KNOWN GUEST ESCAPE.
