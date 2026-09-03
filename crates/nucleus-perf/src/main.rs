@@ -15,6 +15,8 @@
 //!   harness exists to catch, so `failed` is a first-class column.
 //! * **Percentiles, not just a mean.** Under contention the tail is the story.
 
+mod symmetry;
+
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -32,6 +34,15 @@ enum Cli {
     Podburst(Burst),
     /// Run agent tool calls inside a pod and check what came back.
     Toolcall(ToolCall),
+    /// How many cross-pod checks does isolation actually require at N pods?
+    Symmetry(SymmetryArgs),
+}
+
+#[derive(Parser)]
+struct SymmetryArgs {
+    /// Number of pods the cross-pod check would cover.
+    #[arg(long, default_value = "10")]
+    n: usize,
 }
 
 #[derive(Parser)]
@@ -87,6 +98,7 @@ fn main() -> Result<()> {
     match Cli::parse() {
         Cli::Podburst(b) => podburst(b),
         Cli::Toolcall(t) => toolcall(t),
+        Cli::Symmetry(s) => symmetry_report(s),
     }
 }
 
@@ -775,4 +787,61 @@ fn create_pod_with_proxy(
         .ok_or_else(|| anyhow::anyhow!("no proxy_addr in response: {v}"))?
         .to_string();
     Ok((id, proxy))
+}
+
+/// Report how many cross-pod checks isolation needs at N pods, and why.
+///
+/// The answer depends entirely on what the check can observe. If it looks only
+/// at whether one pod saw another's canary, the pods are interchangeable, the
+/// ordered pairs form a single orbit, and one pair settles it. If it can also
+/// see per-pod allocation -- the subnet the network allocator handed out, the
+/// proxy port, the SVID -- then the pods are distinguishable, the orbit
+/// argument does not apply, and every pair has to be run.
+///
+/// Printing both is the useful part: the cost of an isolation check is a
+/// property of how the check is written, and the difference at N=50 is 1 versus
+/// 2450 booted microVMs.
+fn symmetry_report(args: SymmetryArgs) -> Result<()> {
+    let n = args.n;
+    println!("cross-pod isolation checks at n = {n}\n");
+
+    // The check sees only "did the observer see the subject's canary". Nothing
+    // in that answer depends on WHICH pods are involved.
+    let blind = symmetry::pair_schedule(n, |_i, _j| 0);
+    // The check can see allocation state. nucleus hands pod i a different
+    // subnet from pod j, so this genuinely distinguishes them.
+    let allocation_sensitive = symmetry::pair_schedule(n, |i, _j| i as u64);
+
+    for (label, s) in [
+        ("observes only the canary", &blind),
+        ("also observes allocation", &allocation_sensitive),
+    ] {
+        println!("  {label}");
+        println!(
+            "    checks required: {} of {}{}",
+            s.pairs.len(),
+            s.full_size,
+            if s.is_reduced() { "" } else { "  (no saving)" }
+        );
+        match &s.justification {
+            symmetry::Justification::SymmetryVerified {
+                combinations_checked,
+            } => println!(
+                "    reduced: equivariance verified over {combinations_checked} \
+                 (generator, pair) combinations"
+            ),
+            symmetry::Justification::NotReduced { reason } => {
+                println!("    NOT reduced: {reason}")
+            }
+        }
+        println!();
+    }
+
+    println!(
+        "A reduction is only sound when the symmetry holds. This refuses to \
+         reduce rather than\nassume it -- an isolation check that reports success \
+         over pairs it never ran is worse\nthan one that admits it needs {} of them.",
+        allocation_sensitive.full_size
+    );
+    Ok(())
 }
