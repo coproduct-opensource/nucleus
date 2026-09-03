@@ -1406,6 +1406,9 @@ async fn main() -> Result<(), ApiError> {
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
     let mut st = startup_trace::Startup::new();
     let _ = rustls::crypto::ring::default_provider().install_default();
+    // Eager on purpose -- rustls panics on first TLS use if no provider is
+    // installed, so this cannot simply be deferred to save boot time.
+    st.mark("crypto_provider");
 
     {
         use tracing_subscriber::prelude::*;
@@ -1424,9 +1427,10 @@ async fn main() -> Result<(), ApiError> {
             )
             .init();
     }
+    st.mark("tracing_init");
 
     let args = Args::parse();
-    st.mark("logging_init");
+    st.mark("args_parse");
 
     // === Auth-secret sanity (fail-closed on a world-known key) ===
     // `auth_secret` is a required arg, but an EMPTY string satisfies "present"
@@ -2040,6 +2044,15 @@ async fn main() -> Result<(), ApiError> {
             fail_closed_panic_response,
         ));
 
+    // BEFORE the transport branch on purpose, so it covers both.
+    //
+    // The earlier `serve_prep` sits in front of `TcpListener::bind`, which a
+    // booted microVM never reaches — it serves over vsock and returns inside the
+    // block below. So the router build, the watcher spawns and the layer stack
+    // went unmeasured on the only path that matters for guest boot, and showed
+    // up as a 36ms hole before `vsock_bind` — the largest single gap left in the
+    // trace.
+    st.mark("router_build");
     if let Some(vsock) = vsock_binding {
         // THE GUEST PATH. In a booted microVM the proxy serves over vsock and
         // `main` returns right here — everything below this block is host/TCP
