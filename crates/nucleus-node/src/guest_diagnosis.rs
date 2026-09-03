@@ -139,25 +139,29 @@ pub(crate) async fn wait_for_proxy_health(
     addr: SocketAddr,
     console: &Path,
 ) -> Result<(), ApiError> {
-    wait_for_proxy_health_within(
-        addr,
-        Duration::from_secs(
-            std::env::var("NUCLEUS_NODE_PROXY_HEALTH_TIMEOUT_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(PROXY_HEALTH_TIMEOUT_SECS_DEFAULT),
-        ),
-    )
-    .await
-    .map_err(|e| {
-        // The console the node already captured usually says exactly why.
-        // Reporting only "health check timed out" is true and almost never the
-        // cause; finding the real one meant mounting the image by hand.
-        match diagnose(console) {
-            Some(d) => ApiError::Driver(format!("{e}\n\n{d}")),
-            None => e,
-        }
-    })
+    // An EXPLICIT setting is honoured as-is: an operator who names a number is
+    // not asking to have it scaled behind their back.
+    let budget = match std::env::var("NUCLEUS_NODE_PROXY_HEALTH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        Some(secs) => Duration::from_secs(secs),
+        None => Duration::from_secs(health_budget_secs(
+            PROXY_HEALTH_TIMEOUT_SECS_DEFAULT,
+            live_microvms(),
+        )),
+    };
+    wait_for_proxy_health_within(addr, budget)
+        .await
+        .map_err(|e| {
+            // The console the node already captured usually says exactly why.
+            // Reporting only "health check timed out" is true and almost never the
+            // cause; finding the real one meant mounting the image by hand.
+            match diagnose(console) {
+                Some(d) => ApiError::Driver(format!("{e}\n\n{d}")),
+                None => e,
+            }
+        })
 }
 
 /// What the last health probe actually saw.
@@ -339,5 +343,112 @@ mod tests {
             assert!(!d.is_empty());
         }
         assert!(SIGNATURES.len() >= 4, "the table has shrunk unexpectedly");
+    }
+}
+
+/// How many microVMs are already running on this host.
+///
+/// A contention signal, not a census: a guest becomes healthy by doing work on
+/// a CPU, and every VM already running is competing for the same cores.
+fn live_microvms() -> usize {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|p| p.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .filter(|e| {
+            std::fs::read_to_string(e.path().join("comm"))
+                .map(|c| c.trim() == "firecracker")
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// Cap on how far contention may stretch the health budget.
+///
+/// Without it a host with fifty live pods would give each new one a 25-minute
+/// budget, so a genuinely broken guest would hang the caller instead of
+/// failing. The point is to stop punishing slow-because-busy, not to wait
+/// forever.
+const HEALTH_BUDGET_MAX_MULTIPLIER: u64 = 8;
+
+/// Scale the health budget by how many microVMs are already running.
+///
+/// A fixed budget is wrong for a reason that is easy to see once measured. A
+/// guest becomes healthy by running code, and on a 4-vCPU host N booting guests
+/// each get roughly 1/N of a core, so time-to-ready grows with N while the
+/// budget does not. Measured on this hardware:
+///
+///   * N=1  -> ready in ~3s, comfortably inside 30s;
+///   * N=10 -> ALL TEN failed at the 30s budget;
+///   * N=10 with the budget raised -> all ten became healthy, taking ~74s.
+///
+/// Nothing was wrong with those guests. They were slow because the host was
+/// busy, and a fixed deadline reported that as a pod failure -- the failure
+/// mode being "the system works fine until you use it".
+///
+/// Pure and total so the policy is testable without booting anything.
+fn health_budget_secs(base_secs: u64, live: usize) -> u64 {
+    let multiplier = (live as u64)
+        .saturating_add(1)
+        .min(HEALTH_BUDGET_MAX_MULTIPLIER);
+    base_secs.saturating_mul(multiplier)
+}
+
+#[cfg(test)]
+mod health_budget_tests {
+    use super::*;
+
+    /// An idle host must behave exactly as before. This change is meant to stop
+    /// punishing contention, not to slow down the common case.
+    #[test]
+    fn an_idle_host_keeps_the_base_budget() {
+        assert_eq!(health_budget_secs(30, 0), 30);
+    }
+
+    /// The measured failure: ten pods on four cores needed ~74s and got 30s.
+    #[test]
+    fn ten_live_vms_buy_enough_budget_for_the_measured_boot() {
+        let budget = health_budget_secs(30, 10);
+        assert!(
+            budget >= 74,
+            "10 concurrent boots took ~74s on this hardware; a {budget}s budget \
+             would still report healthy guests as failures"
+        );
+    }
+
+    /// The cap is what keeps a broken guest from hanging the caller. Without it
+    /// a busy host would grant budgets in the tens of minutes.
+    #[test]
+    fn the_budget_is_capped_however_busy_the_host_is() {
+        let huge = health_budget_secs(30, 10_000);
+        assert_eq!(huge, 30 * HEALTH_BUDGET_MAX_MULTIPLIER);
+        assert!(
+            huge <= 300,
+            "an unbounded budget turns a broken pod into a hang"
+        );
+    }
+
+    /// Monotonic: more contention never buys LESS time. Obvious, and exactly
+    /// the kind of thing an arithmetic slip inverts.
+    #[test]
+    fn more_contention_never_shortens_the_budget() {
+        let mut prev = 0;
+        for live in 0..64 {
+            let b = health_budget_secs(30, live);
+            assert!(b >= prev, "budget shrank from {prev} to {b} at live={live}");
+            prev = b;
+        }
+    }
+
+    /// Saturating, not panicking: a pathological base must not overflow.
+    #[test]
+    fn a_pathological_base_saturates_rather_than_wrapping() {
+        assert_eq!(health_budget_secs(u64::MAX, 5), u64::MAX);
     }
 }
