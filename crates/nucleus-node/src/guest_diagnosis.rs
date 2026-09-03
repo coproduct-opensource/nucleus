@@ -120,6 +120,23 @@ pub(crate) fn diagnose(console_path: &Path) -> Option<String> {
     ))
 }
 
+/// The host-side wait for the guest to become healthy.
+///
+/// # Why this carries the `proxy.health_wait` stage
+///
+/// It is the single largest span in a pod launch, and until now it had none.
+/// `boot_trace` reported 92% of warm pod-create wall time as `unaccounted`
+/// (~2.3 s of ~2.5 s) because the last measured stage ended at +200 ms and
+/// nothing covered the wait that follows (#2374).
+///
+/// The instrumentation was not missing — it was ATTACHED TO THE WRONG FUNCTION.
+/// When this function moved out of `main.rs` into this module (#2355), its
+/// attributes stayed behind and silently reattached to the next item, which was
+/// `serve_grpc`: a server that runs for the node's entire lifetime. Rust
+/// attributes bind to the following item regardless of the blank line between
+/// them, so this compiled, ran, and mislabelled a long-lived task as a boot
+/// stage while the real stage went unmeasured.
+#[tracing::instrument(skip_all, fields(boot.stage = "proxy.health_wait"))]
 pub(crate) async fn wait_for_proxy_health(
     addr: SocketAddr,
     console: &Path,
