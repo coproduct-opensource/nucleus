@@ -71,6 +71,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,6 +82,8 @@ jobs:
           cache: true
 
       - name: Ratchet down
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           RATCHET_FILE=".clippy-ratchet.toml"
@@ -90,20 +93,55 @@ jobs:
           STEP=$(grep '^step' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
           ACTUAL=$(scripts/check-clippy-ratchet.sh --count)
 
-          # Same rule as the line ratchet: step down, snap to actual when the
-          # code is already better than the step, and never below target.
+          # Step down, snap to actual when the code is already better than the
+          # step, NEVER below actual, and never below target.
+          #
+          # The "never below actual" clamp is the one that was missing, and it is
+          # not hypothetical: ceiling 470 / step 5 / actual 466 computed 465 — a
+          # ceiling BELOW the real count, which is exactly the configuration the
+          # `ratchet-falsifier` job proves goes red. The direct-push rejection
+          # below was masking it, because the bad ceiling never actually landed.
+          #
+          # These clamps are `if` blocks, not `[ .. ] && ..` one-liners: under
+          # `set -e` a false `&&` list is itself a failing command, so the old
+          # form could abort the job on the ordinary "no snap needed" path.
           NEW=$((CEILING - STEP))
-          [ "$ACTUAL" -lt "$NEW" ] && NEW=$ACTUAL
-          [ "$NEW" -lt "$TARGET" ] && NEW=$TARGET
+          if [ "$ACTUAL" -lt "$NEW" ]; then NEW=$ACTUAL; fi
+          if [ "$NEW" -lt "$ACTUAL" ]; then NEW=$ACTUAL; fi
+          if [ "$NEW" -lt "$TARGET" ]; then NEW=$TARGET; fi
 
           if [ "$NEW" -ge "$CEILING" ]; then
-            echo "ceiling $CEILING already at or below $NEW — nothing to do"
+            echo "ceiling $CEILING already at or below $NEW (actual $ACTUAL) — nothing to do"
+            exit 0
+          fi
+
+          # `main` is protected and requires the merge queue, so `git push` here
+          # is rejected with GH006 ("Changes must be made through the merge
+          # queue") and the job fails every time it has work to do. The ceiling
+          # update goes through a PR like every other change to this repo.
+          BRANCH="chore/clippy-ratchet-$NEW"
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')
+          if [ "$EXISTING" != "0" ]; then
+            echo "a PR for $BRANCH is already open — nothing to do"
             exit 0
           fi
 
           sed -i "s/^ceiling = .*/ceiling = $NEW/" "$RATCHET_FILE"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add "$RATCHET_FILE"
           git commit -m "chore(clippy-ratchet): ceiling $CEILING -> $NEW (actual $ACTUAL)"
-          git push
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --base main --head "$BRANCH" \
+            --title "chore(clippy-ratchet): ceiling $CEILING -> $NEW" \
+            --body "Automated ratchet step. Measured violation count on linux CI is **$ACTUAL**; the ceiling drops $CEILING -> $NEW. The ceiling is never set below actual."
+
+          # A PR opened with GITHUB_TOKEN does not trigger `pull_request`
+          # workflows, so its required checks may never start and auto-merge
+          # will sit pending. Warn rather than fail: the ceiling update is
+          # advisory, and a red job here would block nothing but the signal.
+          gh pr merge --auto --squash "$BRANCH" ||
+            echo "::warning::could not enable auto-merge on $BRANCH; a PR opened by GITHUB_TOKEN does not start required checks — merge it manually or supply an App/PAT token"
