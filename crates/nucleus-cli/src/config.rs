@@ -291,6 +291,13 @@ impl Config {
         Ok(nucleus_dir()?.join("artifacts"))
     }
 
+    /// Where this CLI's own mTLS identity lives once `nucleus setup` has
+    /// provisioned it — this CLI's client cert/key and the node's trust
+    /// bundle. See `provision::provision_mtls_identity`.
+    pub fn identity_dir() -> Result<PathBuf> {
+        Ok(nucleus_dir()?.join("identity"))
+    }
+
     /// Get absolute path to kernel
     pub fn kernel_path(&self) -> Result<PathBuf> {
         Ok(Self::artifacts_dir()?.join(&self.firecracker.kernel_path))
