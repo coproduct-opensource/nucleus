@@ -49,6 +49,26 @@ const PROXY_BIN: &str = "/usr/local/bin/nucleus-tool-proxy";
 const EGRESS_PROBE_BIN: &str = "/usr/local/bin/nucleus-egress-probe";
 const GUEST_NET_SH: &str = "/usr/local/bin/guest-net.sh";
 
+/// Time one startup step and print it as it completes.
+///
+/// Mirrors `nucleus-startup-phase` from the tool-proxy deliberately, including
+/// printing per step rather than only in a summary: a summary that prints at the
+/// end cannot diagnose a hang, because a stall means the summary never runs and
+/// the console stays empty. Streaming means the LAST line names the step that
+/// finished, so the stall is in the one after it.
+///
+/// This half of the boot was entirely untimed. `/init` performs the vsock
+/// handshake and then execs the tool-proxy, whose own trace starts at ITS
+/// process start -- so everything here happened before any clock the host could
+/// read, and a boot trace reporting `unaccounted=334ms of 389ms` was not even
+/// measuring this part.
+fn timed<T>(name: &str, f: impl FnOnce() -> T) -> T {
+    let t = std::time::Instant::now();
+    let out = f();
+    eprintln!("nucleus-init-phase {name}={}ms", t.elapsed().as_millis());
+    out
+}
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("nucleus-guest-init error: {err}");
@@ -117,8 +137,13 @@ fn run() -> Result<(), String> {
 
     // Fetch SPIFFE identity from host if configured
     let workload_api_port = identity::parse_workload_api_port(&cmdline);
+    // The handshake is five SEQUENTIAL vsock round trips. Timing the whole run
+    // as well as each leg is the point: the per-leg numbers say which one is
+    // slow, and the total says whether batching them into one round trip is
+    // worth doing at all. Neither number existed before.
+    let handshake_start = std::time::Instant::now();
     if let Some(port) = workload_api_port {
-        match identity::fetch_identity(port) {
+        match timed("identity", || identity::fetch_identity(port)) {
             Ok(spiffe_id) => {
                 eprintln!("fetched identity: {spiffe_id}");
                 // POINT THE PROXY AT WHAT WE JUST FETCHED.
@@ -161,7 +186,7 @@ fn run() -> Result<(), String> {
     // fails closed on its own (an unsigned envelope is refused host-side). Making
     // it fatal would break every pod that never had one.
     if let Some(port) = workload_api_port {
-        match identity::fetch_broker_secret(port) {
+        match timed("broker_secret", || identity::fetch_broker_secret(port)) {
             Ok(cap) => {
                 export!("NUCLEUS_TOOL_PROXY_BROKER_SECRET", &cap.secret);
                 // The port is NOT a secret — it is where to connect — so unlike
@@ -183,7 +208,7 @@ fn run() -> Result<(), String> {
         // key that signs this pod's MediationReceipts is out of the workload's
         // reach. Absent ⇒ no receipts (additive forensics), never a boot failure.
         // The key VALUE is never logged — only its presence.
-        match identity::fetch_mediation_key(port) {
+        match timed("mediation_key", || identity::fetch_mediation_key(port)) {
             Ok(Some(mk)) => {
                 export!("NUCLEUS_MEDIATION_SIGNING_KEY", &mk.signing_key);
                 export!("NUCLEUS_MEDIATION_SPIFFE_ID", &mk.spiffe_id);
@@ -224,7 +249,9 @@ fn run() -> Result<(), String> {
         // or the kernel cmdline for the reason the whole mechanism rests on:
         // the socket says which pod this is, and nothing the guest can write
         // does.
-        match identity::fetch_pod_caller_token(port) {
+        match timed("pod_caller_token", || {
+            identity::fetch_pod_caller_token(port)
+        }) {
             Ok(id) => {
                 eprintln!("fetched pod caller token over vsock");
                 export!("NUCLEUS_POD_CALLER_TOKEN", id.token);
@@ -245,7 +272,7 @@ fn run() -> Result<(), String> {
             }
         }
 
-        match identity::fetch_task_token(port) {
+        match timed("task_token", || identity::fetch_task_token(port)) {
             Ok(Some(t)) => {
                 export!("NUCLEUS_TASK_TOKEN", &t.token);
                 export!("NUCLEUS_TASK_TOKEN_NONCE", &t.nonce);
@@ -273,6 +300,13 @@ fn run() -> Result<(), String> {
             }
         }
     }
+    // Printed even when no port was configured, so a boot with NO handshake is
+    // visibly 0ms rather than silently absent — otherwise "the line is missing"
+    // and "the handshake was free" look identical in a log.
+    eprintln!(
+        "nucleus-init-phase handshake_total={}ms",
+        handshake_start.elapsed().as_millis()
+    );
 
     // OPTIONAL. On the Firecracker path the tool-proxy is bound to a vsock
     // listener that accepts only the host (`pod_mgmt::peer_is_host`), and the
