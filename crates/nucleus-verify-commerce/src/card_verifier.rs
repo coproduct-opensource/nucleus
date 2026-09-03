@@ -49,7 +49,7 @@ impl CallerVerifier for AgentCardVerifier {
             .map_err(|e| CommerceError::Unverified(format!("agent card did not verify: {e}")))?;
 
         Ok(VerifiedCaller {
-            spiffe_id: verified.claims.spiffe_id.clone(),
+            spiffe_id: verified.claims().spiffe_id.clone(),
         })
     }
 }
