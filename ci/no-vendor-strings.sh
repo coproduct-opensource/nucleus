@@ -97,6 +97,49 @@ for pattern in "${PATTERNS[@]}"; do
         | grep -v 'vendor-allow:' >>"$tmpfile" || true
 done
 
+# ---------------------------------------------------------------------------
+# Repo-wide pass: hardcoded vendor MODEL IDENTIFIERS.
+#
+# The pattern list above is deliberately scoped to SCAN_PATHS, because names
+# like `.claude/settings.json`, `CLAUDECODE` and `nucleus-claude-hook` are
+# intrinsic interop that legitimately appears across the tree.
+#
+# A hardcoded vendor *model id* is different: it is a defect ANYWHERE. Nucleus
+# does not choose which model runs -- that is the orchestrator's job
+# (CLAUDE.md) -- and a pinned model id also rots the moment the vendor retires
+# that model. This pattern matches `<family>-<something>-<digit>` shapes such
+# as `claude-sonnet-4-20250514` or `gpt-4o`, and provably does NOT match the
+# intrinsic interop names above.
+MODEL_ID_PATTERN='\b(claude|gpt|gemini|llama|mistral|grok)-[a-z0-9]+([.-][a-z0-9]+)*-?[0-9]'
+MODEL_SCAN_ROOTS=("crates" "ci" "scripts" "docs" ".github")
+
+modelfile="$(mktemp)"
+trap 'rm -f "$modelfile"' EXIT
+for root in "${MODEL_SCAN_ROOTS[@]}"; do
+    [[ -e "$root" ]] || continue
+    grep -RHnE -i "$MODEL_ID_PATTERN" \
+        --include="*.rs" --include="*.toml" --include="*.md" \
+        --include="*.yaml" --include="*.yml" --include="*.json" \
+        --exclude-dir=target --exclude-dir=node_modules --exclude-dir=.git \
+        --exclude-dir=.lake \
+        "$root" 2>/dev/null \
+        | grep -v 'vendor-allow:' >>"$modelfile" || true
+done
+
+if [[ -s "$modelfile" ]]; then
+    sort -u "$modelfile" -o "$modelfile"
+    echo "FAIL: hardcoded vendor model id(s) found — $(wc -l <"$modelfile" | tr -d ' ')" >&2
+    echo "" >&2
+    echo "Nucleus must not name a specific vendor model. Take the value from" >&2
+    echo "configuration or leave it unset so the external agent binary applies" >&2
+    echo "its own default; choosing a model is the orchestrator's decision." >&2
+    echo "" >&2
+    echo "Allow-list a line by appending: vendor-allow: <reason>" >&2
+    echo "" >&2
+    cat "$modelfile" >&2
+    exit 1
+fi
+
 if [[ -s "$tmpfile" ]]; then
     # Deduplicate (a line may match multiple patterns).
     sort -u "$tmpfile" >"${tmpfile}.dedup"

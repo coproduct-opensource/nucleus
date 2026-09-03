@@ -138,10 +138,13 @@ pub struct RunArgs {
     pub timeout: u64,
 
     /// Model identifier to pass to the agent CLI.
-    // Intrinsic interop: the default is a real, non-neutralizable model id
-    // consumed verbatim by the external agent binary's `--model` flag.
-    #[arg(long, default_value = "claude-sonnet-4-20250514")]
-    pub model: String,
+    // Intrinsic interop: the flag name and any value are passed verbatim to the
+    // external agent binary's `--model` flag. Nucleus supplies NO default: which
+    // model to run is the orchestrator's decision, not the runtime's (CLAUDE.md),
+    // and a pinned vendor model id also rots the moment that model is retired.
+    // Unset means the agent binary applies its own default.
+    #[arg(long)]
+    pub model: Option<String>,
 
     /// Output format: text or json
     #[arg(long, default_value = "text")]
@@ -430,10 +433,11 @@ async fn run_hook(
     let start = Instant::now();
 
     let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
-    cmd.arg("--print")
-        .arg("--model")
-        .arg(&args.model)
-        .arg("--max-budget-usd")
+    cmd.arg("--print");
+    if let Some(model) = &args.model {
+        cmd.arg("--model").arg(model);
+    }
+    cmd.arg("--max-budget-usd")
         .arg(policy.budget.max_cost_usd.to_string())
         .arg("--settings")
         .arg(&settings_path)
@@ -562,7 +566,7 @@ async fn run_local(
 
     info!(
         allowed_tools = %allowed_tools.join(","),
-        model = %args.model,
+        model = args.model.as_deref().unwrap_or("<agent default>"),
         "Spawning agent CLI (local enforced mode)"
     );
 
@@ -712,7 +716,7 @@ async fn run_enforced(
 
     info!(
         allowed_tools = %allowed_tools.join(","),
-        model = %args.model,
+        model = args.model.as_deref().unwrap_or("<agent default>"),
         "Spawning agent CLI (enforced MCP mode)"
     );
 
@@ -959,10 +963,11 @@ fn run_agent_mcp(
     work_dir: &Path,
 ) -> Result<std::process::Output> {
     let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
-    cmd.arg("--print")
-        .arg("--model")
-        .arg(&args.model)
-        .arg("--mcp-config")
+    cmd.arg("--print");
+    if let Some(model) = &args.model {
+        cmd.arg("--model").arg(model);
+    }
+    cmd.arg("--mcp-config")
         .arg(mcp_config_path)
         // Allowed tools come ONLY from the confinement guard, which has already
         // vetted that every one routes through the PermissionLattice. There is
