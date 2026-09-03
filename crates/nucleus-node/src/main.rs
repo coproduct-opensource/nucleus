@@ -34,6 +34,7 @@ mod auth;
 mod firecracker_config;
 mod grpc_tls;
 mod guest_diagnosis;
+mod http_serve;
 mod identity;
 mod lockdown;
 mod mediation;
@@ -296,6 +297,19 @@ struct Args {
         default_value_t = false
     )]
     grpc_tls_self_issued: bool,
+    /// Serve the HTTP API over mTLS using the node's own SPIFFE identity,
+    /// instead of the plaintext default. Requires
+    /// `--identity-workload-api-socket`. Unlike `--grpc-tls-self-issued` this
+    /// IS full mTLS (a client certificate is required), so no existing caller
+    /// can connect until the CLI has an SVID of its own — see
+    /// `IdentityManager::self_issued_http_mtls_listener` for why that's
+    /// deliberate. Off by default.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_HTTP_MTLS_SELF_ISSUED",
+        default_value_t = false
+    )]
+    http_mtls_self_issued: bool,
 
     // GitHub OIDC configuration
     /// Enable GitHub OIDC token exchange for CI/CD authentication.
@@ -896,9 +910,7 @@ async fn main() -> Result<(), ApiError> {
 
     start_pod_reaper(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-    info!("nucleus-node listening on {}", args.listen);
-    axum::serve(listener, app).await?;
+    http_serve::serve(&state, &args.listen, args.http_mtls_self_issued, app).await?;
 
     Ok(())
 }

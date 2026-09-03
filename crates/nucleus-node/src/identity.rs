@@ -222,6 +222,47 @@ impl IdentityManager {
         self.fetch_certificate(&self.node_identity()).await
     }
 
+    /// Builds a self-issued mTLS config for the node's HTTP API: the node's
+    /// own certificate as server identity, and this CA's trust bundle as the
+    /// root a client certificate must chain to.
+    ///
+    /// Unlike [`crate::grpc_tls::GrpcTlsConfig::from_node_identity`]
+    /// (server-only), this is full mTLS: `nucleus_identity::mtls::MtlsListener`
+    /// always requires a client certificate (`TlsServerConfig::build_acceptor`
+    /// builds its verifier without `allow_unauthenticated`) — so a caller with
+    /// no SVID cannot connect at all. Correct once the CLI has one (Move A
+    /// step 5); until then, `--http-mtls-self-issued` is an opt-in mode an
+    /// operator enables knowing that. Using THIS manager's own CA as the
+    /// trust root (rather than requiring separately-provisioned trust-bundle
+    /// files, as the tool-proxy's `--trust-bundle` does) is deliberate: once
+    /// step 5 lands, the CLI's SVID is issued by this same CA, so no further
+    /// wiring is needed here for the trust relationship to already be correct.
+    pub async fn self_issued_http_mtls_config(
+        &self,
+    ) -> Result<nucleus_identity::mtls::MtlsConfig, String> {
+        let cert = self.node_certificate().await?;
+        let trust_bundle = self.ca().trust_bundle().clone();
+        Ok(nucleus_identity::mtls::MtlsConfig::new(
+            (*cert).clone(),
+            trust_bundle,
+        ))
+    }
+
+    /// Wraps `tcp_listener` in a self-issued mTLS listener built from
+    /// [`Self::self_issued_http_mtls_config`]. What `--http-mtls-self-issued`
+    /// uses to build the transport before `axum::serve` runs — kept here
+    /// rather than inline in `main.rs`'s already-large boot sequence, since
+    /// "how do I present myself over TLS" is this type's own responsibility,
+    /// the same reasoning as [`Self::node_certificate`].
+    pub async fn self_issued_http_mtls_listener(
+        &self,
+        tcp_listener: tokio::net::TcpListener,
+    ) -> Result<nucleus_identity::mtls::MtlsListener, String> {
+        let mtls_config = self.self_issued_http_mtls_config().await?;
+        nucleus_identity::mtls::MtlsListener::new(tcp_listener, &mtls_config)
+            .map_err(|e| format!("failed to create HTTP mTLS listener: {e}"))
+    }
+
     /// Rebuild the VM registry from the pods already on disk.
     ///
     /// # Why derive instead of journalling
@@ -793,6 +834,119 @@ mod tests {
             "a self-issued node cert minted after a simulated restart must verify against \
              the pre-restart root",
         );
+    }
+
+    /// The property `--http-mtls-self-issued` depends on, proven with a REAL
+    /// TLS handshake rather than inspecting the config's fields: a peer whose
+    /// certificate was minted by this SAME CA (a pod, say) completes a full
+    /// mTLS handshake against the config `self_issued_http_mtls_config`
+    /// builds; a peer from an unrelated CA is refused. Satisfy-before-refute:
+    /// the positive case is checked first, so a config that accepts nothing
+    /// could not pass this by accident.
+    #[tokio::test]
+    async fn self_issued_http_mtls_config_accepts_same_ca_and_refuses_a_stranger() {
+        use nucleus_identity::{
+            CaClient, CsrOptions, SelfSignedCa, TlsClientConfig, TlsServerConfig,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = IdentityManager::new_with_persistent_ca(
+            "nucleus.local",
+            Duration::from_secs(3600),
+            &dir.path().join("ca"),
+        )
+        .unwrap();
+        let mtls_config = manager.self_issued_http_mtls_config().await.unwrap();
+
+        // A peer minted by the SAME CA -- the shape a real pod SVID has.
+        let same_ca_identity = manager.identity_for_pod(Uuid::new_v4(), "default", "same-ca-peer");
+        let same_ca_cert = manager.fetch_certificate(&same_ca_identity).await.unwrap();
+
+        // --- positive: same-CA peer completes a real handshake ---
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server_cert = mtls_config.server_cert.clone();
+            let server_trust_bundle = mtls_config.trust_bundle.clone();
+            let server_handle = tokio::spawn(async move {
+                let (stream, _peer) = listener.accept().await.unwrap();
+                let acceptor = TlsServerConfig::new(server_cert, server_trust_bundle)
+                    .build_acceptor()
+                    .unwrap();
+                let mut tls = acceptor.accept(stream).await.unwrap();
+                let mut buf = [0u8; 5];
+                tls.read_exact(&mut buf).await.unwrap();
+                assert_eq!(&buf, b"hello");
+                tls.write_all(b"ok").await.unwrap();
+            });
+
+            let client_trust_bundle = mtls_config.trust_bundle.clone();
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let connector = TlsClientConfig::new((*same_ca_cert).clone(), client_trust_bundle)
+                .with_spiffe_trust_domain("nucleus.local")
+                .build_connector()
+                .unwrap();
+            let server_name =
+                rustls::pki_types::ServerName::try_from("nucleus.local".to_string()).unwrap();
+            let mut tls = connector
+                .connect(server_name, stream)
+                .await
+                .expect("a peer certified by the SAME CA must complete the handshake");
+            tls.write_all(b"hello").await.unwrap();
+            let mut buf = [0u8; 2];
+            tls.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"ok");
+
+            server_handle.await.unwrap();
+        }
+
+        // --- negative: a stranger from an unrelated CA is refused ---
+        {
+            let stranger_ca = SelfSignedCa::new("nucleus.local").unwrap();
+            let stranger_identity = Identity::new("nucleus.local", "default", "stranger");
+            let stranger_csr = CsrOptions::new(stranger_identity.to_spiffe_uri())
+                .generate()
+                .unwrap();
+            let stranger_cert = stranger_ca
+                .sign_csr(
+                    stranger_csr.csr(),
+                    stranger_csr.private_key(),
+                    &stranger_identity,
+                    Duration::from_secs(3600),
+                )
+                .await
+                .unwrap();
+            let stranger_trust_bundle = stranger_ca.trust_bundle().clone();
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server_cert = mtls_config.server_cert.clone();
+            let server_trust_bundle = mtls_config.trust_bundle.clone();
+            let server_handle = tokio::spawn(async move {
+                let (stream, _peer) = listener.accept().await.unwrap();
+                let acceptor = TlsServerConfig::new(server_cert, server_trust_bundle)
+                    .build_acceptor()
+                    .unwrap();
+                let result = acceptor.accept(stream).await;
+                assert!(result.is_err(), "a stranger's certificate must be refused");
+            });
+
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let connector = TlsClientConfig::new(stranger_cert, stranger_trust_bundle)
+                .with_spiffe_trust_domain("nucleus.local")
+                .build_connector()
+                .unwrap();
+            let server_name =
+                rustls::pki_types::ServerName::try_from("nucleus.local".to_string()).unwrap();
+            // Either side may be the one that observes the failure first
+            // (the stranger's trust bundle doesn't contain the real server's
+            // CA either) -- both outcomes are the property under test.
+            let _ = connector.connect(server_name, stream).await;
+
+            server_handle.await.unwrap();
+        }
     }
 
     /// C9 Phase 0: a CA injected via `with_ca` (as `Arc<dyn CaClient>`) flows through
