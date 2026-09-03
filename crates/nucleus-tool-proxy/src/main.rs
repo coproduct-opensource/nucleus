@@ -1426,6 +1426,7 @@ async fn main() -> Result<(), ApiError> {
     }
 
     let args = Args::parse();
+    st.mark("logging_init");
 
     // === Auth-secret sanity (fail-closed on a world-known key) ===
     // `auth_secret` is a required arg, but an EMPTY string satisfies "present"
@@ -1506,6 +1507,7 @@ async fn main() -> Result<(), ApiError> {
         move |request: &ApprovalRequest| approvals.consume(request.operation())
     });
     let runtime = runtime.with_approver(Arc::new(approver))?;
+    st.mark("runtime_build");
 
     let auth = AuthConfig::new(
         args.auth_secret.as_bytes(),
@@ -1900,6 +1902,7 @@ async fn main() -> Result<(), ApiError> {
         session_task_token,
     };
 
+    st.mark("state_build");
     if let Err(err) = st
         .timed("boot_report", boot_report::emit_boot_report_bounded(&state))
         .await
@@ -2071,6 +2074,7 @@ async fn main() -> Result<(), ApiError> {
         return Ok(());
     }
 
+    st.mark("serve_prep");
     let listener = st.timed("bind", TcpListener::bind(&args.listen)).await?;
     st.report();
     let addr = listener.local_addr()?;
