@@ -1,0 +1,88 @@
+# Helm values for the `nucleus-k3s` runner scale set (gha-runner-scale-set
+# 0.14.2) on the Lima `pci-k3s` VM. The GitHub credential is NOT here: it is
+# the pre-existing `gh-token` secret in the arc-runners namespace.
+#
+#   helm upgrade --install nucleus-k3s \
+#     oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+#     --version 0.14.2 -n arc-runners -f k8s/ci-runner/values.yaml
+#
+# Jobs reach these runners with `runs-on: nucleus-k3s` — in this repo through
+# `runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}`, so unsetting the repo
+# variable CI_RUNNER sends everything back to hosted runners in one place.
+githubConfigUrl: https://github.com/coproduct-opensource/nucleus
+githubConfigSecret: gh-token
+runnerScaleSetName: nucleus-k3s
+
+# Scale-to-zero; two at most. The node has 8 vCPU / 16 GiB. Each runner is
+# held to 4 cargo jobs (CARGO_BUILD_JOBS below) and an 8 GiB memory limit: the
+# first smoke run let cargo use all 8 cores under a 6 GiB limit and the memory
+# cgroup OOM-killed the linker mid-build. Two runners x 4 jobs saturates the
+# CPU; two x 8 GiB fits the node with the runner's own overhead.
+minRunners: 0
+maxRunners: 2
+
+template:
+  spec:
+    containers:
+      - name: runner
+        # Built from docker/Dockerfile.runner and imported into k3s's
+        # containerd (README.md); never pulled from a registry.
+        image: localhost/nucleus-ci-runner:0.1.1
+        imagePullPolicy: Never
+        command: ["/home/runner/run.sh"]
+        env:
+          # Cross-job compile cache on the persistent ~/.cache mount.
+          - name: RUSTC_WRAPPER
+            value: sccache
+          - name: SCCACHE_DIR
+            value: /home/runner/.cache/sccache
+          - name: SCCACHE_CACHE_SIZE
+            value: 30G
+          - name: CARGO_INCREMENTAL
+            value: "0"
+          # Half the node's cores per runner: memory scales with parallel
+          # rustc/ld processes, and the limit below is sized for four.
+          - name: CARGO_BUILD_JOBS
+            value: "4"
+          # Where dtolnay/rust-toolchain and elan-init install to; both are
+          # persistent mounts, so a warm pod starts with the toolchains present.
+          - name: RUSTUP_HOME
+            value: /home/runner/.rustup
+          - name: CARGO_HOME
+            value: /home/runner/.cargo
+          - name: ELAN_HOME
+            value: /home/runner/.elan
+        resources:
+          requests:
+            cpu: "3"
+            memory: 4Gi
+          limits:
+            memory: 8Gi
+        volumeMounts:
+          - name: rustup
+            mountPath: /home/runner/.rustup
+          - name: cargo
+            mountPath: /home/runner/.cargo
+          - name: cache
+            mountPath: /home/runner/.cache
+          - name: elan
+            mountPath: /home/runner/.elan
+    volumes:
+      # Host-path directories on the k3s node, owned by uid 1001 (the image's
+      # `runner` user): created by k8s/ci-runner/README.md's setup step.
+      - name: rustup
+        hostPath:
+          path: /var/lib/nucleus-ci/rustup
+          type: Directory
+      - name: cargo
+        hostPath:
+          path: /var/lib/nucleus-ci/cargo
+          type: Directory
+      - name: cache
+        hostPath:
+          path: /var/lib/nucleus-ci/cache
+          type: Directory
+      - name: elan
+        hostPath:
+          path: /var/lib/nucleus-ci/elan
+          type: Directory

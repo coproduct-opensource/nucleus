@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # The ARC runner scale set on the Lima pci-k3s VM (k8s/ci-runner/README.md).
+  labels:
+    - nucleus-k3s

@@ -34,7 +34,7 @@ permissions:
 jobs:
   kani-fast:
     name: Kani
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - name: No-op (paths not touched)
@@ -42,7 +42,7 @@ jobs:
 
   kani-constitutional:
     name: Kani (constitutional kernel)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - name: No-op (paths not touched)

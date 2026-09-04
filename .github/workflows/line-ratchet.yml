@@ -20,7 +20,7 @@ permissions:
 jobs:
   check:
     name: Check line ceiling
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     steps:
@@ -30,7 +30,7 @@ jobs:
 
   ratchet-down:
     name: Ratchet ceiling down
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:

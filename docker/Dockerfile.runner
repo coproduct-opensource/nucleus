@@ -1,0 +1,59 @@
+# The self-hosted CI runner image for the `nucleus-k3s` runner scale set
+# (actions-runner-controller on the Lima `pci-k3s` VM; see k8s/ci-runner/).
+#
+# Deliberately THIN: OS build dependencies and two prebuilt binaries only.
+# Toolchains (rustup, elan/Lean), the cargo registry, the sccache store and the
+# Mathlib cache live on PERSISTENT host-path mounts the scale set attaches to
+# every ephemeral runner pod, so a rebuild of this image never invalidates a
+# cache and a toolchain bump never needs an image rebuild. The mounts are
+# populated by the first job (dtolnay/rust-toolchain and elan-init do it) or by
+# k8s/ci-runner/warm.sh ahead of time.
+#
+# Build for the node's own architecture (arm64 today):
+#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.1.1 .
+# then import into k3s's containerd (k8s/ci-runner/README.md).
+FROM ghcr.io/actions/actions-runner:2.337.0
+
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
+
+# What the workflows apt-get on hosted runners, preinstalled: musl-tools (the
+# musl type-check), e2fsprogs (rootfs jobs), plus the C toolchain and headers a
+# `cargo build` of this workspace needs (ring, aws-lc, rocksdb-free, protobuf).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential clang lld llvm pkg-config cmake \
+        libssl-dev protobuf-compiler musl-tools e2fsprogs \
+        git zstd xz-utils python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# sccache: the cross-job compile cache (RUSTC_WRAPPER=sccache, store on the
+# persistent ~/.cache mount). just: the repo's task runner.
+ARG SCCACHE_VERSION=0.17.0
+ARG JUST_VERSION=1.58.0
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-${arch}-unknown-linux-musl.tar.gz" \
+      | tar xz -C /tmp; \
+    install -m 0755 /tmp/sccache-v${SCCACHE_VERSION}-${arch}-unknown-linux-musl/sccache /usr/local/bin/sccache; \
+    rm -rf /tmp/sccache-*; \
+    curl -fsSL "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${arch}-unknown-linux-musl.tar.gz" \
+      | tar xz -C /usr/local/bin just; \
+    sccache --version; just --version
+
+# The runner does NOT hand its own PATH to job steps: it reads `.path` (and
+# `.env`) from its root directory and uses that as every step's PATH — which is
+# how the hosted images expose their toolchains. Without this file the first
+# cohort run failed four jobs with `cargo: command not found` / `rustup: command
+# not found` / sccache unreachable as RUSTC_WRAPPER.
+RUN printf '%s\n' "/home/runner/.cargo/bin:/home/runner/.elan/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > /home/runner/.path \
+    && printf '%s\n' "RUSTUP_HOME=/home/runner/.rustup" "CARGO_HOME=/home/runner/.cargo" "ELAN_HOME=/home/runner/.elan" > /home/runner/.env \
+    && chown runner:runner /home/runner/.path /home/runner/.env
+
+USER runner
+# The persistent mounts land here; the PATH entries make whatever they hold
+# visible to the runner process itself (steps get theirs from `.path` above).
+ENV RUSTUP_HOME=/home/runner/.rustup \
+    CARGO_HOME=/home/runner/.cargo \
+    ELAN_HOME=/home/runner/.elan \
+    PATH=/home/runner/.cargo/bin:/home/runner/.elan/bin:/usr/local/bin:/usr/bin:/bin

@@ -1,0 +1,43 @@
+name: Self-hosted runner smoke
+
+# A probe of the `nucleus-k3s` runner scale set (k8s/ci-runner/): architecture,
+# cores, the persistent toolchains, and a timed build against the sccache store.
+# Runs when the runner setup itself changes, and on demand. Never required.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "k8s/ci-runner/**"
+      - "docker/Dockerfile.runner"
+      - ".github/workflows/runner-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe the self-hosted runner
+    runs-on: nucleus-k3s
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Who am I
+        run: |
+          echo "runner=$RUNNER_NAME os=$(uname -s)/$(uname -m) cores=$(nproc) mem=$(free -g | awk '/Mem/{print $2}')G"
+          echo "kvm: $([ -e /dev/kvm ] && echo present || echo absent)"
+          echo "rustup: $(command -v rustup || echo missing)  cargo: $(cargo --version 2>/dev/null || echo missing)"
+          echo "lean: $(lean --version 2>/dev/null || echo missing)"
+          echo "sccache: $(sccache --version)  just: $(just --version)"
+          df -h /home/runner/.cache /home/runner/.cargo | tail -2
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # 1.96
+        with:
+          toolchain: "1.96.1"
+      - name: sccache stats before
+        run: sccache --zero-stats >/dev/null; sccache --show-stats | head -12
+      - name: Timed build (portcullis tests, no run)
+        run: |
+          start=$(date +%s)
+          cargo test -p portcullis --no-run 2>&1 | tail -2
+          echo "portcullis test build: $(( $(date +%s) - start ))s"
+      - name: sccache stats after
+        run: sccache --show-stats | head -12

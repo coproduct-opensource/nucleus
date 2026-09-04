@@ -20,7 +20,7 @@ permissions:
 jobs:
   changed-crates:
     name: Detect changed crates
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     outputs:
       all: ${{ steps.detect.outputs.all }}
@@ -99,7 +99,7 @@ jobs:
 
   fmt:
     name: Rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -112,7 +112,7 @@ jobs:
 
   verify-strict:
     name: Ed25519 verify_strict gate (M-3)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -121,7 +121,7 @@ jobs:
 
   sandbox-trusted-base-gate:
     name: Sandbox trusted-base gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,7 +130,7 @@ jobs:
 
   failclosed-verifier-gate:
     name: Fail-closed verifier gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,7 +139,7 @@ jobs:
 
   mediation-gate:
     name: Mediation backstop gate (North Star)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -157,7 +157,7 @@ jobs:
   # toolchain rather than riding along with the grep-only gates above.
   test-helpers-seal:
     name: test-helpers is not reachable from a shipping build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,7 +177,7 @@ jobs:
   # Pure grep over lakefiles and workflows, so no toolchain and no Lean build.
   lean-lib-coverage:
     name: Every lean_lib is type-checked by something
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -195,7 +195,7 @@ jobs:
   #     at the *who* dimension).
   declassify-sink-scope-enforced:
     name: Declassify sink scope is enforced
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -214,7 +214,7 @@ jobs:
   # + flip-back + one-shot tests and asserts the endpoint wiring by inspection.
   declassify-value-bound:
     name: Declassification is value-bound, single-use, and live
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -227,7 +227,7 @@ jobs:
 
   declassify-governor-keys-sealed:
     name: Governor trusted-key set is not workload-writable
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -244,7 +244,7 @@ jobs:
   # rides the guest cmdline. Reverting fence B or D reds this.
   c1-inbound-fences-enforced:
     name: C1 inbound fences are enforced
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -265,7 +265,7 @@ jobs:
   # pinned, so deletions and demotions are visible events.
   north-star-ledger:
     name: The North Star status table cannot outrun its wiring
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -281,7 +281,7 @@ jobs:
   # kernel) that the scoped Aeneas proof job's trigger does not.
   extracted-callsites:
     name: Extracted predicates have live call sites (C8)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -297,7 +297,7 @@ jobs:
   # (pod_api ownership tests); this covers the lineage it depends on, end to end.
   cross-pod-lineage:
     name: The node records pod lineage on the live path (C2)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -326,7 +326,7 @@ jobs:
   # a job that might have written into the tree.
   gates-can-fail:
     name: Gates must fail on their own subject
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
     # 30 min (was 10): check-declassify-sink-scope-enforced.sh runs cargo tests,
     # and the meta-gate runs each probed gate twice (perturbed + restored), so
     # this job now compiles portcullis. The Rust cache below amortizes it.
@@ -342,7 +342,7 @@ jobs:
 
   ingest-hash-gate:
     name: No-unwitnessed-ingest gate (InputsAuthorized)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -351,7 +351,7 @@ jobs:
 
   sealed-home-gate:
     name: Sealed-home integrity gate (North Star)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -360,7 +360,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -391,7 +391,7 @@ jobs:
   # reasoning lives. They must fail the build.
   doctests:
     name: Doctests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -418,7 +418,7 @@ jobs:
 
   test:
     name: Tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -470,7 +470,7 @@ jobs:
 
   a2a-example:
     name: A2A example server (examples/a2a-server)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     # examples/a2a-server is its own workspace (root Cargo.toml `exclude`), so
     # the root-level fmt/clippy/test jobs never touch it. This job is NOT
@@ -497,7 +497,7 @@ jobs:
 
   owasp-gauntlet:
     name: OWASP LLM Security Gauntlet
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -511,7 +511,7 @@ jobs:
 
   policy-kernel-parity:
     name: Policy-kernel model↔Rust parity (K4)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     # The model↔Rust contract, as a FIRST-CLASS named check. The K4 proof
     # `governance_monotone_iff` (proven axiom-clean in the Portcullis-Core Proven
@@ -534,7 +534,7 @@ jobs:
 
   musl-check:
     name: musl type-check (nucleus-node, nucleus-tool-proxy)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     # The release pipeline builds static musl binaries, but every other job here
     # compiles against glibc — so glibc-only code (v2.0.1: __rlimit_resource_t in
@@ -560,7 +560,7 @@ jobs:
 
   fuzz:
     name: Fuzz
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
