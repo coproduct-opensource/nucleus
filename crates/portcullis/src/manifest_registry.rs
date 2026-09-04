@@ -213,6 +213,68 @@ impl ManifestRegistry {
     }
 }
 
+/// Both shapes a manifest file may take: one `[tool]` table, or a
+/// `[[tools]]` array (what `nucleus manifest init` generates). Each entry
+/// is signed on its own.
+fn parse_entries(content: &str) -> Vec<ToolEntry> {
+    if let Ok(single) = toml::from_str::<ManifestFile>(content) {
+        return vec![single.tool];
+    }
+    if let Ok(multi) = toml::from_str::<MultiManifestFile>(content) {
+        return multi.tools;
+    }
+    Vec::new()
+}
+
+/// Convert every entry of a manifest file to its signable form, in file
+/// order, without admitting anything. For signers and inspectors.
+///
+/// # Errors
+/// If the content is neither shape, or an entry cannot be converted (for
+/// example a malformed `schema_hash`).
+pub fn parse_manifest_toml(content: &str) -> Result<Vec<ToolManifest>, String> {
+    let entries = parse_entries(content);
+    if entries.is_empty() {
+        return Err("no `[tool]` table or `[[tools]]` array found".to_string());
+    }
+    entries
+        .iter()
+        .map(|e| {
+            convert_entry(e).ok_or_else(|| format!("tool `{}`: entry cannot be converted", e.name))
+        })
+        .collect()
+}
+
+/// Sign a manifest with an Ed25519 seed, setting `signature` and
+/// `signing_key`, and return the public key. The payload is
+/// `canonical_bytes()` — the same bytes [`verify_manifest_signature`]
+/// checks, so `schema_hash` must be set BEFORE signing.
+#[cfg(feature = "crypto")]
+pub fn sign_manifest(manifest: &mut ToolManifest, seed: &[u8; 32]) -> [u8; 32] {
+    use ed25519_dalek::Signer as _;
+    let key = ed25519_dalek::SigningKey::from_bytes(seed);
+    let sig = key.sign(&manifest.canonical_bytes());
+    manifest.signature = Some(sig.to_bytes());
+    let public = key.verifying_key().to_bytes();
+    manifest.signing_key = Some(public);
+    public
+}
+
+/// The public key for an Ed25519 seed (for `nucleus trust keygen`).
+#[cfg(feature = "crypto")]
+#[must_use]
+pub fn public_key_for_seed(seed: &[u8; 32]) -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(seed)
+        .verifying_key()
+        .to_bytes()
+}
+
+/// The `[[tools]]` shape.
+#[derive(Deserialize)]
+struct MultiManifestFile {
+    tools: Vec<ToolEntry>,
+}
+
 /// TOML-deserializable manifest format.
 #[derive(Deserialize)]
 struct ManifestFile {
@@ -322,14 +384,17 @@ impl ManifestRegistry {
     /// the single source of truth for manifest signing payloads. See #837.
     #[cfg_attr(not(feature = "crypto"), allow(unused_variables))]
     pub fn load_toml_with_trust(&mut self, content: &str, trust_store: &TrustStore) {
-        let file: ManifestFile = match toml::from_str(content) {
-            Ok(f) => f,
-            Err(_) => return,
-        };
+        for entry in parse_entries(content) {
+            self.register_entry(&entry, trust_store);
+        }
+    }
 
-        let name = file.tool.name.clone();
+    /// Admit (or refuse) one parsed TOML entry.
+    #[cfg_attr(not(feature = "crypto"), allow(unused_variables))]
+    fn register_entry(&mut self, entry: &ToolEntry, trust_store: &TrustStore) {
+        let name = entry.name.clone();
 
-        let manifest = match convert_entry(&file.tool) {
+        let manifest = match convert_entry(entry) {
             Some(m) => m,
             None => return,
         };
@@ -1017,6 +1082,68 @@ schema_hash = "not-hex"
         assert_eq!(
             reg.verify_served_tool("bad", &"ab".repeat(32)),
             Err(ServedToolError::NoManifest)
+        );
+    }
+
+    /// `nucleus manifest init` writes `[[tools]]`; the registry used to read
+    /// only `[tool]`, so generated manifests loaded as nothing at all.
+    #[test]
+    fn a_tools_array_loads_every_entry() {
+        let mut reg = ManifestRegistry::new();
+        reg.load_toml(
+            r#"
+[[tools]]
+name = "a"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+
+[[tools]]
+name = "b"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+"#,
+        );
+        assert_eq!(reg.admitted_count(), 2);
+        assert_eq!(
+            parse_manifest_toml("nonsense = 1")
+                .unwrap_err()
+                .contains("no `[tool]`"),
+            true
+        );
+    }
+
+    /// Sign, then verify under a trust store holding the key: the round trip
+    /// the CLI performs. A tampered `schema_hash` after signing fails, which
+    /// is what makes the signed digest worth anything.
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn a_signed_manifest_verifies_and_a_tampered_schema_hash_does_not() {
+        let seed = [3u8; 32];
+        let mut m = parse_manifest_toml(
+            r#"
+[tool]
+name = "t"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+"#,
+        )
+        .unwrap()
+        .remove(0);
+        m.schema_hash = [0xabu8; 32];
+        let public = sign_manifest(&mut m, &seed);
+        assert_eq!(public, public_key_for_seed(&seed));
+        let trust = TrustStore {
+            keys: vec![public.to_vec()],
+        };
+        assert!(verify_manifest_signature(&m, &trust).is_ok());
+
+        m.schema_hash = [0xcdu8; 32];
+        assert_eq!(
+            verify_manifest_signature(&m, &trust),
+            Err(AdmissionDenyReason::InvalidSignature)
         );
     }
 }
