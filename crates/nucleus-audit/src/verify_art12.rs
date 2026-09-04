@@ -64,6 +64,13 @@ pub struct Art12Report {
     pub signatures_checked: bool,
     /// Whether an executor attestation was checked against the computed head.
     pub attestation_checked: bool,
+    /// How many records name the certificate they were decided under
+    /// (`authority.fingerprint`, #2437). A pod created since the certificate
+    /// convergence binds every record; a shortfall is listed as a limitation.
+    pub authority_bound: u64,
+    /// The distinct certificate fingerprints named, in first-seen order. One
+    /// per session is the expected shape: a pod holds one certificate.
+    pub authority_fingerprints: Vec<String>,
     /// What this run did NOT establish. Never empty.
     pub limitations: Vec<String>,
 }
@@ -181,6 +188,8 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
         verdicts: BTreeMap::new(),
         signatures_checked: secret.is_some(),
         attestation_checked: false,
+        authority_bound: 0,
+        authority_fingerprints: Vec::new(),
         limitations: base_limitations(secret.is_some()),
     };
 
@@ -256,6 +265,12 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
         }
 
         report.records += 1;
+        if let Some(fp) = rec.authority_fingerprint() {
+            report.authority_bound += 1;
+            if !report.authority_fingerprints.iter().any(|f| f == fp) {
+                report.authority_fingerprints.push(fp.to_string());
+            }
+        }
         report.first_timestamp.get_or_insert(rec.timestamp_unix);
         report.last_timestamp = Some(rec.timestamp_unix);
         if rec.actor.spiffe_id.as_ref().is_some_and(|s| !s.is_empty()) {
@@ -268,9 +283,95 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
     }
 
     report.chain_head = prev_hash.unwrap_or_default();
+    if report.authority_bound < report.records {
+        report.limitations.push(format!(
+            "{} of {} records name no authority (no `authority.fingerprint`): they cannot be tied \
+             to the certificate — and so the root key — that authorized the deciding kernel. \
+             Expected only for pods created before the node issued certificates.",
+            report.records - report.authority_bound,
+            report.records
+        ));
+    }
     Ok(report)
 }
 
+/// Require every record to have been decided under exactly `expected_hex` —
+/// the fingerprint of the certificate the node issued this pod (from its
+/// `pods/<id>/authority.json`). This is what ties a log to the root public
+/// key with no side channel: the node verified that chain against its root
+/// when it issued it, and every record here names it inside the signed
+/// preimage.
+///
+/// # Errors
+/// If any record names no authority, or any names a different one.
+pub fn require_authority(report: &Art12Report, expected_hex: &str) -> Result<(), AuditError> {
+    if report.authority_bound != report.records {
+        return Err(AuditError::Invalid {
+            line: 0,
+            message: format!(
+                "{} of {} records name no authority; --authority-fingerprint requires every record \
+                 to be bound",
+                report.records - report.authority_bound,
+                report.records
+            ),
+        });
+    }
+    let expected = expected_hex.trim().to_ascii_lowercase();
+    if let Some(other) = report
+        .authority_fingerprints
+        .iter()
+        .find(|fp| fp.to_ascii_lowercase() != expected)
+    {
+        return Err(AuditError::Invalid {
+            line: 0,
+            message: format!(
+                "a record names authority {other}, not the expected {expected} -- it was decided \
+                 under a certificate this node did not issue to this pod"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Parse `--executor-pubkey` (32 hex-encoded bytes) into a verifying key.
+///
+/// # Errors
+/// If the hex is not 32 bytes or is not a valid Ed25519 point.
+pub fn executor_pubkey_from_hex(
+    pubkey_hex: &str,
+) -> Result<ed25519_dalek::VerifyingKey, AuditError> {
+    let key_bytes: [u8; 32] = hex::decode(pubkey_hex)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or_else(|| AuditError::Invalid {
+            line: 0,
+            message: "--executor-pubkey must be 32 hex-encoded bytes".to_string(),
+        })?;
+    ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).map_err(|_| AuditError::Invalid {
+        line: 0,
+        message: "--executor-pubkey is not a valid Ed25519 public key".to_string(),
+    })
+}
+
+/// Apply `--authority-fingerprint`, when given: every record must be bound to
+/// it ([`require_authority`]), after which the "name no authority" limitation
+/// no longer applies.
+///
+/// # Errors
+/// Those of [`require_authority`].
+pub fn apply_authority_requirement(
+    report: &mut Art12Report,
+    expected_hex: Option<&str>,
+) -> Result<(), AuditError> {
+    let Some(expected) = expected_hex else {
+        return Ok(());
+    };
+    require_authority(report, expected)?;
+    report
+        .limitations
+        .retain(|l| !l.contains("name no authority"));
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,5 +698,41 @@ mod tests {
             format!("{err}").contains("unknown attestation kind"),
             "got: {err}"
         );
+    }
+
+    fn report_with(records: u64, bound: u64, fingerprints: &[&str]) -> Art12Report {
+        Art12Report {
+            records,
+            chain_head: String::new(),
+            first_timestamp: None,
+            last_timestamp: None,
+            identified_actors: 0,
+            verdicts: BTreeMap::new(),
+            signatures_checked: false,
+            attestation_checked: false,
+            authority_bound: bound,
+            authority_fingerprints: fingerprints.iter().map(|s| s.to_string()).collect(),
+            limitations: vec!["N of M records name no authority".to_string()],
+        }
+    }
+
+    /// #2437: `--authority-fingerprint` passes only when EVERY record names
+    /// exactly that certificate; a partial binding or a foreign fingerprint
+    /// fails, and a pass discharges the "name no authority" limitation.
+    #[test]
+    fn the_authority_requirement_is_all_or_nothing() {
+        let mut ok = report_with(3, 3, &["ab"]);
+        apply_authority_requirement(&mut ok, Some("AB")).unwrap();
+        assert!(ok.limitations.is_empty(), "the limitation is discharged");
+
+        let mut partial = report_with(3, 2, &["ab"]);
+        assert!(apply_authority_requirement(&mut partial, Some("ab")).is_err());
+
+        let mut foreign = report_with(3, 3, &["ab", "cd"]);
+        assert!(apply_authority_requirement(&mut foreign, Some("ab")).is_err());
+
+        let mut unasked = report_with(3, 0, &[]);
+        apply_authority_requirement(&mut unasked, None).unwrap();
+        assert_eq!(unasked.limitations.len(), 1, "no flag, no requirement");
     }
 }

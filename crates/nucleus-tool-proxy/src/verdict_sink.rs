@@ -90,6 +90,7 @@ pub fn build_monitored_sink(
     art12_log: Option<Arc<crate::art12::Art12Log>>,
     art12_shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
     mediation_receipt_log: Option<std::path::PathBuf>,
+    authority: Option<crate::art12_sink::AuthorityBinding>,
 ) -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
     let inner: Arc<dyn VerdictSink> = Arc::new(ToolProxyVerdictSink::new(
         file_lockdown,
@@ -117,6 +118,9 @@ pub fn build_monitored_sink(
             // The path (when given) is where the full signed receipts are
             // persisted for offline verification — opened only once a key exists.
             crate::art12_sink::ReceiptSigner::from_env(mediation_receipt_log.as_deref()),
+            // The pod's certificate, when it holds one (#2437): every record
+            // names the authority the deciding kernel was built from.
+            authority,
         )) as Arc<dyn VerdictSink>,
         None => inner,
     };
@@ -614,6 +618,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -665,6 +670,7 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            None,
             None,
             None,
             None,

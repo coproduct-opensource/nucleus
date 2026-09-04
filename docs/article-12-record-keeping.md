@@ -28,6 +28,16 @@ verified-admission state, and the causal DAG's independent opinion of the same
 decision (`flow_cross_check`). Every one of those fields is folded into the
 signed preimage.
 
+When the pod holds a certificate issued by its node (every pod created since the
+certificate convergence, #2464), each record also names the **authority** the
+decision was made under: `authority.fingerprint` (the `LatticeCertificate`
+fingerprint the kernel was built from), `authority.chain_depth` and
+`authority.root_identity`, carried as extensions and therefore inside the signed
+preimage. A verifier holding the node's `pods/<id>/authority.json` can tie every
+decision back to the chain — and the root public key — that authorized it. The
+node refuses a shipped record whose fingerprint is not the one it issued to that
+pod, so a pod cannot claim a different authority than it was granted, nor none.
+
 ## What happens when recording fails
 
 The log latches **degraded** on a write failure and counts what it dropped. The

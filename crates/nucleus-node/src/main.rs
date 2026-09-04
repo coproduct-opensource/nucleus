@@ -1819,6 +1819,7 @@ async fn spawn_container_pod(
             state.proxy_approval_secret
         ));
         env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
+        art12_collector::provision_container_env(&mut env);
 
         // Pass audit sink config from PodSpec for deletion-resistant remote storage
         if let Some(ref sink) = spec.spec.audit_sink {

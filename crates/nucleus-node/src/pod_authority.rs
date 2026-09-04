@@ -508,6 +508,14 @@ impl PodAuthority {
         })
     }
 
+    /// The fingerprint of the certificate this node issued to `pod_id`, for
+    /// cross-checking the authority a pod's shipped Article 12 records claim
+    /// (#2437). `None` when the node issued this pod nothing.
+    pub async fn certificate_fingerprint(&self, pod_id: Uuid) -> Option<[u8; 32]> {
+        let inner = self.inner.lock().await;
+        Some(inner.pods.get(&pod_id)?.cert.fingerprint())
+    }
+
     /// Retire a pod's certificate and return its budget allocation to the
     /// parent's ledger. Until children report actual spend, the whole
     /// allocation is folded into the parent's consumption (no refund).

@@ -21,6 +21,23 @@ pub const ART12_SCHEMA_VERSION: u32 = 1;
 /// never be confused with another HMAC'd artifact signed by the same secret.
 pub const PREIMAGE_DOMAIN: &str = "nucleus-art12-record-v1";
 
+/// Extension keys binding a record to the AUTHORITY it was decided under
+/// (#2437): the pod certificate the tool-proxy verified at boot against the
+/// node's pinned root key. The kernel that produced the verdict was built from
+/// that certificate (`Kernel::from_certificate`), so these three keys let a
+/// verifier holding the node's `authority.json` for the pod tie every decision
+/// back to the chain — and the root public key — that authorized it, with no
+/// side channel. They travel as extensions so the v1 preimage is unchanged:
+/// extensions are already folded into the hash and signature.
+///
+/// A record written by a pod that holds a certificate carries all three; the
+/// node refuses a shipped record whose fingerprint is not the one it issued.
+pub const EXT_AUTHORITY_FINGERPRINT: &str = "authority.fingerprint";
+/// Hops from the node's root to the pod (`LatticeCertificate` chain depth).
+pub const EXT_AUTHORITY_CHAIN_DEPTH: &str = "authority.chain_depth";
+/// The identity at the root of the pod's chain (its creator).
+pub const EXT_AUTHORITY_ROOT: &str = "authority.root_identity";
+
 /// The identity of whoever caused a decision.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -103,6 +120,15 @@ pub struct Art12Record {
 }
 
 impl Art12Record {
+    /// The certificate fingerprint this decision was made under, when the
+    /// writing pod held one ([`EXT_AUTHORITY_FINGERPRINT`]).
+    #[must_use]
+    pub fn authority_fingerprint(&self) -> Option<&str> {
+        self.extensions
+            .get(EXT_AUTHORITY_FINGERPRINT)
+            .map(String::as_str)
+    }
+
     /// The canonical preimage: a `|`-joined, field-ordered rendering that both
     /// the writer and any verifier reconstruct **from the record's own fields**.
     ///
