@@ -385,6 +385,32 @@ lean_lib «GaloisConnectionProofs» where
 lean_lib «AttenuationProofs» where
   roots := #[`AttenuationProofs]
 
+-- Aeneas-generated attenuation core (from real Rust: crates/portcullis-core/
+-- src/attenuation.rs's `chain_effective_authority`, extracted directly — the
+-- source crate for this extraction IS portcullis-core, so the ONE hand-edit is
+-- retargeting Funs.lean's `import PortcullisCore.Types` to
+-- `import PortcullisCoreAttenuation.Types`, matching the same
+-- one-disclosed-hand-edit convention as every other generated-* lib here, so
+-- this lib's inner `namespace portcullis_core` doesn't collide with the
+-- whole-crate «PortcullisCore» lib's own Types.lean when both are on the
+-- dependency graph (they remain mutually un-importable, same as the other
+-- generated-* libs are with each other).
+lean_lib «PortcullisCoreAttenuation» where
+  roots := #[
+    `PortcullisCoreAttenuation.Types,
+    `PortcullisCoreAttenuation.FunsExternal,
+    `PortcullisCoreAttenuation.Funs
+  ]
+  srcDir := "generated-attenuation"
+
+-- Chain order-independence proven OVER the Aeneas-generated core above (not a
+-- hand-written mirror): `chain_effective_authority`'s actual extracted `.fold`
+-- body, for ANY lawful `category.Lattice` dictionary, folding a cap list in
+-- either direction yields `leq`-equivalent results. Strictly stronger than
+-- `AttenuationProofs.lean`'s hand-mirror of the same claim.
+lean_lib «AttenuationChainExtracted» where
+  roots := #[`AttenuationChainExtracted]
+
 -- Semantic IFC: Galois connection on propositions, channel model, soundness
 lean_lib «SemanticIFC» where
   roots := #[`SemanticIFC]
