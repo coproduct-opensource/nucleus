@@ -334,6 +334,32 @@ impl fmt::Display for CertificateDelegationError {
 
 impl std::error::Error for CertificateDelegationError {}
 
+/// Errors from [`LatticeCertificate::mint_child`] — either layer it
+/// validates can refuse the mint. See that function's own doc comment for
+/// why both layers exist.
+#[derive(Debug, Clone)]
+pub enum CertificateMintChildError {
+    /// The lattice-level check ([`crate::PermissionLattice::delegate_to`])
+    /// refused: insufficient budget, or the parent lattice's own time
+    /// window has already expired.
+    Lattice(crate::DelegationError),
+    /// The certificate-chain-level check ([`LatticeCertificate::delegate`])
+    /// refused: chain depth, certificate-block expiry, key mismatch, or
+    /// sink scope.
+    Chain(CertificateDelegationError),
+}
+
+impl fmt::Display for CertificateMintChildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lattice(e) => write!(f, "lattice-level check refused mint_child: {e}"),
+            Self::Chain(e) => write!(f, "certificate-chain check refused mint_child: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for CertificateMintChildError {}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // SINK SCOPE — restricts WHERE delegated operations can target (#594)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -763,6 +789,64 @@ impl LatticeCertificate {
         };
 
         Ok((cert, delegatee_key))
+    }
+
+    /// Mint a child certificate, validated at BOTH layers: the lattice's own
+    /// budget/expiry (via [`PermissionLattice::delegate_to`]) and the
+    /// certificate chain's own depth/expiry/key/scope checks (via
+    /// [`Self::delegate_with_scope`]).
+    ///
+    /// # Why this exists (#2432)
+    ///
+    /// [`Self::delegate`]/[`Self::delegate_with_scope`] compute the child's
+    /// permissions via [`meet_with_justification`] — the raw lattice meet
+    /// plus a constructive witness — which narrows every dimension but
+    /// never *rejects*: a request for more budget than the parent has
+    /// remaining, or against an already-expired parent lattice, silently
+    /// clamps to whatever the meet produces instead of erring.
+    /// [`PermissionLattice::delegate_to`] already has that validation
+    /// ([`DelegationError::InsufficientBudget`], [`DelegationError::ParentExpired`])
+    /// but nothing wired it into certificate minting — every spawn call site
+    /// that hand-rolled chain construction inherited the gap. `mint_child` is
+    /// the single choke point that closes it: call `delegate_to` first (so a
+    /// request the lattice itself would refuse never reaches the chain at
+    /// all), then delegate through the chain exactly as before.
+    ///
+    /// `delegate_to`'s own validated result is intentionally NOT what gets
+    /// stored in the certificate block — `delegate_with_scope` recomputes
+    /// the meet via `meet_with_justification` for its constructive witness,
+    /// and the two are the same pure computation over the same inputs, so
+    /// this costs a redundant (cheap, non-crypto) meet, not a second
+    /// decision that could disagree with the first.
+    ///
+    /// # Errors
+    ///
+    /// [`CertificateMintChildError::Lattice`] wraps a [`DelegationError`] from
+    /// the budget/expiry check; [`CertificateMintChildError::Chain`] wraps a
+    /// [`CertificateDelegationError`] from the existing chain-level checks
+    /// (depth, cert-block expiry, key match, sink scope — always
+    /// unrestricted here, matching [`Self::delegate`]'s default).
+    #[cfg(feature = "crypto")]
+    pub fn mint_child(
+        &self,
+        requested: &PermissionLattice,
+        child_identity: String,
+        not_after: DateTime<Utc>,
+        reason: &str,
+        current_holder_key: &Ed25519KeyPair,
+        rng: &dyn SecureRandom,
+    ) -> Result<(Self, Ed25519KeyPair), CertificateMintChildError> {
+        self.effective_permissions()
+            .delegate_to(requested, reason)
+            .map_err(CertificateMintChildError::Lattice)?;
+        self.delegate(
+            requested,
+            child_identity,
+            not_after,
+            current_holder_key,
+            rng,
+        )
+        .map_err(CertificateMintChildError::Chain)
     }
 
     /// The effective permissions at the end of the chain.
@@ -1720,5 +1804,191 @@ mod tests {
             result,
             Err(CertificateDelegationError::SinkScopeExceedsParent)
         ));
+    }
+
+    // ── mint_child (#2432) ───────────────────────────────────────────────
+
+    #[test]
+    fn mint_child_succeeds_and_matches_delegate() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+        let (cert, holder_key) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/human/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        let (child, _delegatee_key) = cert
+            .mint_child(
+                &PermissionLattice::restrictive(),
+                "spiffe://test/agent/coder".into(),
+                not_after,
+                "spawn coder agent",
+                &holder_key,
+                &rng,
+            )
+            .expect("a well-formed request within budget/depth must mint");
+
+        assert_eq!(child.chain_depth(), 1);
+        assert_eq!(child.leaf_identity(), "spiffe://test/agent/coder");
+    }
+
+    /// The load-bearing case: `delegate`/`delegate_with_scope` alone would
+    /// silently CLAMP a request for more budget than the parent has
+    /// remaining — the plain lattice meet just narrows, it never rejects.
+    /// `mint_child` must refuse instead, via `PermissionLattice::delegate_to`.
+    #[test]
+    fn mint_child_rejects_budget_exceeding_parent() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let mut parent_perms = PermissionLattice::restrictive();
+        parent_perms.budget.max_cost_usd = rust_decimal::Decimal::from(1);
+        let (cert, holder_key) = LatticeCertificate::mint(
+            parent_perms,
+            "spiffe://test/human/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        let mut over_budget = PermissionLattice::restrictive();
+        over_budget.budget.max_cost_usd = rust_decimal::Decimal::from(1_000);
+
+        let result = cert.mint_child(
+            &over_budget,
+            "spiffe://test/agent/coder".into(),
+            not_after,
+            "spawn coder agent",
+            &holder_key,
+            &rng,
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(CertificateMintChildError::Lattice(
+                    crate::DelegationError::InsufficientBudget { .. }
+                ))
+            ),
+            "expected InsufficientBudget, got {result:?}"
+        );
+
+        // Non-vacuity: `delegate` (the primitive `mint_child` wraps for the
+        // chain-level half) does NOT reject this — it silently clamps. If it
+        // also rejected, this test wouldn't be distinguishing mint_child's
+        // added check from the pre-existing one.
+        let plain_delegate_result = cert.delegate(
+            &over_budget,
+            "spiffe://test/agent/coder".into(),
+            not_after,
+            &holder_key,
+            &rng,
+        );
+        assert!(
+            plain_delegate_result.is_ok(),
+            "the pre-existing gap: delegate() must still silently clamp, not reject — \
+             otherwise this test no longer demonstrates what mint_child adds"
+        );
+    }
+
+    /// The other half of the lattice-level check: an already-expired parent
+    /// lattice. Distinct from `test_expired_authority_rejected` (which tests
+    /// the certificate's own `not_after`, checked at *verification* time) —
+    /// this is the lattice's own `TimeLattice`, checked at *mint* time.
+    #[test]
+    fn mint_child_rejects_expired_parent_lattice() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let mut parent_perms = PermissionLattice::permissive();
+        parent_perms.time = crate::TimeLattice::between(
+            Utc::now() - Duration::hours(2),
+            Utc::now() - Duration::hours(1),
+        );
+        let (cert, holder_key) = LatticeCertificate::mint(
+            parent_perms,
+            "spiffe://test/human/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        let result = cert.mint_child(
+            &PermissionLattice::restrictive(),
+            "spiffe://test/agent/coder".into(),
+            not_after,
+            "spawn coder agent",
+            &holder_key,
+            &rng,
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(CertificateMintChildError::Lattice(
+                    crate::DelegationError::ParentExpired
+                ))
+            ),
+            "expected ParentExpired, got {result:?}"
+        );
+    }
+
+    /// Depth-exceeded: `mint_child` must surface the SAME `ChainTooDeep`
+    /// the chain-level check already gives `delegate`/`delegate_with_scope`
+    /// — the lattice-level check ahead of it must not shadow this one.
+    #[test]
+    fn mint_child_rejects_depth_exceeded() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+        let (mut cert, mut holder_key) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/human/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        // Walk the chain to exactly DEFAULT_MAX_CHAIN_DEPTH.
+        for i in 0..DEFAULT_MAX_CHAIN_DEPTH {
+            let (next_cert, next_key) = cert
+                .mint_child(
+                    &PermissionLattice::permissive(),
+                    format!("spiffe://test/agent/hop-{i}"),
+                    not_after,
+                    "hop",
+                    &holder_key,
+                    &rng,
+                )
+                .expect("within depth so far");
+            cert = next_cert;
+            holder_key = next_key;
+        }
+        assert_eq!(cert.chain_depth(), DEFAULT_MAX_CHAIN_DEPTH);
+
+        // One more must be refused as ChainTooDeep, not silently minted.
+        let result = cert.mint_child(
+            &PermissionLattice::permissive(),
+            "spiffe://test/agent/one-too-many".into(),
+            not_after,
+            "hop",
+            &holder_key,
+            &rng,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(CertificateMintChildError::Chain(
+                    CertificateDelegationError::ChainTooDeep { .. }
+                ))
+            ),
+            "expected ChainTooDeep, got {result:?}"
+        );
     }
 }
