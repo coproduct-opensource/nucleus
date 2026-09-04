@@ -20,7 +20,7 @@ permissions:
 jobs:
   scan:
     name: Scan PodSpecs
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       security-events: write
     steps:
@@ -114,7 +114,7 @@ jobs:
   # Test the standalone scan action (downloads pre-built binary from releases)
   scan-action:
     name: Scan Action (integration)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     # Only run on main — the action downloads from releases, so it needs a published version
     if: github.ref == 'refs/heads/main'
     steps:

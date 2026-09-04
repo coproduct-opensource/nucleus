@@ -35,7 +35,7 @@ permissions:
 jobs:
   admit:
     name: Constitutional Gate (in-repo)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: No-op (constitution paths not touched)
