@@ -79,6 +79,17 @@ pub enum WorkloadApiCommand {
     /// public keyset plus the pod's OWN capability grants; possession is
     /// exactly the authority intended.
     FetchDlcAdmission,
+    /// `FETCH_POD_CERTIFICATE` — request this pod's `LatticeCertificate`
+    /// (base64 `AttenuationToken`) and the node's root public key.
+    ///
+    /// Same reasoning as `FetchTaskToken`: per-pod material, served down the
+    /// per-pod socket the host created, fetched after boot so it is neither
+    /// baked into a snapshot base nor on the kernel cmdline. The certificate
+    /// is PUBLIC (its holder key never leaves the node — `pod_authority`);
+    /// the root key delivered alongside is the pinned trust anchor the
+    /// tool-proxy verifies against, deliberately NOT the key embedded in the
+    /// token itself.
+    FetchPodCertificate,
     /// `FETCH_POD_CALLER_TOKEN` — request this pod's caller-identity token for
     /// the node's management API.
     ///
@@ -206,6 +217,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
             WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
             WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
+            WorkloadApiCommand::FetchPodCertificate => "FETCH_POD_CERTIFICATE",
             WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
             WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
             WorkloadApiCommand::PodList => "POD_LIST",
@@ -276,6 +288,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_DLC_ADMISSION" => Ok(WorkloadApiCommand::FetchDlcAdmission),
         "FETCH_BROKER_SECRET" => Ok(WorkloadApiCommand::FetchBrokerSecret),
         "FETCH_POD_CALLER_TOKEN" => Ok(WorkloadApiCommand::FetchPodCallerToken),
+        "FETCH_POD_CERTIFICATE" => Ok(WorkloadApiCommand::FetchPodCertificate),
         "FETCH_AUDIT_CREDENTIALS" => Ok(WorkloadApiCommand::FetchAuditCredentials),
         "FETCH_MEDIATION_KEY" => Ok(WorkloadApiCommand::FetchMediationKey),
         "POD_LIST" => Ok(WorkloadApiCommand::PodList),
@@ -294,6 +307,7 @@ mod tests {
         for cmd in [
             WorkloadApiCommand::FetchTaskToken,
             WorkloadApiCommand::FetchPodCallerToken,
+            WorkloadApiCommand::FetchPodCertificate,
             WorkloadApiCommand::FetchSvid,
             WorkloadApiCommand::FetchBundle,
             WorkloadApiCommand::Ping,
@@ -456,6 +470,7 @@ mod tests {
                 WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
                 WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
                 WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
+                WorkloadApiCommand::FetchPodCertificate => "FETCH_POD_CERTIFICATE",
                 WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
                 WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
                 WorkloadApiCommand::PodList => "POD_LIST",
@@ -489,6 +504,7 @@ mod tests {
             WorkloadApiCommand::FetchDlcAdmission,
             WorkloadApiCommand::FetchBrokerSecret,
             WorkloadApiCommand::FetchPodCallerToken,
+            WorkloadApiCommand::FetchPodCertificate,
             WorkloadApiCommand::FetchAuditCredentials,
             WorkloadApiCommand::FetchMediationKey,
             WorkloadApiCommand::PodList,
@@ -504,6 +520,7 @@ mod tests {
             "FETCH_DLC_ADMISSION",
             "FETCH_BROKER_SECRET",
             "FETCH_POD_CALLER_TOKEN",
+            "FETCH_POD_CERTIFICATE",
             "FETCH_AUDIT_CREDENTIALS",
             "FETCH_MEDIATION_KEY",
             "POD_LIST",

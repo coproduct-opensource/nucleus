@@ -443,6 +443,62 @@ pub fn fetch_task_token(port: u32) -> Result<Option<TaskTokenResponse>, String> 
     ))
 }
 
+/// The pod's certificate of authority, as the tool-proxy reads it from
+/// `NUCLEUS_POD_CERT` / `NUCLEUS_CERT_ROOT_PUBKEY`.
+#[derive(Debug, serde::Deserialize)]
+pub struct PodCertificateResponse {
+    /// Base64 attenuation token (the certificate chain + its embedded root).
+    pub certificate: String,
+    /// Hex Ed25519 public key: the PINNED anchor the proxy verifies against.
+    pub root_pubkey: String,
+}
+
+/// Fetch this pod's certificate of authority (`FETCH_POD_CERTIFICATE`).
+///
+/// `Ok(None)` when the host issued none (a legacy node, or a pod created
+/// before the node's authority came up) — the tool-proxy then falls back to
+/// its resolved policy as its own ceiling. `Err` is a real transport or
+/// protocol failure.
+pub fn fetch_pod_certificate(port: u32) -> Result<Option<PodCertificateResponse>, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_POD_CERTIFICATE\n")
+        .map_err(|e| format!("failed to send FETCH_POD_CERTIFICATE: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read pod certificate response: {e}"))?;
+    parse_pod_certificate(&response)
+}
+
+/// Parse the `FETCH_POD_CERTIFICATE` reply. Split out so it is testable
+/// without a live vsock. An `{"error": ...}` reply (none issued, or a legacy
+/// node that does not know the command) is `Ok(None)`, not a failure.
+fn parse_pod_certificate(response: &str) -> Result<Option<PodCertificateResponse>, String> {
+    if let Ok(c) = serde_json::from_str::<PodCertificateResponse>(response) {
+        return Ok(Some(c));
+    }
+    let v: serde_json::Value = serde_json::from_str(response).map_err(|e| {
+        format!(
+            "failed to parse pod certificate response ({e}): {}",
+            response.trim()
+        )
+    })?;
+    if v.get("error").and_then(|e| e.as_str()).is_some() {
+        return Ok(None);
+    }
+    Err(format!(
+        "pod certificate response had neither a certificate nor an error: {}",
+        response.trim()
+    ))
+}
+
 /// Fetches the workload certificate from the host via vsock.
 ///
 /// This connects to the host's Workload API server, fetches the X.509 SVID,

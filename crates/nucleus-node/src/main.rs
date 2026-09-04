@@ -41,6 +41,7 @@ mod mediation;
 mod mediation_receipt_collector;
 mod oidc;
 mod pod_api;
+mod pod_authority;
 mod pod_caller_identity;
 mod workload_api_protocol;
 mod workload_api_vsock;
@@ -88,6 +89,8 @@ struct Args {
     /// State directory for pod metadata/logs.
     #[arg(long, env = "NUCLEUS_NODE_STATE_DIR", default_value = "./nucleus-node")]
     state_dir: PathBuf,
+    #[command(flatten)]
+    authority: pod_authority::AuthorityArgs,
     /// Driver backend.
     #[arg(
         long,
@@ -399,6 +402,9 @@ struct NodeState {
     docker: Option<Arc<bollard::Docker>>,
     /// Trust gate configuration for reputation-scoped sandboxes.
     trust_gate: trust_gate::TrustGateConfig,
+    /// Per-pod certificate authority: proof of caller authority at
+    /// pod-create, budget conserved across spawn (pod_authority.rs).
+    authority: Arc<pod_authority::PodAuthority>,
     /// HTTP client for trust API calls.
     http_client: reqwest::Client,
     /// Broadcast channel for streaming lockdown commands to connected tool-proxies.
@@ -567,6 +573,10 @@ enum ApiError {
     Auth(#[from] AuthError),
     #[error("authorization error: {0}")]
     Authorization(#[from] AuthorizationError), // authenticated, not permitted
+    /// Authenticated and route-authorized, but the caller could not prove
+    /// authority for the pod it asked for (pod_authority.rs).
+    #[error("authority denied: {0}")]
+    Authority(String),
     #[error("request body error: {0}")]
     Body(String),
 }
@@ -581,6 +591,7 @@ impl IntoResponse for ApiError {
             ApiError::Driver(_) => StatusCode::BAD_REQUEST,
             ApiError::Auth(_) => StatusCode::UNAUTHORIZED,
             ApiError::Authorization(_) => StatusCode::FORBIDDEN,
+            ApiError::Authority(_) => StatusCode::FORBIDDEN,
             ApiError::Body(_) => StatusCode::BAD_REQUEST,
         };
         let body = Json(ErrorBody {
@@ -716,6 +727,8 @@ async fn main() -> Result<(), ApiError> {
             None
         };
 
+    let authority = Arc::new(pod_authority::PodAuthority::from_args(&args));
+
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
@@ -765,18 +778,24 @@ async fn main() -> Result<(), ApiError> {
         broker_enforcing: args.broker_enforcing,
         broker_vsock_port: args.broker_vsock_port,
         github_oidc: build_github_oidc(&args),
-        authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain),
+        authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain)
+            .with_operator_identity(authority.root_minter()),
         container_image: args.container_image.clone(),
         container_network: args.container_network.clone(),
         container_pool,
         docker,
         trust_gate: trust_gate::TrustGateConfig::from_env(&args.state_dir),
+        authority,
         http_client: reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default(),
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
     };
+
+    // Pods that outlived a restart get their certificates + holder keys back.
+    let restored_authority = state.authority.restore_from_disk().await;
+    info!("restored certificate authority for {restored_authority} pod(s)");
 
     // Enroll this executor's Ed25519 public key with the trust-service, once,
     // before serving. Every receipt POST is signed with the matching private
@@ -1062,6 +1081,7 @@ impl IntoResponse for OidcApiError {
 async fn create_pod(
     State(state): State<NodeState>,
     Extension(caller): Extension<Option<Uuid>>,
+    Extension(auth_ctx): Extension<auth::AuthContext>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreatePodResponse>, ApiError> {
@@ -1081,17 +1101,21 @@ async fn create_pod(
     };
 
     // WHO the parent is, established by the node rather than declared by the
-    // caller. `x-nucleus-parent-pod-id` is unauthenticated, so lineage built on
-    // it is forgeable in both directions -- see `pod_api::resolve_parent_pod_id`.
+    // caller: the per-pod caller token, or the caller's own pod SVID.
+    // `x-nucleus-parent-pod-id` is unauthenticated, so lineage built on it is
+    // forgeable in both directions -- see `pod_api::resolve_parent_pod_id`.
+    let admission =
+        pod_authority::Admission::from_http(&state.authz_policy, caller, &auth_ctx, &headers);
     let parent_pod_id = pod_api::resolve_parent_pod_id(
-        caller,
+        admission.caller_pod,
         headers
             .get("x-nucleus-parent-pod-id")
             .and_then(|v| v.to_str().ok()),
     );
 
     let raw = String::from_utf8_lossy(&body).to_string();
-    let (id, proxy_addr) = create_pod_internal(&state, spec, parent_pod_id, Some(raw)).await?;
+    let (id, proxy_addr) =
+        create_pod_internal(&state, spec, parent_pod_id, Some(raw), admission).await?;
 
     Ok(Json(CreatePodResponse { id, proxy_addr }))
 }
@@ -1121,12 +1145,13 @@ async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
-#[tracing::instrument(skip_all, fields(boot.stage = "pod.create", pod_id = tracing::field::Empty))]
+#[tracing::instrument(skip_all, fields(boot.stage = "pod.create", pod_id = tracing::field::Empty, chain_depth = tracing::field::Empty))]
 async fn create_pod_internal(
     state: &NodeState,
     mut spec: PodSpec,
     parent_pod_id: Option<Uuid>,
     raw_yaml: Option<String>,
+    admission: pod_authority::Admission,
 ) -> Result<(Uuid, Option<String>), ApiError> {
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
@@ -1152,14 +1177,31 @@ async fn create_pod_internal(
     let posture_stamp: Option<String> =
         posture::admit_posture(&spec, id, &state.trusted_postures).await?;
 
-    let (driver_state, proxy_addr, log_path) = match state.driver {
+    // ── Authority Gate: proof of caller authority, budget conserved ──
+    // The caller's certificate decides what this pod may do; the spec's policy
+    // is a REQUEST, meet-clamped and never trusted alone. See pod_authority.rs.
+    let issued = state.authority.admit(&admission, &spec, id).await?;
+    tracing::Span::current().record("chain_depth", issued.chain_depth);
+    spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+        lattice: Box::new(issued.effective),
+    };
+
+    let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
-        DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id).await?,
-        DriverKind::Firecracker => spawn_firecracker_pod(state, &pod_dir, &spec, id).await?,
+        DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id).await,
+        DriverKind::Firecracker => spawn_firecracker_pod(state, &pod_dir, &spec, id).await,
         DriverKind::Container => {
-            spawn_container_pod(state, &pod_dir, &spec, id, raw_yaml.as_deref()).await?
+            spawn_container_pod(state, &pod_dir, &spec, id, raw_yaml.as_deref()).await
         }
-        DriverKind::AppleVz => driver::spawn_vz_pod(state, &pod_dir, &spec, id).await?,
+        DriverKind::AppleVz => driver::spawn_vz_pod(state, &pod_dir, &spec, id).await,
+    };
+    let (driver_state, proxy_addr, log_path) = match spawned {
+        Ok(s) => s,
+        Err(e) => {
+            // Nothing runs: hand the budget reservation back to the parent.
+            state.authority.release_child(id).await;
+            return Err(e);
+        }
     };
     boot_trace::log_guest_console_timeline(&log_path).await;
 
@@ -1449,64 +1491,6 @@ impl ContainerPod {
     }
 }
 
-/// Resolve the pod's policy and mint a fresh live-path session capability
-/// token scoped to its granted operations.
-///
-/// Returns `None` (with a warning) if the policy cannot be resolved, the clock
-/// is unavailable, or the token cannot be serialized. That is fail-closed: the
-/// pod still spawns, but with NO token, so the tool-proxy's startup verify half
-/// records `Missing`/`Invalid` and later token-gated operations are denied.
-///
-/// The signing key is the node's dedicated task-issuer key (role-separated from
-/// the executor key); only its public half is injected downstream.
-#[cfg_attr(
-    not(any(feature = "local-driver", target_os = "linux")),
-    allow(dead_code)
-)]
-fn mint_task_token_for_spec(
-    state: &NodeState,
-    spec: &PodSpec,
-    id: Uuid,
-) -> Option<session_mint::MintedTaskToken> {
-    let policy = match spec.spec.resolve_policy() {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(
-                pod = %id,
-                error = %e,
-                "live-path mint: policy resolution failed; no session token injected (fail-closed at verify)"
-            );
-            return None;
-        }
-    };
-    let now_unix = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs(),
-        Err(_) => {
-            tracing::warn!(pod = %id, "live-path mint: clock before epoch; no session token injected");
-            return None;
-        }
-    };
-    // TTL = the pod/session lifetime (the spec's own timeout bound, in seconds).
-    let ttl_secs = spec.spec.timeout_seconds;
-    match session_mint::mint_session_task_token(
-        &id.to_string(),
-        &policy,
-        ttl_secs,
-        now_unix,
-        state.trust_gate.task_issuer_signing_key.as_ref(),
-    ) {
-        Ok(minted) => Some(minted),
-        Err(e) => {
-            tracing::warn!(
-                pod = %id,
-                error = %e,
-                "live-path mint: token serialization failed; no session token injected"
-            );
-            None
-        }
-    }
-}
-
 #[cfg(feature = "local-driver")]
 async fn spawn_local_pod(
     state: &NodeState,
@@ -1604,10 +1588,14 @@ async fn spawn_local_pod(
     // startup (fail-closed). Injected on the same host-controlled env channel as
     // the secrets above; the token itself is a scoped capability + PUBLIC issuer
     // key (not a secret). Names match the tool-proxy verify half exactly.
-    if let Some(minted) = mint_task_token_for_spec(state, spec, id) {
+    if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id) {
         command.env("NUCLEUS_TASK_TOKEN", &minted.token_json);
         command.env("NUCLEUS_TASK_TOKEN_NONCE", &minted.nonce_hex);
         command.env("NUCLEUS_TASK_TOKEN_ISSUER", &minted.issuer_hex);
+    }
+    // The pod's certificate of authority + the pinned anchor (pod_authority).
+    for (key, value) in state.authority.boot_env(id).await {
+        command.env(key, value);
     }
 
     // DLC-D verified admission: pod-scoped provisioning via PodSpec labels,
@@ -1647,16 +1635,14 @@ async fn spawn_local_pod(
         // the pre-Move-B mechanism (a shared secret the tool-proxy no longer
         // reads); this is the SVID-file replacement, env-parity with what
         // guest-init already does for the real Firecracker path over vsock.
-        // Namespace `default` matches `AuthorizationPolicy::default`'s
-        // orchestrator prefix (`ns/default/sa/*`) — the identity a caller
-        // needs to actually be authorized for pod management, not merely to
-        // complete the TLS handshake.
+        // Node-assigned `ns/pods/sa/<uuid>`: the shape `AuthorizationPolicy`'s
+        // pod class authorizes for pod management and nothing else. What the
+        // pod may CREATE is decided by its certificate, not by this prefix.
         let manager = state
             .identity_manager
             .as_ref()
             .expect("identity_manager is unconditionally constructed above (Move B)");
-        let orchestrator_identity =
-            manager.identity_for_pod(id, "default", &format!("orchestrator-{id}"));
+        let orchestrator_identity = manager.pod_identity(id);
         let orchestrator_cert = manager
             .fetch_certificate(&orchestrator_identity)
             .await
@@ -1695,10 +1681,6 @@ async fn spawn_local_pod(
             "NUCLEUS_POD_CALLER_TOKEN",
             pod_caller_identity::derive_token(state.caller_secret.as_ref(), id),
         );
-        // Pass delegation ceiling from pod metadata if provided
-        if let Some(ceiling) = spec.metadata.labels.get("delegation_ceiling") {
-            command.env("NUCLEUS_TOOL_PROXY_DELEGATION_CEILING", ceiling);
-        }
         info!("enabled pod management for orchestrator pod {}", id);
     }
 
@@ -1868,10 +1850,13 @@ async fn spawn_container_pod(
 
         // Live-path session capability token (see spawn_local_pod). Injected in
         // proxy mode — the only container mode that runs the tool-proxy sidecar.
-        if let Some(minted) = mint_task_token_for_spec(state, spec, id) {
+        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id) {
             env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
             env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
             env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
+        }
+        for (key, value) in state.authority.boot_env(id).await {
+            env.push(format!("{key}={value}"));
         }
     }
 
@@ -2384,7 +2369,8 @@ async fn spawn_firecracker_pod(
         // guest over the workload API (`FETCH_TASK_TOKEN`, per-pod socket) — no
         // longer written to the kernel cmdline — so `from_spec` does not take
         // it; only `PodMaterial` below does.
-        let task_token = mint_task_token_for_spec(state, spec, id);
+        let task_token = pod_authority::mint_task_token_for_spec(state, spec, id);
+        let pod_certificate = state.authority.boot_certificate(id).await;
         let config = firecracker_config::FirecrackerConfig::from_spec(
             spec,
             &log_path,
@@ -2795,10 +2781,9 @@ async fn spawn_firecracker_pod(
         let (pod_identity, identity_manager, workload_api_bridge) = if let Some(manager) =
             identity_source
         {
-            // Use pod metadata for namespace/service_account context
-            let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
-            let service_account = spec.metadata.name.as_deref().unwrap_or("");
-            let identity = manager.identity_for_pod(id, namespace, service_account);
+            // Node-assigned, not read from the (possibly agent-authored) spec
+            // metadata: see `IdentityManager::pod_identity`.
+            let identity = manager.pod_identity(id);
 
             // Register the pod identity
             let registry_key = id.to_string();
@@ -2861,6 +2846,7 @@ async fn spawn_firecracker_pod(
                     // Serving it here is what lets the cmdline copy go: a value
                     // fetched after boot is not baked into a snapshot base.
                     task_token: task_token.clone(),
+                    pod_certificate: pod_certificate.clone(),
                     // This pod's caller identity for the management API, derived
                     // from a NODE-ONLY secret. Deliberately not `auth_secret`:
                     // every proxy already holds that one, so deriving from it
@@ -3209,6 +3195,8 @@ fn start_pod_reaper(state: NodeState) {
 
                     exited_ids.push(pod.id);
                     pod.cleanup_after_exit().await;
+                    // Hand the child's budget allocation back to its parent.
+                    state.authority.release_child(pod.id).await;
                 }
             }
 
@@ -3354,12 +3342,21 @@ impl NodeService for GrpcService {
             auth::Operation::CreatePod,
         )?;
 
-        // Extract parent pod ID from gRPC metadata
-        let parent_pod_id = request
-            .metadata()
-            .get("x-nucleus-parent-pod-id")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| Uuid::parse_str(s).ok());
+        // WHO is calling: the SPIFFE peer the interceptor verified. A pod's own
+        // SVID identifies it as a pod; the unauthenticated parent header is
+        // consulted only for callers that are not pods (same rule as HTTP).
+        let auth_ctx = auth::get_auth_context(&request)
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("no authenticated peer"))?;
+        let admission =
+            pod_authority::Admission::from_grpc(&self.state.authz_policy, &auth_ctx, &request);
+        let parent_pod_id = pod_api::resolve_parent_pod_id(
+            admission.caller_pod,
+            request
+                .metadata()
+                .get("x-nucleus-parent-pod-id")
+                .and_then(|v| v.to_str().ok()),
+        );
 
         let yaml = request.into_inner().yaml;
         if yaml.trim().is_empty() {
@@ -3368,10 +3365,20 @@ impl NodeService for GrpcService {
 
         let spec: PodSpec = serde_yaml::from_str(&yaml)
             .map_err(|e| Status::invalid_argument(format!("invalid yaml: {e}")))?;
-        let (id, proxy_addr) =
-            create_pod_internal(&self.state, spec, parent_pod_id, Some(yaml.clone()))
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?;
+        let (id, proxy_addr) = create_pod_internal(
+            &self.state,
+            spec,
+            parent_pod_id,
+            Some(yaml.clone()),
+            admission,
+        )
+        .await
+        .map_err(|e| match e {
+            ApiError::Authority(_) | ApiError::Authorization(_) => {
+                Status::permission_denied(e.to_string())
+            }
+            other => Status::internal(other.to_string()),
+        })?;
 
         Ok(GrpcResponse::new(proto::CreatePodResponse {
             id: id.to_string(),

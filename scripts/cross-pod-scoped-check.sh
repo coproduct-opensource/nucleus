@@ -103,6 +103,7 @@ fi
 
 "$NODE" --proxy-auth-secret "$SECRET" --proxy-approval-secret "$SECRET" \
     --listen "127.0.0.1:$PORT" --state-dir "$WORK/state" --driver local --allow-local-driver \
+    --root-minter-spiffe-id "spiffe://$TRUST_DOMAIN/ns/default/sa/test-cli" \
     --tool-proxy-path "$TP" >"$WORK/node.log" 2>&1 &
 NODE_PID=$!
 
@@ -116,6 +117,10 @@ done
 # `ns/default/sa/*` — an ORCHESTRATOR prefix (AuthorizationPolicy::default);
 # `ns/system/sa/cli` (nucleus-cli's own convention) is NOT authorized for pod
 # management. See cross-pod-lineage-check.sh's own note.
+# The SAME identity is passed to the node as --root-minter-spiffe-id above:
+# since pod_authority, exactly one identity may create a pod from a bare
+# (certificate-less) policy, and every other caller must prove authority.
+
 IDENTITY_DIR="$WORK/cli-identity"
 "$MINT" --ca-dir "$WORK/state/ca" --trust-domain "$TRUST_DOMAIN" \
     --namespace default --service-account test-cli --out-dir "$IDENTITY_DIR" \
