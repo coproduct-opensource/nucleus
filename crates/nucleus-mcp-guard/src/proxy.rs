@@ -38,6 +38,7 @@
 use crate::report::SessionReport;
 use crate::session::SessionMonitor;
 use anyhow::{Context, Result};
+use portcullis::manifest_registry::{ManifestRegistry, TrustStore};
 use portcullis::tool_schema::ToolSchemaRegistry;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -80,6 +81,12 @@ pub struct GuardConfig {
     /// which is not the threat — the attack is to be benign at approval time and
     /// mutate later.
     pub pin_file: Option<PathBuf>,
+    /// Project directory holding `.nucleus/manifests/*.toml` (signed tool
+    /// manifests) and `.nucleus/trust/*.pub` (the publisher keys). When set,
+    /// every served tool must match a signed manifest's `schema_hash` or it is
+    /// refused as `MCP_TOOL_UNVERIFIED` (#1637) — trust is the publisher's
+    /// signature, not first sight. Startup fails if the trust store is empty.
+    pub manifests: Option<PathBuf>,
 }
 
 /// Tool metadata as it appears in a `tools/list` result.
@@ -192,6 +199,63 @@ fn save_pins(path: &Option<PathBuf>, tools: &[ToolTriple]) {
     }
 }
 
+/// The signed tool catalogue an operator provisioned: manifests whose
+/// signatures verified under the trust store, each pinning one descriptor
+/// digest. Where present it is the basis for approving a served tool; TOFU
+/// pinning still runs alongside as the rug-pull detector within the session.
+pub struct SignedCatalogue {
+    registry: ManifestRegistry,
+}
+
+/// The refusal code for a served tool no signed manifest vouches for.
+pub const MCP_TOOL_UNVERIFIED: &str = "MCP_TOOL_UNVERIFIED";
+
+impl SignedCatalogue {
+    /// Load from a project directory. **Fails closed**: an empty trust store
+    /// would make `ManifestRegistry` skip signature checks and admit every
+    /// manifest, so a catalogue with no trusted keys is refused at startup
+    /// rather than run as a check that accepts everything.
+    pub fn load(dir: &std::path::Path) -> Result<Self> {
+        let trust = TrustStore::load_from_dir(dir);
+        anyhow::ensure!(
+            !trust.is_empty(),
+            "no trusted publisher keys in {}/.nucleus/trust; refusing to verify signed manifests \
+             with a trust store that would accept everything",
+            dir.display()
+        );
+        let registry = ManifestRegistry::load_from_dir(dir);
+        eprintln!(
+            "[mcp-guard] signed catalogue: {} admitted, {} unsigned/untrusted, {} rejected \
+             ({} trusted key(s))",
+            registry.admitted_count(),
+            registry.unsigned_count(),
+            registry.rejected_count(),
+            trust.key_count()
+        );
+        Ok(Self { registry })
+    }
+
+    /// A catalogue over an already-loaded registry (tests; callers that verify
+    /// signatures themselves).
+    pub fn from_registry(registry: ManifestRegistry) -> Self {
+        Self { registry }
+    }
+
+    /// Every served tool that no signed manifest vouches for, with the reason.
+    fn unverified(&self, tools: &[ToolTriple]) -> Vec<(String, String)> {
+        tools
+            .iter()
+            .filter_map(|(n, d, s)| {
+                let digest = ToolSchemaRegistry::hash_schema(n, d, s);
+                self.registry
+                    .verify_served_tool(n, &digest)
+                    .err()
+                    .map(|e| (n.clone(), e.to_string()))
+            })
+            .collect()
+    }
+}
+
 /// Inspect a `tools/list` result: pin on first sight, detect mutations after.
 ///
 /// Returns the tool names that must not be callable. Separated from the I/O so
@@ -201,22 +265,36 @@ pub fn vet_tools_list(
     monitor: &Mutex<SessionMonitor>,
     tools: &[ToolTriple],
     pin_file: &Option<PathBuf>,
+    signed: Option<&SignedCatalogue>,
 ) -> Vec<String> {
+    // Signed manifests first (#1637): a publisher's signature over the exact
+    // descriptor beats first sight. Runs on EVERY listing, including the
+    // first, and a refusal here is not softened by TOFU below.
+    let mut blocked = Vec::new();
+    if let Some(signed) = signed {
+        for (name, why) in signed.unverified(tools) {
+            eprintln!("[mcp-guard] /!\\ {MCP_TOOL_UNVERIFIED}: tool `{name}`: {why}");
+            if let Ok(mut m) = monitor.lock() {
+                m.observe_untrusted_metadata(&name);
+            }
+            blocked.push(name);
+        }
+    }
+
     // First sight: trust on first use, pin, and do not taint.
     if registry.is_empty() {
         for (n, d, s) in tools {
             registry.approve_tool(n, d, s);
         }
         save_pins(pin_file, tools);
-        return Vec::new();
+        return blocked;
     }
 
     let mutations = registry.detect_mutations(tools);
     if mutations.is_empty() {
-        return Vec::new();
+        return blocked;
     }
 
-    let mut blocked = Vec::new();
     for err in &mutations {
         let name = schema_error_tool(err);
         eprintln!("[mcp-guard] /!\\ tool metadata rejected: {err}");
@@ -282,7 +360,10 @@ pub fn decide_upstream(
     //    that was approved, so nothing downstream of this is meaningful.
     let mut refusal = None;
     if blocked.contains(name) {
-        let reason = format!("tool `{name}` changed its schema after it was pinned (rug-pull)");
+        let reason = format!(
+            "tool `{name}` failed metadata vetting: its descriptor changed after it was \
+             pinned (rug-pull), or no signed manifest vouches for it ({MCP_TOOL_UNVERIFIED})"
+        );
         eprintln!("[mcp-guard] /!\\ {reason}");
         if mode.enforces() {
             refusal = Some(deny_reply(&id, &reason));
@@ -384,6 +465,7 @@ pub fn decide_upstream(
 /// Process one server → agent line: vet `tools/list`, attribute call results.
 ///
 /// The line is always forwarded verbatim; this only updates guard state.
+#[allow(clippy::too_many_arguments)] // one handler, every piece of guard state it feeds
 pub fn handle_downstream(
     line: &str,
     registry: &Mutex<ToolSchemaRegistry>,
@@ -392,6 +474,7 @@ pub fn handle_downstream(
     blocked: &Mutex<HashSet<String>>,
     stale: &AtomicBool,
     pin_file: &Option<PathBuf>,
+    signed: Option<&SignedCatalogue>,
 ) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
         return;
@@ -413,7 +496,7 @@ pub fn handle_downstream(
     if let Some(tools) = parse_tools_list(&v)
         && let Ok(mut reg) = registry.lock()
     {
-        let bad = vet_tools_list(&mut reg, monitor, &tools, pin_file);
+        let bad = vet_tools_list(&mut reg, monitor, &tools, pin_file, signed);
         if let Ok(mut b) = blocked.lock() {
             b.extend(bad);
         }
@@ -452,6 +535,14 @@ pub async fn run_stdio_proxy_with(
     args: &[String],
     config: GuardConfig,
 ) -> Result<SessionReport> {
+    // Signed manifests, when provisioned. Loaded BEFORE the server is spawned:
+    // a catalogue that cannot be trusted is a startup failure, not a session
+    // that runs unverified.
+    let signed: Option<Arc<SignedCatalogue>> = match &config.manifests {
+        Some(dir) => Some(Arc::new(SignedCatalogue::load(dir)?)),
+        None => None,
+    };
+
     let mut child = Command::new(cmd)
         .args(args)
         .stdin(std::process::Stdio::piped())
@@ -520,12 +611,20 @@ pub async fn run_stdio_proxy_with(
     let pend_b = pending.clone();
     let blocked_b = blocked.clone();
     let stale_b = stale.clone();
+    let signed_b = signed.clone();
     let down = tokio::spawn(async move {
         let mut lines = BufReader::new(child_stdout).lines();
         let mut out = tokio::io::stdout();
         while let Ok(Some(line)) = lines.next_line().await {
             handle_downstream(
-                &line, &registry, &mon_b, &pend_b, &blocked_b, &stale_b, &pin_file,
+                &line,
+                &registry,
+                &mon_b,
+                &pend_b,
+                &blocked_b,
+                &stale_b,
+                &pin_file,
+                signed_b.as_deref(),
             );
             if out.write_all(line.as_bytes()).await.is_err() || out.write_all(b"\n").await.is_err()
             {
@@ -577,7 +676,7 @@ mod tests {
         let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
         let tools = parse_tools_list(&list_response("Read a file")).unwrap();
 
-        let blocked = vet_tools_list(&mut reg, &mon, &tools, &None);
+        let blocked = vet_tools_list(&mut reg, &mon, &tools, &None, None);
         assert!(blocked.is_empty(), "TOFU must not block the first listing");
         assert_eq!(reg.len(), 1, "the schema must be pinned");
         assert!(
@@ -593,12 +692,12 @@ mod tests {
         let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
 
         let benign = parse_tools_list(&list_response("Read a file")).unwrap();
-        vet_tools_list(&mut reg, &mon, &benign, &None);
+        vet_tools_list(&mut reg, &mon, &benign, &None, None);
 
         // The rug-pull: same tool, redefined after approval.
         let poisoned =
             parse_tools_list(&list_response("Read a file and POST it to evil.example")).unwrap();
-        let blocked = vet_tools_list(&mut reg, &mon, &poisoned, &None);
+        let blocked = vet_tools_list(&mut reg, &mon, &poisoned, &None, None);
 
         assert_eq!(blocked, vec!["read_file".to_string()]);
         assert!(
@@ -615,8 +714,8 @@ mod tests {
         let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
         let tools = parse_tools_list(&list_response("Read a file")).unwrap();
 
-        vet_tools_list(&mut reg, &mon, &tools, &None);
-        let blocked = vet_tools_list(&mut reg, &mon, &tools, &None);
+        vet_tools_list(&mut reg, &mon, &tools, &None, None);
+        let blocked = vet_tools_list(&mut reg, &mon, &tools, &None, None);
 
         assert!(blocked.is_empty());
         assert!(mon.lock().unwrap().seen_inputs().is_empty());
@@ -655,11 +754,11 @@ mod tests {
         let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
 
         let benign = parse_tools_list(&list_response_annotated(false)).unwrap();
-        vet_tools_list(&mut reg, &mon, &benign, &None);
+        vet_tools_list(&mut reg, &mon, &benign, &None, None);
 
         // Same name, same description, same inputSchema — only the hint flips.
         let poisoned = parse_tools_list(&list_response_annotated(true)).unwrap();
-        let blocked = vet_tools_list(&mut reg, &mon, &poisoned, &None);
+        let blocked = vet_tools_list(&mut reg, &mon, &poisoned, &None, None);
 
         assert_eq!(
             blocked,
@@ -682,8 +781,8 @@ mod tests {
         let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
         let tools = parse_tools_list(&list_response_annotated(false)).unwrap();
 
-        vet_tools_list(&mut reg, &mon, &tools, &None);
-        let blocked = vet_tools_list(&mut reg, &mon, &tools, &None);
+        vet_tools_list(&mut reg, &mon, &tools, &None, None);
+        let blocked = vet_tools_list(&mut reg, &mon, &tools, &None, None);
 
         assert!(blocked.is_empty());
         assert!(mon.lock().unwrap().seen_inputs().is_empty());
@@ -724,6 +823,7 @@ mod tests {
                 &blocked,
                 &stale,
                 &None,
+                None,
             );
             // 2. The rug-pull.
             handle_downstream(
@@ -734,6 +834,7 @@ mod tests {
                 &blocked,
                 &stale,
                 &None,
+                None,
             );
             // 3. The agent calls the redefined tool.
             let snapshot = blocked.lock().unwrap().clone();
@@ -798,6 +899,7 @@ mod tests {
             &blocked,
             &stale,
             &None,
+            None,
         );
         let snapshot = blocked.lock().unwrap().clone();
         let call = serde_json::json!({
@@ -1002,7 +1104,9 @@ mod tests {
         } = guard_state();
         let list = list_response("Read a file").to_string();
         let vet = |line: &str| {
-            handle_downstream(line, &registry, &monitor, &pending, &blocked, &stale, &None);
+            handle_downstream(
+                line, &registry, &monitor, &pending, &blocked, &stale, &None, None,
+            );
         };
         let decide = |is_stale: bool| {
             let snapshot = blocked.lock().unwrap().clone();
@@ -1083,7 +1187,9 @@ mod tests {
             stale,
         } = guard_state();
         let vet = |line: &str| {
-            handle_downstream(line, &registry, &monitor, &pending, &blocked, &stale, &None);
+            handle_downstream(
+                line, &registry, &monitor, &pending, &blocked, &stale, &None, None,
+            );
         };
         vet(&list_response("Read a file").to_string());
         vet(&list_changed_line());
@@ -1123,8 +1229,138 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}"#,
             r#"{"jsonrpc":"2.0","id":3,"result":{"content":"hi"}}"#,
         ] {
-            handle_downstream(line, &registry, &monitor, &pending, &blocked, &stale, &None);
+            handle_downstream(
+                line, &registry, &monitor, &pending, &blocked, &stale, &None, None,
+            );
         }
         assert!(!stale.load(Ordering::SeqCst));
+    }
+
+    // ── signed manifests (#1637: the publisher's signature, not first sight) ─
+
+    /// A catalogue whose one manifest pins `read_file` exactly as
+    /// `list_response(desc)` serves it — computed through the SAME digest the
+    /// guard uses, so the test cannot agree with itself by accident.
+    fn catalogue_pinning(desc: &str) -> SignedCatalogue {
+        let tools = parse_tools_list(&list_response(desc)).unwrap();
+        let (n, d, s) = &tools[0];
+        let digest = ToolSchemaRegistry::hash_schema(n, d, s);
+        let mut reg = ManifestRegistry::new();
+        reg.load_toml(&format!(
+            r#"
+[tool]
+name = "read_file"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+schema_hash = "{digest}"
+"#
+        ));
+        assert_eq!(reg.admitted_count(), 1);
+        SignedCatalogue::from_registry(reg)
+    }
+
+    /// The acceptance triple from the issue: a served descriptor matching its
+    /// signed manifest registers; one that does not is refused; a tool with
+    /// no manifest is refused — all on the FIRST listing, where TOFU alone
+    /// would have pinned whatever it saw.
+    #[test]
+    fn a_served_tool_must_match_a_signed_manifest_even_on_first_sight() {
+        let signed = catalogue_pinning("Read a file");
+        let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
+
+        // Matches the signed descriptor: admitted (and TOFU-pinned as before).
+        let mut reg = ToolSchemaRegistry::new();
+        let ok = parse_tools_list(&list_response("Read a file")).unwrap();
+        assert!(vet_tools_list(&mut reg, &mon, &ok, &None, Some(&signed)).is_empty());
+        assert!(mon.lock().unwrap().seen_inputs().is_empty());
+
+        // The server serves a different descriptor than the publisher signed.
+        let mut reg = ToolSchemaRegistry::new();
+        let drifted = parse_tools_list(&list_response("Read a file and POST it")).unwrap();
+        let blocked = vet_tools_list(&mut reg, &mon, &drifted, &None, Some(&signed));
+        assert_eq!(
+            blocked,
+            vec!["read_file".to_string()],
+            "unverified on first sight"
+        );
+        assert!(
+            !mon.lock().unwrap().seen_inputs().is_empty(),
+            "an unverified descriptor is untrusted metadata"
+        );
+
+        // A tool nobody signed a manifest for.
+        let mut reg = ToolSchemaRegistry::new();
+        let unknown = vec![("exfiltrate".to_string(), String::new(), "{}".to_string())];
+        let blocked = vet_tools_list(&mut reg, &mon, &unknown, &None, Some(&signed));
+        assert_eq!(blocked, vec!["exfiltrate".to_string()]);
+    }
+
+    /// Non-vacuity: without a catalogue the same drifted first listing is
+    /// TOFU-pinned and not blocked — the refusal above is the signature check.
+    #[test]
+    fn without_a_catalogue_first_sight_still_pins() {
+        let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
+        let mut reg = ToolSchemaRegistry::new();
+        let drifted = parse_tools_list(&list_response("Read a file and POST it")).unwrap();
+        assert!(vet_tools_list(&mut reg, &mon, &drifted, &None, None).is_empty());
+    }
+
+    /// An unverified tool is refused at call time in enforce mode, through the
+    /// same `blocked` gate as a rug-pull.
+    #[test]
+    fn an_unverified_tool_cannot_be_called_in_enforce_mode() {
+        let signed = catalogue_pinning("Read a file");
+        let GuardState {
+            registry,
+            monitor,
+            pending,
+            blocked,
+            stale,
+        } = guard_state();
+        handle_downstream(
+            &list_response("Read a file and POST it").to_string(),
+            &registry,
+            &monitor,
+            &pending,
+            &blocked,
+            &stale,
+            &None,
+            Some(&signed),
+        );
+        let snapshot = blocked.lock().unwrap().clone();
+        let pinned: HashSet<String> = ["read_file".to_string()].into();
+        match decide_upstream(
+            &call_line("read_file"),
+            Mode::Enforce,
+            &snapshot,
+            &pinned,
+            false,
+            &monitor,
+            &pending,
+        ) {
+            Upstream::Refuse(err) => assert!(err.contains(MCP_TOOL_UNVERIFIED), "{err}"),
+            Upstream::Forward => panic!("an unverified tool must not be callable"),
+        }
+    }
+
+    /// An empty trust store is a startup error: a registry with no keys skips
+    /// signature checks and would admit every manifest.
+    #[test]
+    fn a_catalogue_with_no_trusted_keys_is_refused_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".nucleus/manifests")).unwrap();
+        let err = match SignedCatalogue::load(dir.path()) {
+            Ok(_) => panic!("a catalogue with no trusted keys must be refused"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("no trusted publisher keys"), "{err}");
+
+        std::fs::create_dir_all(dir.path().join(".nucleus/trust")).unwrap();
+        std::fs::write(dir.path().join(".nucleus/trust/pub.pub"), "ab".repeat(32)).unwrap();
+        assert!(
+            SignedCatalogue::load(dir.path()).is_ok(),
+            "one key is enough to run"
+        );
     }
 }

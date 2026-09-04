@@ -138,6 +138,81 @@ pub fn verify_manifest_signature(
         .map_err(|_| AdmissionDenyReason::InvalidSignature)
 }
 
+/// Why a tool served in `tools/list` is not vouched for by a signed manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServedToolError {
+    /// No manifest of that name was admitted, and none was seen at all.
+    NoManifest,
+    /// A manifest of that name exists but was unsigned or invalidly signed
+    /// under the trust store (it was never admitted).
+    Unsigned,
+    /// A manifest of that name was rejected by admission control.
+    Rejected,
+    /// The admitted manifest pins no descriptor (`schema_hash` absent), so it
+    /// cannot vouch for the one being served.
+    NoSchemaHash,
+    /// The served descriptor is not the one the publisher signed.
+    SchemaHashMismatch {
+        /// Hex of the signed `schema_hash`.
+        expected: String,
+        /// Hex of the digest of the descriptor actually served.
+        served: String,
+    },
+}
+
+impl std::fmt::Display for ServedToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoManifest => write!(f, "no signed manifest for this tool"),
+            Self::Unsigned => write!(f, "manifest is unsigned or not signed by a trusted key"),
+            Self::Rejected => write!(f, "manifest was rejected by admission control"),
+            Self::NoSchemaHash => write!(f, "manifest pins no descriptor (no schema_hash)"),
+            Self::SchemaHashMismatch { expected, served } => write!(
+                f,
+                "served descriptor digest {served} is not the signed {expected}"
+            ),
+        }
+    }
+}
+
+impl ManifestRegistry {
+    /// Is the descriptor a server is serving for `name` the one its signed
+    /// manifest vouches for? `served_digest_hex` is
+    /// `ToolSchemaRegistry::hash_schema` over the served `(name, description,
+    /// parameters)`. Only an ADMITTED manifest (signature verified when a trust
+    /// store is present, admission passed) with a non-zero `schema_hash` can
+    /// vouch; every other state is a distinct refusal (#1637).
+    ///
+    /// # Errors
+    /// The [`ServedToolError`] naming which of those states applies.
+    pub fn verify_served_tool(
+        &self,
+        name: &str,
+        served_digest_hex: &str,
+    ) -> Result<(), ServedToolError> {
+        let Some(manifest) = self.tools.get(name) else {
+            if self.unsigned.iter().any(|n| n == name) {
+                return Err(ServedToolError::Unsigned);
+            }
+            if self.rejected.contains_key(name) {
+                return Err(ServedToolError::Rejected);
+            }
+            return Err(ServedToolError::NoManifest);
+        };
+        if manifest.schema_hash == [0u8; 32] {
+            return Err(ServedToolError::NoSchemaHash);
+        }
+        let expected = hex::encode(manifest.schema_hash);
+        if !expected.eq_ignore_ascii_case(served_digest_hex.trim()) {
+            return Err(ServedToolError::SchemaHashMismatch {
+                expected,
+                served: served_digest_hex.trim().to_ascii_lowercase(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// TOML-deserializable manifest format.
 #[derive(Deserialize)]
 struct ManifestFile {
@@ -177,6 +252,13 @@ struct ToolEntry {
     /// Empty = all compartments. When set, tool is only available in listed compartments.
     #[serde(default)]
     allowed_compartments: Option<Vec<String>>,
+    /// SHA-256 of the tool descriptor this manifest vouches for, hex-encoded
+    /// (64 chars): `ToolSchemaRegistry::hash_schema(name, description,
+    /// parameters)` over the descriptor as served in `tools/list`. Signed
+    /// (it is inside `canonical_bytes`), so a signed manifest binds one exact
+    /// descriptor; a server that serves another is refused (#1637).
+    #[serde(default)]
+    schema_hash: Option<String>,
 }
 
 fn default_conf() -> String {
@@ -412,6 +494,17 @@ fn convert_entry(entry: &ToolEntry) -> Option<ToolManifest> {
         <[u8; 32]>::try_from(bytes.as_slice()).ok()
     });
 
+    // Parse the descriptor hash (hex → [u8; 32]). Absent means the manifest
+    // vouches for no descriptor (zeros, as before); PRESENT but malformed is a
+    // refused manifest, not a silently-zeroed one.
+    let schema_hash = match entry.schema_hash.as_deref() {
+        None => [0u8; 32],
+        Some(hex_str) => {
+            let bytes = hex::decode(hex_str.trim()).ok()?;
+            <[u8; 32]>::try_from(bytes.as_slice()).ok()?
+        }
+    };
+
     Some(ToolManifest {
         name: ToolName::new(&entry.name),
         capabilities,
@@ -421,7 +514,7 @@ fn convert_entry(entry: &ToolEntry) -> Option<ToolManifest> {
         max_confidentiality,
         output_integrity,
         output_authority,
-        schema_hash: [0; 32],
+        schema_hash,
         allowed_hosts: entry.allowed_hosts.clone().unwrap_or_default(),
         authority_to_instruct: entry.authority_to_instruct.unwrap_or(false),
         memory_behavior: portcullis_core::manifest::MemoryBehavior::None,
@@ -854,5 +947,76 @@ signing_key = "{key_hex}"
                 "struct-based verification is immune to TOML formatting"
             );
         }
+    }
+
+    /// #1637: a manifest pins the descriptor it vouches for; only an admitted
+    /// manifest with a non-zero `schema_hash` equal to the served digest
+    /// verifies, and every other state is a distinct, named refusal.
+    #[test]
+    fn a_served_tool_verifies_only_against_its_signed_descriptor_digest() {
+        let digest = "ab".repeat(32);
+        let mut reg = ManifestRegistry::new();
+        reg.load_toml(&format!(
+            r#"
+[tool]
+name = "pinned"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+schema_hash = "{digest}"
+"#
+        ));
+        reg.load_toml(
+            r#"
+[tool]
+name = "unpinned"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+"#,
+        );
+        assert_eq!(reg.admitted_count(), 2);
+
+        assert_eq!(reg.verify_served_tool("pinned", &digest), Ok(()));
+        assert_eq!(
+            reg.verify_served_tool("pinned", &digest.to_ascii_uppercase()),
+            Ok(()),
+            "hex case is not a mismatch"
+        );
+        assert!(matches!(
+            reg.verify_served_tool("pinned", &"cd".repeat(32)),
+            Err(ServedToolError::SchemaHashMismatch { .. })
+        ));
+        assert_eq!(
+            reg.verify_served_tool("unpinned", &digest),
+            Err(ServedToolError::NoSchemaHash),
+            "a manifest that pins nothing vouches for nothing"
+        );
+        assert_eq!(
+            reg.verify_served_tool("never_listed", &digest),
+            Err(ServedToolError::NoManifest)
+        );
+    }
+
+    /// A present-but-malformed `schema_hash` refuses the manifest rather than
+    /// silently zeroing the field into "pins nothing".
+    #[test]
+    fn a_malformed_schema_hash_refuses_the_manifest() {
+        let mut reg = ManifestRegistry::new();
+        reg.load_toml(
+            r#"
+[tool]
+name = "bad"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+schema_hash = "not-hex"
+"#,
+        );
+        assert_eq!(reg.admitted_count(), 0);
+        assert_eq!(
+            reg.verify_served_tool("bad", &"ab".repeat(32)),
+            Err(ServedToolError::NoManifest)
+        );
     }
 }

@@ -94,6 +94,13 @@ Set `"replace_defaults": true` to start from scratch.
   until a fresh `tools/list` is vetted every pinned digest may be out of date;
   calls are refused (enforce) or reported (observe) until then. A silent
   mutation, with no notification, is still caught at the next listing.
+- **Signed manifests, when you have them.** `--manifests DIR` loads
+  `.nucleus/manifests/*.toml`, verified under the publisher keys in
+  `.nucleus/trust/*.pub`; each manifest pins the descriptor digest it vouches
+  for (`schema_hash`). A served tool that matches no signed manifest is refused
+  as `MCP_TOOL_UNVERIFIED`, on the first listing too — the publisher's
+  signature, not first sight, is the trust. An empty trust store is a startup
+  error, never a check that accepts everything.
 - **Pinning is trust-on-first-use.** That is a real bound and worth stating
   plainly: TOFU defends the *rug-pull* — benign at approval, mutated later — and
   the metadata-tainting is what covers a server that was hostile from the start.
