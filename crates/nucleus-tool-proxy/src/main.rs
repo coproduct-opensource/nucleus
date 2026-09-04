@@ -1915,6 +1915,7 @@ async fn main() -> Result<(), ApiError> {
             args.task_token_nonce.as_deref(),
             args.task_token_issuer.as_deref(),
             elapsed.as_secs(),
+            pod_cert.as_ref().map(|c| c.fingerprint),
         ),
         // Clock before the epoch ⇒ cannot evaluate freshness ⇒ fail closed.
         Err(_) => session_token::SessionTaskToken::Invalid,

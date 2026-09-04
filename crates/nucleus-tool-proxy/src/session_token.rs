@@ -74,6 +74,7 @@ impl VerifiedSessionToken {
         nonce_hex: &str,
         issuer_hex: &str,
         now_unix: u64,
+        expected_authority: Option<[u8; 32]>,
     ) -> Result<Self, SessionTokenError> {
         let expected_nonce = parse_fixed::<NONCE_LEN>(nonce_hex).ok_or(SessionTokenError::Nonce)?;
         let root_issuer = parse_fixed::<ISSUER_LEN>(issuer_hex).ok_or(SessionTokenError::Issuer)?;
@@ -86,6 +87,20 @@ impl VerifiedSessionToken {
             .verify(&root_issuer, now_unix, &expected_nonce)
             .map_err(SessionTokenError::Verify)?
             .clone();
+        // #2486: the token must name the certificate THIS pod boot-verified.
+        // A token naming another authority was derived from a different
+        // grant and is refused. A token naming none was minted by a node that
+        // predates certificate-bound tokens: accepted, and said so.
+        match (expected_authority, signed.authority()) {
+            (Some(expected), Some(named)) if expected != named => {
+                return Err(SessionTokenError::AuthorityMismatch);
+            }
+            (Some(_), None) => tracing::warn!(
+                "session task token names no authority; issued by a node that predates \
+                 certificate-bound tokens (#2486)"
+            ),
+            _ => {}
+        }
         Ok(Self {
             scope,
             token: signed,
@@ -117,6 +132,8 @@ pub(crate) enum SessionTokenError {
     /// The token decoded but failed cryptographic verification.
     #[error("session task token failed verification: {0}")]
     Verify(TokenError),
+    #[error("session task token names a different authority than this pod's certificate")]
+    AuthorityMismatch,
 }
 
 /// The startup verification verdict for the injected session task token, held
@@ -174,6 +191,7 @@ pub(crate) fn resolve_session_task_token(
     nonce_hex: Option<&str>,
     issuer_hex: Option<&str>,
     now_unix: u64,
+    expected_authority: Option<[u8; 32]>,
 ) -> SessionTaskToken {
     let (token_serialized, nonce_hex, issuer_hex) = match (token_serialized, nonce_hex, issuer_hex)
     {
@@ -182,7 +200,13 @@ pub(crate) fn resolve_session_task_token(
         _ => return SessionTaskToken::Missing,
     };
 
-    match VerifiedSessionToken::verify(token_serialized, nonce_hex, issuer_hex, now_unix) {
+    match VerifiedSessionToken::verify(
+        token_serialized,
+        nonce_hex,
+        issuer_hex,
+        now_unix,
+        expected_authority,
+    ) {
         Ok(verified) => SessionTaskToken::Verified(verified),
         Err(_) => SessionTaskToken::Invalid,
     }
@@ -237,7 +261,8 @@ mod tests {
         let issuer = issuer_key(1);
         let (token, nonce, issuer_hex) = injected(&issuer, NONCE);
 
-        let state = resolve_session_task_token(Some(&token), Some(&nonce), Some(&issuer_hex), NOW);
+        let state =
+            resolve_session_task_token(Some(&token), Some(&nonce), Some(&issuer_hex), NOW, None);
 
         assert!(state.is_verified(), "honest injected token must verify");
         assert_eq!(state.verified_scope(), Some(&scope()));
@@ -248,7 +273,7 @@ mod tests {
     #[test]
     fn absent_token_is_fail_closed_missing() {
         // Nothing injected at all.
-        let state = resolve_session_task_token(None, None, None, NOW);
+        let state = resolve_session_task_token(None, None, None, NOW, None);
         assert!(matches!(state, SessionTaskToken::Missing));
         assert!(!state.is_verified());
         assert_eq!(state.verified_scope(), None);
@@ -257,7 +282,7 @@ mod tests {
         // ALSO fail-closed Missing — never silently unrestricted.
         let issuer = issuer_key(1);
         let (token, _n, _i) = injected(&issuer, NONCE);
-        let partial = resolve_session_task_token(Some(&token), None, None, NOW);
+        let partial = resolve_session_task_token(Some(&token), None, None, NOW, None);
         assert!(matches!(partial, SessionTaskToken::Missing));
         assert!(!partial.is_verified());
     }
@@ -278,7 +303,7 @@ mod tests {
         let tampered = serde_json::to_string(&token).unwrap();
 
         let state =
-            resolve_session_task_token(Some(&tampered), Some(&nonce), Some(&issuer_hex), NOW);
+            resolve_session_task_token(Some(&tampered), Some(&nonce), Some(&issuer_hex), NOW, None);
         assert!(matches!(state, SessionTaskToken::Invalid));
         assert!(!state.is_verified());
         assert_eq!(state.verified_scope(), None);
@@ -295,8 +320,13 @@ mod tests {
         // ...but the host-pinned issuer is the real root.
         let real_issuer_hex = hex::encode(real_issuer.verifying_key().to_bytes());
 
-        let state =
-            resolve_session_task_token(Some(&token), Some(&nonce), Some(&real_issuer_hex), NOW);
+        let state = resolve_session_task_token(
+            Some(&token),
+            Some(&nonce),
+            Some(&real_issuer_hex),
+            NOW,
+            None,
+        );
         assert!(matches!(state, SessionTaskToken::Invalid));
         assert!(!state.is_verified());
     }
@@ -314,6 +344,7 @@ mod tests {
             Some(&wrong_nonce_hex),
             Some(&issuer_hex),
             NOW,
+            None,
         );
         assert!(matches!(state, SessionTaskToken::Invalid));
     }
@@ -325,7 +356,7 @@ mod tests {
         let (token, nonce, issuer_hex) = injected(&issuer, NONCE);
         // deadline = ISSUED_AT + TTL = 1500; verify at now = 1501 ⇒ expired.
         let state =
-            resolve_session_task_token(Some(&token), Some(&nonce), Some(&issuer_hex), 1_501);
+            resolve_session_task_token(Some(&token), Some(&nonce), Some(&issuer_hex), 1_501, None);
         assert!(matches!(state, SessionTaskToken::Invalid));
     }
 
@@ -338,7 +369,13 @@ mod tests {
 
         // Non-JSON token.
         assert!(matches!(
-            resolve_session_task_token(Some("not-json"), Some(&nonce), Some(&issuer_hex), NOW),
+            resolve_session_task_token(
+                Some("not-json"),
+                Some(&nonce),
+                Some(&issuer_hex),
+                NOW,
+                None
+            ),
             SessionTaskToken::Invalid
         ));
         // Short nonce (8 bytes hex).
@@ -347,13 +384,14 @@ mod tests {
                 Some(&token),
                 Some(&hex::encode([1u8; 8])),
                 Some(&issuer_hex),
-                NOW
+                NOW,
+                None
             ),
             SessionTaskToken::Invalid
         ));
         // Non-hex issuer.
         assert!(matches!(
-            resolve_session_task_token(Some(&token), Some(&nonce), Some("zz"), NOW),
+            resolve_session_task_token(Some(&token), Some(&nonce), Some("zz"), NOW, None),
             SessionTaskToken::Invalid
         ));
     }
@@ -365,20 +403,94 @@ mod tests {
         let (token, nonce, issuer_hex) = injected(&issuer, NONCE);
 
         assert_eq!(
-            VerifiedSessionToken::verify("nope", &nonce, &issuer_hex, NOW).unwrap_err(),
+            VerifiedSessionToken::verify("nope", &nonce, &issuer_hex, NOW, None).unwrap_err(),
             SessionTokenError::Decode
         );
         assert_eq!(
-            VerifiedSessionToken::verify(&token, "zz", &issuer_hex, NOW).unwrap_err(),
+            VerifiedSessionToken::verify(&token, "zz", &issuer_hex, NOW, None).unwrap_err(),
             SessionTokenError::Nonce
         );
         assert_eq!(
-            VerifiedSessionToken::verify(&token, &nonce, "zz", NOW).unwrap_err(),
+            VerifiedSessionToken::verify(&token, &nonce, "zz", NOW, None).unwrap_err(),
             SessionTokenError::Issuer
         );
         assert!(matches!(
-            VerifiedSessionToken::verify(&token, &nonce, &issuer_hex, 1_501).unwrap_err(),
+            VerifiedSessionToken::verify(&token, &nonce, &issuer_hex, 1_501, None).unwrap_err(),
             SessionTokenError::Verify(TokenError::Expired { .. })
         ));
+    }
+
+    // ── #2486: the authority cross-check ────────────────────────────────────
+
+    const CERT: [u8; 32] = [0x5au8; 32];
+
+    fn injected_under(issuer: &SigningKey, authority: [u8; 32]) -> (String, String, String) {
+        let token = SignedTaskRef::issue_under_authority(
+            "live-task",
+            scope(),
+            NONCE,
+            ISSUED_AT,
+            TTL,
+            issuer,
+            authority,
+        );
+        (
+            serde_json::to_string(&token).unwrap(),
+            hex::encode(NONCE),
+            hex::encode(issuer.verifying_key().to_bytes()),
+        )
+    }
+
+    /// A token naming this pod's certificate verifies; one naming another
+    /// certificate is Invalid even though its signature, nonce and issuer are
+    /// all honest — it was derived from a different grant.
+    #[test]
+    fn a_token_must_name_the_certificate_this_pod_holds() {
+        let issuer = issuer_key(1);
+        let (token, nonce, issuer_hex) = injected_under(&issuer, CERT);
+        assert!(
+            resolve_session_task_token(
+                Some(&token),
+                Some(&nonce),
+                Some(&issuer_hex),
+                NOW,
+                Some(CERT)
+            )
+            .is_verified()
+        );
+        assert!(matches!(
+            resolve_session_task_token(
+                Some(&token),
+                Some(&nonce),
+                Some(&issuer_hex),
+                NOW,
+                Some([0xa5u8; 32])
+            ),
+            SessionTaskToken::Invalid
+        ));
+    }
+
+    /// Compatibility, both ways: a pod with a certificate accepts a token
+    /// that names none (an older node), and a pod with no certificate accepts
+    /// a token that names one (the check needs both sides).
+    #[test]
+    fn an_unbound_token_or_an_uncertified_pod_does_not_refuse() {
+        let issuer = issuer_key(1);
+        let (token, nonce, issuer_hex) = injected(&issuer, NONCE);
+        assert!(
+            resolve_session_task_token(
+                Some(&token),
+                Some(&nonce),
+                Some(&issuer_hex),
+                NOW,
+                Some(CERT)
+            )
+            .is_verified()
+        );
+        let (bound, nonce, issuer_hex) = injected_under(&issuer, CERT);
+        assert!(
+            resolve_session_task_token(Some(&bound), Some(&nonce), Some(&issuer_hex), NOW, None)
+                .is_verified()
+        );
     }
 }

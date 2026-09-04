@@ -84,6 +84,7 @@ pub(crate) fn mint_session_task_token(
     ttl_secs: u64,
     now_unix: u64,
     issuer: &SigningKey,
+    authority: Option<[u8; 32]>,
 ) -> Result<MintedTaskToken, serde_json::Error> {
     // Fresh per-pod nonce from the OS CSPRNG, at the exact width SignedTaskRef
     // pins as the effective nonce.
@@ -95,7 +96,15 @@ pub(crate) fn mint_session_task_token(
     // op). Paths deferred to the next brick — see module docs.
     let scope = TokenScope::new(policy.granted_operations(), Vec::new());
 
-    let token = SignedTaskRef::issue(task_id, scope, nonce, now_unix, ttl_secs, issuer);
+    // Bound to the certificate the node issued this pod (#2486), when it has
+    // one: the token then names the authority its scope was derived from, and
+    // the tool-proxy refuses a token naming another.
+    let token = match authority {
+        Some(fp) => SignedTaskRef::issue_under_authority(
+            task_id, scope, nonce, now_unix, ttl_secs, issuer, fp,
+        ),
+        None => SignedTaskRef::issue(task_id, scope, nonce, now_unix, ttl_secs, issuer),
+    };
     let token_json = serde_json::to_string(&token)?;
 
     Ok(MintedTaskToken {
@@ -128,7 +137,8 @@ mod tests {
         let issuer = issuer_key(3);
         let policy = PermissionLattice::local_dev(); // read/write/edit/bash/glob/grep/commit
 
-        let minted = mint_session_task_token("pod-abc", &policy, TTL, NOW, &issuer).expect("mint");
+        let minted =
+            mint_session_task_token("pod-abc", &policy, TTL, NOW, &issuer, None).expect("mint");
 
         // Reconstruct the verifier inputs from the injected strings exactly as
         // the tool-proxy would.
@@ -183,7 +193,8 @@ mod tests {
             extensions: std::collections::BTreeMap::new(),
         };
 
-        let minted = mint_session_task_token("pod-locked", &policy, TTL, NOW, &issuer).unwrap();
+        let minted =
+            mint_session_task_token("pod-locked", &policy, TTL, NOW, &issuer, None).unwrap();
         let token: SignedTaskRef = serde_json::from_str(&minted.token_json).unwrap();
         let nonce: [u8; 16] = hex::decode(&minted.nonce_hex).unwrap().try_into().unwrap();
         let issuer_pub: [u8; 32] = hex::decode(&minted.issuer_hex).unwrap().try_into().unwrap();
@@ -206,7 +217,7 @@ mod tests {
         let issuer = issuer_key(5);
         let policy = PermissionLattice::pr_review(); // read/glob/grep/web only
 
-        let minted = mint_session_task_token("pod-pr", &policy, TTL, NOW, &issuer).unwrap();
+        let minted = mint_session_task_token("pod-pr", &policy, TTL, NOW, &issuer, None).unwrap();
         let token: SignedTaskRef = serde_json::from_str(&minted.token_json).unwrap();
 
         let scope = token.effective_scope().unwrap();
@@ -222,5 +233,21 @@ mod tests {
         // allowed op (read_files) is present.
         assert!(!scope.allowed_operations.contains(&Operation::RunBash));
         assert!(scope.allowed_operations.contains(&Operation::ReadFiles));
+    }
+
+    /// #2486: a token minted under the pod's certificate carries that
+    /// certificate's fingerprint in the signed root claim.
+    #[test]
+    fn minted_token_names_the_certificate_it_was_derived_from() {
+        let issuer = issuer_key(4);
+        let policy = PermissionLattice::local_dev();
+        let fp = [0x42u8; 32];
+        let minted =
+            mint_session_task_token("pod-fp", &policy, TTL, NOW, &issuer, Some(fp)).unwrap();
+        let token: SignedTaskRef = serde_json::from_str(&minted.token_json).unwrap();
+        assert_eq!(token.authority(), Some(fp));
+        let issuer_pub: [u8; 32] = hex::decode(&minted.issuer_hex).unwrap().try_into().unwrap();
+        let nonce: [u8; 16] = hex::decode(&minted.nonce_hex).unwrap().try_into().unwrap();
+        assert!(token.verify(&issuer_pub, NOW + 1, &nonce).is_ok());
     }
 }
