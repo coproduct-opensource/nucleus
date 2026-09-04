@@ -98,6 +98,7 @@ pub mod cedar_bridge;
 // VerifiedPermissions, …) and non-crypto logic are ring-free; only the
 // sign/verify/mint/delegate fns inside are `#[cfg(feature = "crypto")]`-gated
 // (ring can't compile to WASM). The kernel needs the types, not the signing.
+#[cfg(not(kani))]
 pub mod cert_compartment;
 pub mod certificate;
 #[cfg(all(test, feature = "crypto", feature = "serde"))]

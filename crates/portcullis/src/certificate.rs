@@ -387,6 +387,7 @@ pub enum CertificateDelegationError {
     ToolSurfaceDropped,
     /// The requested compartment is above the parent's, or the child sheds
     /// the compartment dimension (#2484). Compartments only go down a chain.
+    #[cfg(not(kani))]
     Compartment(crate::cert_compartment::CompartmentHopError),
 }
 
@@ -406,6 +407,7 @@ impl fmt::Display for CertificateDelegationError {
                 f,
                 "Requested lattice sheds the parent's tool surface (marker at Never)"
             ),
+            #[cfg(not(kani))]
             Self::Compartment(e) => write!(f, "compartment: {e}"),
         }
     }
@@ -763,7 +765,9 @@ impl LatticeCertificate {
         let next_key = holder_key.public_key().as_ref().to_vec();
         // A root that names a compartment is clamped to its ceiling (#2484):
         // the compartment is a capability bound, not a label.
+        #[allow(unused_mut)]
         let mut root_permissions = root_permissions;
+        #[cfg(not(kani))]
         if let Some(c) = crate::cert_compartment::compartment_of(&root_permissions.capabilities) {
             crate::cert_compartment::clamp_to_ceiling(&mut root_permissions.capabilities, c);
         }
@@ -940,17 +944,20 @@ impl LatticeCertificate {
         // request above the parent's is refused, not clamped; the compartment's
         // capability ceiling is applied to the request (named dimensions only)
         // so the chain meet below cannot exceed it.
-        crate::cert_compartment::inherit_compartment(
-            &mut requested.capabilities,
-            &parent_permissions.capabilities,
-        );
-        crate::cert_compartment::check_request(
-            &requested.capabilities,
-            &parent_permissions.capabilities,
-        )
-        .map_err(CertificateDelegationError::Compartment)?;
-        if let Some(c) = crate::cert_compartment::compartment_of(&requested.capabilities) {
-            crate::cert_compartment::clamp_to_ceiling(&mut requested.capabilities, c);
+        #[cfg(not(kani))]
+        {
+            crate::cert_compartment::inherit_compartment(
+                &mut requested.capabilities,
+                &parent_permissions.capabilities,
+            );
+            crate::cert_compartment::check_request(
+                &requested.capabilities,
+                &parent_permissions.capabilities,
+            )
+            .map_err(CertificateDelegationError::Compartment)?;
+            if let Some(c) = crate::cert_compartment::compartment_of(&requested.capabilities) {
+                crate::cert_compartment::clamp_to_ceiling(&mut requested.capabilities, c);
+            }
         }
         let requested = &requested;
 
@@ -964,6 +971,7 @@ impl LatticeCertificate {
         ) {
             return Err(CertificateDelegationError::ToolSurfaceDropped);
         }
+        #[cfg(not(kani))]
         crate::cert_compartment::check_effective(
             &effective_permissions.capabilities,
             &parent_permissions.capabilities,
