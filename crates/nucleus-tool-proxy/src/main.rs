@@ -1492,8 +1492,45 @@ async fn main() -> Result<(), ApiError> {
     let spec_contents = st
         .timed("spec_read", tokio::fs::read_to_string(&args.spec))
         .await?;
-    let spec: PodSpec =
+    let mut spec: PodSpec =
         serde_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
+
+    // This pod's certificate of authority: verified ONCE, against the pinned
+    // anchor (never the token's own embedded key). Present-but-invalid is
+    // fatal (EX_CONFIG); absent leaves the spec's policy as the ceiling.
+    let pod_cert = match pod_cert::resolve_pod_certificate(
+        args.pod_cert.as_deref(),
+        args.cert_root_pubkey.as_deref(),
+        chrono::Utc::now(),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FATAL: pod certificate: {e}");
+            std::process::exit(78);
+        }
+    };
+    if let Some((_, summary)) = &pod_cert {
+        // The certificate IS this pod's policy. On the local and container
+        // drivers the spec on disk is the node's own copy (policy already
+        // replaced by the issued lattice, so this is a no-op); on Firecracker
+        // the guest's /etc/nucleus/pod.yaml is the IMAGE's template, not this
+        // pod's spec, and the certificate is the only per-pod policy that
+        // reaches the guest at all. Either way the runtime, the kernel and the
+        // delegation ceiling below all derive from the one signed lattice.
+        let on_disk = spec.spec.resolve_policy().ok();
+        let same = on_disk
+            .as_ref()
+            .is_some_and(|p| p.leq(&summary.effective) && summary.effective.leq(p));
+        if !same {
+            tracing::warn!(
+                leaf = %summary.leaf_identity,
+                "the spec's on-disk policy is not the issued lattice; running under the certificate"
+            );
+        }
+        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+            lattice: Box::new(summary.effective.clone()),
+        };
+    }
 
     let runtime = pod_mgmt::build_runtime(&spec)?;
     let approvals = Arc::new(ApprovalRegistry::default());
@@ -1511,27 +1548,8 @@ async fn main() -> Result<(), ApiError> {
     let runtime = runtime.with_approver(Arc::new(approver))?;
     st.mark("runtime_build");
 
-    // This pod's certificate of authority: verified ONCE, against the pinned
-    // anchor. Its effective lattice is the pod's true ceiling; a spec on disk
-    // that disagrees with the certificate is refused (EX_CONFIG) — the node
-    // wrote both, and the certificate is the signed one.
-    let pod_cert = match pod_cert::resolve_pod_certificate(
-        args.pod_cert.as_deref(),
-        args.cert_root_pubkey.as_deref(),
-        chrono::Utc::now(),
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("FATAL: pod certificate: {e}");
-            std::process::exit(78);
-        }
-    };
-    if let Some((_, summary)) = &pod_cert
-        && !(runtime.policy().leq(&summary.effective) && summary.effective.leq(runtime.policy()))
-    {
-        eprintln!("FATAL: the pod spec's policy is not the lattice this pod's certificate grants");
-        std::process::exit(78);
-    }
+    // Split the verified certificate: the sealed permissions go into the
+    // kernel, the summary into AppState.
     let (mut pod_cert_verified, pod_cert) = match pod_cert {
         Some((verified, summary)) => {
             tracing::info!(
