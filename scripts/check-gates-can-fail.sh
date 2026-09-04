@@ -168,6 +168,13 @@ perturb_verify_strict() {
     append_line "$1" 'fn _gate_of_gates_weak(k: &ed25519_dalek::VerifyingKey, m: &[u8], s: ed25519_dalek::Signature) -> bool { k.verify(m, &s).is_ok() }'
 }
 
+perturb_ring_ed25519() {
+    # SECURITY_TODO #16 sibling scan: a cofactored `ring::signature::ED25519`
+    # verify on a production path. The gate matches the algorithm constant
+    # itself, so the probe names it in a plain (non-test) function.
+    append_line "$1" 'fn _gate_of_gates_ring(k: &[u8], m: &[u8], s: &[u8]) -> bool { ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, k).verify(m, s).is_ok() }'
+}
+
 perturb_failclosed() {
     # A VERIFIER that reports success on a platform where it cannot check. The
     # gate matches a `cfg(not(target_os = ...))` stub whose name starts with
@@ -353,6 +360,8 @@ probe check-sealed-home.sh    "" crates/portcullis-effects/src/lib.rs \
       "an un-allowlisted spawn in the sealed home" perturb_sealed_home
 probe check-verify-strict.sh  "" crates/nucleus-identity/src/lib.rs \
       "a non-strict dalek .verify()"          perturb_verify_strict
+probe check-verify-strict.sh  "" crates/ck-types/src/witness.rs \
+      "a cofactored ring ED25519 verify"      perturb_ring_ed25519
 probe check-failclosed-verifiers.sh "" crates/nucleus-identity/src/lib.rs \
       "a verifier returning Ok where it cannot check" perturb_failclosed
 probe check-ingest-hashed.sh  "" crates/nucleus-tool-proxy/src/egress.rs \

@@ -323,9 +323,10 @@ TODO
 - [x] Option (b) chosen: migrate trust-path verifies to `ed25519-dalek::verify_strict`, signing stays on `ring`.
   - [x] `token_sign.rs`, `receipt_sign.rs` — migrated (earlier).
   - [x] `certificate.rs` (authority / per-block / proof-of-possession, the highest-concern in-band `next_key` site) — migrated in the certificate-convergence PR 1; `verify_ed25519_strict` is the single verify helper, pinned by `certificate_convergence_test::small_order_root_key_forgery_rejected`, which asserts (non-vacuously) that `ring` still accepts the identity triple and `verify_certificate` now refuses it.
-  - [ ] `manifest_registry.rs:98/139` — still `ring`.
-  - [ ] Extend `scripts/check-verify-strict.sh` to cover the migrated ring paths.
+  - [x] `manifest_registry.rs` (`TrustStore::verify`, `verify_manifest_signature`) — migrated to the shared `certificate::verify_ed25519_strict`; pinned by `manifest_registry::tests::crypto_tests::small_order_identity_triple_rejected` (asserts `ring` still accepts the identity triple, then that the trust store and the manifest verify refuse it).
+  - [x] `ck-types::witness.rs` (witness-bundle signatures) and `ck-kernel::lib.rs` (human governance signatures) — found by the sweep below; migrated to `ck_types::witness::verify_ed25519_strict` (dalek `verify_strict`, single-variant `InvalidSignature` error).
+  - [x] `scripts/check-verify-strict.sh` now has a second scan: any production reference to `ring::signature::ED25519` (the cofactored verifier) fails the gate, no allowlist, `#[cfg(test)]` blocks and `*_test.rs` files excluded. Verified to FAIL on the pre-migration tree and PASS after.
 - `nucleus-identity::approval_bundle.rs:425` is **ECDSA P-256** (`ECDSA_P256_SHA256_FIXED`), not Ed25519; the small-order Ed25519 concern does not apply there. Listed in error by the original sweep.
 
 Status
-- [PARTIAL] Three of four Ed25519 sites migrated; `manifest_registry.rs` open.
+- CLOSED (2026-09-04). Every Ed25519 re-verify in the workspace is `verify_strict`; `ring` remains for signing only. The only production `ring::signature::ED25519` references left are inside test modules, which the gate strips.

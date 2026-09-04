@@ -29,6 +29,9 @@ use portcullis_core::manifest::{
 use portcullis_core::{AuthorityLevel, ConfLevel, IntegLevel, Operation};
 use serde::Deserialize;
 
+#[cfg(feature = "crypto")]
+use crate::certificate::verify_ed25519_strict;
+
 /// A loaded and validated manifest registry.
 #[derive(Debug, Default)]
 pub struct ManifestRegistry {
@@ -90,17 +93,14 @@ impl TrustStore {
     /// Verify a signature against any trusted key.
     ///
     /// Returns true if the signature is valid for at least one trusted key.
+    /// Strict (`ed25519_dalek::verify_strict`) — a small-order or non-canonical
+    /// key never verifies, so a signature cannot be made to check under an
+    /// identity other than the one that produced it (SECURITY_TODO #16).
     #[cfg(feature = "crypto")]
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
-        use ring::signature::{self, UnparsedPublicKey};
-
-        for key_bytes in &self.keys {
-            let public_key = UnparsedPublicKey::new(&signature::ED25519, key_bytes);
-            if public_key.verify(message, signature).is_ok() {
-                return true;
-            }
-        }
-        false
+        self.keys
+            .iter()
+            .any(|key_bytes| verify_ed25519_strict(key_bytes, message, signature).is_ok())
     }
 
     /// Number of trusted keys.
@@ -118,8 +118,6 @@ pub fn verify_manifest_signature(
     manifest: &ToolManifest,
     trust_store: &TrustStore,
 ) -> Result<(), AdmissionDenyReason> {
-    use ring::signature::{self, UnparsedPublicKey};
-
     let (sig, key) = match (manifest.signature.as_ref(), manifest.signing_key.as_ref()) {
         (Some(s), Some(k)) => (s, k),
         _ => return Err(AdmissionDenyReason::UnsignedManifest),
@@ -134,11 +132,9 @@ pub fn verify_manifest_signature(
         return Err(AdmissionDenyReason::InvalidSignature);
     }
 
-    // Second check: the signature must verify against canonical bytes
+    // Second check: the signature must verify (strictly) against canonical bytes
     let canonical = manifest.canonical_bytes();
-    let public_key = UnparsedPublicKey::new(&signature::ED25519, key.as_slice());
-    public_key
-        .verify(&canonical, sig.as_slice())
+    verify_ed25519_strict(key.as_slice(), &canonical, sig.as_slice())
         .map_err(|_| AdmissionDenyReason::InvalidSignature)
 }
 
@@ -638,6 +634,44 @@ signing_key = "bb"
             manifest.signature = Some(sig_bytes);
             manifest.signing_key = Some(pub_bytes);
             manifest
+        }
+
+        /// SECURITY_TODO #16 regression: the identity triple (small-order key,
+        /// `R` = identity, `s` = 0) is a signature `ring`'s cofactored verify
+        /// accepts under the identity key. A trust store pinned to that key,
+        /// or a manifest carrying it, must now refuse it. The `ring` half is
+        /// asserted first so the test cannot pass vacuously.
+        #[test]
+        fn small_order_identity_triple_rejected() {
+            let mut identity_vk = [0u8; 32];
+            identity_vk[0] = 1; // compressed Edwards identity: y = 1
+            let mut identity_sig = [0u8; 64];
+            identity_sig[..32].copy_from_slice(&identity_vk); // R = identity, s = 0
+
+            let kp = test_keypair();
+            let mut manifest = signed_manifest(&kp);
+            let canonical = manifest.canonical_bytes();
+
+            let ring_verifier =
+                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, identity_vk);
+            assert!(
+                ring_verifier.verify(&canonical, &identity_sig).is_ok(),
+                "ring accepts the identity triple; if this fails the test no longer \
+                 distinguishes strict from cofactored verification"
+            );
+
+            let trust = make_trust_store(&identity_vk);
+            assert!(
+                !trust.verify(&canonical, &identity_sig),
+                "TrustStore::verify must reject a small-order key"
+            );
+
+            manifest.signature = Some(identity_sig);
+            manifest.signing_key = Some(identity_vk);
+            assert_eq!(
+                verify_manifest_signature(&manifest, &trust),
+                Err(AdmissionDenyReason::InvalidSignature)
+            );
         }
 
         #[test]

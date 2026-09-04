@@ -133,3 +133,76 @@ if [[ "${#hits[@]}" -gt 0 ]]; then
 fi
 
 echo "M-3 verify-strict gate PASSED: no non-strict dalek .verify(...) on any trust path."
+
+# ── SECURITY_TODO #16 sibling: no `ring` Ed25519 verify on any production path ──
+#
+# `ring::signature::ED25519` is the cofactored verifier: it accepts the
+# small-order "identity triple" (empirically confirmed under the pinned `ring`,
+# see SECURITY_TODO #16), and `ring` has no strict variant. Every trust-path
+# Ed25519 re-verify in the workspace was migrated to `verify_strict`
+# (portcullis `certificate.rs` / `token_sign.rs` / `receipt_sign.rs` /
+# `manifest_registry.rs`, ck-types `witness.rs`, ck-kernel `lib.rs`); signing
+# stays on `ring` (`Ed25519KeyPair`, which this scan does not match). A
+# reference to the `ED25519` verification algorithm in production code is a
+# regression, full stop — there is no allowlist for it. Test code is excluded
+# the same way as above (`#[cfg(test)]` blocks stripped) plus `*_test.rs` /
+# `*_tests.rs` files, which the crate roots declare under `#[cfg(test)]`.
+list_ring_files() {
+    if command -v rg >/dev/null 2>&1; then
+        rg -l --glob '*.rs' 'signature::ED25519([^_A-Za-z0-9]|$)' crates
+    else
+        grep -rlE --include='*.rs' 'signature::ED25519([^_A-Za-z0-9]|$)' crates
+    fi \
+        | grep -vE '/(tests|benches)/' \
+        | grep -vE '_tests?\.rs$'
+}
+
+read -r -d '' AWK_RING <<'AWK' || true
+BEGIN { skip=0; brace=0; pending=0 }
+{
+    line=$0
+    tmp=line; no=gsub(/\{/,"{",tmp)
+    tmp=line; nc=gsub(/\}/,"}",tmp)
+    if (skip==1) {
+        brace += no - nc
+        if (brace <= 0) { skip=0; brace=0 }
+        next
+    }
+    if (line ~ /#\[cfg\(test\)\]/) { pending=1; next }
+    if (pending==1) {
+        if (no>0) {
+            skip=1
+            brace = no - nc
+            pending=0
+            if (brace <= 0) { skip=0; brace=0 }
+            next
+        }
+        if (line ~ /;/) { pending=0 }
+    }
+    stripped=line; sub(/^[[:space:]]+/,"",stripped)
+    if (stripped ~ /^\/\//) { next }
+    if (line ~ /signature::ED25519([^_A-Za-z0-9]|$)/) {
+        printf "%s:%d:%s\n", FILENAME, FNR, line
+    }
+}
+AWK
+
+ring_hits=()
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    while IFS= read -r rec; do
+        [[ -z "$rec" ]] && continue
+        ring_hits+=("$rec")
+    done < <(awk "$AWK_RING" "$f")
+done < <(list_ring_files || true)
+
+if [[ "${#ring_hits[@]}" -gt 0 ]]; then
+    echo "#16 ring-Ed25519 gate FAILED: cofactored ring::signature::ED25519 verify on a production path:" >&2
+    printf '  %s\n' "${ring_hits[@]}" >&2
+    echo >&2
+    echo "Fix: verify with ed25519_dalek::VerifyingKey::verify_strict (see portcullis" >&2
+    echo "certificate::verify_ed25519_strict or ck_types::witness::verify_ed25519_strict)." >&2
+    exit 1
+fi
+
+echo "#16 ring-Ed25519 gate PASSED: no ring::signature::ED25519 verify on any production path."
