@@ -78,10 +78,11 @@ Set `"replace_defaults": true` to start from scratch.
 
 ## What this is (and isn't)
 
-- **Observes by default, enforces on request.** Without `--enforce` the proxy
-  reports and forwards, so wrapping a server never starts refusing traffic by
-  surprise. With `--enforce` a denied call is answered with a JSON-RPC error and
-  never reaches the server.
+- **Enforces by default, observes on request.** A denied call is answered with
+  a JSON-RPC error and never reaches the server. Pass `--observe` to report and
+  forward anyway — assessment mode, for seeing what a session *would* have been
+  blocked from without changing it. (The former `--enforce` flag is accepted
+  and inert: it names the default.)
 - **It vets `tools/list`, not just `tools/call`.** MCP carries instructions and
   data in one channel, so a tool description has as much influence over the agent
   as the system prompt does. Schemas are pinned on first sight (`--pin-file` to

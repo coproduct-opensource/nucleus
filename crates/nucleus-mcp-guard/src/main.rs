@@ -28,9 +28,13 @@ enum Cmd {
     /// Wrap a live stdio MCP server and observe the session. The server command
     /// and its args follow `--`, e.g. `mcp-guard proxy -- npx my-mcp-server`.
     Proxy {
-        /// Block denied calls instead of only reporting them. Off by default,
-        /// so wrapping a server never starts refusing traffic by surprise.
-        #[arg(long)]
+        /// Report denied calls and forward them anyway instead of blocking.
+        /// Blocking is the default (#2429); this is the assessment-mode opt-out.
+        #[arg(long, conflicts_with = "enforce")]
+        observe: bool,
+        /// Accepted for compatibility: blocking is now the default, so this
+        /// flag changes nothing. Hidden so new invocations do not learn it.
+        #[arg(long, hide = true)]
         enforce: bool,
         /// Persist pinned tool schemas here (JSON). Without it a rug-pull can
         /// only be caught within a single session, which is not the threat:
@@ -52,14 +56,14 @@ enum SessionFile {
     Obj { tools: Vec<String> },
 }
 
-/// The whole of what `--enforce` buys (#2434): presence of the flag, and
-/// nothing else, selects [`Mode::Enforce`]. Absence always resolves to
-/// [`Mode::default`] ([`Mode::Observe`]) — pinned so this boundary (today the
-/// only in-repo stand-in for the free/paid-tier split the product decision in
-/// #2429 is about) cannot silently flip in either direction.
-fn mode_for_flag(enforce: bool) -> Mode {
-    if enforce {
-        Mode::Enforce
+/// The whole of what `--observe` gives up (#2434, #2429): presence of the
+/// flag, and nothing else, selects [`Mode::Observe`]. Absence always resolves
+/// to [`Mode::default`] ([`Mode::Enforce`]) — pinned so this boundary cannot
+/// silently flip in either direction. The legacy `--enforce` flag is accepted
+/// and ignored: it names the default.
+fn mode_for_flag(observe: bool) -> Mode {
+    if observe {
+        Mode::Observe
     } else {
         Mode::default()
     }
@@ -95,14 +99,15 @@ async fn main() -> Result<()> {
             (analyze_session(&tools, classifier), false)
         }
         Cmd::Proxy {
-            enforce,
+            observe,
+            enforce: _,
             pin_file,
             server,
         } => {
             let (cmd, args) = server.split_first().context("missing MCP server command")?;
             let monitor = Arc::new(Mutex::new(SessionMonitor::new(classifier)));
             let config = GuardConfig {
-                mode: mode_for_flag(enforce),
+                mode: mode_for_flag(observe),
                 pin_file,
             };
             let report = proxy::run_stdio_proxy_with(monitor, cmd, args, config).await?;
@@ -132,46 +137,75 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
 
-    // ── #2434: pin the observe/enforce boundary ──────────────────────────
+    // ── #2434 / #2429: pin the enforce-by-default boundary ───────────────
     //
     // Two links in the chain from argv to blocking behavior, each pinned
     // independently so a regression in either can't hide behind the other:
     // `proxy.rs`'s own `enforce_blocks_where_observe_only_reports` already
-    // pins that `Mode::Observe` never blocks and `Mode::Enforce` does: what
-    // was untested is everything upstream of that — that omitting the flag
-    // parses to `enforce: false`, and that `false` resolves to `Observe`.
+    // pins that `Mode::Observe` never blocks and `Mode::Enforce` does; what
+    // is pinned here is everything upstream of that — that omitting every
+    // flag parses to `observe: false`, and that `false` resolves to `Enforce`.
 
-    /// Link 1: `mode_for_flag` itself. Also verifies `Mode::Enforce` is
+    /// Link 1: `mode_for_flag` itself. Also verifies `Mode::Observe` is
     /// reachable at all — a test that only checked the false case would pass
-    /// just as well if `--enforce` did nothing.
+    /// just as well if `--observe` did nothing.
     #[test]
     fn mode_for_flag_matches_the_boundary() {
-        assert_eq!(mode_for_flag(false), Mode::Observe);
-        assert_eq!(mode_for_flag(true), Mode::Enforce);
+        assert_eq!(mode_for_flag(false), Mode::Enforce);
+        assert_eq!(mode_for_flag(true), Mode::Observe);
     }
 
-    /// Link 2: the CLI parser. Omitting `--enforce` from argv must parse to
-    /// `enforce: false` — the value `mode_for_flag` is called with. Without
-    /// this, a clap default-value regression that flipped the flag's
-    /// polarity would slip past `mode_for_flag_matches_the_boundary`, which
-    /// never touches argument parsing.
+    /// Link 2: the CLI parser. A bare `proxy` must parse to `observe: false`
+    /// — the value `mode_for_flag` is called with. Without this, a clap
+    /// default-value regression that flipped the flag's polarity would slip
+    /// past `mode_for_flag_matches_the_boundary`, which never touches parsing.
     #[test]
-    fn omitting_the_flag_parses_to_non_enforcing() {
+    fn omitting_every_flag_parses_to_enforcing() {
         let cli = Cli::try_parse_from(["mcp-guard", "proxy", "--", "some-server"]).unwrap();
         match cli.cmd {
-            Cmd::Proxy { enforce, .. } => assert!(!enforce, "default must be non-enforcing"),
+            Cmd::Proxy { observe, .. } => assert!(!observe, "default must be enforcing"),
             other => panic!("expected Cmd::Proxy, got {other:?}"),
         }
     }
 
-    /// The control for the test above: the flag must still work when given.
+    /// The control for the test above: the opt-out must still work when given.
     #[test]
-    fn passing_the_flag_parses_to_enforcing() {
+    fn passing_observe_parses_to_non_enforcing() {
+        let cli =
+            Cli::try_parse_from(["mcp-guard", "proxy", "--observe", "--", "some-server"]).unwrap();
+        match cli.cmd {
+            Cmd::Proxy { observe, .. } => assert!(observe),
+            other => panic!("expected Cmd::Proxy, got {other:?}"),
+        }
+    }
+
+    /// Compatibility: the legacy `--enforce` still parses (and resolves to the
+    /// default it names), and cannot be combined with `--observe`.
+    #[test]
+    fn legacy_enforce_flag_is_accepted_and_inert() {
         let cli =
             Cli::try_parse_from(["mcp-guard", "proxy", "--enforce", "--", "some-server"]).unwrap();
         match cli.cmd {
-            Cmd::Proxy { enforce, .. } => assert!(enforce),
+            Cmd::Proxy {
+                observe, enforce, ..
+            } => {
+                assert!(enforce);
+                assert!(!observe);
+                assert_eq!(mode_for_flag(observe), Mode::Enforce);
+            }
             other => panic!("expected Cmd::Proxy, got {other:?}"),
         }
+        assert!(
+            Cli::try_parse_from([
+                "mcp-guard",
+                "proxy",
+                "--enforce",
+                "--observe",
+                "--",
+                "some-server"
+            ])
+            .is_err(),
+            "contradictory flags must not silently pick one"
+        );
     }
 }

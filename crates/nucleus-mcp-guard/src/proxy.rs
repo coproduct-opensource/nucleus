@@ -10,9 +10,9 @@
 //!   poisoning and rug-pulls live and which this proxy previously did not look at
 //!   at all.
 //!
-//! In [`Mode::Observe`] a denied verdict is reported and the traffic still flows,
-//! byte-verbatim. In [`Mode::Enforce`] the request is answered with a JSON-RPC
-//! error and never reaches the server.
+//! In [`Mode::Enforce`] (the default) a denied request is answered with a
+//! JSON-RPC error and never reaches the server. In [`Mode::Observe`] the same
+//! verdict is reported and the traffic still flows, byte-verbatim.
 //!
 //! # Why `tools/list` matters
 //!
@@ -42,13 +42,18 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 /// What the proxy does when the gate denies.
+///
+/// [`Mode::Enforce`] is the default (#2429): a security control that reports
+/// and forwards anyway is not a control, and "wrapping a server never
+/// surprises you" is the wrong default for the one component whose job is
+/// to stop exfiltration. Observation is an explicit opt-out (`--observe`)
+/// for assessment runs where the operator wants the report without the block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    /// Report and forward anyway. The default, so wrapping a server can never
-    /// break a working session by surprise.
-    #[default]
+    /// Report and forward anyway. Opt-in, for assessment.
     Observe,
-    /// Answer the agent with a JSON-RPC error and do not forward.
+    /// Answer the agent with a JSON-RPC error and do not forward. The default.
+    #[default]
     Enforce,
 }
 
@@ -246,8 +251,8 @@ pub enum Upstream {
 ///
 /// Returns [`Upstream::Refuse`] only in [`Mode::Enforce`]; in [`Mode::Observe`]
 /// the same input produces the same findings and side effects but always
-/// forwards. That difference is the whole of what `--enforce` buys, so it is
-/// asserted directly in the tests rather than inferred.
+/// forwards. That difference is the whole of what `--observe` gives up, so it
+/// is asserted directly in the tests rather than inferred.
 pub fn decide_upstream(
     line: &str,
     mode: Mode,
@@ -751,7 +756,7 @@ mod tests {
                 &pending
             ),
             Upstream::Forward,
-            "a pinned, unmutated tool must still be callable under --enforce"
+            "a pinned, unmutated tool must still be callable in enforce mode"
         );
     }
 
@@ -877,10 +882,11 @@ mod tests {
     }
 
     #[test]
-    fn observe_is_the_default_mode() {
-        // Wrapping a server must never start blocking by surprise.
-        assert_eq!(Mode::default(), Mode::Observe);
-        assert!(!Mode::default().enforces());
-        assert!(Mode::Enforce.enforces());
+    fn enforce_is_the_default_mode() {
+        // #2429: a control that forwards denied traffic by default is not a
+        // control. Observation is the explicit opt-out, never the default.
+        assert_eq!(Mode::default(), Mode::Enforce);
+        assert!(Mode::default().enforces());
+        assert!(!Mode::Observe.enforces());
     }
 }

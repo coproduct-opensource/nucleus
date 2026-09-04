@@ -29,10 +29,10 @@
 //! same proven gate that handles web content.
 //!
 //! ## Two modes
-//! - [`proxy::Mode::Observe`] (default) — report and forward anyway, so wrapping
-//!   a server never starts refusing traffic by surprise.
-//! - [`proxy::Mode::Enforce`] — answer the agent with a JSON-RPC error and never
-//!   forward the call.
+//! - [`proxy::Mode::Enforce`] (default, #2429) — answer the agent with a JSON-RPC
+//!   error and never forward the call.
+//! - [`proxy::Mode::Observe`] (`--observe`) — report and forward anyway, for
+//!   assessment runs where the operator wants the report without the block.
 //!
 //! Both ship here. Enforcement being merely *described* while the code only
 //! `eprintln!`d is precisely the kind of control that reads as protection and
