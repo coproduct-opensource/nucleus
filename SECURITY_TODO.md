@@ -322,7 +322,7 @@ Deficiency
 TODO
 - [x] Option (b) chosen: migrate trust-path verifies to `ed25519-dalek::verify_strict`, signing stays on `ring`.
   - [x] `token_sign.rs`, `receipt_sign.rs` — migrated (earlier).
-  - [x] `certificate.rs` (authority / per-block / proof-of-possession, the highest-concern in-band `next_key` site) — migrated in the certificate-convergence PR 1; `verify_ed25519_strict` is the single verify helper, pinned by `certificate_convergence_tests::small_order_root_key_forgery_rejected`, which asserts (non-vacuously) that `ring` still accepts the identity triple and `verify_certificate` now refuses it.
+  - [x] `certificate.rs` (authority / per-block / proof-of-possession, the highest-concern in-band `next_key` site) — migrated in the certificate-convergence PR 1; `verify_ed25519_strict` is the single verify helper, pinned by `certificate_convergence_test::small_order_root_key_forgery_rejected`, which asserts (non-vacuously) that `ring` still accepts the identity triple and `verify_certificate` now refuses it.
   - [ ] `manifest_registry.rs:98/139` — still `ring`.
   - [ ] Extend `scripts/check-verify-strict.sh` to cover the migrated ring paths.
 - `nucleus-identity::approval_bundle.rs:425` is **ECDSA P-256** (`ECDSA_P256_SHA256_FIXED`), not Ed25519; the small-order Ed25519 concern does not apply there. Listed in error by the original sweep.
