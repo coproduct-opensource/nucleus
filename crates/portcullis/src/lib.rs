@@ -103,6 +103,8 @@ pub mod certificate;
 mod certificate_convergence_test;
 mod command;
 pub mod constraint;
+// Uses `CapabilityLattice::extensions`, which is compiled out under Kani.
+#[cfg(not(kani))]
 pub mod tool_surface;
 pub mod trace_monitor;
 pub mod uninhabitable_state;
