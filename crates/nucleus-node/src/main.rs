@@ -57,6 +57,7 @@ mod broker_perform;
 mod broker_rollout;
 mod broker_transport;
 mod cgroup;
+mod container_transport;
 mod cred_split;
 mod driver;
 mod envelope_frame;
@@ -197,6 +198,9 @@ struct Args {
     /// Network mode for containers ("none", "bridge", or a custom network name).
     #[arg(long, env = "NUCLEUS_CONTAINER_NETWORK", default_value = "none")]
     container_network: String,
+    /// Reach container pods' proxies over a peer-verified Unix socket, no shared secret (#2446). Opt-in.
+    #[arg(long, env = "NUCLEUS_CONTAINER_PROXY_UNIX", default_value_t = false)]
+    container_proxy_unix: bool,
     /// Max concurrent container pods (0 = unlimited).
     #[arg(long, env = "NUCLEUS_CONTAINER_MAX_PODS", default_value_t = 10)]
     container_max_pods: usize,
@@ -396,6 +400,7 @@ struct NodeState {
     container_image: String,
     /// Default network mode for containers.
     container_network: String,
+    container_proxy_unix: bool,
     /// Semaphore limiting concurrent container pods.
     container_pool: Option<Arc<Semaphore>>,
     /// Docker client (initialized at startup when container driver is active).
@@ -782,6 +787,7 @@ async fn main() -> Result<(), ApiError> {
             .with_operator_identity(authority.root_minter()),
         container_image: args.container_image.clone(),
         container_network: args.container_network.clone(),
+        container_proxy_unix: args.container_proxy_unix,
         container_pool,
         docker,
         trust_gate: trust_gate::TrustGateConfig::from_env(&args.state_dir),
@@ -1810,10 +1816,7 @@ async fn spawn_container_pod(
     let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
 
     if proxy_mode {
-        env.push(format!(
-            "NUCLEUS_TOOL_PROXY_AUTH_SECRET={}",
-            state.proxy_auth_secret
-        ));
+        env.extend(container_transport::proxy_env(state));
         env.push(format!(
             "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
             state.proxy_approval_secret
@@ -2027,11 +2030,9 @@ async fn spawn_container_pod(
             wait_for_container_announce(&announce_path, docker.as_ref(), &container_id).await;
 
         if let Some(ref addr) = proxy_addr {
-            let target_addr: SocketAddr = addr
-                .parse()
-                .map_err(|e| ApiError::Driver(format!("invalid tool proxy address {addr}: {e}")))?;
+            let target = container_transport::target(state, &pod_dir_abs, addr)?;
             let proxy = signed_proxy::SignedProxy::start_with_drand(
-                target_addr,
+                target,
                 Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
                 // Env-provisioned container: shared-secret approvals.
                 Some(signed_proxy::ApprovalSigning::Hmac(Arc::new(
