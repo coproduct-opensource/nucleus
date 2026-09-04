@@ -251,6 +251,11 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
     // The agent CLI's session env var (intrinsic interop: `CLAUDECODE`) must be
     // removed to allow launching the agent CLI from within an existing agent
     // session (e.g. testing nucleus shell from inside one).
+    // Runtime complete mediation (see `crate::mediation`): the PreToolUse
+    // hook denies every tool that is not an allowed nucleus MCP tool, so the
+    // static denylist above is defence in depth rather than the boundary.
+    let settings_path = crate::mediation::write_hook_settings(&tmp_dir)?;
+
     let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
     cmd.arg("--mcp-config")
         .arg(&mcp_config_path)
@@ -258,6 +263,9 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         .arg(allowed_tools.join(","))
         .arg("--disallowedTools")
         .arg(crate::constants::DISALLOWED_BUILTIN_TOOLS)
+        .arg("--settings")
+        .arg(&settings_path)
+        .env(crate::mediation::ALLOWED_TOOLS_ENV, allowed_tools.join(","))
         .env_remove("CLAUDECODE")
         .current_dir(&work_dir);
 

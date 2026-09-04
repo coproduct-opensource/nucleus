@@ -10,10 +10,13 @@
 ///
 /// COMPLETE-MEDIATION INVARIANT: every code path that launches the assistant
 /// with `--dangerously-skip-permissions` / `bypassPermissions` (`run`, `shell`)
-/// MUST also pass this list. Omitting it lets the built-in Bash/Write/WebFetch/
-/// etc. run OUTSIDE the kernel — an in-band path that skips the monitor. The
-/// two launch sites referencing this constant keep the boundary identical by
-/// construction; do not inline the list.
+/// MUST also pass this list AND install the runtime allowlist hook
+/// (`crate::mediation`). This list is defence in depth: it cannot be complete
+/// (a built-in tool added or renamed after it was written is not on it), so
+/// the BOUNDARY is the `PreToolUse` hook, which denies every tool that is not
+/// an explicitly granted nucleus MCP tool. Omitting either lets a built-in
+/// run OUTSIDE the kernel — an in-band path that skips the monitor. The two
+/// launch sites keep the boundary identical by construction; do not inline.
 pub const DISALLOWED_BUILTIN_TOOLS: &str =
     "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Agent";
 
