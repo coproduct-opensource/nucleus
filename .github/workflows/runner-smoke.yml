@@ -1,10 +1,15 @@
 name: Self-hosted runner smoke
 
-# A manual probe of the `nucleus-k3s` runner scale set (k8s/ci-runner/):
-# architecture, cores, the persistent toolchains, and a timed build with the
-# sccache store cold and then warm. Never runs on a PR; never required.
+# A probe of the `nucleus-k3s` runner scale set (k8s/ci-runner/): architecture,
+# cores, the persistent toolchains, and a timed build against the sccache store.
+# Runs when the runner setup itself changes, and on demand. Never required.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "k8s/ci-runner/**"
+      - "docker/Dockerfile.runner"
+      - ".github/workflows/runner-smoke.yml"
 
 permissions:
   contents: read
