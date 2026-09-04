@@ -826,10 +826,12 @@ where
 /// `spiffe://{trust_domain}/ns/pods/sa/{pod_id}`
 #[allow(dead_code)]
 async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> String {
-    // Create a unique identity for this specific pod
-    // The identity is based on the pod's UUID, ensuring isolation between pods
-    let identity =
-        nucleus_identity::Identity::new(manager.trust_domain(), "pods", pod_id.to_string());
+    // THE pod identity — the same function the spawn path registers and caches
+    // the attested certificate under. These used to be two spellings: this
+    // served `ns/pods/sa/<uuid>` while the spawn path registered the
+    // spec-derived `ns/<namespace>/sa/<name>`, so the attested-certificate
+    // cache always missed and every guest got a plain SVID.
+    let identity = manager.pod_identity(pod_id);
 
     // Fetch the certificate with the actual certificate data
     match manager.fetch_certificate(&identity).await {

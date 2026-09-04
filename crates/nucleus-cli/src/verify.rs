@@ -475,11 +475,21 @@ fn proxy_post(pod: &Pod, route: &str, body: serde_json::Value) -> Result<(u16, S
 /// The guest proved its own identity to its own tool-proxy.
 ///
 /// This is the strongest single assertion available, and it is machine-readable:
-/// the proxy reports which sandbox-proof tier it established. Tier 2 is
-/// `spiffe-identity`, which the guest can only reach by fetching an SVID from
-/// the host over vsock. Tier 3 is the kernel-cmdline token — a pod that fell
-/// back to it has NOT exercised the identity path, and reporting that as success
-/// is exactly the kind of silent downgrade this command exists to catch.
+/// the proxy reports which sandbox-proof tier it established. Tier 1 is
+/// `attested` — an SVID carrying the launch-attestation extension — and tier 2
+/// is `spiffe-identity`, a plain SVID; the guest can reach either only by
+/// fetching an SVID from the host over vsock. Tier 3 is the kernel-cmdline
+/// token — a pod that fell back to it has NOT exercised the identity path, and
+/// reporting that as success is exactly the kind of silent downgrade this
+/// command exists to catch.
+///
+/// This used to require exactly tier 2. A Firecracker pod only ever reached
+/// tier 2 because the served SVID (`ns/pods/sa/<uuid>`) and the identity the
+/// node cached the ATTESTED certificate under (spec-derived
+/// `ns/<namespace>/sa/<name>`) were different identities, so the cache missed
+/// and every guest got a plain SVID. With the pod identity node-assigned they
+/// agree, the guest receives the attested SVID, and tier 1 is the honest —
+/// stronger — result.
 fn check_sandbox_proof(pod: &Pod) -> Result<()> {
     let mut response = plain_agent()
         .get(format!("{}/v1/health", pod.proxy))
@@ -495,17 +505,15 @@ fn check_sandbox_proof(pod: &Pod) -> Result<()> {
         .ok_or_else(|| anyhow!("the tool-proxy reported no sandbox proof at all: {body}"))?;
     let tier = proof.get("tier").and_then(|t| t.as_u64());
     let label = proof.get("label").and_then(|l| l.as_str()).unwrap_or("");
-    if tier != Some(2) {
+    let Some(tier @ (1 | 2)) = tier else {
         bail!(
             "the guest did not establish a SPIFFE identity: sandbox proof is \
-             tier {tier:?} ({label:?}), expected tier 2 (spiffe-identity). \
-             A lower tier means the identity path silently fell back."
+             tier {tier:?} ({label:?}), expected tier 1 (attested) or 2 \
+             (spiffe-identity). A higher tier means the identity path silently \
+             fell back."
         );
-    }
-    println!(
-        "  [OK] guest proved itself to its proxy: tier {} ({label})",
-        2
-    );
+    };
+    println!("  [OK] guest proved itself to its proxy: tier {tier} ({label})");
     Ok(())
 }
 

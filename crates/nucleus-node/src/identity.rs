@@ -694,6 +694,24 @@ mod tests {
         assert_eq!(restored, m.pod_identity(pod_id));
     }
 
+    /// The identity the spawn path registers (and caches the ATTESTED
+    /// certificate under) must be the identity `FETCH_SVID` serves, or the
+    /// cache misses and the guest gets a plain SVID. Both call `pod_identity`
+    /// now; this pins the shape so a spec-derived spelling cannot creep back.
+    #[test]
+    fn the_served_svid_identity_is_the_registered_pod_identity() {
+        let m = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
+        let id = uuid::Uuid::new_v4();
+        assert_eq!(
+            m.pod_identity(id),
+            Identity::new("nucleus.local", "pods", id.to_string())
+        );
+        assert_eq!(
+            m.pod_identity(id).to_spiffe_uri(),
+            format!("spiffe://nucleus.local/ns/pods/sa/{id}")
+        );
+    }
+
     /// A pod directory not named by a UUID is not a pod this node launched,
     /// even if someone dropped a `pod.yaml` in it.
     #[tokio::test]
