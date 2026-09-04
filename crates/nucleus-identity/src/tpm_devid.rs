@@ -296,21 +296,21 @@ pub fn verify_residency(
         Claim::ContinuousLiveness,
         Claim::UnmodifiedArtifact,
     ]);
-    Ok(VerifiedAttestation {
-        backend: "tpm-devid-residency",
-        assurance: AssuranceLevel::L1Software,
-        subject: AttestedSubject::TpmResidentKey {
+    Ok(VerifiedAttestation::new(
+        "tpm-devid-residency",
+        AssuranceLevel::L1Software,
+        AttestedSubject::TpmResidentKey {
             ak_name_sha256: sha256_32(&ak_name),
             subject_name_sha256: sha256_32(&subject_name),
         },
         // A TPM Name is a hash over the TPM public area, not the bare Ed25519
         // public key a receipt signer presents, so this residency proof cannot
         // bind a receipt signer directly (that binding is a later brick).
-        subject_key_sha256: None,
+        None,
         proves,
         not_proven,
-        launch: None,
-    })
+        None,
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -715,7 +715,7 @@ pub fn compose_l2(
     ek: &EkIdentity,
     binding: &AkEkBound,
 ) -> Result<VerifiedAttestation> {
-    let ak_name_sha256 = match &residency.subject {
+    let ak_name_sha256 = match residency.subject() {
         AttestedSubject::TpmResidentKey { ak_name_sha256, .. } => *ak_name_sha256,
         _ => return Err(vfail("residency attestation is not a TPM resident key")),
     };
@@ -747,17 +747,17 @@ pub fn compose_l2(
         Claim::ContinuousLiveness,
         Claim::UnmodifiedArtifact,
     ]);
-    Ok(VerifiedAttestation {
-        backend: "tpm-devid-l2",
-        assurance: AssuranceLevel::L2Device,
-        subject: residency.subject.clone(),
+    Ok(VerifiedAttestation::new(
+        "tpm-devid-l2",
+        AssuranceLevel::L2Device,
+        residency.subject().clone(),
         // Inherits residency's key-binding: still a TPM Name, not a bare
         // Ed25519 receipt-signer key.
-        subject_key_sha256: residency.subject_key_sha256,
+        residency.subject_key_sha256(),
         proves,
         not_proven,
-        launch: None,
-    })
+        None,
+    ))
 }
 
 #[cfg(test)]
@@ -767,18 +767,18 @@ mod l2_composition_tests {
     use std::collections::BTreeSet;
 
     fn residency(ak: [u8; 32]) -> VerifiedAttestation {
-        VerifiedAttestation {
-            backend: "tpm-devid-residency",
-            assurance: AssuranceLevel::L1Software,
-            subject: AttestedSubject::TpmResidentKey {
+        VerifiedAttestation::new(
+            "tpm-devid-residency",
+            AssuranceLevel::L1Software,
+            AttestedSubject::TpmResidentKey {
                 ak_name_sha256: ak,
                 subject_name_sha256: [0u8; 32],
             },
-            subject_key_sha256: None,
-            proves: BTreeSet::from([Claim::KeyNonExportable]),
-            not_proven: BTreeSet::from([Claim::HardwareRootedKey, Claim::StableDeviceIdentity]),
-            launch: None,
-        }
+            None,
+            BTreeSet::from([Claim::KeyNonExportable]),
+            BTreeSet::from([Claim::HardwareRootedKey, Claim::StableDeviceIdentity]),
+            None,
+        )
     }
     fn ek() -> EkIdentity {
         EkIdentity {
@@ -808,7 +808,7 @@ mod l2_composition_tests {
             assert!(va.proves(c), "must prove {c:?}");
         }
         assert!(va.cannot_prove(Claim::MeasuredBoot), "MeasuredBoot is L3");
-        assert!(va.proves.is_disjoint(&va.not_proven));
+        assert!(va.proven_claims().is_disjoint(va.unproven_claims()));
     }
 
     /// **Coherence bite — wrong AK.** A binding for a different AK than the
@@ -839,8 +839,21 @@ mod l2_composition_tests {
     #[test]
     fn residency_without_nonexportable_is_refused() {
         let ak = [7u8; 32];
-        let mut r = residency(ak);
-        r.proves = BTreeSet::new(); // strip KeyNonExportable
+        // Same shape as `residency(ak)`, but with `proves` stripped of
+        // KeyNonExportable — private fields mean this must be built fresh
+        // rather than mutated post-construction.
+        let r = VerifiedAttestation::new(
+            "tpm-devid-residency",
+            AssuranceLevel::L1Software,
+            AttestedSubject::TpmResidentKey {
+                ak_name_sha256: ak,
+                subject_name_sha256: [0u8; 32],
+            },
+            None,
+            BTreeSet::new(),
+            BTreeSet::from([Claim::HardwareRootedKey, Claim::StableDeviceIdentity]),
+            None,
+        );
         let e = ek();
         let b = AkEkBound {
             ak_name_sha256: ak,
@@ -1358,7 +1371,7 @@ pub fn effective_assurance_with_roots(
         ek_spki_sha256: hw.ek_spki_sha256,
     };
     let l2 = compose_l2(&residency, &ek, &binding)?;
-    Ok(base_level.max(l2.assurance))
+    Ok(base_level.max(l2.assurance()))
 }
 
 fn effective_assurance_residency_only(
@@ -1374,7 +1387,7 @@ fn effective_assurance_residency_only(
     // attestation instead of residency, so *absence* is not itself a failure —
     // but a present-yet-invalid proof still errs (verify_leaf_der is fail-closed).
     match TpmDevidBackend::verify_leaf_der(cert_der, false)? {
-        Some(va) => Ok(base.max(va.assurance)),
+        Some(va) => Ok(base.max(va.assurance())),
         None => Ok(base),
     }
 }
@@ -1420,8 +1433,11 @@ mod tests {
         // The residency proof must NOT be read as hardware rooting.
         assert!(va.cannot_prove(Claim::HardwareRootedKey));
         assert!(va.cannot_prove(Claim::StableDeviceIdentity));
-        assert!(va.proves.is_disjoint(&va.not_proven));
-        assert!(matches!(va.subject, AttestedSubject::TpmResidentKey { .. }));
+        assert!(va.proven_claims().is_disjoint(va.unproven_claims()));
+        assert!(matches!(
+            va.subject(),
+            AttestedSubject::TpmResidentKey { .. }
+        ));
     }
 
     /// RED (revert detector for fixedParent) — clearing the subject's fixedParent
@@ -1665,7 +1681,10 @@ mod tests {
             .expect("attested");
         assert!(va.proves(Claim::KeyNonExportable));
         assert!(va.cannot_prove(Claim::HardwareRootedKey));
-        assert!(matches!(va.subject, AttestedSubject::TpmResidentKey { .. }));
+        assert!(matches!(
+            va.subject(),
+            AttestedSubject::TpmResidentKey { .. }
+        ));
     }
 
     /// RED (anti-replay) — the SAME valid residency proof embedded in a cert whose
