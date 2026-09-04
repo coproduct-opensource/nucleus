@@ -166,7 +166,8 @@ jobs:
             echo "ERROR: no '#print axioms' output in $log; nothing was audited"; exit 1; }
           echo "=== #print axioms output ==="
           grep -E "depends on axioms|does not depend on any axioms" "$log"
-          if grep -E "depends on axioms" "$log" | grep -qE "sorryAx|External|\.fold"; then
+          # Inspect the AXIOM LIST only: theorem names (foldAttenuates_…) must not trip the fold check.
+          if grep -E "depends on axioms" "$log" | sed 's/.*depends on axioms: //' | grep -qE "sorryAx|External|fold"; then
             echo "ERROR: the monotonicity theorem depends on sorryAx or an opaque Aeneas axiom"; exit 1
           fi
           echo "clean: only propext / Quot.sound / Classical.choice, as disclosed in the file header."
