@@ -162,11 +162,17 @@ These are important security properties that have NO formal verification:
 | I/O confinement | Kani BMC | Never→Deny, delegation narrowing | Bounded | 2 harnesses | Every PR |
 | Permission algebra | Kani BMC | Distributivity, monotonicity, monoid | Bounded | ~45 harnesses | PR (fast) + nightly |
 
+<<<<<<< HEAD
 **Total: 115 Kani BMC harnesses repo-wide** (portcullis 66, portcullis-core 25,
 ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1; recount with
 `scripts/formal-numbers.sh --print` — a bare `grep -rc` says 117 because it also
 counts a doc comment in ck-kernel and the string inside nucleus-audit's own
 counter; CI runs the script and fails on drift) **+ ~277 kernel-checked
+=======
+**Total: 119 Kani BMC harnesses repo-wide** (portcullis 68, portcullis-core 25,
+ck-kernel 18, nucleus-ifc-kernel 6, nucleus-econ-kernels 1, nucleus-audit 1;
+recount with `grep -rc '#\[kani::proof\]' crates`) **+ ~277 kernel-checked
+>>>>>>> f5eec739 (formal(portcullis): Kani harnesses that actually drive verify_certificate and mint_child's lattice half (#2476, #2477))
 Lean 4 theorems** in the security core. The Lean *security* core is `sorry`-free;
 the exploratory alignment-tax / cohomology / braid formalizations are
 research-tier and **not discharged** (23 open `sorry` proof holes across 10

@@ -73,7 +73,11 @@ jobs:
           # "latest", which silently changes what Kani checks) and to make the
           # toolchain cache key above stable. Bump both together.
           kani-version: "0.67.0"
+          # -Z stubbing: the certificate harnesses (C3-C5, #2476/#2477) stub the
+          # Ed25519 and SHA-256 points so the chain walk is the subject; the
+          # attribute macro refuses to compile without the feature enabled.
           args: >-
+            -Z stubbing
             -p portcullis
             --solver cadical
             --harness proof_capability_distributive
@@ -83,7 +87,7 @@ jobs:
             --harness proof_clinejection_blocked
       - name: Proof count regression gate
         run: |
-          PORTCULLIS=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
+          PORTCULLIS=$(cat crates/portcullis/src/kani.rs crates/portcullis/src/kani/*.rs | grep -c '#\[kani::proof\]')
           CK_KERNEL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
           CORE=$(grep -rc '#\[kani::proof\]' crates/portcullis-core/src/ || echo 0)
           PROOF_COUNT=$((PORTCULLIS + CK_KERNEL + CORE))
@@ -96,7 +100,7 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          PORTCULLIS=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
+          PORTCULLIS=$(cat crates/portcullis/src/kani.rs crates/portcullis/src/kani/*.rs | grep -c '#\[kani::proof\]')
           CK_KERNEL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
           CORE=$(grep -rc '#\[kani::proof\]' crates/portcullis-core/src/ || echo 0)
           PROOF_COUNT=$((PORTCULLIS + CK_KERNEL + CORE))
@@ -293,10 +297,10 @@ jobs:
           # "latest", which silently changes what Kani checks) and to make the
           # toolchain cache key above stable. Bump both together.
           kani-version: "0.67.0"
-          args: "-p portcullis --solver cadical"
+          args: "-Z stubbing -p portcullis --solver cadical"
       - name: Proof count regression gate
         run: |
-          PORTCULLIS=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
+          PORTCULLIS=$(cat crates/portcullis/src/kani.rs crates/portcullis/src/kani/*.rs | grep -c '#\[kani::proof\]')
           CK_KERNEL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
           CORE=$(grep -rc '#\[kani::proof\]' crates/portcullis-core/src/ || echo 0)
           PROOF_COUNT=$((PORTCULLIS + CK_KERNEL + CORE))
@@ -309,7 +313,7 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          PORTCULLIS=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
+          PORTCULLIS=$(cat crates/portcullis/src/kani.rs crates/portcullis/src/kani/*.rs | grep -c '#\[kani::proof\]')
           CK_KERNEL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
           CORE=$(grep -rc '#\[kani::proof\]' crates/portcullis-core/src/ || echo 0)
           PROOF_COUNT=$((PORTCULLIS + CK_KERNEL + CORE))
