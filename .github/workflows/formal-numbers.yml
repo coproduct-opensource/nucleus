@@ -1,0 +1,42 @@
+name: Formal-methods numbers match the tree
+
+# #2478: the Kani-harness and sorry-hole counts the docs publish had drifted
+# from the tree in four places. This recounts both with the same rules the
+# docs cite (scripts/formal-numbers.sh) and fails on any mismatch. No
+# toolchain: bash + awk + grep.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "FORMAL_METHODS.md"
+      - "NORTH_STAR.md"
+      - "crates/portcullis-core/lean/CONJECTURES.md"
+      - "crates/**/*.lean"
+      - "crates/**/*.rs"
+      - "scripts/formal-numbers.sh"
+      - ".github/workflows/formal-numbers.yml"
+  pull_request:
+    paths:
+      - "FORMAL_METHODS.md"
+      - "NORTH_STAR.md"
+      - "crates/portcullis-core/lean/CONJECTURES.md"
+      - "crates/**/*.lean"
+      - "crates/**/*.rs"
+      - "scripts/formal-numbers.sh"
+      - ".github/workflows/formal-numbers.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  formal-numbers:
+    name: Formal-methods numbers match the tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Recount and compare
+        run: bash scripts/formal-numbers.sh

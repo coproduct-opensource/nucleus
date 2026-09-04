@@ -162,9 +162,11 @@ These are important security properties that have NO formal verification:
 | I/O confinement | Kani BMC | Never→Deny, delegation narrowing | Bounded | 2 harnesses | Every PR |
 | Permission algebra | Kani BMC | Distributivity, monotonicity, monoid | Bounded | ~45 harnesses | PR (fast) + nightly |
 
-**Total: 117 Kani BMC harnesses repo-wide** (portcullis 66, portcullis-core 25,
-ck-kernel 18, nucleus-ifc-kernel 6, nucleus-econ-kernels 1, nucleus-audit 1;
-recount with `grep -rc '#\[kani::proof\]' crates`) **+ ~277 kernel-checked
+**Total: 115 Kani BMC harnesses repo-wide** (portcullis 66, portcullis-core 25,
+ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1; recount with
+`scripts/formal-numbers.sh --print` — a bare `grep -rc` says 117 because it also
+counts a doc comment in ck-kernel and the string inside nucleus-audit's own
+counter; CI runs the script and fails on drift) **+ ~277 kernel-checked
 Lean 4 theorems** in the security core. The Lean *security* core is `sorry`-free;
 the exploratory alignment-tax / cohomology / braid formalizations are
 research-tier and **not discharged** (23 open `sorry` proof holes across 10
@@ -265,7 +267,9 @@ cargo kani -p portcullis --solver cadical
 #   crates/portcullis-core/lean/CONJECTURES.md (Tier 2) has a hole.
 # A bare grep is NOT a hole check — it also matches "no sorry" doc comments:
 grep -rn 'sorry' crates/portcullis-core/lean/ --include='*.lean' | wc -l
-# ~100 raw occurrences; only 40 are actual proof terms, all in the 11 research files.
+# ~100 raw occurrences; only 23 are actual proof terms, all in the 10 research
+# files listed in CONJECTURES.md — `scripts/formal-numbers.sh --print` is the
+# comment-aware count (the same awk the CI gate runs).
 
 # Assurance report
 cargo run -p nucleus-audit -- assurance --project-dir .
@@ -288,7 +292,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 
 | Component | Maturity | Evidence |
 |-----------|----------|----------|
-| **Permission lattice** (portcullis) | Verified | ~165K LOC, 64 Kani BMC proofs in the `portcullis` crate (114 repo-wide), Lean 4 lattice/IFC proofs, proptest conformance suite. (Verus removed — see note below.) |
+| **Permission lattice** (portcullis) | Verified | ~165K LOC, 66 Kani BMC proofs in the `portcullis` crate (115 repo-wide), Lean 4 lattice/IFC proofs, proptest conformance suite. (Verus removed — see note below.) |
 | **Uninhabitable state detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
 | **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
 | **Delegation chains** | Verified | Monotone attenuation with `meet_with_justification`, Lean proofs for delegation narrowing |
@@ -325,7 +329,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 | Tool | Type | Count | What It Proves |
 |------|------|-------|----------------|
 | **Lean 4 + Mathlib** | Unbounded, kernel-checked | ~277 theorems (security core; `sorry`-free, CI-gated) | HeytingAlgebra, IFC flow rules, compartment safety, delegation narrowing, DerivationClass lattice |
-| **Kani** | Bounded model checking | 114 harnesses repo-wide (portcullis 64, portcullis-core 31, ck-kernel 17, +2) | DecisionToken linearity, lattice distributivity, exposure monoid, constitutional kernel invariants |
+| **Kani** | Bounded model checking | 115 harnesses repo-wide (portcullis 66, portcullis-core 25, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1) | DecisionToken linearity, lattice distributivity, exposure monoid, constitutional kernel invariants |
 | **Proptest** | Property-based testing | ~47 suites incl. `verus_conformance.rs` | Full PermissionLattice composition (the surviving "Verus" artifact — property tests, not SMT) |
 | **Red team** | Adversarial testing | 162 scenarios | OWASP LLM Top 10, DPI flow attacks, delegation chain attacks |
 
