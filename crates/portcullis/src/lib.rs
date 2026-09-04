@@ -103,6 +103,7 @@ pub mod certificate;
 mod certificate_convergence_test;
 mod command;
 pub mod constraint;
+pub mod tool_surface;
 pub mod trace_monitor;
 pub mod uninhabitable_state;
 
