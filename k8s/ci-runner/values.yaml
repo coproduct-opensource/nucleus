@@ -13,11 +13,13 @@ githubConfigUrl: https://github.com/coproduct-opensource/nucleus
 githubConfigSecret: gh-token
 runnerScaleSetName: nucleus-k3s
 
-# Scale-to-zero; three at most. The node has 8 vCPU / 16 GiB and a cargo build
-# uses every core it is given, so more runners than this thrash rather than
-# parallelise.
+# Scale-to-zero; two at most. The node has 8 vCPU / 16 GiB. Each runner is
+# held to 4 cargo jobs (CARGO_BUILD_JOBS below) and an 8 GiB memory limit: the
+# first smoke run let cargo use all 8 cores under a 6 GiB limit and the memory
+# cgroup OOM-killed the linker mid-build. Two runners x 4 jobs saturates the
+# CPU; two x 8 GiB fits the node with the runner's own overhead.
 minRunners: 0
-maxRunners: 3
+maxRunners: 2
 
 template:
   spec:
@@ -38,6 +40,10 @@ template:
             value: 30G
           - name: CARGO_INCREMENTAL
             value: "0"
+          # Half the node's cores per runner: memory scales with parallel
+          # rustc/ld processes, and the limit below is sized for four.
+          - name: CARGO_BUILD_JOBS
+            value: "4"
           # Where dtolnay/rust-toolchain and elan-init install to; both are
           # persistent mounts, so a warm pod starts with the toolchains present.
           - name: RUSTUP_HOME
@@ -48,10 +54,10 @@ template:
             value: /home/runner/.elan
         resources:
           requests:
-            cpu: "2"
-            memory: 3Gi
+            cpu: "3"
+            memory: 4Gi
           limits:
-            memory: 6Gi
+            memory: 8Gi
         volumeMounts:
           - name: rustup
             mountPath: /home/runner/.rustup
