@@ -71,7 +71,7 @@
 //! // Recipient verifies and creates kernel
 //! let restored = AttenuationToken::from_bytes(&wire_bytes).unwrap();
 //! let verified = restored.verify(Utc::now(), 10).unwrap();
-//! assert_eq!(verified.chain_depth, 1);
+//! assert_eq!(verified.chain_depth(), 1);
 //! ```
 
 // chrono is only consumed by the crypto-gated verify path (and unit
@@ -363,9 +363,9 @@ mod tests {
         let token = AttenuationToken::seal(cert, root_pub);
         let verified = token.verify(Utc::now(), 10).unwrap();
 
-        assert_eq!(verified.chain_depth, 1);
-        assert_eq!(verified.root_identity, "spiffe://test/human/alice");
-        assert_eq!(verified.leaf_identity, "spiffe://test/agent/coder-042");
+        assert_eq!(verified.chain_depth(), 1);
+        assert_eq!(verified.root_identity(), "spiffe://test/human/alice");
+        assert_eq!(verified.leaf_identity(), "spiffe://test/agent/coder-042");
     }
 
     #[test]
@@ -438,8 +438,8 @@ mod tests {
         let restored = AttenuationToken::from_bytes(&bytes).unwrap();
 
         let verified = restored.verify(Utc::now(), 10).unwrap();
-        assert_eq!(verified.chain_depth, 1);
-        assert_eq!(verified.root_identity, "spiffe://test/human/alice");
+        assert_eq!(verified.chain_depth(), 1);
+        assert_eq!(verified.root_identity(), "spiffe://test/human/alice");
     }
 
     #[cfg(feature = "serde")]
@@ -453,7 +453,7 @@ mod tests {
         let restored = AttenuationToken::from_base64(&encoded).unwrap();
 
         let verified = restored.verify(Utc::now(), 10).unwrap();
-        assert_eq!(verified.chain_depth, 1);
+        assert_eq!(verified.chain_depth(), 1);
     }
 
     #[test]
@@ -467,9 +467,9 @@ mod tests {
 
         let provenance = SessionProvenance {
             certificate_fingerprint: fingerprint,
-            root_identity: verified.root_identity.clone(),
-            leaf_identity: verified.leaf_identity.clone(),
-            chain_depth: verified.chain_depth,
+            root_identity: verified.root_identity().to_string(),
+            leaf_identity: verified.leaf_identity().to_string(),
+            chain_depth: verified.chain_depth(),
         };
 
         assert_eq!(provenance.root_identity, "spiffe://test/human/alice");
@@ -555,11 +555,11 @@ mod tests {
         let token = AttenuationToken::seal(cert, root_pub);
         let verified = token.verify(Utc::now(), 10).unwrap();
 
-        assert_eq!(verified.chain_depth, 3);
-        assert_eq!(verified.root_identity, "spiffe://test/human/alice");
-        assert_eq!(verified.leaf_identity, "spiffe://test/agent/test");
+        assert_eq!(verified.chain_depth(), 3);
+        assert_eq!(verified.root_identity(), "spiffe://test/human/alice");
+        assert_eq!(verified.leaf_identity(), "spiffe://test/agent/test");
 
         // Effective perms are ≤ root (monotone attenuation)
-        assert!(verified.effective.leq(&root_perms));
+        assert!(verified.effective().leq(&root_perms));
     }
 }

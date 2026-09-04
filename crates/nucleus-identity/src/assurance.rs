@@ -123,14 +123,43 @@ pub enum AttestedSubject {
 ///
 /// `not_proven` is carried deliberately: it is what makes over-reading unsayable
 /// rather than merely undocumented.
+///
+/// Sealed (#2450): fields are private. The production constructor
+/// ([`Self::new`]) is `pub(crate)` — callable from anywhere in this crate
+/// (this module's own backends, and [`crate::tpm_devid`]'s residency/L2
+/// composition), but no struct literal compiles outside it, even within this
+/// crate. A second constructor, [`Self::for_test`], is gated behind
+/// `#[cfg(any(test, feature = "test-helpers"))]`: it exists so that A
+/// DIFFERENT crate's tests (`nucleus-tool-proxy`, which unit-tests
+/// `verify_attested_receipt` against controlled field combinations) can build
+/// a synthetic attestation without standing up a real SVID chain, while
+/// staying unreachable from any normal build — a crate must opt into
+/// `test-helpers` in its `[dev-dependencies]` to reach it at all.
+///
+/// ```compile_fail
+/// // This code does NOT compile — the fields are private and both
+/// // constructors are inaccessible here (`new` is `pub(crate)`; `for_test`
+/// // needs `test-helpers`, which this doctest does not enable).
+/// use nucleus_identity::assurance::{AssuranceLevel, AttestedSubject, VerifiedAttestation};
+/// use std::collections::BTreeSet;
+/// let forged = VerifiedAttestation {
+///     backend: "self-measured",
+///     assurance: AssuranceLevel::L3MeasuredBoot,
+///     subject: AttestedSubject::SelfMeasuredNode,
+///     subject_key_sha256: None,
+///     proves: BTreeSet::new(),
+///     not_proven: BTreeSet::new(),
+///     launch: None,
+/// };
+/// ```
 #[derive(Clone, Debug)]
 pub struct VerifiedAttestation {
     /// Stable backend identifier (e.g. `"self-measured"`).
-    pub backend: &'static str,
+    backend: &'static str,
     /// Normalized assurance this result carries.
-    pub assurance: AssuranceLevel,
+    assurance: AssuranceLevel,
     /// What the backend names as the attested subject.
-    pub subject: AttestedSubject,
+    subject: AttestedSubject,
     /// SHA-256 of the attested subject's **signing key** — the 32-byte Ed25519
     /// public key that this subject signs on its own behalf with — when the
     /// backend binds such a key. This is what lets a relying party close the
@@ -148,16 +177,81 @@ pub struct VerifiedAttestation {
     /// binding only when this is `Some`, and its contract requires the caller to
     /// have obtained `signer_pubkey` from the attested SVID itself when it is
     /// `None`.
-    pub subject_key_sha256: Option<[u8; 32]>,
+    subject_key_sha256: Option<[u8; 32]>,
     /// Claims the backend affirmatively established.
-    pub proves: BTreeSet<Claim>,
+    proves: BTreeSet<Claim>,
     /// Claims the backend explicitly could NOT establish.
-    pub not_proven: BTreeSet<Claim>,
+    not_proven: BTreeSet<Claim>,
     /// The launch measurement, when this backend is measurement-based.
-    pub launch: Option<LaunchAttestation>,
+    launch: Option<LaunchAttestation>,
 }
 
 impl VerifiedAttestation {
+    /// Private outside this crate — see the struct's own doc comment.
+    pub(crate) fn new(
+        backend: &'static str,
+        assurance: AssuranceLevel,
+        subject: AttestedSubject,
+        subject_key_sha256: Option<[u8; 32]>,
+        proves: BTreeSet<Claim>,
+        not_proven: BTreeSet<Claim>,
+        launch: Option<LaunchAttestation>,
+    ) -> Self {
+        Self {
+            backend,
+            assurance,
+            subject,
+            subject_key_sha256,
+            proves,
+            not_proven,
+            launch,
+        }
+    }
+
+    /// Test-only synthetic constructor — see the struct's own doc comment.
+    /// Bypasses all backend verification; never reachable from a normal build.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn for_test(
+        backend: &'static str,
+        assurance: AssuranceLevel,
+        subject: AttestedSubject,
+        subject_key_sha256: Option<[u8; 32]>,
+        proves: BTreeSet<Claim>,
+        not_proven: BTreeSet<Claim>,
+        launch: Option<LaunchAttestation>,
+    ) -> Self {
+        Self::new(
+            backend,
+            assurance,
+            subject,
+            subject_key_sha256,
+            proves,
+            not_proven,
+            launch,
+        )
+    }
+
+    /// Stable backend identifier (e.g. `"self-measured"`).
+    pub fn backend(&self) -> &'static str {
+        self.backend
+    }
+
+    /// What the backend names as the attested subject.
+    pub fn subject(&self) -> &AttestedSubject {
+        &self.subject
+    }
+
+    /// SHA-256 of the attested subject's bound signing key, when the backend
+    /// established one. See the field's own doc comment for the `None` contract.
+    pub fn subject_key_sha256(&self) -> Option<[u8; 32]> {
+        self.subject_key_sha256
+    }
+
+    /// The launch measurement, when this backend is measurement-based.
+    pub fn launch(&self) -> Option<&LaunchAttestation> {
+        self.launch.as_ref()
+    }
+
     /// True iff the backend affirmatively proved `claim`.
     pub fn proves(&self, claim: Claim) -> bool {
         self.proves.contains(&claim)
@@ -172,6 +266,20 @@ impl VerifiedAttestation {
     /// The normalized assurance level.
     pub fn assurance(&self) -> AssuranceLevel {
         self.assurance
+    }
+
+    /// The full set of claims the backend affirmatively established. Prefer
+    /// [`Self::proves`] for a single membership check; this is for whole-set
+    /// operations (e.g. disjointness with [`Self::unproven_claims`]).
+    pub fn proven_claims(&self) -> &BTreeSet<Claim> {
+        &self.proves
+    }
+
+    /// The full set of claims the backend explicitly could NOT establish. Prefer
+    /// [`Self::cannot_prove`] for a single membership check; this is for
+    /// whole-set operations.
+    pub fn unproven_claims(&self) -> &BTreeSet<Claim> {
+        &self.not_proven
     }
 }
 
@@ -255,15 +363,15 @@ impl SvidAttestationBackend for SelfMeasuredBackend {
                 let subject_key_sha256 = pem::parse(chain_pem).ok().and_then(|leaf| {
                     crate::attestation::extract_mediation_key_binding(leaf.contents())
                 });
-                Ok(Some(VerifiedAttestation {
-                    backend: self.id(),
-                    assurance: self.assurance(),
-                    subject: AttestedSubject::SelfMeasuredNode,
+                Ok(Some(VerifiedAttestation::new(
+                    self.id(),
+                    self.assurance(),
+                    AttestedSubject::SelfMeasuredNode,
                     subject_key_sha256,
                     proves,
                     not_proven,
-                    launch: Some(launch),
-                }))
+                    Some(launch),
+                )))
             }
             None => Ok(None),
         }
@@ -328,9 +436,9 @@ mod tests {
             .expect("verify ok")
             .expect("attestation present");
 
-        assert_eq!(va.backend, "self-measured");
+        assert_eq!(va.backend(), "self-measured");
         assert_eq!(va.assurance(), AssuranceLevel::L1Software);
-        assert_eq!(va.subject, AttestedSubject::SelfMeasuredNode);
+        assert_eq!(va.subject(), &AttestedSubject::SelfMeasuredNode);
         // Proves exactly the artifact match…
         assert!(va.proves(Claim::UnmodifiedArtifact));
         // …and is explicit about the hardware-root gap it CANNOT close.

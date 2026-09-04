@@ -20,6 +20,12 @@ spire = ["dep:spiffe", "dep:futures-util"]
 # The AK↔EK credential-activation binder (Inc 3 brick 2) additionally needs raw
 # AES-128-CFB (the one primitive ring does not expose); pulled in only here.
 tpm-devid = ["dep:aes", "dep:cfb-mode"]
+# Expose `VerifiedAttestation::for_test`, a synthetic constructor that bypasses
+# all backend verification (#2450 sealing). Meant only for another crate's
+# `[dev-dependencies]` (resolver v2 keeps this out of that crate's published
+# artifact) so its tests can unit-test a `VerifiedAttestation` consumer against
+# controlled field combinations without standing up a real SVID chain.
+test-helpers = []
 # Enable HTTP-based did:web resolution (requires network)
 resolver = ["dep:reqwest"]
 

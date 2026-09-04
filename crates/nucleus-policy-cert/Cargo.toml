@@ -72,3 +72,13 @@ portcullis = { path = "../portcullis", version = "1.0.0", default-features = fal
 ed25519-dalek = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }
+# Test-only: `portcullis::certificate::VerifiedPermissions` is sealed (#2450)
+# and can only be produced by `verify_certificate`, which needs `ring`
+# (portcullis's own Ed25519 primitive, distinct from this crate's own
+# `crypto` feature's `ed25519-dalek`) and `chrono` for cert timestamps. Only
+# unified into the `crypto`/`portcullis` feature combination during `cargo
+# test` (resolver v2 dev-dependency feature unification) — the published
+# leaf build is unaffected.
+ring = { workspace = true }
+chrono = { workspace = true }
+portcullis = { path = "../portcullis", features = ["crypto"] }

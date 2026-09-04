@@ -2437,12 +2437,12 @@ async fn auth_middleware(
                 };
             } else {
                 context.identity_binding = auth::IdentityBinding::DelegationVerified {
-                    leaf_identity: certified.verified.leaf_identity.clone(),
+                    leaf_identity: certified.verified.leaf_identity().to_string(),
                 };
             }
         } else {
             context.identity_binding = auth::IdentityBinding::DelegationVerified {
-                leaf_identity: certified.verified.leaf_identity.clone(),
+                leaf_identity: certified.verified.leaf_identity().to_string(),
             };
         }
         (Some(grant), Some(certified))
@@ -2540,7 +2540,7 @@ pub(crate) struct CertifiedPermissions {
 /// 1. Decode base64 certificate from `x-nucleus-delegation-cert`
 /// 2. Verify Ed25519 chain against root public key
 /// 3. **Identity binding**: if `authenticated_spiffe_id` is Some, reject if
-///    `verified.leaf_identity != spiffe_id` (prevents privilege escalation)
+///    `verified.leaf_identity() != spiffe_id` (prevents privilege escalation)
 /// 4. Convert `VerifiedPermissions` → `PermissionBid` via α
 /// 5. Evaluate bid against market → `PermissionGrant`
 /// 6. Intersect grant with certificate → effective `PermissionLattice`
@@ -2592,11 +2592,11 @@ fn evaluate_delegation_cert_with_identity(
     // verify that the delegation certificate's leaf identity matches.
     // This prevents privilege escalation where agent-A presents agent-B's cert.
     if let Some(spiffe_id) = authenticated_spiffe_id
-        && verified.leaf_identity != spiffe_id
+        && verified.leaf_identity() != spiffe_id
     {
         tracing::warn!(
             authenticated_id = %spiffe_id,
-            cert_leaf_id = %verified.leaf_identity,
+            cert_leaf_id = %verified.leaf_identity(),
             event = "identity_mismatch_rejected",
             "delegation cert leaf_identity does not match authenticated SPIFFE ID"
         );
@@ -2623,8 +2623,8 @@ fn evaluate_delegation_cert_with_identity(
     let effective = cert_bridge::intersect_grant_with_certificate(&grant, &verified);
 
     tracing::info!(
-        leaf_identity = %verified.leaf_identity,
-        chain_depth = verified.chain_depth,
+        leaf_identity = %verified.leaf_identity(),
+        chain_depth = verified.chain_depth(),
         trust_tier = ?bid.trust_tier,
         granted = grant.granted.len(),
         denied = grant.denied.len(),

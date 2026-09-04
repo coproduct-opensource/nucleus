@@ -4,11 +4,16 @@
 //! These tests verify that the kernel enforces SinkScope constraints
 //! from verified permission certificates (path, host, and git ref scoping).
 
-use portcullis::certificate::{SinkScope, VerifiedPermissions};
+use chrono::{Duration, Utc};
+use portcullis::certificate::{
+    verify_certificate, LatticeCertificate, SinkScope, VerifiedPermissions,
+};
 use portcullis::kernel::{DenyReason, Kernel, Verdict};
 use portcullis::{
     BudgetLattice, CapabilityLattice, IsolationLattice, Obligations, Operation, PermissionLattice,
 };
+use ring::rand::SystemRandom;
+use ring::signature::{Ed25519KeyPair, KeyPair};
 
 /// Build a fully permissive lattice with NO obligations and NO
 /// uninhabitable constraint — purely for testing sink scope checks
@@ -28,15 +33,38 @@ fn permissive_no_obligations() -> PermissionLattice {
     lattice
 }
 
-/// Helper: create a VerifiedPermissions with the given SinkScope.
+/// Helper: create a `VerifiedPermissions` with the given `SinkScope`, through
+/// a REAL mint + delegate + verify — `VerifiedPermissions` is sealed (#2450)
+/// and can only be produced by [`verify_certificate`] now, matching every
+/// other producer in this codebase (see `nucleus-tool-proxy::cert_bridge`'s
+/// `mint_and_verify`/`mint_delegate_and_verify` for the same pattern).
 fn verified_with_scope(scope: SinkScope) -> VerifiedPermissions {
-    VerifiedPermissions::new(
-        permissive_no_obligations(),
-        1,
+    let rng = SystemRandom::new();
+    let root_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let root_key = Ed25519KeyPair::from_pkcs8(root_pkcs8.as_ref()).unwrap();
+    let root_pub = root_key.public_key().as_ref().to_vec();
+    let not_after = Utc::now() + Duration::hours(8);
+
+    let ceiling = permissive_no_obligations();
+    let (cert, holder_key) = LatticeCertificate::mint(
+        ceiling.clone(),
         "root".to_string(),
-        "leaf".to_string(),
-        scope,
-    )
+        not_after,
+        &root_key,
+        &rng,
+    );
+    let (cert, _delegatee_key) = cert
+        .delegate_with_scope(
+            &ceiling,
+            "leaf".to_string(),
+            not_after,
+            scope,
+            &holder_key,
+            &rng,
+        )
+        .unwrap();
+
+    verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap()
 }
 
 #[test]

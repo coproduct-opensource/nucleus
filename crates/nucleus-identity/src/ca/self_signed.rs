@@ -1314,7 +1314,7 @@ mod tests {
             .unwrap()
             .expect("an attested leaf verifies");
         assert_eq!(
-            va.subject_key_sha256,
+            va.subject_key_sha256(),
             Some(binding),
             "the verifier must surface the bound key as subject_key_sha256"
         );
@@ -1358,7 +1358,7 @@ mod tests {
             .verify_svid(cert.leaf().to_pem(), &AttestationRequirements::any(), true)
             .unwrap()
             .expect("attested");
-        assert_eq!(va.subject_key_sha256, Some(binding));
+        assert_eq!(va.subject_key_sha256(), Some(binding));
     }
 
     /// The control: an attested SVID WITHOUT the binding extension surfaces
@@ -1390,7 +1390,7 @@ mod tests {
             .verify_svid(chain[0].to_pem(), &AttestationRequirements::any(), true)
             .unwrap()
             .expect("an attested leaf verifies");
-        assert_eq!(va.subject_key_sha256, None);
+        assert_eq!(va.subject_key_sha256(), None);
     }
 
     #[test]

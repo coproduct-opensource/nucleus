@@ -275,8 +275,8 @@ pub use audit::{
     RetentionPolicy,
 };
 pub use certificate::{
-    canonical_permissions_hash, CertificateDelegationError, CertificateError, LatticeCertificate,
-    SinkScope, VerifiedPermissions,
+    canonical_permissions_hash, CertificateDelegationError, CertificateError,
+    CertificateMintChildError, LatticeCertificate, SinkScope, VerifiedPermissions,
 };
 // `verify_certificate` performs Ed25519 verification via `ring` → crypto-only.
 #[cfg(feature = "crypto")]

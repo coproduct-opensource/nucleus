@@ -428,10 +428,11 @@ pub fn verify_attested_receipt(
 
     // 2. The self-claim must EQUAL the independently-verified attestation — the
     //    load-bearing check. Backend first, then the assurance level.
-    if receipt.signer_backend != attestation.backend {
+    if receipt.signer_backend != attestation.backend() {
         return Err(format!(
             "signer backend claim {:?} does not match verified attestation backend {:?}",
-            receipt.signer_backend, attestation.backend
+            receipt.signer_backend,
+            attestation.backend()
         ));
     }
     if receipt.signer_assurance != attestation.assurance().as_u8() {
@@ -452,7 +453,7 @@ pub fn verify_attested_receipt(
     //    TPM Name that is not a bare Ed25519 key), the binding cannot be checked
     //    here; the caller's contract is then to have obtained `signer_pubkey`
     //    from the attested SVID itself.
-    if let Some(expected) = attestation.subject_key_sha256 {
+    if let Some(expected) = attestation.subject_key_sha256() {
         let mut hasher = Sha256::new();
         hasher.update(signer_pubkey.to_bytes());
         let got: [u8; 32] = hasher.finalize().into();
@@ -736,15 +737,18 @@ mod tests {
         level: AssuranceLevel,
         key_fp: Option<[u8; 32]>,
     ) -> VerifiedAttestation {
-        VerifiedAttestation {
+        // Synthetic — see VerifiedAttestation::for_test's own doc comment
+        // (#2450 sealing; gated behind nucleus-identity's `test-helpers`
+        // dev-dependency feature, enabled only for this crate's tests).
+        VerifiedAttestation::for_test(
             backend,
-            assurance: level,
-            subject: AttestedSubject::SelfMeasuredNode,
-            subject_key_sha256: key_fp,
-            proves: BTreeSet::new(),
-            not_proven: BTreeSet::new(),
-            launch: None,
-        }
+            level,
+            AttestedSubject::SelfMeasuredNode,
+            key_fp,
+            BTreeSet::new(),
+            BTreeSet::new(),
+            None,
+        )
     }
 
     /// The common case in these tests: no key-binding declared.

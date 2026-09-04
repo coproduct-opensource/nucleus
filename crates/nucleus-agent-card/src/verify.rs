@@ -58,21 +58,59 @@ use crate::{Error, Result};
 /// A card whose signature verified against the caller's out-of-band key,
 /// together with its extracted [`NucleusClaims`].
 ///
+/// Sealed (#2450): fields are private, and the only constructor
+/// ([`Self::new`]) is `pub(crate)` — callable as a function from anywhere
+/// in this crate (so [`verify_card`]/[`verify_card_json`] and this crate's
+/// own tests can build one), but no struct literal compiles, even within
+/// this crate. Same tier of rigor as
+/// `nucleus_tool_proxy::session_token::VerifiedSessionToken` (private
+/// fields, `pub(crate)`-scoped) — not the fully module-private tier
+/// `DischargedBundle` uses, because unlike that type this one legitimately
+/// needs building from more than one module in the crate (`envelope.rs`'s
+/// own tests, matching the doc comment that USED to justify the public
+/// fields this replaces).
+///
 /// Holding a `VerifiedCard` is the proof obligation: you may only call
 /// [`Self::advertised_jwks`] (and thence build a TrustAnchor) once the
 /// card's authenticity has been established.
+///
+/// ```compile_fail
+/// // This code does NOT compile — the fields are private and `new` is
+/// // `pub(crate)`, invisible outside this crate.
+/// use nucleus_agent_card::verify::VerifiedCard;
+/// use nucleus_agent_card::card::{AgentCard, NucleusClaims};
+/// let forged = VerifiedCard {
+///     card: unimplemented!(),
+///     claims: unimplemented!(),
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct VerifiedCard {
     /// The verified identity document (v1.0 card, signatures included).
-    pub card: AgentCard,
+    card: AgentCard,
 
     /// The nucleus claims extracted from the card's
     /// [`NUCLEUS_EXTENSION_URI`](crate::card::NUCLEUS_EXTENSION_URI)
     /// extension — covered by the verified signature.
-    pub claims: NucleusClaims,
+    claims: NucleusClaims,
 }
 
 impl VerifiedCard {
+    /// Private outside this crate — see the struct's own doc comment.
+    pub(crate) fn new(card: AgentCard, claims: NucleusClaims) -> Self {
+        Self { card, claims }
+    }
+
+    /// The verified identity document.
+    pub fn card(&self) -> &AgentCard {
+        &self.card
+    }
+
+    /// The extracted nucleus claims.
+    pub fn claims(&self) -> &NucleusClaims {
+        &self.claims
+    }
+
     /// The JWKS the (now-verified) card advertises as authoritative for
     /// its provenance bundles. Feed this to
     /// [`crate::anchor::trust_anchor_from_card`].
@@ -225,7 +263,7 @@ pub fn verify_card_bound_to_peer(
 /// when either side is empty — an empty id must never compare equal to another
 /// empty id and let an unidentified peer through.
 pub fn bind_to_peer(verified: VerifiedCard, peer_spiffe_id: &str) -> Result<VerifiedCard> {
-    let declared = verified.claims.spiffe_id.trim();
+    let declared = verified.claims().spiffe_id.trim();
     let presented = peer_spiffe_id.trim();
 
     if declared.is_empty() || presented.is_empty() {
@@ -310,7 +348,7 @@ fn apply_nucleus_policy(card: AgentCard) -> Result<VerifiedCard> {
         ))
     })?;
 
-    Ok(VerifiedCard { card, claims })
+    Ok(VerifiedCard::new(card, claims))
 }
 
 /// §8.4.3 over the whole `signatures` array: succeed if ANY entry both
@@ -495,7 +533,7 @@ mod tests {
             .expect("claims parse")
             .expect("the test card carries nucleus claims");
         claims.spiffe_id = spiffe_id.to_string();
-        VerifiedCard { card, claims }
+        VerifiedCard::new(card, claims)
     }
 
     const PEER: &str = "spiffe://prod.example.com/ns/agents/sa/coder";

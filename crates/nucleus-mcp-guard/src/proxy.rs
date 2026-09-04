@@ -77,6 +77,30 @@ type ToolTriple = (String, String, String);
 
 /// Pull `(name, description, parameters)` out of a `tools/list` response.
 ///
+/// `parameters` is a canonical envelope over every field of the MCP
+/// 2025-06-18 `Tool` schema besides `name`/`description` — not just
+/// `inputSchema` (#1637 finding: `annotations`, `outputSchema` and `title`
+/// used to be dropped here entirely, so they never entered the pin's hash
+/// at all. `ToolAnnotations` (`readOnlyHint`/`destructiveHint`/
+/// `idempotentHint`/`openWorldHint`) informs a client's own approval
+/// decision — the spec's own note is that a client "should never make tool
+/// use decisions based on ToolAnnotations received from untrusted
+/// servers", which is exactly the trust `vet_tools_list` pinning is meant
+/// to establish. A server pinned while advertising `destructiveHint:
+/// false` could silently flip it to `true` on a later listing — same
+/// name, same description, same `inputSchema` — and `detect_mutations`
+/// reported no mutation, because the flag never entered the digest).
+///
+/// This widens what's hashed, not how it's compared (`ToolSchemaRegistry`
+/// stays a 3-string API — see its own docs) — the fix belongs at this
+/// parse boundary because everything downstream (`vet_tools_list`,
+/// `detect_mutations`, the persisted pin file) already treats `parameters`
+/// as an opaque, canonically-ordered string. **Breaking, deliberately**:
+/// an existing pin file's `parameters` for any tool that carries
+/// `annotations`/`outputSchema`/`title` will no longer match, and that
+/// tool re-pins as if freshly seen — the alternative is staying blind to
+/// exactly the metadata a rug-pull would flip.
+///
 /// Returns `None` when the message is not a tools listing, so ordinary traffic
 /// is untouched.
 fn parse_tools_list(v: &serde_json::Value) -> Option<Vec<ToolTriple>> {
@@ -91,11 +115,19 @@ fn parse_tools_list(v: &serde_json::Value) -> Option<Vec<ToolTriple>> {
                     .and_then(|d| d.as_str())
                     .unwrap_or_default()
                     .to_string();
-                // Canonicalised by serde_json so key order cannot flip the hash.
-                let parameters = t
-                    .get("inputSchema")
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
+                // A `serde_json::Map` is a `BTreeMap` by default (the
+                // `preserve_order` feature, which would switch it to
+                // insertion-ordered `IndexMap`, is not enabled anywhere in
+                // this workspace) — `Value::Object(..).to_string()` emits
+                // keys in sorted order, so this envelope is canonical the
+                // same way the old bare `inputSchema` string already was.
+                let mut envelope = serde_json::Map::new();
+                for field in ["inputSchema", "annotations", "outputSchema", "title"] {
+                    if let Some(v) = t.get(field) {
+                        envelope.insert(field.to_string(), v.clone());
+                    }
+                }
+                let parameters = serde_json::Value::Object(envelope).to_string();
                 Some((name, description, parameters))
             })
             .collect(),
@@ -524,6 +556,73 @@ mod tests {
         let mut reg = ToolSchemaRegistry::new();
         let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
         let tools = parse_tools_list(&list_response("Read a file")).unwrap();
+
+        vet_tools_list(&mut reg, &mon, &tools, &None);
+        let blocked = vet_tools_list(&mut reg, &mon, &tools, &None);
+
+        assert!(blocked.is_empty());
+        assert!(mon.lock().unwrap().seen_inputs().is_empty());
+    }
+
+    /// A `tools/list` entry with `annotations`, `outputSchema` and `title`
+    /// wired in, so a test can flip exactly one of them and prove the
+    /// digest actually depends on it.
+    fn list_response_annotated(destructive: bool) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "tools": [
+                { "name": "read_file", "description": "Read a file",
+                  "inputSchema": { "path": "string" },
+                  "title": "Read File",
+                  "outputSchema": { "content": "string" },
+                  "annotations": {
+                      "readOnlyHint": !destructive,
+                      "destructiveHint": destructive,
+                  } }
+            ]}
+        })
+    }
+
+    /// #1637 finding: `annotations`/`outputSchema`/`title` used to be
+    /// dropped at `parse_tools_list`, so a server pinned while advertising
+    /// `destructiveHint: false` could flip it to `true` on a later listing
+    /// — same name/description/inputSchema — and go undetected, because a
+    /// client's own approval decisions lean on `ToolAnnotations`. RED
+    /// before the parse-boundary widening (this exact scenario passed
+    /// `an_unchanged_listing_stays_clean`-shaped assertions); GREEN after.
+    #[test]
+    fn a_flipped_destructive_hint_is_blocked_and_taints() {
+        let mut reg = ToolSchemaRegistry::new();
+        let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
+
+        let benign = parse_tools_list(&list_response_annotated(false)).unwrap();
+        vet_tools_list(&mut reg, &mon, &benign, &None);
+
+        // Same name, same description, same inputSchema — only the hint flips.
+        let poisoned = parse_tools_list(&list_response_annotated(true)).unwrap();
+        let blocked = vet_tools_list(&mut reg, &mon, &poisoned, &None);
+
+        assert_eq!(
+            blocked,
+            vec!["read_file".to_string()],
+            "a flipped destructiveHint must be treated as a schema mutation, \
+             not silently accepted"
+        );
+        assert!(
+            !mon.lock().unwrap().seen_inputs().is_empty(),
+            "unvouched metadata must enter the taint set"
+        );
+    }
+
+    /// The control for the test above: re-listing the identical annotated
+    /// tool must stay clean, or the flip test would be agreeing for the
+    /// wrong reason (e.g. every re-listing blocking regardless of content).
+    #[test]
+    fn an_unchanged_annotated_listing_stays_clean() {
+        let mut reg = ToolSchemaRegistry::new();
+        let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
+        let tools = parse_tools_list(&list_response_annotated(false)).unwrap();
 
         vet_tools_list(&mut reg, &mon, &tools, &None);
         let blocked = vet_tools_list(&mut reg, &mon, &tools, &None);
