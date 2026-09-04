@@ -172,6 +172,8 @@ jobs:
             DelegationCategoryProofs \
             GaloisConnectionProofs \
             AttenuationProofs \
+            PortcullisCoreAttenuation \
+            AttenuationChainExtracted \
             SemanticIFC \
             MonoidalPermissionProofs \
             ConstructiveSecurity \
