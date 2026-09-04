@@ -217,7 +217,12 @@ pub struct VerifiedPermissions {
 
 impl VerifiedPermissions {
     /// Private constructor — only callable from within this module (the
-    /// verifier, and this module's own tests).
+    /// verifier, and this module's own tests). Gated behind `crypto`, same as
+    /// its one caller ([`verify_certificate`]): without that feature `new` is
+    /// genuinely unreachable, and leaving it ungated produces a dead-code
+    /// warning in any crate that depends on `portcullis` with
+    /// `default-features = false` and no other path to `crypto`.
+    #[cfg(feature = "crypto")]
     fn new(
         effective: PermissionLattice,
         chain_depth: usize,
