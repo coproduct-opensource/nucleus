@@ -993,9 +993,10 @@ mod leq_unrestricted_tests {
     use proptest::prelude::*;
 
     fn with_allowed(globs: &[&str]) -> PathLattice {
-        let mut p = PathLattice::default();
-        p.allowed = globs.iter().map(|s| s.to_string()).collect();
-        p
+        PathLattice {
+            allowed: globs.iter().map(|s| s.to_string()).collect(),
+            ..PathLattice::default()
+        }
     }
 
     #[test]
@@ -1042,8 +1043,8 @@ mod leq_unrestricted_tests {
             a in proptest::collection::hash_set("[a-c]/\\*\\*", 0..3),
             b in proptest::collection::hash_set("[a-c]/\\*\\*", 0..3),
         ) {
-            let pa = { let mut p = PathLattice::default(); p.allowed = a.clone(); p };
-            let pb = { let mut p = PathLattice::default(); p.allowed = b.clone(); p };
+            let pa = PathLattice { allowed: a.clone(), ..PathLattice::default() };
+            let pb = PathLattice { allowed: b.clone(), ..PathLattice::default() };
             let m = pa.meet(&pb);
             prop_assert!(m.leq(&pa));
             prop_assert!(m.leq(&pb));
