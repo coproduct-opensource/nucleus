@@ -225,21 +225,58 @@ pub(crate) async fn get_pod(state: &NodeState, id: Uuid) -> Result<Arc<PodHandle
 /// <uuid> exist on this node?" for any caller willing to probe, which is exactly
 /// the fact that filtering the listing withholds. The refusal must not restore
 /// by oracle what the filter removed.
-async fn get_pod_for_caller(
+pub(crate) async fn get_pod_for_caller(
     state: &NodeState,
     id: Uuid,
     caller: Option<Uuid>,
 ) -> Result<Arc<PodHandle>, ApiError> {
     let pod = get_pod(state, id).await?;
-    if !caller_may_manage(caller, pod.id, pod.parent_pod_id) {
+    scoped_lookup(std::slice::from_ref(&pod), id, caller).ok_or_else(|| {
         tracing::warn!(
             %id,
             caller = ?caller,
             "a pod tried to manage a pod it does not own"
         );
-        return Err(ApiError::NotFound);
-    }
-    Ok(pod)
+        ApiError::NotFound
+    })
+}
+
+/// The single-item form of the scoping filter: `id` resolves for `caller` iff
+/// it is present AND `caller_may_manage` admits it. The same predicate as
+/// `scope_to_caller`, so a pod that is filtered OUT of the listing cannot be
+/// reached by id either — over HTTP or gRPC, which both call this.
+fn scoped_lookup<T: Lineage + Clone>(items: &[T], id: Uuid, caller: Option<Uuid>) -> Option<T> {
+    items
+        .iter()
+        .find(|it| {
+            it.lineage_id() == id && caller_may_manage(caller, it.lineage_id(), it.lineage_parent())
+        })
+        .cloned()
+}
+
+/// WHICH pod a gRPC request proves it is, from the same two metadata entries
+/// the HTTP middleware reads — and with the same outcome for an unprovable
+/// claim (`.ok()`: treated as no identity, exactly as `auth_middleware` does),
+/// so the two transports cannot disagree about who is calling (#2475).
+pub(crate) fn grpc_caller(caller_secret: &[u8], md: &tonic::metadata::MetadataMap) -> Option<Uuid> {
+    crate::pod_caller_identity::identify_from_metadata(caller_secret, md).ok()
+}
+
+/// Resolve a pod named on the wire for a gRPC caller: parse the id, identify
+/// the caller, and look the pod up through the SAME ownership-scoped path the
+/// HTTP handlers use. A pod the caller may not manage is `NOT_FOUND`, never a
+/// distinguishable refusal (#2475; the oracle argument on `get_pod_for_caller`).
+pub(crate) async fn grpc_scoped_pod(
+    state: &NodeState,
+    md: &tonic::metadata::MetadataMap,
+    raw_id: &str,
+) -> Result<Arc<PodHandle>, tonic::Status> {
+    let id =
+        Uuid::parse_str(raw_id).map_err(|_| tonic::Status::invalid_argument("invalid pod id"))?;
+    let caller = grpc_caller(state.caller_secret.as_ref(), md);
+    get_pod_for_caller(state, id, caller)
+        .await
+        .map_err(|_| tonic::Status::not_found("pod not found"))
 }
 
 #[cfg(test)]
@@ -510,5 +547,110 @@ mod ownership_tests {
         assert_eq!(recorded, Some(b()), "the proof must win");
         // And it still cannot reach A's child.
         assert!(!caller_may_manage(Some(b()), child_of_a(), Some(a())));
+    }
+
+    // ── #2475: the gRPC surface uses the same ownership predicate ─────────
+
+    /// The HTTP-side property, run against the lookup the gRPC handlers now
+    /// call: pod B cannot resolve A's child by id; A can; the operator can.
+    #[test]
+    fn scoped_lookup_refuses_another_pods_child_by_id() {
+        #[derive(Clone)]
+        struct P {
+            id: Uuid,
+            parent: Option<Uuid>,
+        }
+        impl super::Lineage for P {
+            fn lineage_id(&self) -> Uuid {
+                self.id
+            }
+            fn lineage_parent(&self) -> Option<Uuid> {
+                self.parent
+            }
+        }
+        let (a, b, child) = (a(), b(), child_of_a());
+        let registry = [
+            P {
+                id: a,
+                parent: None,
+            },
+            P {
+                id: child,
+                parent: Some(a),
+            },
+            P {
+                id: b,
+                parent: None,
+            },
+        ];
+        assert!(
+            super::scoped_lookup(&registry, child, Some(b)).is_none(),
+            "B cannot reach A's child"
+        );
+        assert!(
+            super::scoped_lookup(&registry, child, Some(a)).is_some(),
+            "A manages its child"
+        );
+        assert!(
+            super::scoped_lookup(&registry, child, None).is_some(),
+            "the operator sees everything"
+        );
+        assert!(
+            super::scoped_lookup(&registry, a, Some(b)).is_none(),
+            "a sibling is out of reach"
+        );
+        assert!(
+            super::scoped_lookup(&registry, Uuid::new_v4(), None).is_none(),
+            "absent is absent"
+        );
+    }
+
+    /// gRPC identifies the caller from the same two metadata entries the HTTP
+    /// middleware reads, with the same outcome for a claim that does not verify.
+    #[test]
+    fn grpc_caller_mirrors_the_http_middleware() {
+        let secret = [7u8; 32];
+        let pod = a();
+        let token = crate::pod_caller_identity::derive_token(&secret, pod);
+        let mut md = tonic::metadata::MetadataMap::new();
+        assert_eq!(
+            super::grpc_caller(&secret, &md),
+            None,
+            "nothing claimed: operator scope"
+        );
+        md.insert(
+            nucleus_client::HEADER_POD_ID,
+            pod.to_string().parse().unwrap(),
+        );
+        md.insert(nucleus_client::HEADER_POD_TOKEN, token.parse().unwrap());
+        assert_eq!(super::grpc_caller(&secret, &md), Some(pod));
+        assert_eq!(
+            super::grpc_caller(&[8u8; 32], &md),
+            None,
+            "an unprovable claim is no identity, as over HTTP"
+        );
+    }
+
+    /// Structural: no gRPC pod-management handler reaches the registry through
+    /// the unscoped lookup any more, and the listing is scoped.
+    #[test]
+    fn every_grpc_pod_handler_goes_through_the_scoped_lookup() {
+        let main = include_str!("main.rs");
+        let start = main
+            .find("impl NodeService for GrpcService")
+            .expect("the gRPC service impl");
+        let grpc = &main[start..];
+        assert!(
+            !grpc.contains("pod_api::get_pod("),
+            "an unscoped lookup survived in the gRPC impl"
+        );
+        assert!(
+            !grpc.contains("collect_pod_infos(&self.state, None)"),
+            "the gRPC listing is unscoped"
+        );
+        assert!(
+            grpc.matches("grpc_scoped_pod(").count() >= 6,
+            "every id-taking handler is scoped"
+        );
     }
 }

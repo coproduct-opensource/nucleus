@@ -3398,7 +3398,9 @@ impl NodeService for GrpcService {
             auth::Operation::ListPods,
         )?;
 
-        let infos = pod_api::collect_pod_infos(&self.state, None).await;
+        // Scoped to the calling pod exactly as the HTTP listing is (#2475).
+        let caller = pod_api::grpc_caller(self.state.caller_secret.as_ref(), request.metadata());
+        let infos = pod_api::collect_pod_infos(&self.state, caller).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
         Ok(GrpcResponse::new(proto::ListPodsResponse { pods }))
     }
@@ -3414,11 +3416,8 @@ impl NodeService for GrpcService {
             auth::Operation::StreamLogs,
         )?;
 
-        let id = Uuid::parse_str(&request.into_inner().id)
-            .map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let pod = pod_api::get_pod(&self.state, id)
-            .await
-            .map_err(|_| Status::not_found("pod not found"))?;
+        let (md, _, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.id).await?;
         let logs = tokio::fs::read_to_string(&pod.log_path)
             .await
             .unwrap_or_default();
@@ -3436,11 +3435,8 @@ impl NodeService for GrpcService {
             auth::Operation::CancelPod,
         )?;
 
-        let id = Uuid::parse_str(&request.into_inner().id)
-            .map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let pod = pod_api::get_pod(&self.state, id)
-            .await
-            .map_err(|_| Status::not_found("pod not found"))?;
+        let (md, _, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.id).await?;
         pod.cancel()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -3460,11 +3456,8 @@ impl NodeService for GrpcService {
             auth::Operation::GetPod,
         )?;
 
-        let id = Uuid::parse_str(&request.into_inner().pod_id)
-            .map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let handle = pod_api::get_pod(&self.state, id)
-            .await
-            .map_err(|_| Status::not_found("pod not found"))?;
+        let (md, _, req) = request.into_parts();
+        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &req.pod_id).await?;
         let info = handle.info().await;
         Ok(GrpcResponse::new(proto::GetPodResponse {
             pod: Some(pod_info_to_grpc(info)),
@@ -3484,12 +3477,8 @@ impl NodeService for GrpcService {
             auth::Operation::StreamLogs,
         )?;
 
-        let req = request.into_inner();
-        let id =
-            Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let pod = pod_api::get_pod(&self.state, id)
-            .await
-            .map_err(|_| Status::not_found("pod not found"))?;
+        let (md, _, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.pod_id).await?;
 
         let log_path = pod.log_path.clone();
         let follow = req.follow;
@@ -3520,12 +3509,9 @@ impl NodeService for GrpcService {
             auth::Operation::GetPod,
         )?;
 
-        let req = request.into_inner();
-        let id =
-            Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let pod = pod_api::get_pod(&self.state, id)
-            .await
-            .map_err(|_| Status::not_found("pod not found"))?;
+        let (md, _, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.pod_id).await?;
+        let id = pod.id;
 
         let include_initial = req.include_initial;
         let pod_id_str = id.to_string();
@@ -3552,12 +3538,10 @@ impl NodeService for GrpcService {
             auth::Operation::GetReceipt,
         )?;
 
-        let pod_id_str = request.into_inner().pod_id;
-        let id =
-            Uuid::parse_str(&pod_id_str).map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let handle = pod_api::get_pod(&self.state, id)
-            .await
-            .map_err(|_| Status::not_found("pod not found"))?;
+        let (md, _, req) = request.into_parts();
+        let pod_id_str = req.pod_id;
+        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &pod_id_str).await?;
+        let id = handle.id;
 
         // Pod must be exited to have a receipt
         let state = handle.status().await;
