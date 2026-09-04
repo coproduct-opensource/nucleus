@@ -14,6 +14,11 @@ on:
       - "crates/ck-*/src/**"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
+  # Bare, unfiltered: the merge queue's own re-validation of the fast-tier
+  # jobs (#2430 — required status checks). Not path-filtered like push/
+  # pull_request above; kani-nightly-noop.yml is pull_request-only (its own
+  # comment explains why merge_group needs no twin).
+  merge_group:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
