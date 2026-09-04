@@ -34,9 +34,14 @@ use axum::Json;
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
-use crate::{ApiError, AppState};
+use crate::auth;
+use crate::{ApiError, AppState, actor_from_auth};
 use nucleus::portcullis::declassify::{DeclassificationToken, TokenApplyResult};
 use nucleus::portcullis::kernel::DenyReason;
+use portcullis::Operation;
+use portcullis::verdict_sink::{VerdictContext, VerdictOutcome};
+use std::collections::BTreeMap;
+use tracing::warn;
 
 /// Parse governor trusted keys from a comma-separated hex env value.
 ///
@@ -98,6 +103,7 @@ pub(crate) struct DeclassifyResponse {
 /// None of the refusals burn the token except a successful `Applied`.
 pub(crate) async fn apply_declassification(
     State(state): State<AppState>,
+    auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<DeclassifyRequest>,
 ) -> Result<Json<DeclassifyResponse>, ApiError> {
     // Rate-limit: a governor endpoint is a high-value target and a signature
@@ -119,17 +125,66 @@ pub(crate) async fn apply_declassification(
     // kernel's separate, never-populated `flow_graph`. Lock order MUST be
     // (kernel, then flow_graph) to match `http_kernel_decide` and the ingest
     // path, or the two lock sites could deadlock.
-    let kernel = state.kernel.lock().await;
-    let mut graph = state.flow_graph.lock().await;
-    match kernel.apply_declassification_token_on(&mut graph, &token) {
-        Ok(TokenApplyResult::Applied { .. }) => Ok(Json(DeclassifyResponse {
+    let applied = {
+        let kernel = state.kernel.lock().await;
+        let mut graph = state.flow_graph.lock().await;
+        kernel.apply_declassification_token_on(&mut graph, &token)
+    };
+
+    let result = classify_apply_result(applied, target, &sinks);
+
+    // Audit record (mirrors `/v1/escalate`): a declassification is the one
+    // place a value's confidentiality is lowered at runtime, and it is
+    // reachable by the workload, so every attempt — applied or refused — is a
+    // verdict worth keeping. Recording failure is logged as an audit gap, never
+    // turned into a request failure, so it cannot be used to suppress the
+    // release itself.
+    let outcome = match &result {
+        Ok(_) => VerdictOutcome::Allow,
+        Err(e) => VerdictOutcome::Deny {
+            reason: e.to_string(),
+        },
+    };
+    let mut extensions = BTreeMap::new();
+    extensions.insert("target_node_id".to_string(), target.to_string());
+    extensions.insert("allowed_sinks".to_string(), sinks.join(","));
+    if let Err(e) = state.verdict_sink.record(VerdictContext {
+        operation: Operation::ManagePods, // meta-operation: governor declassification
+        subject: format!("declassify:node={target} sinks=[{}]", sinks.join(",")),
+        outcome,
+        actor: actor_from_auth(auth.as_ref().map(|ext| &ext.0)),
+        policy_rule: Some(DECLASSIFY_POLICY_RULE.to_string()),
+        extensions,
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
+
+    result.map(Json)
+}
+
+/// The `policy_rule` every declassification verdict is recorded under, so an
+/// audit consumer can select releases without parsing the subject string.
+pub(crate) const DECLASSIFY_POLICY_RULE: &str = "declassification-token";
+
+/// Map the kernel's apply result onto the HTTP contract. Pure, so the mapping
+/// (and the fact that every non-`Applied` arm is a refusal) is unit-testable
+/// without a running kernel.
+///
+/// Well-formed but not applied — the request was valid, the token was not
+/// usable. Replay/already-declassified is a 409 (`DeclassificationConflict`),
+/// everything else a 403 (`Declassification`), so a governor can tell "spent"
+/// from "rejected".
+fn classify_apply_result(
+    applied: Result<TokenApplyResult, DenyReason>,
+    target: u64,
+    sinks: &[String],
+) -> Result<DeclassifyResponse, ApiError> {
+    match applied {
+        Ok(TokenApplyResult::Applied { .. }) => Ok(DeclassifyResponse {
             applied: true,
             target_node_id: target,
-            released_for_sinks: sinks,
-        })),
-        // Well-formed but not applied — the request was valid, the token was
-        // not usable. Distinguish replay/already-declassified (409) from the
-        // rest (403), so a governor can tell "spent" from "rejected".
+            released_for_sinks: sinks.to_vec(),
+        }),
         Ok(TokenApplyResult::AlreadyDeclassified) => Err(ApiError::DeclassificationConflict(
             format!("node {target} is already declassified"),
         )),
@@ -153,7 +208,9 @@ pub(crate) async fn apply_declassification(
         // the node can still release it. This denies steering WHICH value a
         // signed release clears (C5).
         Ok(TokenApplyResult::ContentMismatch) => Err(ApiError::Declassification(format!(
-            "token content_commitment does not match the recorded value of node {target}              (unbound token, node without a recorded content hash, or a substituted value)              — release refused (fail-closed)"
+            "token content_commitment does not match the recorded value of node {target} \
+             (unbound token, node without a recorded content hash, or a substituted value) \
+             — release refused (fail-closed)"
         ))),
         Err(DenyReason::DeclassificationReplayed { .. }) => {
             Err(ApiError::DeclassificationConflict(format!(
@@ -170,7 +227,85 @@ pub(crate) async fn apply_declassification(
 
 #[cfg(test)]
 mod tests {
-    use super::governor_keys_from_env;
+    use super::{classify_apply_result, governor_keys_from_env};
+    use nucleus::portcullis::declassify::TokenApplyResult;
+    use nucleus::portcullis::kernel::DenyReason;
+    use portcullis_core::IFCLabel;
+
+    /// Every non-`Applied` kernel result is a refusal at the HTTP edge, and
+    /// therefore a `Deny` verdict in the audit record; only `Applied` is an
+    /// `Allow`. Replay-shaped results are the 409 conflict, the rest 403.
+    #[test]
+    fn only_applied_maps_to_success() {
+        use crate::ApiError;
+        let sinks = vec!["web_fetch".to_string()];
+        let ok = classify_apply_result(
+            Ok(TokenApplyResult::Applied {
+                original_label: IFCLabel::default(),
+                new_label: IFCLabel::default(),
+            }),
+            7,
+            &sinks,
+        )
+        .expect("Applied is the one success");
+        assert!(ok.applied);
+        assert_eq!(ok.target_node_id, 7);
+        assert_eq!(ok.released_for_sinks, sinks);
+
+        let refusals: Vec<Result<TokenApplyResult, DenyReason>> = vec![
+            Ok(TokenApplyResult::AlreadyDeclassified),
+            Ok(TokenApplyResult::Expired {
+                valid_until: 1,
+                now: 2,
+            }),
+            Ok(TokenApplyResult::PreconditionUnmet),
+            Ok(TokenApplyResult::NodeNotFound),
+            Ok(TokenApplyResult::InvalidSignature),
+            Ok(TokenApplyResult::ContentMismatch),
+            Err(DenyReason::DeclassificationReplayed {
+                target_node: "7".into(),
+            }),
+            Err(DenyReason::InvalidDeclassification {
+                detail: "bad".into(),
+            }),
+        ];
+        let n = refusals.len();
+        let mut conflicts = 0;
+        for r in refusals {
+            match classify_apply_result(r, 7, &sinks) {
+                Ok(_) => panic!("a non-Applied result must not be a success"),
+                Err(ApiError::DeclassificationConflict(_)) => conflicts += 1,
+                Err(ApiError::Declassification(_)) => {}
+                Err(other) => panic!("unexpected error class: {other:?}"),
+            }
+        }
+        assert_eq!(n, 8, "the refusal table must cover every arm");
+        assert_eq!(
+            conflicts, 2,
+            "AlreadyDeclassified and Replayed are the 409s"
+        );
+    }
+
+    /// Structural pin: the handler records BOTH outcomes through the shared
+    /// verdict sink. The Phase-1 audit found this endpoint recorded nothing.
+    #[test]
+    fn handler_records_allow_and_deny_verdicts() {
+        let src = include_str!("declassify.rs");
+        let body = src
+            .split("pub(crate) async fn apply_declassification(")
+            .nth(1)
+            .expect("handler present")
+            .split("fn classify_apply_result(")
+            .next()
+            .expect("handler body ends at the classifier");
+        assert!(body.contains("state.verdict_sink.record(VerdictContext {"));
+        assert!(body.contains("VerdictOutcome::Allow"));
+        assert!(body.contains("VerdictOutcome::Deny {"));
+        assert!(
+            body.contains("audit gap"),
+            "a recording failure must be logged, never swallowed"
+        );
+    }
 
     #[test]
     fn absent_env_yields_no_keys() {
