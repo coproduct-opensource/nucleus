@@ -138,6 +138,13 @@ impl JobService for GrpcJobService {
         // share an `execute_job_async` helper between REST + gRPC.
         let initial = JobState::Queued {
             submitted_at: chrono::Utc::now(),
+            // The gRPC surface runs open in iter-1 (see this module's own
+            // "Auth posture" doc comment) — there is no verified caller
+            // identity to record yet. Use the same honest sentinel
+            // `AuthenticatedPrincipal::unauthenticated()` uses on the REST
+            // path rather than inventing a second one. Populating this from
+            // a real SPIFFE JWT-SVID is iter-2 / #2442, not this change.
+            owner: "<unauthenticated>".to_string(),
         };
         let id = self
             .state
