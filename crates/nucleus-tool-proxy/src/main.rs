@@ -41,6 +41,7 @@ mod drand_setup;
 mod egress;
 mod escalate;
 mod exit_report;
+mod host_socket;
 mod identity_fusion;
 mod ingest;
 mod lockdown_client;
@@ -86,6 +87,14 @@ struct Args {
     /// Optional path to write the bound address for discovery.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ANNOUNCE")]
     announce_path: Option<PathBuf>,
+    /// Serve on a Unix socket whose peers the kernel identifies (#2446): the
+    /// container driver's host-verified transport. Exclusive with vsock.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_LISTEN_UNIX")]
+    listen_unix: Option<PathBuf>,
+    /// Extra in-namespace peer uids admitted on `--listen-unix` (own uid is
+    /// always admitted; an out-of-namespace peer is the host).
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_PEER_UIDS", value_delimiter = ',')]
+    peer_uids: Vec<u32>,
     /// Optional vsock CID override.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_VSOCK_CID")]
     vsock_cid: Option<u32>,
@@ -1927,9 +1936,15 @@ async fn main() -> Result<(), ApiError> {
     // describe how this server will actually be bound, not be patched in later.
     // A request can never influence it.
     let vsock_binding = pod_mgmt::resolve_vsock(&args, &spec)?;
+    let unix_binding = host_socket::resolve_unix(
+        args.listen_unix.as_deref(),
+        &args.peer_uids,
+        vsock_binding.as_ref(),
+    )?;
+    let host_verified = vsock_binding.is_some() || unix_binding.is_some();
 
     // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
-    enforce_hmac_key_quality(&args.auth_secret, vsock_binding.is_some());
+    enforce_hmac_key_quality(&args.auth_secret, host_verified);
 
     let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
     let state = AppState {
@@ -1942,7 +1957,7 @@ async fn main() -> Result<(), ApiError> {
         auth,
         approval_auth,
         approval_verifier,
-        host_verified_transport: vsock_binding.is_some(),
+        host_verified_transport: host_verified,
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
         approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
         web_client,
@@ -2135,29 +2150,24 @@ async fn main() -> Result<(), ApiError> {
     // up as a 36ms hole before `vsock_bind` — the largest single gap left in the
     // trace.
     st.mark("router_build");
-    if let Some(vsock) = vsock_binding {
-        // THE GUEST PATH. In a booted microVM the proxy serves over vsock and
+    if let Some(bound) = host_socket::bind_host_verified(
+        vsock_binding,
+        unix_binding,
+        args.announce_path.clone(),
+        &mut st,
+    )
+    .await?
+    {
+        // THE GUEST PATH: vsock in a microVM, a peer-verified Unix socket in a
+        // container (#2446). The proxy serves the host-verified transport and
         // `main` returns right here — everything below this block is host/TCP
         // only. The workload therefore starts on this path (between bind and
         // serve, so its proxy URL names a socket that exists); before run 4's
         // diagnosis it started only below, and an in-guest pod's workload never
         // ran at all.
-        let bound = st
-            .timed(
-                "vsock_bind",
-                pod_mgmt::bind_vsock(vsock, args.announce_path),
-            )
-            .await?;
-        let _workload = start_and_drain_workload(
-            &spec,
-            workload::BoundProxy::Vsock {
-                cid: bound.cid(),
-                port: bound.port(),
-            },
-            &args.auth_secret,
-        )?;
+        let _workload = start_and_drain_workload(&spec, bound.proxy(), &args.auth_secret)?;
         st.report();
-        pod_mgmt::serve_vsock(app, bound).await?;
+        bound.serve(app).await?;
         write_exit_report(
             &exit_audit,
             &exit_work_dir,

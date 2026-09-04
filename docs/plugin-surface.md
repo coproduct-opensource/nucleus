@@ -65,7 +65,12 @@ isolation ≥ requested; `not_proven` makes over-reading an attestation unsayabl
   lift trust off the operator to a witness quorum; SIEM sinks.
 
 ### 6. Transport / discovery / mesh (where the seam lives on the wire)
-- **Seam:** transport kind (`http` | `mcp`), vsock (guest↔host), iroh
+- **Seam:** transport kind (`http` | `mcp`), vsock (guest↔host), peer-verified
+  Unix socket (container pod↔host/agent, `nucleus-tool-proxy --listen-unix`), iroh
+  (dial-by-`EndpointID`, Pkarr/DNS discovery).
+- **Shipped:** vsock workload API, peer-credential Unix-socket transport for the
+  proxy (#2446 step 1; node wiring and clients follow), HTTP/MCP, iroh (the
+  "call SPIFFE agents anywhere" spike).| `mcp`), vsock (guest↔host), iroh
   (dial-by-`EndpointID`, Pkarr/DNS discovery).
 - **Shipped:** vsock workload API, HTTP/MCP, iroh (the "call SPIFFE agents anywhere"
   spike).

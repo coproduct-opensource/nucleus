@@ -754,6 +754,9 @@ pub(crate) enum BoundProxy {
     /// client speaks vsock, not TCP, so the URL is `vsock://cid:port` — the
     /// same form the announce file uses.
     Vsock { cid: u32, port: u32 },
+    /// The container path (#2446): a peer-verified Unix socket. The URL is
+    /// `unix://<path>`, the same form the announce file uses.
+    Unix(std::path::PathBuf),
 }
 
 impl BoundProxy {
@@ -761,6 +764,7 @@ impl BoundProxy {
         match self {
             Self::Tcp(addr) => format!("http://{addr}"),
             Self::Vsock { cid, port } => format!("vsock://{cid}:{port}"),
+            Self::Unix(path) => crate::host_socket::unix_url(path),
         }
     }
 }
