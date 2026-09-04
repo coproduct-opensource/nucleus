@@ -90,6 +90,7 @@ pub mod audit;
 #[cfg(feature = "serde")]
 pub mod audit_backend;
 mod budget;
+pub mod budget_ledger;
 mod capability;
 #[cfg(feature = "cedar")]
 pub mod cedar_bridge;
@@ -98,6 +99,8 @@ pub mod cedar_bridge;
 // sign/verify/mint/delegate fns inside are `#[cfg(feature = "crypto")]`-gated
 // (ring can't compile to WASM). The kernel needs the types, not the signing.
 pub mod certificate;
+#[cfg(all(test, feature = "crypto", feature = "serde"))]
+mod certificate_convergence_tests;
 mod command;
 pub mod constraint;
 pub mod trace_monitor;
@@ -213,6 +216,7 @@ pub mod workspace;
 mod kani;
 
 pub use budget::BudgetLattice;
+pub use budget_ledger::{BudgetLedger, LedgerCore, LedgerError};
 pub use capability::{
     default_sink_class, CapabilityLattice, CapabilityLevel, ExtensionOperation,
     IncompatibilityConstraint, Obligations, Operation, OperationParseError, SinkClass, StateRisk,

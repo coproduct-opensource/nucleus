@@ -88,7 +88,7 @@ use chrono::{DateTime, Utc};
 #[cfg(feature = "crypto")]
 use ring::rand::SecureRandom;
 #[cfg(feature = "crypto")]
-use ring::signature::{self, Ed25519KeyPair, KeyPair};
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
@@ -124,6 +124,16 @@ pub struct AuthorityBlock {
     pub signature: Vec<u8>,
     /// Public key for verifying the next block (or proof-of-possession if no delegations).
     pub next_key: Vec<u8>,
+    /// Fingerprint of the certificate this authority was *re-rooted* from.
+    ///
+    /// When an issuer mints a fresh root on behalf of a caller who proved its
+    /// own chain (the caller's leaf identity becomes this block's
+    /// `root_identity`, and `root_permissions` is the caller's effective
+    /// lattice narrowed by the request), this records which chain that was —
+    /// token-exchange semantics, the `act` claim of RFC 8693. `None` for a
+    /// genuine root. Signature-covered via [`signing_payload`](Self::signing_payload).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub provenance: Option<[u8; 32]>,
 }
 
 /// A delegation block recording one hop in the permission chain.
@@ -491,7 +501,16 @@ fn subset_check(parent: &[String], child: &[String]) -> bool {
 pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
     let mut hasher = Sha256::new();
 
-    // Capabilities (12 dimensions, each as u8)
+    // Capabilities (13 named dimensions, each as u8, then the extension map).
+    //
+    // `spawn_agent` and `extensions` were outside this digest until the
+    // certificate convergence work: they rode inside the signed *struct* but
+    // outside the signed *bytes*, so anyone who could edit the serialized JSON
+    // could raise them on every block without invalidating a single Ed25519
+    // signature — and `verify_certificate`'s monotone check compared the same
+    // tampered values. `spawn_agent` is precisely the dimension that gates
+    // sub-pod creation, so that hole sat on the authority this certificate
+    // exists to attest. Pinned by `spawn_agent_is_signature_covered`.
     hasher.update([perms.capabilities.read_files as u8]);
     hasher.update([perms.capabilities.write_files as u8]);
     hasher.update([perms.capabilities.edit_files as u8]);
@@ -504,6 +523,17 @@ pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
     hasher.update([perms.capabilities.git_push as u8]);
     hasher.update([perms.capabilities.create_pr as u8]);
     hasher.update([perms.capabilities.manage_pods as u8]);
+    hasher.update([perms.capabilities.spawn_agent as u8]);
+    #[cfg(not(kani))]
+    {
+        // BTreeMap iterates in key order, so this is deterministic.
+        hasher.update((perms.capabilities.extensions.len() as u32).to_le_bytes());
+        for (op, level) in &perms.capabilities.extensions {
+            hasher.update(op.0.as_bytes());
+            hasher.update([0]);
+            hasher.update([*level as u8]);
+        }
+    }
 
     // Obligations (sorted set of operation indices for determinism)
     let mut ops: Vec<u8> = perms
@@ -538,8 +568,13 @@ pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
         hasher.update([0]);
     }
 
-    // Budget
+    // Budget. `consumed_usd` is signature-covered too: a chain hop that
+    // carries budget forward carries what has already been spent against
+    // it, and an unsigned `consumed_usd` would let a holder reset it to zero.
     hasher.update(perms.budget.max_cost_usd.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(perms.budget.consumed_usd.to_string().as_bytes());
+    hasher.update([0]);
     hasher.update(perms.budget.max_input_tokens.to_le_bytes());
     hasher.update(perms.budget.max_output_tokens.to_le_bytes());
 
@@ -572,14 +607,24 @@ pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
 impl AuthorityBlock {
     /// Compute the canonical payload for signing.
     #[cfg(feature = "crypto")]
-    fn signing_payload(&self) -> Vec<u8> {
+    pub(crate) fn signing_payload(&self) -> Vec<u8> {
         let mut payload = Vec::new();
-        payload.extend_from_slice(b"lattice-cert-authority-v1:");
+        // v2: canonical hash now covers spawn_agent/extensions/consumed_usd,
+        // and the payload carries `provenance`. Tokens issued under v1 do not
+        // verify — none exist outside this tree.
+        payload.extend_from_slice(b"lattice-cert-authority-v2:");
         payload.extend_from_slice(self.root_identity.as_bytes());
         payload.push(0); // separator
         payload.extend_from_slice(&self.not_after.timestamp().to_le_bytes());
         payload.extend_from_slice(&canonical_permissions_hash(&self.root_permissions));
         payload.extend_from_slice(&self.next_key);
+        match self.provenance {
+            Some(fp) => {
+                payload.push(1);
+                payload.extend_from_slice(&fp);
+            }
+            None => payload.push(0),
+        }
         payload
     }
 
@@ -596,9 +641,10 @@ impl AuthorityBlock {
 impl DelegationBlock {
     /// Compute the canonical payload for signing.
     #[cfg(feature = "crypto")]
-    fn signing_payload(&self) -> Vec<u8> {
+    pub(crate) fn signing_payload(&self) -> Vec<u8> {
         let mut payload = Vec::new();
-        payload.extend_from_slice(b"lattice-cert-delegation-v2:");
+        // v3: canonical hash now covers spawn_agent/extensions/consumed_usd.
+        payload.extend_from_slice(b"lattice-cert-delegation-v3:");
         payload.extend_from_slice(self.from_identity.as_bytes());
         payload.push(0);
         payload.extend_from_slice(self.to_identity.as_bytes());
@@ -669,6 +715,39 @@ impl LatticeCertificate {
         let holder_key =
             Ed25519KeyPair::from_pkcs8(holder_pkcs8.as_ref()).expect("Ed25519 key parse failed");
 
+        let cert = Self::mint_with_holder_key(
+            root_permissions,
+            root_identity,
+            not_after,
+            None,
+            signing_key,
+            &holder_key,
+        );
+
+        (cert, holder_key)
+    }
+
+    /// Mint a root authority certificate whose holder key the CALLER owns.
+    ///
+    /// [`Self::mint`] generates the holder key internally and hands back only
+    /// the `ring` keypair, which cannot export its seed — so nothing minted
+    /// that way can persist its holder key across a restart or hand it to
+    /// another process. An issuer that must keep `(certificate, holder key)`
+    /// per pod (the node's per-pod authority registry) generates the PKCS#8
+    /// document itself, keeps it, and mints through this constructor.
+    ///
+    /// `provenance` records the fingerprint of the chain this root was
+    /// re-rooted from (see [`AuthorityBlock::provenance`]); pass `None` for a
+    /// genuine root.
+    #[cfg(feature = "crypto")]
+    pub fn mint_with_holder_key(
+        root_permissions: PermissionLattice,
+        root_identity: String,
+        not_after: DateTime<Utc>,
+        provenance: Option<[u8; 32]>,
+        signing_key: &Ed25519KeyPair,
+        holder_key: &Ed25519KeyPair,
+    ) -> Self {
         let next_key = holder_key.public_key().as_ref().to_vec();
 
         // Build authority block (without signature initially)
@@ -678,6 +757,7 @@ impl LatticeCertificate {
             not_after,
             signature: Vec::new(),
             next_key,
+            provenance,
         };
 
         // Sign the canonical payload
@@ -688,13 +768,11 @@ impl LatticeCertificate {
         let pop_payload = Self::pop_payload_for_block_hash(&authority.block_hash());
         let final_signature = holder_key.sign(&pop_payload).as_ref().to_vec();
 
-        let cert = Self {
+        Self {
             authority,
             blocks: Vec::new(),
             final_signature,
-        };
-
-        (cert, holder_key)
+        }
     }
 
     /// Delegate permissions to a sub-agent, producing a new certificate.
@@ -747,6 +825,42 @@ impl LatticeCertificate {
         current_holder_key: &Ed25519KeyPair,
         rng: &dyn SecureRandom,
     ) -> Result<(Self, Ed25519KeyPair), CertificateDelegationError> {
+        // Generate ephemeral key pair for the delegatee
+        let delegatee_pkcs8 = Ed25519KeyPair::generate_pkcs8(rng)
+            .map_err(|_| CertificateDelegationError::KeyGenerationFailed)?;
+        let delegatee_key = Ed25519KeyPair::from_pkcs8(delegatee_pkcs8.as_ref())
+            .map_err(|_| CertificateDelegationError::KeyGenerationFailed)?;
+
+        let cert = self.delegate_with_scope_using_key(
+            requested,
+            to_identity,
+            not_after,
+            sink_scope,
+            current_holder_key,
+            &delegatee_key,
+        )?;
+        Ok((cert, delegatee_key))
+    }
+
+    /// [`Self::delegate_with_scope`] where the CALLER owns the delegatee's
+    /// holder key.
+    ///
+    /// The `rng` variants generate the delegatee key internally and return
+    /// only the `ring` keypair, which cannot export its seed — so the caller
+    /// can never persist it. An issuer that has to keep the delegatee's key
+    /// (to delegate again on that holder's behalf later, after a restart)
+    /// generates the PKCS#8 document itself, keeps it, and delegates through
+    /// this variant with the parsed keypair.
+    #[cfg(feature = "crypto")]
+    pub fn delegate_with_scope_using_key(
+        &self,
+        requested: &PermissionLattice,
+        to_identity: String,
+        not_after: DateTime<Utc>,
+        sink_scope: SinkScope,
+        current_holder_key: &Ed25519KeyPair,
+        delegatee_key: &Ed25519KeyPair,
+    ) -> Result<Self, CertificateDelegationError> {
         // Check chain depth
         if self.blocks.len() >= DEFAULT_MAX_CHAIN_DEPTH {
             return Err(CertificateDelegationError::ChainTooDeep {
@@ -805,12 +919,6 @@ impl LatticeCertificate {
             self.blocks.last().unwrap().to_identity.clone()
         };
 
-        // Generate ephemeral key pair for the delegatee
-        let delegatee_pkcs8 = Ed25519KeyPair::generate_pkcs8(rng)
-            .map_err(|_| CertificateDelegationError::KeyGenerationFailed)?;
-        let delegatee_key = Ed25519KeyPair::from_pkcs8(delegatee_pkcs8.as_ref())
-            .map_err(|_| CertificateDelegationError::KeyGenerationFailed)?;
-
         let next_key = delegatee_key.public_key().as_ref().to_vec();
 
         // Build delegation block
@@ -839,13 +947,11 @@ impl LatticeCertificate {
         let pop_payload = Self::pop_payload_for_block_hash(&last_hash);
         let final_signature = delegatee_key.sign(&pop_payload).as_ref().to_vec();
 
-        let cert = Self {
+        Ok(Self {
             authority: self.authority.clone(),
             blocks: new_blocks,
             final_signature,
-        };
-
-        Ok((cert, delegatee_key))
+        })
     }
 
     /// Mint a child certificate, validated at BOTH layers: the lattice's own
@@ -893,15 +999,72 @@ impl LatticeCertificate {
         current_holder_key: &Ed25519KeyPair,
         rng: &dyn SecureRandom,
     ) -> Result<(Self, Ed25519KeyPair), CertificateMintChildError> {
-        self.effective_permissions()
-            .delegate_to(requested, reason)
-            .map_err(CertificateMintChildError::Lattice)?;
-        self.delegate(
+        self.mint_child_with_scope(
             requested,
             child_identity,
             not_after,
+            reason,
+            SinkScope::unrestricted(),
             current_holder_key,
             rng,
+        )
+    }
+
+    /// [`Self::mint_child`] with an explicit sink scope (the child's scope
+    /// must be ⊆ the parent's, exactly as in [`Self::delegate_with_scope`]).
+    #[cfg(feature = "crypto")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_child_with_scope(
+        &self,
+        requested: &PermissionLattice,
+        child_identity: String,
+        not_after: DateTime<Utc>,
+        reason: &str,
+        sink_scope: SinkScope,
+        current_holder_key: &Ed25519KeyPair,
+        rng: &dyn SecureRandom,
+    ) -> Result<(Self, Ed25519KeyPair), CertificateMintChildError> {
+        self.effective_permissions()
+            .delegate_to(requested, reason)
+            .map_err(CertificateMintChildError::Lattice)?;
+        self.delegate_with_scope(
+            requested,
+            child_identity,
+            not_after,
+            sink_scope,
+            current_holder_key,
+            rng,
+        )
+        .map_err(CertificateMintChildError::Chain)
+    }
+
+    /// [`Self::mint_child_with_scope`] where the CALLER owns the child's
+    /// holder key — the issuer-side constructor, for the same reason as
+    /// [`Self::mint_with_holder_key`]: `ring` keypairs cannot export their
+    /// seed, so an issuer that must persist the child's holder key generates
+    /// the PKCS#8 document itself and passes the parsed keypair in.
+    #[cfg(feature = "crypto")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_child_with_scope_using_key(
+        &self,
+        requested: &PermissionLattice,
+        child_identity: String,
+        not_after: DateTime<Utc>,
+        reason: &str,
+        sink_scope: SinkScope,
+        current_holder_key: &Ed25519KeyPair,
+        child_key: &Ed25519KeyPair,
+    ) -> Result<Self, CertificateMintChildError> {
+        self.effective_permissions()
+            .delegate_to(requested, reason)
+            .map_err(CertificateMintChildError::Lattice)?;
+        self.delegate_with_scope_using_key(
+            requested,
+            child_identity,
+            not_after,
+            sink_scope,
+            current_holder_key,
+            child_key,
         )
         .map_err(CertificateMintChildError::Chain)
     }
@@ -982,13 +1145,20 @@ impl LatticeCertificate {
         let mut hasher = Sha256::new();
 
         // Domain separation to prevent cross-protocol confusion
-        hasher.update(b"lattice-cert-fingerprint-v1:");
+        hasher.update(b"lattice-cert-fingerprint-v2:");
 
         // Authority block
         hasher.update(self.authority.root_identity.as_bytes());
         hasher.update([0]); // separator
         hasher.update(self.authority.not_after.timestamp().to_le_bytes());
         hasher.update(canonical_permissions_hash(&self.authority.root_permissions));
+        match self.authority.provenance {
+            Some(fp) => {
+                hasher.update([1]);
+                hasher.update(fp);
+            }
+            None => hasher.update([0]),
+        }
         hasher.update(&self.authority.signature);
 
         // Delegation blocks
@@ -1017,6 +1187,21 @@ impl LatticeCertificate {
 // ═══════════════════════════════════════════════════════════════════════════
 // VERIFICATION — THE REFERENCE MONITOR
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Ed25519 verify on the strict (RFC 8032, `s < ℓ`, no small-order keys)
+/// semantics — `ed25519_dalek::verify_strict`, NOT `ring`'s cofactored
+/// verify. Ring's verify accepts the small-order identity-key forgery (see
+/// `small_order_root_key_forgery_rejected`), and this chain is the credential
+/// the runtime's authority rests on. Unifies the cert chain with the rest of
+/// the attest stack (`token_sign`, `receipt_sign`) and removes `ring` from the
+/// verify TCB (SECURITY_TODO #16). Signing stays on `ring`.
+#[cfg(feature = "crypto")]
+fn verify_ed25519_strict(public_key: &[u8], message: &[u8], sig: &[u8]) -> Result<(), ()> {
+    let vk_bytes: [u8; 32] = public_key.try_into().map_err(|_| ())?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes).map_err(|_| ())?;
+    let sig = ed25519_dalek::Signature::from_slice(sig).map_err(|_| ())?;
+    vk.verify_strict(message, &sig).map_err(|_| ())
+}
 
 /// Verify an attested delegation certificate.
 ///
@@ -1059,10 +1244,12 @@ pub fn verify_certificate(
 
     // 2. Verify authority block signature
     let authority_payload = cert.authority.signing_payload();
-    let root_verifier = signature::UnparsedPublicKey::new(&signature::ED25519, root_public_key);
-    root_verifier
-        .verify(&authority_payload, &cert.authority.signature)
-        .map_err(|_| CertificateError::InvalidSignature { block_index: 0 })?;
+    verify_ed25519_strict(
+        root_public_key,
+        &authority_payload,
+        &cert.authority.signature,
+    )
+    .map_err(|_| CertificateError::InvalidSignature { block_index: 0 })?;
 
     // 3. Check authority expiry
     if now > cert.authority.not_after {
@@ -1083,11 +1270,8 @@ pub fn verify_certificate(
         }
 
         // 4b. Verify Ed25519 signature
-        let verifier_key =
-            signature::UnparsedPublicKey::new(&signature::ED25519, prev_next_key.as_slice());
         let block_payload = block.signing_payload();
-        verifier_key
-            .verify(&block_payload, &block.signature)
+        verify_ed25519_strict(prev_next_key, &block_payload, &block.signature)
             .map_err(|_| CertificateError::InvalidSignature { block_index })?;
 
         // 4c. Verify monotone attenuation
@@ -1118,10 +1302,7 @@ pub fn verify_certificate(
 
     // 5. Verify proof-of-possession
     let pop_payload = LatticeCertificate::pop_payload_for_block_hash(&prev_hash);
-    let final_verifier =
-        signature::UnparsedPublicKey::new(&signature::ED25519, prev_next_key.as_slice());
-    final_verifier
-        .verify(&pop_payload, &cert.final_signature)
+    verify_ed25519_strict(prev_next_key, &pop_payload, &cert.final_signature)
         .map_err(|_| CertificateError::InvalidProofOfPossession)?;
 
     // 6. Return sealed verified permissions

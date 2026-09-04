@@ -320,7 +320,12 @@ Deficiency
 - Exploitability varies by site: certificate DELEGATION `next_key` travels in-band (attacker-influenced) → highest concern; `verify_certificate` root key, `TrustStore`, and token/receipt keys are caller-pinned (lower, but still weak-binding).
 
 TODO
-- [ ] Owner decision required — not fixed here (out of M-3's stated dalek/`verify_strict` scope; it is a load-bearing crypto change). Options: (a) add an explicit small-order/canonical-encoding rejection of the public key and `R` around each ring verify; or (b) migrate these trust-path verifies to `ed25519-dalek::verify_strict`. Either way, extend `scripts/check-verify-strict.sh` to cover the ring paths once a canonical form is chosen.
+- [x] Option (b) chosen: migrate trust-path verifies to `ed25519-dalek::verify_strict`, signing stays on `ring`.
+  - [x] `token_sign.rs`, `receipt_sign.rs` — migrated (earlier).
+  - [x] `certificate.rs` (authority / per-block / proof-of-possession, the highest-concern in-band `next_key` site) — migrated in the certificate-convergence PR 1; `verify_ed25519_strict` is the single verify helper, pinned by `certificate_convergence_tests::small_order_root_key_forgery_rejected`, which asserts (non-vacuously) that `ring` still accepts the identity triple and `verify_certificate` now refuses it.
+  - [ ] `manifest_registry.rs:98/139` — still `ring`.
+  - [ ] Extend `scripts/check-verify-strict.sh` to cover the migrated ring paths.
+- `nucleus-identity::approval_bundle.rs:425` is **ECDSA P-256** (`ECDSA_P256_SHA256_FIXED`), not Ed25519; the small-order Ed25519 concern does not apply there. Listed in error by the original sweep.
 
 Status
-- [OPEN] Reported by the M-3 sweep; deliberately left unfixed pending owner triage.
+- [PARTIAL] Three of four Ed25519 sites migrated; `manifest_registry.rs` open.

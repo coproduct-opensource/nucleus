@@ -2232,3 +2232,87 @@ fn proof_compartment_transition_no_leak() {
         "fresh graph should have at most the sentinel node"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// E-series: Budget conservation across spawn (#2426, #2445)
+//
+// The ledger is the shipped type (`budget_ledger::LedgerCore`), not a model:
+// fixed-slot, `u64` micro-USD, no heap — see the module doc for why that
+// shape was chosen so the proof and production share one implementation.
+// Amounts are symbolic `u8`s: the arithmetic is the same at any width, and
+// the small domain keeps the unwinding cheap.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **E1 — Allocation conserves the parent's budget**:
+///
+/// For any parent `(max, consumed)` and ANY sequence of three allocation
+/// attempts (symbolic child ids and amounts, each of which may succeed or
+/// be refused), `Σ live allocations + consumed ≤ max` holds after every
+/// attempt. This is the invariant `PermissionLattice::delegate_to` alone
+/// cannot give (it reads the parent's remaining budget and decrements
+/// nothing), and the reason a fan-out of N children could previously be
+/// granted N× the parent's budget.
+#[kani::proof]
+#[kani::unwind(8)]
+#[kani::solver(cadical)]
+fn proof_budget_ledger_conserves() {
+    let max: u8 = kani::any();
+    let consumed: u8 = kani::any();
+    let mut ledger = crate::budget_ledger::LedgerCore::<4>::new(max as u64, consumed as u64);
+    assert!(
+        ledger.conserves(),
+        "constructor must establish the invariant"
+    );
+
+    let mut step = 0u8;
+    while step < 3 {
+        let child: u8 = kani::any();
+        let amount: u8 = kani::any();
+        let _ = ledger.try_allocate(child as u128, amount as u64);
+        assert!(
+            ledger.conserves(),
+            "Σ allocations + consumed must never exceed max"
+        );
+        step += 1;
+    }
+}
+
+/// **E2 — Release never manufactures budget**:
+///
+/// After a child is released with ANY reported consumption, the invariant
+/// still holds, the parent's consumption grew by at most that child's
+/// allocation, and the refund plus the folded-in spend equals exactly the
+/// allocation (nothing is created, nothing is lost).
+#[kani::proof]
+#[kani::unwind(8)]
+#[kani::solver(cadical)]
+fn proof_budget_ledger_release_conserves() {
+    let max: u8 = kani::any();
+    let consumed: u8 = kani::any();
+    let mut ledger = crate::budget_ledger::LedgerCore::<4>::new(max as u64, consumed as u64);
+
+    let amount: u8 = kani::any();
+    let other: u8 = kani::any();
+    let _ = ledger.try_allocate(1, amount as u64);
+    let _ = ledger.try_allocate(2, other as u64);
+
+    let consumed_before = ledger.parent_consumed_micro();
+    let allocation = ledger.allocation_of(1);
+    let reported: u8 = kani::any();
+    let result = ledger.release(1, reported as u64);
+
+    match (allocation, result) {
+        (Some(a), Ok(refund)) => {
+            let folded = ledger.parent_consumed_micro() - consumed_before;
+            assert!(
+                folded <= a,
+                "parent consumption grows by at most the allocation"
+            );
+            assert!(refund + folded == a, "refund + folded spend == allocation");
+        }
+        (None, Err(_)) => {}
+        _ => panic!("release must succeed exactly when the child was allocated"),
+    }
+    assert!(ledger.conserves());
+    assert!(ledger.allocation_of(1).is_none(), "released child is gone");
+}
