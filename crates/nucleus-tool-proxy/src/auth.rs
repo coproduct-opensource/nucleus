@@ -111,12 +111,15 @@ pub enum AuthMethod {
     HmacDrand,
     /// SPIFFE mTLS certificate (no shared secrets).
     SpiffeMtls,
-    /// The request arrived on a vsock listener that accepts only the host.
+    /// The request arrived on a host-verified transport: a vsock listener that
+    /// accepts only the host, or (#2446) a Unix socket whose peers the kernel
+    /// identifies and `host_socket::PeerPolicy` admits.
     ///
     /// No shared secret and no certificate: the guest kernel sets the peer CID
-    /// on an accepted AF_VSOCK connection and a guest process cannot forge it,
-    /// so "this came from the host" is enforced below the application rather
-    /// than asserted by it. See `pod_mgmt::peer_is_host`.
+    /// on an accepted AF_VSOCK connection (or the peer credentials on an
+    /// AF_UNIX one) and a guest process cannot forge them, so "this came from
+    /// an admitted peer" is enforced below the application rather than
+    /// asserted by it. See `pod_mgmt::peer_is_host` and `host_socket`.
     HostVsock,
     /// Ed25519 signature against a configured PUBLIC key, drand-anchored.
     ///
