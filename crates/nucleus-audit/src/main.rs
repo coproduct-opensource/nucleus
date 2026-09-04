@@ -251,6 +251,10 @@ enum Command {
         /// The executor's Ed25519 public key, hex-encoded (32 bytes).
         #[arg(long, requires = "attestation")]
         executor_pubkey: Option<String>,
+        /// Require every record to be decided under this certificate fingerprint
+        /// (hex): the pod's `fingerprint` in the node's `authority.json` (#2437).
+        #[arg(long)]
+        authority_fingerprint: Option<String>,
     },
     /// Verify a log of signed MediationReceipts and render a scoreboard.
     ///
@@ -642,27 +646,20 @@ fn main() -> Result<(), AuditError> {
             json,
             attestation,
             executor_pubkey,
+            authority_fingerprint,
         } => {
             let mut report =
                 verify_art12::verify_art12_log(&log, secret.as_ref().map(|s| s.as_bytes()))?;
+            verify_art12::apply_authority_requirement(
+                &mut report,
+                authority_fingerprint.as_deref(),
+            )?;
 
             if let (Some(att_path), Some(pubkey_hex)) = (attestation, executor_pubkey) {
                 let att: portcullis::art12_record::Art12Attestation =
                     serde_json::from_str(&std::fs::read_to_string(&att_path)?)
                         .map_err(|e| AuditError::Json { line: 0, source: e })?;
-                let key_bytes: [u8; 32] = hex::decode(&pubkey_hex)
-                    .ok()
-                    .and_then(|v| v.try_into().ok())
-                    .ok_or_else(|| AuditError::Invalid {
-                        line: 0,
-                        message: "--executor-pubkey must be 32 hex-encoded bytes".to_string(),
-                    })?;
-                let key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).map_err(|_| {
-                    AuditError::Invalid {
-                        line: 0,
-                        message: "--executor-pubkey is not a valid Ed25519 public key".to_string(),
-                    }
-                })?;
+                let key = verify_art12::executor_pubkey_from_hex(&pubkey_hex)?;
                 verify_art12::check_attestation(&att, &report.chain_head, &key)?;
                 report.attestation_checked = true;
                 report

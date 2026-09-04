@@ -1851,6 +1851,7 @@ async fn main() -> Result<(), ApiError> {
         art12_log.clone(),
         art12_shipper.clone(),
         art12_sink::mediation_receipt_log_path(args.art12_log.as_deref(), &spec.spec.work_dir),
+        pod_cert.as_deref().map(art12_sink::AuthorityBinding::from),
     );
 
     if dlc_provisioned {

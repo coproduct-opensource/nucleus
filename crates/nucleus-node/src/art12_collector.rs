@@ -195,12 +195,19 @@ pub async fn art12_append(
     let sig = headers
         .get("X-Nucleus-Signature")
         .and_then(|v| v.to_str().ok());
+    // The session id on this route is the pod id (`provision_pod_env`), so the
+    // node can ask its own registry which certificate it issued this pod.
+    let expected_authority = match uuid::Uuid::parse_str(&sid) {
+        Ok(pod_id) => state.authority.certificate_fingerprint(pod_id).await,
+        Err(_) => None,
+    };
     accept(
         &state.state_dir,
         state.trust_gate.art12_secret(),
         &sid,
         sig,
         &body,
+        expected_authority,
     )
     .await
 }
@@ -222,12 +229,18 @@ pub async fn art12_append(
 /// * storage failure — reported as failure, never as success. A pod told
 ///   "accepted" for a record the host did not keep carries on believing it was
 ///   witnessed.
+/// * wrong authority — when this node issued the pod a certificate
+///   (`expected_authority`), a record that names a different fingerprint, or
+///   none, is refused (#2437). The proxy stamps the certificate it verified at
+///   boot into every record; a mismatch means the record was not produced by
+///   the kernel this node authorized.
 pub async fn accept(
     state_dir: &Path,
     secret: Option<&[u8]>,
     raw_session_id: &str,
     signature: Option<&str>,
     body: &str,
+    expected_authority: Option<[u8; 32]>,
 ) -> (axum::http::StatusCode, &'static str) {
     use axum::http::StatusCode;
 
@@ -254,6 +267,12 @@ pub async fn accept(
         tracing::warn!(%session_id, "rejected an unauthenticated Article 12 record");
         return (StatusCode::UNAUTHORIZED, "bad signature");
     }
+    if let Some(expected) = expected_authority
+        && let Err(reason) = check_authority_binding(body, &expected)
+    {
+        tracing::warn!(%session_id, reason, "rejected an Article 12 record with the wrong authority");
+        return (StatusCode::FORBIDDEN, reason);
+    }
 
     match append_record(state_dir, &session_id, body).await {
         Ok(()) => (StatusCode::NO_CONTENT, ""),
@@ -262,6 +281,30 @@ pub async fn accept(
             (StatusCode::INTERNAL_SERVER_ERROR, "storage failed")
         }
     }
+}
+
+/// Whether a shipped record names the certificate this node issued its pod.
+///
+/// The record is parsed as the shared `Art12Record` type so the check reads the
+/// same field a verifier reads (`authority.fingerprint`, inside the signed
+/// preimage), not a regex over the body.
+fn check_authority_binding(body: &str, expected: &[u8; 32]) -> Result<(), &'static str> {
+    let rec: portcullis::art12_record::Art12Record =
+        serde_json::from_str(body).map_err(|_| "record is not an Article 12 record")?;
+    match rec.authority_fingerprint() {
+        None => Err("record names no authority but this pod holds a certificate"),
+        Some(fp) if fp == hex::encode(expected) => Ok(()),
+        Some(_) => Err("record names an authority this node did not issue to this pod"),
+    }
+}
+
+/// The container driver's Article 12 provisioning: a pod-side log under the
+/// pod's data volume (never the workspace). No ship URL: a container's network
+/// namespace has no guaranteed route back to the node's listener, so — like a
+/// Firecracker pod until vsock shipping lands — the executor attests the head
+/// the POD reported. Until #2437 a container pod kept no Article 12 log at all.
+pub fn provision_container_env(env: &mut Vec<String>) {
+    env.push("NUCLEUS_TOOL_PROXY_ART12_LOG=/data/pod/art12.jsonl".to_string());
 }
 
 #[cfg(test)]
@@ -376,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn an_unsigned_record_is_refused_and_not_stored() {
         let dir = tempfile::tempdir().unwrap();
-        let (code, _) = accept(dir.path(), Some(b"k"), "s1", None, "{}").await;
+        let (code, _) = accept(dir.path(), Some(b"k"), "s1", None, "{}", None).await;
         assert_eq!(code, StatusCode::UNAUTHORIZED);
         assert!(
             !session_log_path(dir.path(), "s1").exists(),
@@ -396,6 +439,7 @@ mod tests {
             "s1",
             Some(&sign(b"other", "s1", "{}")),
             "{}",
+            None,
         )
         .await;
         assert_eq!(code, StatusCode::UNAUTHORIZED);
@@ -414,6 +458,7 @@ mod tests {
             "s1",
             Some(&sign(b"k", "s1", body)),
             body,
+            None,
         )
         .await;
         assert_eq!(code, StatusCode::NO_CONTENT);
@@ -429,7 +474,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let body = "{}";
         // Even a signature valid under the EMPTY key must not get in.
-        let (code, _) = accept(dir.path(), None, "s1", Some(&sign(b"", "s1", body)), body).await;
+        let (code, _) = accept(
+            dir.path(),
+            None,
+            "s1",
+            Some(&sign(b"", "s1", body)),
+            body,
+            None,
+        )
+        .await;
         assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
         assert!(!session_log_path(dir.path(), "s1").exists());
     }
@@ -445,9 +498,92 @@ mod tests {
             "../escaped",
             Some(&sign(b"k", "s1", body)),
             body,
+            None,
         )
         .await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert!(!dir.path().join("../escaped.jsonl").exists());
+    }
+
+    fn bound_record(fingerprint_hex: Option<&str>) -> String {
+        let ext = fingerprint_hex
+            .map(|fp| format!(r#","extensions":{{"authority.fingerprint":"{fp}"}}"#))
+            .unwrap_or_default();
+        format!(
+            r#"{{"schema_version":1,"seq":1,"timestamp_unix":1,"session_id":"s","transport":"http","actor":{{"kind":"unknown"}},"operation":"run_bash","subject":"ls","verdict":"allow","gate_class":"hard","policy_checksum":"c","dlc_admission":"unprovisioned","lockdown_active":false{ext},"prev_hash":"","hash":"","signature":""}}"#
+        )
+    }
+
+    const ISSUED: [u8; 32] = [7u8; 32];
+
+    /// #2437: a record naming the certificate this node issued is stored.
+    #[tokio::test]
+    async fn a_record_naming_the_issued_authority_is_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = bound_record(Some(&hex::encode(ISSUED)));
+        let (code, _) = accept(
+            dir.path(),
+            Some(b"k"),
+            "s1",
+            Some(&sign(b"k", "s1", &body)),
+            &body,
+            Some(ISSUED),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NO_CONTENT);
+        assert!(session_log_path(dir.path(), "s1").exists());
+    }
+
+    /// A validly SIGNED record that names a certificate this node did not issue
+    /// to this pod is refused and not stored: the signature proves the pod sent
+    /// it, the fingerprint proves which kernel decided it, and they disagree.
+    #[tokio::test]
+    async fn a_record_naming_another_authority_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = bound_record(Some(&hex::encode([8u8; 32])));
+        let (code, reason) = accept(
+            dir.path(),
+            Some(b"k"),
+            "s1",
+            Some(&sign(b"k", "s1", &body)),
+            &body,
+            Some(ISSUED),
+        )
+        .await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "{reason}");
+        assert!(!session_log_path(dir.path(), "s1").exists());
+    }
+
+    /// A pod that holds a certificate cannot ship records that name none: the
+    /// binding is mandatory, not best-effort, once the node has issued one.
+    #[tokio::test]
+    async fn a_record_naming_no_authority_is_refused_when_the_pod_holds_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = bound_record(None);
+        let (code, _) = accept(
+            dir.path(),
+            Some(b"k"),
+            "s1",
+            Some(&sign(b"k", "s1", &body)),
+            &body,
+            Some(ISSUED),
+        )
+        .await;
+        assert_eq!(code, StatusCode::FORBIDDEN);
+        assert!(!session_log_path(dir.path(), "s1").exists());
+    }
+
+    /// The container driver keeps an Article 12 log under the pod`s data
+    /// volume, never the workspace (the proxy refuses a workspace path).
+    #[test]
+    fn container_pods_keep_an_article_12_log_outside_the_workspace() {
+        let mut env = Vec::new();
+        provision_container_env(&mut env);
+        let log = env
+            .iter()
+            .find_map(|e| e.strip_prefix("NUCLEUS_TOOL_PROXY_ART12_LOG="))
+            .expect("the container driver provisions an Article 12 log");
+        assert!(log.starts_with("/data/pod/"), "{log}");
+        assert!(!log.starts_with("/workspace"), "{log}");
     }
 }

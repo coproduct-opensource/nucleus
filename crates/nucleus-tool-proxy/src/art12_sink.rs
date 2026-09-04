@@ -338,6 +338,45 @@ pub(crate) fn health_json(log: Option<&Arc<Art12Log>>) -> serde_json::Value {
 }
 
 /// Appends an Article 12 record for every verdict, then delegates.
+/// The authority a pod's records are bound to (#2437): what the proxy kept of
+/// its own certificate after the one-time boot verification. Stamped into every
+/// record as the `authority.*` extensions, so the decision names the chain —
+/// and, through the node's copy of that chain, the root public key — that
+/// authorized the kernel which made it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthorityBinding {
+    fingerprint_hex: String,
+    chain_depth: usize,
+    root_identity: String,
+}
+
+impl From<&crate::pod_cert::PodCertificate> for AuthorityBinding {
+    fn from(cert: &crate::pod_cert::PodCertificate) -> Self {
+        Self {
+            fingerprint_hex: hex::encode(cert.fingerprint),
+            chain_depth: cert.chain_depth,
+            root_identity: cert.root_identity.clone(),
+        }
+    }
+}
+
+impl AuthorityBinding {
+    fn stamp(&self, ext: &mut std::collections::BTreeMap<String, String>) {
+        use portcullis::art12_record::{
+            EXT_AUTHORITY_CHAIN_DEPTH, EXT_AUTHORITY_FINGERPRINT, EXT_AUTHORITY_ROOT,
+        };
+        ext.insert(
+            EXT_AUTHORITY_FINGERPRINT.to_string(),
+            self.fingerprint_hex.clone(),
+        );
+        ext.insert(
+            EXT_AUTHORITY_CHAIN_DEPTH.to_string(),
+            self.chain_depth.to_string(),
+        );
+        ext.insert(EXT_AUTHORITY_ROOT.to_string(), self.root_identity.clone());
+    }
+}
+
 pub(crate) struct Art12Sink {
     inner: Arc<dyn VerdictSink>,
     log: Arc<Art12Log>,
@@ -353,9 +392,12 @@ pub(crate) struct Art12Sink {
     dlc_provisioned: bool,
     /// Opt-in: issue a signed `MediationReceipt` per verdict (default `None`).
     receipt_signer: Option<ReceiptSigner>,
+    /// The pod's certificate, when it holds one: stamped into every record.
+    authority: Option<AuthorityBinding>,
 }
 
 impl Art12Sink {
+    #[allow(clippy::too_many_arguments)] // one constructor, one place to assemble the chain
     pub(crate) fn new(
         inner: Arc<dyn VerdictSink>,
         log: Arc<Art12Log>,
@@ -364,6 +406,7 @@ impl Art12Sink {
         dlc_provisioned: bool,
         shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
         receipt_signer: Option<ReceiptSigner>,
+        authority: Option<AuthorityBinding>,
     ) -> Self {
         Self {
             inner,
@@ -373,6 +416,7 @@ impl Art12Sink {
             policy_checksum,
             dlc_provisioned,
             receipt_signer,
+            authority,
         }
     }
 
@@ -414,7 +458,7 @@ impl Art12Sink {
         // Everything the recorder attached that is not already a named field
         // travels as extensions — including `flow_cross_check` (#2144), so the
         // DAG's second opinion is in the regulatory record and not only in a log.
-        let extensions = ctx
+        let mut extensions: std::collections::BTreeMap<String, String> = ctx
             .extensions
             .iter()
             .filter(|(k, _)| {
@@ -425,6 +469,11 @@ impl Art12Sink {
             })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        // The authority this decision was made under (#2437). Stamped LAST so
+        // a recorder cannot claim a different certificate through the context.
+        if let Some(authority) = &self.authority {
+            authority.stamp(&mut extensions);
+        }
 
         Art12Record {
             // Assigned by `Art12Log::append`.
@@ -636,6 +685,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         )
     }
 
@@ -677,6 +727,7 @@ mod tests {
                 emitted: Arc::clone(&emitted),
                 receipt_log: None,
             }),
+            None,
         );
 
         sink.record(ctx(VerdictOutcome::Allow, &[])).unwrap();
@@ -726,6 +777,7 @@ mod tests {
                 emitted: Arc::new(Mutex::new(Vec::new())),
                 receipt_log: Some(ReceiptLog::open(&receipt_path).unwrap()),
             }),
+            None,
         );
 
         sink.record(ctx(VerdictOutcome::Allow, &[])).unwrap();
@@ -906,5 +958,61 @@ mod tests {
         let work = TempDir::new().unwrap();
         let elsewhere = TempDir::new().unwrap();
         assert!(reject_workspace_path(&elsewhere.path().join("a.jsonl"), work.path()).is_ok());
+    }
+
+    /// #2437: a pod that holds a certificate stamps every record with the
+    /// authority the deciding kernel was built from, inside the signed
+    /// preimage; a recorder cannot override it through the context; a pod with
+    /// no certificate stamps nothing (a pre-authority node).
+    #[test]
+    fn every_record_names_the_authority_it_was_decided_under() {
+        use portcullis::art12_record::{
+            EXT_AUTHORITY_CHAIN_DEPTH, EXT_AUTHORITY_FINGERPRINT, EXT_AUTHORITY_ROOT,
+        };
+        let dir = TempDir::new().unwrap();
+        let authority = AuthorityBinding {
+            fingerprint_hex: hex::encode([0xabu8; 32]),
+            chain_depth: 2,
+            root_identity: "spiffe://td/ns/system/sa/cli".to_string(),
+        };
+        let bound = Art12Sink::new(
+            Arc::new(NullSink),
+            open_log(&dir),
+            "sess".to_string(),
+            "checksum".to_string(),
+            false,
+            None,
+            None,
+            Some(authority.clone()),
+        );
+
+        // A recorder claiming a different certificate through the context loses.
+        let rec = bound.project(&ctx(
+            VerdictOutcome::Allow,
+            &[(EXT_AUTHORITY_FINGERPRINT, "deadbeef")],
+        ));
+        assert_eq!(
+            rec.authority_fingerprint(),
+            Some(authority.fingerprint_hex.as_str())
+        );
+        assert_eq!(
+            rec.extensions
+                .get(EXT_AUTHORITY_CHAIN_DEPTH)
+                .map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            rec.extensions.get(EXT_AUTHORITY_ROOT).map(String::as_str),
+            Some("spiffe://td/ns/system/sa/cli")
+        );
+        assert!(
+            rec.canonical_preimage()
+                .contains(&authority.fingerprint_hex),
+            "the binding is inside the signed preimage"
+        );
+
+        let unbound = sink_with(open_log(&dir));
+        let rec = unbound.project(&ctx(VerdictOutcome::Allow, &[]));
+        assert_eq!(rec.authority_fingerprint(), None);
     }
 }
