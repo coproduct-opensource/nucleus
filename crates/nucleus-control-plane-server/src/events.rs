@@ -182,6 +182,7 @@ mod tests {
     fn queued() -> JobState {
         JobState::Queued {
             submitted_at: Utc::now(),
+            owner: "spiffe://nucleus.local/agent/test".to_string(),
         }
     }
 
