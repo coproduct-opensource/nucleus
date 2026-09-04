@@ -946,7 +946,7 @@ pub fn write_mcp_config(
 /// Prefix identifying nucleus MCP tools. Only tools carrying this prefix route
 /// through the `PermissionLattice`-enforcing MCP server; anything else is a
 /// built-in tool that would act OUTSIDE the kernel.
-const NUCLEUS_MCP_TOOL_PREFIX: &str = "mcp__nucleus__";
+pub(crate) const NUCLEUS_MCP_TOOL_PREFIX: &str = "mcp__nucleus__";
 
 /// Capability token proving the *complete-mediation* confinement guard that
 /// makes launching the agent with the approval bypass safe.
@@ -1009,6 +1009,16 @@ fn run_agent_mcp(
     prompt: &str,
     work_dir: &Path,
 ) -> Result<std::process::Output> {
+    // Runtime complete mediation: the PreToolUse hook denies every tool that
+    // is not one of the guard's allowed nucleus MCP tools, so a built-in the
+    // static denylist below has never heard of is still blocked at the call
+    // edge. The settings file lives beside the MCP config.
+    let settings_path = crate::mediation::write_hook_settings(
+        mcp_config_path
+            .parent()
+            .ok_or_else(|| anyhow!("mcp config path has no parent directory"))?,
+    )?;
+
     let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
     cmd.arg("--print");
     if let Some(model) = &args.model {
@@ -1029,6 +1039,12 @@ fn run_agent_mcp(
         // `shell.rs`; the two disallow lists MUST stay identical (regression-tested).
         .arg("--disallowedTools")
         .arg(crate::constants::DISALLOWED_BUILTIN_TOOLS)
+        .arg("--settings")
+        .arg(&settings_path)
+        .env(
+            crate::mediation::ALLOWED_TOOLS_ENV,
+            guard.allowed_tools().join(","),
+        )
         .arg("--max-budget-usd")
         .arg(policy.budget.max_cost_usd.to_string())
         .arg(prompt)

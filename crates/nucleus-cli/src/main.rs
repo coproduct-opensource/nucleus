@@ -35,6 +35,7 @@ mod lineage;
 mod lineage_verify;
 mod lockdown;
 mod manifest;
+mod mediation;
 mod node;
 mod observe;
 mod profiles;
@@ -148,6 +149,11 @@ enum Commands {
 
     /// Verify an attested SVID against expected measurements (relying party, C9)
     VerifyAttestation(verify_attestation::VerifyAttestationArgs),
+
+    /// PreToolUse hook installed by `run`/`shell`: default-deny every tool
+    /// that is not an allowed nucleus MCP tool (internal; see `mediation`).
+    #[command(name = "mediation-hook", hide = true)]
+    MediationHook,
 }
 
 fn init_logging(verbose: bool) {
@@ -206,5 +212,8 @@ async fn main() -> Result<()> {
         Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
         Commands::Bundle(args) => bundle::execute(args).await,
         Commands::VerifyAttestation(args) => verify_attestation::execute(args),
+        // The hook's whole contract is its exit status; nothing else may
+        // reach stdout/stderr after the decision is printed.
+        Commands::MediationHook => std::process::exit(i32::from(mediation::run_hook())),
     }
 }
