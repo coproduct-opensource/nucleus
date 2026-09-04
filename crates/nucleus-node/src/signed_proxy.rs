@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,7 +15,8 @@ use hyper::body::Incoming;
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
 use nucleus_client::drand::{DrandClient, DrandConfig, DrandFailMode};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::{TcpListener, TcpStream, UnixStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
@@ -49,9 +51,51 @@ pub enum ApprovalSigning {
     Ed25519(Arc<ed25519_dalek::SigningKey>),
 }
 
+/// Where the pod's tool proxy is reached from the host.
+///
+/// `Tcp` is the env-provisioned container path today: the node's requests
+/// carry an HMAC the container's proxy checks. `Unix` is the host-verified
+/// container transport (#2446): the proxy inside the container listens on a
+/// socket in the pod directory the node bind-mounts, and admits the node by
+/// kernel-reported peer credentials (`nucleus-tool-proxy --listen-unix`), so
+/// the HMAC this proxy still attaches is not what authenticates the node
+/// there — the transport is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProxyTarget {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
+}
+
+impl ProxyTarget {
+    /// The authority the forwarded request names. A Unix socket has none, so
+    /// the conventional `localhost` stands in (hyper needs SOME `Host`; the
+    /// proxy on the other end does not route on it).
+    fn authority(&self) -> String {
+        match self {
+            Self::Tcp(addr) => addr.to_string(),
+            Self::Unix(_) => "localhost".to_string(),
+        }
+    }
+}
+
+impl From<SocketAddr> for ProxyTarget {
+    fn from(addr: SocketAddr) -> Self {
+        Self::Tcp(addr)
+    }
+}
+
+impl std::fmt::Display for ProxyTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tcp(addr) => write!(f, "{addr}"),
+            Self::Unix(path) => write!(f, "unix://{}", path.display()),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct SignedProxyState {
-    target: SocketAddr,
+    target: ProxyTarget,
     secret: Arc<Vec<u8>>,
     approval: Option<ApprovalSigning>,
     default_actor: Option<String>,
@@ -80,7 +124,7 @@ impl SignedProxy {
     /// signatures, use [`start_with_drand`] instead.
     #[allow(dead_code)]
     pub async fn start(
-        target: SocketAddr,
+        target: impl Into<ProxyTarget>,
         secret: Arc<Vec<u8>>,
         approval: Option<ApprovalSigning>,
         default_actor: Option<String>,
@@ -103,7 +147,7 @@ impl SignedProxy {
     /// Without drand anchoring (or for non-approval requests):
     /// - Message format: `"{timestamp}.{actor}.{body}"`
     pub async fn start_with_drand(
-        target: SocketAddr,
+        target: impl Into<ProxyTarget>,
         secret: Arc<Vec<u8>>,
         approval: Option<ApprovalSigning>,
         default_actor: Option<String>,
@@ -134,7 +178,7 @@ impl SignedProxy {
         });
 
         let state = SignedProxyState {
-            target,
+            target: target.into(),
             secret,
             approval,
             default_actor,
@@ -245,13 +289,13 @@ async fn proxy_handler(
         )
     };
 
-    let uri = build_target_uri(state.target, parts.uri.path_and_query())
+    let uri = build_target_uri(&state.target, parts.uri.path_and_query())
         .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad uri: {e}")))?;
 
     let mut headers = filter_headers(&parts.headers);
     headers.insert(
         axum::http::header::HOST,
-        HeaderValue::from_str(&state.target.to_string())
+        HeaderValue::from_str(&state.target.authority())
             .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad host: {e}")))?,
     );
     headers.insert(
@@ -293,7 +337,7 @@ async fn proxy_handler(
         .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad request: {e}")))?;
     *outbound.headers_mut() = headers;
 
-    let response = forward_request(state.target, outbound)
+    let response = forward_request(&state.target, outbound)
         .await
         .map_err(|e| proxy_error(StatusCode::BAD_GATEWAY, format!("proxy error: {e}")))?;
 
@@ -331,11 +375,11 @@ fn extract_actor(headers: &HeaderMap, default_actor: Option<&str>) -> Option<Str
 }
 
 fn build_target_uri(
-    target: SocketAddr,
+    target: &ProxyTarget,
     path_and_query: Option<&axum::http::uri::PathAndQuery>,
 ) -> Result<Uri, axum::http::Error> {
     let mut builder = Uri::builder().scheme("http");
-    builder = builder.authority(target.to_string());
+    builder = builder.authority(target.authority());
     if let Some(path) = path_and_query {
         builder = builder.path_and_query(path.as_str());
     } else {
@@ -368,10 +412,24 @@ fn sign_request(secret: &[u8], timestamp: i64, actor: Option<&str>, body: &[u8])
 }
 
 async fn forward_request(
-    target: SocketAddr,
+    target: &ProxyTarget,
     request: Request<Full<axum::body::Bytes>>,
 ) -> Result<AxumResponse, Box<dyn std::error::Error + Send + Sync>> {
-    let stream = TcpStream::connect(target).await?;
+    match target {
+        ProxyTarget::Tcp(addr) => send_over(TcpStream::connect(addr).await?, request).await,
+        ProxyTarget::Unix(path) => send_over(UnixStream::connect(path).await?, request).await,
+    }
+}
+
+/// One HTTP/1 exchange over an already-connected stream, whatever it is
+/// (TCP to an env-provisioned container, Unix socket to a host-verified one).
+async fn send_over<S>(
+    stream: S,
+    request: Request<Full<axum::body::Bytes>>,
+) -> Result<AxumResponse, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await?;
 
     tokio::spawn(async move {
@@ -424,6 +482,76 @@ mod tests {
     /// An Ed25519 approval signature produced the way the handler produces it
     /// verifies under `verify_strict` with the public half — the check the
     /// guest performs against `nucleus.approval_pubkeys`.
+    /// The signed proxy forwards over a Unix socket exactly as over TCP: the
+    /// request reaches the socket's server with the node's signature headers
+    /// attached, and the reply comes back through. Pinned against a real
+    /// bound socket so a regression in `forward_request`'s Unix arm cannot
+    /// hide behind the TCP path that every other test exercises.
+    #[tokio::test]
+    async fn a_unix_target_is_reached_and_signed() {
+        use axum::routing::get;
+        use std::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("proxy.sock");
+        let seen: Arc<Mutex<Option<HeaderMap>>> = Arc::new(Mutex::new(None));
+        let seen_in = Arc::clone(&seen);
+        let backend = Router::new().route(
+            "/v1/ping",
+            get(move |headers: HeaderMap| {
+                let seen_in = Arc::clone(&seen_in);
+                async move {
+                    *seen_in.lock().unwrap() = Some(headers);
+                    "ok"
+                }
+            }),
+        );
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, backend).await;
+        });
+
+        let proxy = SignedProxy::start(
+            ProxyTarget::Unix(sock.clone()),
+            Arc::new(b"test-secret".to_vec()),
+            None,
+            Some("node".to_string()),
+        )
+        .await
+        .unwrap();
+
+        // Client side over plain TCP to the proxy, using the same one-exchange
+        // helper the proxy uses (no reqwest: the workspace's reqwest has no
+        // crypto provider installed in tests, and none is needed here).
+        let request = Request::builder()
+            .method("GET")
+            .uri(format!("http://{}/v1/ping", proxy.listen_addr()))
+            .header(axum::http::header::HOST, proxy.listen_addr().to_string())
+            .body(Full::new(axum::body::Bytes::new()))
+            .unwrap();
+        let stream = TcpStream::connect(proxy.listen_addr()).await.unwrap();
+        let response = send_over(stream, request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(&body[..], b"ok");
+
+        let headers = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("backend saw the request");
+        assert!(
+            headers.contains_key(HEADER_SIGNATURE),
+            "signature attached: {headers:?}"
+        );
+        assert!(headers.contains_key(HEADER_TIMESTAMP));
+        assert_eq!(headers.get(HEADER_ACTOR).unwrap(), "node");
+        assert_eq!(headers.get(axum::http::header::HOST).unwrap(), "localhost");
+
+        proxy.shutdown().await;
+        server.abort();
+    }
+
     #[test]
     fn an_approval_signature_round_trips_to_the_public_key() {
         use ed25519_dalek::Signer as _;
