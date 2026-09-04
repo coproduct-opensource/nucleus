@@ -1,0 +1,172 @@
+name: Aeneas certificate chain (scoped extraction + monotonicity)
+
+# #2451: the monotone-attenuation walk of `verify_certificate` is restated
+# over an abstract lattice in `portcullis_core::certchain::chain_attenuates`,
+# bound to the production walk by a parity test over real signed certificates,
+# extracted with Charon/Aeneas, and proven monotone for chains of ANY length
+# in `CertChainMonotoneExtracted.lean`. This job re-extracts FRESH on every
+# PR that touches the root, the production walk, or the proof — so the
+# committed `generated-certchain/` cannot silently describe code that no
+# longer exists (the failure mode the IFC job's history documents). Same
+# shape as aeneas-ifc-scoped.yml; drift from the committed copy is a warning,
+# the theorem is built against the fresh output, and the axiom set is audited.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/portcullis-core/src/certchain.rs"
+      - "crates/portcullis-core/src/category.rs"
+      - "crates/portcullis/src/certificate.rs"
+      - "crates/portcullis-core/lean/CertChainMonotoneExtracted.lean"
+      - "crates/portcullis-core/lean/generated-certchain/**"
+      - ".github/workflows/aeneas-certchain.yml"
+  pull_request:
+    paths:
+      - "crates/portcullis-core/src/certchain.rs"
+      - "crates/portcullis-core/src/category.rs"
+      - "crates/portcullis/src/certificate.rs"
+      - "crates/portcullis-core/lean/CertChainMonotoneExtracted.lean"
+      - "crates/portcullis-core/lean/generated-certchain/**"
+      - ".github/workflows/aeneas-certchain.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: aeneas-certchain-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  AENEAS_RELEASE: nightly-2026.06.10
+  CHARON_NIGHTLY: nightly-2026-06-01
+  EXTRACT_ROOT: portcullis_core::certchain::chain_attenuates
+
+jobs:
+  aeneas-certchain:
+    name: Scoped Aeneas (certificate chain) + parity + monotonicity theorem
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust nightly for Charon
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: ${{ env.CHARON_NIGHTLY }}
+          components: rustc-dev,llvm-tools-preview,rust-src
+
+      - name: Rust / cargo cache (Charon target dir)
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+        with:
+          workspaces: crates/portcullis-core
+          key: charon-certchain-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Stable toolchain (for cargo test)
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+
+      # The model<->code bond the theorem rests on: the extracted walk agrees
+      # with `verify_certificate` on real, fully signed certificates, including
+      # a hand-built hop that is validly signed but widens its permissions.
+      - name: Parity test (extracted walk == verify_certificate step 4c)
+        run: |
+          cargo test -p portcullis-core --all-features certchain
+          cargo test -p portcullis --lib chain_attenuates_agrees_with_verify_certificate
+
+      - name: Cache Aeneas binary
+        id: cache-aeneas-bin
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: /tmp/aeneas-bin
+          key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
+
+      - name: Download Aeneas pre-built binaries
+        if: steps.cache-aeneas-bin.outputs.cache-hit != 'true'
+        run: |
+          gh release download "$AENEAS_RELEASE" \
+            --repo AeneasVerif/aeneas \
+            --pattern "aeneas-linux-x86_64.tar.gz" \
+            --dir /tmp
+          mkdir -p /tmp/aeneas-bin
+          tar xzf /tmp/aeneas-linux-x86_64.tar.gz -C /tmp/aeneas-bin
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Add Aeneas to PATH
+        run: echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+
+      - name: Verify tools
+        run: |
+          which charon && charon version
+          which aeneas && aeneas -version
+
+      - name: Charon scoped MIR extraction
+        working-directory: crates/portcullis-core
+        run: |
+          cargo clean -p portcullis-core
+          charon cargo --preset aeneas --start-from "$EXTRACT_ROOT"
+
+      - name: Aeneas Lean 4 translation (scoped slice)
+        run: |
+          LLBC="$(find crates/portcullis-core . -maxdepth 2 -name 'portcullis_core.llbc' -print -quit)"
+          test -n "$LLBC" || { echo "ERROR: charon produced no portcullis_core.llbc"; exit 1; }
+          mkdir -p crates/portcullis-core/lean/ci-generated-certchain
+          aeneas -backend lean -split-files "$LLBC" \
+            -dest crates/portcullis-core/lean/ci-generated-certchain
+
+      # The ONE disclosed hand-edit: the self-imports are retargeted from the
+      # crate-derived `PortcullisCore.*` to `PortcullisCoreCertChain.*` so this
+      # lib does not collide with the whole-crate «PortcullisCore» lib.
+      - name: Canonicalize generated-certchain from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-certchain/PortcullisCoreCertChain
+          SRC=crates/portcullis-core/lean/ci-generated-certchain
+          for f in Types.lean Funs.lean FunsExternal_Template.lean; do
+            test -f "$SRC/$f" || { echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1; }
+          done
+          for pair in "Types.lean:Types.lean" "Funs.lean:Funs.lean" "FunsExternal_Template.lean:FunsExternal.lean"; do
+            src="${pair%%:*}"; dst="${pair##*:}"
+            if ! diff -q <(sed 's/^import PortcullisCoreCertChain\./import PortcullisCore./; s/^-- Filled from FunsExternal_Template.lean:.*$/-- This is a template file: rename it to "FunsExternal.lean" and fill the holes./' "$DST/$dst") "$SRC/$src" > /dev/null 2>&1; then
+              echo "::warning::generated-certchain $dst drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+            sed 's/^import PortcullisCore\./import PortcullisCoreCertChain./; s/^-- This is a template file: rename it to "FunsExternal.lean" and fill the holes.$/-- Filled from FunsExternal_Template.lean: the one external, `Iter::fold`, stays an axiom (see CertChainMonotoneExtracted.lean)./' "$SRC/$src" > "$DST/$dst"
+          done
+          echo "generated-certchain/ canonicalized from the fresh extraction; theorem builds against it."
+
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
+        with:
+          lean-project-dir: crates/portcullis-core/lean
+          build-target: PortcullisCoreCertChain
+          cache-key-prefix: lean-certchain
+
+      - name: lake build (extracted core + theorem)
+        working-directory: crates/portcullis-core/lean
+        shell: bash
+        run: |
+          lake build PortcullisCoreCertChain
+          lake build CertChainMonotoneExtracted 2>&1 | tee /tmp/lake-certchain.log
+
+      - name: Assert clean axiom set (no sorryAx / opaque axioms)
+        shell: bash
+        run: |
+          log=/tmp/lake-certchain.log
+          test -s "$log" || { echo "ERROR: $log is missing or empty"; exit 1; }
+          grep -qE "depends on axioms|does not depend on any axioms" "$log" || {
+            echo "ERROR: no '#print axioms' output in $log; nothing was audited"; exit 1; }
+          echo "=== #print axioms output ==="
+          grep -E "depends on axioms|does not depend on any axioms" "$log"
+          if grep -E "depends on axioms" "$log" | grep -qE "sorryAx|External|\.fold"; then
+            echo "ERROR: the monotonicity theorem depends on sorryAx or an opaque Aeneas axiom"; exit 1
+          fi
+          echo "clean: only propext / Quot.sound / Classical.choice, as disclosed in the file header."

@@ -579,3 +579,24 @@ lean_lib «RepairAlgebraProofs» where
 -- K4 SPIKE: governance-monotonicity completeness (mathlib-free model + crux proof)
 lean_lib «GovernanceCompletenessSpike» where
   roots := #[`GovernanceCompletenessSpike]
+
+-- Aeneas-generated certificate-chain walk (from real Rust: crates/portcullis-
+-- core/src/certchain.rs's `chain_attenuates`, the monotone-attenuation step
+-- of `portcullis::certificate::verify_certificate` restated over an abstract
+-- lattice — #2451). Same one-disclosed-hand-edit convention as
+-- generated-attenuation: Funs/FunsExternal import `PortcullisCoreCertChain.Types`
+-- instead of the crate-wide `PortcullisCore.Types`.
+lean_lib «PortcullisCoreCertChain» where
+  roots := #[
+    `PortcullisCoreCertChain.Types,
+    `PortcullisCoreCertChain.FunsExternal,
+    `PortcullisCoreCertChain.Funs
+  ]
+  srcDir := "generated-certchain"
+
+-- Chain monotonicity proven OVER the generated core above: if the extracted
+-- per-hop step folds to `true`, every block's effective permissions are `leq`
+-- its parent's, for chains of any length (induction, not bounded model
+-- checking — strictly stronger than the Kani DEL harnesses on this property).
+lean_lib «CertChainMonotoneExtracted» where
+  roots := #[`CertChainMonotoneExtracted]

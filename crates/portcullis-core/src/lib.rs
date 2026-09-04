@@ -92,6 +92,7 @@ pub mod c2pa_manifest;
 pub mod c2pa_signer;
 pub mod capability_traits;
 pub mod category;
+pub mod certchain;
 pub mod combinators;
 pub mod compartment;
 #[cfg(feature = "serde")]

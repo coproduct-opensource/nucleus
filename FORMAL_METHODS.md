@@ -222,6 +222,15 @@ The `nucleus-claude-hook` binary is the user-facing product. Here's what's verif
    `ExposureSet`/`Operation`/`IFCLabel` remain hand-written Lean models (Aeneas can't yet
    translate their bool-field / large-enum shapes), so ~half the safety surface is
    model-level, not machine-extracted. Closing that is the open extraction work.
+   The certificate chain is now on the extracted side of that line (#2451):
+   `portcullis_core::certchain::chain_attenuates` — the monotone-attenuation walk of
+   `verify_certificate`, restated over an abstract lattice — is Charon/Aeneas-extracted
+   fresh by `aeneas-certchain.yml` and proven in `CertChainMonotoneExtracted.lean` to
+   admit no escalating hop for chains of ANY length (induction, vs Kani DEL1–DEL3's
+   bounded checks). Its bond to the real walk is a parity test over signed
+   certificates, including a hand-built hop that is validly signed but wider than its
+   parent; the loop SHAPE is hand-written Lean over the extracted per-hop step, the
+   same disclosed gap as `AttenuationChainExtracted.lean` (`Iter::fold` is external).
 
 6. **The flow graph in the hook is a DAG, not the full causal graph.** The
    `LeafTracker` assigns parents by source category (trusted vs adversarial).
@@ -238,6 +247,7 @@ lake build PortcullisCoreBridge FlowProofs ExposureProofs DeclassifyProofs \
            DecidePureProofs CompartmentProofs DelegationProofs DerivationProofs \
            FlowGraphProofs IFCSemilatticeProofs IntegrityNoninterferenceExtracted \
            SemanticIFC ConstructiveSecurity WasiWorldFunctor WasiIfcBoundary \
+           CertChainMonotoneExtracted \
            BelnapDecisionProofs                # ... the proven tier (CONJECTURES.md, Tier 1)
 # A bare `lake build` of the WHOLE tree also compiles the research libs, but it
 # exits 0 even with open holes, because `sorry` is a WARNING, not an error. Do
