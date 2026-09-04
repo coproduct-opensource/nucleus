@@ -89,6 +89,11 @@ Set `"replace_defaults": true` to start from scratch.
   persist across sessions) and re-checked on every later listing; a tool that
   redefines itself after approval is refused, and metadata that isn't vouched for
   is treated as adversarial ingest.
+- **A `notifications/tools/list_changed` makes the catalogue stale.** The
+  server has said the tools it advertised are no longer the ones it serves, so
+  until a fresh `tools/list` is vetted every pinned digest may be out of date;
+  calls are refused (enforce) or reported (observe) until then. A silent
+  mutation, with no notification, is still caught at the next listing.
 - **Pinning is trust-on-first-use.** That is a real bound and worth stating
   plainly: TOFU defends the *rug-pull* — benign at approval, mutated later — and
   the metadata-tainting is what covers a server that was hostile from the start.
