@@ -185,7 +185,9 @@ impl Default for NodeConfig {
 }
 
 fn default_node_url() -> String {
-    "http://127.0.0.1:8080".to_string()
+    // https:// since Move B: the node's HTTP listener requires mTLS
+    // unconditionally, with no plaintext/HMAC fallback left.
+    "https://127.0.0.1:8080".to_string()
 }
 fn default_actor() -> String {
     "nucleus-cli".to_string()

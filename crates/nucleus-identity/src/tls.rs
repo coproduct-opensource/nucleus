@@ -40,6 +40,24 @@ use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, S
 use std::sync::Arc;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+/// Builds a rustls root store from a trust bundle's roots.
+///
+/// Shared by [`TlsServerConfig::build`] and [`TlsClientConfig::build`], and
+/// exported so a caller that needs a raw verifier built from primitives
+/// (e.g. tonic's `Endpoint::tls_config_with_verifier`, which has no public
+/// hook for a pre-built `ClientConfig`) can construct a
+/// [`SpiffeServerCertVerifier`] without duplicating this conversion.
+pub fn root_store_from_trust_bundle(trust_bundle: &TrustBundle) -> Result<RootCertStore> {
+    let mut roots = RootCertStore::empty();
+    for root in trust_bundle.roots() {
+        let cert_der = root.der();
+        roots
+            .add(CertificateDer::from(cert_der.to_vec()))
+            .map_err(|e| Error::Certificate(format!("failed to add root cert: {}", e)))?;
+    }
+    Ok(roots)
+}
+
 /// Builder for TLS server configuration.
 ///
 /// Creates a `rustls::ServerConfig` that requires client certificates,
@@ -73,14 +91,7 @@ impl TlsServerConfig {
         // Install ring as the crypto provider
         let _ = default_provider().install_default();
 
-        // Build root cert store from trust bundle
-        let mut roots = RootCertStore::empty();
-        for root in self.trust_bundle.roots() {
-            let cert_der = root.der();
-            roots
-                .add(CertificateDer::from(cert_der.to_vec()))
-                .map_err(|e| Error::Certificate(format!("failed to add root cert: {}", e)))?;
-        }
+        let roots = root_store_from_trust_bundle(&self.trust_bundle)?;
 
         // Create client verifier that requires client certs
         let client_verifier = WebPkiClientVerifier::builder(Arc::new(roots))
@@ -150,14 +161,7 @@ impl TlsClientConfig {
         // Install ring as the crypto provider
         let _ = default_provider().install_default();
 
-        // Build root cert store from trust bundle
-        let mut roots = RootCertStore::empty();
-        for root in self.trust_bundle.roots() {
-            let cert_der = root.der();
-            roots
-                .add(CertificateDer::from(cert_der.to_vec()))
-                .map_err(|e| Error::Certificate(format!("failed to add root cert: {}", e)))?;
-        }
+        let roots = root_store_from_trust_bundle(&self.trust_bundle)?;
 
         // Parse client certificate chain
         let cert_chain = parse_cert_chain(&self.client_cert.chain_pem())?;
@@ -211,14 +215,21 @@ pub fn server_name_from_trust_domain(trust_domain: &str) -> Result<ServerName<'s
 ///
 /// This enables mTLS between workloads using SPIFFE identities without requiring
 /// DNS infrastructure or certificate authority support for DNS name validation.
+///
+/// Public (not just used internally by [`TlsClientConfig`]) so callers that
+/// need a raw `rustls`/`tokio-rustls` `ServerCertVerifier` — e.g. tonic's
+/// `Endpoint::tls_config_with_verifier`, which has no way to accept a
+/// pre-built `TlsClientConfig` — can build one from these same primitives
+/// instead of reimplementing SPIFFE verification. Two divergent verifiers is
+/// the defect this whole identity layer exists to avoid.
 #[derive(Debug)]
-struct SpiffeServerCertVerifier {
+pub struct SpiffeServerCertVerifier {
     roots: Arc<RootCertStore>,
     trust_domain: String,
 }
 
 impl SpiffeServerCertVerifier {
-    fn new(roots: Arc<RootCertStore>, trust_domain: String) -> Self {
+    pub fn new(roots: Arc<RootCertStore>, trust_domain: String) -> Self {
         Self {
             roots,
             trust_domain,

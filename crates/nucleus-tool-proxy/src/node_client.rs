@@ -1,10 +1,17 @@
 #![allow(clippy::disallowed_types)] // #1216 exempt: node management HTTP client (infrastructure, not agent I/O)
 //! HTTP client for nucleus-node pod management.
 //!
-//! Used by orchestrator pods to create and manage sub-pods via
-//! the nucleus-node REST API with HMAC request signing.
-
-use nucleus_client::sign_http_headers;
+//! Used by orchestrator pods to create and manage sub-pods via the
+//! nucleus-node REST API, authenticating with the pod's OWN SVID over mTLS
+//! — the same identity guest-init already fetches for Tier 1/2 sandbox proof
+//! (`NUCLEUS_IDENTITY_CERT`/`_KEY`/`_TRUST_BUNDLE`), reused here rather than
+//! minting a second one. Move B: this used to HMAC-sign every request with
+//! `proxy_auth_secret` — a value the pod never independently held (the node
+//! injected it at spawn) and which the node's `/v1/pods` API in fact
+//! verified against a DIFFERENT secret (`auth_secret`), a pre-existing
+//! mismatch this migration sidesteps rather than needing to first untangle.
+//! Since the node's HTTP listener now requires mTLS unconditionally (see
+//! `nucleus-node/src/http_serve.rs`), there is no HMAC fallback to keep.
 
 /// The header names, imported rather than restated. Both sides reading one
 /// definition is what keeps a typo from silently degrading every caller to
@@ -46,7 +53,6 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct NodeClient {
     base_url: String,
-    auth_secret: Vec<u8>,
     http: reqwest::Client,
 }
 
@@ -91,18 +97,62 @@ impl std::fmt::Display for NodeClientError {
 impl std::error::Error for NodeClientError {}
 
 impl NodeClient {
-    /// Create a new node client.
-    pub fn new(base_url: String, auth_secret: String) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .expect("failed to build HTTP client");
+    /// Build a node client that authenticates over mTLS with the given SVID
+    /// identity, presenting it to a node whose HTTP listener now requires
+    /// mTLS unconditionally.
+    ///
+    /// `identity_pem` is the SVID cert and key concatenated in one buffer —
+    /// the same convention `nucleus-cli`'s `load_mtls_config` and
+    /// `nucleus-sdk::MtlsConfig` already use, so callers can build it the
+    /// same way: read cert bytes, push a newline, extend with key bytes.
+    /// `trust_bundle_pem` is the node's CA root, used to validate the
+    /// server's cert chain; hostname/SNI verification is skipped (see the
+    /// comment on `tls_certs_only` below) because the node's SVID carries a
+    /// SPIFFE URI SAN, never a DNS or IP SAN — SPIFFE identity, not
+    /// hostname, is this system's trust model, matching every other mTLS
+    /// client in this codebase (`nucleus-cli/src/node.rs`,
+    /// `nucleus-sdk/src/auth.rs`).
+    pub fn new(
+        base_url: String,
+        identity_pem: &[u8],
+        trust_bundle_pem: &[u8],
+    ) -> Result<Self, NodeClientError> {
+        // Idempotent — see nucleus-cli's `create_client` for why this must
+        // run before building any reqwest client on the `rustls-no-provider`
+        // feature, and why installing it again here is harmless.
+        let _ = rustls::crypto::ring::default_provider().install_default();
 
-        Self {
+        let identity = reqwest::Identity::from_pem(identity_pem).map_err(|e| NodeClientError {
+            message: format!("failed to build client identity from SVID cert/key: {e}"),
+        })?;
+        let roots = reqwest::Certificate::from_pem_bundle(trust_bundle_pem).map_err(|e| {
+            NodeClientError {
+                message: format!("failed to parse trust bundle: {e}"),
+            }
+        })?;
+
+        let http = reqwest::Client::builder()
+            .identity(identity)
+            .timeout(std::time::Duration::from_secs(30))
+            // `tls_certs_only`, not repeated `add_root_certificate`: reqwest
+            // refuses to combine `danger_accept_invalid_hostnames` with the
+            // platform/webpki default roots, since that combination would
+            // mean trusting a hostname-unverified cert from ANY public CA.
+            // `tls_certs_only` replaces the trust store entirely with ONLY
+            // the node's own CA root, so the chain is still fully validated
+            // — only hostname matching is skipped, and only against a
+            // pinned root.
+            .tls_certs_only(roots)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .map_err(|e| NodeClientError {
+                message: format!("failed to build mTLS client: {e}"),
+            })?;
+
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            auth_secret: auth_secret.into_bytes(),
             http,
-        }
+        })
     }
 
     /// Create a sub-pod from a PodSpec YAML string.
@@ -119,13 +169,7 @@ impl NodeClient {
     /// Get logs for a specific pod.
     pub async fn pod_logs(&self, id: Uuid) -> Result<String, NodeClientError> {
         let url = format!("{}/v1/pods/{}/logs", self.base_url, id);
-        let body_bytes = b"";
-        let signed = sign_http_headers(&self.auth_secret, Some("tool-proxy"), body_bytes);
-
         let mut request = self.http.get(&url);
-        for (key, value) in &signed.headers {
-            request = request.header(key.as_str(), value.as_str());
-        }
         if let Some((pod_id, token)) = caller_identity_headers() {
             request = request.header(HEADER_POD_ID, pod_id);
             request = request.header(HEADER_POD_TOKEN, token);
@@ -150,16 +194,12 @@ impl NodeClient {
     pub async fn cancel_pod(&self, id: Uuid) -> Result<(), NodeClientError> {
         let url = format!("{}/v1/pods/{}/cancel", self.base_url, id);
         let body_bytes = b"{}";
-        let signed = sign_http_headers(&self.auth_secret, Some("tool-proxy"), body_bytes);
 
         let mut request = self
             .http
             .post(&url)
             .header("content-type", "application/json")
             .body(body_bytes.to_vec());
-        for (key, value) in &signed.headers {
-            request = request.header(key.as_str(), value.as_str());
-        }
         if let Some((pod_id, token)) = caller_identity_headers() {
             request = request.header(HEADER_POD_ID, pod_id);
             request = request.header(HEADER_POD_TOKEN, token);
@@ -178,7 +218,8 @@ impl NodeClient {
         Ok(())
     }
 
-    /// POST with JSON body and HMAC signing.
+    /// POST with a JSON body, authenticated by the client cert presented at
+    /// the TLS handshake — no per-request signing needed.
     async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         path: &str,
@@ -188,16 +229,12 @@ impl NodeClient {
         let body_bytes = serde_json::to_vec(body).map_err(|e| NodeClientError {
             message: e.to_string(),
         })?;
-        let signed = sign_http_headers(&self.auth_secret, Some("tool-proxy"), &body_bytes);
 
         let mut request = self
             .http
             .post(&url)
             .header("content-type", "application/json")
             .body(body_bytes);
-        for (key, value) in &signed.headers {
-            request = request.header(key.as_str(), value.as_str());
-        }
         if let Some((pod_id, token)) = caller_identity_headers() {
             request = request.header(HEADER_POD_ID, pod_id);
             request = request.header(HEADER_POD_TOKEN, token);
@@ -220,19 +257,13 @@ impl NodeClient {
         })
     }
 
-    /// GET with HMAC signing.
+    /// GET, authenticated by the client cert presented at the TLS handshake.
     async fn get_json<R: for<'de> Deserialize<'de>>(
         &self,
         path: &str,
     ) -> Result<R, NodeClientError> {
         let url = format!("{}{}", self.base_url, path);
-        let body_bytes = b"";
-        let signed = sign_http_headers(&self.auth_secret, Some("tool-proxy"), body_bytes);
-
         let mut request = self.http.get(&url);
-        for (key, value) in &signed.headers {
-            request = request.header(key.as_str(), value.as_str());
-        }
         if let Some((pod_id, token)) = caller_identity_headers() {
             request = request.header(HEADER_POD_ID, pod_id);
             request = request.header(HEADER_POD_TOKEN, token);
@@ -338,5 +369,140 @@ mod caller_identity_tests {
     #[test]
     fn the_two_headers_are_distinct() {
         assert_ne!(super::HEADER_POD_ID, super::HEADER_POD_TOKEN);
+    }
+}
+
+#[cfg(test)]
+mod mtls_tests {
+    //! Satisfy-before-refute for Move B: construct a real client that
+    //! completes an mTLS handshake and gets a real response before trusting
+    //! that an unrelated CA is refused. Mirrors
+    //! `nucleus-cli/src/node.rs`'s `create_client_completes_a_real_mtls_handshake`
+    //! / `create_client_refuses_a_server_from_an_unrelated_ca` pair — same
+    //! primitives, same two-sided proof, different client.
+    use super::*;
+    use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa, TlsServerConfig};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn issue(
+        ca: &SelfSignedCa,
+        trust_domain: &str,
+        service: &str,
+    ) -> nucleus_identity::WorkloadCertificate {
+        let identity = Identity::new(trust_domain, "system", service);
+        let csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        ca.sign_csr(
+            csr.csr(),
+            csr.private_key(),
+            &identity,
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_pods_completes_a_real_mtls_handshake() {
+        let trust_domain = "node-client-mtls-test.nucleus.local";
+        let ca = SelfSignedCa::new(trust_domain).unwrap();
+        let trust_bundle = ca.trust_bundle().clone();
+
+        let server_cert = issue(&ca, trust_domain, "node").await;
+        let client_cert = issue(&ca, trust_domain, "tool-proxy").await;
+
+        let mut identity_pem = client_cert.chain_pem().into_bytes();
+        identity_pem.push(b'\n');
+        identity_pem.extend_from_slice(client_cert.private_key_pem().as_bytes());
+        let bundle_pem = trust_bundle
+            .roots()
+            .iter()
+            .map(|c| c.to_pem())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into_bytes();
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer) = tcp_listener.accept().await.unwrap();
+            let acceptor = TlsServerConfig::new(server_cert, trust_bundle)
+                .build_acceptor()
+                .unwrap();
+            let mut tls = acceptor.accept(stream).await.unwrap();
+            let mut buf = [0u8; 1024];
+            let n = tls.read(&mut buf).await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&buf[..n]).starts_with("GET /v1/pods"),
+                "server should have received the real request the client sent, \
+                 with no HMAC headers to sign or verify"
+            );
+            tls.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n[]",
+            )
+            .await
+            .unwrap();
+        });
+
+        let client =
+            NodeClient::new(format!("https://{addr}"), &identity_pem, &bundle_pem).unwrap();
+        let pods = client
+            .list_pods()
+            .await
+            .expect("a real mTLS handshake against the SAME CA must succeed");
+        assert!(pods.is_empty());
+
+        server_handle.await.unwrap();
+    }
+
+    /// The refute half: a server cert from an UNRELATED CA must be refused
+    /// even though hostname verification is skipped — proving `tls_certs_only`
+    /// is pinning to the SVID's own trust bundle, not a broader store.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_pods_refuses_a_server_from_an_unrelated_ca() {
+        let real_domain = "node-client-refuse-test.nucleus.local";
+        let real_ca = SelfSignedCa::new(real_domain).unwrap();
+        let client_cert = issue(&real_ca, real_domain, "tool-proxy").await;
+        let real_trust_bundle = real_ca.trust_bundle().clone();
+
+        let stranger_domain = "stranger.node-client.nucleus.local";
+        let stranger_ca = SelfSignedCa::new(stranger_domain).unwrap();
+        let server_cert = issue(&stranger_ca, stranger_domain, "node").await;
+        let stranger_trust_bundle = stranger_ca.trust_bundle().clone();
+
+        let mut identity_pem = client_cert.chain_pem().into_bytes();
+        identity_pem.push(b'\n');
+        identity_pem.extend_from_slice(client_cert.private_key_pem().as_bytes());
+        let bundle_pem = real_trust_bundle
+            .roots()
+            .iter()
+            .map(|c| c.to_pem())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into_bytes();
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer) = tcp_listener.accept().await.unwrap();
+            let acceptor = TlsServerConfig::new(server_cert, stranger_trust_bundle)
+                .build_acceptor()
+                .unwrap();
+            // A refused handshake never reaches `accept`'s Ok path — this
+            // task's job is just to hold the listening socket open.
+            let _ = acceptor.accept(stream).await;
+        });
+
+        let client =
+            NodeClient::new(format!("https://{addr}"), &identity_pem, &bundle_pem).unwrap();
+        let result = client.list_pods().await;
+        assert!(
+            result.is_err(),
+            "a server cert from an unrelated CA must be refused, not silently trusted"
+        );
+
+        server_handle.abort();
     }
 }

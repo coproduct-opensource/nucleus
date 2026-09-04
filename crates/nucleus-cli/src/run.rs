@@ -26,7 +26,15 @@ use crate::profiles;
 /// Resolved configuration from args, config file, and Keychain
 struct ResolvedConfig {
     node_url: String,
-    node_auth_secret: String,
+    /// mTLS, when the identity `nucleus setup` provisions (Move A step 6) is
+    /// present — the preferred path, and the only one that still works
+    /// against a real node: Move B deleted the node's HMAC tier entirely.
+    /// `None` when that identity hasn't been provisioned, in which case
+    /// `node_auth_secret` is required instead (and will fail against any
+    /// node updated past Move B — kept for a transition window / a node the
+    /// operator has not yet migrated, matching `node.rs`'s own dual mode).
+    node_mtls_client: Option<reqwest::Client>,
+    node_auth_secret: Option<String>,
     node_actor: String,
     kernel_path: String,
     rootfs_path: String,
@@ -55,28 +63,33 @@ fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<ResolvedConf
         ));
     };
 
-    // Node auth secret: args > keychain > error
+    // mTLS first: the identity `nucleus setup` provisions (Move A step 6),
+    // used automatically when present — see `node.rs`'s
+    // `apply_provisioned_identity_defaults` for the same pattern.
+    let node_mtls_client = crate::provision::mtls_client_if_provisioned()?;
+
+    // Node auth secret: args > keychain > (required only if mTLS isn't
+    // available). A node updated past Move B has no HMAC tier to check this
+    // against at all — it exists for a not-yet-migrated node / a transition
+    // window, not as the normal path.
     let node_auth_secret = if let Some(ref secret) = args.node_auth_secret {
         if !secret.is_empty() {
-            secret.clone()
+            Some(secret.clone())
         } else {
             return Err(anyhow!("--node-auth-secret is empty"));
         }
     } else if config.auth.use_keychain {
-        match SecretStore::get(SecretKind::NodeAuthSecret)? {
-            Some(secret) => hex::encode(secret),
-            None => {
-                return Err(anyhow!(
-                    "Node auth secret not found in Keychain.\n\
-                     Run 'nucleus setup' to generate secrets, or set NUCLEUS_NODE_AUTH_SECRET."
-                ));
-            }
-        }
+        SecretStore::get(SecretKind::NodeAuthSecret)?.map(hex::encode)
     } else {
-        return Err(anyhow!(
-            "missing --node-auth-secret (NUCLEUS_NODE_AUTH_SECRET). Use --local for CI mode."
-        ));
+        None
     };
+    if node_mtls_client.is_none() && node_auth_secret.is_none() {
+        return Err(anyhow!(
+            "no way to authenticate to nucleus-node: no mTLS identity provisioned \
+             (run: nucleus setup) and no --node-auth-secret (NUCLEUS_NODE_AUTH_SECRET) \
+             either. Use --local for CI mode."
+        ));
+    }
 
     // Node actor: args > config
     let node_actor = if args.node_actor != "nucleus-cli" {
@@ -101,6 +114,7 @@ fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<ResolvedConf
 
     Ok(Some(ResolvedConfig {
         node_url,
+        node_mtls_client,
         node_auth_secret,
         node_actor,
         kernel_path,
@@ -678,9 +692,11 @@ async fn run_enforced(
     let proxy_addr = create_pod_via_node(
         &resolved.node_url,
         &pod_spec,
-        &resolved.node_auth_secret,
+        resolved.node_mtls_client.as_ref(),
+        resolved.node_auth_secret.as_deref(),
         &resolved.node_actor,
-    )?;
+    )
+    .await?;
     let proxy_url = if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
         proxy_addr
     } else {
@@ -783,16 +799,47 @@ struct NodeErrorBody {
     error: String,
 }
 
-fn create_pod_via_node(
+/// Creates the pod through nucleus-node, over mTLS when `mtls_client` is
+/// `Some` (the preferred, Move-B-compatible path — see `ResolvedConfig`'s
+/// doc comment), else HMAC-signed over plain `ureq` for a node that has not
+/// been migrated past Move B yet.
+async fn create_pod_via_node(
     node_url: &str,
     spec: &SpecPodSpec,
-    auth_secret: &str,
+    mtls_client: Option<&reqwest::Client>,
+    auth_secret: Option<&str>,
     actor: &str,
 ) -> Result<String> {
     let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
     let body = serde_yaml::to_string(spec)?;
-    let mut request = ureq::post(&url).header("content-type", "application/yaml");
 
+    if let Some(client) = mtls_client {
+        let response = client
+            .post(&url)
+            .header("content-type", "application/yaml")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| anyhow!("node request failed: {e}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            return match response.json::<NodeErrorBody>().await {
+                Ok(body) => Err(anyhow!("node error: {}", body.error)),
+                Err(_) => Err(anyhow!("node error: status {status}")),
+            };
+        }
+        let parsed: CreatePodResponse = response
+            .json()
+            .await
+            .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
+        return parsed
+            .proxy_addr
+            .ok_or_else(|| anyhow!("node did not return proxy address"));
+    }
+
+    let auth_secret = auth_secret
+        .ok_or_else(|| anyhow!("neither an mTLS identity nor an auth secret is available"))?;
+    let mut request = ureq::post(&url).header("content-type", "application/yaml");
     let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
     for (key, value) in signed.headers {
         request = request.header(&key, &value);
@@ -1129,5 +1176,109 @@ mod tests {
         // nucleus MCP tool is not lattice-mediated and must be refused.
         let tools = vec!["mcp__other__exec".to_string()];
         assert!(MediationGuard::establish(&tools).is_none());
+    }
+
+    // ── create_pod_via_node mTLS (Move B) ───────────────────────────────────
+
+    /// A real mTLS handshake against a real server, proving the NEW code path
+    /// end to end — not just the general reqwest-mTLS mechanism (already
+    /// proven elsewhere this session), but this function's own request
+    /// shape and response parsing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_pod_via_node_completes_a_real_mtls_handshake() {
+        use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa, TlsServerConfig};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let trust_domain = "run-mtls-test.nucleus.local";
+        let ca = SelfSignedCa::new(trust_domain).unwrap();
+        let trust_bundle = ca.trust_bundle().clone();
+
+        let server_identity = Identity::new(trust_domain, "system", "node");
+        let server_csr = CsrOptions::new(server_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let server_cert = ca
+            .sign_csr(
+                server_csr.csr(),
+                server_csr.private_key(),
+                &server_identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        let client_identity = Identity::new(trust_domain, "system", "cli");
+        let client_csr = CsrOptions::new(client_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let client_cert = ca
+            .sign_csr(
+                client_csr.csr(),
+                client_csr.private_key(),
+                &client_identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut identity_pem = client_cert.chain_pem().into_bytes();
+        identity_pem.push(b'\n');
+        identity_pem.extend_from_slice(client_cert.private_key_pem().as_bytes());
+        let bundle_pem = trust_bundle
+            .roots()
+            .iter()
+            .map(|c| c.to_pem())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into_bytes();
+        let identity = reqwest::Identity::from_pem(&identity_pem).unwrap();
+        let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem).unwrap();
+        let client = reqwest::Client::builder()
+            .identity(identity)
+            .tls_certs_only(roots)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .unwrap();
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer) = tcp_listener.accept().await.unwrap();
+            let acceptor = TlsServerConfig::new(server_cert, trust_bundle)
+                .build_acceptor()
+                .unwrap();
+            let mut tls = acceptor.accept(stream).await.unwrap();
+            let mut buf = [0u8; 1024];
+            let n = tls.read(&mut buf).await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&buf[..n]).starts_with("POST /v1/pods"),
+                "server should have received the real request the client sent, \
+                 with no HMAC headers to sign"
+            );
+            tls.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 72\r\n\r\n\
+                  {\"id\":\"550e8400-e29b-41d4-a716-446655440000\",\"proxy_addr\":\"127.0.0.1:9\"}",
+            )
+            .await
+            .unwrap();
+        });
+
+        let spec: SpecPodSpec =
+            serde_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: /work\n")
+                .unwrap();
+        let proxy_addr = create_pod_via_node(
+            &format!("https://{addr}"),
+            &spec,
+            Some(&client),
+            None,
+            "test-actor",
+        )
+        .await
+        .expect("a real mTLS handshake against the SAME CA must succeed");
+        assert_eq!(proxy_addr, "127.0.0.1:9");
+
+        server_handle.await.unwrap();
     }
 }

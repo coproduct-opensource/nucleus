@@ -36,11 +36,13 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
-use nucleus_client::sign_http_headers;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::provision::{HOST_ARTIFACTS_DIR, HOST_STATE_DIR, NODE_ENV_PATH, Tier2Host};
+use crate::provision::{
+    HOST_ARTIFACTS_DIR, HOST_STATE_DIR, NODE_ENV_PATH, Tier2Host,
+    mtls_client_from_provisioned_identity as mtls_client,
+};
 
 /// Verify that Tier 2 actually works on this machine.
 #[derive(Args, Debug)]
@@ -70,8 +72,10 @@ pub struct VerifyArgs {
     pub pins: bool,
 }
 
-/// The node's HTTP address on the machine running the checks.
-const NODE_URL: &str = "http://127.0.0.1:8080";
+/// The node's HTTP address on the machine running the checks. `https://`
+/// since Move B: the node's HTTP listener requires mTLS unconditionally,
+/// with no plaintext/HMAC fallback left.
+const NODE_URL: &str = "https://127.0.0.1:8080";
 
 /// An operation the policy allows, used to show the proxy really serves the
 /// guest's filesystem.
@@ -136,9 +140,9 @@ pub async fn execute(args: VerifyArgs) -> Result<()> {
         bail!("nothing to verify; did you mean `nucleus verify --tier2`?");
     }
     if args.here || cfg!(target_os = "linux") {
-        verify_here()
+        verify_here().await
     } else {
-        verify_tier2(&Tier2Host::Lima(args.vm_name.clone()), &args.vm_name)
+        verify_tier2(&Tier2Host::Lima(args.vm_name.clone()), &args.vm_name).await
     }
 }
 
@@ -185,9 +189,9 @@ fn print_pins() -> Result<()> {
 }
 
 /// Run the Tier 2 verification against `host`, wherever that is.
-pub fn verify_tier2(host: &Tier2Host, vm_name: &str) -> Result<()> {
+pub async fn verify_tier2(host: &Tier2Host, vm_name: &str) -> Result<()> {
     match host {
-        Tier2Host::Local => verify_here(),
+        Tier2Host::Local => verify_here().await,
         // The per-pod tool-proxy binds 127.0.0.1:0 inside the VM, so there is no
         // address the workstation could reach even in principle. Re-invoke the
         // Linux CLI where the proxy is.
@@ -234,13 +238,13 @@ pub fn verify_tier2(host: &Tier2Host, vm_name: &str) -> Result<()> {
 }
 
 /// The verification proper, on a machine that has KVM.
-fn verify_here() -> Result<()> {
+async fn verify_here() -> Result<()> {
     let host = Tier2Host::Local;
     println!("\nTier 2 verification: booting a real nucleus pod");
     println!("================================================");
 
     preflight(&host)?;
-    start_node(&host)?;
+    start_node(&host).await?;
 
     // The pod runs UNDER verified admission: every check below therefore also
     // exercises the DLC-D gate — the allowed-op check proves the credentialed
@@ -249,7 +253,7 @@ fn verify_here() -> Result<()> {
     // uncredentialed operation is refused by the admission gate specifically.
     let admission = mint_admission()?;
     let started = Instant::now();
-    let pod = create_pod(&host, &admission)?;
+    let pod = create_pod(&admission).await?;
     println!(
         "  [OK] pod created in {} ms, tool-proxy at {} (verified admission provisioned)",
         started.elapsed().as_millis(),
@@ -331,21 +335,24 @@ fn preflight(host: &Tier2Host) -> Result<()> {
 }
 
 /// Bring the node up and wait for it to answer, or say what it logged.
-fn start_node(host: &Tier2Host) -> Result<()> {
+async fn start_node(host: &Tier2Host) -> Result<()> {
     host.sh("systemctl restart nucleus-node")
         .context("could not start the nucleus-node service")?;
 
+    let client = mtls_client()?;
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        if ureq::get(&format!("{NODE_URL}/v1/health"))
-            .call()
+        if client
+            .get(format!("{NODE_URL}/v1/health"))
+            .send()
+            .await
             .map(|r| r.status().is_success())
             .unwrap_or(false)
         {
             println!("  [OK] nucleus-node is answering on {NODE_URL}");
             return Ok(());
         }
-        std::thread::sleep(Duration::from_millis(500));
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     // The node exits immediately when a required secret is absent, and its own
     // message says which one — far more useful than "timed out".
@@ -375,13 +382,14 @@ struct CreatePodResponse {
     proxy_addr: Option<String>,
 }
 
-/// Create a pod on the real nucleus rootfs, signed the way the node requires.
+/// Create a pod on the real nucleus rootfs, authenticated the way the node
+/// requires: mTLS with the identity `nucleus setup` provisioned (Move B —
+/// the node's HMAC tier is gone, there is no secret left to sign with).
 ///
 /// The DLC-D labels provision verified admission for THIS pod only (the node
 /// forwards them to the pod's tool-proxy as `NUCLEUS_DLC_*`); the issuer key
 /// doubles as its own trust anchor, matching dlc-d's principal convention.
-fn create_pod(host: &Tier2Host, admission: &AdmissionMaterial) -> Result<Pod> {
-    let secret = node_auth_secret(host)?;
+async fn create_pod(admission: &AdmissionMaterial) -> Result<Pod> {
     let issuer = &admission.issuer_hex;
     let creds = &admission.credentials;
     let body = format!(
@@ -398,23 +406,13 @@ fn create_pod(host: &Tier2Host, admission: &AdmissionMaterial) -> Result<Pod> {
               "vsock":{{"guest_cid":3,"port":5005}}}}}}"#
     );
 
-    // Do NOT treat a 4xx as a transport error: ureq's default turns the response
-    // into an `Err` and discards the body, which is exactly where the node
-    // explains itself.
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .build()
-        .into();
-    let mut request = agent
+    let client = mtls_client()?;
+    let response = client
         .post(format!("{NODE_URL}/v1/pods"))
-        .header("content-type", "application/json");
-    let signed = sign_http_headers(secret.as_bytes(), Some("nucleus-verify"), body.as_bytes());
-    for (key, value) in signed.headers {
-        request = request.header(&key, &value);
-    }
-
-    let mut response = request
-        .send(body.as_bytes())
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
         .map_err(|e| anyhow!("the node refused to create a pod: {e}"))?;
     if !response.status().is_success() {
         // The body is the whole value here: the node's 400s name the actual
@@ -423,14 +421,14 @@ fn create_pod(host: &Tier2Host, admission: &AdmissionMaterial) -> Result<Pod> {
         // 400" turns a precise diagnosis into a guess.
         let status = response.status();
         let detail = response
-            .body_mut()
-            .read_to_string()
+            .text()
+            .await
             .unwrap_or_else(|_| "<no body>".to_string());
         bail!("pod creation returned {status}: {}", detail.trim());
     }
     let parsed: CreatePodResponse = response
-        .body_mut()
-        .read_json()
+        .json()
+        .await
         .context("the node's response was not the JSON we expected")?;
     let proxy = parsed
         .proxy_addr
@@ -446,19 +444,6 @@ fn create_pod(host: &Tier2Host, admission: &AdmissionMaterial) -> Result<Pod> {
         },
         id,
     })
-}
-
-/// The node's HMAC secret, read from the env file setup wrote.
-///
-/// Read from the host rather than from the Keychain because this runs *on* the
-/// Tier 2 host, which has no Keychain — and because the value that matters is
-/// the one the running node was actually started with.
-fn node_auth_secret(host: &Tier2Host) -> Result<String> {
-    let line = host.sh("grep '^NUCLEUS_NODE_AUTH_SECRET=' /etc/nucleus/node.env")?;
-    line.split_once('=')
-        .map(|(_, v)| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| anyhow!("/etc/nucleus/node.env has no NUCLEUS_NODE_AUTH_SECRET value"))
 }
 
 /// The tool-proxy's `/v1/run` reply. Mirrors `nucleus_tool_proxy::RunResponse`,

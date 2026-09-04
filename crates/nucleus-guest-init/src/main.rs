@@ -159,6 +159,11 @@ fn run() -> Result<(), String> {
                 // always failed, so this gap was invisible: the pod died one
                 // step earlier for a different reason.
                 export!("NUCLEUS_IDENTITY_CERT", identity::svid_cert_path());
+                export!("NUCLEUS_IDENTITY_KEY", identity::svid_key_path());
+                export!(
+                    "NUCLEUS_IDENTITY_TRUST_BUNDLE",
+                    identity::trust_bundle_path()
+                );
             }
             Err(err) => {
                 eprintln!("failed to fetch identity: {err}");

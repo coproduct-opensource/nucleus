@@ -47,6 +47,7 @@ mod mcp;
 mod mediation;
 mod memory;
 mod node_client;
+mod node_identity;
 mod pod_mgmt;
 mod policy;
 mod run_gate;
@@ -270,17 +271,29 @@ struct Args {
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ENABLE_POD_MGMT")]
     enable_pod_mgmt: bool,
 
-    /// nucleus-node HTTP endpoint for pod management.
+    /// nucleus-node HTTP endpoint for pod management. mTLS-only — the node's
+    /// HTTP listener no longer accepts plaintext (Move B), so this must be an
+    /// `https://` URL.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_NODE_URL")]
     node_url: Option<String>,
-
-    /// Auth secret for requests to nucleus-node (HMAC).
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET")]
-    node_auth_secret: Option<String>,
 
     /// gRPC endpoint of nucleus-node for streaming lockdown commands.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_NODE_GRPC_URL")]
     node_grpc_url: Option<String>,
+
+    /// Private key matching `--identity-cert`, used as this pod's client
+    /// identity when calling nucleus-node's pod-management HTTP API and
+    /// lockdown gRPC stream over mTLS. Guest-init exports this alongside
+    /// the cert it already fetches for sandbox proof (tier 1/2).
+    #[arg(long, env = "NUCLEUS_IDENTITY_KEY")]
+    identity_key: Option<std::path::PathBuf>,
+
+    /// Trust bundle (the node's CA root) used to validate nucleus-node's
+    /// server certificate when calling its pod-management HTTP API and
+    /// lockdown gRPC stream over mTLS. Falls back to `--trust-bundle` if not
+    /// specified, mirroring `--identity-cert`'s fallback to `--tls-cert`.
+    #[arg(long, env = "NUCLEUS_IDENTITY_TRUST_BUNDLE")]
+    identity_trust_bundle: Option<std::path::PathBuf>,
 
     /// Delegation ceiling for sub-pod permissions (JSON-serialized PermissionLattice).
     /// Sub-pods cannot exceed this ceiling via delegate_to().
@@ -558,6 +571,19 @@ fn enforce_hmac_key_quality(auth_secret: &str, host_verified_transport: bool) {
             "NUCLEUS_TOOL_PROXY_AUTH_SECRET is shorter than the recommended minimum — weak HMAC key"
         );
     }
+}
+
+/// Thin adapter from `Args`' individual path fields to `node_identity::require`,
+/// which takes plain paths so it can be unit-tested without a full `Args`.
+fn require_node_identity(args: &Args, flag_hint: &str) -> node_identity::NodeIdentityPem {
+    node_identity::require(
+        args.identity_cert.as_ref(),
+        args.tls_cert.as_ref(),
+        args.identity_key.as_ref(),
+        args.identity_trust_bundle.as_ref(),
+        args.trust_bundle.as_ref(),
+        flag_hint,
+    )
 }
 
 pub(crate) fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity {
@@ -1400,19 +1426,9 @@ async fn main() -> Result<(), ApiError> {
     // listener, and that is only known once the spec is loaded. Refusing an
     // empty key here would make the secretless vsock path impossible; refusing
     // it nowhere would fail open on the transports that still need HMAC.
-    // The node-auth secret defaults to `auth_secret` when unset, but an explicitly
-    // provided EMPTY `--node-auth-secret` would be a world-known key for node
-    // requests — refuse it too (fail-closed).
-    if let Some(ref node_secret) = args.node_auth_secret
-        && node_secret.trim().is_empty()
-    {
-        error!(
-            "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET is empty — refusing to start: an empty HMAC \
-                 key makes node request auth forgeable (fail-closed). Unset it to inherit \
-                 the main auth secret instead."
-        );
-        std::process::exit(1);
-    }
+    // Move B: requests to nucleus-node (pod management HTTP, lockdown gRPC)
+    // now authenticate over mTLS with this pod's own SVID — there is no
+    // node-auth secret left to sanity-check here. See `load_node_identity`.
 
     // === Sandbox Proof Gate ===
     // Refuse to start unless we can cryptographically prove we're in a managed sandbox.
@@ -1624,18 +1640,25 @@ async fn main() -> Result<(), ApiError> {
         );
     }
 
-    // Build node client for pod management (orchestrator mode)
+    // Build node client for pod management (orchestrator mode). mTLS-only:
+    // the node's HTTP listener requires a client cert unconditionally.
     let node_client = if args.enable_pod_mgmt {
-        let node_url = args.node_url.as_deref().unwrap_or("http://127.0.0.1:3000");
-        let node_secret = args
-            .node_auth_secret
-            .clone()
-            .unwrap_or_else(|| args.auth_secret.clone());
+        let node_url = args.node_url.as_deref().unwrap_or("https://127.0.0.1:3000");
+        let identity = require_node_identity(&args, "--enable-pod-mgmt");
+        // cert then key, concatenated — the convention `reqwest::Identity::from_pem`
+        // expects, matching `nucleus-cli`'s `load_mtls_config`.
+        let mut identity_pem = identity.cert_pem.into_bytes();
+        identity_pem.push(b'\n');
+        identity_pem.extend_from_slice(identity.key_pem.as_bytes());
+        let bundle_pem = identity.bundle_pem.into_bytes();
         info!("pod management enabled (node_url={})", node_url);
-        Some(Arc::new(node_client::NodeClient::new(
-            node_url.to_string(),
-            node_secret,
-        )))
+        match node_client::NodeClient::new(node_url.to_string(), &identity_pem, &bundle_pem) {
+            Ok(client) => Some(Arc::new(client)),
+            Err(e) => {
+                error!("failed to build node client: {e}");
+                std::process::exit(1);
+            }
+        }
     } else {
         None
     };
@@ -1922,14 +1945,21 @@ async fn main() -> Result<(), ApiError> {
     // Streaming lockdown watcher: connects to nucleus-node gRPC and receives
     // LockdownCommand messages with sub-second latency.
     if let Some(ref grpc_url) = args.node_grpc_url {
+        let identity = require_node_identity(&args, "--node-grpc-url");
         let stream_flag = state.stream_lockdown.clone();
-        let auth_secret = args
-            .node_auth_secret
+        // "nucleus.local" matches this codebase's pervasive default trust
+        // domain (e.g. `SelfSignedCa::new`'s doc examples) — used only when
+        // `--trust-domain` isn't explicitly set.
+        let trust_domain = args
+            .trust_domain
             .clone()
-            .unwrap_or_else(|| args.auth_secret.clone());
+            .unwrap_or_else(|| "nucleus.local".to_string());
         let config = lockdown_client::LockdownWatcherConfig {
             node_grpc_url: grpc_url.clone(),
-            auth_secret,
+            client_cert_pem: identity.cert_pem,
+            client_key_pem: identity.key_pem,
+            trust_bundle_pem: identity.bundle_pem,
+            trust_domain,
             proxy_id: format!(
                 "{}:{}",
                 whoami::hostname().unwrap_or_else(|_| "unknown".into()),

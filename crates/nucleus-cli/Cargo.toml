@@ -65,16 +65,21 @@ shellexpand = "3.1"
 dirs = "6.0"
 uuid = { workspace = true }
 ureq = { workspace = true }
-# mTLS against a node started with --http-mtls-self-issued (Move A step 5).
+# mTLS against nucleus-node's HTTP listener (Move A step 5; mandatory on the
+# node's side since Move B — see nucleus-cli/src/node.rs).
 # ureq's TLS API validates a server cert's hostname against DNS/IP SANs with
 # no way to skip only that check — but the node's self-issued SVID carries
 # only a SPIFFE URI SAN, so ureq always rejects it. reqwest independently
 # supports skipping hostname verification while still validating the chain
 # against a pinned CA root, which is the correct primitive for SPIFFE
 # identity (not hostname-based). Same feature set as nucleus-sdk's own
-# (already-working) mTLS path. The plaintext/HMAC default stays on ureq,
-# unchanged.
-reqwest = { workspace = true, features = ["rustls-no-provider", "json"] }
+# (already-working) mTLS path. The HMAC fallback (for a machine that has not
+# run `nucleus setup` since Move A step 6) stays on ureq, unchanged.
+#
+# "blocking": `twosafety_boot.rs`'s `PodBoot` implements a SYNC trait
+# (`twosafety::Boot`) and needs a sync mTLS client for its node calls —
+# see `provision::mtls_blocking_client_from_provisioned_identity`.
+reqwest = { workspace = true, features = ["rustls-no-provider", "json", "blocking"] }
 rand = "0.10"
 chrono = { workspace = true, features = ["serde"] }
 hex = { workspace = true }
@@ -88,13 +93,6 @@ security-framework = "3.7"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# Test-only here: proves provisioned mTLS identity files work against a real
-# TLS handshake. Move A step 5 (a sibling, not-yet-merged PR as of this
-# writing) adds reqwest as a real (non-dev) dependency for the same reason
-# ureq can't verify the node's SPIFFE-only server cert — see that PR's
-# Cargo.toml comment. If both land, this becomes a redundant entry rather
-# than a conflicting one; harmless either order.
-reqwest = { workspace = true, features = ["rustls-no-provider", "json"] }
 # spike: "call SPIFFE agents anywhere" over iroh (examples/spiffe_iroh_*.rs)
 nucleus-node-binding = { path = "../nucleus-node-binding" }
 ed25519-dalek = { workspace = true }

@@ -246,7 +246,7 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
     // with no nucleus-node and no nucleus rootfs — measured 2026-07-29.
     let host = tier2_host_for(&args, &platform);
     if let (Some(host), false) = (host, args.skip_verify) {
-        if let Err(e) = crate::verify::verify_tier2(&host, &args.vm_name) {
+        if let Err(e) = crate::verify::verify_tier2(&host, &args.vm_name).await {
             print_setup_summary(&args, &platform, false);
             // Do NOT name a cause here. This runs for ANY verification failure,
             // and asserting "the pod could not boot" was wrong on a run where the
@@ -705,14 +705,15 @@ async fn provision_tier2_host(args: &SetupArgs, platform: &Platform) -> Result<(
     println!("    client key:    {}", mtls.cli_key.display());
     println!("    trust bundle:  {}", mtls.trust_bundle.display());
     println!(
-        "    Use with: nucleus node --tls-cert {} --tls-key {} --trust-bundle {} ...",
+        "    `nucleus node` finds these automatically — no flags needed. To point at a \
+         different identity: --tls-cert {} --tls-key {} --trust-bundle {}",
         mtls.cli_cert.display(),
         mtls.cli_key.display(),
         mtls.trust_bundle.display()
     );
     println!(
-        "    (opt-in: the node still serves plaintext/HMAC by default — pass \
-         --http-mtls-self-issued to the node to require this.)"
+        "    (mTLS is mandatory on the node's HTTP API now — there is no plaintext/HMAC \
+         fallback to opt out of.)"
     );
 
     provision::install_node_service(
@@ -783,11 +784,13 @@ memory_gib = {memory}
 disk_gib = {disk}
 
 [node]
-# nucleus-node endpoint (forwarded from Lima VM)
-url = "http://127.0.0.1:8080"
-# gRPC endpoint for internal communication
-grpc_url = "http://127.0.0.1:9180"
-# Actor name for signed requests
+# nucleus-node endpoint (forwarded from Lima VM). mTLS-only since Move B —
+# there is no plaintext/HMAC fallback.
+url = "https://127.0.0.1:8080"
+# gRPC endpoint for internal communication (also mTLS-only since Move B)
+grpc_url = "https://127.0.0.1:9180"
+# Actor name recorded on requests (used only by the HMAC fallback path, for
+# a node not yet migrated past Move B)
 actor = "nucleus-cli"
 
 [firecracker]

@@ -600,6 +600,113 @@ pub struct MtlsIdentityPaths {
     pub trust_bundle: PathBuf,
 }
 
+/// Builds an mTLS client presenting the identity provisioned at
+/// `~/.config/nucleus/identity/` (`Config::identity_dir()`,
+/// `mint_cli_identity`'s output). Shared by every in-process caller that
+/// talks to a LOCAL node over HTTP now that Move B made the node's listener
+/// mTLS-only with no HMAC fallback: `nucleus verify --tier2` and the
+/// 2-safety experiment (`twosafety_boot.rs`) both used to sign requests with
+/// `NUCLEUS_NODE_AUTH_SECRET` read out of `/etc/nucleus/node.env`; neither
+/// secret means anything to the node any more.
+///
+/// `nucleus node`'s own client (`node.rs::create_client`) does NOT use this:
+/// it also accepts explicit `--tls-cert`/`--tls-key`/`--trust-bundle` flags
+/// (for a remote node whose identity isn't the local provisioned one) and
+/// only falls back to these same provisioned defaults when none are given —
+/// see `node.rs::apply_provisioned_identity_defaults`. The callers here
+/// always run "here" relative to the node they're checking, so there is no
+/// analogous remote case to support.
+/// `(identity_pem, bundle_pem)` read from the provisioned identity — the
+/// half shared by both the async and blocking client builders below.
+fn read_provisioned_identity_pems() -> Result<(Vec<u8>, Vec<u8>)> {
+    let dir = crate::config::Config::identity_dir()
+        .context("could not resolve the identity directory")?;
+    let cert_path = dir.join("cli-cert.pem");
+    let key_path = dir.join("cli-key.pem");
+    let bundle_path = dir.join("trust-bundle.pem");
+
+    let mut identity_pem = std::fs::read(&cert_path).with_context(|| {
+        format!(
+            "no CLI identity at {} — run: nucleus setup",
+            cert_path.display()
+        )
+    })?;
+    let key_pem = std::fs::read(&key_path)
+        .with_context(|| format!("failed to read {}", key_path.display()))?;
+    identity_pem.push(b'\n');
+    identity_pem.extend_from_slice(&key_pem);
+    let bundle_pem = std::fs::read(&bundle_path)
+        .with_context(|| format!("failed to read {}", bundle_path.display()))?;
+
+    Ok((identity_pem, bundle_pem))
+}
+
+/// `Some` client when an identity is actually provisioned, `None` (not an
+/// error) when it isn't — for a caller that has another way to authenticate
+/// to fall back to (`run.rs`'s `resolve_config`, still supporting an
+/// explicit `--node-auth-secret` for a not-yet-migrated node). Contrast
+/// [`mtls_client_from_provisioned_identity`], which errors when the
+/// identity is missing because its callers have no fallback to offer.
+pub fn mtls_client_if_provisioned() -> Result<Option<reqwest::Client>> {
+    let Ok(dir) = crate::config::Config::identity_dir() else {
+        return Ok(None);
+    };
+    if !(dir.join("cli-cert.pem").is_file()
+        && dir.join("cli-key.pem").is_file()
+        && dir.join("trust-bundle.pem").is_file())
+    {
+        return Ok(None);
+    }
+    mtls_client_from_provisioned_identity().map(Some)
+}
+
+pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
+    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let identity = reqwest::Identity::from_pem(&identity_pem)
+        .context("failed to build client identity from the provisioned CLI cert/key")?;
+    let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem)
+        .context("failed to parse the provisioned trust bundle")?;
+
+    // Same reasoning as `node.rs::create_client`: `tls_certs_only` pins the
+    // trust store to ONLY the node's own CA, and hostname verification is
+    // skipped because the node's self-issued SVID carries a SPIFFE URI SAN,
+    // never a DNS or IP SAN.
+    reqwest::Client::builder()
+        .identity(identity)
+        .timeout(std::time::Duration::from_secs(30))
+        .tls_certs_only(roots)
+        .danger_accept_invalid_hostnames(true)
+        .build()
+        .context("failed to build mTLS client")
+}
+
+/// The `reqwest::blocking` twin of [`mtls_client_from_provisioned_identity`],
+/// for a caller with a sync call chain it cannot make async (see
+/// `twosafety_boot.rs::PodBoot`'s doc comment on its `mtls_client` field).
+/// `reqwest::blocking::Client` builds its own internal runtime and PANICS if
+/// constructed directly on an async task's worker thread — callers must
+/// wrap the call (and every use of the returned client) in
+/// `tokio::task::block_in_place`, as `twosafety_boot::execute` does.
+pub fn mtls_blocking_client_from_provisioned_identity() -> Result<reqwest::blocking::Client> {
+    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let identity = reqwest::Identity::from_pem(&identity_pem)
+        .context("failed to build client identity from the provisioned CLI cert/key")?;
+    let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem)
+        .context("failed to parse the provisioned trust bundle")?;
+
+    reqwest::blocking::Client::builder()
+        .identity(identity)
+        .timeout(std::time::Duration::from_secs(30))
+        .tls_certs_only(roots)
+        .danger_accept_invalid_hostnames(true)
+        .build()
+        .context("failed to build mTLS client")
+}
+
 /// Seeds the node's CA root on `host` and mints this CLI's own client
 /// identity from it — the material Move A step 5's `--tls-cert`/`--tls-key`/
 /// `--trust-bundle` flags need, which nothing produced before this function
