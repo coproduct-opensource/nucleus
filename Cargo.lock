@@ -6750,6 +6750,7 @@ dependencies = [
  "http-body-util",
  "nucleus-control-plane",
  "nucleus-envelope",
+ "nucleus-github-oidc",
  "nucleus-lineage",
  "nucleus-oidc-core",
  "nucleus-otel-bootstrap",

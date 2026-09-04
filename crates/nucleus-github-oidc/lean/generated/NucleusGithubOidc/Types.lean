@@ -14,4 +14,15 @@ set_option maxRecDepth 2048
 
 namespace nucleus_github_oidc
 
+/-- [nucleus_github_oidc::extracted::jwt_svid_claims::ClaimsVerdict]
+    Source: 'crates/nucleus-github-oidc/src/extracted/jwt_svid_claims.rs', lines 80:0-91:1
+    Visibility: public -/
+@[discriminant isize]
+inductive extracted.jwt_svid_claims.ClaimsVerdict where
+| Admit : extracted.jwt_svid_claims.ClaimsVerdict
+| Expired : extracted.jwt_svid_claims.ClaimsVerdict
+| NotYetValid : extracted.jwt_svid_claims.ClaimsVerdict
+| AudienceMismatch : extracted.jwt_svid_claims.ClaimsVerdict
+| SubjectPrefixMismatch : extracted.jwt_svid_claims.ClaimsVerdict
+
 end nucleus_github_oidc

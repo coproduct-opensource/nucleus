@@ -15,8 +15,118 @@ set_option maxRecDepth 2048
 
 namespace nucleus_github_oidc
 
+/-- [nucleus_github_oidc::extracted::jwt_svid_claims::bytes_eq]: loop body 0:
+    Source: 'crates/nucleus-github-oidc/src/extracted/jwt_svid_claims.rs', lines 99:4-106:1
+    Visibility: public -/
+@[rust_loop_body]
+def extracted.jwt_svid_claims.bytes_eq_loop.body
+  (a : Slice Std.U8) (b : Slice Std.U8) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize Bool)
+  := do
+  let i1 := Slice.len a
+  if i < i1
+  then
+    let i2 ← Slice.index_usize a i
+    let i3 ← Slice.index_usize b i
+    if i2 != i3
+    then ok (done false)
+    else let i4 ← i + 1#usize
+         ok (cont i4)
+  else ok (done true)
+
+/-- [nucleus_github_oidc::extracted::jwt_svid_claims::bytes_eq]: loop 0:
+    Source: 'crates/nucleus-github-oidc/src/extracted/jwt_svid_claims.rs', lines 99:4-106:1
+    Visibility: public -/
+@[rust_loop]
+def extracted.jwt_svid_claims.bytes_eq_loop
+  (a : Slice Std.U8) (b : Slice Std.U8) (i : Std.Usize) : Result Bool := do
+  loop
+    (fun i1 => extracted.jwt_svid_claims.bytes_eq_loop.body a b i1)
+    i
+
+/-- [nucleus_github_oidc::extracted::jwt_svid_claims::bytes_eq]:
+    Source: 'crates/nucleus-github-oidc/src/extracted/jwt_svid_claims.rs', lines 94:0-106:1
+    Visibility: public -/
+def extracted.jwt_svid_claims.bytes_eq
+  (a : Slice Std.U8) (b : Slice Std.U8) : Result Bool := do
+  let i := Slice.len a
+  let i1 := Slice.len b
+  if i != i1
+  then ok false
+  else extracted.jwt_svid_claims.bytes_eq_loop a b 0#usize
+
+/-- [nucleus_github_oidc::extracted::jwt_svid_claims::has_prefix]: loop body 0:
+    Source: 'crates/nucleus-github-oidc/src/extracted/jwt_svid_claims.rs', lines 114:4-121:1
+    Visibility: public -/
+@[rust_loop_body]
+def extracted.jwt_svid_claims.has_prefix_loop.body
+  (s : Slice Std.U8) (prefix1 : Slice Std.U8) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize Bool)
+  := do
+  let i1 := Slice.len prefix1
+  if i < i1
+  then
+    let i2 ← Slice.index_usize s i
+    let i3 ← Slice.index_usize prefix1 i
+    if i2 != i3
+    then ok (done false)
+    else let i4 ← i + 1#usize
+         ok (cont i4)
+  else ok (done true)
+
+/-- [nucleus_github_oidc::extracted::jwt_svid_claims::has_prefix]: loop 0:
+    Source: 'crates/nucleus-github-oidc/src/extracted/jwt_svid_claims.rs', lines 114:4-121:1
+    Visibility: public -/
+@[rust_loop]
+def extracted.jwt_svid_claims.has_prefix_loop
+  (s : Slice Std.U8) (prefix1 : Slice Std.U8) (i : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun i1 => extracted.jwt_svid_claims.has_prefix_loop.body s prefix1 i1)
+    i
+
+/-- [nucleus_github_oidc::extracted::jwt_svid_claims::has_prefix]:
+    Source: 'crates/nucleus-github-oidc/src/extracted/jwt_svid_claims.rs', lines 109:0-121:1
+    Visibility: public -/
+def extracted.jwt_svid_claims.has_prefix
+  (s : Slice Std.U8) (prefix1 : Slice Std.U8) : Result Bool := do
+  let i := Slice.len prefix1
+  let i1 := Slice.len s
+  if i > i1
+  then ok false
+  else extracted.jwt_svid_claims.has_prefix_loop s prefix1 0#usize
+
+/-- [nucleus_github_oidc::extracted::jwt_svid_claims::decide_claims]:
+    Source: 'crates/nucleus-github-oidc/src/extracted/jwt_svid_claims.rs', lines 130:0-155:1
+    Visibility: public -/
+def extracted.jwt_svid_claims.decide_claims
+  (exp : Std.U64) (nbf : Option Std.U64) (now : Std.U64) (skew : Std.U64)
+  (aud_ok : Bool) (sub_ok : Bool) :
+  Result extracted.jwt_svid_claims.ClaimsVerdict
+  := do
+  let i ← exp + skew
+  if i < now
+  then ok extracted.jwt_svid_claims.ClaimsVerdict.Expired
+  else
+    let not_yet_valid ←
+      match nbf with
+      | none => ok false
+      | some n => do
+                  let i1 ← now + skew
+                  ok (n > i1)
+    if not_yet_valid
+    then ok extracted.jwt_svid_claims.ClaimsVerdict.NotYetValid
+    else
+      if aud_ok
+      then
+        if sub_ok
+        then ok extracted.jwt_svid_claims.ClaimsVerdict.Admit
+        else ok extracted.jwt_svid_claims.ClaimsVerdict.SubjectPrefixMismatch
+      else ok extracted.jwt_svid_claims.ClaimsVerdict.AudienceMismatch
+
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::is_spiffe_byte]:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 15:0-22:1
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 23:0-30:1
     Visibility: public -/
 def extracted.oidc_spiffe.is_spiffe_byte (b : Std.U8) : Result Bool := do
   if b >= 48#u8
@@ -103,11 +213,11 @@ def extracted.oidc_spiffe.is_spiffe_byte (b : Std.U8) : Result Bool := do
              else ok (b = 45#u8)
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::DASH]
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 25:0-25:22 -/
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 33:0-33:22 -/
 @[global_simps, irreducible] def extracted.oidc_spiffe.DASH : Std.U8 := 45#u8
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes]: loop body 0:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 48:4-60:5
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 56:4-68:5
     Visibility: public -/
 @[rust_loop_body]
 def extracted.oidc_spiffe.sanitize_bytes_loop0.body
@@ -138,7 +248,7 @@ def extracted.oidc_spiffe.sanitize_bytes_loop0.body
   else ok (done collapsed)
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes]: loop 0:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 48:4-60:5
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 56:4-68:5
     Visibility: public -/
 @[rust_loop]
 def extracted.oidc_spiffe.sanitize_bytes_loop0
@@ -153,7 +263,7 @@ def extracted.oidc_spiffe.sanitize_bytes_loop0
     (collapsed, prev_dash, i)
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes]: loop body 1:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 65:4-67:5
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 73:4-75:5
     Visibility: public -/
 @[rust_loop_body]
 def extracted.oidc_spiffe.sanitize_bytes_loop1.body
@@ -172,7 +282,7 @@ def extracted.oidc_spiffe.sanitize_bytes_loop1.body
   else ok (done lo)
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes]: loop 1:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 65:4-67:5
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 73:4-75:5
     Visibility: public -/
 @[rust_loop]
 def extracted.oidc_spiffe.sanitize_bytes_loop1
@@ -185,7 +295,7 @@ def extracted.oidc_spiffe.sanitize_bytes_loop1
     lo
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes]: loop body 2:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 70:4-72:5
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 78:4-80:5
     Visibility: public -/
 @[rust_loop_body]
 def extracted.oidc_spiffe.sanitize_bytes_loop2.body
@@ -204,7 +314,7 @@ def extracted.oidc_spiffe.sanitize_bytes_loop2.body
   else ok (done hi)
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes]: loop 2:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 70:4-72:5
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 78:4-80:5
     Visibility: public -/
 @[rust_loop]
 def extracted.oidc_spiffe.sanitize_bytes_loop2
@@ -217,7 +327,7 @@ def extracted.oidc_spiffe.sanitize_bytes_loop2
     hi
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes]: loop body 3:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 76:4-79:5
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 84:4-87:5
     Visibility: public -/
 @[rust_loop_body]
 def extracted.oidc_spiffe.sanitize_bytes_loop3.body
@@ -237,7 +347,7 @@ def extracted.oidc_spiffe.sanitize_bytes_loop3.body
   else ok (done out)
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes]: loop 3:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 76:4-79:5
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 84:4-87:5
     Visibility: public -/
 @[rust_loop]
 def extracted.oidc_spiffe.sanitize_bytes_loop3
@@ -251,7 +361,7 @@ def extracted.oidc_spiffe.sanitize_bytes_loop3
     (out, k)
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes]:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 42:0-81:1
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 50:0-89:1
     Visibility: public -/
 def extracted.oidc_spiffe.sanitize_bytes
   (input : Slice Std.U8) : Result (alloc.vec.Vec Std.U8) := do
@@ -266,7 +376,7 @@ def extracted.oidc_spiffe.sanitize_bytes
     Std.U8) lo
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::append]: loop body 0:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 88:4-91:5 -/
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 96:4-99:5 -/
 @[rust_loop_body]
 def extracted.oidc_spiffe.append_loop.body
   (src : Slice Std.U8) (n : Std.Usize) (dst : alloc.vec.Vec Std.U8)
@@ -283,7 +393,7 @@ def extracted.oidc_spiffe.append_loop.body
   else ok (done dst)
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::append]: loop 0:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 88:4-91:5 -/
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 96:4-99:5 -/
 @[rust_loop]
 def extracted.oidc_spiffe.append_loop
   (dst : alloc.vec.Vec Std.U8) (src : Slice Std.U8) (i : Std.Usize)
@@ -295,7 +405,7 @@ def extracted.oidc_spiffe.append_loop
     (dst, i)
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::append]:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 85:0-92:1 -/
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 93:0-100:1 -/
 def extracted.oidc_spiffe.append
   (dst : alloc.vec.Vec Std.U8) (src : Slice Std.U8) :
   Result (alloc.vec.Vec Std.U8)
@@ -304,7 +414,7 @@ def extracted.oidc_spiffe.append
   extracted.oidc_spiffe.append_loop dst src 0#usize n
 
 /-- [nucleus_github_oidc::extracted::oidc_spiffe::derive_spiffe_bytes]:
-    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 110:0-135:1
+    Source: 'crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs', lines 118:0-146:1
     Visibility: public -/
 def extracted.oidc_spiffe.derive_spiffe_bytes
   (trust_domain : Slice Std.U8) (owner_sanitized : Slice Std.U8)

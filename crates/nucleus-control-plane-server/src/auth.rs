@@ -38,6 +38,7 @@ use axum::extract::FromRequestParts;
 use axum::http::{StatusCode, header, request::Parts};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use ed25519_dalek::{Signature, VerifyingKey};
+use nucleus_github_oidc::extracted::jwt_svid_claims::{self, ClaimsVerdict};
 use nucleus_oidc_core::{JwkPublicKey, Jwks};
 use serde::Deserialize;
 use thiserror::Error;
@@ -381,25 +382,46 @@ pub fn verify_jwt_svid(
         .map_err(|_| AuthError::ClockBeforeEpoch)?
         .as_secs();
 
-    if claims.exp + config.clock_skew_secs < now {
-        return Err(AuthError::Expired {
-            exp: claims.exp,
-            now,
-        });
-    }
-    if let Some(nbf) = claims.nbf
-        && nbf > now + config.clock_skew_secs
-    {
-        return Err(AuthError::NotYetValid { nbf, now });
-    }
-
+    // The claims decision (exp/nbf with skew leeway, aud membership, sub
+    // prefix) is the Aeneas-extracted core in `nucleus-github-oidc`
+    // (`extracted::jwt_svid_claims`, #2452): `decide_claims` and the byte
+    // loops are extracted to Lean and their soundness / fail-closed /
+    // completeness theorems proved over the generated defs; `claims_verdict`
+    // is the audience fold (not extractable: nested borrow) composed with
+    // them. This is the call that puts the theorems on the live path. Check
+    // order is the original order, so the first failing predicate is the
+    // error reported.
     let auds = claims.aud.into_vec();
-    if !auds.iter().any(|a| a == &config.allowed_audience) {
-        return Err(AuthError::AudienceMismatch);
-    }
-
-    if !claims.sub.starts_with(&config.allowed_subject_prefix) {
-        return Err(AuthError::SubjectPrefixMismatch { sub: claims.sub });
+    let aud_refs: Vec<&[u8]> = auds.iter().map(|a| a.as_bytes()).collect();
+    match jwt_svid_claims::claims_verdict(
+        claims.exp,
+        claims.nbf,
+        now,
+        config.clock_skew_secs,
+        &aud_refs,
+        config.allowed_audience.as_bytes(),
+        claims.sub.as_bytes(),
+        config.allowed_subject_prefix.as_bytes(),
+    ) {
+        ClaimsVerdict::Admit => {}
+        ClaimsVerdict::Expired => {
+            return Err(AuthError::Expired {
+                exp: claims.exp,
+                now,
+            });
+        }
+        ClaimsVerdict::NotYetValid => {
+            // `NotYetValid` is only raised with `nbf = Some` (Lean:
+            // `not_yet_valid_has_nbf`); the fallback is unreachable.
+            return Err(AuthError::NotYetValid {
+                nbf: claims.nbf.unwrap_or(now),
+                now,
+            });
+        }
+        ClaimsVerdict::AudienceMismatch => return Err(AuthError::AudienceMismatch),
+        ClaimsVerdict::SubjectPrefixMismatch => {
+            return Err(AuthError::SubjectPrefixMismatch { sub: claims.sub });
+        }
     }
 
     Ok(AuthenticatedPrincipal::new(claims.sub, auds, true))

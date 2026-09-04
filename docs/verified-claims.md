@@ -398,3 +398,55 @@ enforcement of IFC constraints.
 | Discharge sealing | Rust types | 1 compile-fail test | No forging of `DischargedBundle` |
 | Type-level IFC | Rust types | 1 compile-fail test | No `Adversarial` -> `Trusted` flow |
 | Confidentiality downflow | Unit tests | 21 tests | No `Secret` -> `Public` flow |
+
+### 10. JWT-SVID claims decision: no admission without every predicate
+
+**Plain English:** When the control plane authenticates a caller's JWT-SVID,
+it checks the signature and then decides on the claims: not expired (with
+clock-skew leeway), not before its `nbf`, the right audience, a subject under
+the allowed SPIFFE prefix. We machine-check that decision: an `Admit` verdict
+can only come out when all four predicates held, a failed audience or subject
+check never admits, a valid token is never refused by the decision, and the
+error reported is the first failing predicate in the documented order.
+
+**Formal statement (proven, sorry-free, over the Aeneas-extracted
+`decide_claims`):**
+- `admit_sound` — `decide_claims … = ok Admit` implies `aud_ok`, `sub_ok`,
+  `exp + skew` representable and `¬ (exp + skew < now)`, and for `nbf = some n`,
+  `now + skew` representable and `¬ (n > now + skew)`.
+- `aud_mismatch_fails_closed` / `sub_mismatch_fails_closed` — with `aud_ok =
+  false` or `sub_ok = false` the verdict is never `Admit`.
+- `admit_complete` — all predicates holding gives `Admit`.
+- `not_yet_valid_has_nbf` — `NotYetValid` is only raised with `nbf = some _`.
+- `expired_first` / `not_yet_valid_second` / `audience_third` / `subject_last`
+  — the first failing predicate, in production's order, is the verdict.
+
+**Trust chain:** production `verify_jwt_svid` (`nucleus-control-plane-server`
+`auth.rs`) CALLS the extracted core on the live path (`decide_claims`, with
+`has_prefix` on the subject and `bytes_eq` per audience element); the parity
+proptests in `extracted/jwt_svid_claims.rs` check the composed call against the
+pre-refactor clause lifted verbatim → Lean via Aeneas.
+
+**Proved in:**
+- Lean 4: [`lean/JwtSvidClaimsProofs.lean`](../crates/nucleus-github-oidc/lean/JwtSvidClaimsProofs.lean) — the nine theorems above (each `#print axioms` ⊆ `[propext, Classical.choice, Quot.sound]`)
+- Rust parity proptests: [`src/extracted/jwt_svid_claims.rs`](../crates/nucleus-github-oidc/src/extracted/jwt_svid_claims.rs) — `claims_verdict_matches_production`, `claims_verdict_matches_production_near_edges`, `loops_match_std`
+
+**CI gate:** the same `Scoped Aeneas (Rust → Lean 4) + parity tests` job as
+§9 (`aeneas-oidc-spiffe.yml`): re-extracts both slices from Rust, builds the
+theorems against the fresh extraction, requires `#print axioms` evidence, fails
+on `sorryAx` / opaque external axioms.
+
+**What it does NOT prove:**
+- NOT the EdDSA signature check (`ed25519-dalek`, outside the extractable
+  subset).
+- NOT the audience fold: `auds.iter().any(..)` takes `&[&[u8]]`, a nested
+  borrow Aeneas rejects; the fold stays in production and its result enters
+  the theorems as `aud_ok`.
+- NOT `bytes_eq` / `has_prefix` as closed Lean theorems (Aeneas `loop`
+  combinator, the §9 gap); the Rust parity proptests cover them.
+- Overflow: the generated `+` is checked, so the theorems carry
+  representability as a conclusion of soundness and a hypothesis of
+  completeness rather than assuming it.
+
+Design note for the other two verifiers in #2452 (`verify_card`, attestation
+backends): [`docs/design/identity-verifier-extraction.md`](design/identity-verifier-extraction.md).

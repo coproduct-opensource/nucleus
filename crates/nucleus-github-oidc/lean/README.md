@@ -50,6 +50,18 @@ kernel-reducible `DecidableEq` for `decide`. So the Lean side proves the per-ste
 root cause (`collapse_lossy_step`); the closed end-to-end collision lives in the
 Rust proptest. No `sorry` claims more than holds.
 
+## Aeneas→Lean target #3: the JWT-SVID claims decision (#2452)
+
+`JwtSvidClaimsProofs.lean` proves, over the generated
+`extracted.jwt_svid_claims.decide_claims` (source:
+`src/extracted/jwt_svid_claims.rs`, called on the live path by the control
+plane's `verify_jwt_svid`): `admit_sound` (no admission without every
+predicate), `aud_mismatch_fails_closed` / `sub_mismatch_fails_closed`,
+`admit_complete`, `not_yet_valid_has_nbf`, and the four verdict-order theorems.
+The audience fold (`&[&[u8]]`, a nested borrow) and the signature check stay in
+production; the byte loops are covered by parity proptests. See
+`docs/verified-claims.md` §10 and `docs/design/identity-verifier-extraction.md`.
+
 ## Reproducing
 
 Extraction + proofs build on Linux CI (`aeneas-oidc-spiffe.yml`) and locally:
@@ -60,11 +72,14 @@ RUSTUP_TOOLCHAIN=nightly-2026-02-07 \
   charon cargo --preset aeneas \
     --start-from nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes \
     --start-from nucleus_github_oidc::extracted::oidc_spiffe::derive_spiffe_bytes \
-    --start-from nucleus_github_oidc::extracted::oidc_spiffe::is_spiffe_byte
+    --start-from nucleus_github_oidc::extracted::oidc_spiffe::is_spiffe_byte \
+    --start-from nucleus_github_oidc::extracted::jwt_svid_claims::bytes_eq \
+    --start-from nucleus_github_oidc::extracted::jwt_svid_claims::has_prefix \
+    --start-from nucleus_github_oidc::extracted::jwt_svid_claims::decide_claims
 aeneas -backend lean -split-files nucleus_github_oidc.llbc -dest lean/generated/NucleusGithubOidc
 
 # 2. build the proofs + axiom audit
-cd lean && lake exe cache get && lake build NucleusGithubOidc OidcSpiffeProofs
+cd lean && lake exe cache get && lake build NucleusGithubOidc OidcSpiffeProofs JwtSvidClaimsProofs
 ```
 
 Pins: aeneas `nightly-2026.06.10` (commit `2a12be13…`), Charon nightly

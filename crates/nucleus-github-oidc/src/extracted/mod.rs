@@ -65,5 +65,10 @@
 //!
 //! The extraction roots live here so the CI extractor can name them with
 //! `charon … --start-from nucleus_github_oidc::extracted::oidc_spiffe::<fn>`.
+//!
+//! [`jwt_svid_claims`] is the second slice through the same pipeline: the pure
+//! claims decision (`exp`/`nbf`/`aud`/`sub`) behind the control plane's
+//! `verify_jwt_svid`, which calls it on the live path (#2452).
 
+pub mod jwt_svid_claims;
 pub mod oidc_spiffe;
