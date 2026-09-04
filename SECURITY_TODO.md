@@ -236,14 +236,18 @@ DoD (guarantees)
 Status
 - [DONE] Both legs closed and regression-tested: the OOM/allocation leg (bounded `read_body_capped`) and the panic/poison leg (H-3, two-class lock policy + router panic net). Still does NOT claim "monitor is un-killable" (SIGKILL / OOM-kill of the process is out of scope for `catch_unwind`).
 
-## 13) Transparency-log cosignature not enforced on the production trust path (audit C-3) — ESCALATED, DEFERRED
+## 13) Transparency-log cosignature not enforced on the production trust path (audit C-3) — CLOSED (2026-09-04)
 
 Deficiency
 - `verify_binding_in_log` (witness-cosigned STH + inclusion proof) is called only in tests; the production `federation.rs` path (`apply_to_store`) authenticates inbound JWT-SVIDs directly from the on-disk `FederationSet` with no cosignature check. Anyone who can write the registry tree gets keys served for identity verification (forged foreign identities authenticate). This is the highest-severity remaining finding.
 Refs: `crates/nucleus-trust-registry/src/federation.rs:25-48`, `tlog.rs` (`verify_binding_in_log`)
 
 Status
-- DEFERRED by owner decision (2026-07-17). Enforcement establishes a NEW TRUST ROOT (which pinned witness cosigner(s), out-of-band key distribution) and a BREAKING CHANGE (deployments lacking a `SealedLog` must be rejected). Both the witness model (single vs k-of-n) and the rollout (hard fail-closed vs warn-then-enforce) are open owner decisions; do not wire enforcement until decided. Kept as the top open critical.
+- Was DEFERRED by owner decision (2026-07-17) pending two calls. Both were made on 2026-09-04 (owner directive to burn down the remaining audit items) and enforcement is wired:
+  - Witness model: **single pinned cosigner** — the crate's stated MVP trust base (`lib.rs` "Honest caveat #3"); k-of-n stays the documented drop-in. The consumer pins the key out of band in a `LogAttestation`; the artifact's embedded copy is only cross-checked, never trusted alone.
+  - Rollout: **hard fail-closed, no warn-then-enforce and no unverified entry point**. `build_federation_store` / `apply_to_store` take a `LogAttestation` and refuse any binding the cosigned log does not prove (`tlog::verify_binding_inclusion`: recompute leaf → inclusion proof against the cosigned STH root → witness cosignature). Verification runs for EVERY binding before any store write, so one unproven binding federates nothing. A deployment without a `SealedLog` cannot build a store — that is the breaking change, accepted.
+- Format change: `StoredInclusion` now records `(trust_domain, ts)` per leaf so a consumer holding only the compiled registry can re-derive the leaf. The fields are REQUIRED; a pre-change sealed log fails to parse (`sealed_log_without_leaf_ts_is_refused_at_parse`) rather than silently failing verification. Re-seal with `nucleus-trust-registry log-append`.
+- Pinned by `tests/enrollment_e2e.rs`: `neg_store_refuses_binding_absent_from_cosigned_log`, `neg_store_refuses_wrong_pinned_cosigner`, `neg_one_unproven_binding_federates_nothing`, and the positive pipeline now builds its store through the attestation.
 
 ## 14) Ed25519 re-verify used non-strict `verify()` on three trust-path sites (audit M-2)
 

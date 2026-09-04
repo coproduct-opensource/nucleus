@@ -91,14 +91,20 @@ fn canonical_json(bundle_bytes: &[u8]) -> Result<Vec<u8>, RegistryError> {
     serde_jcs::to_vec(&value).map_err(|e| RegistryError::Bundle(format!("canonicalize (JCS): {e}")))
 }
 
-/// One appended binding's record: its leaf index + the leaf hash. Used to
-/// look up inclusion proofs after the tree is sealed.
+/// One appended binding's record: its leaf index + the leaf hash, plus the
+/// two leaf inputs a consumer does not otherwise hold (`trust_domain`, `ts`),
+/// so the sealed artifact is self-describing. Used to look up inclusion
+/// proofs after the tree is sealed.
 #[derive(Debug, Clone)]
 pub struct AppendedLeaf {
     /// 0-based leaf index in the Merkle tree.
     pub index: u64,
     /// The 32-byte leaf hash (`binding_leaf`).
     pub leaf_hash: [u8; 32],
+    /// The trust domain the leaf binds.
+    pub trust_domain: String,
+    /// The append timestamp bound into the leaf.
+    pub ts: u64,
 }
 
 /// An append-only transparency log of trust-root bindings.
@@ -128,7 +134,12 @@ impl TrustLog {
         let leaf_hash = binding_leaf(trust_domain, bundle_bytes, owner_id, ts)?;
         let index = self.tree.len();
         self.tree.push(leaf_hash.to_vec());
-        let rec = AppendedLeaf { index, leaf_hash };
+        let rec = AppendedLeaf {
+            index,
+            leaf_hash,
+            trust_domain: trust_domain.to_string(),
+            ts,
+        };
         self.leaves.push(rec.clone());
         Ok(rec)
     }
@@ -175,6 +186,8 @@ impl TrustLog {
             let proof = self.tree.prove_inclusion(leaf.index as usize);
             proofs.push(StoredInclusion {
                 trust_domain_index: leaf.index,
+                trust_domain: leaf.trust_domain.clone(),
+                ts: leaf.ts,
                 leaf_hash_hex: hex::encode(leaf.leaf_hash),
                 proof_hex: hex::encode(proof.as_bytes()),
             });
@@ -196,6 +209,15 @@ impl TrustLog {
 pub struct StoredInclusion {
     /// Leaf index in the tree.
     pub trust_domain_index: u64,
+    /// The trust domain this leaf binds. Lets a consumer holding only the
+    /// compiled registry find the leaf without knowing the append order.
+    pub trust_domain: String,
+    /// The append timestamp bound into the leaf. Integrity-protected
+    /// transitively: altering it changes the recomputed leaf hash, which then
+    /// has no inclusion proof against the cosigned root. REQUIRED (no serde
+    /// default) so a sealed log from before this field existed is refused at
+    /// parse rather than silently unverifiable.
+    pub ts: u64,
     /// Hex of the 32-byte leaf hash.
     pub leaf_hash_hex: String,
     /// Hex of the inclusion proof bytes (`InclusionProof::as_bytes`).
@@ -323,6 +345,55 @@ pub fn verify_binding_in_log(
     Ok(())
 }
 
+/// Verify a binding against the cosigned log WITHOUT knowing its append
+/// timestamp — the consumer-side form [`crate::federation::apply_to_store`]
+/// uses. The sealed artifact records `(trust_domain, ts)` per leaf; this
+/// tries every leaf recorded for `trust_domain` (a domain rotated over time
+/// has several) and accepts iff one of them re-derives to a leaf hash that
+/// [`verify_binding_in_log`] then proves included and cosigned. Returns the
+/// `ts` of the matching leaf.
+///
+/// Fail-closed: a domain with no recorded leaf, a bundle that matches no
+/// recorded leaf (tampered, or logged under a different `owner_id`), a
+/// leaf whose proof does not verify, or a bad cosignature all reject.
+pub fn verify_binding_inclusion(
+    sealed: &SealedLog,
+    trust_domain: &str,
+    bundle_bytes: &[u8],
+    owner_id: u64,
+    expected_cosigner_pubkey: &[u8; 32],
+) -> Result<u64, RegistryError> {
+    let mut candidates = 0usize;
+    for stored in sealed
+        .inclusions
+        .iter()
+        .filter(|s| s.trust_domain == trust_domain)
+    {
+        candidates += 1;
+        let leaf_hash = binding_leaf(trust_domain, bundle_bytes, owner_id, stored.ts)?;
+        if hex::encode(leaf_hash) != stored.leaf_hash_hex {
+            continue;
+        }
+        verify_binding_in_log(
+            sealed,
+            trust_domain,
+            bundle_bytes,
+            owner_id,
+            stored.ts,
+            expected_cosigner_pubkey,
+        )?;
+        return Ok(stored.ts);
+    }
+    Err(RegistryError::NotInLog(if candidates == 0 {
+        format!("no leaf recorded for trust domain {trust_domain:?} in the cosigned log")
+    } else {
+        format!(
+            "{candidates} leaf(s) recorded for {trust_domain:?} but none re-derives from this \
+             bundle + owner_id {owner_id} (bundle tampered, or logged under another owner)"
+        )
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +479,76 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, RegistryError::Cosignature(_)));
+    }
+
+    #[test]
+    fn inclusion_without_ts_round_trip_and_rotation() {
+        // ci.example.org is logged twice (a rotation): the consumer holds
+        // only the CURRENT bundle and must find the right leaf by re-derivation.
+        let old = br#"{"keys":[],"spiffe_sequence":0}"#;
+        let mut log = TrustLog::new();
+        log.append_binding("ci.example.org", old, 12345, 1000)
+            .unwrap();
+        log.append_binding("ci.example.org", BUNDLE, 12345, 2000)
+            .unwrap();
+        let sealed = log.seal(&witness(), &cosigner(), 1_700_000_000).unwrap();
+        let pk = cosigner().verifying_key_bytes();
+        assert_eq!(
+            verify_binding_inclusion(&sealed, "ci.example.org", BUNDLE, 12345, &pk).unwrap(),
+            2000
+        );
+        assert_eq!(
+            verify_binding_inclusion(&sealed, "ci.example.org", old, 12345, &pk).unwrap(),
+            1000
+        );
+    }
+
+    #[test]
+    fn inclusion_without_ts_rejects_unlogged_tampered_and_wrong_owner() {
+        let mut log = TrustLog::new();
+        log.append_binding("ci.example.org", BUNDLE, 12345, 1000)
+            .unwrap();
+        let sealed = log.seal(&witness(), &cosigner(), 1_700_000_000).unwrap();
+        let pk = cosigner().verifying_key_bytes();
+        // never logged
+        let err =
+            verify_binding_inclusion(&sealed, "rogue.example.org", BUNDLE, 1, &pk).unwrap_err();
+        assert!(matches!(err, RegistryError::NotInLog(_)), "{err:?}");
+        // tampered bundle: a leaf exists for the domain but does not re-derive
+        let tampered = br#"{"keys":[{"kty":"EC","crv":"P-256","use":"jwt-svid","kid":"ATTACKER","x":"AA","y":"BB"}],"spiffe_sequence":1}"#;
+        let err =
+            verify_binding_inclusion(&sealed, "ci.example.org", tampered, 12345, &pk).unwrap_err();
+        assert!(matches!(err, RegistryError::NotInLog(_)), "{err:?}");
+        // same bundle, logged under another owner
+        let err =
+            verify_binding_inclusion(&sealed, "ci.example.org", BUNDLE, 999, &pk).unwrap_err();
+        assert!(matches!(err, RegistryError::NotInLog(_)), "{err:?}");
+        // wrong pinned cosigner
+        let other = WitnessKey::from_seed([42u8; 32], "other");
+        let err = verify_binding_inclusion(
+            &sealed,
+            "ci.example.org",
+            BUNDLE,
+            12345,
+            &other.verifying_key_bytes(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, RegistryError::Cosignature(_)), "{err:?}");
+    }
+
+    #[test]
+    fn sealed_log_without_leaf_ts_is_refused_at_parse() {
+        // A pre-#13 artifact has no per-leaf `trust_domain`/`ts`; it must not
+        // parse into something the verifier could be handed.
+        let mut log = TrustLog::new();
+        log.append_binding("ci.example.org", BUNDLE, 12345, 1000)
+            .unwrap();
+        let sealed = log.seal(&witness(), &cosigner(), 1_700_000_000).unwrap();
+        let mut v: serde_json::Value = serde_json::to_value(&sealed).unwrap();
+        let leaf = v["inclusions"][0].as_object_mut().unwrap();
+        leaf.remove("ts");
+        leaf.remove("trust_domain");
+        assert!(serde_json::from_value::<SealedLog>(v).is_err());
     }
 
     #[test]

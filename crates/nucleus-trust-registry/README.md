@@ -76,6 +76,21 @@ The OIDC token *request* is enroller-side workflow config
 (`.github/workflows/trust-registry.yml`); the *verifier* is this Rust
 binary.
 
+## Consuming a compiled set
+
+A relying party builds its inbound `FederationStore` from the compiled set
+**and** the sealed log, pinning the witness key out of band:
+
+```rust
+let attestation = LogAttestation { sealed: &sealed_log, cosigner_pubkey: &witness_key };
+let store = build_federation_store(&set, audience, attestation)?;
+```
+
+Every binding is re-verified against the cosigned Signed Tree Head before
+the store is touched; a binding the log does not prove — or a set with one
+such binding — federates nothing. There is no unverified entry point, so a
+deployment without a sealed log cannot serve foreign keys at all.
+
 ## Dormant metering seam
 
 Verifying an enrollment (proof-of-control + transparency inclusion) is a

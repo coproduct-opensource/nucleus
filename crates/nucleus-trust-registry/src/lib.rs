@@ -40,8 +40,10 @@
 //! witness-cosigned Signed Tree Head ([`tlog::verify_binding_in_log`]),
 //! so a backdated or out-of-band insertion that never entered the
 //! cosigned log is rejected, and tampering with a bundle breaks its
-//! inclusion proof. But a maintainer who colludes with the witness can
-//! still enroll a binding — transparency surfaces that for auditors; it
+//! inclusion proof. This is ENFORCED on the production path, not only
+//! stated: [`build_federation_store`] / [`apply_to_store`] require a
+//! [`LogAttestation`] and admit nothing the log does not prove. But a
+//! maintainer who colludes with the witness can still enroll a binding — transparency surfaces that for auditors; it
 //! does not prevent it.
 //!
 //! # Honest caveat #3 — MVP trust base
@@ -88,10 +90,10 @@ pub use compile::{
     CompiledBinding, FederationSet, check_no_silent_rotation, check_pr_diff, compile,
 };
 pub use error::RegistryError;
-pub use federation::{apply_to_store, build_federation_store};
+pub use federation::{LogAttestation, apply_to_store, build_federation_store};
 pub use metadata::{DOMAINS_SUBDIR, DomainEnrollment, DomainMetadata, PROFILE_HTTPS_WEB};
 pub use proof::{GITHUB_ISSUER, ProofClaims, verify_proof_of_control};
 pub use tlog::{
     AppendedLeaf, LOG_ORIGIN, SealedLog, StoredInclusion, TrustLog, binding_leaf,
-    verify_binding_in_log,
+    verify_binding_in_log, verify_binding_inclusion,
 };
