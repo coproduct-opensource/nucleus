@@ -1,22 +1,22 @@
-//! Trust Gate — verifies agent attestations against Coproduct Trust API
-//! and derives permission scoping from reputation brackets.
+//! Trust Gate — verifies agent attestations against the Coproduct Trust API
+//! and records the resulting reputation on the pod. **Observational only.**
 //!
-//! Injected into `create_pod_internal()` to scope sandbox permissions
-//! based on the agent's demonstrated reputation. Agents with higher
-//! reputation get broader capabilities; unknown or low-reputation agents
-//! get restricted sandboxes.
+//! Reputation is not a capability check (#2438). What a pod MAY do is decided
+//! once, from the caller's certificate, in `pod_authority::PodAuthority::admit`;
+//! this module never reads or writes the pod's policy. It also owns the node's
+//! role-separated signing keys and the executor's receipt reporting, which
+//! are unrelated to reputation and unaffected by that change.
 //!
 //! # Flow
 //!
 //! ```text
-//! PodSpec arrives
+//! PodSpec arrives (create_pod_internal, before admission)
 //!   → extract agent identity from metadata labels
 //!   → call POST trust_api_url/api/trust/verify (if attestation JWT present)
 //!   → or call POST trust_api_url/api/trust/discount (identity lookup)
 //!   → map bracket → bracket_to_profile()
-//!   → TrustProfile::enforce() on requested permissions
-//!   → log enforcement result
-//!   → return scoped PodSpec
+//!   → record bracket / profile / score as metadata labels; log
+//!   → the spec's policy is untouched
 //! ```
 
 use std::path::Path;
@@ -26,21 +26,17 @@ use base64::Engine as _;
 use ed25519_dalek::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
 use ed25519_dalek::{Signer as _, SigningKey};
 use hmac::{Hmac, Mac, digest::KeyInit};
-use nucleus_spec::{PodSpec, PolicySpec};
-use portcullis::enforcement::{BackendCapability, require_isolation};
-use portcullis::{IsolationLattice, PermissionLattice, TrustProfile};
+use nucleus_spec::PodSpec;
 
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Configuration for the trust gate.
 #[derive(Debug, Clone)]
 pub struct TrustGateConfig {
     /// URL of the Coproduct Trust API (e.g., "https://trust.coproduct.one")
     pub trust_api_url: String,
-    /// Whether to enforce trust profiles (false = log-only mode)
-    pub enforce: bool,
     /// Default bracket for agents without attestations
     pub default_bracket: String,
     /// HMAC-SHA256 key for signing X-Nucleus-Signature on receipt POSTs.
@@ -70,7 +66,6 @@ impl Default for TrustGateConfig {
     fn default() -> Self {
         Self {
             trust_api_url: String::new(),     // Disabled by default
-            enforce: false,                   // Log-only by default
             default_bracket: "C".to_string(), // Adequate — tenant profile
             receipt_secret: None,
             executor_signing_key: Arc::new(generate_signing_key()),
@@ -276,9 +271,6 @@ impl TrustGateConfig {
 
         Self {
             trust_api_url: std::env::var("TRUST_API_URL").unwrap_or_default(),
-            enforce: std::env::var("TRUST_GATE_ENFORCE")
-                .map(|v| v == "true" || v == "1")
-                .unwrap_or(false),
             default_bracket: std::env::var("TRUST_DEFAULT_BRACKET")
                 .unwrap_or_else(|_| "C".to_string()),
             receipt_secret,
@@ -301,17 +293,14 @@ pub struct TrustVerification {
     pub agent_identity: String,
     /// Attestation bracket (A-F)
     pub bracket: String,
-    /// Trust profile name derived from bracket
+    /// Trust profile name derived from bracket (a label, not a policy)
     pub profile_name: String,
-    /// Whether permissions were actually restricted
-    pub was_restricted: bool,
-    /// Whether enforcement is active (vs log-only)
-    pub enforced: bool,
     /// Continuous reputation score in [0.0, 1.0] when available from the
     /// discount endpoint. Preserves full precision of the discount_factor
     /// rather than double-discretizing through bracket → score bracket mapping.
-    /// Falls back to bracket-derived discrete values in apply_trust_enforcement
-    /// when None (e.g., when score was derived from an attestation JWT).
+    /// Falls back to bracket-derived discrete values in
+    /// `record_trust_observation` when None (e.g., when the score was derived
+    /// from an attestation JWT).
     pub continuous_score: Option<f64>,
 }
 
@@ -345,7 +334,7 @@ struct Brackets {
     overall: String,
 }
 
-/// Verify an agent's trust status and return the appropriate TrustProfile.
+/// Verify an agent's trust status and return the observation to record.
 ///
 /// If the trust API is unreachable or returns an error, falls back to
 /// the default bracket (never blocks execution due to trust API failure).
@@ -406,7 +395,6 @@ pub async fn verify_agent_trust(
         bracket = %bracket,
         profile = %profile_name,
         continuous_score = ?continuous_score,
-        enforce = config.enforce,
         "Trust gate: agent verified"
     );
 
@@ -414,25 +402,22 @@ pub async fn verify_agent_trust(
         agent_identity,
         bracket,
         profile_name,
-        was_restricted: false, // Updated after apply_trust_enforcement() is called
-        enforced: config.enforce,
         continuous_score,
     }
 }
 
-/// Apply the trust profile to a PodSpec, scoping permissions.
+/// Record the trust observation on the PodSpec as metadata labels.
 ///
-/// Computes a `TrustProfile` from the continuous reputation score via
-/// `TrustProfile::from_reputation_score()`, then calls `profile.enforce()` to
-/// actually restrict the PodSpec's capability lattice before it is submitted to
-/// the runtime. In enforce mode the PodSpec policy is replaced with an inline
-/// lattice containing the enforced capabilities/isolation/obligations.
-/// In log-only mode the restriction is computed and logged but not applied.
-pub fn apply_trust_enforcement(verification: &mut TrustVerification, spec: &mut PodSpec) {
-    // Use the continuous discount-derived score when available — it preserves
-    // the full resolution of the trust API's discount_factor without the
-    // lossy double-discretization of discount_factor → bracket → score.
-    // Fall back to bracket-derived values for attestation-JWT paths.
+/// This is the whole of what reputation does to a pod (#2438): the bracket,
+/// the profile name and the score are written as labels for dashboards,
+/// receipts and audit, and logged. **Nothing about the pod's authority is
+/// touched.** What a pod MAY do is decided once, from the caller's
+/// certificate, in `pod_authority::PodAuthority::admit`; a score from an
+/// external service is not a capability check and must never narrow — or,
+/// by being absent, fail to narrow — what that certificate grants.
+pub fn record_trust_observation(verification: &TrustVerification, spec: &mut PodSpec) {
+    // Continuous discount-derived score when available; bracket-derived
+    // otherwise (attestation-JWT paths). Observability only.
     let reputation_score =
         verification
             .continuous_score
@@ -444,163 +429,41 @@ pub fn apply_trust_enforcement(verification: &mut TrustVerification, spec: &mut 
                 _ => 0.2,
             });
 
-    // Write metadata labels for downstream observability and auditing.
-    spec.metadata.labels.insert(
+    let labels = &mut spec.metadata.labels;
+    labels.insert(
         "trust.coproduct.one/bracket".to_string(),
         verification.bracket.clone(),
     );
-    spec.metadata.labels.insert(
+    labels.insert(
         "trust.coproduct.one/profile".to_string(),
         verification.profile_name.clone(),
     );
-    spec.metadata.labels.insert(
-        "trust.coproduct.one/enforced".to_string(),
-        verification.enforced.to_string(),
-    );
-    spec.metadata.labels.insert(
+    labels.insert(
         "trust.coproduct.one/reputation-score".to_string(),
         format!("{reputation_score:.4}"),
     );
 
-    // Resolve the PodSpec's requested policy to get the current capability lattice.
-    let current_lattice = match spec.spec.resolve_policy() {
-        Ok(l) => l,
-        Err(e) => {
-            warn!(
-                agent = %verification.agent_identity,
-                error = %e,
-                "Trust gate: policy resolution failed, skipping enforcement"
-            );
-            return;
-        }
-    };
-
-    // Derive the trust profile from the continuous reputation score.
-    // This uses smooth thresholds and transition zones — no discrete cliffs.
-    let profile = TrustProfile::from_reputation_score(reputation_score);
-
-    // Use the existing minimum_isolation as the baseline; default to localhost
-    // (no pre-existing isolation requirement) so the profile floor can only
-    // strengthen, never weaken, the required isolation.
-    let current_isolation = current_lattice
-        .minimum_isolation
-        .unwrap_or_else(IsolationLattice::localhost);
-
-    // Enforce: capabilities ← meet(current, ceiling)
-    //          isolation   ← join(current, floor)
-    //          obligations ← union(current, mandatory)
-    let enforcement = profile.enforce(
-        &current_lattice.capabilities,
-        &current_isolation,
-        &current_lattice.obligations,
+    info!(
+        agent = %verification.agent_identity,
+        bracket = %verification.bracket,
+        profile = %verification.profile_name,
+        score = reputation_score,
+        "Trust gate: reputation observed (not an authorization input)"
     );
-
-    verification.was_restricted = enforcement.was_restricted;
-
-    if enforcement.was_restricted {
-        info!(
-            agent = %verification.agent_identity,
-            profile = %enforcement.profile_name,
-            score = reputation_score,
-            enforced = verification.enforced,
-            "Trust gate: sandbox capabilities restricted by reputation profile"
-        );
-    }
-
-    // ── Backend-enforceability gate ──────────────────────────────────────
-    // The trust profile chose a REQUIRED isolation posture (join of the pod's
-    // current isolation with the profile floor). Clamp it to what THIS node's
-    // backend can actually enforce: on Firecracker this is the full lattice (a
-    // no-op); on a host that can't enforce a level (e.g. Apple VZ exposes no
-    // host-side egress allowlist) the posture is strengthened UP — never
-    // weakened — and the gap is recorded. The sandbox is then configured from
-    // the ENFORCED posture, so a pod never runs believing it has a guarantee
-    // the platform doesn't actually deliver.
-    let backend = isolation_backend();
-    let isolation = match require_isolation(enforcement.isolation, backend) {
-        Ok(enforced) => {
-            spec.metadata.labels.insert(
-                "isolation.coproduct.one/requested".to_string(),
-                enforced.requested.to_string(),
-            );
-            spec.metadata.labels.insert(
-                "isolation.coproduct.one/enforced".to_string(),
-                enforced.enforced.to_string(),
-            );
-            spec.metadata.labels.insert(
-                "isolation.coproduct.one/backend".to_string(),
-                backend.name.to_string(),
-            );
-            if enforced.was_strengthened() {
-                warn!(
-                    agent = %verification.agent_identity,
-                    backend = backend.name,
-                    requested = %enforced.requested,
-                    enforced = %enforced.enforced,
-                    "Trust gate: isolation strengthened to the backend-enforceable posture"
-                );
-            }
-            enforced.enforced
-        }
-        Err(err) => {
-            // Unreachable for the built-in backends (their top level is always
-            // enforceable), but a misconfigured custom backend could reach here.
-            // Fail safe: keep the strongest posture available — the requested
-            // one — and surface the error rather than silently under-enforcing.
-            error!(
-                agent = %verification.agent_identity,
-                backend = backend.name,
-                error = %err,
-                "Trust gate: required isolation is unenforceable on this backend"
-            );
-            enforcement.isolation
-        }
-    };
-    let isolation_strengthened = isolation != enforcement.isolation;
-
-    // In enforce mode, apply the scoped policy to the PodSpec so the runtime
-    // sees the narrowed capabilities + the backend-enforceable isolation before
-    // launching the sandbox. Rewrite whenever the profile restricted the pod OR
-    // the backend clamp strengthened the isolation posture.
-    // In log-only mode we've computed the restriction for audit purposes only.
-    if verification.enforced && (enforcement.was_restricted || isolation_strengthened) {
-        let enforced_lattice = PermissionLattice::builder()
-            .description(format!(
-                "trust-scoped by {} (score={:.4})",
-                enforcement.profile_name, reputation_score
-            ))
-            .capabilities(enforcement.capabilities)
-            .obligations(enforcement.obligations)
-            .paths(current_lattice.paths.clone())
-            .budget(current_lattice.budget.clone())
-            .commands(current_lattice.commands.clone())
-            .time(current_lattice.time.clone())
-            .minimum_isolation(isolation)
-            .created_by("trust-gate")
-            .build();
-
-        spec.spec.policy = PolicySpec::Inline {
-            lattice: Box::new(enforced_lattice),
-        };
-    }
 }
 
-/// The isolation backend this node enforces with. Defaults to Firecracker
-/// (Linux/KVM — the full lattice); set `NUCLEUS_ISOLATION_BACKEND=apple-vz` on a
-/// macOS `Virtualization.framework` host so the trust gate clamps un-enforceable
-/// levels (no host egress allowlist, no namespaces tier) UP to what VZ delivers.
-fn isolation_backend() -> &'static BackendCapability {
-    match std::env::var("NUCLEUS_ISOLATION_BACKEND").as_deref() {
-        Ok("apple-vz") => &BackendCapability::APPLE_VZ,
-        _ => &BackendCapability::FIRECRACKER,
-    }
+/// Look the agent up and record the observation on the spec. The one call
+/// site is `create_pod_internal`, before admission; the pod's authority is
+/// unaffected.
+pub async fn observe(config: &TrustGateConfig, spec: &mut PodSpec, http_client: &reqwest::Client) {
+    let verification = verify_agent_trust(config, spec, http_client).await;
+    record_trust_observation(&verification, spec);
 }
 
-/// Map attestation bracket to portcullis trust profile name.
+/// Map attestation bracket to a portcullis trust profile NAME.
 ///
-/// Used for logging and metadata labels. The actual permission scoping
-/// uses `TrustProfile::from_reputation_score()` for continuous lattice
-/// autonomy (no discrete brackets in enforcement).
+/// Used for logging and metadata labels only. No profile is applied to the
+/// pod (#2438); the name is a coarse summary for dashboards and receipts.
 fn bracket_to_profile(bracket: &str) -> &'static str {
     match bracket.to_uppercase().as_str() {
         "A" => "operator",
@@ -1729,7 +1592,6 @@ mod tests {
     fn test_config_from_env_defaults() {
         let config = TrustGateConfig::default();
         assert!(!config.is_enabled());
-        assert!(!config.enforce);
         assert_eq!(config.default_bracket, "C");
     }
 
@@ -1900,7 +1762,6 @@ mod tests {
         let secret_bytes = b"my-receipt-secret-32-bytes-long!!";
         let config = TrustGateConfig {
             trust_api_url: "https://trust.example.com".to_string(),
-            enforce: true,
             default_bracket: "C".to_string(),
             receipt_secret: Some(Arc::new(secret_bytes.to_vec())),
             ..Default::default()
@@ -2026,17 +1887,14 @@ mod tests {
         assert!(compute_session_score(&best) <= 1.0);
     }
 
-    /// Verify apply_trust_enforcement writes all expected metadata labels.
-    #[test]
-    fn test_apply_trust_enforcement_writes_labels() {
+    fn spec_with_profile(name: &str) -> PodSpec {
         use nucleus_spec::{PodSpecInner, PolicySpec};
         use std::path::PathBuf;
-
-        let spec_inner = PodSpecInner {
+        PodSpec::new(PodSpecInner {
             work_dir: PathBuf::from("/workspace"),
             timeout_seconds: 3600,
             policy: PolicySpec::Profile {
-                name: "default".to_string(),
+                name: name.to_string(),
             },
             budget_model: None,
             resources: None,
@@ -2049,239 +1907,88 @@ mod tests {
             cgroup: None,
             audit_sink: None,
             credentials: None,
-        };
-        let mut spec = PodSpec::new(spec_inner);
+        })
+    }
 
-        let mut verification = TrustVerification {
+    fn verified_as(bracket: &str, profile: &str, score: Option<f64>) -> TrustVerification {
+        TrustVerification {
             agent_identity: "spiffe://nucleus/test".to_string(),
-            bracket: "D".to_string(),
-            profile_name: "untrusted".to_string(),
-            was_restricted: false,
-            enforced: false, // log-only — spec must not be modified
-            continuous_score: None,
-        };
+            bracket: bracket.to_string(),
+            profile_name: profile.to_string(),
+            continuous_score: score,
+        }
+    }
 
-        apply_trust_enforcement(&mut verification, &mut spec);
+    /// The observation is recorded as labels: bracket, profile and score.
+    /// There is no `enforced` label any more — there is nothing to enforce.
+    #[test]
+    fn test_record_trust_observation_writes_labels() {
+        let mut spec = spec_with_profile("default");
+        record_trust_observation(&verified_as("D", "untrusted", None), &mut spec);
 
+        let labels = &spec.metadata.labels;
         assert_eq!(
-            spec.metadata
-                .labels
+            labels
                 .get("trust.coproduct.one/bracket")
                 .map(String::as_str),
             Some("D")
         );
         assert_eq!(
-            spec.metadata
-                .labels
+            labels
                 .get("trust.coproduct.one/profile")
                 .map(String::as_str),
             Some("untrusted")
         );
-        assert!(
-            spec.metadata
-                .labels
-                .contains_key("trust.coproduct.one/reputation-score"),
-            "reputation-score label must be written"
-        );
         assert_eq!(
-            spec.metadata
-                .labels
-                .get("trust.coproduct.one/enforced")
+            labels
+                .get("trust.coproduct.one/reputation-score")
                 .map(String::as_str),
-            Some("false")
+            Some("0.4500")
+        );
+        assert!(
+            !labels.contains_key("trust.coproduct.one/enforced"),
+            "no enforcement label: reputation is observed, not enforced (#2438)"
         );
     }
 
-    /// The enforcement gate is wired into the runtime: `apply_trust_enforcement`
-    /// clamps the required isolation through the node's backend and records the
-    /// requested/enforced/backend posture. On the default Firecracker backend
-    /// the full lattice is enforceable, so `enforced == requested`. (Apple-VZ
-    /// strengthening is covered by `portcullis::enforcement`'s unit tests.)
+    /// #2438: the lowest reputation against the most permissive profile leaves
+    /// the policy exactly as requested. Before this change a score of 0.45
+    /// against `local_dev` rewrote the policy to an inline lattice with
+    /// `write_files = Never`; authority now comes only from the certificate
+    /// (`pod_authority`), so a score can neither narrow nor fail to narrow it.
     #[test]
-    fn test_apply_trust_enforcement_records_backend_isolation() {
-        use nucleus_spec::{PodSpecInner, PolicySpec};
-        use std::path::PathBuf;
+    fn test_reputation_never_narrows_the_policy() {
+        use nucleus_spec::PolicySpec;
 
-        let spec_inner = PodSpecInner {
-            work_dir: PathBuf::from("/workspace"),
-            timeout_seconds: 3600,
-            policy: PolicySpec::Profile {
-                name: "default".to_string(),
-            },
-            budget_model: None,
-            resources: None,
-            network: None,
-            image: None,
-            credentialed_egress: Vec::new(),
-            workload: None,
-            vsock: None,
-            seccomp: None,
-            cgroup: None,
-            audit_sink: None,
-            credentials: None,
-        };
-        let mut spec = PodSpec::new(spec_inner);
-        let mut verification = TrustVerification {
-            agent_identity: "spiffe://nucleus/test".to_string(),
-            bracket: "A".to_string(),
-            profile_name: "trusted".to_string(),
-            was_restricted: false,
-            enforced: true,
-            continuous_score: None,
-        };
+        let mut spec = spec_with_profile("local_dev");
+        record_trust_observation(&verified_as("F", "airgapped", Some(0.0)), &mut spec);
 
-        apply_trust_enforcement(&mut verification, &mut spec);
-
-        let backend = spec
-            .metadata
-            .labels
-            .get("isolation.coproduct.one/backend")
-            .cloned()
-            .expect("backend label must be written");
-        let requested = spec
-            .metadata
-            .labels
-            .get("isolation.coproduct.one/requested")
-            .cloned();
-        let enforced = spec
-            .metadata
-            .labels
-            .get("isolation.coproduct.one/enforced")
-            .cloned();
-        assert!(
-            requested.is_some() && enforced.is_some(),
-            "requested/enforced isolation labels must be written"
-        );
-        // Firecracker (the default, no env override) enforces the full lattice,
-        // so the enforced posture is faithful to the requested one.
-        if backend == "firecracker" {
-            assert_eq!(requested, enforced, "firecracker enforces the full lattice");
+        match &spec.spec.policy {
+            PolicySpec::Profile { name } => assert_eq!(name, "local_dev"),
+            PolicySpec::Inline { .. } => panic!("reputation rewrote the policy"),
         }
     }
 
-    /// Verify apply_trust_enforcement replaces the PodSpec policy in enforce mode
-    /// when the requested capabilities exceed the reputation profile.
+    /// Structural pin for #2438's acceptance criterion: no production code in
+    /// this module assigns the pod's policy, consults a trust profile, or
+    /// clamps isolation. Only the test half of the file may name these.
     #[test]
-    fn test_apply_trust_enforcement_scopes_policy_in_enforce_mode() {
-        use nucleus_spec::{PodSpecInner, PolicySpec};
-        use std::path::PathBuf;
-
-        // Start with the permissive "local_dev" profile and a low-reputation agent.
-        // The agent's score (0.45 for bracket D) should restrict write/bash/push.
-        let spec_inner = PodSpecInner {
-            work_dir: PathBuf::from("/workspace"),
-            timeout_seconds: 3600,
-            policy: PolicySpec::Profile {
-                name: "local_dev".to_string(),
-            },
-            budget_model: None,
-            resources: None,
-            network: None,
-            image: None,
-            credentialed_egress: Vec::new(),
-            workload: None,
-            vsock: None,
-            seccomp: None,
-            cgroup: None,
-            audit_sink: None,
-            credentials: None,
-        };
-        let mut spec = PodSpec::new(spec_inner);
-
-        let mut verification = TrustVerification {
-            agent_identity: "spiffe://nucleus/low-trust".to_string(),
-            bracket: "D".to_string(),
-            profile_name: "untrusted".to_string(),
-            was_restricted: false,
-            enforced: true, // enforce mode — policy must be replaced
-            continuous_score: Some(0.45),
-        };
-
-        apply_trust_enforcement(&mut verification, &mut spec);
-
-        // was_restricted should be set because local_dev is more permissive than score 0.45 allows
-        assert!(
-            verification.was_restricted,
-            "low-reputation agent against permissive profile must be restricted"
-        );
-
-        // The policy should now be an inline lattice
-        match &spec.spec.policy {
-            PolicySpec::Inline { lattice } => {
-                // Score 0.45: write_files threshold is 0.5 → Never
-                use portcullis::CapabilityLevel;
-                assert_eq!(
-                    lattice.capabilities.write_files,
-                    CapabilityLevel::Never,
-                    "write_files must be blocked at score 0.45"
-                );
-                // run_bash threshold is 0.6 → Never
-                assert_eq!(
-                    lattice.capabilities.run_bash,
-                    CapabilityLevel::Never,
-                    "run_bash must be blocked at score 0.45"
-                );
-                // read_files is always allowed
-                assert_eq!(
-                    lattice.capabilities.read_files,
-                    CapabilityLevel::Always,
-                    "read_files must always be allowed"
-                );
-            }
-            PolicySpec::Profile { name } => {
-                panic!("policy was not replaced with inline lattice; still Profile({name:?})");
-            }
-        }
-    }
-
-    /// Verify apply_trust_enforcement does NOT modify the policy in log-only mode.
-    #[test]
-    fn test_apply_trust_enforcement_log_only_does_not_modify_policy() {
-        use nucleus_spec::{PodSpecInner, PolicySpec};
-        use std::path::PathBuf;
-
-        let spec_inner = PodSpecInner {
-            work_dir: PathBuf::from("/workspace"),
-            timeout_seconds: 3600,
-            policy: PolicySpec::Profile {
-                name: "fix_issue".to_string(),
-            },
-            budget_model: None,
-            resources: None,
-            network: None,
-            image: None,
-            credentialed_egress: Vec::new(),
-            workload: None,
-            vsock: None,
-            seccomp: None,
-            cgroup: None,
-            audit_sink: None,
-            credentials: None,
-        };
-        let mut spec = PodSpec::new(spec_inner);
-
-        let mut verification = TrustVerification {
-            agent_identity: "spiffe://nucleus/test".to_string(),
-            bracket: "F".to_string(),
-            profile_name: "airgapped".to_string(),
-            was_restricted: false,
-            enforced: false, // log-only
-            continuous_score: Some(0.1),
-        };
-
-        apply_trust_enforcement(&mut verification, &mut spec);
-
-        // Policy must remain unchanged in log-only mode
-        match &spec.spec.policy {
-            PolicySpec::Profile { name } => {
-                assert_eq!(
-                    name, "fix_issue",
-                    "policy profile must not be mutated in log-only mode"
-                );
-            }
-            PolicySpec::Inline { .. } => {
-                panic!("policy must not be replaced in log-only mode");
-            }
+    fn test_trust_gate_has_no_authorization_path() {
+        let src = include_str!("trust_gate.rs");
+        let production = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the module has a test half");
+        for needle in [
+            "spec.spec.policy =",
+            "TrustProfile",
+            "require_isolation",
+            "TRUST_GATE_ENFORCE",
+        ] {
+            assert!(
+                !production.contains(needle),
+                "trust_gate.rs must not contain {needle:?} outside its tests"
+            );
         }
     }
 

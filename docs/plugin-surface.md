@@ -12,8 +12,8 @@ exactly where a vendor slots in, and so no vendor is ever hard-coded in the core
 Each axis below is **a trait or enum with ≥1 shipped implementation and room for
 more**. Where a seam is a *trust or isolation* boundary, it carries a
 **clamp**: the kernel never trusts a backend's self-description upward — a weaker
-backend cannot claim a stronger guarantee (e.g. `trust_gate` auto-clamps enforced
-isolation ≥ requested; `not_proven` makes over-reading an attestation unsayable).
+backend cannot claim a stronger guarantee (e.g. the node's `driver::clamp_isolation_to_backend`
+clamps enforced isolation ≥ requested on every pod-create; `not_proven` makes over-reading an attestation unsayable).
 
 ## The eight axes
 
@@ -96,7 +96,7 @@ fills each axis.
 Apple Virtualization.framework is the macOS-native isolation substrate. The VZ
 substrate is additive behind two existing seams, and **the enforcement half is
 already wired**: `BackendCapability::APPLE_VZ` is defined and tested in
-`portcullis::enforcement`, and `trust_gate::isolation_backend()` already selects
+`portcullis::enforcement`, and `driver::isolation_backend()` already selects
 it when the node runs the `apple-vz` backend (so `require_isolation` clamps a
 VZ pod's enforced isolation exactly as it does a Firecracker pod's). Its
 attested-mediator key comes from axis 2's Apple/SEP backend.
