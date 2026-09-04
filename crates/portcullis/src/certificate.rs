@@ -95,7 +95,6 @@ use std::fmt;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "crypto")]
 use crate::delegation::meet_with_justification;
 use crate::delegation::MeetJustification;
 use crate::PermissionLattice;
