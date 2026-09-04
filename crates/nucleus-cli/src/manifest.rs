@@ -61,6 +61,17 @@ pub enum ManifestCommand {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
     },
+    /// Emit the approved tool surface for a pod policy (#2485): the extension
+    /// entries — one per pinned tool, plus the surface marker — to place under
+    /// `policy.lattice.capabilities.extensions` of the pod's inline policy.
+    /// The node signs them into the pod certificate; a child pod can only
+    /// narrow them, and `mcp-guard` refuses any served tool not on them.
+    Surface {
+        /// An `mcp-guard --pin-file`: the vetted `(name, description,
+        /// parameters)` triples whose digests define the surface.
+        #[arg(long, value_name = "FILE")]
+        pins: PathBuf,
+    },
     /// Load a manifest file under `<dir>/.nucleus/trust` exactly as
     /// `mcp-guard --manifests` would, and report what was admitted.
     Verify {
@@ -115,6 +126,12 @@ pub fn execute(args: ManifestArgs) {
                 schema_hash.as_deref(),
                 out.as_deref(),
             ) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        ManifestCommand::Surface { pins } => {
+            if let Err(e) = run_surface(&pins) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -314,6 +331,29 @@ fn run_sign(
     std::fs::write(dest, rendered)
         .map_err(|e| format!("failed to write {}: {e}", dest.display()))?;
     eprintln!("wrote {}", dest.display());
+    Ok(())
+}
+
+/// Print the surface extension entries as JSON, ready for the pod policy.
+fn run_surface(pins: &Path) -> Result<(), String> {
+    use portcullis::tool_surface::approve_tool;
+    let digests = digests_from_pins(pins)?;
+    if digests.is_empty() {
+        return Err(format!(
+            "{} pins no tools; a surface of nothing approves nothing",
+            pins.display()
+        ));
+    }
+    let mut caps = portcullis::CapabilityLattice::default();
+    for (name, digest) in &digests {
+        approve_tool(&mut caps, name, digest);
+    }
+    let json = serde_json::to_string_pretty(&caps.extensions).map_err(|e| e.to_string())?;
+    println!("{json}");
+    eprintln!(
+        "{} tool(s) on the surface; place this map under policy.lattice.capabilities.extensions",
+        digests.len()
+    );
     Ok(())
 }
 
