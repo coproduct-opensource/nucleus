@@ -45,15 +45,28 @@ impl fmt::Display for JobId {
 
 /// Lifecycle state. Persisted by whatever backing store the
 /// orchestrator uses; in-process executors simply hold this enum.
+///
+/// Every variant carries `owner` — the SPIFFE subject of the caller who
+/// submitted the job (#2433), populated from the already-verified
+/// identity `RequireSpiffeAuth` extracts at `POST /v1/jobs` and carried
+/// forward, unchanged, through every subsequent state transition. It is
+/// per-variant rather than hoisted into a wrapper struct so the wire
+/// shape (`#[serde(tag = "state")]`, flat JSON) doesn't change — use
+/// [`Self::owner`] rather than matching on it directly, so a future
+/// variant can't silently omit it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum JobState {
     /// Submitted but not yet picked up.
-    Queued { submitted_at: DateTime<Utc> },
+    Queued {
+        submitted_at: DateTime<Utc>,
+        owner: String,
+    },
     /// Agent is running.
     Running {
         started_at: DateTime<Utc>,
         session_root: String,
+        owner: String,
     },
     /// Job finished successfully. The bundle is in [`JobOutcome::bundle`].
     ///
@@ -64,6 +77,7 @@ pub enum JobState {
         started_at: DateTime<Utc>,
         completed_at: DateTime<Utc>,
         outcome: Box<JobOutcome>,
+        owner: String,
     },
     /// Job failed. `reason` is a human-readable error string; structured
     /// errors flow through the [`crate::executor::ExecuteJobError`] type
@@ -72,7 +86,22 @@ pub enum JobState {
         started_at: Option<DateTime<Utc>>,
         failed_at: DateTime<Utc>,
         reason: String,
+        owner: String,
     },
+}
+
+impl JobState {
+    /// The SPIFFE subject of the caller who submitted this job. Constant
+    /// across the job's lifetime — every transition carries the same
+    /// value forward.
+    pub fn owner(&self) -> &str {
+        match self {
+            JobState::Queued { owner, .. }
+            | JobState::Running { owner, .. }
+            | JobState::Completed { owner, .. }
+            | JobState::Failed { owner, .. } => owner,
+        }
+    }
 }
 
 /// What a completed job produced. The bundle is the value the customer
@@ -104,9 +133,43 @@ mod tests {
     fn job_state_round_trips_through_json() {
         let s = JobState::Queued {
             submitted_at: Utc::now(),
+            owner: "spiffe://nucleus.local/agent/coder".to_string(),
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: JobState = serde_json::from_str(&json).unwrap();
-        matches!(back, JobState::Queued { .. });
+        assert!(matches!(back, JobState::Queued { .. }));
+        assert_eq!(back.owner(), "spiffe://nucleus.local/agent/coder");
+    }
+
+    /// #2433: every variant carries `owner` through a JSON round-trip, not
+    /// just `Queued` — a future variant that forgot to serialize it would
+    /// fail here rather than only being caught by `Self::owner`'s match
+    /// arms failing to compile (which a `..` pattern would hide anyway).
+    #[test]
+    fn owner_round_trips_through_every_variant() {
+        let owner = "spiffe://nucleus.local/agent/coder";
+        let states = [
+            JobState::Queued {
+                submitted_at: Utc::now(),
+                owner: owner.to_string(),
+            },
+            JobState::Running {
+                started_at: Utc::now(),
+                session_root: "session-1".to_string(),
+                owner: owner.to_string(),
+            },
+            JobState::Failed {
+                started_at: Some(Utc::now()),
+                failed_at: Utc::now(),
+                reason: "boom".to_string(),
+                owner: owner.to_string(),
+            },
+        ];
+        for s in states {
+            assert_eq!(s.owner(), owner);
+            let json = serde_json::to_string(&s).unwrap();
+            let back: JobState = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.owner(), owner, "owner must survive a JSON round-trip");
+        }
     }
 }
