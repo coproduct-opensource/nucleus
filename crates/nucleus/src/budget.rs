@@ -39,6 +39,16 @@ pub struct AtomicBudget {
     reservation_lock: Mutex<()>,
 }
 
+/// Whole micro-dollars for a non-negative, finite USD amount. The ONE place
+/// the f64→u64 conversion lives (the clippy cast ratchet counts each `as`);
+/// callers validate sign and finiteness first.
+fn usd_to_micro(usd: f64) -> u64 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        (usd * 1_000_000.0) as u64
+    }
+}
+
 impl AtomicBudget {
     /// Create a new atomic budget from a policy.
     ///
@@ -58,8 +68,8 @@ impl AtomicBudget {
             .unwrap_or(0.0);
 
         Self {
-            max_micro_usd: (max_micro * 1_000_000.0) as u64,
-            consumed_micro_usd: AtomicU64::new((consumed_micro * 1_000_000.0) as u64),
+            max_micro_usd: usd_to_micro(max_micro),
+            consumed_micro_usd: AtomicU64::new(usd_to_micro(consumed_micro)),
             max_input_tokens: policy.max_input_tokens,
             consumed_input_tokens: AtomicU64::new(0),
             max_output_tokens: policy.max_output_tokens,
@@ -88,7 +98,7 @@ impl AtomicBudget {
             });
         }
 
-        let amount_micro = (amount * 1_000_000.0) as u64;
+        let amount_micro = usd_to_micro(amount);
         self.charge_micro_usd(amount_micro)
     }
 
@@ -203,7 +213,7 @@ impl AtomicBudget {
 
         // Create child budget with reserved amount
         Ok(AtomicBudget {
-            max_micro_usd: (amount_usd * 1_000_000.0) as u64,
+            max_micro_usd: usd_to_micro(amount_usd),
             consumed_micro_usd: AtomicU64::new(0),
             max_input_tokens: self.max_input_tokens / 2, // Give half of remaining
             consumed_input_tokens: AtomicU64::new(0),
@@ -211,6 +221,31 @@ impl AtomicBudget {
             consumed_output_tokens: AtomicU64::new(0),
             reservation_lock: Mutex::new(()),
         })
+    }
+
+    /// Return a [`Self::reserve`] that never became spend (the child the
+    /// reservation was for was refused downstream). Saturates at zero, and
+    /// ignores non-finite or non-positive amounts, so it can never *grant*
+    /// budget: the most it can do is undo a reservation of the same size.
+    pub fn release(&self, amount_usd: f64) {
+        if !amount_usd.is_finite() || amount_usd <= 0.0 {
+            return;
+        }
+        let _guard = self.reservation_lock.lock();
+        let amount_micro = usd_to_micro(amount_usd);
+        let mut current = self.consumed_micro_usd.load(Ordering::Acquire);
+        loop {
+            let next = current.saturating_sub(amount_micro);
+            match self.consumed_micro_usd.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 

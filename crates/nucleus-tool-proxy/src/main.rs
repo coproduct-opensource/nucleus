@@ -11,6 +11,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
+#[cfg(test)]
+use base64::Engine as _;
 use clap::Parser;
 use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeTraceLink};
 use nucleus::portcullis::kernel::{DecisionToken, Kernel};
@@ -48,6 +50,7 @@ mod mediation;
 mod memory;
 mod node_client;
 mod node_identity;
+mod pod_cert;
 mod pod_mgmt;
 mod policy;
 mod run_gate;
@@ -65,7 +68,6 @@ mod workload;
 
 use attestation::AttestationVerifier;
 use auth::{AuthConfig, AuthError};
-use base64::Engine as _;
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
 use nucleus_identity::approval_bundle::{ApprovalBundleVerifier, compute_manifest_hash};
 use nucleus_identity::mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
@@ -307,6 +309,14 @@ struct Args {
     #[arg(long, env = "NUCLEUS_CERT_ROOT_PUBKEY")]
     cert_root_pubkey: Option<String>,
 
+    /// This pod's certificate of authority (base64 `AttenuationToken`),
+    /// issued by the node at pod-create. Verified ONCE at boot against
+    /// `--cert-root-pubkey` — never against the token's own embedded key.
+    /// Present-but-invalid is fatal (EX_CONFIG); absent falls back to the
+    /// spec policy as this pod's own ceiling. See `pod_cert.rs`.
+    #[arg(long, env = "NUCLEUS_POD_CERT")]
+    pod_cert: Option<String>,
+
     // === Live-Path Session Task Token (PR-2, present-not-consumed) ===
     // Host-minted session capability token injected on the SAME host-controlled
     // boot channel that provisions credentials (the pod boot environment set by
@@ -395,8 +405,14 @@ pub(crate) struct AppState {
     policy_engine: PolicyEngine,
     /// Node client for pod management (orchestrator mode only).
     node_client: Option<Arc<node_client::NodeClient>>,
-    /// Delegation ceiling: sub-pod permissions cannot exceed this.
-    delegation_ceiling: Option<Arc<PermissionLattice>>,
+    /// Delegation ceiling: sub-pod permissions cannot exceed this. ALWAYS
+    /// present — derived from this pod's own certificate (or resolved policy),
+    /// with the operator flag as an extra meet, never a substitute (#2440).
+    delegation_ceiling: Arc<PermissionLattice>,
+    /// This pod's certificate of authority, verified once at boot
+    /// (`pod_cert.rs`). `None` only for a pod created before its node issued
+    /// certificates.
+    pod_cert: Option<Arc<pod_cert::PodCertificate>>,
     /// Credentials loaded from orchestrator environment for injection into sub-pods.
     orchestrator_credentials: std::collections::BTreeMap<String, String>,
     /// Permission market for Lagrangian pricing of capability dimensions.
@@ -1145,6 +1161,11 @@ enum ApiError {
     DnsNotAllowed(String),
     #[error("attestation verification failed: {0}")]
     AttestationFailed(String),
+    /// A request-borne delegation certificate was presented and cannot be
+    /// honoured (unbound tier, malformed, unverifiable, wrong leaf). Never a
+    /// downgrade to the unsigned bid — see `pod_cert::evaluate_request_cert`.
+    #[error("delegation certificate rejected: {0}")]
+    DelegationCert(String),
     #[error("escalation error: {0}")]
     Escalation(String),
     /// The permission kernel refused, for a reason that is not a capability
@@ -1274,6 +1295,12 @@ impl IntoResponse for ApiError {
             ApiError::AttestationFailed(_) => {
                 (StatusCode::FORBIDDEN, "attestation_failed", None, None)
             }
+            ApiError::DelegationCert(_) => (
+                StatusCode::FORBIDDEN,
+                "delegation_cert_rejected",
+                None,
+                None,
+            ),
             ApiError::Escalation(_) => (StatusCode::FORBIDDEN, "escalation_denied", None, None),
             ApiError::Validation(_) => (StatusCode::BAD_REQUEST, "validation_error", None, None),
             ApiError::PermissionDenied(info) => (
@@ -1465,8 +1492,45 @@ async fn main() -> Result<(), ApiError> {
     let spec_contents = st
         .timed("spec_read", tokio::fs::read_to_string(&args.spec))
         .await?;
-    let spec: PodSpec =
+    let mut spec: PodSpec =
         serde_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
+
+    // This pod's certificate of authority: verified ONCE, against the pinned
+    // anchor (never the token's own embedded key). Present-but-invalid is
+    // fatal (EX_CONFIG); absent leaves the spec's policy as the ceiling.
+    let pod_cert = match pod_cert::resolve_pod_certificate(
+        args.pod_cert.as_deref(),
+        args.cert_root_pubkey.as_deref(),
+        chrono::Utc::now(),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FATAL: pod certificate: {e}");
+            std::process::exit(78);
+        }
+    };
+    if let Some((_, summary)) = &pod_cert {
+        // The certificate IS this pod's policy. On the local and container
+        // drivers the spec on disk is the node's own copy (policy already
+        // replaced by the issued lattice, so this is a no-op); on Firecracker
+        // the guest's /etc/nucleus/pod.yaml is the IMAGE's template, not this
+        // pod's spec, and the certificate is the only per-pod policy that
+        // reaches the guest at all. Either way the runtime, the kernel and the
+        // delegation ceiling below all derive from the one signed lattice.
+        let on_disk = spec.spec.resolve_policy().ok();
+        let same = on_disk
+            .as_ref()
+            .is_some_and(|p| p.leq(&summary.effective) && summary.effective.leq(p));
+        if !same {
+            tracing::warn!(
+                leaf = %summary.leaf_identity,
+                "the spec's on-disk policy is not the issued lattice; running under the certificate"
+            );
+        }
+        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+            lattice: Box::new(summary.effective.clone()),
+        };
+    }
 
     let runtime = pod_mgmt::build_runtime(&spec)?;
     let approvals = Arc::new(ApprovalRegistry::default());
@@ -1483,6 +1547,22 @@ async fn main() -> Result<(), ApiError> {
     });
     let runtime = runtime.with_approver(Arc::new(approver))?;
     st.mark("runtime_build");
+
+    // Split the verified certificate: the sealed permissions go into the
+    // kernel, the summary into AppState.
+    let (mut pod_cert_verified, pod_cert) = match pod_cert {
+        Some((verified, summary)) => {
+            tracing::info!(
+                leaf = %summary.leaf_identity,
+                root = %summary.root_identity,
+                chain_depth = summary.chain_depth,
+                "pod certificate verified; kernel and delegation ceiling derive from it"
+            );
+            let fingerprint = summary.fingerprint;
+            (Some((verified, fingerprint)), Some(Arc::new(summary)))
+        }
+        None => (None, None),
+    };
 
     let auth = AuthConfig::new(
         args.auth_secret.as_bytes(),
@@ -1663,13 +1743,24 @@ async fn main() -> Result<(), ApiError> {
         None
     };
 
-    // Parse delegation ceiling for orchestrator mode
-    let delegation_ceiling = if let Some(ref ceiling_json) = args.delegation_ceiling {
-        let lattice: PermissionLattice = serde_json::from_str(ceiling_json)
-            .map_err(|e| ApiError::Spec(format!("invalid delegation ceiling JSON: {e}")))?;
-        Some(Arc::new(lattice))
-    } else {
-        None
+    // The delegation ceiling is ALWAYS this pod's own authority — the
+    // certificate's effective lattice, or the resolved policy when none was
+    // issued. The operator flag is an additional meet, never a substitute
+    // (#2440): with it unset, sub-pod narrowing used to be skipped entirely,
+    // and the Firecracker driver never set it.
+    let delegation_ceiling = {
+        let own = pod_cert
+            .as_ref()
+            .map(|c| c.effective.clone())
+            .unwrap_or_else(|| runtime.policy().clone());
+        Arc::new(match args.delegation_ceiling.as_deref() {
+            Some(json) => {
+                let extra: PermissionLattice = serde_json::from_str(json)
+                    .map_err(|e| ApiError::Spec(format!("invalid delegation ceiling JSON: {e}")))?;
+                own.meet(&extra)
+            }
+            None => own,
+        })
     };
 
     // Load orchestrator credentials from environment for sub-pod injection
@@ -1766,7 +1857,12 @@ async fn main() -> Result<(), ApiError> {
         tracing::info!("DLC-D verified admission provisioned from NUCLEUS_DLC_* env");
     }
     let kernel = Arc::new(tokio::sync::Mutex::new({
-        let mut k = Kernel::new(runtime.policy().clone());
+        // From the certificate when there is one: same lattice (checked
+        // above), plus provenance on every decision.
+        let mut k = match pod_cert_verified.take() {
+            Some((verified, fingerprint)) => Kernel::from_certificate(verified, fingerprint),
+            None => Kernel::new(runtime.policy().clone()),
+        };
         if let Some(admission) = dlc_admission {
             k.set_dlc_admission(admission);
         }
@@ -1866,6 +1962,7 @@ async fn main() -> Result<(), ApiError> {
             .as_deref()
             .and_then(|hex_str| hex::decode(hex_str).ok())
             .map(Arc::new),
+        pod_cert,
         exposure_guard,
         file_lockdown,
         stream_lockdown,
@@ -2269,7 +2366,6 @@ fn is_allowed_during_lockdown(path: &str) -> bool {
 
 const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
 const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
-const HEADER_DELEGATION_CERT: &str = "x-nucleus-delegation-cert";
 
 async fn auth_middleware(
     State(state): State<AppState>,
@@ -2450,16 +2546,17 @@ async fn auth_middleware(
                 .map(|cert| cert.cert_der.clone())
         });
 
-    // Evaluate delegation certificate for ALL auth methods (not just HMAC).
-    // This fixes the security gap where mTLS requests couldn't use delegation certs.
-    // Identity binding: when mTLS is active, leaf_identity must match SPIFFE ID.
+    // A request-borne delegation certificate is honoured only on a tier that
+    // binds an identity (SPIFFE mTLS), and every failure is a refusal — never
+    // a downgrade to the unsigned bid (#2427, #2431). See pod_cert.rs.
     let (permission_grant, certified_perms) = if let Some((grant, certified, fused)) =
-        evaluate_delegation_cert_with_identity(
+        pod_cert::evaluate_request_cert(
             &parts.headers,
             &state,
+            &context.auth_method,
             context.spiffe_id.as_deref(),
             client_cert_der.as_deref(),
-        ) {
+        )? {
         if let Some(ref fi) = fused {
             if fi.fingerprint_verified {
                 context.identity_binding = auth::IdentityBinding::Fused {
@@ -2551,128 +2648,6 @@ fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<Perm
     );
 
     Some(grant)
-}
-
-/// Verified delegation certificate permissions, inserted into request extensions.
-/// Downstream handlers read these to enforce the intersection of
-/// certificate attestation and market pricing.
-#[derive(Clone)]
-#[allow(dead_code)] // Fields consumed by downstream handlers
-pub(crate) struct CertifiedPermissions {
-    pub(crate) verified: portcullis::certificate::VerifiedPermissions,
-    pub(crate) effective: PermissionLattice,
-}
-
-/// Parse, verify, and evaluate a delegation certificate from request headers,
-/// enforcing identity binding when an authenticated SPIFFE ID is present.
-///
-/// Flow:
-/// 1. Decode base64 certificate from `x-nucleus-delegation-cert`
-/// 2. Verify Ed25519 chain against root public key
-/// 3. **Identity binding**: if `authenticated_spiffe_id` is Some, reject if
-///    `verified.leaf_identity() != spiffe_id` (prevents privilege escalation)
-/// 4. Convert `VerifiedPermissions` → `PermissionBid` via α
-/// 5. Evaluate bid against market → `PermissionGrant`
-/// 6. Intersect grant with certificate → effective `PermissionLattice`
-fn evaluate_delegation_cert_with_identity(
-    headers: &HeaderMap,
-    state: &AppState,
-    authenticated_spiffe_id: Option<&str>,
-    client_cert_der: Option<&[u8]>,
-) -> Option<(
-    PermissionGrant,
-    CertifiedPermissions,
-    Option<identity_fusion::FusedIdentity>,
-)> {
-    let cert_header = headers.get(HEADER_DELEGATION_CERT)?;
-    let cert_b64 = cert_header.to_str().ok()?;
-
-    let root_pubkey = state.cert_root_pubkey.as_ref()?;
-
-    let cert_bytes = match base64::engine::general_purpose::STANDARD.decode(cert_b64) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "invalid delegation cert base64");
-            return None;
-        }
-    };
-
-    let cert: portcullis::LatticeCertificate = match serde_json::from_slice(&cert_bytes) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(error = %e, "invalid delegation cert JSON");
-            return None;
-        }
-    };
-
-    let verified = match portcullis::verify_certificate(
-        &cert,
-        root_pubkey,
-        chrono::Utc::now(),
-        portcullis::certificate::DEFAULT_MAX_CHAIN_DEPTH,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(error = %e, "delegation cert verification failed");
-            return None;
-        }
-    };
-
-    // CRITICAL SECURITY CHECK (Layer 1): If we have an authenticated identity (mTLS),
-    // verify that the delegation certificate's leaf identity matches.
-    // This prevents privilege escalation where agent-A presents agent-B's cert.
-    if let Some(spiffe_id) = authenticated_spiffe_id
-        && verified.leaf_identity() != spiffe_id
-    {
-        tracing::warn!(
-            authenticated_id = %spiffe_id,
-            cert_leaf_id = %verified.leaf_identity(),
-            event = "identity_mismatch_rejected",
-            "delegation cert leaf_identity does not match authenticated SPIFFE ID"
-        );
-        return None;
-    }
-
-    // Layer 3: Extract fused identity from X.509 permission fingerprint extension.
-    let mut fused = client_cert_der.and_then(|der| {
-        authenticated_spiffe_id.and_then(|sid| identity_fusion::extract_fused_identity(der, sid))
-    });
-
-    let bid = cert_bridge::certificate_to_bid(&verified);
-
-    let market = state.permission_market.lock().unwrap();
-    let mut grant = market.evaluate_bid(&bid);
-
-    // Layer 3: If fused identity present, verify fingerprint and elevate trust.
-    if let Some(ref mut fi) = fused
-        && identity_fusion::verify_delegation_against_fingerprint(fi, &cert, &verified)
-    {
-        grant = identity_fusion::elevate_grant_trust(&grant);
-    }
-
-    let effective = cert_bridge::intersect_grant_with_certificate(&grant, &verified);
-
-    tracing::info!(
-        leaf_identity = %verified.leaf_identity(),
-        chain_depth = verified.chain_depth(),
-        trust_tier = ?bid.trust_tier,
-        granted = grant.granted.len(),
-        denied = grant.denied.len(),
-        total_cost = grant.total_cost,
-        identity_verified = authenticated_spiffe_id.is_some(),
-        fused_verified = fused.as_ref().is_some_and(|f| f.fingerprint_verified),
-        event = "delegation_cert_evaluated",
-        "delegation certificate verified and evaluated against market"
-    );
-
-    Some((
-        grant,
-        CertifiedPermissions {
-            verified,
-            effective,
-        },
-        fused,
-    ))
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -2767,10 +2742,16 @@ fn check_identity_policy(
 /// web-ingest record is admitted-but-quarantined.
 async fn memory_write(
     State(state): State<AppState>,
-    _auth: Option<axum::Extension<auth::AuthContext>>,
+    auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<memory::MemoryWriteReq>,
 ) -> Result<Json<memory::MemoryWriteResp>, ApiError> {
-    let _dt = http_kernel_decide(&state, Operation::WriteFiles, "memory://write").await?;
+    let _dt = http_kernel_decide(
+        &state,
+        Operation::WriteFiles,
+        "memory://write",
+        auth.as_ref().map(|e| &e.0),
+    )
+    .await?;
     let mut set = state.provenance_memory.lock().await;
     Ok(Json(memory::memory_write_core(
         &mut set,
@@ -2786,10 +2767,16 @@ async fn memory_write(
 /// agent's NEXT privileged tool call is denied by the existing egress gate.
 async fn memory_recall(
     State(state): State<AppState>,
-    _auth: Option<axum::Extension<auth::AuthContext>>,
+    auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<memory::MemoryRecallReq>,
 ) -> Result<Json<memory::MemoryRecallResp>, ApiError> {
-    let _dt = http_kernel_decide(&state, Operation::ReadFiles, "memory://recall").await?;
+    let _dt = http_kernel_decide(
+        &state,
+        Operation::ReadFiles,
+        "memory://recall",
+        auth.as_ref().map(|e| &e.0),
+    )
+    .await?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -2821,19 +2808,23 @@ async fn http_kernel_decide(
     state: &AppState,
     operation: Operation,
     subject: &str,
+    auth_ctx: Option<&auth::AuthContext>,
 ) -> Result<DecisionToken, ApiError> {
     let mut kernel = state.kernel.lock().await;
     // The single authoritative FlowGraph is the live verdict source (Phase 2
     // retirement: the FlowTracker oracle is gone). Lock order (kernel, graph)
     // matches ingest.
     let graph = state.flow_graph.lock().await;
+    // The kernel-decision record names the same actor the handler's own
+    // records do; it used to hardcode `Unknown` while the sibling record in
+    // the same handler carried the SPIFFE ID.
     mediation::decide_and_record(
         state.verdict_sink.as_ref(),
         &mut kernel,
         &graph,
         operation,
         subject,
-        ActorIdentity::Unknown,
+        actor_from_auth(auth_ctx),
         "http",
     )
 }
@@ -2882,7 +2873,8 @@ async fn read_file(
     }
 
     // Kernel mediation + IFC flow consult — obtain DecisionToken for sandbox I/O
-    let decision_token = http_kernel_decide(&state, operation, &req.path).await?;
+    let decision_token =
+        http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
 
     let path = req.path.clone();
     // Survives the sink record below, which consumes `path`.
@@ -2896,7 +2888,7 @@ async fn read_file(
         () => {{
             use nucleus_ifc_kernel::discharge::PreflightResult;
             let verified_scope = state.session_task_token.verified_scope();
-            let ceiling = state.runtime.policy().capabilities.read_files;
+            let ceiling = run_gate::levels_for(&state, Operation::ReadFiles);
             let flow = state.flow_graph.lock().await;
             let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
             drop(flow);
@@ -3038,7 +3030,8 @@ async fn write_file(
     // Kernel mediation + IFC flow consult — obtain DecisionToken for sandbox I/O.
     // WriteFiles is an OutboundAction: denied with IfcUnsafe once the session is
     // tainted by web content (lethal-trifecta guard, #1633).
-    let decision_token = http_kernel_decide(&state, operation, &req.path).await?;
+    let decision_token =
+        http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
 
     let path = req.path.clone();
     // Survives the sink record below, which consumes `path`.
@@ -3057,7 +3050,7 @@ async fn write_file(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let fs_ceiling = state.runtime.policy().capabilities.write_files;
+        let fs_ceiling = run_gate::levels_for(&state, Operation::WriteFiles);
         let flow = state.flow_graph.lock().await;
         let result = run_gate::preflight_fs(
             Operation::WriteFiles,
@@ -3143,7 +3136,7 @@ async fn write_file(
                 let retry_bundle = {
                     use nucleus_ifc_kernel::discharge::PreflightResult;
                     let verified_scope = state.session_task_token.verified_scope();
-                    let fs_ceiling = state.runtime.policy().capabilities.write_files;
+                    let fs_ceiling = run_gate::levels_for(&state, Operation::WriteFiles);
                     let flow = state.flow_graph.lock().await;
                     let r = run_gate::preflight_fs(
                         Operation::WriteFiles,
@@ -3309,7 +3302,8 @@ async fn run_command(
     // Kernel mediation + IFC flow consult — obtain DecisionToken for executor I/O.
     // RunBash is an OutboundAction: denied with IfcUnsafe once the session is
     // tainted by web content (lethal-trifecta guard, #1633).
-    let decision_token = http_kernel_decide(&state, operation, &display_command).await?;
+    let decision_token =
+        http_kernel_decide(&state, operation, &display_command, auth_ctx.as_ref()).await?;
 
     let executor = state.runtime.executor();
 
@@ -3327,7 +3321,7 @@ async fn run_command(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let run_bash_ceiling = state.runtime.policy().capabilities.run_bash;
+        let run_bash_ceiling = run_gate::levels_for(&state, Operation::RunBash);
         let flow = state.flow_graph.lock().await;
         let result =
             run_gate::preflight_runbash(verified_scope, run_bash_ceiling, &display_command, &flow);
@@ -3409,7 +3403,7 @@ async fn run_command(
                     portcullis_effects::authority::Authority::new({
                         use nucleus_ifc_kernel::discharge::PreflightResult;
                         let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling = state.runtime.policy().capabilities.run_bash;
+                        let ceiling = run_gate::levels_for(&state, Operation::RunBash);
                         let flow = state.flow_graph.lock().await;
                         let r = run_gate::preflight_runbash(
                             verified_scope,
@@ -3517,7 +3511,7 @@ async fn web_fetch(
 
     // Kernel mediation + IFC flow consult. WebFetch is itself a taint source
     // (observed below on success); the consult still runs for capability/exposure.
-    let _ = http_kernel_decide(&state, operation, &url_str).await?;
+    let _ = http_kernel_decide(&state, operation, &url_str, auth_ctx.as_ref()).await?;
 
     // Check web_fetch capability
     let policy = state.runtime.policy();
@@ -3605,7 +3599,13 @@ async fn web_fetch(
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
         let flow = state.flow_graph.lock().await;
-        let result = run_gate::preflight_web(operation, verified_scope, level, &url_str, &flow);
+        let result = run_gate::preflight_web(
+            operation,
+            verified_scope,
+            run_gate::levels_for(&state, operation),
+            &url_str,
+            &flow,
+        );
         drop(flow);
         match result {
             PreflightResult::Allowed(bundle) => bundle,
@@ -3742,7 +3742,7 @@ async fn glob_search(
 
     // Kernel mediation + IFC flow consult. GlobSearch is a FileRead (observed
     // below on success); not an outbound action, so never IFC-denied.
-    let _ = http_kernel_decide(&state, operation, &req.pattern).await?;
+    let _ = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
 
     // Check glob_search capability
     let policy = state.runtime.policy();
@@ -3904,7 +3904,7 @@ async fn grep_search(
 
     // Kernel mediation + IFC flow consult. GrepSearch is a FileRead (observed
     // below on success); not an outbound action, so never IFC-denied.
-    let _ = http_kernel_decide(&state, operation, &req.pattern).await?;
+    let _ = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
 
     // Check grep_search capability
     let policy = state.runtime.policy();
@@ -4108,7 +4108,7 @@ async fn web_search(
 
     // Kernel mediation + IFC flow consult. WebSearch is a taint source
     // (observed below on success); the consult still runs for capability/exposure.
-    let _ = http_kernel_decide(&state, operation, &req.query).await?;
+    let _ = http_kernel_decide(&state, operation, &req.query, auth_ctx.as_ref()).await?;
 
     // Check web_search capability
     let policy = state.runtime.policy();
@@ -4205,7 +4205,13 @@ async fn web_search(
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
         let flow = state.flow_graph.lock().await;
-        let result = run_gate::preflight_web(operation, verified_scope, level, &req.query, &flow);
+        let result = run_gate::preflight_web(
+            operation,
+            verified_scope,
+            run_gate::levels_for(&state, operation),
+            &req.query,
+            &flow,
+        );
         drop(flow);
         match result {
             PreflightResult::Allowed(bundle) => bundle,

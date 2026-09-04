@@ -1830,6 +1830,14 @@ impl Kernel {
         Ok(self.effective.budget.max_cost_usd - self.consumed_usd)
     }
 
+    /// Return a reservation made with [`Self::charge`] that never became
+    /// spend (a sub-pod the node refused to create). Saturates at zero.
+    pub fn refund(&mut self, cost_usd: Decimal) {
+        if cost_usd > Decimal::ZERO {
+            self.consumed_usd = (self.consumed_usd - cost_usd).max(Decimal::ZERO);
+        }
+    }
+
     /// Grant pre-approval for an operation (with a count).
     ///
     /// The approval is consumed by [`Kernel::decide`] when the operation

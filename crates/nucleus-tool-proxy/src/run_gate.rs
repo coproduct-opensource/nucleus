@@ -17,6 +17,54 @@ use nucleus_ifc_kernel::discharge::{
 use nucleus_ifc_kernel::{IFCLabel, SinkClass};
 use nucleus_provenance_memory::TokenScope;
 
+/// The two INDEPENDENTLY-sourced inputs to `WithinDelegationCeiling`.
+///
+/// Every caller used to pass one level for both — the policy's — so
+/// `requested ≤ ceiling` held by construction and the obligation could not
+/// fire on a live term. With a pod certificate the ceiling is the
+/// certificate's level and the request is the on-disk policy's: two
+/// sources that CAN disagree, which is what makes the witness non-vacuous.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GateLevels {
+    /// The authority ceiling: the certificate's level for the op, or the
+    /// policy's own when the pod holds no certificate.
+    pub ceiling: CapabilityLevel,
+    /// The requested level: what the resolved policy grants for the op.
+    pub requested: CapabilityLevel,
+}
+
+impl GateLevels {
+    /// `ceiling == requested`: the honest no-escalation claim, exactly what
+    /// every caller passed before certificates. Production always goes
+    /// through [`levels_for`]; this is the tests' constructor.
+    #[cfg(test)]
+    pub fn honest(level: CapabilityLevel) -> Self {
+        Self {
+            ceiling: level,
+            requested: level,
+        }
+    }
+}
+
+/// [`GateLevels`] for `op` on this pod: the certificate's level as the
+/// ceiling, the resolved policy's as the request. They agree for an honest
+/// pod (boot refuses a spec that disagrees with its certificate), so a
+/// disagreement here is a widened policy — denied by the obligation.
+///
+/// `estimated_cost_micro_usd` stays 0: in the extracted kernel a non-zero cost
+/// with no budget gate is an unconditional deny (#1362), so a real estimate
+/// is a kernel change. Budget is conserved at spawn (the node's ledger) and
+/// per command (`AtomicBudget`), not through this obligation.
+pub(crate) fn levels_for(state: &crate::AppState, op: Operation) -> GateLevels {
+    let requested = state.runtime.policy().capabilities.level_for(op);
+    let ceiling = state
+        .pod_cert
+        .as_ref()
+        .map(|c| c.effective.capabilities.level_for(op))
+        .unwrap_or(requested);
+    GateLevels { ceiling, requested }
+}
+
 /// The sealed discharge preflight for the live RunBash path (#2038).
 ///
 /// Builds the discharge [`ActionTerm`](discharge::ActionTerm) for
@@ -42,9 +90,10 @@ use nucleus_provenance_memory::TokenScope;
 /// - NoAdversarialAncestry: passes whenever the session carries no
 ///   adversarial-integrity source label (with an empty [`FlowGraph`], vacuous);
 /// - BudgetNotExceeded: cost is 0 (no cost estimator wired, #1362);
-/// - WithinDelegationCeiling: `requested == ceiling == level_for(RunBash)`, the
-///   runtime's honest no-escalation claim, so `requested ≤ ceiling` holds by
-///   construction (sound-but-dormant, mirrors `build_term_scoped`).
+/// - WithinDelegationCeiling: `ceiling` is the pod CERTIFICATE's level and
+///   `requested` the on-disk policy's ([`GateLevels`]); equal on an honest
+///   pod, so it bites only when the policy claims more than the certificate
+///   grants (pinned by `a_request_above_the_certificate_ceiling_is_denied_by_the_ceiling_obligation`).
 /// - InputsAuthorized: the content-addressed inputs channel is plumbed from the
 ///   session [`FlowGraph`] (`Some(..)`, never a `None` default), so the
 ///   obligation is minted — vacuously on a clean session with no
@@ -58,7 +107,7 @@ use nucleus_provenance_memory::TokenScope;
 /// content is in the session — they are simply vacuous on a clean session.
 pub(crate) fn preflight_runbash(
     verified_scope: Option<&TokenScope>,
-    run_bash_ceiling: CapabilityLevel,
+    levels: GateLevels,
     subject: &str,
     flow: &FlowGraph,
 ) -> PreflightResult {
@@ -66,7 +115,7 @@ pub(crate) fn preflight_runbash(
         Operation::RunBash,
         SinkClass::BashExec,
         verified_scope,
-        run_bash_ceiling,
+        levels,
         subject,
         flow,
     )
@@ -99,7 +148,7 @@ pub(crate) fn preflight_runbash(
 pub(crate) fn preflight_web(
     operation: Operation,
     verified_scope: Option<&TokenScope>,
-    web_ceiling: CapabilityLevel,
+    levels: GateLevels,
     subject: &str,
     flow: &FlowGraph,
 ) -> PreflightResult {
@@ -111,7 +160,7 @@ pub(crate) fn preflight_web(
         operation,
         SinkClass::HTTPEgress,
         verified_scope,
-        web_ceiling,
+        levels,
         subject,
         flow,
     )
@@ -145,7 +194,7 @@ pub(crate) fn preflight_web(
 pub(crate) fn preflight_fs(
     operation: Operation,
     verified_scope: Option<&TokenScope>,
-    fs_ceiling: CapabilityLevel,
+    levels: GateLevels,
     subject: &str,
     flow: &FlowGraph,
 ) -> PreflightResult {
@@ -157,7 +206,7 @@ pub(crate) fn preflight_fs(
         operation,
         SinkClass::WorkspaceWrite,
         verified_scope,
-        fs_ceiling,
+        levels,
         subject,
         flow,
     )
@@ -175,7 +224,7 @@ pub(crate) fn preflight_fs(
 /// (`operation_allowed_for_sink`), matching `NucleusRuntime::preflight_read`.
 pub(crate) fn preflight_read_fs(
     verified_scope: Option<&TokenScope>,
-    fs_ceiling: CapabilityLevel,
+    levels: GateLevels,
     subject: &str,
     flow: &FlowGraph,
 ) -> PreflightResult {
@@ -183,7 +232,7 @@ pub(crate) fn preflight_read_fs(
         Operation::ReadFiles,
         SinkClass::AuditLogAppend,
         verified_scope,
-        fs_ceiling,
+        levels,
         subject,
         flow,
     )
@@ -203,7 +252,7 @@ pub(crate) fn preflight_read_fs(
 #[cfg(feature = "mcp")]
 pub(crate) fn preflight_grep_fs(
     verified_scope: Option<&TokenScope>,
-    fs_ceiling: CapabilityLevel,
+    levels: GateLevels,
     subject: &str,
     flow: &FlowGraph,
 ) -> PreflightResult {
@@ -211,7 +260,7 @@ pub(crate) fn preflight_grep_fs(
         Operation::GrepSearch,
         SinkClass::AuditLogAppend,
         verified_scope,
-        fs_ceiling,
+        levels,
         subject,
         flow,
     )
@@ -229,7 +278,7 @@ fn preflight_scoped(
     operation: Operation,
     sink_class: SinkClass,
     verified_scope: Option<&TokenScope>,
-    ceiling: CapabilityLevel,
+    levels: GateLevels,
     subject: &str,
     flow: &FlowGraph,
 ) -> PreflightResult {
@@ -286,9 +335,10 @@ fn preflight_scoped(
         artifact_label,
         subject: subject.to_string(),
         estimated_cost_micro_usd: 0,
-        // Honest no-escalation: request exactly what the policy grants for the op.
-        capability_ceiling: Some(ceiling),
-        requested_capability: Some(ceiling),
+        // Two sources (see `GateLevels`): the certificate's ceiling, the
+        // policy's request. Equal on an honest pod; a widened policy is denied.
+        capability_ceiling: Some(levels.ceiling),
+        requested_capability: Some(levels.requested),
         verified_scope: term_scope,
         // Plumbed inputs channel → InputsAuthorized minted (empty on a clean
         // session = vacuously authorized). Never a `None` default.
@@ -325,13 +375,47 @@ mod tests {
     // (`requested == ceiling`).
     const WEB_CEILING: CapabilityLevel = CapabilityLevel::LowRisk;
 
+    /// `WithinDelegationCeiling` now has two sources. A policy that claims
+    /// more than the certificate grants is denied BY THAT OBLIGATION — and
+    /// with an honest ceiling the identical inputs mint the bundle, so the
+    /// denial is the obligation firing, not an earlier gate.
+    #[test]
+    fn a_request_above_the_certificate_ceiling_is_denied_by_the_ceiling_obligation() {
+        let flow = FlowGraph::new();
+        let scope = TokenScope::new(vec![Operation::RunBash], vec![]);
+        let widened = GateLevels {
+            ceiling: CapabilityLevel::Never,
+            requested: CapabilityLevel::LowRisk,
+        };
+        let result = preflight_runbash(Some(&scope), widened, "cargo test", &flow);
+        assert!(result.is_denied(), "got {result:?}");
+        assert!(
+            result
+                .denial_reason()
+                .unwrap()
+                .contains("DelegationCeiling"),
+            "denial must be WithinDelegationCeiling: {result:?}"
+        );
+        let honest = GateLevels::honest(CapabilityLevel::LowRisk);
+        assert!(
+            preflight_runbash(Some(&scope), honest, "cargo test", &flow).is_allowed(),
+            "non-vacuity: the same inputs with an honest ceiling must mint"
+        );
+    }
+
     // (a) Missing/Invalid session token ⇒ verified_scope() is None ⇒ DENY
     //     fail-closed (no-vacuous-witness) ⇒ no fetch. Both net ops.
     #[test]
     fn web_denies_when_session_token_missing_or_invalid() {
         for op in [Operation::WebFetch, Operation::WebSearch] {
             let flow = FlowGraph::new();
-            let result = preflight_web(op, None, WEB_CEILING, "https://evil.example", &flow);
+            let result = preflight_web(
+                op,
+                None,
+                GateLevels::honest(WEB_CEILING),
+                "https://evil.example",
+                &flow,
+            );
             assert!(
                 result.is_denied(),
                 "no verified scope must DENY {op:?} (fail-closed), got {result:?}"
@@ -355,7 +439,13 @@ mod tests {
                 vec![Operation::ReadFiles, Operation::RunBash],
                 vec!["/workspace/**".to_string()],
             );
-            let result = preflight_web(op, Some(&scope), WEB_CEILING, "https://api.example", &flow);
+            let result = preflight_web(
+                op,
+                Some(&scope),
+                GateLevels::honest(WEB_CEILING),
+                "https://api.example",
+                &flow,
+            );
             assert!(
                 result.is_denied(),
                 "{op:?} out of token scope must DENY, got {result:?}"
@@ -378,7 +468,13 @@ mod tests {
                 vec![Operation::WebFetch, Operation::WebSearch],
                 vec!["/workspace/**".to_string()],
             );
-            let result = preflight_web(op, Some(&scope), WEB_CEILING, "https://api.example", &flow);
+            let result = preflight_web(
+                op,
+                Some(&scope),
+                GateLevels::honest(WEB_CEILING),
+                "https://api.example",
+                &flow,
+            );
             assert!(
                 result.is_allowed(),
                 "valid in-scope token must ALLOW {op:?} (reach fetch), got {result:?}"
@@ -412,7 +508,7 @@ mod tests {
         let result = preflight_fs(
             Operation::WriteFiles,
             None,
-            FS_CEILING,
+            GateLevels::honest(FS_CEILING),
             "/workspace/out.txt",
             &flow,
         );
@@ -440,7 +536,7 @@ mod tests {
         let result = preflight_fs(
             Operation::WriteFiles,
             Some(&scope),
-            FS_CEILING,
+            GateLevels::honest(FS_CEILING),
             "/workspace/out.txt",
             &flow,
         );
@@ -467,7 +563,7 @@ mod tests {
         let result = preflight_fs(
             Operation::WriteFiles,
             Some(&scope),
-            FS_CEILING,
+            GateLevels::honest(FS_CEILING),
             "/workspace/out.txt",
             &flow,
         );
