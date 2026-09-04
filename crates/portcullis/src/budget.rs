@@ -97,8 +97,16 @@ impl BudgetLattice {
     }
 
     /// Check if this lattice is less than or equal to another (partial order).
+    ///
+    /// `consumed_usd` participates with the order REVERSED: more already
+    /// spent means less remaining, i.e. more restrictive, so `self ≤ other`
+    /// requires `self.consumed_usd ≥ other.consumed_usd`. This is the order
+    /// `meet` (max of consumed) and `join` (min of consumed) already used;
+    /// before it was in `leq`, a chain hop could reset `consumed_usd` to zero
+    /// and still pass the certificate's monotone check.
     pub fn leq(&self, other: &Self) -> bool {
         self.max_cost_usd <= other.max_cost_usd
+            && self.consumed_usd >= other.consumed_usd
             && self.max_input_tokens <= other.max_input_tokens
             && self.max_output_tokens <= other.max_output_tokens
     }
@@ -260,6 +268,29 @@ mod tests {
 
         assert!(smaller.leq(&larger));
         assert!(!larger.leq(&smaller));
+    }
+
+    /// A hop that resets `consumed_usd` to zero is an escalation: it grants
+    /// back everything the parent already spent. `leq` must refuse it, and
+    /// `meet`/`join` must stay consistent with that order (glb/lub laws).
+    #[test]
+    fn test_budget_leq_consumed_is_reverse_ordered() {
+        let mut spent = BudgetLattice::with_cost_limit(10.0);
+        spent.charge(Decimal::from(4));
+        let fresh = BudgetLattice::with_cost_limit(10.0);
+
+        assert!(spent.leq(&fresh), "having spent more is more restrictive");
+        assert!(
+            !fresh.leq(&spent),
+            "resetting consumed_usd to zero must not be ≤ the spent parent"
+        );
+
+        let glb = spent.meet(&fresh);
+        assert!(glb.leq(&spent) && glb.leq(&fresh));
+        assert_eq!(glb.consumed_usd, Decimal::from(4));
+        let lub = spent.join(&fresh);
+        assert!(spent.leq(&lub) && fresh.leq(&lub));
+        assert_eq!(lub.consumed_usd, Decimal::ZERO);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use clap::{Args, Subcommand};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 
 use portcullis::PermissionLattice;
-use portcullis::certificate::LatticeCertificate;
+use portcullis::certificate::{LatticeCertificate, SinkScope};
 use portcullis::profile::ProfileRegistry;
 use portcullis::token::AttenuationToken;
 
@@ -67,10 +67,17 @@ pub struct MintArgs {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Also write the root signing key (PKCS#8 PEM) for later delegation.
-    /// WARNING: Keep this key secure — it is the root of trust.
+    /// Also write the HOLDER key (PKCS#8 PEM) — the key `nucleus token
+    /// delegate --key` needs to extend this chain. (Previously this wrote the
+    /// root signing key, which cannot delegate: the chain expects the holder
+    /// key, so every `delegate` off a minted token failed with KeyMismatch.)
     #[arg(long)]
     pub write_key: Option<PathBuf>,
+
+    /// Also write the ROOT signing key (PKCS#8 PEM). This is the trust
+    /// anchor, not a delegation key. WARNING: keep it secure.
+    #[arg(long)]
+    pub write_root_key: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -153,6 +160,20 @@ fn write_output(data: &str, path: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Write a PKCS#8 key as PEM, owner-read-only.
+fn write_key_pem(path: &PathBuf, pkcs8_bytes: &[u8]) -> Result<()> {
+    let pem = pkcs8_to_pem(pkcs8_bytes);
+    std::fs::write(path, &pem)
+        .with_context(|| format!("Failed to write key to {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("Failed to restrict permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// Encode a PKCS#8 key as PEM.
 fn pkcs8_to_pem(pkcs8_bytes: &[u8]) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(pkcs8_bytes);
@@ -199,13 +220,22 @@ fn mint(args: MintArgs) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to parse generated key: {}", e))?;
     let root_pub = root_key.public_key().as_ref().to_vec();
 
+    // Generate the holder keypair OURSELVES so it can be written out: a
+    // `ring` keypair cannot export its seed, so the one `mint` would
+    // generate internally is unpersistable.
+    let holder_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
+        .map_err(|e| anyhow::anyhow!("Failed to generate holder key: {}", e))?;
+    let holder_key = Ed25519KeyPair::from_pkcs8(holder_pkcs8.as_ref())
+        .map_err(|e| anyhow::anyhow!("Failed to parse generated holder key: {}", e))?;
+
     // Mint root certificate
-    let (cert, _holder_key) = LatticeCertificate::mint(
+    let cert = LatticeCertificate::mint_with_holder_key(
         permissions,
         args.identity.clone(),
         not_after,
+        None,
         &root_key,
-        &rng,
+        &holder_key,
     );
 
     // Seal into token
@@ -216,11 +246,12 @@ fn mint(args: MintArgs) -> Result<()> {
 
     write_output(&encoded, args.output.as_ref())?;
 
-    // Optionally write the signing key
     if let Some(key_path) = &args.write_key {
-        let pem = pkcs8_to_pem(root_pkcs8.as_ref());
-        std::fs::write(key_path, &pem)
-            .with_context(|| format!("Failed to write key to {}", key_path.display()))?;
+        write_key_pem(key_path, holder_pkcs8.as_ref())?;
+        eprintln!("Holder (delegation) key written to {}", key_path.display());
+    }
+    if let Some(key_path) = &args.write_root_key {
+        write_key_pem(key_path, root_pkcs8.as_ref())?;
         eprintln!("Root signing key written to {}", key_path.display());
     }
 
@@ -250,14 +281,27 @@ fn delegate(args: DelegateArgs) -> Result<()> {
     let not_after = Utc::now() + Duration::hours(args.expires_hours as i64);
     let rng = ring::rand::SystemRandom::new();
 
-    let cert = parent_token.certificate().clone();
-    let (child_cert, _child_key) = cert
-        .delegate(
+    // Generate the child's key OURSELVES so `--write-key` writes the key the
+    // new block actually expects. (Previously a fresh, unrelated key was
+    // written, so the next `delegate` failed with KeyMismatch.)
+    let child_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
+        .map_err(|e| anyhow::anyhow!("Failed to generate child key: {}", e))?;
+    let child_key = Ed25519KeyPair::from_pkcs8(child_pkcs8.as_ref())
+        .map_err(|e| anyhow::anyhow!("Failed to parse generated child key: {}", e))?;
+
+    // `mint_child_*` (not `delegate`): a request for more budget than the
+    // parent has remaining, or against an expired parent lattice, is
+    // REFUSED rather than silently clamped (#2432).
+    let child_cert = parent_token
+        .certificate()
+        .mint_child_with_scope_using_key(
             &child_permissions,
             args.identity.clone(),
             not_after,
+            "nucleus token delegate",
+            SinkScope::unrestricted(),
             &holder_key,
-            &rng,
+            &child_key,
         )
         .map_err(|e| anyhow::anyhow!("Delegation failed: {}", e))?;
 
@@ -269,15 +313,9 @@ fn delegate(args: DelegateArgs) -> Result<()> {
 
     write_output(&encoded, args.output.as_ref())?;
 
-    // Optionally write child key
     if let Some(key_path) = &args.write_key {
-        // Generate a new ephemeral key for the child
-        let child_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
-            .map_err(|e| anyhow::anyhow!("Failed to generate child key: {}", e))?;
-        let pem = pkcs8_to_pem(child_pkcs8.as_ref());
-        std::fs::write(key_path, &pem)
-            .with_context(|| format!("Failed to write key to {}", key_path.display()))?;
-        eprintln!("Child signing key written to {}", key_path.display());
+        write_key_pem(key_path, child_pkcs8.as_ref())?;
+        eprintln!("Child holder key written to {}", key_path.display());
     }
 
     eprintln!(
@@ -423,6 +461,7 @@ mod tests {
             expires_hours: 2,
             output: Some(token_path.clone()),
             write_key: Some(key_path.clone()),
+            write_root_key: None,
         };
 
         mint(args).unwrap();
@@ -453,6 +492,7 @@ mod tests {
             expires_hours: 1,
             output: Some(token_path.clone()),
             write_key: None,
+            write_root_key: None,
         };
 
         mint(args).unwrap();
@@ -481,6 +521,7 @@ mod tests {
             expires_hours: 1,
             output: None,
             write_key: None,
+            write_root_key: None,
         };
 
         assert!(mint(args).is_err());
@@ -498,6 +539,7 @@ mod tests {
             expires_hours: 1,
             output: Some(token_path.clone()),
             write_key: None,
+            write_root_key: None,
         };
         mint(mint_args).unwrap();
 
@@ -517,6 +559,7 @@ mod tests {
             expires_hours: 1,
             output: Some(token_path.clone()),
             write_key: None,
+            write_root_key: None,
         };
         mint(mint_args).unwrap();
 
@@ -559,5 +602,82 @@ mod tests {
             let result = resolve_profile(name);
             assert!(result.is_ok(), "Profile '{}' should resolve", name);
         }
+    }
+}
+
+/// The keys `--write-key` writes must be the keys the chain expects at the
+/// next hop. Before this, `mint` wrote the ROOT signing key (which cannot
+/// delegate) and `delegate` wrote a fresh unrelated key, so no chain longer
+/// than one hop could ever be built with the CLI.
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+
+    #[test]
+    fn written_keys_extend_the_chain_across_two_hops() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_token = dir.path().join("root.b64");
+        let holder_key = dir.path().join("holder.pem");
+        let root_key = dir.path().join("root.pem");
+        mint(MintArgs {
+            profile: "read-only".into(),
+            identity: "spiffe://test/human/alice".into(),
+            expires_hours: 3,
+            output: Some(root_token.clone()),
+            write_key: Some(holder_key.clone()),
+            write_root_key: Some(root_key.clone()),
+        })
+        .unwrap();
+        assert!(
+            std::fs::read_to_string(&root_key)
+                .unwrap()
+                .contains("BEGIN PRIVATE KEY")
+        );
+
+        let child_token = dir.path().join("child.b64");
+        let child_key = dir.path().join("child.pem");
+        delegate(DelegateArgs {
+            token: root_token.clone(),
+            key: holder_key,
+            identity: "spiffe://test/agent/a".into(),
+            profile: "read-only".into(),
+            expires_hours: 2,
+            output: Some(child_token.clone()),
+            write_key: Some(child_key.clone()),
+        })
+        .unwrap();
+
+        let grandchild_token = dir.path().join("grandchild.b64");
+        delegate(DelegateArgs {
+            token: child_token,
+            key: child_key,
+            identity: "spiffe://test/agent/b".into(),
+            profile: "read-only".into(),
+            expires_hours: 1,
+            output: Some(grandchild_token.clone()),
+            write_key: None,
+        })
+        .unwrap();
+
+        let token = AttenuationToken::from_base64(
+            std::fs::read_to_string(&grandchild_token).unwrap().trim(),
+        )
+        .unwrap();
+        assert_eq!(token.chain_depth(), 2);
+        assert_eq!(token.leaf_identity(), "spiffe://test/agent/b");
+        token.verify_default(Utc::now()).unwrap();
+
+        // The root signing key is the trust anchor, not a holder key: using
+        // it to delegate is a KeyMismatch, not a silent success.
+        let with_root = delegate(DelegateArgs {
+            token: root_token,
+            key: root_key,
+            identity: "spiffe://test/agent/c".into(),
+            profile: "read-only".into(),
+            expires_hours: 1,
+            output: Some(dir.path().join("never.b64")),
+            write_key: None,
+        });
+        assert!(with_root.is_err(), "root signing key must not delegate");
     }
 }
