@@ -446,10 +446,10 @@ fn agent_card_verdict(
         serde_json::from_str(resolved_jwk_json).map_err(|e| format!("resolved JWK JSON: {e}"))?;
     match nucleus_agent_card::verify_card_json(signed_card_json, &jwk) {
         Ok(verified) => Ok(CardVerdict::Verified {
-            spiffe_id: verified.claims.spiffe_id.clone(),
-            did: verified.claims.did.clone(),
+            spiffe_id: verified.claims().spiffe_id.clone(),
+            did: verified.claims().did.clone(),
             supported_envelope_schema_versions: verified
-                .claims
+                .claims()
                 .supported_envelope_schema_versions
                 .clone(),
             trust_jwks_kids: verified
@@ -458,7 +458,7 @@ fn agent_card_verdict(
                 .iter()
                 .map(|k| k.kid.clone())
                 .collect(),
-            runtime_guarantees: verified.claims.runtime_guarantees.as_ref().map(|p| {
+            runtime_guarantees: verified.claims().runtime_guarantees.as_ref().map(|p| {
                 RuntimeGuaranteeSummary {
                     profile_version: p.profile_version.clone(),
                     tracked_sources: p.tracked_sources.clone(),
