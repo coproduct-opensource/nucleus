@@ -1157,11 +1157,11 @@ async fn create_pod_internal(
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
 
-    // ── Trust Gate: verify agent reputation, scope permissions ──────
+    // ── Backend clamp, then the trust gate. Since #2438 the gate only OBSERVES
+    // reputation; what the pod MAY do comes from the certificate below. ──────
+    driver::clamp_isolation_to_backend(&mut spec);
     if state.trust_gate.is_enabled() {
-        let mut verification =
-            trust_gate::verify_agent_trust(&state.trust_gate, &spec, &state.http_client).await;
-        trust_gate::apply_trust_enforcement(&mut verification, &mut spec);
+        trust_gate::observe(&state.trust_gate, &mut spec, &state.http_client).await;
     }
 
     let pod_dir = state.state_dir.join("pods").join(id.to_string());
