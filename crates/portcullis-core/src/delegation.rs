@@ -1,7 +1,23 @@
-//! Delegation plane — sealed tokens with scope, expiry, and sink ceilings.
+//! Delegation constraints — the literal-scope MODEL of narrowing.
 //!
-//! Extends the capability-lattice delegation model with structured constraints
-//! that enforce narrowing at every delegation step:
+//! # Not the live credential
+//!
+//! Since the certificate convergence (#2424), the delegation credential a
+//! running pod actually holds is `portcullis::certificate::LatticeCertificate`:
+//! chain depth, expiry and `SinkScope` are enforced at mint time by the node
+//! (`mint_child`) and at verify time by `verify_certificate`, and the kernel
+//! is built from the verified chain. The dormant `Kernel::set_delegation`
+//! gate that consulted [`DelegationConstraints`] — never armed on any live
+//! path — has been removed.
+//!
+//! What remains here is the algebra: [`DelegationConstraints`] over literal
+//! scopes is a lattice, and [`DelegationConstraints::narrow`] is its meet.
+//! That is the subject of the attenuation theory in `attenuation.rs`, the
+//! OWASP AG05 red-team tests, and the Kani harnesses below (DEL1/DEL2), which
+//! prove narrowing monotone over the shipped code. It is a proof subject and
+//! a test oracle, not a runtime authority.
+//!
+//! Structured constraints that enforce narrowing at every delegation step:
 //!
 //! - **Scope**: Which file paths, repositories, and sink classes the delegate
 //!   may access. A child's scope must be a subset of its parent's.
@@ -242,11 +258,12 @@ impl DelegationScope {
     }
 }
 
-/// Constraints on a delegation token: scope, depth limit, and expiry.
+/// Constraints on a delegation: scope, depth limit, and expiry.
 ///
-/// These are carried alongside (or embedded in) a `LatticeCertificate` to
-/// restrict not just *what capabilities* a delegate has, but *where*, *when*,
-/// and *how deeply* those capabilities may be exercised.
+/// The literal-scope model the attenuation theory and its proofs are stated
+/// over (see the module docs). The live runtime credential carrying the same
+/// three dimensions is `LatticeCertificate` (`not_after`, chain depth,
+/// `SinkScope`); nothing on a live path constructs or consults this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DelegationConstraints {

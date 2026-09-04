@@ -277,9 +277,11 @@ pub enum DenyReason {
     },
     /// Delegation constraint violation.
     ///
-    /// The operation (typically `SpawnAgent`) is denied because the session's
-    /// delegation constraints forbid it — expired, depth exhausted, or sink
-    /// class not in scope.
+    /// Retained for verdict classification (`gate_class`) and receipts. The
+    /// in-kernel `SpawnAgent` gate that produced it — `set_delegation`, never
+    /// armed on a live path — was removed in the certificate convergence:
+    /// depth, expiry and sink scope are enforced by the certificate chain at
+    /// mint (`LatticeCertificate::mint_child`) and verify time instead.
     DelegationDenied {
         /// Human-readable detail about which constraint was violated.
         detail: String,
@@ -545,14 +547,6 @@ pub struct Kernel {
     // `flow_graph` (`FlowGraph::release_burn_ledger`) so BOTH mint policies — the
     // Ed25519 token here and the keyless k-of-n memory path, which has no kernel —
     // burn against the SAME shared ledger. See `kernel/declassify_authority.rs`.
-    /// Optional delegation constraints for this session.
-    ///
-    /// When present, `SpawnAgent` operations are checked against scope,
-    /// depth, and expiry before being allowed. Set via [`Kernel::set_delegation`].
-    delegation: Option<portcullis_core::delegation::DelegationConstraints>,
-    /// Current delegation depth — incremented each time a `SpawnAgent`
-    /// operation is allowed. Used with `delegation.can_delegate_further()`.
-    delegation_depth: u32,
     /// Certificate sink scope — restricts which paths, hosts, and git refs
     /// the delegated agent can target.
     ///
@@ -632,8 +626,6 @@ impl Kernel {
             #[cfg(feature = "dlc")]
             dlc_admission: None,
             enterprise: None,
-            delegation: None,
-            delegation_depth: 0,
             sink_scope: None,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
@@ -686,8 +678,6 @@ impl Kernel {
             #[cfg(feature = "dlc")]
             dlc_admission: None,
             enterprise: None,
-            delegation: None,
-            delegation_depth: 0,
             sink_scope: None,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
@@ -1035,8 +1025,6 @@ impl Kernel {
             #[cfg(feature = "dlc")]
             dlc_admission: None,
             enterprise: None,
-            delegation: None,
-            delegation_depth: 0,
             sink_scope,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
@@ -1095,8 +1083,6 @@ impl Kernel {
             #[cfg(feature = "dlc")]
             dlc_admission: None,
             enterprise: None,
-            delegation: None,
-            delegation_depth: 0,
             sink_scope,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
@@ -1196,79 +1182,6 @@ impl Kernel {
                 false,
                 false,
             );
-        }
-
-        // 2b. Delegation constraint check (for SpawnAgent operations).
-        //
-        // When delegation constraints are set, SpawnAgent is gated on:
-        //   a) Expiry — is the delegation still valid?
-        //   b) Depth — can this session delegate further?
-        //   c) Scope — is AgentSpawn in the allowed sink classes?
-        if operation == Operation::SpawnAgent {
-            if let Some(ref delegation) = self.delegation {
-                let now_unix = now.timestamp() as u64;
-
-                // a) Expiry check
-                if !delegation.is_valid(now_unix) {
-                    return self.record_with_exposure(
-                        operation,
-                        subject,
-                        Verdict::Deny(DenyReason::DelegationDenied {
-                            detail: format!(
-                                "delegation expired at {} (now={})",
-                                delegation.expires_at, now_unix,
-                            ),
-                        }),
-                        &pre_hash,
-                        pre_exposure_count,
-                        contributed_label,
-                        false,
-                        false,
-                    );
-                }
-
-                // b) Depth check
-                if !delegation.can_delegate_further(self.delegation_depth) {
-                    return self.record_with_exposure(
-                        operation,
-                        subject,
-                        Verdict::Deny(DenyReason::DelegationDenied {
-                            detail: format!(
-                                "delegation depth exhausted: current_depth={}, max={}",
-                                self.delegation_depth, delegation.max_delegation_depth,
-                            ),
-                        }),
-                        &pre_hash,
-                        pre_exposure_count,
-                        contributed_label,
-                        false,
-                        false,
-                    );
-                }
-
-                // c) Scope check — AgentSpawn must be in allowed_sinks
-                if !delegation
-                    .scope
-                    .allowed_sinks
-                    .contains(&portcullis_core::SinkClass::AgentSpawn)
-                {
-                    return self.record_with_exposure(
-                        operation,
-                        subject,
-                        Verdict::Deny(DenyReason::DelegationDenied {
-                            detail: format!(
-                                "AgentSpawn not in delegation scope (allowed: {:?})",
-                                delegation.scope.allowed_sinks,
-                            ),
-                        }),
-                        &pre_hash,
-                        pre_exposure_count,
-                        contributed_label,
-                        false,
-                        false,
-                    );
-                }
-            }
         }
 
         // 3. Capability level check
@@ -1513,9 +1426,6 @@ impl Kernel {
                 self.exposure = exposure_core::apply_record(&self.exposure, operation);
                 let state_uninhabitable =
                     !ExposureSet::empty().is_uninhabitable() && self.exposure.is_uninhabitable();
-                if operation == Operation::SpawnAgent && self.delegation.is_some() {
-                    self.delegation_depth += 1;
-                }
                 return self.record_with_exposure(
                     operation,
                     subject,
@@ -1556,9 +1466,6 @@ impl Kernel {
                 let pre_complete = self.exposure.is_uninhabitable();
                 self.exposure = exposure_core::apply_record(&self.exposure, operation);
                 let newly_completed = !pre_complete && self.exposure.is_uninhabitable();
-                if operation == Operation::SpawnAgent && self.delegation.is_some() {
-                    self.delegation_depth += 1;
-                }
                 return self.record_with_exposure(
                     operation,
                     subject,
@@ -1586,11 +1493,6 @@ impl Kernel {
         let pre_complete = self.exposure.is_uninhabitable();
         self.exposure = exposure_core::apply_record(&self.exposure, operation);
         let state_uninhabitable = !pre_complete && self.exposure.is_uninhabitable();
-
-        // Increment delegation depth when a SpawnAgent is allowed.
-        if operation == Operation::SpawnAgent && self.delegation.is_some() {
-            self.delegation_depth += 1;
-        }
 
         self.record_with_exposure(
             operation,
@@ -1911,34 +1813,6 @@ impl Kernel {
     /// Get the enterprise allowlist, if set.
     pub fn enterprise(&self) -> Option<&portcullis_core::enterprise::EnterpriseAllowlist> {
         self.enterprise.as_ref()
-    }
-
-    /// Set delegation constraints for this session.
-    ///
-    /// When set, `SpawnAgent` operations are checked against:
-    /// 1. **Expiry** — `is_valid(now)` rejects expired delegations
-    /// 2. **Depth** — `can_delegate_further(depth)` rejects exhausted chains
-    /// 3. **Scope** — `allowed_sinks` must contain `AgentSpawn`
-    ///
-    /// Must be called before the first `decide()` — delegation constraints
-    /// are immutable for the session lifetime.
-    pub fn set_delegation(
-        &mut self,
-        constraints: portcullis_core::delegation::DelegationConstraints,
-    ) {
-        self.delegation = Some(constraints);
-    }
-
-    /// Get the delegation constraints, if set.
-    pub fn delegation(&self) -> Option<&portcullis_core::delegation::DelegationConstraints> {
-        self.delegation.as_ref()
-    }
-
-    /// Get the current delegation depth.
-    ///
-    /// Starts at 0 and increments each time a `SpawnAgent` operation is allowed.
-    pub fn delegation_depth(&self) -> u32 {
-        self.delegation_depth
     }
 
     /// Get the certificate sink scope, if set.

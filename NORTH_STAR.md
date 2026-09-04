@@ -83,37 +83,43 @@ The agent process must not have ambient authority. The kernel is the only place 
 
 **Target:** Reach parity with AWS's [verify-rust-std](https://github.com/model-checking/verify-rust-std) effort in verification density — measured by proof-to-code ratio, not absolute count.
 
-### Current State (March 2026)
+### Current State (September 2026)
 
-| Metric | Nucleus (portcullis) | Workstream-KG | Combined |
-|---|---|---|---|
-| Verus SMT VCs | 297 | — | 297 |
-| Kani BMC proofs | 32 | 30 | 62 |
-| Verus↔prod conformance | 17 proptests | — | 17 |
-| Runtime conservation laws | — | 10 | 10 |
-| Unit tests | 597 | 1,895 | 2,492 |
+Verus was removed from the workspace (see `FORMAL_METHODS.md`); its role —
+unbounded algebraic properties over the enforcement core — is now Lean 4 over
+Aeneas-extracted Rust. The earlier "297 Verus VCs" line in this file was stale
+for months; the numbers below are recomputed from the tree
+(`grep -rc '#\[kani::proof\]' crates`).
+
+| Metric | Count | Where |
+|---|---|---|
+| Kani BMC harnesses | 117 | portcullis 66, portcullis-core 25, ck-kernel 18, nucleus-ifc-kernel 6, nucleus-econ-kernels 1, nucleus-audit 1 |
+| Lean 4 theorems over **extracted** Rust | ~277 in the security core | IFC noninterference family, `decide_pure`, ck-policy gate, `chain_effective_authority` |
+| Open `sorry` holes | 23 across 10 files | research tier only (`CONJECTURES.md`); the proven tier is `sorry`-free and CI-gated |
+| Budget conservation | Kani E1/E2 over the shipped `LedgerCore` | `Σ child allocations + consumed ≤ max` |
 
 ### Targets
 
-| Milestone | Verus VCs | Kani Proofs | What |
+| Milestone | Kani harnesses | Extracted Lean | What |
 |---|---|---|---|
-| **Current** | 297 | 62 | Lattice laws + BMC safety |
-| **T1: 500/100** | 500 | 100 | Add Verus to conservation laws, Kani to Lyapunov monotonicity |
-| **T2: 1000/200** | 1,000 | 200 | Verify reconciler convergence properties, executor pool fairness |
+| **Current** | 117 | ~277 theorems | Lattice laws, BMC safety, IFC noninterference, budget conservation |
+| **T1** | 150 | verify_certificate extracted (#2451) | Prove the certificate chain's monotonicity soundness over the real code |
+| **T2** | 200 | identity/card verification extracted (#2452) | Reconciler convergence, executor pool fairness |
 | **T3: verify-rust-std density** | — | — | Proof-to-code ratio ≥ AWS std lib effort |
 
 ### Credible Claims (honest framing)
 
 - **"Most formally verified AI agent permission system"** — true today, zero competition
-- **"Only project using both Verus AND Kani"** on the same codebase — SMT + BMC dual verification
+- **"Lean proofs over Aeneas-extracted production Rust, regenerated on every PR"** — the IFC core, the decision function, the amendment gate, and chain attenuation; not hand-written models of the code
 - **"Only AI orchestrator with runtime conservation laws backed by formal verification"** — Gas Town, Agent Sandbox, Kagent have zero
 - **NOT "most formally verified OSS project"** — seL4 (200K lines Isabelle proof) and CompCert are orders of magnitude ahead in absolute terms
+- **NOT "uses both Verus and Kani"** — Verus is gone; do not repeat the old claim
 
 ### Strategy
 
 1. **Maximize proof-to-code ratio** on the enforcement boundary (portcullis), not on application logic
 2. **Automate harness generation** — follow Hifitime's pattern of auto-generating Kani harnesses for new functions
-3. **Verus for algebraic properties** (lattice laws, monotonicity), **Kani for safety** (no panics, bounded behavior)
+3. **Lean over extracted Rust for algebraic properties** (lattice laws, monotonicity, noninterference), **Kani for safety** (no panics, bounded behavior)
 4. **Conservation laws bridge the gap** — runtime enforcement of invariants that are too expensive to statically verify
 
 ## Iteration Plan (PR-sized)

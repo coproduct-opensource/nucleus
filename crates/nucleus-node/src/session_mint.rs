@@ -3,7 +3,11 @@
 //! This is the counterpart to the tool-proxy's startup verification
 //! (`nucleus-tool-proxy::session_token`, live-path PR-2). At pod spawn the node
 //! mints a fresh [`SignedTaskRef`] scoped to exactly the operations the pod's
-//! resolved policy permits, then injects the serialized token, its effective
+//! resolved policy permits — and since the certificate convergence that
+//! resolved policy IS the pod's certificate's effective lattice
+//! (`pod_authority` replaces the requested spec policy with it before any
+//! driver runs), so the token's scope is derived from proven authority, not
+//! from the caller's request. Then it injects the serialized token, its effective
 //! nonce, and the task-issuer PUBLIC key into the pod on the **same
 //! host-controlled boot channel** the node already uses for credentials
 //! (process env / kernel cmdline the agent cannot set). The tool-proxy reads
