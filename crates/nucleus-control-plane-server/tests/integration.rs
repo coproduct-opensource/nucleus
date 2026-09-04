@@ -210,6 +210,7 @@ async fn bundle_on_in_progress_job_returns_409() {
         .jobs
         .insert(JobState::Queued {
             submitted_at: chrono::Utc::now(),
+            owner: "spiffe://nucleus.local/agent/test".to_string(),
         })
         .unwrap();
     let app = build_app(state);
@@ -406,6 +407,7 @@ async fn sse_late_subscriber_to_completed_job_gets_catchup_and_closes() {
                 bundle,
                 delivered: true,
             }),
+            owner: "spiffe://nucleus.local/agent/test".to_string(),
         })
         .unwrap();
 
@@ -883,6 +885,29 @@ mod spiffe_auth {
             .unwrap();
         let resp = build_app(state).oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+
+    /// #2433 acceptance: the owner recorded on a submitted job is the
+    /// already-verified SPIFFE subject `RequireSpiffeAuth` extracted from
+    /// the caller's JWT-SVID — not something the caller supplies itself,
+    /// and not silently blank.
+    #[tokio::test]
+    async fn submitted_job_records_the_verified_caller_as_owner() {
+        let signer = Signer::new();
+        let state = auth_enabled_state(&signer);
+        let sub = "spiffe://test.nucleus.local/ns/agents/sa/coder";
+        let token = signer.mint(sub, "https://control.test/api");
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/jobs")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+            .unwrap();
+        let resp = build_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let body = read_json(resp.into_body()).await;
+        assert_eq!(body["state"]["owner"], sub);
     }
 
     #[tokio::test]

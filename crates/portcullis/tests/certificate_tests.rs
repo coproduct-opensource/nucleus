@@ -136,7 +136,7 @@ proptest! {
             .unwrap();
 
         let verified = verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap();
-        prop_assert_eq!(verified.chain_depth, 1);
+        prop_assert_eq!(verified.chain_depth(), 1);
     }
 
     /// After delegation, effective_permissions.leq(parent_permissions) always holds.
@@ -221,12 +221,12 @@ proptest! {
 
         // Verify the full chain
         let verified = verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap();
-        prop_assert_eq!(verified.chain_depth, 2);
+        prop_assert_eq!(verified.chain_depth(), 2);
 
         // Transitivity: leaf ≤ mid ≤ root
-        prop_assert!(verified.effective.leq(&mid_perms));
+        prop_assert!(verified.effective().leq(&mid_perms));
         prop_assert!(mid_perms.leq(&root_perms));
-        prop_assert!(verified.effective.leq(&root_perms));
+        prop_assert!(verified.effective().leq(&root_perms));
     }
 }
 
@@ -288,11 +288,11 @@ fn test_pajamas_attack_blocked_by_certificate() {
     // But the coder's effective permissions can't exceed the orchestrator's ceiling
     // Specifically: write_files and git_push should be Never (inherited from read_only)
     assert_eq!(
-        verified.effective.capabilities.write_files,
+        verified.effective().capabilities.write_files,
         CapabilityLevel::Never
     );
     assert_eq!(
-        verified.effective.capabilities.git_push,
+        verified.effective().capabilities.git_push,
         CapabilityLevel::Never
     );
 }
@@ -379,6 +379,6 @@ proptest! {
 
         // Must still verify
         let verified = verify_certificate(&restored, &root_pub, Utc::now(), 10).unwrap();
-        prop_assert_eq!(verified.chain_depth, 1);
+        prop_assert_eq!(verified.chain_depth(), 1);
     }
 }

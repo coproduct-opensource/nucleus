@@ -134,6 +134,11 @@ wiremock = "0.6"
 # corpus; already transitive via `portcullis`. Dev-only — production graph
 # unchanged. Used by tests/attack_corpus.rs.
 portcullis-core = { path = "../portcullis-core", features = ["test-helpers"] }
+# VerifiedAttestation::for_test (#2450 sealing) — synthetic attestations for
+# unit-testing verify_attested_receipt's cross-check logic in src/attestation.rs.
+# Resolver v2 keeps this test-only feature out of the published binary's
+# dependency graph; the real `[dependencies]` entry above stays unchanged.
+nucleus-identity = { path = "../nucleus-identity", features = ["tpm-devid", "test-helpers"] }
 
 [lints]
 workspace = true

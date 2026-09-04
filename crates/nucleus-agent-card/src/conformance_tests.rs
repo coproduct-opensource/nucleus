@@ -529,7 +529,7 @@ fn unmodeled_member_signed_by_a_newer_producer_verifies_via_the_json_path() {
     let verified =
         verify_card_json(&raw, &jwk).expect("unmodeled member must not break verification");
     assert_eq!(
-        verified.claims.did,
+        verified.claims().did,
         "did:web:golden.conformance.example.com"
     );
 

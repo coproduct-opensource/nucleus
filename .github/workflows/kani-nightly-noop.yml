@@ -1,0 +1,49 @@
+name: Kani BMC
+
+# NO-OP TWIN of kani-nightly.yml's fast-tier jobs (`Kani`, `Kani
+# (constitutional kernel)`), so they can be REQUIRED status checks (#2430).
+# Branch protection evaluates required contexts on the PR itself; the real
+# workflow is path-filtered on pull_request, so a PR not touching its paths
+# would never report the context and block forever. This twin has the SAME
+# workflow name and SAME job names, with `paths-ignore` exactly mirroring the
+# real workflow's `paths`: exactly one of the twins reports each context on
+# every PR. (merge_group is NOT twinned — the real workflow now runs
+# unconditionally there; see its own `on:` block.)
+#
+# Keep this list in exact sync with kani-nightly.yml's `pull_request.paths` —
+# aeneas-ifc-scoped-noop.yml's own history has a scar from exactly this: two
+# paths present in the real workflow's list but missing here, so a PR fired
+# BOTH twins under the same context name instead of exactly one.
+
+on:
+  pull_request:
+    paths-ignore:
+      - "crates/portcullis/src/**"
+      - "crates/ck-*/src/**"
+      - ".kani-minimum-proofs"
+      - ".github/workflows/kani-nightly.yml"
+
+concurrency:
+  # Supersede a PR's older in-flight runs; NEVER cancel anything else.
+  group: kani-nightly-noop-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kani-fast:
+    name: Kani
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: No-op (paths not touched)
+        run: echo "no relevant paths changed — gate vacuously green"
+
+  kani-constitutional:
+    name: Kani (constitutional kernel)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: No-op (paths not touched)
+        run: echo "no relevant paths changed — gate vacuously green"

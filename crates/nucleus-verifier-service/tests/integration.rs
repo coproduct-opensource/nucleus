@@ -879,7 +879,7 @@ async fn well_known_agent_card_verifies_against_matching_key() {
     let returned: AgentCard = serde_json::from_value(body).unwrap();
     let verified = verify_card(&returned, &resolved_key)
         .expect("served agent card must verify against the matching out-of-band key");
-    assert_eq!(verified.claims.did, "did:web:verifier.test.nucleus.local");
+    assert_eq!(verified.claims().did, "did:web:verifier.test.nucleus.local");
 }
 
 #[tokio::test]

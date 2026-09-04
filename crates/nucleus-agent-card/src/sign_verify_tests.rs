@@ -84,7 +84,7 @@ fn sign_then_verify_happy_path() {
     let (der, pub_jwk) = p256_keypair();
     let signed = sign_card(sample_card(), &der, "card-key-1").unwrap();
     let verified = verify_card(&signed, &pub_jwk).expect("freshly-signed card must verify");
-    assert_eq!(verified.claims.did, "did:web:coder.prod.example.com");
+    assert_eq!(verified.claims().did, "did:web:coder.prod.example.com");
     assert_eq!(verified.advertised_jwks().keys.len(), 1);
 }
 
@@ -243,7 +243,7 @@ fn sign_and_verify_with_runtime_guarantees_roundtrip() {
     let signed = sign_card(card, &der, "card-key-1").unwrap();
     let verified = verify_card(&signed, &pub_jwk).expect("card with profile must verify");
     let prof = verified
-        .claims
+        .claims()
         .runtime_guarantees
         .as_ref()
         .expect("profile present");

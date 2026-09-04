@@ -206,6 +206,7 @@ mod tests {
         let id = reg
             .insert(JobState::Queued {
                 submitted_at: Utc::now(),
+                owner: "spiffe://nucleus.local/agent/test".to_string(),
             })
             .unwrap();
         let state = reg.get(&id).unwrap();
@@ -221,6 +222,7 @@ mod tests {
                 &unknown,
                 JobState::Queued {
                     submitted_at: Utc::now(),
+                    owner: "spiffe://nucleus.local/agent/test".to_string(),
                 },
             )
             .unwrap_err();
@@ -235,6 +237,7 @@ mod tests {
                 "key-1".to_string(),
                 JobState::Queued {
                     submitted_at: Utc::now(),
+                    owner: "spiffe://nucleus.local/agent/test".to_string(),
                 },
             )
             .unwrap();
@@ -244,6 +247,7 @@ mod tests {
                 "key-1".to_string(),
                 JobState::Queued {
                     submitted_at: Utc::now(),
+                    owner: "spiffe://nucleus.local/agent/test".to_string(),
                 },
             )
             .unwrap();

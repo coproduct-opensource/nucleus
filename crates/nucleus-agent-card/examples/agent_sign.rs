@@ -104,12 +104,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let verified = verify_card(&signed, &resolved_key)?;
     let profile = verified
-        .claims
+        .claims()
         .runtime_guarantees
         .as_ref()
         .expect("the verified card carries its IFC profile");
     println!("\nverified ✓  — IFC profile is authentic + untampered:");
-    println!("  spiffe_id        = {}", verified.claims.spiffe_id);
+    println!("  spiffe_id        = {}", verified.claims().spiffe_id);
     println!("  tracked_sources  = {:?}", profile.tracked_sources);
     for rule in &profile.enforcement_rules {
         println!("  rule             = {} — {}", rule.name, rule.description);

@@ -52,10 +52,15 @@ pub async fn healthz() -> &'static str {
 /// status URL rather than assuming immediate completion.
 pub async fn submit_job(
     State(state): State<AppState>,
-    _: crate::auth::RequireSpiffeAuth,
+    crate::auth::RequireSpiffeAuth(principal): crate::auth::RequireSpiffeAuth,
     headers: HeaderMap,
     Json(spec): Json<JobSpec>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // #2433: the owner of record for this job's whole lifecycle — the
+    // already-verified SPIFFE subject `RequireSpiffeAuth` extracted above.
+    // Carried forward unchanged through every subsequent state transition
+    // in `spawn_job`/`run_job_blocking`; never re-derived.
+    let owner = principal.sub().to_string();
     // Look up the driver up front so we fail fast on unknown drivers
     // rather than after queueing the job.
     if state.runners.get(&spec.agent_driver.name).is_none() {
@@ -105,7 +110,10 @@ pub async fn submit_job(
     };
 
     let now = Utc::now();
-    let queued = JobState::Queued { submitted_at: now };
+    let queued = JobState::Queued {
+        submitted_at: now,
+        owner: owner.clone(),
+    };
 
     let (job_id, freshly_inserted) = match idem_key {
         Some(key) => state
@@ -168,7 +176,7 @@ pub async fn submit_job(
         },
     );
 
-    spawn_job(state.clone(), job_id.clone(), spec, permit);
+    spawn_job(state.clone(), job_id.clone(), spec, permit, owner);
 
     let response = JobSubmissionResponse {
         job_id: job_id.clone(),
@@ -189,6 +197,7 @@ fn spawn_job(
     job_id: JobId,
     spec: JobSpec,
     permit: tokio::sync::OwnedSemaphorePermit,
+    owner: String,
 ) {
     tokio::spawn(async move {
         // **MED-6**: hold the job-slot permit for the lifetime of
@@ -204,7 +213,8 @@ fn spawn_job(
             let state = state.clone();
             let job_id = job_id.clone();
             let spec = spec.clone();
-            move || run_job_blocking(&state, &job_id, &spec)
+            let owner = owner.clone();
+            move || run_job_blocking(&state, &job_id, &spec, &owner)
         })
         .await;
 
@@ -213,16 +223,19 @@ fn spawn_job(
                 started_at: outcome.started_at,
                 completed_at: Utc::now(),
                 outcome: Box::new(outcome.outcome),
+                owner: owner.clone(),
             },
             Ok(Err(e)) => JobState::Failed {
                 started_at: None,
                 failed_at: Utc::now(),
                 reason: e.to_string(),
+                owner: owner.clone(),
             },
             Err(join_err) => JobState::Failed {
                 started_at: None,
                 failed_at: Utc::now(),
                 reason: format!("runner task panicked or was cancelled: {join_err}"),
+                owner: owner.clone(),
             },
         };
 
@@ -241,6 +254,7 @@ fn spawn_job(
                     started_at: None,
                     failed_at: Utc::now(),
                     reason: format!("registry update failed: {e}"),
+                    owner,
                 };
                 // Best-effort retry — same registry, but now writing a
                 // Failed state. If that also fails, the SSE Closing
@@ -277,6 +291,7 @@ fn run_job_blocking(
     state: &AppState,
     job_id: &JobId,
     spec: &JobSpec,
+    owner: &str,
 ) -> Result<RunOutcome, String> {
     let started_at = Utc::now();
     let session_root = state.new_session_pod();
@@ -285,6 +300,7 @@ fn run_job_blocking(
     let running = JobState::Running {
         started_at,
         session_root: session_root.to_string(),
+        owner: owner.to_string(),
     };
     state
         .jobs
@@ -379,6 +395,7 @@ pub async fn cancel_job(
                 },
                 failed_at: chrono::Utc::now(),
                 reason: "cancelled by client request".to_string(),
+                owner: current.owner().to_string(),
             };
             state
                 .jobs

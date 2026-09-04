@@ -95,13 +95,13 @@ pub struct CardClaims {
 impl From<&VerifiedCard> for CardClaims {
     fn from(verified: &VerifiedCard) -> Self {
         CardClaims {
-            spiffe_id: verified.claims.spiffe_id.clone(),
-            did: verified.claims.did.clone(),
+            spiffe_id: verified.claims().spiffe_id.clone(),
+            did: verified.claims().did.clone(),
             supported_envelope_schema_versions: verified
-                .claims
+                .claims()
                 .supported_envelope_schema_versions
                 .clone(),
-            runtime_guarantees: verified.claims.runtime_guarantees.clone(),
+            runtime_guarantees: verified.claims().runtime_guarantees.clone(),
             advertised_jwks_kids: verified
                 .advertised_jwks()
                 .keys
@@ -256,14 +256,22 @@ mod tests {
         .unwrap()
     }
 
-    /// In-crate test shortcut: `VerifiedCard`'s fields are public within
-    /// the crate's API, but the END-TO-END test (sign_verify path, feature
-    /// `sign`) is the one that goes through `verify_card` for real.
+    /// In-crate test shortcut: `VerifiedCard::new` is `pub(crate)` (#2450),
+    /// so this crate's own tests can still build one directly — but the
+    /// END-TO-END test (sign_verify path, feature `sign`) is the one that
+    /// goes through `verify_card` for real.
     fn verified() -> VerifiedCard {
-        VerifiedCard {
-            card: sample_card(),
-            claims: sample_claims(),
-        }
+        VerifiedCard::new(sample_card(), sample_claims())
+    }
+
+    /// Same as [`verified`], but with `runtime_guarantees` cleared —
+    /// `VerifiedCard`'s fields are private (#2450), so a test that used to
+    /// mutate `.claims.runtime_guarantees` after construction now builds
+    /// the claims it wants up front instead.
+    fn verified_without_runtime_guarantees() -> VerifiedCard {
+        let mut claims = sample_claims();
+        claims.runtime_guarantees = None;
+        VerifiedCard::new(sample_card(), claims)
     }
 
     /// The round-trip law: narrow ∘ lift = id on the lifted claims.
@@ -301,8 +309,7 @@ mod tests {
 
     #[test]
     fn absent_profile_is_omitted_from_the_wire() {
-        let mut v = verified();
-        v.claims.runtime_guarantees = None;
+        let v = verified_without_runtime_guarantees();
         let Projection::Capability(body) = to_capability_projection(&v) else {
             panic!("lift must produce a capability projection");
         };

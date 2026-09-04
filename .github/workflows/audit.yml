@@ -29,6 +29,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+      # Work around a broken transitive dependency: `actions-rust-lang/audit`
+      # installs cargo-audit via `cargo install cargo-audit --vers 0.22.0`
+      # with no `--locked`, so it re-resolves cargo-audit's own dependency
+      # tree against whatever is newest on crates.io today rather than the
+      # tree cargo-audit 0.22.0 shipped and tested against. tinyvec 1.13.0
+      # (a transitive dep, several hops down) fails to compile under
+      # `no_std` — `TinyVec::Heap` calls the `vec!` macro but the crate only
+      # imports the `alloc::vec` MODULE, not the macro — breaking every
+      # audit run repo-wide since it was published, independent of any
+      # change in this repo. `cargo install` skips reinstalling a version
+      # that's already present, so installing it ourselves with `--locked`
+      # (cargo-audit's own vetted lockfile, which predates the broken
+      # tinyvec release) here makes the action's own install step a no-op.
+      # Safe to remove once upstream re-locks past the tinyvec fix, or once
+      # actions-rust-lang/audit exposes a `--locked` passthrough itself.
+      - name: Pre-install cargo-audit with its own locked dependency tree
+        run: cargo +stable install cargo-audit --version 0.22.0 --locked --no-default-features
+        shell: bash
       - uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1
         with:
           denyWarnings: true
