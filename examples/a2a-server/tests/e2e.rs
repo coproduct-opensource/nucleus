@@ -154,10 +154,10 @@ async fn discover_gate_serve_receipt() {
     let server_card: AgentCard = serde_json::from_value(card_json.clone()).unwrap();
     let verified = verify_card(&server_card, &card_jwk).expect("server card verifies");
     assert_eq!(
-        verified.claims.spiffe_id,
+        verified.claims().spiffe_id,
         "spiffe://summarizer.example.com/ns/agents/sa/summarizer"
     );
-    assert!(verified.claims.runtime_guarantees.is_some());
+    assert!(verified.claims().runtime_guarantees.is_some());
     // §4.6.1: the receipt extension is declared, optional.
     let receipt_ext = server_card
         .capabilities
