@@ -100,7 +100,7 @@ pub mod cedar_bridge;
 // (ring can't compile to WASM). The kernel needs the types, not the signing.
 pub mod certificate;
 #[cfg(all(test, feature = "crypto", feature = "serde"))]
-mod certificate_convergence_tests;
+mod certificate_convergence_test;
 mod command;
 pub mod constraint;
 pub mod trace_monitor;
