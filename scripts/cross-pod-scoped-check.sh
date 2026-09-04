@@ -69,8 +69,12 @@ set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
 PORT="${NUCLEUS_SCOPED_TEST_PORT:-8103}"
-URL="http://127.0.0.1:$PORT"
-SECRET="$(printf 'a%.0s' {1..64})"
+# `https://` since Move B: the node's HTTP listener requires mTLS
+# unconditionally now, with no anonymous-TLS fallback — see
+# cross-pod-lineage-check.sh's own note on this for the detail.
+URL="https://127.0.0.1:$PORT"
+TRUST_DOMAIN="nucleus.local"   # the node's own --identity-trust-domain default
+SECRET="$(printf 'a%.0s' {1..64})"   # still required for --proxy-auth-secret/--proxy-approval-secret
 WORK="$(mktemp -d)"
 NODE_PID=""
 cleanup() { [[ -n "$NODE_PID" ]] && kill "$NODE_PID" 2>/dev/null; rm -rf "$WORK"; }
@@ -86,18 +90,50 @@ fi
 for b in "$NODE" "$CLI" "$TP"; do [[ -x "$b" ]] || { echo "ERROR: missing binary $b"; exit 1; }; done
 TP="$(cd "$(dirname "$TP")" && pwd)/$(basename "$TP")"
 
-"$NODE" --auth-secret "$SECRET" --proxy-auth-secret "$SECRET" --proxy-approval-secret "$SECRET" \
+# See cross-pod-lineage-check.sh's own note: mints a CLI-usable mTLS identity
+# signed by the node's own already-persisted CA, since there's no VM/Tier2Host
+# here to carry a provisioned one over SSH.
+MINT="target/debug/examples/mint_test_client_cert"
+if [[ ! -x "$MINT" ]]; then
+    echo "building nucleus-identity's mint_test_client_cert example…"
+    cargo build -p nucleus-identity --example mint_test_client_cert \
+        >/dev/null 2>&1 || { echo "ERROR: build failed"; exit 1; }
+fi
+[[ -x "$MINT" ]] || { echo "ERROR: missing binary $MINT"; exit 1; }
+
+"$NODE" --proxy-auth-secret "$SECRET" --proxy-approval-secret "$SECRET" \
     --listen "127.0.0.1:$PORT" --state-dir "$WORK/state" --driver local --allow-local-driver \
     --tool-proxy-path "$TP" >"$WORK/node.log" 2>&1 &
 NODE_PID=$!
+
+ca_ready=0
+for _ in $(seq 1 40); do
+    [[ -f "$WORK/state/ca/ca-cert.pem" && -f "$WORK/state/ca/ca-key.pem" ]] && { ca_ready=1; break; }
+    sleep 0.25
+done
+[[ "$ca_ready" -eq 1 ]] || { echo "ERROR: node never persisted its CA under $WORK/state/ca"; tail -20 "$WORK/node.log"; exit 1; }
+
+# `ns/default/sa/*` — an ORCHESTRATOR prefix (AuthorizationPolicy::default);
+# `ns/system/sa/cli` (nucleus-cli's own convention) is NOT authorized for pod
+# management. See cross-pod-lineage-check.sh's own note.
+IDENTITY_DIR="$WORK/cli-identity"
+"$MINT" --ca-dir "$WORK/state/ca" --trust-domain "$TRUST_DOMAIN" \
+    --namespace default --service-account test-cli --out-dir "$IDENTITY_DIR" \
+    >"$WORK/mint.log" 2>&1 || { echo "ERROR: minting the CLI's client cert failed"; cat "$WORK/mint.log"; exit 1; }
+
+N() {
+    "$CLI" node --url "$URL" \
+        --tls-cert "$IDENTITY_DIR/cert.pem" --tls-key "$IDENTITY_DIR/key.pem" \
+        --trust-bundle "$IDENTITY_DIR/trust-bundle.pem" \
+        "$@" 2>/dev/null | grep -viE "Starting nucleus|config_path"
+}
+
 ready=0
 for _ in $(seq 1 40); do
-    [[ "$(curl -s -o /dev/null -w '%{http_code}' "$URL/v1/health" 2>/dev/null)" == "200" ]] && { ready=1; break; }
+    N health >/dev/null 2>&1 && { ready=1; break; }
     sleep 0.25
 done
 [[ "$ready" -eq 1 ]] || { echo "ERROR: node not healthy"; tail -20 "$WORK/node.log"; exit 1; }
-
-N() { "$CLI" node --url "$URL" --auth-secret "$SECRET" "$@" 2>/dev/null | grep -viE "Starting nucleus|config_path"; }
 
 # Pod A: an orchestrator (holds manage_pods) with pod-mgmt enabled, so its
 # tool-proxy carries A's caller token and can call the management API.

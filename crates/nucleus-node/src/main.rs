@@ -1636,13 +1636,59 @@ async fn spawn_local_pod(
         .unwrap_or(false);
     if enable_pod_mgmt {
         command.env("NUCLEUS_TOOL_PROXY_ENABLE_POD_MGMT", "true");
-        // Point orchestrator's tool-proxy at this node's HTTP API
-        let node_url = format!("http://{}", state.listen_addr);
+        // Point orchestrator's tool-proxy at this node's HTTP API. `https://`
+        // since Move B: the node's HTTP listener is mTLS-only, unconditionally
+        // (http_serve.rs) — there is no plaintext fallback any more.
+        let node_url = format!("https://{}", state.listen_addr);
         command.env("NUCLEUS_TOOL_PROXY_NODE_URL", &node_url);
-        command.env(
-            "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET",
-            &state.proxy_auth_secret,
-        );
+        // Mint this orchestrator pod its own SVID so its tool-proxy can
+        // authenticate back to the node over mTLS (`node_identity::require`
+        // in nucleus-tool-proxy). `NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET` was
+        // the pre-Move-B mechanism (a shared secret the tool-proxy no longer
+        // reads); this is the SVID-file replacement, env-parity with what
+        // guest-init already does for the real Firecracker path over vsock.
+        // Namespace `default` matches `AuthorizationPolicy::default`'s
+        // orchestrator prefix (`ns/default/sa/*`) — the identity a caller
+        // needs to actually be authorized for pod management, not merely to
+        // complete the TLS handshake.
+        let manager = state
+            .identity_manager
+            .as_ref()
+            .expect("identity_manager is unconditionally constructed above (Move B)");
+        let orchestrator_identity =
+            manager.identity_for_pod(id, "default", &format!("orchestrator-{id}"));
+        let orchestrator_cert = manager
+            .fetch_certificate(&orchestrator_identity)
+            .await
+            .map_err(|e| {
+                ApiError::Driver(format!(
+                    "failed to mint orchestrator pod {id}'s SVID for pod management: {e}"
+                ))
+            })?;
+        let identity_dir = pod_dir.join("identity");
+        tokio::fs::create_dir_all(&identity_dir).await?;
+        let identity_cert_path = identity_dir.join("cert.pem");
+        let identity_key_path = identity_dir.join("key.pem");
+        let identity_bundle_path = identity_dir.join("trust-bundle.pem");
+        tokio::fs::write(&identity_cert_path, orchestrator_cert.chain_pem()).await?;
+        tokio::fs::write(&identity_key_path, orchestrator_cert.private_key_pem()).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&identity_key_path, std::fs::Permissions::from_mode(0o600))
+                .await?;
+        }
+        let bundle_pem = manager
+            .trust_bundle()
+            .roots()
+            .iter()
+            .map(|r| r.to_pem().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        tokio::fs::write(&identity_bundle_path, bundle_pem).await?;
+        command.env("NUCLEUS_IDENTITY_CERT", &identity_cert_path);
+        command.env("NUCLEUS_IDENTITY_KEY", &identity_key_path);
+        command.env("NUCLEUS_IDENTITY_TRUST_BUNDLE", &identity_bundle_path);
         // Caller identity → tool-proxy scopes the management API (env-parity with guest-init).
         command.env("NUCLEUS_POD_ID", id.to_string());
         command.env(
