@@ -1769,6 +1769,97 @@ mod tests {
         assert_eq!(verified.chain_depth, 1);
     }
 
+    /// #2451 parity: the Aeneas-extracted walk (`portcullis_core::certchain::
+    /// chain_attenuates`, proven monotone in `CertChainMonotoneExtracted.lean`)
+    /// agrees with `verify_certificate`'s step 4c on REAL, fully signed
+    /// certificates — on an honest two-hop chain, and on a chain whose second
+    /// hop is validly signed by its parent but WIDENS its permissions (built by
+    /// hand: `delegate` refuses to mint one). Everything else in the walk
+    /// (signatures, hash linkage, expiry, proof of possession) holds, so the
+    /// monotone check is the only thing deciding.
+    #[test]
+    fn chain_attenuates_agrees_with_verify_certificate() {
+        use portcullis_core::certchain::chain_attenuates;
+
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let root_pub = root_key.public_key().as_ref().to_vec();
+        let not_after = Utc::now() + Duration::hours(8);
+        let root_perms = PermissionLattice::permissive();
+
+        let (cert, holder) = LatticeCertificate::mint(
+            root_perms.clone(),
+            "spiffe://test/human/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+        let (cert, child) = cert
+            .delegate(
+                &PermissionLattice::restrictive(),
+                "spiffe://test/agent/a".into(),
+                not_after,
+                &holder,
+                &rng,
+            )
+            .unwrap();
+
+        // Honest: both accept.
+        let effective: Vec<PermissionLattice> = cert
+            .blocks
+            .iter()
+            .map(|b| b.effective_permissions.clone())
+            .collect();
+        assert!(verify_certificate(&cert, &root_pub, Utc::now(), 10).is_ok());
+        assert!(chain_attenuates(&root_perms, &effective));
+
+        // A second hop, correctly signed by the first hop's holder, that
+        // claims MORE than its parent: permissive under a restrictive parent.
+        let grandchild = generate_key(&rng);
+        let parent = cert.blocks.last().unwrap();
+        let (_, justification) = meet_with_justification(
+            &parent.effective_permissions,
+            &PermissionLattice::permissive(),
+        );
+        let mut widened = DelegationBlock {
+            effective_permissions: PermissionLattice::permissive(),
+            justification,
+            from_identity: parent.to_identity.clone(),
+            to_identity: "spiffe://test/agent/b".into(),
+            not_after,
+            sink_scope: SinkScope::unrestricted(),
+            prev_block_hash: parent.block_hash(),
+            signature: Vec::new(),
+            next_key: grandchild.public_key().as_ref().to_vec(),
+        };
+        widened.signature = child.sign(&widened.signing_payload()).as_ref().to_vec();
+        let pop = LatticeCertificate::pop_payload_for_block_hash(&widened.block_hash());
+        let mut blocks = cert.blocks.clone();
+        blocks.push(widened);
+        let escalated = LatticeCertificate {
+            authority: cert.authority.clone(),
+            blocks,
+            final_signature: grandchild.sign(&pop).as_ref().to_vec(),
+        };
+
+        let effective: Vec<PermissionLattice> = escalated
+            .blocks
+            .iter()
+            .map(|b| b.effective_permissions.clone())
+            .collect();
+        assert!(
+            matches!(
+                verify_certificate(&escalated, &root_pub, Utc::now(), 10),
+                Err(CertificateError::MonotoneViolation { block_index: 2 })
+            ),
+            "the production walk refuses the widened hop for the monotone reason and no other"
+        );
+        assert!(
+            !chain_attenuates(&root_perms, &effective),
+            "the extracted walk refuses the same chain"
+        );
+    }
+
     #[test]
     fn test_monotone_attenuation_holds() {
         let rng = test_rng();
