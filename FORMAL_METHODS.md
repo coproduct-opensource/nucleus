@@ -158,14 +158,16 @@ These are important security properties that have NO formal verification:
 | DecisionToken | Kani BMC | Token issuance, audit, exposure | Bounded | 5 harnesses | Every PR |
 | FlowGraph DAG | Kani BMC | Denied-parent, structural invariants | Bounded | 8 harnesses | Every PR |
 | Certificate delegation | Kani BMC | Monotonicity, depth, hash | Bounded | 3 harnesses | Every PR |
+| Budget conservation | Kani BMC | `Σ child allocations + consumed ≤ max` over the shipped `LedgerCore` (E1/E2) | Bounded | 2 harnesses | Every PR |
 | I/O confinement | Kani BMC | Never→Deny, delegation narrowing | Bounded | 2 harnesses | Every PR |
 | Permission algebra | Kani BMC | Distributivity, monotonicity, monoid | Bounded | ~45 harnesses | PR (fast) + nightly |
 
-**Total: 114 Kani BMC harnesses repo-wide** (portcullis 64, portcullis-core 31,
-ck-kernel 17, nucleus-econ-kernels 1, nucleus-audit 1) **+ ~277 kernel-checked
+**Total: 117 Kani BMC harnesses repo-wide** (portcullis 66, portcullis-core 25,
+ck-kernel 18, nucleus-ifc-kernel 6, nucleus-econ-kernels 1, nucleus-audit 1;
+recount with `grep -rc '#\[kani::proof\]' crates`) **+ ~277 kernel-checked
 Lean 4 theorems** in the security core. The Lean *security* core is `sorry`-free;
 the exploratory alignment-tax / cohomology / braid formalizations are
-research-tier and **not discharged** (40 open `sorry` proof holes across 11
+research-tier and **not discharged** (23 open `sorry` proof holes across 10
 files — see `crates/portcullis-core/lean/CONJECTURES.md`). The
 `portcullis-core-proven-lean.yml` CI gate `lake build`s the proven tier and
 fails if any proof hole appears outside that manifest.

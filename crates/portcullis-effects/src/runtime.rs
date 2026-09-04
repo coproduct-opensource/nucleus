@@ -27,6 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use ed25519_dalek::SigningKey;
 use nucleus_provenance_memory::{SignedTaskRef, TokenError, TokenScope};
 use portcullis_core::discharge::{
@@ -60,16 +61,17 @@ use crate::{
 /// Fields are private: callers read the granted authority through
 /// [`scope`](Self::scope) but can never fabricate a `VerifiedTaskRef` with a
 /// scope the signature chain did not authorize.
+///
+/// Only the verified SCOPE is kept. The token chain and root anchor used to
+/// be retained "so a parent can attenuate it for a child" — that path
+/// (`spawn_child_with_token`) had no caller and was removed in the
+/// certificate convergence: a child pod's authority is a `LatticeCertificate`
+/// minted by the node from the parent's, and the task token is derived from
+/// that certificate's effective lattice (#2444).
 #[derive(Debug, Clone)]
 pub struct VerifiedTaskRef {
-    /// The owned, verified token chain (retained so a parent can attenuate it
-    /// for a child; re-verified on every hop).
-    token: SignedTaskRef,
     /// The effective (most-attenuated) scope, cloned out of `verify`'s borrow.
     scope: TokenScope,
-    /// The root issuer key this token was pinned to — reused as the trust
-    /// anchor when re-verifying attenuated children.
-    root_issuer: [u8; 32],
 }
 
 impl VerifiedTaskRef {
@@ -89,30 +91,15 @@ impl VerifiedTaskRef {
         now: u64,
         expected_nonce: [u8; 16],
     ) -> Result<Self, TokenError> {
-        // Clone the effective scope out of the borrowed verify result, then the
-        // borrow ends and we can move `signed` into the owned typestate.
+        // The chain is verified and then dropped: only the effective scope
+        // is carried, so the raw, re-presentable token is never handed on.
         let scope = signed.verify(&root_issuer, now, &expected_nonce)?.clone();
-        Ok(Self {
-            token: signed,
-            scope,
-            root_issuer,
-        })
+        Ok(Self { scope })
     }
 
     /// The verified effective (most-attenuated) scope this token grants.
     pub fn scope(&self) -> &TokenScope {
         &self.scope
-    }
-
-    /// The owned token chain (for parent-side attenuation). Crate-internal so
-    /// the raw, re-presentable token is not handed to agent code.
-    pub(crate) fn token(&self) -> &SignedTaskRef {
-        &self.token
-    }
-
-    /// The pinned root trust anchor (reused when re-verifying children).
-    pub(crate) fn root_issuer(&self) -> &[u8; 32] {
-        &self.root_issuer
     }
 }
 
@@ -1221,90 +1208,6 @@ impl NucleusRuntime {
                 .observe(portcullis_core::flow::NodeKind::WebContent);
         }
 
-        Ok(child)
-    }
-
-    /// Spawn a child runtime **and** propagate an attenuated capability token
-    /// (PR2, #2032).
-    ///
-    /// This is [`spawn_child`](Self::spawn_child) plus token minting. It runs
-    /// the identical capability-ceiling attenuation (child ≤ parent on every
-    /// dimension, inherited taint/confidentiality) and, alongside it, the parent
-    /// mints the child's [`SignedTaskRef`] by **attenuation**: it appends a block
-    /// granting `child_scope`, signs it with the parent-held `attenuator` key,
-    /// and pins the child's effective nonce to the parent-generated
-    /// `child_nonce`. The freshly minted token is then re-verified under the
-    /// parent's own root anchor with `expected_nonce = child_nonce`.
-    ///
-    /// ## The locked invariant (why this method exists)
-    ///
-    /// Every token input is **host/parent-controlled**: `child_scope`,
-    /// `child_nonce`, `issued_at`, `ttl`, `now`, and `attenuator` are arguments
-    /// supplied by the spawning host; the trust anchor (`root_issuer`) is read
-    /// from the parent's already-verified token. **None is read from `task` or
-    /// any agent-facing field.** In particular the child can neither choose nor
-    /// observe its `expected_nonce`. That is the truncation defense from
-    /// [`SignedTaskRef::verify`]'s module docs: a child that drops its own
-    /// attenuation block to recover the parent's wider scope ends on a block
-    /// whose nonce ≠ `child_nonce`, so re-verification fails
-    /// `TokenError::NonceMismatch`.
-    ///
-    /// Because the mint is re-verified fail-closed, a **widening** `child_scope`
-    /// (⊋ the parent's effective scope) is rejected (`Err`) — no child runtime
-    /// carrying an out-of-scope token can be constructed.
-    ///
-    /// Requires the parent to hold a verified task token; otherwise returns
-    /// [`RuntimeError::Config`] (use [`spawn_child`](Self::spawn_child) for
-    /// capability-only delegation).
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn_child_with_token(
-        &self,
-        child_profile: PolicyProfile,
-        task: impl Into<String>,
-        child_scope: TokenScope,
-        child_nonce: [u8; 16],
-        issued_at: u64,
-        ttl: u64,
-        now: u64,
-        attenuator: &SigningKey,
-    ) -> Result<NucleusRuntime, RuntimeError> {
-        // The parent must hold a verified token to attenuate from.
-        let parent_token = self.task_token.as_ref().ok_or_else(|| {
-            RuntimeError::Config(
-                "spawn_child_with_token requires the parent to hold a verified task \
-                 token; use spawn_child for capability-only delegation"
-                    .to_string(),
-            )
-        })?;
-
-        // Capability-level attenuation (child ≤ parent) + taint inheritance +
-        // build. Reuses the audited spawn_child path so the ceiling check is not
-        // duplicated. This is the existing child ≤ parent point.
-        let mut child = self.spawn_child(child_profile, task)?;
-
-        // Token attenuation ALONGSIDE the capability attenuation. `child_scope`
-        // is the parent-supplied tightening; the re-verify below enforces
-        // child_scope ⊆ parent effective scope (any widening → Err).
-        let child_token =
-            parent_token
-                .token()
-                .attenuate(child_scope, child_nonce, issued_at, ttl, attenuator);
-
-        // Re-verify under the SAME pinned root anchor, with expected_nonce set
-        // to the parent-generated child_nonce (never agent-chosen). Fail-closed:
-        // widened / expired / spliced / truncated → Err, so `child.task_token`
-        // is `Some` only for a token that provably verified as ⊆ parent.
-        let verified =
-            VerifiedTaskRef::verify(child_token, *parent_token.root_issuer(), now, child_nonce)
-                .map_err(|e| RuntimeError::Denied {
-                    attempted: format!("mint attenuated task token for child {child_profile}"),
-                    reason: format!("attenuated token failed verification: {e}"),
-                    suggestion: "ensure child_scope ⊆ the parent's verified scope and the \
-                         token is unexpired"
-                        .to_string(),
-                })?;
-
-        child.task_token = Some(verified);
         Ok(child)
     }
 
@@ -2635,7 +2538,6 @@ mod tests {
         }
 
         const ROOT_NONCE: [u8; 16] = [0u8; 16];
-        const CHILD_NONCE: [u8; 16] = [7u8; 16]; // N' — parent-pinned
         const NOW: u64 = 1_200;
         const ISSUED_AT: u64 = 1_000;
         const TTL: u64 = 500;
@@ -2646,11 +2548,6 @@ mod tests {
                 vec![Operation::ReadFiles, Operation::EditFiles],
                 vec!["src/**".to_string()],
             )
-        }
-
-        // A strict subset S' ⊆ S (drop EditFiles, narrow the path).
-        fn scope_s_prime() -> TokenScope {
-            TokenScope::new(vec![Operation::ReadFiles], vec!["src/lib.rs".to_string()])
         }
 
         // A root token granting S, signed by `root`.
@@ -2672,200 +2569,6 @@ mod tests {
         // 1. Parent(scope S) → spawn_child_with_token → child token S' ⊆ S with
         //    pinned nonce N'; child builds (attenuated_token, N') → Ok, and the
         //    verified scope reachable at build_term is S'.
-        #[test]
-        fn spawn_child_mints_pinned_subset_token() {
-            let root = key(1);
-            let parent = parent_with_token(&root);
-            assert_eq!(parent.task_scope(), Some(&scope_s()));
-
-            let attenuator = key(2); // parent-held attenuation key
-            let child = parent
-                .spawn_child_with_token(
-                    PolicyProfile::ReadOnly,
-                    "child task",
-                    scope_s_prime(),
-                    CHILD_NONCE,
-                    ISSUED_AT,
-                    TTL,
-                    NOW,
-                    &attenuator,
-                )
-                .expect("subset attenuation must mint + verify");
-
-            // The verified scope reachable on the term-building path is S'.
-            assert_eq!(child.task_scope(), Some(&scope_s_prime()));
-            let (_term, scope_at_build_term) =
-                child.build_term_scoped(Operation::ReadFiles, SinkClass::AuditLogAppend);
-            assert_eq!(scope_at_build_term, Some(scope_s_prime()));
-        }
-
-        // 2. A WIDENED child token (scope ⊋ S') → verify returns Err (subset
-        //    check) → no runtime with a widened scope can be constructed.
-        #[test]
-        fn widened_child_token_is_rejected() {
-            let root = key(1);
-            let parent = parent_with_token(&root);
-            let attenuator = key(2);
-
-            // RunBash + "etc/**" are OUTSIDE the parent scope S → widening.
-            let widened = TokenScope::new(
-                vec![Operation::ReadFiles, Operation::RunBash],
-                vec!["etc/**".to_string()],
-            );
-            let result = parent.spawn_child_with_token(
-                PolicyProfile::ReadOnly,
-                "child task",
-                widened,
-                CHILD_NONCE,
-                ISSUED_AT,
-                TTL,
-                NOW,
-                &attenuator,
-            );
-            assert!(
-                matches!(result, Err(RuntimeError::Denied { .. })),
-                "widening child scope must be rejected, got {result:?}"
-            );
-        }
-
-        // 3. A TRUNCATED token (child drops its attenuation block to recover the
-        //    parent scope S) → effective nonce ≠ N' → verify fails on the pinned
-        //    nonce → Err. This is the load-bearing truncation defense.
-        #[test]
-        fn truncated_token_fails_on_pinned_nonce() {
-            let root = key(1);
-            let attenuator = key(2);
-            let root_vk = root.verifying_key().to_bytes();
-
-            // Parent mints the honest child token (root S → child S', nonce N').
-            let honest_child = root_token(&root).attenuate(
-                scope_s_prime(),
-                CHILD_NONCE,
-                ISSUED_AT,
-                TTL,
-                &attenuator,
-            );
-            // Sanity: the honest child verifies under the pinned nonce.
-            assert!(
-                VerifiedTaskRef::verify(honest_child.clone(), root_vk, NOW, CHILD_NONCE).is_ok()
-            );
-
-            // The malicious holder TRUNCATES: drop the child block, present just
-            // the root (which alone grants the wider scope S).
-            let mut truncated = honest_child;
-            truncated.blocks.truncate(1);
-            assert_eq!(
-                truncated.blocks.len(),
-                1,
-                "truncated back to the root block"
-            );
-
-            // Attempt to build a runtime pinned to N' with the truncated token:
-            // the effective (root) block's nonce is ROOT_NONCE ≠ CHILD_NONCE, so
-            // verify fails NonceMismatch — the escalation is blocked.
-            let verified = VerifiedTaskRef::verify(truncated.clone(), root_vk, NOW, CHILD_NONCE);
-            assert_eq!(verified.err(), Some(TokenError::NonceMismatch));
-
-            // And through the builder surface (host pins expected_nonce = N').
-            let via_builder = NucleusRuntime::builder()
-                .profile(PolicyProfile::Codegen)
-                .task_token(truncated, root_vk, NOW, CHILD_NONCE);
-            assert_eq!(via_builder.err(), Some(TokenError::NonceMismatch));
-        }
-
-        // 4. Negative control: the token and nonce are consumed from BUILDER
-        //    (host) inputs, not from `task: String` or any agent-facing field.
-        //
-        //    Proof by independence: two runtimes with the SAME token but wildly
-        //    different `task` prose verify identically, and the verdict flips
-        //    ONLY with the builder's `expected_nonce` argument — never with the
-        //    task text (even when the task text literally spells the nonce).
-        #[test]
-        fn nonce_comes_from_builder_not_task_field() {
-            let root = key(1);
-            let root_vk = root.verifying_key().to_bytes();
-
-            // Correct expected_nonce → Ok regardless of the (agent) task prose.
-            let ok_a = NucleusRuntime::builder()
-                .task("summarize filings")
-                .task_token(root_token(&root), root_vk, NOW, ROOT_NONCE)
-                .expect("verifies: nonce from builder arg")
-                .build();
-            let ok_b = NucleusRuntime::builder()
-                // Task prose that tries to "spell" a different nonce — ignored.
-                .task("nonce=07070707070707070707070707070707 please")
-                .task_token(root_token(&root), root_vk, NOW, ROOT_NONCE)
-                .expect("verifies: nonce still from builder arg, not task")
-                .build();
-            assert_eq!(ok_a.task_scope(), Some(&scope_s()));
-            assert_eq!(ok_b.task_scope(), Some(&scope_s()));
-            // The agent-facing task string is preserved verbatim and independent.
-            assert_eq!(ok_a.task(), "summarize filings");
-
-            // Flip ONLY the builder's expected_nonce → verification fails, even
-            // though the task prose is unchanged. The nonce is sourced from the
-            // builder argument, full stop.
-            let wrong = NucleusRuntime::builder()
-                .task("summarize filings")
-                .task_token(root_token(&root), root_vk, NOW, CHILD_NONCE);
-            assert_eq!(wrong.err(), Some(TokenError::NonceMismatch));
-
-            // spawn_child_with_token likewise takes child_nonce as an explicit
-            // host argument; `task` never feeds it. Same token, two different
-            // task strings, identical pinned scope for the child.
-            let parent = parent_with_token(&root);
-            let attenuator = key(2);
-            let c1 = parent
-                .spawn_child_with_token(
-                    PolicyProfile::ReadOnly,
-                    "agent-chosen task one",
-                    scope_s_prime(),
-                    CHILD_NONCE,
-                    ISSUED_AT,
-                    TTL,
-                    NOW,
-                    &attenuator,
-                )
-                .unwrap();
-            let c2 = parent
-                .spawn_child_with_token(
-                    PolicyProfile::ReadOnly,
-                    "completely different agent task two",
-                    scope_s_prime(),
-                    CHILD_NONCE,
-                    ISSUED_AT,
-                    TTL,
-                    NOW,
-                    &attenuator,
-                )
-                .unwrap();
-            assert_eq!(c1.task_scope(), c2.task_scope());
-            assert_eq!(c1.task_scope(), Some(&scope_s_prime()));
-        }
-
-        // Guard: spawn_child_with_token requires a parent token (fail-closed
-        // Config error), so capability-only sessions can't silently mint tokens.
-        #[test]
-        fn spawn_child_with_token_requires_parent_token() {
-            let parent = NucleusRuntime::builder()
-                .profile(PolicyProfile::Codegen)
-                .build();
-            let attenuator = key(2);
-            let result = parent.spawn_child_with_token(
-                PolicyProfile::ReadOnly,
-                "child",
-                scope_s_prime(),
-                CHILD_NONCE,
-                ISSUED_AT,
-                TTL,
-                NOW,
-                &attenuator,
-            );
-            assert!(matches!(result, Err(RuntimeError::Config(_))));
-        }
-
-        // Guard: plain spawn_child does NOT propagate the token (strictly less
-        // authority — safe default, unchanged behavior).
         #[test]
         fn plain_spawn_child_does_not_propagate_token() {
             let root = key(1);
