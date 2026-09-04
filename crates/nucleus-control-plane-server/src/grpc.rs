@@ -11,23 +11,31 @@
 //! (matching `POST /v1/jobs/{id}/cancel`) so internal callers can
 //! avoid running both an HTTP and a gRPC client.
 //!
-//! # Auth posture
+//! # Auth posture (#2442)
 //!
-//! Internal services connect over Fly.io 6PN, which is WireGuard-
-//! encrypted in transit. SPIFFE JWT-SVID authentication on the gRPC
-//! surface is iter-2 (uses the same `verify_jwt_svid` helper as the
-//! REST extractor); iter-1 runs the gRPC surface open since deploys
-//! ship it on a private listener that only same-org Fly machines
-//! reach. Production callers MUST set `--spiffe-trust-jwks-path`
-//! before exposing the gRPC port outside the 6PN.
+//! The gRPC surface is authenticated exactly like REST: every call carries
+//! `authorization: Bearer <JWT-SVID>`, verified by the interceptor
+//! [`intercepted`] installs against the SAME [`crate::auth::SpiffeAuthConfig`]
+//! the REST extractor uses (one trust JWKS, one audience, one subject
+//! prefix). The verified principal is placed in the request extensions;
+//! `Submit` records it as the job's owner and `Get` refuses (NOT_FOUND, no
+//! existence oracle) a job it does not own.
+//!
+//! It used to run open — "a private listener only same-org machines reach"
+//! — with the boundary asserted in this comment rather than enforced, and
+//! `Get` returned any job's bundle to anyone who could connect. Network
+//! topology is not authentication. `main.rs` now refuses to bind the gRPC
+//! listener without auth in a production build and binds loopback by default.
 
 use nucleus_control_plane::{AgentDriverRef, Destination, InputRef, JobId, JobSpec, JobState};
 use nucleus_proto::control_plane::{
     JobIdMessage, JobStatus, JobStatusCode, JobSubmission, SubmittedJob,
-    job_service_server::JobService,
+    job_service_server::{JobService, JobServiceServer},
 };
+use tonic::service::interceptor::InterceptedService;
 use tonic::{Request, Response, Status};
 
+use crate::auth::{AuthenticatedPrincipal, principal_from_grpc};
 use crate::state::AppState;
 
 /// gRPC service impl. Holds an `AppState` so handlers see the same
@@ -41,6 +49,33 @@ impl GrpcJobService {
     pub fn new(state: AppState) -> Self {
         Self { state }
     }
+}
+
+/// The service wrapped in the JWT-SVID interceptor — the ONLY way `main.rs`
+/// mounts it, so an unauthenticated gRPC surface is not constructible there.
+pub fn intercepted(
+    state: AppState,
+) -> InterceptedService<
+    JobServiceServer<GrpcJobService>,
+    impl FnMut(Request<()>) -> Result<Request<()>, Status> + Clone,
+> {
+    let config = state.spiffe_auth.clone();
+    JobServiceServer::with_interceptor(GrpcJobService::new(state), move |mut req: Request<()>| {
+        let principal = principal_from_grpc(&req, config.as_deref())?;
+        req.extensions_mut().insert(principal);
+        Ok(req)
+    })
+}
+
+/// The principal the interceptor verified for this call. Absent only if the
+/// service was mounted without [`intercepted`], which is a programming error
+/// reported as UNAUTHENTICATED rather than admitted.
+fn principal_of<T>(request: &Request<T>) -> Result<AuthenticatedPrincipal, Status> {
+    request
+        .extensions()
+        .get::<AuthenticatedPrincipal>()
+        .cloned()
+        .ok_or_else(|| Status::unauthenticated("no verified principal on this call"))
 }
 
 /// Map a proto `JobSubmission` to the internal `JobSpec`. Iter-1
@@ -120,6 +155,7 @@ impl JobService for GrpcJobService {
         &self,
         request: Request<JobSubmission>,
     ) -> Result<Response<SubmittedJob>, Status> {
+        let principal = principal_of(&request)?;
         let req = request.into_inner();
         let spec = to_job_spec(req)?;
 
@@ -138,13 +174,9 @@ impl JobService for GrpcJobService {
         // share an `execute_job_async` helper between REST + gRPC.
         let initial = JobState::Queued {
             submitted_at: chrono::Utc::now(),
-            // The gRPC surface runs open in iter-1 (see this module's own
-            // "Auth posture" doc comment) — there is no verified caller
-            // identity to record yet. Use the same honest sentinel
-            // `AuthenticatedPrincipal::unauthenticated()` uses on the REST
-            // path rather than inventing a second one. Populating this from
-            // a real SPIFFE JWT-SVID is iter-2 / #2442, not this change.
-            owner: "<unauthenticated>".to_string(),
+            // The owner of record: the interceptor-verified caller, carried
+            // forward unchanged through every later transition (#2433).
+            owner: principal.sub().to_string(),
         };
         let id = self
             .state
@@ -155,6 +187,7 @@ impl JobService for GrpcJobService {
         tracing::info!(
             job_id = %id,
             driver = %spec.agent_driver.name,
+            owner = %principal.sub(),
             "gRPC JobService.Submit accepted job"
         );
 
@@ -164,12 +197,24 @@ impl JobService for GrpcJobService {
     }
 
     async fn get(&self, request: Request<JobIdMessage>) -> Result<Response<JobStatus>, Status> {
+        let principal = principal_of(&request)?;
         let id = JobId::from_raw(request.into_inner().job_id);
         let state = self
             .state
             .jobs
             .get(&id)
             .map_err(|_| Status::not_found(format!("job {id} not found")))?;
+        // Same rule as REST (#2441): another owner's job is NOT FOUND, not
+        // PERMISSION_DENIED — a denial would confirm the id exists.
+        if !principal.owns(state.owner()) {
+            tracing::warn!(
+                caller = %principal.sub(),
+                owner = %state.owner(),
+                job_id = %id,
+                "gRPC Get from a non-owner refused as not-found"
+            );
+            return Err(Status::not_found(format!("job {id} not found")));
+        }
         Ok(Response::new(to_job_status(&id, state)))
     }
 }

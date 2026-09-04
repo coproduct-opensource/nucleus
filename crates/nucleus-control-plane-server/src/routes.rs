@@ -101,6 +101,11 @@ pub async fn submit_job(
             let spec_bytes = serde_json::to_vec(&spec)
                 .map_err(|e| ApiError::Internal(format!("idempotency hash: {e}")))?;
             let mut h = Sha256::new();
+            // Scoped to the caller: idempotency keys were global, so a
+            // principal guessing another's key + body was handed that
+            // principal's job id back (#2441).
+            h.update(principal.sub().as_bytes());
+            h.update(b"\0");
             h.update(k.as_bytes());
             h.update(b"\0");
             h.update(&spec_bytes);
@@ -349,14 +354,35 @@ fn run_job_blocking(
     })
 }
 
+/// Ownership check for every job-scoped route (#2441): the verified caller
+/// must be the job's owner of record. A job that is not the caller's is
+/// reported as NOT FOUND, not forbidden — a 403 would confirm the id exists
+/// and let a caller enumerate other tenants' jobs by id.
+fn require_owner(
+    principal: &crate::auth::AuthenticatedPrincipal,
+    job: &JobState,
+) -> Result<(), ApiError> {
+    if principal.owns(job.owner()) {
+        Ok(())
+    } else {
+        tracing::warn!(
+            caller = %principal.sub(),
+            owner = %job.owner(),
+            "job-scoped request from a non-owner refused as not-found"
+        );
+        Err(ApiError::NotFound)
+    }
+}
+
 /// `GET /v1/jobs/{id}` — current state snapshot.
 pub async fn get_job(
     State(state): State<AppState>,
-    _: crate::auth::RequireSpiffeAuth,
+    crate::auth::RequireSpiffeAuth(principal): crate::auth::RequireSpiffeAuth,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobState>, ApiError> {
     let id = JobId::from_raw(job_id);
     let state = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
+    require_owner(&principal, &state)?;
     Ok(Json(state))
 }
 
@@ -381,11 +407,12 @@ pub async fn get_job(
 /// but doesn't unwind the cancel decision).
 pub async fn cancel_job(
     State(state): State<AppState>,
-    _: crate::auth::RequireSpiffeAuth,
+    crate::auth::RequireSpiffeAuth(principal): crate::auth::RequireSpiffeAuth,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobState>, ApiError> {
     let id = JobId::from_raw(job_id);
     let current = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
+    require_owner(&principal, &current)?;
     let next = match &current {
         JobState::Queued { .. } | JobState::Running { .. } => {
             let new_state = JobState::Failed {
@@ -397,10 +424,27 @@ pub async fn cancel_job(
                 reason: "cancelled by client request".to_string(),
                 owner: current.owner().to_string(),
             };
-            state
+            // Compare-and-update under the registry lock: the cancel lands
+            // only if the job is STILL cancellable and still this owner's.
+            // A job that completed between our read and this write keeps
+            // its completion — the blind `update` used to overwrite it.
+            let owner = current.owner().to_string();
+            let landed = state
                 .jobs
-                .update(&id, new_state.clone())
+                .update_if(
+                    &id,
+                    &|cur: &JobState| {
+                        cur.owner() == owner
+                            && matches!(cur, JobState::Queued { .. } | JobState::Running { .. })
+                    },
+                    new_state.clone(),
+                )
                 .map_err(|_| ApiError::NotFound)?;
+            if !landed {
+                let now_state = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
+                require_owner(&principal, &now_state)?;
+                return Ok(Json(now_state));
+            }
             state.events.publish(
                 &id,
                 crate::events::JobEvent::StateChanged {
@@ -436,11 +480,12 @@ pub async fn cancel_job(
 /// resumption is a v2 surface that needs a persistent event log.
 pub async fn stream_job_events(
     State(state): State<AppState>,
-    _: crate::auth::RequireSpiffeAuth,
+    crate::auth::RequireSpiffeAuth(principal): crate::auth::RequireSpiffeAuth,
     Path(job_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let id = JobId::from_raw(job_id);
     let current = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
+    require_owner(&principal, &current)?;
     let stream = build_event_stream(state, id, current);
     Ok(Sse::new(stream).keep_alive(
         KeepAlive::new()
@@ -521,11 +566,12 @@ fn event_for(evt: &JobEvent) -> Event {
 /// 409 with the current state otherwise, 404 if unknown.
 pub async fn get_bundle(
     State(state): State<AppState>,
-    _: crate::auth::RequireSpiffeAuth,
+    crate::auth::RequireSpiffeAuth(principal): crate::auth::RequireSpiffeAuth,
     Path(job_id): Path<String>,
 ) -> Result<Json<nucleus_envelope::Bundle>, ApiError> {
     let id = JobId::from_raw(job_id);
     let job_state = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
+    require_owner(&principal, &job_state)?;
     match job_state {
         JobState::Completed { outcome, .. } => Ok(Json(outcome.bundle)),
         JobState::Queued { .. } => Err(ApiError::Conflict { state: "queued" }),

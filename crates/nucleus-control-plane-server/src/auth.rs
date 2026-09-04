@@ -136,10 +136,35 @@ impl AuthenticatedPrincipal {
     }
 
     /// Synthetic admit path for auth-disabled deployments. The `sub`
-    /// is the literal string `"<unauthenticated>"` so handlers that
-    /// log it can't be tricked into reading it as a real SPIFFE id.
+    /// is the literal [`UNAUTHENTICATED_SUB`] so handlers that log it
+    /// can't be tricked into reading it as a real SPIFFE id.
     fn unauthenticated() -> Self {
-        Self::new("<unauthenticated>".to_string(), Vec::new(), false)
+        Self::new(UNAUTHENTICATED_SUB.to_string(), Vec::new(), false)
+    }
+
+    /// The SPIFFE trust domain of this principal — the tenancy primitive
+    /// (ADR 0001): tenants are trust domains, and the authority already
+    /// enforced everywhere else in the codebase is the SPIFFE identity, so
+    /// tenancy is derived from it rather than from a bespoke, unauthenticated
+    /// tenant string. Parsed with the same lowercasing parser the OIDC
+    /// federation path uses, so a mixed-case `sub` cannot dodge an equality
+    /// check. `None` for the auth-disabled sentinel.
+    pub fn trust_domain(&self) -> Option<String> {
+        nucleus_oidc_core::SpiffeId::parse(&self.sub)
+            .ok()
+            .map(|id| id.trust_domain)
+    }
+
+    /// Does this principal own a resource recorded against `owner`
+    /// (a `JobState::owner`)? Equality on the verified `sub`. Under an
+    /// auth-disabled (`insecure-dev`) build every caller is the sentinel and
+    /// so is every owner — stated explicitly here rather than falling out of
+    /// a string comparison by accident.
+    pub fn owns(&self, owner: &str) -> bool {
+        if !self.authenticated {
+            return owner == UNAUTHENTICATED_SUB;
+        }
+        self.sub == owner
     }
 
     /// SPIFFE subject id. `spiffe://...` URL (or the literal
@@ -158,6 +183,11 @@ impl AuthenticatedPrincipal {
         self.authenticated
     }
 }
+
+/// The `sub` of the auth-disabled sentinel principal — ONE definition, shared
+/// by the REST extractor and the gRPC interceptor, so an ownership check can
+/// name it explicitly instead of two surfaces spelling it independently.
+pub const UNAUTHENTICATED_SUB: &str = "<unauthenticated>";
 
 /// Reasons a JWT-SVID may be rejected.
 #[derive(Debug, Error)]
@@ -208,6 +238,40 @@ impl AuthError {
             AuthError::ClockBeforeEpoch => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
+
+    /// The gRPC twin of [`Self::status`]: 401-class → `UNAUTHENTICATED`,
+    /// 403-class → `PERMISSION_DENIED`, server misconfiguration → `INTERNAL`.
+    pub fn grpc_status(&self) -> tonic::Status {
+        match self.status() {
+            StatusCode::UNAUTHORIZED => tonic::Status::unauthenticated(self.to_string()),
+            StatusCode::FORBIDDEN => tonic::Status::permission_denied(self.to_string()),
+            _ => tonic::Status::internal(self.to_string()),
+        }
+    }
+}
+
+/// The gRPC counterpart of [`RequireSpiffeAuth`] (#2442): verify the
+/// `authorization: Bearer <JWT-SVID>` metadata against the SAME
+/// [`SpiffeAuthConfig`] the REST extractor uses. `config == None` is the
+/// auth-disabled admit path, reachable only under `insecure-dev`
+/// (`require_auth_or_insecure`), and `main.rs` refuses to bind the gRPC
+/// listener at all without auth in a production build.
+pub fn principal_from_grpc<T>(
+    request: &tonic::Request<T>,
+    config: Option<&SpiffeAuthConfig>,
+) -> Result<AuthenticatedPrincipal, tonic::Status> {
+    let Some(config) = config else {
+        return Ok(AuthenticatedPrincipal::unauthenticated());
+    };
+    let header = request
+        .metadata()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| AuthError::MissingAuthorizationHeader.grpc_status())?;
+    let token = header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| AuthError::NotBearer.grpc_status())?;
+    verify_jwt_svid(token, config).map_err(|e| e.grpc_status())
 }
 
 #[derive(Debug, Deserialize)]
