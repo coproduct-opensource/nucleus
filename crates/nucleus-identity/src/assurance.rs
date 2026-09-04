@@ -363,15 +363,15 @@ impl SvidAttestationBackend for SelfMeasuredBackend {
                 let subject_key_sha256 = pem::parse(chain_pem).ok().and_then(|leaf| {
                     crate::attestation::extract_mediation_key_binding(leaf.contents())
                 });
-                Ok(Some(VerifiedAttestation {
-                    backend: self.id(),
-                    assurance: self.assurance(),
-                    subject: AttestedSubject::SelfMeasuredNode,
+                Ok(Some(VerifiedAttestation::new(
+                    self.id(),
+                    self.assurance(),
+                    AttestedSubject::SelfMeasuredNode,
                     subject_key_sha256,
                     proves,
                     not_proven,
-                    launch: Some(launch),
-                }))
+                    Some(launch),
+                )))
             }
             None => Ok(None),
         }
