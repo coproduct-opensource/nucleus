@@ -108,6 +108,11 @@ Set `"replace_defaults": true` to start from scratch.
   `MCP_TOOL_UNAPPROVED`. The surface is a signed, narrow-only dimension of the
   certificate: a child pod can drop tools, never add them. A certificate with
   no surface constrains nothing; an invalid one is a startup error.
+- **The pod's compartment, from the same certificate.** When the certificate
+  names a compartment (`research` < `draft` < `execute` < `breakglass`, a
+  signed dimension a child pod can only lower), a tool whose signed manifest
+  lists `allowed_compartments` is refused outside them as
+  `MCP_TOOL_WRONG_COMPARTMENT` — at listing, and therefore at call.
 - **Pinning is trust-on-first-use.** That is a real bound and worth stating
   plainly: TOFU defends the *rug-pull* — benign at approval, mutated later — and
   the metadata-tainting is what covers a server that was hostile from the start.

@@ -71,6 +71,13 @@ pub enum ManifestCommand {
         /// parameters)` triples whose digests define the surface.
         #[arg(long, value_name = "FILE")]
         pins: PathBuf,
+        /// The pod's compartment (`research` | `draft` | `execute` |
+        /// `breakglass`), written as a signed certificate dimension (#2484):
+        /// the node clamps the pod's capabilities to its ceiling, a child pod
+        /// can only lower it, and tools whose signed manifest lists
+        /// `allowed_compartments` are refused outside them.
+        #[arg(long, value_name = "NAME")]
+        compartment: Option<String>,
     },
     /// Load a manifest file under `<dir>/.nucleus/trust` exactly as
     /// `mcp-guard --manifests` would, and report what was admitted.
@@ -130,8 +137,8 @@ pub fn execute(args: ManifestArgs) {
                 std::process::exit(1);
             }
         }
-        ManifestCommand::Surface { pins } => {
-            if let Err(e) = run_surface(&pins) {
+        ManifestCommand::Surface { pins, compartment } => {
+            if let Err(e) = run_surface(&pins, compartment.as_deref()) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -335,8 +342,15 @@ fn run_sign(
 }
 
 /// Print the surface extension entries as JSON, ready for the pod policy.
-fn run_surface(pins: &Path) -> Result<(), String> {
+fn run_surface(pins: &Path, compartment: Option<&str>) -> Result<(), String> {
+    use portcullis::cert_compartment::{Compartment, set_compartment};
     use portcullis::tool_surface::approve_tool;
+    let compartment = match compartment {
+        Some(name) => Some(Compartment::from_str_opt(name).ok_or_else(|| {
+            format!("unknown compartment `{name}` (research | draft | execute | breakglass)")
+        })?),
+        None => None,
+    };
     let digests = digests_from_pins(pins)?;
     if digests.is_empty() {
         return Err(format!(
@@ -347,6 +361,9 @@ fn run_surface(pins: &Path) -> Result<(), String> {
     let mut caps = portcullis::CapabilityLattice::default();
     for (name, digest) in &digests {
         approve_tool(&mut caps, name, digest);
+    }
+    if let Some(c) = compartment {
+        set_compartment(&mut caps, c);
     }
     let json = serde_json::to_string_pretty(&caps.extensions).map_err(|e| e.to_string())?;
     println!("{json}");
