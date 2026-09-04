@@ -30,7 +30,7 @@ permissions:
 jobs:
   lean-build-core:
     name: lake build PortcullisCoreBridge
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
