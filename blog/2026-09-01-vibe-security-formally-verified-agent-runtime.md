@@ -2,6 +2,18 @@
 
 *September 2026*
 
+> **Updated 2026-09-04.** The verification stack described below has moved on
+> since this was first published. Verus has been removed from the repository;
+> the algebraic proofs it carried are now machine-checked in Lean 4 (unbounded,
+> kernel-checked) and Kani (bounded model checking), and the Lean 4 via Aeneas
+> extraction that the original post listed as a "Phase 1 (Q4 2026)" roadmap
+> item is live and CI-gated today. The sections "Why Rust, Why Verus" and
+> "What's Next" have been rewritten to match the tree; the proof narrative and
+> the two counterexamples are kept as written because they still hold. The
+> current, audited numbers live in
+> [`FORMAL_METHODS.md`](https://github.com/coproduct-opensource/nucleus/blob/main/FORMAL_METHODS.md),
+> which CI keeps in sync with the tree, so this post no longer quotes counts.
+
 Andrej Karpathy coined "vibe coding" in February 2025: give in to the vibes, embrace exponentials, forget that the code even exists. Collins Dictionary made it 2025's Word of the Year. By 2026, 92% of US developers use AI coding tools daily. Google says 25% of their new code is AI-generated. Across the industry, the number is [24% and climbing](https://www.aikido.dev/).
 
 Here's the problem nobody is talking about honestly: **we are now vibe-coding our security**.
@@ -34,9 +46,11 @@ That failure was the catalyst. We decided that if AI agents are going to write a
 
 ## 49 Machine-Checked Proofs (and 2 Machine-Checked Counterexamples)
 
-We use [Verus](https://github.com/verus-lang/verus), an SMT-based verification tool for Rust. Verus translates Rust specifications into Z3 queries — if Z3 finds a satisfying assignment, the proof fails; if it exhausts the search space, the property is verified. No gaps between specification and implementation language. No translation trust boundary.
+*Historical note (2026-09-04): this section describes the first proof pass, done in Verus. Verus and the `portcullis-verified` crate have since been removed; the same properties are now proved in Lean 4 and Kani, and the meet-preservation counterexample below is pinned as a Kani regression harness, `proof_nucleus_counterexample_witness`, so a future change cannot "fix" it by accident. The mathematics has not changed.*
 
-The [`portcullis-verified`](https://github.com/coproduct-opensource/nucleus/tree/main/crates/portcullis-verified) crate currently contains **49 verified proofs, 0 errors**:
+At the time, we used [Verus](https://github.com/verus-lang/verus), an SMT-based verification tool for Rust. Verus translates Rust specifications into Z3 queries — if Z3 finds a satisfying assignment, the proof fails; if it exhausts the search space, the property is verified. No gaps between specification and implementation language. No translation trust boundary.
+
+The `portcullis-verified` crate contained **49 verified proofs, 0 errors**:
 
 **Capability lattice (37 proofs):**
 - 7 lattice laws (commutativity, associativity, idempotence, absorption, distributivity, bounded) for a 3-element total order
@@ -87,29 +101,39 @@ We could have papered over this. Instead, we published the counterexamples as ve
 
 The practical consequence: we proved that the *quotient meet* (which normalizes after meeting) always produces fixed points. The algebra is sound — just not via the classical nucleus construction. The fixed points form a well-behaved set under the quotient operations.
 
-## Why Rust, Why Verus, Why Not Lean/Coq/Agda
+## Why Rust, Why Lean 4 + Kani, and What We Got Wrong About the Trust Boundary
 
-We looked hard at the alternatives. Here's why we landed where we did:
+*(Rewritten 2026-09-04. The original version of this section argued for Verus on the grounds that it avoids a translation trust boundary. We no longer use Verus, and we changed our mind about the boundary. Here is where we landed and why.)*
 
-**The Cedar pattern.** AWS's [Cedar authorization engine](https://www.cedarpolicy.com/) uses a Lean 4 formal model with differential random testing against the Rust production implementation. This is the gold standard. But Cedar's Lean model is a *separate implementation* — there's a translation trust boundary between the verified model and the code that runs.
+**The Cedar pattern.** AWS's [Cedar authorization engine](https://www.cedarpolicy.com/) uses a Lean 4 formal model with differential random testing against the Rust production implementation. This is the gold standard. Cedar's Lean model is a *separate implementation*, so there is a translation trust boundary between the verified model and the code that runs. The original post held that against it.
 
-**Verus eliminates the gap.** With Verus, the specifications live *in the same Rust crate* as the production types. The verified CapLattice struct uses the same field layout. The verified `nucleus` spec matches the production `normalize()`. No FFI, no extraction, no "we proved property P about model M which we believe corresponds to code C." The Z3 queries are generated from the same AST.
+**We now accept that boundary on purpose, and gate it.** The [Aeneas](https://github.com/AeneasVerif/aeneas) toolchain (Charon lowers safe Rust to a typed intermediate representation; Aeneas lowers that to pure functional Lean 4) extracts our production Rust into Lean, where the deep proofs are done against Mathlib with the Lean kernel as the only thing trusted. That extraction *is* a trust boundary, and the honest answer is that every verification approach has one somewhere: Verus trusts its encoding into Z3 and Z3 itself, Kani trusts its MIR-to-GOTO lowering and CBMC. What matters is whether the boundary is checked in CI every time the code changes. Ours is, three ways:
 
-**The language stack is converging.** Rust is the only language that simultaneously offers: (1) near-C performance for Firecracker microVM efficiency, (2) algebraic data types and async for modern systems code, (3) three independent formal verification backends (Verus/Z3, Kani/CBMC, Aeneas/Lean 4), and (4) safety certification (Ferrocene, ISO 26262 ASIL-D). No other language hits all four.
+- **Drift.** CI re-runs the extraction on every change and fails if the generated Lean differs from what is committed. A proof about last month's code cannot silently outlive the code.
+- **Vacuity.** Every extracted theorem is followed by `#print axioms`, and the gate first asserts that the axiom output actually appeared before it believes the output's silence about `sorryAx`. A proof that did not run is not a proof.
+- **Holes.** The proven tier bans `sorry` outright. Open research conjectures live in a separate, quarantined tier with a manifest, and CI counts them.
 
-## What's Next: The 6-Month Roadmap
+**What is extracted and proved today.** The capability lattice's `meet`, `join`, and `implies` are extracted and shown to agree with Mathlib's lattice operators, so the Heyting-algebra proofs are about the code, not a model of it. The integrity-flow kernel's noninterference theorem is proved on the extracted Rust. The OIDC-to-SPIFFE identity derivation and the constitutional policy kernel's soundness have their own scoped extractions and gates. Each family is a separate workflow in the repository's CI, and the scoped extraction gates are required checks on `main`.
 
-**Phase 1 (Q4 2026): Lean 4 via Aeneas.** We're using the [Aeneas](https://github.com/AeneasVerif/aeneas) toolchain to extract our Rust code into Lean 4 for deeper proofs — things like termination, refinement types, and quotient lattice universality that are beyond SMT solving. This gives us both the Verus "same-language" proofs and the Cedar "deep mathematical model" proofs.
+**Kani carries the bounded half.** Bounded model checking on the production Rust types, no extraction at all: lattice laws, the kernel-operator counterexamples above, capability and budget escalation refusals, certificate-chain attenuation. A fast tier runs on every pull request; the full tier runs nightly and in the merge queue. Kani is where a property lands first, because a harness is cheap and a Lean proof is not; Lean is where it ends up when we want it unbounded.
 
-**Phase 2 (Q1 2027): Enforcement boundary.** The audit taught us that the real bugs aren't in the algebra — they're in whether the algebra gets applied. We're extending verification to the integration layer: proving that `normalize()` is called on every code path, that TLS failures are fatal, that every API route is gated. This is the hardest part.
+**The language stack is converging.** Rust is the only language that simultaneously offers: (1) near-C performance for Firecracker microVM efficiency, (2) algebraic data types and async for modern systems code, (3) several independent formal verification backends (Kani/CBMC, Aeneas/Lean 4, Verus/Z3) that can be run against the same source, and (4) safety certification (Ferrocene, ISO 26262 ASIL-D). No other language hits all four.
 
-**Phase 3 (Q2 2027): Differential testing.** Following Cedar: randomized testing that the Lean model and Rust engine agree on millions of generated inputs. This catches specification bugs — where the proof is correct but the spec doesn't capture what we intended.
+## What's Next: The Roadmap, Revised
 
-**Phase 4 (2027): Full TCB verification.** The trusted computing base for an AI agent sandbox includes: the permission lattice (Verus), the enforcement daemon (Phase 2), the Firecracker VM boundary, and the SPIFFE identity chain. Each layer gets its own verification strategy appropriate to its abstraction level.
+*(Rewritten 2026-09-04.)*
+
+**Lean 4 via Aeneas: done, and central.** This was "Phase 1 (Q4 2026)" in the original post. It landed ahead of schedule and is the repository's deep-proof mechanism, as described above.
+
+**Enforcement boundary: partly done, by gates rather than proofs.** The audit taught us that the real bugs are not in the algebra but in whether the algebra gets applied. Today that is held by structural CI gates on the live path: raw effect primitives are forbidden outside the mediated API, every input on the agent path must be content-addressed, verifiers must fail closed, and a meta-gate checks that each gate still fails on its own subject. These are checks over the source tree, not machine-checked proofs, and we say so. The certificate work of the last month moved more of this into signed data: the node issues every pod's certificate, and the proxy derives its permission kernel from that certificate rather than from a request.
+
+**Differential testing: started.** Parity tests already assert that the extracted Lean and the Rust agree on generated inputs, and a property-based conformance suite covers the lattice composition. Cedar-scale randomized differential testing between a hand-written Lean model and the engine is still ahead of us.
+
+**Full TCB verification: still the goal.** The trusted computing base for an AI agent sandbox includes the permission lattice (Lean 4 and Kani), the enforcement daemon (gates today, proofs later), the Firecracker VM boundary, and the SPIFFE identity chain. Each layer gets its own verification strategy appropriate to its abstraction level.
 
 ## The Honest Version
 
-We are not done. We have 49 proofs covering the algebraic core. The enforcement boundary — the thing that actually stops exfiltration — is tested but not verified. The Firecracker isolation relies on AWS's existing verification work. The SPIFFE identity chain relies on SPIRE's audit trail.
+We are not done. The algebraic core is machine-checked, unbounded in Lean 4 and bounded in Kani (the audited inventory is in [`FORMAL_METHODS.md`](https://github.com/coproduct-opensource/nucleus/blob/main/FORMAL_METHODS.md)). The enforcement boundary — the thing that actually stops exfiltration — is gated and tested but not proved. The Firecracker isolation relies on AWS's existing verification work. The SPIFFE identity chain relies on SPIRE's audit trail.
 
 What we have today is a formally verified permission *algebra* inside a conventionally tested enforcement *runtime*. That's better than nothing, and it's better than what anyone else in the AI agent space is shipping. But it's not the end state.
 
@@ -123,4 +147,4 @@ Because "it's probably fine" is not a security posture. And vibe security is not
 
 *Nucleus is open source under MIT/Apache-2.0: [github.com/coproduct-opensource/nucleus](https://github.com/coproduct-opensource/nucleus)*
 
-*The Verus proofs: [`crates/portcullis-verified/src/lib.rs`](https://github.com/coproduct-opensource/nucleus/tree/main/crates/portcullis-verified/src/lib.rs) — 49 verified, 0 errors, 2 machine-checked counterexamples.*
+*The proofs: the Lean 4 developments under [`crates/portcullis-core/lean`](https://github.com/coproduct-opensource/nucleus/tree/main/crates/portcullis-core/lean) and the Kani harnesses in [`crates/portcullis/src/kani.rs`](https://github.com/coproduct-opensource/nucleus/blob/main/crates/portcullis/src/kani.rs), including the two machine-checked counterexamples. The honest inventory, with what is and is not proved, is [`FORMAL_METHODS.md`](https://github.com/coproduct-opensource/nucleus/blob/main/FORMAL_METHODS.md).*
