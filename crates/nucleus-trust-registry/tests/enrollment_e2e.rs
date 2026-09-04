@@ -19,8 +19,9 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use nucleus_lineage::checkpoint::Ed25519Witness;
 use nucleus_oidc_core::Jwks;
 use nucleus_trust_registry::{
-    DomainMetadata, RegistryError, TrustLog, build_federation_store, check_no_silent_rotation,
-    check_pr_diff, compile, tlog, verify_proof_of_control,
+    DomainMetadata, LogAttestation, RegistryError, TrustLog, apply_to_store,
+    build_federation_store, check_no_silent_rotation, check_pr_diff, compile, tlog,
+    verify_proof_of_control,
 };
 use nucleus_witness::cosign::WitnessKey;
 use serde_json::json;
@@ -380,10 +381,15 @@ fn positive_full_pipeline_enrolls_and_validates_svid() {
     )
     .unwrap();
 
-    // 7. Wire the compiled set into the inbound FederationStore and
-    //    validate a REAL ES256 JWT-SVID minted by the enrolled domain.
+    // 7. Wire the compiled set into the inbound FederationStore — which
+    //    itself re-verifies every binding against the cosigned log (#13) —
+    //    and validate a REAL ES256 JWT-SVID minted by the enrolled domain.
     let aud = "spiffe://prod.example.org/api";
-    let store = build_federation_store(&set, aud).unwrap();
+    let attestation = LogAttestation {
+        sealed: &sealed,
+        cosigner_pubkey: &cosigner.verifying_key_bytes(),
+    };
+    let store = build_federation_store(&set, aud, attestation).unwrap();
     let sub = "spiffe://ci.example.org/runner/42";
     let token = mint_es256_svid(sub, aud, now() + 300);
     let id = store
@@ -391,4 +397,103 @@ fn positive_full_pipeline_enrolls_and_validates_svid() {
         .expect("JWT-SVID from the enrolled domain must validate end-to-end");
     assert_eq!(id.trust_domain, TRUST_DOMAIN);
     assert_eq!(id.path, "/runner/42");
+}
+
+// =====================================================================
+// PRODUCTION SEAM NEGATIVES (#13): the FederationStore admits nothing the
+// cosigned log does not prove.
+// =====================================================================
+
+/// The compiled registry set, a sealed log that DOES contain its binding,
+/// and the cosigner — the honest baseline the negatives perturb.
+fn compiled_and_logged() -> (
+    nucleus_trust_registry::FederationSet,
+    tlog::SealedLog,
+    WitnessKey,
+) {
+    let set = compile(std::path::Path::new(REGISTRY_DIR)).unwrap();
+    let binding = set.bindings.get(TRUST_DOMAIN).unwrap();
+    let witness = Ed25519Witness::from_seed([3u8; 32]);
+    let cosigner = WitnessKey::from_seed([9u8; 32], "w");
+    let mut log = TrustLog::new();
+    log.append_binding(TRUST_DOMAIN, &binding.bundle_bytes, OWNER_ID, 100)
+        .unwrap();
+    let sealed = log.seal(&witness, &cosigner, 1_700_000_000).unwrap();
+    (set, sealed, cosigner)
+}
+
+#[test]
+fn neg_store_refuses_binding_absent_from_cosigned_log() {
+    // A registry tree with a binding that was never appended to the log:
+    // exactly the "anyone who can write the tree gets keys served" hole.
+    let set = compile(std::path::Path::new(REGISTRY_DIR)).unwrap();
+    let witness = Ed25519Witness::from_seed([3u8; 32]);
+    let cosigner = WitnessKey::from_seed([9u8; 32], "w");
+    let mut log = TrustLog::new();
+    log.append_binding(
+        "unrelated.example.org",
+        b"{\"keys\":[],\"spiffe_sequence\":1}",
+        1,
+        100,
+    )
+    .unwrap();
+    let sealed = log.seal(&witness, &cosigner, 1_700_000_000).unwrap();
+    let err = match build_federation_store(
+        &set,
+        "spiffe://prod.example.org/api",
+        LogAttestation {
+            sealed: &sealed,
+            cosigner_pubkey: &cosigner.verifying_key_bytes(),
+        },
+    ) {
+        Ok(_) => panic!("an unlogged binding must not build a store"),
+        Err(e) => e,
+    };
+    assert!(matches!(err, RegistryError::NotInLog(_)), "got {err:?}");
+}
+
+#[test]
+fn neg_store_refuses_wrong_pinned_cosigner() {
+    let (set, sealed, _cosigner) = compiled_and_logged();
+    let other = WitnessKey::from_seed([42u8; 32], "other");
+    let err = match build_federation_store(
+        &set,
+        "spiffe://prod.example.org/api",
+        LogAttestation {
+            sealed: &sealed,
+            cosigner_pubkey: &other.verifying_key_bytes(),
+        },
+    ) {
+        Ok(_) => panic!("a wrong cosigner pin must not build a store"),
+        Err(e) => e,
+    };
+    assert!(matches!(err, RegistryError::Cosignature(_)), "got {err:?}");
+}
+
+#[test]
+fn neg_one_unproven_binding_federates_nothing() {
+    // Two bindings, only one in the log. The proven one must NOT be pinned
+    // either: verification is all-or-nothing, before any store write.
+    let (mut set, sealed, cosigner) = compiled_and_logged();
+    let mut rogue = set.bindings.get(TRUST_DOMAIN).unwrap().clone();
+    rogue.metadata.trust_domain = "rogue.example.org".to_string();
+    set.bindings.insert("rogue.example.org".to_string(), rogue);
+
+    let store =
+        nucleus_oidc_core::spiffe_federation::FederationStore::new("spiffe://prod.example.org/api");
+    let err = apply_to_store(
+        &set,
+        &store,
+        LogAttestation {
+            sealed: &sealed,
+            cosigner_pubkey: &cosigner.verifying_key_bytes(),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, RegistryError::NotInLog(_)), "got {err:?}");
+    assert!(
+        !store.is_federated(TRUST_DOMAIN),
+        "the proven binding must not be pinned when a sibling fails"
+    );
+    assert!(!store.is_federated("rogue.example.org"));
 }
