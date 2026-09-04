@@ -1106,12 +1106,9 @@ admissible_sinks = ["local_memory"]
 "#,
         );
         assert_eq!(reg.admitted_count(), 2);
-        assert_eq!(
-            parse_manifest_toml("nonsense = 1")
-                .unwrap_err()
-                .contains("no `[tool]`"),
-            true
-        );
+        assert!(parse_manifest_toml("nonsense = 1")
+            .unwrap_err()
+            .contains("no `[tool]`"));
     }
 
     /// Sign, then verify under a trust store holding the key: the round trip
