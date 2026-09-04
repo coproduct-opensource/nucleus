@@ -19,10 +19,12 @@ use tracing::info;
 use tracing::warn;
 
 use nucleus::portcullis::flow_graph::FlowGraph;
-use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation};
+use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
 use nucleus::{BudgetModel, NucleusError};
 use nucleus_spec::{BudgetModelSpec, PodSpec};
 use portcullis::verdict_sink::{VerdictContext, VerdictOutcome};
+use rust_decimal::Decimal;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 use crate::node_client;
 use crate::{ApiError, AppState, PodRuntime, actor_from_auth};
@@ -103,6 +105,30 @@ fn sub_pod_ifc_gate(flow: &FlowGraph) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Narrow a requested sub-pod policy to this pod's ceiling, with the parent's
+/// live spend folded in.
+///
+/// `PermissionLattice::delegate_to` refuses a request for more budget than
+/// the parent has REMAINING — but it reads `consumed_usd` off the ceiling it
+/// is called on, and the ceiling is a boot-time lattice whose consumption is
+/// forever zero. So the check compared against the parent's full budget no
+/// matter how much it had already spent. Folding the runtime's actual
+/// consumption in makes the check live; the atomic reservation that follows
+/// in `create_sub_pod` is what makes it race-free.
+fn narrow_to_ceiling(
+    ceiling: &PermissionLattice,
+    requested: &PermissionLattice,
+    consumed_usd: f64,
+    reason: &str,
+) -> Result<PermissionLattice, ApiError> {
+    let mut live = ceiling.clone();
+    // An unrepresentable consumption is treated as "everything": fail closed.
+    let consumed = Decimal::from_f64(consumed_usd).unwrap_or(live.budget.max_cost_usd);
+    live.budget.consumed_usd = live.budget.consumed_usd.max(consumed);
+    live.delegate_to(requested, reason)
+        .map_err(|e| ApiError::Spec(format!("delegation failed: {e}")))
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -141,17 +167,20 @@ pub(crate) async fn create_sub_pod(
         .resolve_policy()
         .map_err(|e| ApiError::Spec(format!("invalid sub-pod policy: {e}")))?;
 
-    // 4. Enforce delegation ceiling via delegate_to()
-    if let Some(ceiling) = state.delegation_ceiling.as_ref() {
-        let delegated = ceiling
-            .delegate_to(&requested, &req.reason)
-            .map_err(|e| ApiError::Spec(format!("delegation failed: {e}")))?;
-
-        // Replace policy with delegated (never exceeds parent)
-        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
-            lattice: Box::new(delegated),
-        };
-    }
+    // 4. Narrow to THIS pod's authority — unconditionally (#2440). The
+    //    ceiling is the pod's own certificate (or resolved policy) with the
+    //    parent's LIVE spend folded in, so `delegate_to`'s remaining-budget
+    //    check is against what is actually left, not a boot-time constant.
+    let delegated = narrow_to_ceiling(
+        &state.delegation_ceiling,
+        &requested,
+        state.runtime.budget().consumed_usd(),
+        &req.reason,
+    )?;
+    let child_budget_usd = delegated.budget.max_cost_usd;
+    spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+        lattice: Box::new(delegated),
+    };
 
     // 4b. STRIP any workload the requester asked for.
     //
@@ -185,19 +214,38 @@ pub(crate) async fn create_sub_pod(
         spec.spec.credentials = Some(creds);
     }
 
-    // 6. Forward to nucleus-node
+    // 5b. Reserve the child's budget from THIS pod's live budget (#2426):
+    //     the child's max_cost is debited here, atomically, before the node
+    //     call, and mirrored into the kernel so its own BudgetExhausted arm
+    //     — previously unreachable, nothing ever charged it — sees the spend.
+    //     The node keeps the authoritative ledger; this is the parent
+    //     refusing to overspend itself.
     let node = state
         .node_client
         .as_ref()
         .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
+    let reserved_usd = child_budget_usd.to_f64().unwrap_or(f64::INFINITY);
+    state
+        .runtime
+        .budget()
+        .reserve(reserved_usd)
+        .map_err(|e| ApiError::Spec(format!("budget conservation: {e}")))?;
+    if let Err(reason) = state.kernel.lock().await.charge(child_budget_usd) {
+        state.runtime.budget().release(reserved_usd);
+        return Err(ApiError::KernelDenied(format!("{reason:?}")));
+    }
 
+    // 6. Forward to nucleus-node; a refusal hands the reservation back.
     let spec_yaml = serde_yaml::to_string(&spec)
         .map_err(|e| ApiError::Spec(format!("failed to serialize sub-pod spec: {e}")))?;
-
-    let result = node
-        .create_pod(&spec_yaml)
-        .await
-        .map_err(|e| ApiError::Spec(format!("node create_pod failed: {e}")))?;
+    let result = match node.create_pod(&spec_yaml).await {
+        Ok(r) => r,
+        Err(e) => {
+            state.runtime.budget().release(reserved_usd);
+            state.kernel.lock().await.refund(child_budget_usd);
+            return Err(ApiError::Spec(format!("node create_pod failed: {e}")));
+        }
+    };
 
     // 7. Record verdict
     if let Err(e) = sink.record(VerdictContext {
@@ -1006,5 +1054,67 @@ spec:
             "create_sub_pod no longer clamps credentialed_egress — an agent-authored \
              sub-pod spec can name any node environment variable and any destination"
         );
+    }
+
+    /// STRUCTURAL (#2440, #2426): narrowing is unconditional and the child's
+    /// budget is reserved from the parent's live budget before the node call.
+    /// The narrowing used to sit under `if let Some(ceiling)`, and the ceiling
+    /// was `None` on every driver but the local one.
+    #[test]
+    fn create_sub_pod_always_narrows_and_reserves() {
+        let src = include_str!("pod_mgmt.rs");
+        let handler = src
+            .split("pub(crate) async fn create_sub_pod(")
+            .nth(1)
+            .expect("create_sub_pod must exist");
+        let body = &handler[..handler.find("\n pub(crate) ").unwrap_or(handler.len())];
+        assert!(
+            body.contains("narrow_to_ceiling("),
+            "narrowing must be unconditional"
+        );
+        assert!(
+            !body.contains("if let Some(ceiling)"),
+            "the ceiling must never be optional again"
+        );
+        assert!(
+            body.contains(".budget()\n        .reserve("),
+            "the child's budget must be reserved from the parent's live AtomicBudget"
+        );
+        assert!(
+            body.contains(".charge(child_budget_usd)"),
+            "the reservation must be mirrored into the kernel"
+        );
+        assert!(
+            body.matches(".release(reserved_usd)").count() >= 2,
+            "both failure paths after the reservation must hand it back"
+        );
+    }
+
+    /// The live-spend fold: a parent that has spent $3 of $5 cannot delegate
+    /// $3 even though the boot-time ceiling alone would have allowed it.
+    #[test]
+    fn narrowing_folds_in_the_parents_live_spend() {
+        let mut ceiling = PermissionLattice::permissive();
+        ceiling.budget = portcullis::BudgetLattice::with_cost_limit(5.0);
+        let mut request = PermissionLattice::permissive();
+        request.budget = portcullis::BudgetLattice::with_cost_limit(3.0);
+
+        // Non-vacuity: with nothing spent, $3 of $5 is fine.
+        let fresh = narrow_to_ceiling(&ceiling, &request, 0.0, "spawn").expect("fits");
+        assert_eq!(fresh.budget.max_cost_usd, Decimal::from(3));
+        assert!(fresh.leq(&ceiling));
+
+        // $3 already spent: only $2 remain, so $3 is refused …
+        let denied = narrow_to_ceiling(&ceiling, &request, 3.0, "spawn");
+        assert!(
+            matches!(&denied, Err(ApiError::Spec(m)) if m.contains("delegation failed")),
+            "got {denied:?}"
+        );
+        // … and $2 fits exactly.
+        request.budget = portcullis::BudgetLattice::with_cost_limit(2.0);
+        narrow_to_ceiling(&ceiling, &request, 3.0, "spawn").expect("$2 of the remaining $2");
+
+        // An unrepresentable spend fails closed.
+        assert!(narrow_to_ceiling(&ceiling, &request, f64::NAN, "spawn").is_err());
     }
 }

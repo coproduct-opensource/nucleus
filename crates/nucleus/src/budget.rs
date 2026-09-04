@@ -212,6 +212,31 @@ impl AtomicBudget {
             reservation_lock: Mutex::new(()),
         })
     }
+
+    /// Return a [`Self::reserve`] that never became spend (the child the
+    /// reservation was for was refused downstream). Saturates at zero, and
+    /// ignores non-finite or non-positive amounts, so it can never *grant*
+    /// budget: the most it can do is undo a reservation of the same size.
+    pub fn release(&self, amount_usd: f64) {
+        if !amount_usd.is_finite() || amount_usd <= 0.0 {
+            return;
+        }
+        let _guard = self.reservation_lock.lock();
+        let amount_micro = (amount_usd * 1_000_000.0) as u64;
+        let mut current = self.consumed_micro_usd.load(Ordering::Acquire);
+        loop {
+            let next = current.saturating_sub(amount_micro);
+            match self.consumed_micro_usd.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -269,7 +269,7 @@ pub(crate) async fn credentialed_egress(
     // The same gate a tool call gets. A tainted session calling its model API is
     // exfiltration by the same definition that governs `web_fetch`, and treating
     // it differently would be the hole this whole module exists to close.
-    let _decision = crate::http_kernel_decide(&state, Operation::WebFetch, &url).await?;
+    let _decision = crate::http_kernel_decide(&state, Operation::WebFetch, &url, None).await?;
 
     // ── The credential is NOT read here, and cannot be ─────────────────────
     //
@@ -286,7 +286,7 @@ pub(crate) async fn credentialed_egress(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let level = state.runtime.policy().capabilities.web_fetch;
+        let level = crate::run_gate::levels_for(&state, Operation::WebFetch);
         let flow = state.flow_graph.lock().await;
         let result =
             crate::run_gate::preflight_web(Operation::WebFetch, verified_scope, level, &url, &flow);

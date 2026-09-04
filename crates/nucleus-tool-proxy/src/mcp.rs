@@ -389,7 +389,7 @@ impl NucleusMcpServer {
         // never cleared the obligations `FileEffect::read` enforces.
         let read_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let fs_ceiling = self.state.runtime.policy().capabilities.read_files;
+            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::ReadFiles);
             let flow = self.flow_graph.lock().await;
             let result =
                 crate::run_gate::preflight_read_fs(verified_scope, fs_ceiling, &params.path, &flow);
@@ -494,7 +494,7 @@ impl NucleusMcpServer {
         // handler returns its error and NEVER writes (cap-std is never reached).
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let fs_ceiling = self.state.runtime.policy().capabilities.write_files;
+            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::WriteFiles);
             let flow = self.flow_graph.lock().await;
             let result = preflight_fs(
                 Operation::WriteFiles,
@@ -613,7 +613,7 @@ impl NucleusMcpServer {
         // authorization proof.
         let (discharge_note, discharge_bundle) = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let run_bash_ceiling = self.state.runtime.policy().capabilities.run_bash;
+            let run_bash_ceiling = crate::run_gate::levels_for(&self.state, Operation::RunBash);
             let flow = self.flow_graph.lock().await;
             let result = preflight_runbash(verified_scope, run_bash_ceiling, &subject, &flow);
             drop(flow);
@@ -964,7 +964,7 @@ impl NucleusMcpServer {
                     // loop would be the replay the by-value cutover removed.
                     let search_authority = {
                         let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling = state.runtime.policy().capabilities.grep_search;
+                        let ceiling = crate::run_gate::levels_for(&state, Operation::GrepSearch);
                         // `blocking_lock` rather than `.await`: this loop runs
                         // inside `block_in_place`, which exists precisely to allow
                         // blocking calls off the async executor.
@@ -1207,7 +1207,7 @@ impl NucleusMcpServer {
         // handler returns its error and NEVER fetches (no wire egress).
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let web_ceiling = self.state.runtime.policy().capabilities.web_fetch;
+            let web_ceiling = crate::run_gate::levels_for(&self.state, Operation::WebFetch);
             let flow = self.flow_graph.lock().await;
             let result = preflight_web(
                 Operation::WebFetch,
@@ -1521,7 +1521,12 @@ mod tests {
         let flow = FlowGraph::new();
         // `SessionTaskToken::Missing` and `::Invalid` both return `None` from
         // `verified_scope()` (see session_token.rs) — modeled here as `None`.
-        let result = preflight_runbash(None, RUN_BASH_CEILING, "rm -rf /", &flow);
+        let result = preflight_runbash(
+            None,
+            crate::run_gate::GateLevels::honest(RUN_BASH_CEILING),
+            "rm -rf /",
+            &flow,
+        );
         assert!(
             result.is_denied(),
             "no verified scope must DENY RunBash (fail-closed), got {result:?}"
@@ -1543,7 +1548,12 @@ mod tests {
             vec![Operation::ReadFiles, Operation::GlobSearch],
             vec!["/workspace/**".to_string()],
         );
-        let result = preflight_runbash(Some(&scope), RUN_BASH_CEILING, "cargo test", &flow);
+        let result = preflight_runbash(
+            Some(&scope),
+            crate::run_gate::GateLevels::honest(RUN_BASH_CEILING),
+            "cargo test",
+            &flow,
+        );
         assert!(
             result.is_denied(),
             "RunBash out of token scope must DENY, got {result:?}"
@@ -1564,7 +1574,12 @@ mod tests {
             vec![Operation::RunBash, Operation::ReadFiles],
             vec!["/workspace/**".to_string()],
         );
-        let result = preflight_runbash(Some(&scope), RUN_BASH_CEILING, "cargo test", &flow);
+        let result = preflight_runbash(
+            Some(&scope),
+            crate::run_gate::GateLevels::honest(RUN_BASH_CEILING),
+            "cargo test",
+            &flow,
+        );
         assert!(
             result.is_allowed(),
             "valid in-scope token must ALLOW RunBash (reach run_args), got {result:?}"

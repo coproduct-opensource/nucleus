@@ -167,6 +167,11 @@ impl PodRuntime {
         &self.budget
     }
 
+    /// The cost model this pod charges executions under.
+    pub fn budget_model(&self) -> BudgetModel {
+        self.spec.budget_model
+    }
+
     /// Get the pod time guard.
     pub fn time_guard(&self) -> &MonotonicGuard {
         &self.time_guard
