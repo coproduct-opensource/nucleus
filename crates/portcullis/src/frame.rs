@@ -25,7 +25,7 @@
 //! **Note on `UninhabitableQuotient`**: this operator satisfies (1) and (2) but
 //! NOT (3). It is a **kernel operator** (deflationary + idempotent), not a full
 //! frame-theoretic nucleus. The Kani harness in `portcullis/src/kani.rs`
-//! formally disproves meet-preservation (`proof_nucleus_not_meet_preserving`).
+//! formally disproves meet-preservation (`proof_nucleus_counterexample_witness`).
 //! Fixed points remain closed under the **quotient meet** (`PermissionLattice::meet`
 //! which re-normalizes internally), not under the raw lattice meet.
 //!
@@ -104,7 +104,7 @@ pub trait Frame: CompleteLattice + DistributiveLattice {}
 /// requires meet-preservation (`j(x ∧ y) = j(x) ∧ j(y)`), but
 /// `UninhabitableQuotient` does **not** satisfy that property — it is
 /// formally disproven by the Kani proof in `portcullis/src/kani.rs`
-/// (`proof_nucleus_not_meet_preserving`).
+/// (`proof_nucleus_counterexample_witness`).
 ///
 /// # Properties satisfied by `UninhabitableQuotient`
 ///
@@ -115,7 +115,7 @@ pub trait Frame: CompleteLattice + DistributiveLattice {}
 ///
 /// 3. **Meet-preserving** `j(x ∧ y) = j(x) ∧ j(y)` — this does **NOT** hold
 ///    for `UninhabitableQuotient`. Counterexample (see the Kani proof
-///    `proof_nucleus_not_meet_preserving` in `portcullis/src/kani.rs`):
+///    `proof_nucleus_counterexample_witness` in `portcullis/src/kani.rs`):
 ///    `a` = full caps (uninhabitable-complete), empty obligations;
 ///    `b` = no-private-access caps, empty obligations.
 ///    `j(a∧b)` adds no obligations (meet caps are not uninhabitable),
@@ -285,7 +285,7 @@ impl SafePermissionLattice {
     /// (via `IncompatibilityConstraint::obligations_for`). This is distinct
     /// from the meet-preservation property `j(x∧y) = j(x)∧j(y)`, which does
     /// NOT hold for the raw `UninhabitableQuotient` nucleus operator (see
-    /// `proof_nucleus_not_meet_preserving` in `portcullis/src/kani.rs`).
+    /// `proof_nucleus_counterexample_witness` in `portcullis/src/kani.rs`).
     pub fn meet(&self, other: &Self) -> Self {
         Self(self.0.meet(&other.0))
     }
@@ -393,7 +393,7 @@ pub struct NucleusLawViolation {
 /// **Note on `MeetPreservation`**: the frame-theoretic nucleus axiom
 /// `j(x∧y) = j(x)∧j(y)` is listed here for completeness, but
 /// `UninhabitableQuotient` does **not** satisfy it. The Kani proof
-/// `proof_nucleus_not_meet_preserving` in `portcullis/src/kani.rs`
+/// `proof_nucleus_counterexample_witness` in `portcullis/src/kani.rs`
 /// provides a concrete witness. Do not assert `MeetPreservation` passes for
 /// `UninhabitableQuotient` — see `proof_nucleus_counterexample_witness` in
 /// `portcullis/src/kani.rs` for the regression harness.
@@ -587,7 +587,7 @@ mod tests {
 
     /// Regression test: the raw `UninhabitableQuotient` nucleus does NOT preserve
     /// meets in general. This is the concrete counterexample from the Kani proof
-    /// `proof_nucleus_not_meet_preserving` in `portcullis/src/kani.rs`.
+    /// `proof_nucleus_counterexample_witness` in `portcullis/src/kani.rs`.
     ///
     /// Witness:
     /// - `a` = full caps (uninhabitable-complete), empty obligations
@@ -649,7 +649,7 @@ mod tests {
         assert_ne!(
             j_a_meet_b.obligations, ja_meet_jb.obligations,
             "Counterexample regression: j(a∧b) should NOT equal j(a)∧j(b) in obligations \
-             (UninhabitableQuotient does not preserve meets — Kani proof_nucleus_not_meet_preserving)"
+             (UninhabitableQuotient does not preserve meets — Kani proof_nucleus_counterexample_witness)"
         );
     }
 
@@ -728,7 +728,7 @@ mod tests {
 
         // Only idempotency and deflation are hard requirements.
         // Meet-preservation does NOT hold for UninhabitableQuotient in general
-        // (see proof_nucleus_not_meet_preserving in portcullis/src/kani.rs).
+        // (see proof_nucleus_counterexample_witness in portcullis/src/kani.rs).
         let hard_violations: Vec<_> = violations
             .iter()
             .filter(|v| v.law != NucleusLaw::MeetPreservation)

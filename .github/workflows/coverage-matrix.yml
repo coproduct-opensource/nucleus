@@ -194,8 +194,8 @@ jobs:
 
   # Layer 3: Verification proof count regression gates
   #
-  # Verus verification count is gated in verus.yml (runs the actual verifier).
-  # Here we gate Kani proof harnesses and report all counts for visibility.
+  # Verus is gone from the workspace (see FORMAL_METHODS.md); only the proptest
+  # conformance suite survives. Here we gate Kani proof harnesses and report counts.
   proof-ratchet:
     name: Proof Count Ratchet
     runs-on: ubuntu-latest
@@ -222,11 +222,8 @@ jobs:
       - name: Count verification artifacts
         id: counts
         run: |
-          VERUS_PROOF=0  # portcullis-verified removed; Verus proofs superseded by Lean 4 + Kani
           CONFORMANCE=$(grep -c 'proptest!' crates/portcullis/tests/verus_conformance.rs)
-          echo "verus_proof=$VERUS_PROOF" >> "$GITHUB_OUTPUT"
           echo "conformance=$CONFORMANCE" >> "$GITHUB_OUTPUT"
-          echo "Verus proof functions: $VERUS_PROOF"
           echo "Conformance test suites: $CONFORMANCE"
       - name: Ratchet summary
         if: always()
@@ -236,8 +233,6 @@ jobs:
           echo "| Layer | Count | Minimum | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|-------|---------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          VERUS="${{ steps.counts.outputs.verus_proof }}"
-          echo "| Verus proof fns | ${VERUS:-?} | — | gated in verus.yml |" >> "$GITHUB_STEP_SUMMARY"
 
           KANI="${{ steps.kani-count.outputs.count }}"
           KANI_MIN="${{ steps.kani-count.outputs.minimum }}"

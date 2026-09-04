@@ -1520,9 +1520,9 @@ fn proof_isolation_at_least_reflexive() {
 // as a *deflationary idempotent kernel operator*, NOT a frame-theoretic
 // nucleus (which would additionally require meet-preservation).
 //
-// The Kani harness below formally disproves
-// meet-preservation via `proof_nucleus_not_meet_preserving`. The harness
-// below reproduces that concrete counterexample witness using the production
+// Meet-preservation was first disproved by a Verus proof (removed with Verus);
+// `proof_nucleus_counterexample_witness` below is the surviving machine check.
+// It reproduces that concrete counterexample witness using the production
 // Rust types so that any future code change that accidentally "fixes" meet-
 // preservation (incorrectly, by masking the obligation union) is caught.
 
@@ -1561,8 +1561,8 @@ fn proof_nucleus_deflationary() {
 
 /// **N3 — Counterexample witness: nucleus does NOT preserve meets**.
 ///
-/// This is the concrete witness from the Kani proof
-/// `proof_nucleus_not_meet_preserving` (in this module):
+/// This is the concrete witness that disproves meet-preservation (originally a
+/// Verus proof, removed with Verus; this harness is its replacement):
 ///
 /// - `a`: full caps (uninhabitable-complete), empty obligations
 /// - `b`: no private-access caps (read_files/glob/grep=Never), empty obligations
