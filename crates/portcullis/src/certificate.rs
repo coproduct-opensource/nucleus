@@ -385,6 +385,10 @@ pub enum CertificateDelegationError {
     /// lattice has none: the request asked for the surface marker at `Never`
     /// (#2485). The dimension can be narrowed, never shed.
     ToolSurfaceDropped,
+    /// The requested compartment is above the parent's, or the child sheds
+    /// the compartment dimension (#2484). Compartments only go down a chain.
+    #[cfg(not(kani))]
+    Compartment(crate::cert_compartment::CompartmentHopError),
 }
 
 impl fmt::Display for CertificateDelegationError {
@@ -403,6 +407,8 @@ impl fmt::Display for CertificateDelegationError {
                 f,
                 "Requested lattice sheds the parent's tool surface (marker at Never)"
             ),
+            #[cfg(not(kani))]
+            Self::Compartment(e) => write!(f, "compartment: {e}"),
         }
     }
 }
@@ -757,6 +763,14 @@ impl LatticeCertificate {
         holder_key: &Ed25519KeyPair,
     ) -> Self {
         let next_key = holder_key.public_key().as_ref().to_vec();
+        // A root that names a compartment is clamped to its ceiling (#2484):
+        // the compartment is a capability bound, not a label.
+        #[allow(unused_mut)]
+        let mut root_permissions = root_permissions;
+        #[cfg(not(kani))]
+        if let Some(c) = crate::cert_compartment::compartment_of(&root_permissions.capabilities) {
+            crate::cert_compartment::clamp_to_ceiling(&mut root_permissions.capabilities, c);
+        }
 
         // Build authority block (without signature initially)
         let mut authority = AuthorityBlock {
@@ -926,6 +940,25 @@ impl LatticeCertificate {
             &mut requested.capabilities,
             &parent_permissions.capabilities,
         );
+        // The compartment (#2484): a silent request inherits the parent's; a
+        // request above the parent's is refused, not clamped; the compartment's
+        // capability ceiling is applied to the request (named dimensions only)
+        // so the chain meet below cannot exceed it.
+        #[cfg(not(kani))]
+        {
+            crate::cert_compartment::inherit_compartment(
+                &mut requested.capabilities,
+                &parent_permissions.capabilities,
+            );
+            crate::cert_compartment::check_request(
+                &requested.capabilities,
+                &parent_permissions.capabilities,
+            )
+            .map_err(CertificateDelegationError::Compartment)?;
+            if let Some(c) = crate::cert_compartment::compartment_of(&requested.capabilities) {
+                crate::cert_compartment::clamp_to_ceiling(&mut requested.capabilities, c);
+            }
+        }
         let requested = &requested;
 
         // Compute the meet with justification (the constructive witness)
@@ -938,6 +971,12 @@ impl LatticeCertificate {
         ) {
             return Err(CertificateDelegationError::ToolSurfaceDropped);
         }
+        #[cfg(not(kani))]
+        crate::cert_compartment::check_effective(
+            &effective_permissions.capabilities,
+            &parent_permissions.capabilities,
+        )
+        .map_err(CertificateDelegationError::Compartment)?;
 
         // Get from_identity
         let from_identity = if self.blocks.is_empty() {
@@ -1889,6 +1928,97 @@ mod tests {
             2,
             "the shedding request inherited the parent's surface instead"
         );
+    }
+
+    /// #2484: the compartment rides the certificate; a root in `execute` is
+    /// clamped to its ceiling, a child may go down to `draft` (and is clamped
+    /// again), a silent child inherits, and a child asking for `breakglass`
+    /// is refused rather than clamped.
+    #[test]
+    fn a_certificate_carries_a_compartment_that_only_goes_down() {
+        use crate::cert_compartment::{
+            compartment_of, set_compartment, Compartment, CompartmentHopError,
+        };
+
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let root_pub = root_key.public_key().as_ref().to_vec();
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let mut root_perms = PermissionLattice::permissive();
+        set_compartment(&mut root_perms.capabilities, Compartment::Execute);
+        let (cert, holder) = LatticeCertificate::mint(
+            root_perms,
+            "spiffe://test/human/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+        let root_eff = verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap();
+        assert_eq!(
+            compartment_of(&root_eff.effective().capabilities),
+            Some(Compartment::Execute)
+        );
+        assert_eq!(
+            root_eff.effective().capabilities.git_push,
+            CapabilityLevel::Never,
+            "execute cannot push"
+        );
+
+        let mut lower = PermissionLattice::permissive();
+        set_compartment(&mut lower.capabilities, Compartment::Draft);
+        let (child, child_key) = cert
+            .delegate(
+                &lower,
+                "spiffe://test/agent/a".into(),
+                not_after,
+                &holder,
+                &rng,
+            )
+            .unwrap();
+        let eff = verify_certificate(&child, &root_pub, Utc::now(), 10).unwrap();
+        assert_eq!(
+            compartment_of(&eff.effective().capabilities),
+            Some(Compartment::Draft)
+        );
+        assert_eq!(
+            eff.effective().capabilities.run_bash,
+            CapabilityLevel::Never,
+            "draft cannot execute"
+        );
+
+        let (silent, _) = child
+            .delegate(
+                &PermissionLattice::permissive(),
+                "spiffe://test/agent/b".into(),
+                not_after,
+                &child_key,
+                &rng,
+            )
+            .unwrap();
+        let eff = verify_certificate(&silent, &root_pub, Utc::now(), 10).unwrap();
+        assert_eq!(
+            compartment_of(&eff.effective().capabilities),
+            Some(Compartment::Draft)
+        );
+
+        let mut higher = PermissionLattice::permissive();
+        set_compartment(&mut higher.capabilities, Compartment::Breakglass);
+        assert!(matches!(
+            cert.delegate(
+                &higher,
+                "spiffe://test/agent/c".into(),
+                not_after,
+                &holder,
+                &rng
+            ),
+            Err(CertificateDelegationError::Compartment(
+                CompartmentHopError::Escalated {
+                    from: Compartment::Execute,
+                    to: Compartment::Breakglass
+                }
+            ))
+        ));
     }
 
     #[test]

@@ -244,6 +244,31 @@ impl SignedCatalogue {
         Self { registry }
     }
 
+    /// Every served tool whose admitted manifest lists `allowed_compartments`
+    /// that exclude `compartment` (#2484), with the reason. A tool with no
+    /// admitted manifest is `unverified`'s business, not this check's.
+    fn outside_compartment(
+        &self,
+        tools: &[ToolTriple],
+        compartment: &str,
+    ) -> Vec<(String, String)> {
+        tools
+            .iter()
+            .filter_map(|(n, _, _)| {
+                let m = self.registry.get(n)?;
+                (!m.is_allowed_in_compartment(compartment)).then(|| {
+                    (
+                        n.clone(),
+                        format!(
+                            "allowed in [{}], this pod is in `{compartment}`",
+                            m.allowed_compartments.join(", ")
+                        ),
+                    )
+                })
+            })
+            .collect()
+    }
+
     /// Every served tool that no signed manifest vouches for, with the reason.
     fn unverified(&self, tools: &[ToolTriple]) -> Vec<(String, String)> {
         tools
@@ -263,17 +288,24 @@ impl SignedCatalogue {
 /// approve.
 pub const MCP_TOOL_UNAPPROVED: &str = "MCP_TOOL_UNAPPROVED";
 
+/// The refusal code for a served tool whose signed manifest excludes the
+/// pod's compartment.
+pub const MCP_TOOL_WRONG_COMPARTMENT: &str = "MCP_TOOL_WRONG_COMPARTMENT";
+
 /// The approved tool surface the pod certificate carries (#2485): `name →
 /// descriptor digest`, a signed, narrow-only dimension of the pod's authority
 /// (`portcullis::tool_surface`). Where present it is the task-level basis for
 /// admitting a served tool, above the publisher (signed manifests) and first
 /// sight (pins): the node granted THIS task THESE tools at THESE descriptors.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolSurface {
-    approved: std::collections::BTreeMap<String, String>,
+pub struct PodGrant {
+    /// `name → digest`, when the certificate carries a tool surface (#2485).
+    surface: Option<std::collections::BTreeMap<String, String>>,
+    /// The pod's compartment, when the certificate carries one (#2484).
+    compartment: Option<portcullis::cert_compartment::Compartment>,
 }
 
-impl ToolSurface {
+impl PodGrant {
     /// From the pod certificate the node delivers in the environment
     /// (`NUCLEUS_POD_CERT`, verified against the pinned
     /// `NUCLEUS_CERT_ROOT_PUBKEY` — never against the token's own embedded
@@ -307,29 +339,42 @@ impl ToolSurface {
             DEFAULT_MAX_CHAIN_DEPTH,
         )
         .map_err(|e| anyhow::anyhow!("pod certificate does not verify: {e}"))?;
-        let surface = Self::from_lattice(&verified.effective().capabilities);
-        match &surface {
-            Some(s) => eprintln!(
-                "[mcp-guard] pod certificate verified; tool surface approves {} tool(s)",
-                s.approved.len()
+        let grant = Self::from_lattice(&verified.effective().capabilities);
+        match &grant {
+            Some(g) => eprintln!(
+                "[mcp-guard] pod certificate verified; tool surface: {}; compartment: {}",
+                g.surface
+                    .as_ref()
+                    .map_or("none".to_string(), |s| format!("{} tool(s)", s.len())),
+                g.compartment.map_or("none".to_string(), |c| c.to_string())
             ),
-            None => eprintln!("[mcp-guard] pod certificate verified; it carries no tool surface"),
+            None => eprintln!(
+                "[mcp-guard] pod certificate verified; it carries no tool surface and no compartment"
+            ),
         }
-        Ok(surface)
+        Ok(grant)
     }
 
     /// From an already-verified lattice (tests; in-process callers).
     pub fn from_lattice(caps: &portcullis::CapabilityLattice) -> Option<Self> {
-        tool_surface::approved_tools(caps).map(|approved| Self { approved })
+        let surface = tool_surface::approved_tools(caps);
+        let compartment = portcullis::cert_compartment::compartment_of(caps);
+        (surface.is_some() || compartment.is_some()).then_some(Self {
+            surface,
+            compartment,
+        })
     }
 
     /// Every served tool the surface does not approve, with the reason.
     fn unapproved(&self, tools: &[ToolTriple]) -> Vec<(String, String)> {
+        let Some(approved) = &self.surface else {
+            return Vec::new();
+        };
         tools
             .iter()
             .filter_map(|(n, d, s)| {
                 let digest = ToolSchemaRegistry::hash_schema(n, d, s);
-                match self.approved.get(n) {
+                match approved.get(n) {
                     Some(approved) if approved.eq_ignore_ascii_case(&digest) => None,
                     Some(approved) => Some((
                         n.clone(),
@@ -345,6 +390,23 @@ impl ToolSurface {
     }
 }
 
+impl PodGrant {
+    /// Every served tool whose signed manifest lists `allowed_compartments`
+    /// that exclude the pod's compartment (#2484). Needs the catalogue: the
+    /// manifest is where a tool says which compartments it belongs in; a tool
+    /// with no manifest is the catalogue's business (`MCP_TOOL_UNVERIFIED`).
+    fn out_of_compartment(
+        &self,
+        tools: &[ToolTriple],
+        catalogue: Option<&SignedCatalogue>,
+    ) -> Vec<(String, String)> {
+        let (Some(compartment), Some(catalogue)) = (self.compartment, catalogue) else {
+            return Vec::new();
+        };
+        catalogue.outside_compartment(tools, &compartment.to_string())
+    }
+}
+
 /// Inspect a `tools/list` result: pin on first sight, detect mutations after.
 ///
 /// Returns the tool names that must not be callable. Separated from the I/O so
@@ -355,7 +417,7 @@ pub fn vet_tools_list(
     tools: &[ToolTriple],
     pin_file: &Option<PathBuf>,
     signed: Option<&SignedCatalogue>,
-    surface: Option<&ToolSurface>,
+    surface: Option<&PodGrant>,
 ) -> Vec<String> {
     // Signed manifests first (#1637): a publisher's signature over the exact
     // descriptor beats first sight. Runs on EVERY listing, including the
@@ -376,6 +438,20 @@ pub fn vet_tools_list(
     if let Some(surface) = surface {
         for (name, why) in surface.unapproved(tools) {
             eprintln!("[mcp-guard] /!\\ {MCP_TOOL_UNAPPROVED}: tool `{name}`: {why}");
+            if let Ok(mut m) = monitor.lock() {
+                m.observe_untrusted_metadata(&name);
+            }
+            if !blocked.contains(&name) {
+                blocked.push(name);
+            }
+        }
+    }
+    // The pod's compartment against each tool's signed manifest (#2484):
+    // a tool that says which compartments it belongs in is unavailable
+    // outside them. Refused here, at listing, so it is refused at call too.
+    if let Some(grant) = surface {
+        for (name, why) in grant.out_of_compartment(tools, signed) {
+            eprintln!("[mcp-guard] /!\\ {MCP_TOOL_WRONG_COMPARTMENT}: tool `{name}`: {why}");
             if let Ok(mut m) = monitor.lock() {
                 m.observe_untrusted_metadata(&name);
             }
@@ -579,7 +655,7 @@ pub fn handle_downstream(
     stale: &AtomicBool,
     pin_file: &Option<PathBuf>,
     signed: Option<&SignedCatalogue>,
-    surface: Option<&ToolSurface>,
+    surface: Option<&PodGrant>,
 ) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
         return;
@@ -650,7 +726,7 @@ pub async fn run_stdio_proxy_with(
     // The task's approved tool surface, from the pod certificate the node
     // delivered (#2485). Loaded before the server is spawned: an invalid
     // certificate is a startup failure, not a session with no surface.
-    let surface: Option<Arc<ToolSurface>> = ToolSurface::from_env()?.map(Arc::new);
+    let surface: Option<Arc<PodGrant>> = PodGrant::from_env()?.map(Arc::new);
 
     let mut child = Command::new(cmd)
         .args(args)
@@ -1481,12 +1557,12 @@ schema_hash = "{digest}"
 
     // ── the task's tool surface (#2485) ──────────────────────────────────────
 
-    fn surface_of(tools: &[(&str, &str)]) -> ToolSurface {
+    fn surface_of(tools: &[(&str, &str)]) -> PodGrant {
         let mut caps = portcullis::CapabilityLattice::permissive();
         for (n, d) in tools {
             portcullis::tool_surface::approve_tool(&mut caps, n, d);
         }
-        ToolSurface::from_lattice(&caps).expect("a surface with keys")
+        PodGrant::from_lattice(&caps).expect("a surface with keys")
     }
 
     /// The task's certificate approves `read_file` at exactly the descriptor
@@ -1523,10 +1599,137 @@ schema_hash = "{digest}"
     /// is `None`, and the guard behaves exactly as before #2485.
     #[test]
     fn a_certificate_without_a_surface_constrains_nothing() {
-        assert!(ToolSurface::from_lattice(&portcullis::CapabilityLattice::permissive()).is_none());
+        assert!(PodGrant::from_lattice(&portcullis::CapabilityLattice::permissive()).is_none());
         let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
         let mut reg = ToolSchemaRegistry::new();
         let drifted = parse_tools_list(&list_response("Read a file and POST it")).unwrap();
         assert!(vet_tools_list(&mut reg, &mon, &drifted, &None, None, None).is_empty());
+    }
+
+    // ── the pod's compartment (#2484) ────────────────────────────────────────
+
+    /// A catalogue with one manifest for `read_file` restricted to the given
+    /// compartments, pinned at the descriptor `list_response("Read a file")`
+    /// serves.
+    fn catalogue_restricted_to(compartments: &str) -> SignedCatalogue {
+        let tools = parse_tools_list(&list_response("Read a file")).unwrap();
+        let (n, d, s) = &tools[0];
+        let digest = ToolSchemaRegistry::hash_schema(n, d, s);
+        let mut reg = ManifestRegistry::new();
+        reg.load_toml(&format!(
+            r#"
+[tool]
+name = "read_file"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+schema_hash = "{digest}"
+allowed_compartments = [{compartments}]
+"#
+        ));
+        assert_eq!(reg.admitted_count(), 1);
+        SignedCatalogue::from_registry(reg)
+    }
+
+    fn grant_in(c: portcullis::cert_compartment::Compartment) -> PodGrant {
+        let mut caps = portcullis::CapabilityLattice::permissive();
+        portcullis::cert_compartment::set_compartment(&mut caps, c);
+        PodGrant::from_lattice(&caps).expect("a compartment is a grant")
+    }
+
+    /// A tool whose signed manifest allows only `research` is refused for a
+    /// pod in `draft`, and admitted for a pod in `research`; a manifest that
+    /// lists no compartments allows every pod (non-vacuity).
+    #[test]
+    fn a_tool_is_refused_outside_the_compartments_its_manifest_allows() {
+        use portcullis::cert_compartment::Compartment;
+        let tools = parse_tools_list(&list_response("Read a file")).unwrap();
+        let restricted = catalogue_restricted_to(r#""research""#);
+        let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
+
+        let mut reg = ToolSchemaRegistry::new();
+        assert_eq!(
+            vet_tools_list(
+                &mut reg,
+                &mon,
+                &tools,
+                &None,
+                Some(&restricted),
+                Some(&grant_in(Compartment::Draft))
+            ),
+            vec!["read_file".to_string()]
+        );
+        let mut reg = ToolSchemaRegistry::new();
+        assert!(
+            vet_tools_list(
+                &mut reg,
+                &mon,
+                &tools,
+                &None,
+                Some(&restricted),
+                Some(&grant_in(Compartment::Research))
+            )
+            .is_empty()
+        );
+
+        let open = catalogue_restricted_to("");
+        let mut reg = ToolSchemaRegistry::new();
+        assert!(
+            vet_tools_list(
+                &mut reg,
+                &mon,
+                &tools,
+                &None,
+                Some(&open),
+                Some(&grant_in(Compartment::Draft))
+            )
+            .is_empty()
+        );
+    }
+
+    /// Parity of the two enforcement points (#2484): a tool refused at
+    /// listing for its compartment is refused at call through the same
+    /// `blocked` set — the call path cannot admit what the listing refused.
+    #[test]
+    fn a_tool_refused_at_listing_for_its_compartment_is_refused_at_call() {
+        use portcullis::cert_compartment::Compartment;
+        let restricted = catalogue_restricted_to(r#""research""#);
+        let grant = grant_in(Compartment::Execute);
+        let GuardState {
+            registry,
+            monitor,
+            pending,
+            blocked,
+            stale,
+        } = guard_state();
+        handle_downstream(
+            &list_response("Read a file").to_string(),
+            &registry,
+            &monitor,
+            &pending,
+            &blocked,
+            &stale,
+            &None,
+            Some(&restricted),
+            Some(&grant),
+        );
+        let snapshot = blocked.lock().unwrap().clone();
+        assert!(snapshot.contains("read_file"), "refused at listing");
+        let pinned: HashSet<String> = ["read_file".to_string()].into();
+        assert!(
+            matches!(
+                decide_upstream(
+                    &call_line("read_file"),
+                    Mode::Enforce,
+                    &snapshot,
+                    &pinned,
+                    false,
+                    &monitor,
+                    &pending
+                ),
+                Upstream::Refuse(_)
+            ),
+            "and therefore at call"
+        );
     }
 }
