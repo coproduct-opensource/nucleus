@@ -48,8 +48,10 @@ struct Cli {
     bind: String,
     /// gRPC bind address (host:port). Per workspace convention the
     /// gRPC port is `HTTP port + 1000`. Set to empty string to
-    /// disable the gRPC surface (default: 0.0.0.0:9080).
-    #[arg(long, default_value = "0.0.0.0:9080", env = "NUCLEUS_GRPC_BIND")]
+    /// disable the gRPC surface. Loopback by default (#2442): exposing
+    /// it wider is a deliberate choice, and every call is JWT-SVID
+    /// authenticated regardless of where it is bound.
+    #[arg(long, default_value = "127.0.0.1:9080", env = "NUCLEUS_GRPC_BIND")]
     grpc_bind: String,
     /// JSONL lineage log file. Created if missing.
     #[arg(
@@ -291,18 +293,23 @@ async fn main() -> Result<()> {
             .grpc_bind
             .parse()
             .with_context(|| format!("parsing --grpc-bind {}", cli.grpc_bind))?;
-        let service = nucleus_control_plane_server::grpc::GrpcJobService::new(state.clone());
+        // Fail closed (#2442): the gRPC surface never binds without auth in a
+        // production build. `require_auth_or_insecure` above already makes
+        // `spiffe_auth` Some here; this guard keeps that true if it moves.
+        #[cfg(not(feature = "insecure-dev"))]
+        if state.spiffe_auth.is_none() {
+            anyhow::bail!("refusing to bind the gRPC surface without SPIFFE JWT-SVID auth");
+        }
+        // The ONLY way the service is mounted: wrapped in the JWT-SVID
+        // interceptor, the same trust config as REST.
+        let service = nucleus_control_plane_server::grpc::intercepted(state.clone());
         tracing::info!(
-            "nucleus-control-plane-server gRPC listening on {}",
+            "nucleus-control-plane-server gRPC listening on {} (JWT-SVID authenticated)",
             grpc_addr
         );
         Some(tokio::spawn(async move {
             if let Err(e) = tonic::transport::Server::builder()
-                .add_service(
-                    nucleus_proto::control_plane::job_service_server::JobServiceServer::new(
-                        service,
-                    ),
-                )
+                .add_service(service)
                 .serve(grpc_addr)
                 .await
             {

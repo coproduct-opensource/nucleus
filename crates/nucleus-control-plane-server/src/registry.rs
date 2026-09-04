@@ -41,6 +41,20 @@ pub trait JobRegistry: Send + Sync {
     fn insert(&self, initial: JobState) -> Result<JobId, JobRegistryError>;
     /// Replace the state of an existing job. Errors if `id` is unknown.
     fn update(&self, id: &JobId, state: JobState) -> Result<(), JobRegistryError>;
+    /// Compare-and-update: replace the job's state with `state` only if
+    /// `expected` holds for the CURRENT stored state, under one lock.
+    /// Returns `Ok(false)` when it did not (the job moved underneath the
+    /// caller between its read and this write) — the caller re-reads.
+    ///
+    /// `cancel_job` reads a job, checks its owner, and writes `Failed`;
+    /// with a blind `update` a job that completed in between was overwritten
+    /// with a cancellation it never had. This closes that window.
+    fn update_if(
+        &self,
+        id: &JobId,
+        expected: &dyn Fn(&JobState) -> bool,
+        state: JobState,
+    ) -> Result<bool, JobRegistryError>;
     /// Snapshot the current state of a job.
     fn get(&self, id: &JobId) -> Result<JobState, JobRegistryError>;
     /// Look up a JobId by its idempotency key, if one has been recorded.
@@ -133,6 +147,24 @@ impl JobRegistry for InMemoryRegistry {
         // eviction policy keeps treating this as the same job.
         inner.jobs.insert(id.clone(), state);
         Ok(())
+    }
+
+    fn update_if(
+        &self,
+        id: &JobId,
+        expected: &dyn Fn(&JobState) -> bool,
+        state: JobState,
+    ) -> Result<bool, JobRegistryError> {
+        let mut inner = self.inner.write().map_err(|_| JobRegistryError::Poisoned)?;
+        let current = inner
+            .jobs
+            .get(id)
+            .ok_or_else(|| JobRegistryError::NotFound(id.clone()))?;
+        if !expected(current) {
+            return Ok(false);
+        }
+        inner.jobs.insert(id.clone(), state);
+        Ok(true)
     }
 
     fn get(&self, id: &JobId) -> Result<JobState, JobRegistryError> {

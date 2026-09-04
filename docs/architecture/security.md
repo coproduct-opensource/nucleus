@@ -346,3 +346,9 @@ Nucleus does not protect against:
 - [SPIFFE Specification](https://spiffe.io/docs/latest/spiffe-about/spiffe-concepts/)
 - [OWASP Input Validation Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html)
 - [Firecracker Security](https://firecracker-microvm.github.io/docs/security/)
+
+## Architecture decision records
+
+- [ADR 0001 — Tenancy is the SPIFFE trust domain; ownership is the SPIFFE subject](../adr/0001-trust-domain-tenancy.md):
+  how multi-principal servers scope resources to their owners without a bespoke,
+  unauthenticated tenant type (first consumer: the job control plane).

@@ -210,7 +210,10 @@ async fn bundle_on_in_progress_job_returns_409() {
         .jobs
         .insert(JobState::Queued {
             submitted_at: chrono::Utc::now(),
-            owner: "spiffe://nucleus.local/agent/test".to_string(),
+            // Planted directly, read back through an auth-disabled app: the
+            // reader is the sentinel principal, which owns only sentinel-owned
+            // jobs (ADR 0001) — exactly what an auth-disabled submission records.
+            owner: nucleus_control_plane_server::auth::UNAUTHENTICATED_SUB.to_string(),
         })
         .unwrap();
     let app = build_app(state);
@@ -407,7 +410,10 @@ async fn sse_late_subscriber_to_completed_job_gets_catchup_and_closes() {
                 bundle,
                 delivered: true,
             }),
-            owner: "spiffe://nucleus.local/agent/test".to_string(),
+            // Planted directly, read back through an auth-disabled app: the
+            // reader is the sentinel principal, which owns only sentinel-owned
+            // jobs (ADR 0001) — exactly what an auth-disabled submission records.
+            owner: nucleus_control_plane_server::auth::UNAUTHENTICATED_SUB.to_string(),
         })
         .unwrap();
 
@@ -745,19 +751,19 @@ mod spiffe_auth {
     use nucleus_oidc_core::{Jwk, Jwks as OidcJwks};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    struct Signer {
+    pub(super) struct Signer {
         signing_key: SigningKey,
         kid: String,
     }
 
     impl Signer {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self {
                 signing_key: SigningKey::from_bytes(&[31u8; SECRET_KEY_LENGTH]),
                 kid: "test-kid".to_string(),
             }
         }
-        fn jwks(&self) -> OidcJwks {
+        pub(super) fn jwks(&self) -> OidcJwks {
             let vk = self.signing_key.verifying_key();
             OidcJwks {
                 keys: vec![Jwk {
@@ -773,7 +779,7 @@ mod spiffe_auth {
                 }],
             }
         }
-        fn mint(&self, sub: &str, aud: &str) -> String {
+        pub(super) fn mint(&self, sub: &str, aud: &str) -> String {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -924,5 +930,239 @@ mod spiffe_auth {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
+
+/// Ownership scoping (#2441, ADR 0001): a job is visible and controllable
+/// ONLY to the principal that submitted it, and a different principal is
+/// answered exactly as if the job did not exist.
+mod ownership {
+    use super::*;
+    use nucleus_control_plane_server::SpiffeAuthConfig;
+
+    const AUD: &str = "https://control.test/api";
+    const CODER: &str = "spiffe://test.nucleus.local/ns/agents/sa/coder";
+    const REVIEWER: &str = "spiffe://test.nucleus.local/ns/agents/sa/reviewer";
+
+    fn auth_state(signer: &super::spiffe_auth::Signer) -> AppState {
+        let rr = RunnerRegistry::new().register("mock", Box::new(MockJobRunner));
+        let sink: Arc<dyn nucleus_lineage::LineageSink> = Arc::new(InMemorySink::new());
+        let mut s = build_demo_state(rr, sink, "test.nucleus.local", "agents", "subject")
+            .expect("build_demo_state");
+        s.spiffe_auth = Some(Arc::new(SpiffeAuthConfig::new(
+            signer.jwks(),
+            AUD,
+            "spiffe://test.nucleus.local/ns/agents/sa/",
+        )));
+        s
+    }
+
+    async fn submit_as(app: axum::Router, token: &str, idem: Option<&str>) -> (StatusCode, Value) {
+        let mut b = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/jobs")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"));
+        if let Some(k) = idem {
+            b = b.header("idempotency-key", k);
+        }
+        let req = b
+            .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        (status, read_json(resp.into_body()).await)
+    }
+
+    async fn status_as(app: axum::Router, token: &str, method: Method, uri: &str) -> StatusCode {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn a_job_is_not_found_for_any_principal_but_its_owner() {
+        let signer = super::spiffe_auth::Signer::new();
+        let app = build_app(auth_state(&signer));
+        let coder = signer.mint(CODER, AUD);
+        let reviewer = signer.mint(REVIEWER, AUD);
+
+        let (status, body) = submit_as(app.clone(), &coder, None).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let id = body["job_id"].as_str().expect("job_id").to_string();
+        assert_eq!(body["state"]["owner"], CODER);
+
+        // The owner sees it on every job-scoped route …
+        assert_eq!(
+            status_as(app.clone(), &coder, Method::GET, &format!("/v1/jobs/{id}")).await,
+            StatusCode::OK
+        );
+        // … and a different, fully authenticated principal in the same trust
+        // domain is told it does not exist — on all four routes, including
+        // the mutating one and the bundle (the thing the caller paid for).
+        for (method, path) in [
+            (Method::GET, format!("/v1/jobs/{id}")),
+            (Method::GET, format!("/v1/jobs/{id}/bundle")),
+            (Method::GET, format!("/v1/jobs/{id}/events/stream")),
+            (Method::POST, format!("/v1/jobs/{id}/cancel")),
+        ] {
+            assert_eq!(
+                status_as(app.clone(), &reviewer, method.clone(), &path).await,
+                StatusCode::NOT_FOUND,
+                "{method} {path} must be not-found for a non-owner"
+            );
+        }
+        // Non-vacuity: the reviewer's token is good — it can submit its own job.
+        let (status, _) = submit_as(app.clone(), &reviewer, None).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        // And the non-owner's cancel attempt changed nothing: the owner still
+        // sees the job in a non-cancelled state.
+        let req = Request::builder()
+            .uri(format!("/v1/jobs/{id}"))
+            .header(header::AUTHORIZATION, format!("Bearer {coder}"))
+            .body(Body::empty())
+            .unwrap();
+        let body = read_json(app.oneshot(req).await.unwrap().into_body()).await;
+        assert_ne!(body["state"]["reason"], "cancelled by client request");
+    }
+
+    #[tokio::test]
+    async fn idempotency_keys_are_scoped_to_the_principal() {
+        let signer = super::spiffe_auth::Signer::new();
+        let app = build_app(auth_state(&signer));
+        let coder = signer.mint(CODER, AUD);
+        let reviewer = signer.mint(REVIEWER, AUD);
+
+        let (_, a1) = submit_as(app.clone(), &coder, Some("shared-key")).await;
+        let (_, a2) = submit_as(app.clone(), &coder, Some("shared-key")).await;
+        let (_, b1) = submit_as(app.clone(), &reviewer, Some("shared-key")).await;
+        assert_eq!(
+            a1["job_id"], a2["job_id"],
+            "same principal, same key: replay"
+        );
+        assert_ne!(
+            a1["job_id"], b1["job_id"],
+            "a different principal with the same key must NOT be handed the first job's id"
+        );
+        assert_eq!(b1["state"]["owner"], REVIEWER);
+    }
+
+    /// The gRPC surface (#2442): the interceptor-verified principal is the
+    /// owner of record, `Get` is not-found for anyone else, and a call with
+    /// no verified principal at all is refused rather than admitted.
+    mod grpc {
+        use super::*;
+        use nucleus_control_plane_server::auth::{principal_from_grpc, verify_jwt_svid};
+        use nucleus_control_plane_server::grpc::GrpcJobService;
+        use nucleus_proto::control_plane::{
+            AgentDriverRef as PbDriver, InlineInput, JobIdMessage, JobSubmission,
+            job_service_server::JobService,
+        };
+
+        fn submission() -> JobSubmission {
+            JobSubmission {
+                task: "summarize".into(),
+                policy_profile: "report-extraction".into(),
+                destination_in_response: true,
+                agent_driver: Some(PbDriver {
+                    name: "mock".into(),
+                    version: String::new(),
+                    config_json: String::new(),
+                }),
+                inline_input: Some(InlineInput {
+                    content_json: r#"{"raw":"hello"}"#.into(),
+                }),
+            }
+        }
+
+        #[tokio::test]
+        async fn get_is_not_found_for_a_non_owner_and_refused_without_a_principal() {
+            let signer = super::super::spiffe_auth::Signer::new();
+            let state = auth_state(&signer);
+            let cfg = state.spiffe_auth.clone().expect("auth enabled");
+            let coder = verify_jwt_svid(&signer.mint(CODER, AUD), &cfg).unwrap();
+            let reviewer = verify_jwt_svid(&signer.mint(REVIEWER, AUD), &cfg).unwrap();
+            let svc = GrpcJobService::new(state);
+
+            let mut submit = tonic::Request::new(submission());
+            submit.extensions_mut().insert(coder.clone());
+            let id = svc.submit(submit).await.unwrap().into_inner().job_id;
+
+            let mut as_reviewer = tonic::Request::new(JobIdMessage { job_id: id.clone() });
+            as_reviewer.extensions_mut().insert(reviewer);
+            assert_eq!(
+                svc.get(as_reviewer).await.unwrap_err().code(),
+                tonic::Code::NotFound,
+                "another principal's job is NOT FOUND, never PERMISSION_DENIED"
+            );
+
+            let mut as_coder = tonic::Request::new(JobIdMessage { job_id: id.clone() });
+            as_coder.extensions_mut().insert(coder);
+            assert_eq!(svc.get(as_coder).await.unwrap().into_inner().job_id, id);
+
+            // Mounted without the interceptor (no principal on the call): refused.
+            let bare = tonic::Request::new(JobIdMessage { job_id: id });
+            assert_eq!(
+                svc.get(bare).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+            let bare_submit = tonic::Request::new(submission());
+            assert_eq!(
+                svc.submit(bare_submit).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        #[test]
+        fn the_interceptor_verifies_the_same_bearer_token_rest_does() {
+            let signer = super::super::spiffe_auth::Signer::new();
+            let state = auth_state(&signer);
+            let cfg = state.spiffe_auth.clone().expect("auth enabled");
+
+            let none = tonic::Request::new(());
+            assert_eq!(
+                principal_from_grpc(&none, Some(&cfg)).unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+            let mut basic = tonic::Request::new(());
+            basic
+                .metadata_mut()
+                .insert("authorization", "Basic abc".parse().unwrap());
+            assert_eq!(
+                principal_from_grpc(&basic, Some(&cfg)).unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+            let mut wrong_aud = tonic::Request::new(());
+            let bad = format!("Bearer {}", signer.mint(CODER, "https://other/api"));
+            wrong_aud
+                .metadata_mut()
+                .insert("authorization", bad.parse().unwrap());
+            assert_eq!(
+                principal_from_grpc(&wrong_aud, Some(&cfg))
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::PermissionDenied
+            );
+            let mut good = tonic::Request::new(());
+            let ok = format!("Bearer {}", signer.mint(CODER, AUD));
+            good.metadata_mut()
+                .insert("authorization", ok.parse().unwrap());
+            let p = principal_from_grpc(&good, Some(&cfg)).unwrap();
+            assert_eq!(p.sub(), CODER);
+            assert!(p.authenticated());
+            assert_eq!(p.trust_domain().as_deref(), Some("test.nucleus.local"));
+            assert!(p.owns(CODER) && !p.owns(REVIEWER));
+
+            // Auth disabled (insecure-dev only): the sentinel, which owns only
+            // sentinel-owned jobs — stated, not accidental.
+            let sentinel = principal_from_grpc(&none, None).unwrap();
+            assert!(!sentinel.authenticated());
+            assert!(sentinel.owns("<unauthenticated>") && !sentinel.owns(CODER));
+            assert_eq!(sentinel.trust_domain(), None);
+        }
     }
 }
