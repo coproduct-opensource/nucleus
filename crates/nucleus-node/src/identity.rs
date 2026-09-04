@@ -192,6 +192,20 @@ impl IdentityManager {
         Identity::new(&self.trust_domain, namespace, sa)
     }
 
+    /// The node-assigned SPIFFE identity of a pod:
+    /// `spiffe://<trust_domain>/ns/pods/sa/<pod_id>`.
+    ///
+    /// A pure function of the pod id — NOT of `spec.metadata`. A sub-pod
+    /// spec is agent-authored, and deriving the identity from its
+    /// namespace/name let a pod name itself into the orchestrator prefix
+    /// `AuthorizationPolicy` grants full access to. `AuthorizationPolicy`'s
+    /// pod class recognises exactly this shape, and
+    /// `pod_authority::pod_spiffe_id` mints the same string for the
+    /// certificate's leaf identity, so the SVID and the certificate agree.
+    pub fn pod_identity(&self, pod_id: Uuid) -> Identity {
+        Identity::new(&self.trust_domain, "pods", pod_id.to_string())
+    }
+
     /// The node's own SPIFFE identity: `spiffe://<trust_domain>/ns/system/sa/node`.
     ///
     /// Stable across restarts by construction (it is a pure function of
@@ -310,39 +324,21 @@ impl IdentityManager {
                 continue;
             };
             // A directory with no spec is not a pod this node launched.
-            let Ok(yaml) = tokio::fs::read_to_string(dir.join("pod.yaml")).await else {
+            if tokio::fs::metadata(dir.join("pod.yaml")).await.is_err() {
+                continue;
+            }
+            // A pod directory is named by the pod's UUID, and the identity is
+            // a pure function of it (`pod_identity`) — the launch path and the
+            // restore path cannot disagree because they call the same function
+            // with the same input. A directory not named by a UUID is not a
+            // pod this node launched.
+            let Ok(uuid) = Uuid::parse_str(&pod_id) else {
                 continue;
             };
-            let Some(identity) = self.identity_from_spec_yaml(&pod_id, &yaml) else {
-                continue;
-            };
-            self.register_pod(pod_id, identity).await;
+            self.register_pod(pod_id, self.pod_identity(uuid)).await;
             restored += 1;
         }
         restored
-    }
-
-    /// The identity a pod spec yields, derived exactly as the launch path does.
-    ///
-    /// Split out and kept pure so the restored identity can be tested against
-    /// the one `identity_for_pod` mints live. If these two ever disagree, a pod
-    /// would come back after a restart under a DIFFERENT SPIFFE ID than it had
-    /// before, which is worse than not coming back at all.
-    fn identity_from_spec_yaml(&self, pod_id: &str, yaml: &str) -> Option<Identity> {
-        let spec: serde_yaml::Value = serde_yaml::from_str(yaml).ok()?;
-        let meta = spec.get("metadata");
-        let namespace = meta
-            .and_then(|m| m.get("namespace"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("default");
-        let name = meta
-            .and_then(|m| m.get("name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        // Mirrors identity_for_pod: an empty service account falls back to the
-        // pod id.
-        let sa = if name.is_empty() { pod_id } else { name };
-        Some(Identity::new(&self.trust_domain, namespace, sa))
     }
 
     /// Registers a pod's identity in the VM registry.
@@ -651,7 +647,12 @@ mod tests {
         );
 
         let m = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
-        let live = m.identity_for_pod(pod_id, "prod", "web");
+        let live = m.pod_identity(pod_id);
+        // Node-assigned: the spec's own namespace/name do not enter the SVID.
+        assert_eq!(
+            live.to_spiffe_uri(),
+            format!("spiffe://nucleus.local/ns/pods/sa/{pod_id}")
+        );
 
         assert_eq!(m.rebuild_registry_from_disk(tmp.path()).await, 1);
         let restored = m
@@ -668,8 +669,8 @@ mod tests {
         );
     }
 
-    /// The launch path falls back to the pod id when the spec has no name. The
-    /// rebuild has to make the same choice or the SPIFFE ID changes.
+    /// A spec with no metadata at all restores to the same node-assigned
+    /// identity — there is nothing in the spec for either path to read.
     #[tokio::test]
     async fn a_spec_with_no_name_falls_back_to_the_pod_id_on_both_paths() {
         let tmp = tempfile::tempdir().unwrap();
@@ -690,7 +691,39 @@ mod tests {
             .get(&pod_id.to_string())
             .cloned()
             .unwrap();
-        assert_eq!(restored, m.identity_for_pod(pod_id, "default", ""));
+        assert_eq!(restored, m.pod_identity(pod_id));
+    }
+
+    /// The identity the spawn path registers (and caches the ATTESTED
+    /// certificate under) must be the identity `FETCH_SVID` serves, or the
+    /// cache misses and the guest gets a plain SVID. Both call `pod_identity`
+    /// now; this pins the shape so a spec-derived spelling cannot creep back.
+    #[test]
+    fn the_served_svid_identity_is_the_registered_pod_identity() {
+        let m = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
+        let id = uuid::Uuid::new_v4();
+        assert_eq!(
+            m.pod_identity(id),
+            Identity::new("nucleus.local", "pods", id.to_string())
+        );
+        assert_eq!(
+            m.pod_identity(id).to_spiffe_uri(),
+            format!("spiffe://nucleus.local/ns/pods/sa/{id}")
+        );
+    }
+
+    /// A pod directory not named by a UUID is not a pod this node launched,
+    /// even if someone dropped a `pod.yaml` in it.
+    #[tokio::test]
+    async fn a_directory_not_named_by_a_uuid_is_not_restored() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pod(
+            tmp.path(),
+            "orchestrator-x",
+            "apiVersion: nucleus/v1\nkind: Pod\n",
+        );
+        let m = IdentityManager::new("nucleus.local", Duration::from_secs(3600)).unwrap();
+        assert_eq!(m.rebuild_registry_from_disk(tmp.path()).await, 0);
     }
 
     /// Non-vacuity. Without these, `rebuild` returning 0 on everything would
@@ -730,10 +763,10 @@ mod tests {
         let reg = m.vm_registry.read().await;
         for (n, id) in ids.iter().enumerate() {
             let got = reg.get(&id.to_string()).expect("every pod must come back");
-            assert_eq!(
-                got,
-                &m.identity_for_pod(*id, &format!("ns{n}"), &format!("pod{n}"))
-            );
+            // `ns{n}` / `pod{n}` in the spec are deliberately NOT what comes
+            // back: the identity is node-assigned from the pod id.
+            let _ = n;
+            assert_eq!(got, &m.pod_identity(*id));
         }
     }
 

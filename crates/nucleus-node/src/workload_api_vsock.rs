@@ -155,6 +155,9 @@ impl std::fmt::Debug for WorkloadApiVsockBridge {
 pub struct PodMaterial {
     /// The pod's live-path session capability token.
     pub task_token: Option<crate::session_mint::MintedTaskToken>,
+    /// The pod's certificate of authority and the pinned root key
+    /// (`pod_authority`). Public material; the holder key stays on the node.
+    pub pod_certificate: Option<crate::pod_authority::BootCertificate>,
     /// This pod's caller-identity token for the node's management API.
     ///
     /// Derived host-side from a node-only secret and THIS pod's id, and served
@@ -624,6 +627,17 @@ fn handle_fetch_audit_credentials(
     .to_string()
 }
 
+fn handle_fetch_pod_certificate(cert: Option<&crate::pod_authority::BootCertificate>) -> String {
+    match cert {
+        Some(c) => serde_json::json!({
+            "certificate": c.token_b64,
+            "root_pubkey": c.root_pubkey_hex,
+        })
+        .to_string(),
+        None => r#"{"error":"no certificate was issued for this pod"}"#.to_string(),
+    }
+}
+
 fn handle_fetch_task_token(token: Option<&crate::session_mint::MintedTaskToken>) -> String {
     match token {
         Some(t) => serde_json::json!({
@@ -681,6 +695,10 @@ async fn handle_connection(
             Ok(WorkloadApiCommand::FetchTaskToken) => {
                 debug!("workload API FETCH_TASK_TOKEN for pod {}", pod_id);
                 handle_fetch_task_token(material.task_token.as_ref())
+            }
+            Ok(WorkloadApiCommand::FetchPodCertificate) => {
+                debug!("workload API FETCH_POD_CERTIFICATE for pod {}", pod_id);
+                handle_fetch_pod_certificate(material.pod_certificate.as_ref())
             }
             Ok(WorkloadApiCommand::FetchDlcAdmission) => {
                 debug!("workload API FETCH_DLC_ADMISSION for pod {}", pod_id);
@@ -808,10 +826,12 @@ where
 /// `spiffe://{trust_domain}/ns/pods/sa/{pod_id}`
 #[allow(dead_code)]
 async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> String {
-    // Create a unique identity for this specific pod
-    // The identity is based on the pod's UUID, ensuring isolation between pods
-    let identity =
-        nucleus_identity::Identity::new(manager.trust_domain(), "pods", pod_id.to_string());
+    // THE pod identity — the same function the spawn path registers and caches
+    // the attested certificate under. These used to be two spellings: this
+    // served `ns/pods/sa/<uuid>` while the spawn path registered the
+    // spec-derived `ns/<namespace>/sa/<name>`, so the attested-certificate
+    // cache always missed and every guest got a plain SVID.
+    let identity = manager.pod_identity(pod_id);
 
     // Fetch the certificate with the actual certificate data
     match manager.fetch_certificate(&identity).await {
@@ -906,6 +926,31 @@ mod task_token_serving_tests {
             "must not offer an empty token: {body}"
         );
         assert!(v["error"].is_string(), "must say why: {body}");
+    }
+
+    /// The certificate reply carries exactly the two values the guest exports
+    /// as `NUCLEUS_POD_CERT` / `NUCLEUS_CERT_ROOT_PUBKEY`; a pod without one
+    /// gets a refusal, not an empty certificate.
+    #[test]
+    fn the_served_certificate_carries_the_token_and_the_pinned_anchor() {
+        let boot = crate::pod_authority::BootCertificate {
+            token_b64: "dG9rZW4=".to_string(),
+            root_pubkey_hex: "ab".repeat(32),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&handle_fetch_pod_certificate(Some(&boot))).unwrap();
+        assert_eq!(v["certificate"], "dG9rZW4=");
+        assert_eq!(v["root_pubkey"], "ab".repeat(32));
+
+        let v: serde_json::Value =
+            serde_json::from_str(&handle_fetch_pod_certificate(None)).unwrap();
+        assert!(v.get("certificate").is_none());
+        assert!(v["error"].is_string());
+        use crate::workload_api_protocol::{WorkloadApiCommand, parse_command};
+        assert_eq!(
+            parse_command(b"FETCH_POD_CERTIFICATE\n").unwrap(),
+            WorkloadApiCommand::FetchPodCertificate
+        );
     }
 
     /// The command must round-trip through the wire spelling the guest sends.

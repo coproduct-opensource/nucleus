@@ -122,18 +122,21 @@ pub struct AuthorizationPolicy {
     /// Allowed SPIFFE ID prefixes for CI/CD (GitHub OIDC).
     /// These identities can only manage pods with matching labels.
     cicd_prefixes: Vec<String>,
+    /// SPIFFE ID prefixes of PODS this node minted (`ns/pods/sa/<uuid>`).
+    ///
+    /// A pod may perform pod-management operations, and only those; WHAT it
+    /// may create is decided by its certificate (`pod_authority`), not by
+    /// this prefix. Node-assigned: `pod_authority::pod_spiffe_id` mints this
+    /// shape regardless of the spec's own `metadata`, so an agent-authored
+    /// sub-pod spec can no longer name itself into an orchestrator prefix.
+    pod_prefixes: Vec<String>,
+    /// Exact SPIFFE IDs with full access — the certificate root minter.
+    operator_identities: Vec<String>,
 }
 
 impl Default for AuthorizationPolicy {
     fn default() -> Self {
-        Self {
-            trust_domain: "nucleus.local".to_string(),
-            orchestrator_prefixes: vec![
-                "spiffe://nucleus.local/ns/default/sa/".to_string(),
-                "spiffe://nucleus.local/ns/workstream-kg/sa/".to_string(),
-            ],
-            cicd_prefixes: vec!["spiffe://nucleus.local/ns/github/sa/".to_string()],
-        }
+        Self::new("nucleus.local")
     }
 }
 
@@ -148,6 +151,8 @@ impl AuthorizationPolicy {
                 format!("spiffe://{}/ns/workstream-kg/sa/", trust_domain),
             ],
             cicd_prefixes: vec![format!("spiffe://{}/ns/github/sa/", trust_domain)],
+            pod_prefixes: vec![format!("spiffe://{}/ns/pods/sa/", trust_domain)],
+            operator_identities: Vec::new(),
             trust_domain,
         }
     }
@@ -158,9 +163,29 @@ impl AuthorizationPolicy {
         self
     }
 
+    /// The pod id a SPIFFE ID names, if it has the node-assigned pod shape
+    /// (`<pod prefix><uuid>`). Anything else — including an orchestrator or
+    /// CI/CD identity — is `None`: those callers are not pods.
+    pub fn pod_id_from_spiffe(&self, spiffe_id: &str) -> Option<uuid::Uuid> {
+        self.pod_prefixes.iter().find_map(|prefix| {
+            spiffe_id
+                .strip_prefix(prefix.as_str())
+                .and_then(|rest| uuid::Uuid::parse_str(rest).ok())
+        })
+    }
+
     /// Add a CI/CD prefix.
     pub fn with_cicd_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.cicd_prefixes.push(prefix.into());
+        self
+    }
+
+    /// Authorize one EXACT identity as an operator (full access): the
+    /// certificate root minter (`pod_authority`), by default the
+    /// `ns/system/sa/cli` identity `nucleus setup` provisions. Exact, not a
+    /// prefix — `…/sa/cli` must not also admit `…/sa/cli-anything`.
+    pub fn with_operator_identity(mut self, spiffe_id: impl Into<String>) -> Self {
+        self.operator_identities.push(spiffe_id.into());
         self
     }
 
@@ -182,6 +207,12 @@ impl AuthorizationPolicy {
                 expected: self.trust_domain.clone(),
                 got: spiffe_id.to_string(),
             });
+        }
+
+        // The operator (certificate root minter): exact match, full access.
+        if self.operator_identities.iter().any(|id| id == spiffe_id) {
+            tracing::debug!(spiffe_id = %spiffe_id, operation = ?op, "Authorized operator operation");
+            return Ok(());
         }
 
         // Check if this is an orchestrator identity (full access)
@@ -212,6 +243,29 @@ impl AuthorizationPolicy {
                             spiffe_id = %spiffe_id,
                             operation = ?op,
                             "Authorized CI/CD operation"
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // A pod this node minted: pod-management operations only. Its
+        // certificate decides what those operations may grant (pod_authority).
+        for prefix in &self.pod_prefixes {
+            if spiffe_id.starts_with(prefix) {
+                match op {
+                    Operation::CreatePod
+                    | Operation::GetPod
+                    | Operation::CancelPod
+                    | Operation::StreamLogs
+                    | Operation::ListPods
+                    | Operation::GetReceipt
+                    | Operation::PodManagement => {
+                        tracing::debug!(
+                            spiffe_id = %spiffe_id,
+                            operation = ?op,
+                            "Authorized pod operation"
                         );
                         return Ok(());
                     }
@@ -485,6 +539,62 @@ mod tests {
             "spiffe://nucleus.local/ns/jenkins/sa/build-agent".to_string(),
         );
         assert!(policy.authorize(&ctx, Operation::CreatePod).is_ok());
+    }
+
+    /// The root minter is authorized as an operator by EXACT identity: the
+    /// tier-2 e2e creates pods as `ns/system/sa/cli`, which no prefix class
+    /// covers, and a prefix would also admit `…/sa/cli-anything`.
+    #[test]
+    fn the_operator_identity_is_exact_not_a_prefix() {
+        let policy = AuthorizationPolicy::new("nucleus.local")
+            .with_operator_identity("spiffe://nucleus.local/ns/system/sa/cli");
+        let cli = AuthContext::from_spiffe("spiffe://nucleus.local/ns/system/sa/cli".into());
+        assert!(policy.authorize(&cli, Operation::CreatePod).is_ok());
+        assert!(policy.authorize(&cli, Operation::CancelPod).is_ok());
+        let sibling =
+            AuthContext::from_spiffe("spiffe://nucleus.local/ns/system/sa/cli-anything".into());
+        assert!(policy.authorize(&sibling, Operation::CreatePod).is_err());
+        // Non-vacuity: without the operator entry the same identity is refused.
+        let bare = AuthorizationPolicy::new("nucleus.local");
+        assert!(bare.authorize(&cli, Operation::CreatePod).is_err());
+    }
+
+    /// A pod identity is authorized for pod management and nothing else, and
+    /// only the node-assigned `ns/pods/sa/<uuid>` shape parses as a pod.
+    #[test]
+    fn pod_identities_manage_pods_only_and_parse_to_their_id() {
+        let policy = AuthorizationPolicy::new("nucleus.local");
+        let id = uuid::Uuid::new_v4();
+        let spiffe = format!("spiffe://nucleus.local/ns/pods/sa/{id}");
+        let ctx = AuthContext::from_spiffe(spiffe.clone());
+        for op in [
+            Operation::CreatePod,
+            Operation::ListPods,
+            Operation::GetPod,
+            Operation::CancelPod,
+            Operation::StreamLogs,
+            Operation::GetReceipt,
+            Operation::PodManagement,
+        ] {
+            assert!(policy.authorize(&ctx, op).is_ok(), "{op:?}");
+        }
+        assert_eq!(policy.pod_id_from_spiffe(&spiffe), Some(id));
+
+        // The old spec-authored shape is NOT a pod identity and is not an
+        // orchestrator either once it stops matching `ns/default/sa/`.
+        assert_eq!(
+            policy.pod_id_from_spiffe("spiffe://nucleus.local/ns/default/sa/orchestrator-x"),
+            None
+        );
+        assert_eq!(
+            policy.pod_id_from_spiffe("spiffe://nucleus.local/ns/pods/sa/not-a-uuid"),
+            None
+        );
+        // A different trust domain never parses, even with the right path.
+        assert_eq!(
+            policy.pod_id_from_spiffe(&format!("spiffe://evil.local/ns/pods/sa/{id}")),
+            None
+        );
     }
 
     // ── HTTP SPIFFE branch (Move A step 4 / Move B) ────────────────────────

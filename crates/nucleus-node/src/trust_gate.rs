@@ -111,6 +111,13 @@ const TASK_ISSUER_KEY_FILE: &str = "task_issuer_signing_key.der";
 /// the task-token root.
 const APPROVAL_SIGNING_KEY_FILE: &str = "approval_signing_key.der";
 
+/// Filename (under `state_dir`) holding the persisted **certificate-root**
+/// signing key — the trust anchor every pod's `LatticeCertificate` chains
+/// to (`pod_authority`). DISTINCT from the three role keys above: the
+/// authority that says what a pod MAY do must not double as the executor's
+/// receipt identity, the task-token root, or the approval authority.
+const CERT_ROOT_KEY_FILE: &str = "cert_root_signing_key.der";
+
 /// Generate a fresh Ed25519 signing key from the OS CSPRNG.
 ///
 /// Samples 32 raw bytes via `rand_core 0.6`'s `fill_bytes` and feeds
@@ -166,6 +173,21 @@ pub fn load_or_create_task_issuer_signing_key(state_dir: &Path) -> SigningKey {
 /// no longer approve anything for pods launched before the restart.
 pub fn load_or_create_approval_signing_key(state_dir: &Path) -> SigningKey {
     load_or_create_key_file(state_dir, APPROVAL_SIGNING_KEY_FILE, "approval signing key")
+}
+
+/// Load the dedicated **certificate-root** Ed25519 signing key from
+/// `state_dir`, creating and persisting a fresh one on first run.
+///
+/// Persistence is load-bearing: every running pod's certificate chains to
+/// this key, and a pod's sub-pod requests are verified against it, so a node
+/// that minted a fresh root on every restart would orphan every chain it had
+/// issued.
+pub fn load_or_create_cert_root_signing_key(state_dir: &Path) -> SigningKey {
+    load_or_create_key_file(
+        state_dir,
+        CERT_ROOT_KEY_FILE,
+        "certificate root signing key",
+    )
 }
 
 /// Shared implementation for the persisted per-node Ed25519 keys. `filename` is

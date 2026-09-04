@@ -669,3 +669,35 @@ async fn admit_posture_one_byte_of_drift_reds_the_gate() {
         "a changed artifact must fail a claim minted for the original"
     );
 }
+
+// ── Authority gate wiring (pod_authority) ──────────────────────────────────
+
+/// The authority gate cannot be dropped from pod creation without this
+/// failing — the `include_str!` idiom `pod_mgmt.rs` uses for the same reason:
+/// an unwired security check is the failure shape this repo keeps finding.
+/// Both entry points (HTTP and gRPC) funnel into `create_pod_internal`, so
+/// this one site is the whole surface.
+#[test]
+fn create_pod_internal_still_consults_the_authority_gate() {
+    let src = include_str!("main.rs");
+    let body = src
+        .split("async fn create_pod_internal(")
+        .nth(1)
+        .expect("create_pod_internal exists");
+    let body = &body[..body.find("\nasync fn ").unwrap_or(body.len())];
+    assert!(
+        body.contains("state.authority.admit("),
+        "create_pod_internal must consult pod_authority::admit before any driver spawns"
+    );
+    assert!(
+        body.contains("PolicySpec::Inline"),
+        "the issued effective lattice must replace the requested policy before spawn"
+    );
+    assert!(
+        body.contains("state.authority.release_child("),
+        "a failed spawn must hand the budget reservation back"
+    );
+    // Both entry points build an Admission — neither bypasses the gate.
+    assert!(src.contains("pod_authority::Admission::from_http("));
+    assert!(src.contains("pod_authority::Admission::from_grpc("));
+}

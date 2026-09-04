@@ -304,6 +304,21 @@ fn run() -> Result<(), String> {
                 ));
             }
         }
+
+        // The pod's certificate of authority (pod_authority on the node). Its
+        // effective permissions ARE this pod's policy, and the pinned root
+        // key is what the tool-proxy verifies it against. Absence is not
+        // fatal: the proxy falls back to its resolved policy as its own
+        // ceiling. Presence-but-invalid is the proxy's to refuse.
+        match timed("pod_certificate", || identity::fetch_pod_certificate(port)) {
+            Ok(Some(c)) => {
+                export!("NUCLEUS_POD_CERT", &c.certificate);
+                export!("NUCLEUS_CERT_ROOT_PUBKEY", &c.root_pubkey);
+                eprintln!("fetched pod certificate over vsock");
+            }
+            Ok(None) => eprintln!("no pod certificate was issued for this pod"),
+            Err(err) => eprintln!("failed to fetch pod certificate over vsock: {err}"),
+        }
     }
     // Printed even when no port was configured, so a boot with NO handshake is
     // visibly 0ms rather than silently absent — otherwise "the line is missing"

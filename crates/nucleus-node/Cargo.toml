@@ -60,6 +60,11 @@ base64 = { workspace = true }
 # Version comes from the workspace pin (=3.0.0); only the extra features
 # are declared here.
 ed25519-dalek = { workspace = true, features = ["rand_core", "pkcs8", "alloc"] }
+# The certificate authority (pod_authority.rs) signs LatticeCertificate chains
+# with ring, portcullis's signing backend; verification is dalek verify_strict.
+ring = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 # X.509 certificate parsing for SPIFFE ID extraction
