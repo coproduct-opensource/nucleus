@@ -134,6 +134,15 @@ pub struct BlockClaim {
     pub ttl: u64,
     /// Ed25519 verifying-key bytes of the block's issuer/attenuator.
     pub issuer_vk: [u8; 32],
+    /// The authority this token was derived from (#2486): the fingerprint of
+    /// the `LatticeCertificate` the issuing node had granted the task. Signed
+    /// (it is inside `signing_bytes`), carried UNCHANGED across attenuation
+    /// hops (`verify` refuses a chain that switches it), and optional so a
+    /// token minted before certificate-bound tokens still verifies: absent
+    /// means "no field", and `skip_serializing_if` keeps its signing bytes
+    /// byte-identical to the v1 layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<[u8; 32]>,
 }
 
 /// A [`BlockClaim`] plus the issuer's Ed25519 signature over its
@@ -203,6 +212,8 @@ pub enum TokenError {
     /// (replay / stale token).
     #[error("effective nonce mismatch (replay)")]
     NonceMismatch,
+    #[error("block {block} names a different authority than its parent")]
+    AuthoritySwitched { block: usize },
 }
 
 /// Domain-tagged canonical bytes a block's issuer signs over. Binds the
@@ -239,6 +250,41 @@ impl SignedTaskRef {
         ttl: u64,
         issuer: &SigningKey,
     ) -> Self {
+        Self::issue_with(task_id, scope, nonce, issued_at, ttl, issuer, None)
+    }
+
+    /// [`Self::issue`] bound to an authority: the fingerprint of the
+    /// certificate the issuer had granted the task (#2486). A verifier that
+    /// holds that certificate refuses a token naming another.
+    pub fn issue_under_authority(
+        task_id: impl Into<String>,
+        scope: TokenScope,
+        nonce: [u8; 16],
+        issued_at: u64,
+        ttl: u64,
+        issuer: &SigningKey,
+        authority: [u8; 32],
+    ) -> Self {
+        Self::issue_with(
+            task_id,
+            scope,
+            nonce,
+            issued_at,
+            ttl,
+            issuer,
+            Some(authority),
+        )
+    }
+
+    fn issue_with(
+        task_id: impl Into<String>,
+        scope: TokenScope,
+        nonce: [u8; 16],
+        issued_at: u64,
+        ttl: u64,
+        issuer: &SigningKey,
+        authority: Option<[u8; 32]>,
+    ) -> Self {
         let task_id = task_id.into();
         let claim = BlockClaim {
             scope,
@@ -247,6 +293,7 @@ impl SignedTaskRef {
             issued_at,
             ttl,
             issuer_vk: issuer.verifying_key().to_bytes(),
+            authority,
         };
         let sig = issuer
             .sign(&signing_bytes(&task_id, &claim))
@@ -287,6 +334,8 @@ impl SignedTaskRef {
             issued_at,
             ttl,
             issuer_vk: attenuator.verifying_key().to_bytes(),
+            // The authority is the ROOT's and never changes across hops.
+            authority: parent.claim.authority,
         };
         let sig = attenuator
             .sign(&signing_bytes(&next.task_id, &claim))
@@ -300,6 +349,11 @@ impl SignedTaskRef {
     /// only for an empty (invalid) token.
     pub fn effective_scope(&self) -> Option<&TokenScope> {
         self.blocks.last().map(|b| &b.claim.scope)
+    }
+
+    /// The authority the root block was issued under, if any (#2486).
+    pub fn authority(&self) -> Option<[u8; 32]> {
+        self.blocks.first().and_then(|b| b.claim.authority)
     }
 
     /// **The verification gate.** Returns the effective granted scope, or a
@@ -370,6 +424,11 @@ impl SignedTaskRef {
                 }
                 if !block.claim.scope.is_subset_of(&parent.claim.scope) {
                     return Err(TokenError::ScopeWidened { block: i });
+                }
+                // 5b. The authority is fixed at the root: a hop may not re-home
+                //     the token under another certificate (#2486).
+                if block.claim.authority != parent.claim.authority {
+                    return Err(TokenError::AuthoritySwitched { block: i });
                 }
             }
         }
@@ -629,6 +688,7 @@ mod tests {
             issued_at: 1_000,
             ttl: 500,
             issuer_vk: id,
+            authority: None,
         };
         let token = SignedTaskRef {
             task_id: "task-1".to_string(),
@@ -658,6 +718,7 @@ mod tests {
             issued_at: 1_000,
             ttl: 500,
             issuer_vk: [0u8; 32],
+            authority: None,
         };
         let token = SignedTaskRef {
             task_id: "task-1".to_string(),
@@ -670,5 +731,91 @@ mod tests {
             token.verify(&[0u8; 32], 1_200, &N0),
             Err(TokenError::BadSignature { block: 0 })
         );
+    }
+
+    // ── #2486: the authority claim ──────────────────────────────────────────
+
+    const AUTH: [u8; 32] = [0xaa; 32];
+
+    /// Minted under an authority, the token carries it, verifies, and an
+    /// attenuation hop carries the SAME authority forward.
+    #[test]
+    fn an_authority_bound_token_carries_it_through_attenuation() {
+        let issuer = key(1);
+        let vk = issuer.verifying_key().to_bytes();
+        let token = SignedTaskRef::issue_under_authority(
+            "task-1",
+            root_scope(),
+            N0,
+            1_000,
+            500,
+            &issuer,
+            AUTH,
+        );
+        assert_eq!(token.authority(), Some(AUTH));
+        assert!(token.verify(&vk, 1_200, &N0).is_ok());
+
+        let child = token.attenuate(
+            TokenScope::new(vec![Operation::ReadFiles], vec!["src/**".to_string()]),
+            N1,
+            1_100,
+            300,
+            &key(2),
+        );
+        assert_eq!(child.blocks[1].claim.authority, Some(AUTH));
+        assert!(child.verify(&vk, 1_200, &N1).is_ok());
+
+        // Round-trips through JSON with the field present.
+        let json = serde_json::to_string(&token).unwrap();
+        assert!(json.contains("\"authority\""));
+        let back: SignedTaskRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, token);
+    }
+
+    /// A hop that re-homes the token under another authority is refused —
+    /// even when the hop is otherwise honestly signed and narrower.
+    #[test]
+    fn a_hop_that_switches_authority_is_refused() {
+        let issuer = key(1);
+        let vk = issuer.verifying_key().to_bytes();
+        let token = SignedTaskRef::issue_under_authority(
+            "task-1",
+            root_scope(),
+            N0,
+            1_000,
+            500,
+            &issuer,
+            AUTH,
+        );
+        let mut child = token.attenuate(
+            TokenScope::new(vec![Operation::ReadFiles], vec!["src/**".to_string()]),
+            N1,
+            1_100,
+            300,
+            &key(2),
+        );
+        // Re-home and re-sign the hop with its own (attenuator) key.
+        child.blocks[1].claim.authority = Some([0xbb; 32]);
+        child.blocks[1].sig = key(2)
+            .sign(&signing_bytes(&child.task_id, &child.blocks[1].claim))
+            .to_bytes()
+            .to_vec();
+        assert_eq!(
+            child.verify(&vk, 1_200, &N1),
+            Err(TokenError::AuthoritySwitched { block: 1 })
+        );
+    }
+
+    /// Compatibility: a token minted with no authority (the v1 layout) still
+    /// verifies, has no authority, and its JSON carries no field at all —
+    /// so its signing bytes are byte-identical to before #2486.
+    #[test]
+    fn a_token_without_an_authority_still_verifies_and_serializes_as_before() {
+        let issuer = key(1);
+        let vk = issuer.verifying_key().to_bytes();
+        let token = root_token(&issuer);
+        assert_eq!(token.authority(), None);
+        assert!(token.verify(&vk, 1_200, &N0).is_ok());
+        assert!(!serde_json::to_string(&token).unwrap().contains("authority"));
     }
 }

@@ -711,7 +711,7 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
     not(any(feature = "local-driver", target_os = "linux")),
     allow(dead_code)
 )]
-pub(crate) fn mint_task_token_for_spec(
+pub(crate) async fn mint_task_token_for_spec(
     state: &NodeState,
     spec: &PodSpec,
     id: Uuid,
@@ -736,12 +736,16 @@ pub(crate) fn mint_task_token_for_spec(
     };
     // TTL = the pod/session lifetime (the spec's own timeout bound, in seconds).
     let ttl_secs = spec.spec.timeout_seconds;
+    // The certificate this node issued the pod (#2464) — the token names it
+    // (#2486). `None` only for a pod the authority refused to register.
+    let authority = state.authority.certificate_fingerprint(id).await;
     match crate::session_mint::mint_session_task_token(
         &id.to_string(),
         &policy,
         ttl_secs,
         now_unix,
         state.trust_gate.task_issuer_signing_key.as_ref(),
+        authority,
     ) {
         Ok(minted) => Some(minted),
         Err(e) => {

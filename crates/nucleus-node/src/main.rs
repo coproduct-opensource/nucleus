@@ -1588,7 +1588,7 @@ async fn spawn_local_pod(
     // startup (fail-closed). Injected on the same host-controlled env channel as
     // the secrets above; the token itself is a scoped capability + PUBLIC issuer
     // key (not a secret). Names match the tool-proxy verify half exactly.
-    if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id) {
+    if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id).await {
         command.env("NUCLEUS_TASK_TOKEN", &minted.token_json);
         command.env("NUCLEUS_TASK_TOKEN_NONCE", &minted.nonce_hex);
         command.env("NUCLEUS_TASK_TOKEN_ISSUER", &minted.issuer_hex);
@@ -1851,7 +1851,7 @@ async fn spawn_container_pod(
 
         // Live-path session capability token (see spawn_local_pod). Injected in
         // proxy mode — the only container mode that runs the tool-proxy sidecar.
-        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id) {
+        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id).await {
             env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
             env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
             env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
@@ -2370,7 +2370,7 @@ async fn spawn_firecracker_pod(
         // guest over the workload API (`FETCH_TASK_TOKEN`, per-pod socket) — no
         // longer written to the kernel cmdline — so `from_spec` does not take
         // it; only `PodMaterial` below does.
-        let task_token = pod_authority::mint_task_token_for_spec(state, spec, id);
+        let task_token = pod_authority::mint_task_token_for_spec(state, spec, id).await;
         let pod_certificate = state.authority.boot_certificate(id).await;
         let config = firecracker_config::FirecrackerConfig::from_spec(
             spec,
