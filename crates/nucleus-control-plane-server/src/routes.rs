@@ -60,7 +60,7 @@ pub async fn submit_job(
     // already-verified SPIFFE subject `RequireSpiffeAuth` extracted above.
     // Carried forward unchanged through every subsequent state transition
     // in `spawn_job`/`run_job_blocking`; never re-derived.
-    let owner = principal.sub.clone();
+    let owner = principal.sub().to_string();
     // Look up the driver up front so we fail fast on unknown drivers
     // rather than after queueing the job.
     if state.runners.get(&spec.agent_driver.name).is_none() {

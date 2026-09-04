@@ -998,14 +998,14 @@ impl Kernel {
         let now = chrono::Utc::now().timestamp() as u64;
         let provenance = SessionProvenance {
             certificate_fingerprint,
-            root_identity: verified.root_identity.clone(),
-            leaf_identity: verified.leaf_identity.clone(),
-            chain_depth: verified.chain_depth,
+            root_identity: verified.root_identity().to_string(),
+            leaf_identity: verified.leaf_identity().to_string(),
+            chain_depth: verified.chain_depth(),
         };
-        let initial_hash = verified.effective.checksum();
+        let initial_hash = verified.effective().checksum();
         // Capture sink scope before moving effective permissions.
         // A fully-unrestricted scope (all vecs empty) is stored as None.
-        let scope = verified.sink_scope;
+        let scope = verified.sink_scope().clone();
         let sink_scope = if scope.allowed_paths.is_empty()
             && scope.allowed_hosts.is_empty()
             && scope.allowed_git_refs.is_empty()
@@ -1016,7 +1016,7 @@ impl Kernel {
         };
         Self {
             session_id: Uuid::new_v4(),
-            effective: verified.effective,
+            effective: verified.effective().clone(),
             initial_hash,
             isolation: IsolationLattice::localhost(),
             trace: Vec::new(),
@@ -1060,12 +1060,12 @@ impl Kernel {
         let now = chrono::Utc::now().timestamp() as u64;
         let provenance = SessionProvenance {
             certificate_fingerprint,
-            root_identity: verified.root_identity.clone(),
-            leaf_identity: verified.leaf_identity.clone(),
-            chain_depth: verified.chain_depth,
+            root_identity: verified.root_identity().to_string(),
+            leaf_identity: verified.leaf_identity().to_string(),
+            chain_depth: verified.chain_depth(),
         };
-        let initial_hash = verified.effective.checksum();
-        let scope = verified.sink_scope;
+        let initial_hash = verified.effective().checksum();
+        let scope = verified.sink_scope().clone();
         let sink_scope = if scope.allowed_paths.is_empty()
             && scope.allowed_hosts.is_empty()
             && scope.allowed_git_refs.is_empty()
@@ -1076,7 +1076,7 @@ impl Kernel {
         };
         Self {
             session_id: Uuid::new_v4(),
-            effective: verified.effective,
+            effective: verified.effective().clone(),
             initial_hash,
             isolation,
             trace: Vec::new(),

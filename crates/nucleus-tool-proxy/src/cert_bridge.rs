@@ -44,7 +44,7 @@ use std::collections::HashSet;
 ///
 /// A dimension is included in the bid if ANY constituent capability is non-Never.
 pub fn certificate_to_bid(verified: &VerifiedPermissions) -> PermissionBid {
-    let caps = &verified.effective.capabilities;
+    let caps = &verified.effective().capabilities;
     let mut requested = Vec::new();
 
     // Filesystem: read_files, write_files, edit_files, glob_search, grep_search
@@ -72,21 +72,21 @@ pub fn certificate_to_bid(verified: &VerifiedPermissions) -> PermissionBid {
     }
 
     // Approval: meta-dimension, present if there are obligations
-    if !verified.effective.obligations.is_empty() {
+    if !verified.effective().obligations.is_empty() {
         requested.push(PermissionDimension::Approval);
     }
 
-    let trust_tier = chain_depth_to_trust_tier(verified.chain_depth);
+    let trust_tier = chain_depth_to_trust_tier(verified.chain_depth());
 
     let value_estimate = verified
-        .effective
+        .effective()
         .budget
         .max_cost_usd
         .to_f64()
         .unwrap_or(0.0);
 
     PermissionBid {
-        skill_id: verified.leaf_identity.clone(),
+        skill_id: verified.leaf_identity().to_string(),
         requested,
         value_estimate,
         trust_tier,
@@ -198,20 +198,20 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
 
 /// Intersect a market grant with certificate-attested permissions.
 ///
-/// The effective permissions are `verified.effective ∧ ceiling(granted)`,
+/// The effective permissions are `verified.effective() ∧ ceiling(granted)`,
 /// using the lattice meet operation. This preserves all invariants
 /// (uninhabitable_state enforcement, obligations, paths, budget, commands, time)
 /// and is provably correct: meet is monotone and deflationary.
 ///
 /// # Security Invariant
 ///
-/// The result is always ≤ `verified.effective` AND ≤ `ceiling(granted)`.
+/// The result is always ≤ `verified.effective()` AND ≤ `ceiling(granted)`.
 pub fn intersect_grant_with_certificate(
     grant: &PermissionGrant,
     verified: &VerifiedPermissions,
 ) -> PermissionLattice {
     let ceiling = dimensions_to_ceiling(&grant.granted);
-    verified.effective.meet(&ceiling)
+    verified.effective().meet(&ceiling)
 }
 
 /// Extract the set of market dimensions from a `PermissionLattice`.
@@ -560,8 +560,8 @@ mod tests {
 
         // Step 3: Verify the certificate
         let verified = verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap();
-        assert_eq!(verified.chain_depth, 1);
-        assert_eq!(verified.leaf_identity, "spiffe://nucleus/agent/coder-042");
+        assert_eq!(verified.chain_depth(), 1);
+        assert_eq!(verified.leaf_identity(), "spiffe://nucleus/agent/coder-042");
 
         // Step 4: Convert to market bid (α)
         let bid = certificate_to_bid(&verified);
@@ -580,7 +580,7 @@ mod tests {
         let effective = intersect_grant_with_certificate(&grant, &verified);
 
         // Step 7: Verify the result is bounded by both certificate and grant
-        assert!(effective.leq(&verified.effective));
+        assert!(effective.leq(verified.effective()));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -689,7 +689,7 @@ mod tests {
         for grant in &grants {
             let effective = intersect_grant_with_certificate(grant, &verified);
             assert!(
-                effective.leq(&verified.effective),
+                effective.leq(verified.effective()),
                 "Intersection exceeded certificate for grant: {:?}",
                 grant.granted
             );

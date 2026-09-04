@@ -78,7 +78,7 @@
 //! // Any verifier can check the certificate
 //! let root_pub = root_key.public_key().as_ref();
 //! let verified = verify_certificate(&cert, root_pub, Utc::now(), 10).unwrap();
-//! assert_eq!(verified.chain_depth, 1);
+//! assert_eq!(verified.chain_depth(), 1);
 //! ```
 
 use chrono::{DateTime, Utc};
@@ -171,28 +171,59 @@ pub struct LatticeCertificate {
     final_signature: Vec<u8>,
 }
 
+/// Marker type that makes [`VerifiedPermissions`] unforgeable outside this
+/// module — see the struct's own doc comment. Named distinctly from other
+/// sealed types in this codebase (`nucleus_ifc_kernel::discharge::Seal`,
+/// `nucleus_tool_proxy::session_token`'s own marker) since each lives in a
+/// different crate; there is no shared "the" seal type.
+#[derive(Clone)]
+struct CertificateSeal;
+
 /// Result of successful certificate verification.
 ///
-/// Only [`verify_certificate`] can produce this type, guaranteeing that the
-/// permissions were cryptographically verified.
-#[non_exhaustive]
+/// Sealed (#2450): every field is private, the only constructor
+/// ([`Self::new`]) is private to this module, and the `_seal` field holds a
+/// [`CertificateSeal`] that cannot be named outside it — so no
+/// `VerifiedPermissions` struct literal compiles in another crate, even one
+/// naming all five public-looking fields (see the `compile_fail` doctest
+/// below). Only [`verify_certificate`] produces one, guaranteeing that the
+/// permissions were cryptographically verified. Same pattern as
+/// `nucleus_ifc_kernel::discharge::DischargedBundle`.
+///
+/// ```compile_fail
+/// // This code does NOT compile — CertificateSeal is not accessible, and
+/// // the fields are private even ignoring that.
+/// use portcullis::certificate::VerifiedPermissions;
+/// use portcullis::PermissionLattice;
+/// let verified = VerifiedPermissions {
+///     effective: PermissionLattice::restrictive(),
+///     chain_depth: 0,
+///     root_identity: "spiffe://attacker/forged".to_string(),
+///     leaf_identity: "spiffe://attacker/forged".to_string(),
+///     sink_scope: Default::default(),
+///     // no `_seal`: the field is private, and CertificateSeal is
+///     // unnameable outside this module regardless.
+/// };
+/// ```
 #[derive(Clone)]
 pub struct VerifiedPermissions {
-    /// The effective permissions at the end of the chain.
-    pub effective: PermissionLattice,
-    /// Number of delegation hops from root to leaf.
-    pub chain_depth: usize,
-    /// Identity of the root authority.
-    pub root_identity: String,
-    /// Identity of the leaf holder.
-    pub leaf_identity: String,
-    /// Effective sink scope at the end of the chain (#594).
-    pub sink_scope: SinkScope,
+    effective: PermissionLattice,
+    chain_depth: usize,
+    root_identity: String,
+    leaf_identity: String,
+    sink_scope: SinkScope,
+    _seal: CertificateSeal,
 }
 
 impl VerifiedPermissions {
-    /// Construct verified permissions (typically from certificate chain verification).
-    pub fn new(
+    /// Private constructor — only callable from within this module (the
+    /// verifier, and this module's own tests). Gated behind `crypto`, same as
+    /// its one caller ([`verify_certificate`]): without that feature `new` is
+    /// genuinely unreachable, and leaving it ungated produces a dead-code
+    /// warning in any crate that depends on `portcullis` with
+    /// `default-features = false` and no other path to `crypto`.
+    #[cfg(feature = "crypto")]
+    fn new(
         effective: PermissionLattice,
         chain_depth: usize,
         root_identity: String,
@@ -205,7 +236,33 @@ impl VerifiedPermissions {
             root_identity,
             leaf_identity,
             sink_scope,
+            _seal: CertificateSeal,
         }
+    }
+
+    /// The effective permissions at the end of the chain.
+    pub fn effective(&self) -> &PermissionLattice {
+        &self.effective
+    }
+
+    /// Number of delegation hops from root to leaf.
+    pub fn chain_depth(&self) -> usize {
+        self.chain_depth
+    }
+
+    /// Identity of the root authority.
+    pub fn root_identity(&self) -> &str {
+        &self.root_identity
+    }
+
+    /// Identity of the leaf holder.
+    pub fn leaf_identity(&self) -> &str {
+        &self.leaf_identity
+    }
+
+    /// Effective sink scope at the end of the chain (#594).
+    pub fn sink_scope(&self) -> &SinkScope {
+        &self.sink_scope
     }
 }
 
@@ -1080,13 +1137,13 @@ pub fn verify_certificate(
         .map(|b| b.sink_scope.clone())
         .unwrap_or_default();
 
-    Ok(VerifiedPermissions {
-        effective: prev_permissions.clone(),
-        chain_depth: cert.blocks.len(),
-        root_identity: cert.authority.root_identity.clone(),
+    Ok(VerifiedPermissions::new(
+        prev_permissions.clone(),
+        cert.blocks.len(),
+        cert.authority.root_identity.clone(),
         leaf_identity,
-        sink_scope: effective_sink_scope,
-    })
+        effective_sink_scope,
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

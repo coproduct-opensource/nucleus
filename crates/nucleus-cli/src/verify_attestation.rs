@@ -81,19 +81,15 @@ pub fn execute(args: VerifyAttestationArgs) -> Result<()> {
     let backend = SelfMeasuredBackend;
     match backend.verify_svid(&chain, &req, args.require_attestation) {
         Ok(Some(va)) => {
-            let measurement = va
-                .launch
-                .as_ref()
-                .map(|l| l.to_hex_summary())
-                .unwrap_or_default();
+            let measurement = va.launch().map(|l| l.to_hex_summary()).unwrap_or_default();
             println!(
                 "OK: attested SVID verified via '{}' (assurance L{}) — {}",
-                va.backend,
+                va.backend(),
                 va.assurance().as_u8(),
                 measurement
             );
-            println!("  proves:     {}", fmt_claims(&va.proves));
-            println!("  not proven: {}", fmt_claims(&va.not_proven));
+            println!("  proves:     {}", fmt_claims(va.proven_claims()));
+            println!("  not proven: {}", fmt_claims(va.unproven_claims()));
             println!(
                 "NOTE: node-signed SOFTWARE launch attestation (no hardware root); \
                  trust is conditional on the node's signing key."

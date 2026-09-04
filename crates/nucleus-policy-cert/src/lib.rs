@@ -1024,9 +1024,9 @@ pub mod portcullis_bridge {
     /// Project a verified portcullis delegation into the unified outcome.
     pub fn delegation_outcome(verified: &VerifiedPermissions) -> AuthorityOutcome {
         AuthorityOutcome::Delegation {
-            chain_depth: verified.chain_depth as u32,
-            root_identity: verified.root_identity.clone(),
-            leaf_identity: verified.leaf_identity.clone(),
+            chain_depth: verified.chain_depth() as u32,
+            root_identity: verified.root_identity().to_string(),
+            leaf_identity: verified.leaf_identity().to_string(),
         }
     }
 
@@ -1046,17 +1046,63 @@ pub mod portcullis_bridge {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use chrono::{Duration, Utc};
         use portcullis::PermissionLattice;
-        use portcullis::certificate::{SinkScope, VerifiedPermissions};
+        use portcullis::certificate::{
+            LatticeCertificate, VerifiedPermissions, verify_certificate,
+        };
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
 
+        /// Mint a real `depth`-hop delegation chain and verify it —
+        /// `VerifiedPermissions` is sealed (#2450) and can only be produced
+        /// by `verify_certificate` now, matching every other producer in
+        /// this codebase (`nucleus-tool-proxy::cert_bridge`'s
+        /// `mint_and_verify`/`mint_delegate_and_verify`,
+        /// `portcullis/tests/kernel_sink_scope.rs`'s `verified_with_scope`).
+        /// Only `depth` 1 and 2 are used by the tests below.
         fn verified(depth: usize) -> VerifiedPermissions {
-            VerifiedPermissions::new(
+            assert!(
+                depth >= 1,
+                "a mint-only chain has depth 0, not a hop count this helper supports"
+            );
+            let rng = SystemRandom::new();
+            let root_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+            let root_key = Ed25519KeyPair::from_pkcs8(root_pkcs8.as_ref()).unwrap();
+            let root_pub = root_key.public_key().as_ref().to_vec();
+            let not_after = Utc::now() + Duration::hours(8);
+
+            let (mut cert, mut holder_key) = LatticeCertificate::mint(
                 PermissionLattice::restrictive(),
-                depth,
-                "spiffe://nucleus.local/human/alice".into(),
-                "spiffe://nucleus.local/agent/coder-042".into(),
-                SinkScope::default(),
-            )
+                "spiffe://nucleus.local/human/alice".to_string(),
+                not_after,
+                &root_key,
+                &rng,
+            );
+            for hop in 1..depth {
+                let (next_cert, next_key) = cert
+                    .delegate(
+                        &PermissionLattice::restrictive(),
+                        format!("spiffe://nucleus.local/intermediate/{hop}"),
+                        not_after,
+                        &holder_key,
+                        &rng,
+                    )
+                    .unwrap();
+                cert = next_cert;
+                holder_key = next_key;
+            }
+            let (cert, _leaf_key) = cert
+                .delegate(
+                    &PermissionLattice::restrictive(),
+                    "spiffe://nucleus.local/agent/coder-042".to_string(),
+                    not_after,
+                    &holder_key,
+                    &rng,
+                )
+                .unwrap();
+
+            verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap()
         }
 
         #[test]
