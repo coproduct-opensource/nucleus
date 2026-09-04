@@ -311,7 +311,7 @@ impl PodAuthority {
             .resolve_policy()
             .map_err(|e| ApiError::InvalidSpec(format!("policy: {e}")))?;
         let child_identity = self.pod_spiffe_id(child_id);
-        let ttl = Duration::seconds(spec.spec.timeout_seconds.min(i64::MAX as u64) as i64);
+        let ttl = Duration::seconds(i64::try_from(spec.spec.timeout_seconds).unwrap_or(i64::MAX));
         let now = Utc::now();
         let reason = format!("pod {child_id} created by {}", admission.caller_spiffe_id);
 
