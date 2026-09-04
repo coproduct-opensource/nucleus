@@ -19,6 +19,7 @@ on:
       - "crates/nucleus-github-oidc/src/extracted/**"
       - "crates/nucleus-github-oidc/lean/generated/**"
       - "crates/nucleus-github-oidc/lean/OidcSpiffeProofs.lean"
+      - "crates/nucleus-github-oidc/lean/JwtSvidClaimsProofs.lean"
       - "crates/nucleus-github-oidc/lean/lakefile.lean"
       - ".github/workflows/aeneas-oidc-spiffe.yml"
   pull_request:
@@ -26,6 +27,7 @@ on:
       - "crates/nucleus-github-oidc/src/extracted/**"
       - "crates/nucleus-github-oidc/lean/generated/**"
       - "crates/nucleus-github-oidc/lean/OidcSpiffeProofs.lean"
+      - "crates/nucleus-github-oidc/lean/JwtSvidClaimsProofs.lean"
       - "crates/nucleus-github-oidc/lean/lakefile.lean"
       - ".github/workflows/aeneas-oidc-spiffe.yml"
   merge_group:
@@ -49,7 +51,7 @@ env:
   # Charon needs a specific nightly for rustc-dev components.
   CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
-  EXTRACT_ROOTS: "nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes,nucleus_github_oidc::extracted::oidc_spiffe::derive_spiffe_bytes,nucleus_github_oidc::extracted::oidc_spiffe::is_spiffe_byte"
+  EXTRACT_ROOTS: "nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes,nucleus_github_oidc::extracted::oidc_spiffe::derive_spiffe_bytes,nucleus_github_oidc::extracted::oidc_spiffe::is_spiffe_byte,nucleus_github_oidc::extracted::jwt_svid_claims::bytes_eq,nucleus_github_oidc::extracted::jwt_svid_claims::has_prefix,nucleus_github_oidc::extracted::jwt_svid_claims::decide_claims"
 
 jobs:
   aeneas-oidc-spiffe:
@@ -74,7 +76,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.merge_group.head_sha }}
-          PATTERN: '^\.github/workflows/aeneas\-oidc\-spiffe\.yml$|^crates/nucleus\-github\-oidc/lean/OidcSpiffeProofs\.lean$|^crates/nucleus\-github\-oidc/lean/generated/|^crates/nucleus\-github\-oidc/lean/lakefile\.lean$|^crates/nucleus\-github\-oidc/src/extracted/'
+          PATTERN: '^\.github/workflows/aeneas\-oidc\-spiffe\.yml$|^crates/nucleus\-github\-oidc/lean/OidcSpiffeProofs\.lean$|^crates/nucleus\-github\-oidc/lean/JwtSvidClaimsProofs\.lean$|^crates/nucleus\-github\-oidc/lean/generated/|^crates/nucleus\-github\-oidc/lean/lakefile\.lean$|^crates/nucleus\-github\-oidc/src/extracted/'
         run: |
           set -euo pipefail
           if [ "$EVENT" != "merge_group" ]; then
@@ -241,7 +243,7 @@ jobs:
         shell: bash
         run: |
           lake build NucleusGithubOidc
-          lake build OidcSpiffeProofs 2>&1 | tee /tmp/lake-oidc.log
+          lake build OidcSpiffeProofs JwtSvidClaimsProofs 2>&1 | tee /tmp/lake-oidc.log
 
       - name: Assert clean axiom set (no sorryAx / opaque axioms)
         if: steps.scope.outputs.relevant == 'true'
@@ -279,7 +281,7 @@ jobs:
           # anywhere. Must NOT false-positive on the file's honest prose about
           # `sorry`/`sorry-free`/`partial_fixpoint`.
           if grep -rnE '(:=|=>|\bby\b|<;>|·|;|^)[[:space:]]*(sorry|admit)\b|\bnative_decide\b' \
-               OidcSpiffeProofs.lean \
+               OidcSpiffeProofs.lean JwtSvidClaimsProofs.lean \
                generated/NucleusGithubOidc/ --include='*.lean'; then
             echo "ERROR: proof contains a sorry/admit/native_decide tactic."
             exit 1

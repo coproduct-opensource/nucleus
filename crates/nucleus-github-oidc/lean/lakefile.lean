@@ -30,3 +30,10 @@ lean_lib «NucleusGithubOidc» where
 -- The OIDC→SPIFFE derivation properties, proven OVER the generated defs above.
 lean_lib «OidcSpiffeProofs» where
   roots := #[`OidcSpiffeProofs]
+
+-- The JWT-SVID claims-decision properties (soundness / fail-closed /
+-- completeness / verdict attribution), proven OVER the generated
+-- `extracted.jwt_svid_claims.decide_claims` (#2452). Same generated lib, its
+-- own theorem file, so each slice's axiom audit stays separately readable.
+lean_lib «JwtSvidClaimsProofs» where
+  roots := #[`JwtSvidClaimsProofs]
