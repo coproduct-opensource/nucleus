@@ -919,7 +919,9 @@ impl LatticeCertificate {
         // The tool surface (#2485): a request that says nothing about tools
         // inherits the parent's; one that names tools gets the marker. After
         // the meet the dimension must still be present if the parent had it.
+        #[allow(unused_mut)] // mutated only outside Kani (extensions are compiled out there)
         let mut requested = requested.clone();
+        #[cfg(not(kani))]
         crate::tool_surface::inherit_surface(
             &mut requested.capabilities,
             &parent_permissions.capabilities,
@@ -929,6 +931,7 @@ impl LatticeCertificate {
         // Compute the meet with justification (the constructive witness)
         let (effective_permissions, justification) =
             meet_with_justification(parent_permissions, requested);
+        #[cfg(not(kani))]
         if !crate::tool_surface::surface_preserved(
             &effective_permissions.capabilities,
             &parent_permissions.capabilities,
