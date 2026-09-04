@@ -88,27 +88,74 @@ impl SpiffeAuthConfig {
 
 /// Information the verifier extracts from a valid JWT-SVID. Handlers
 /// downstream may inspect `sub` for fine-grained federation decisions.
+///
+/// Sealed (#2450): fields are private, and a private `_seal: Seal`
+/// marker field means no struct literal compiles even from elsewhere in
+/// this crate — the tightest tier used for any of the four #2450 types,
+/// matching this type's tighter acceptance bar ("no code outside
+/// `crate::auth`"). The only constructors, [`Self::new`] (the real
+/// `verify_jwt_svid` path) and [`Self::unauthenticated`] (the honest
+/// auth-disabled sentinel), are private to this module — same rigor as
+/// `nucleus_ifc_kernel::discharge::DischargedBundle`.
+///
+/// ```compile_fail
+/// // This code does NOT compile — the fields are private, `_seal`'s type
+/// // is unnameable outside this module, and both constructors are private.
+/// use nucleus_control_plane_server::AuthenticatedPrincipal;
+/// let forged = AuthenticatedPrincipal {
+///     sub: "spiffe://prod.example.com/ns/agents/sa/forged".to_string(),
+///     aud: vec!["https://control.nucleus.local/api".to_string()],
+///     authenticated: true,
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct AuthenticatedPrincipal {
     /// SPIFFE subject id. `spiffe://...` URL.
-    pub sub: String,
+    sub: String,
     /// All `aud` values from the token.
-    pub aud: Vec<String>,
+    aud: Vec<String>,
     /// True iff verification was performed against a configured trust
     /// JWKS. False when auth is disabled (synthetic admit path).
-    pub authenticated: bool,
+    authenticated: bool,
+    _seal: Seal,
 }
 
+/// Unnameable outside this module — see [`AuthenticatedPrincipal`]'s doc comment.
+#[derive(Debug, Clone)]
+struct Seal;
+
 impl AuthenticatedPrincipal {
+    /// Private to this module — see the struct's own doc comment.
+    fn new(sub: String, aud: Vec<String>, authenticated: bool) -> Self {
+        Self {
+            sub,
+            aud,
+            authenticated,
+            _seal: Seal,
+        }
+    }
+
     /// Synthetic admit path for auth-disabled deployments. The `sub`
     /// is the literal string `"<unauthenticated>"` so handlers that
     /// log it can't be tricked into reading it as a real SPIFFE id.
-    pub fn unauthenticated() -> Self {
-        Self {
-            sub: "<unauthenticated>".to_string(),
-            aud: Vec::new(),
-            authenticated: false,
-        }
+    fn unauthenticated() -> Self {
+        Self::new("<unauthenticated>".to_string(), Vec::new(), false)
+    }
+
+    /// SPIFFE subject id. `spiffe://...` URL (or the literal
+    /// `"<unauthenticated>"` sentinel — see [`Self::unauthenticated`]).
+    pub fn sub(&self) -> &str {
+        &self.sub
+    }
+
+    /// All `aud` values from the token.
+    pub fn aud(&self) -> &[String] {
+        &self.aud
+    }
+
+    /// True iff verification was performed against a configured trust JWKS.
+    pub fn authenticated(&self) -> bool {
+        self.authenticated
     }
 }
 
@@ -291,11 +338,7 @@ pub fn verify_jwt_svid(
         return Err(AuthError::SubjectPrefixMismatch { sub: claims.sub });
     }
 
-    Ok(AuthenticatedPrincipal {
-        sub: claims.sub,
-        aud: auds,
-        authenticated: true,
-    })
+    Ok(AuthenticatedPrincipal::new(claims.sub, auds, true))
 }
 
 /// Outcome of bootstrap-time SPIFFE config resolution from optional
@@ -531,10 +574,10 @@ mod tests {
         let cfg = config(f.jwks());
         let principal = verify_jwt_svid(&token, &cfg).unwrap();
         assert_eq!(
-            principal.sub,
+            principal.sub(),
             "spiffe://prod.example.com/ns/agents/sa/coder"
         );
-        assert!(principal.authenticated);
+        assert!(principal.authenticated());
     }
 
     /// M-3 strong-binding regression for the control-plane JWT-SVID trust
@@ -778,6 +821,6 @@ mod tests {
 
         let cfg = config(f.jwks());
         let p = verify_jwt_svid(&token, &cfg).unwrap();
-        assert_eq!(p.aud.len(), 2);
+        assert_eq!(p.aud().len(), 2);
     }
 }
