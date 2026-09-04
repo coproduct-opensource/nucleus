@@ -7093,7 +7093,9 @@ name = "nucleus-mcp-guard"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
+ "hex",
  "nucleus-ifc",
  "portcullis",
  "serde",

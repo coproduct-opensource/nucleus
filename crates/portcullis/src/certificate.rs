@@ -381,6 +381,10 @@ pub enum CertificateDelegationError {
     KeyGenerationFailed,
     /// The requested sink scope exceeds the parent's scope (#594).
     SinkScopeExceedsParent,
+    /// The parent certificate carries a tool surface and the child's effective
+    /// lattice has none: the request asked for the surface marker at `Never`
+    /// (#2485). The dimension can be narrowed, never shed.
+    ToolSurfaceDropped,
 }
 
 impl fmt::Display for CertificateDelegationError {
@@ -395,6 +399,10 @@ impl fmt::Display for CertificateDelegationError {
             Self::SinkScopeExceedsParent => {
                 write!(f, "Requested sink scope exceeds parent's scope")
             }
+            Self::ToolSurfaceDropped => write!(
+                f,
+                "Requested lattice sheds the parent's tool surface (marker at Never)"
+            ),
         }
     }
 }
@@ -908,9 +916,25 @@ impl LatticeCertificate {
             return Err(CertificateDelegationError::SinkScopeExceedsParent);
         }
 
+        // The tool surface (#2485): a request that says nothing about tools
+        // inherits the parent's; one that names tools gets the marker. After
+        // the meet the dimension must still be present if the parent had it.
+        let mut requested = requested.clone();
+        crate::tool_surface::inherit_surface(
+            &mut requested.capabilities,
+            &parent_permissions.capabilities,
+        );
+        let requested = &requested;
+
         // Compute the meet with justification (the constructive witness)
         let (effective_permissions, justification) =
             meet_with_justification(parent_permissions, requested);
+        if !crate::tool_surface::surface_preserved(
+            &effective_permissions.capabilities,
+            &parent_permissions.capabilities,
+        ) {
+            return Err(CertificateDelegationError::ToolSurfaceDropped);
+        }
 
         // Get from_identity
         let from_identity = if self.blocks.is_empty() {
@@ -1767,6 +1791,101 @@ mod tests {
         let restored = LatticeCertificate::from_bytes(&bytes).unwrap();
         let verified = verify_certificate(&restored, &root_pub, Utc::now(), 10).unwrap();
         assert_eq!(verified.chain_depth, 1);
+    }
+
+    /// #2485: the tool surface rides the certificate as extension keys, so a
+    /// hop can only narrow it — the child's effective surface is the meet of
+    /// what the parent approved and what the child asked for, inside the
+    /// signed permissions and therefore the fingerprint.
+    #[test]
+    fn a_delegated_certificate_narrows_the_tool_surface() {
+        use crate::tool_surface::{approve_tool, approved_tools};
+
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let root_pub = root_key.public_key().as_ref().to_vec();
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let mut root_perms = PermissionLattice::permissive();
+        approve_tool(&mut root_perms.capabilities, "read_file", "11");
+        approve_tool(&mut root_perms.capabilities, "list_dir", "22");
+        let (cert, holder) = LatticeCertificate::mint(
+            root_perms,
+            "spiffe://test/human/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        let mut requested = PermissionLattice::permissive();
+        approve_tool(&mut requested.capabilities, "read_file", "11");
+        approve_tool(&mut requested.capabilities, "exfiltrate", "33");
+        let (child, _) = cert
+            .delegate(
+                &requested,
+                "spiffe://test/agent/a".into(),
+                not_after,
+                &holder,
+                &rng,
+            )
+            .unwrap();
+
+        let verified = verify_certificate(&child, &root_pub, Utc::now(), 10).unwrap();
+        assert_eq!(
+            approved_tools(&verified.effective().capabilities).unwrap(),
+            std::collections::BTreeMap::from([("read_file".to_string(), "11".to_string())]),
+            "list_dir dropped by the child, exfiltrate never approved by the parent"
+        );
+        assert_ne!(
+            child.fingerprint(),
+            cert.fingerprint(),
+            "the surface is under the fingerprint"
+        );
+
+        // A request that says nothing about tools keeps the parent's surface.
+        let (silent, _) = cert
+            .delegate(
+                &PermissionLattice::permissive(),
+                "spiffe://test/agent/b".into(),
+                not_after,
+                &holder,
+                &rng,
+            )
+            .unwrap();
+        let verified = verify_certificate(&silent, &root_pub, Utc::now(), 10).unwrap();
+        assert_eq!(
+            approved_tools(&verified.effective().capabilities).unwrap(),
+            std::collections::BTreeMap::from([
+                ("list_dir".to_string(), "22".to_string()),
+                ("read_file".to_string(), "11".to_string()),
+            ])
+        );
+
+        // Asking for the marker at Never cannot shed the dimension either: a
+        // request with no surface above Never counts as silent and inherits
+        // the parent's whole surface. No request shape escapes.
+        let mut shed = PermissionLattice::permissive();
+        shed.capabilities.extensions.insert(
+            crate::ExtensionOperation::new(crate::tool_surface::TOOL_SURFACE_MARKER),
+            crate::CapabilityLevel::Never,
+        );
+        let (kept, _) = cert
+            .delegate(
+                &shed,
+                "spiffe://test/agent/c".into(),
+                not_after,
+                &holder,
+                &rng,
+            )
+            .unwrap();
+        let verified = verify_certificate(&kept, &root_pub, Utc::now(), 10).unwrap();
+        assert_eq!(
+            approved_tools(&verified.effective().capabilities)
+                .unwrap()
+                .len(),
+            2,
+            "the shedding request inherited the parent's surface instead"
+        );
     }
 
     #[test]
