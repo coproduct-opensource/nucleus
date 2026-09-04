@@ -2177,6 +2177,7 @@ dependencies = [
  "base64 0.23.1",
  "blake3",
  "chrono",
+ "ed25519-dalek 3.0.0",
  "pretty_assertions",
  "ring",
  "serde",

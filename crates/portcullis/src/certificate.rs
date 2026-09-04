@@ -1196,7 +1196,11 @@ impl LatticeCertificate {
 /// the attest stack (`token_sign`, `receipt_sign`) and removes `ring` from the
 /// verify TCB (SECURITY_TODO #16). Signing stays on `ring`.
 #[cfg(feature = "crypto")]
-fn verify_ed25519_strict(public_key: &[u8], message: &[u8], sig: &[u8]) -> Result<(), ()> {
+pub(crate) fn verify_ed25519_strict(
+    public_key: &[u8],
+    message: &[u8],
+    sig: &[u8],
+) -> Result<(), ()> {
     let vk_bytes: [u8; 32] = public_key.try_into().map_err(|_| ())?;
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes).map_err(|_| ())?;
     let sig = ed25519_dalek::Signature::from_slice(sig).map_err(|_| ())?;

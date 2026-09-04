@@ -504,10 +504,10 @@ impl Kernel {
                 continue;
             };
 
-            // Verify Ed25519 signature
-            let public_key =
-                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, pub_key_bytes);
-            if public_key.verify(&payload, &sig.signature).is_err() {
+            // Verify Ed25519 signature (strict: SECURITY_TODO #16)
+            if ck_types::witness::verify_ed25519_strict(pub_key_bytes, &payload, &sig.signature)
+                .is_err()
+            {
                 reasons.push(RejectionReason {
                     invariant: ConstitutionalInvariant::GovernanceMonotonicity,
                     message: format!(

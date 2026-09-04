@@ -13,6 +13,41 @@ use crate::digest::ArtifactDigest;
 use crate::manifest::PolicyManifest;
 use crate::{ConstitutionalInvariant, PatchClass};
 
+/// Strict Ed25519 verification for every ck trust-path re-verify.
+///
+/// `ed25519_dalek::VerifyingKey::verify_strict` rejects small-order and
+/// non-canonical public keys and `R` points, which `ring`'s cofactored
+/// `UnparsedPublicKey::verify` accepts (the "identity triple" verifies under
+/// the identity key). A witness or human signature must bind to exactly one
+/// key, so this is the only verifier the kernel may use (SECURITY_TODO #16).
+/// Signing stays on `ring`.
+pub fn verify_ed25519_strict(
+    public_key: &[u8],
+    message: &[u8],
+    sig: &[u8],
+) -> Result<(), InvalidSignature> {
+    let vk_bytes: [u8; 32] = public_key.try_into().map_err(|_| InvalidSignature)?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes).map_err(|_| InvalidSignature)?;
+    let sig = ed25519_dalek::Signature::from_slice(sig).map_err(|_| InvalidSignature)?;
+    vk.verify_strict(message, &sig)
+        .map_err(|_| InvalidSignature)
+}
+
+/// The single failure of [`verify_ed25519_strict`]: malformed key, malformed
+/// signature, small-order/non-canonical point, or a signature that does not
+/// verify. Deliberately one variant — a verifier must not tell an attacker
+/// WHICH check failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidSignature;
+
+impl std::fmt::Display for InvalidSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Ed25519 signature did not verify (strict)")
+    }
+}
+
+impl std::error::Error for InvalidSignature {}
+
 /// Canonical witness bundle for an amendment transition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WitnessBundle {
@@ -166,10 +201,7 @@ impl SignatureVerifier {
                 }
             };
 
-            let public_key =
-                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, pub_key_bytes);
-
-            match public_key.verify(&payload, &sig_bytes) {
+            match verify_ed25519_strict(pub_key_bytes, &payload, &sig_bytes) {
                 Ok(()) => {
                     valid_count += 1;
                     distinct_keys.insert(pub_key_bytes.clone());
