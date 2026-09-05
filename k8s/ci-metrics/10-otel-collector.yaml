@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: ci-metrics
+data:
+  config.yaml: |
+    receivers:
+      # Runner side: the actions-runner-controller listeners (one per scale
+      # set) and the controller-manager expose gha_* on :8080/metrics once
+      # the controller chart has `metrics:` set (k8s/ci-runner/README.md).
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: arc
+              scrape_interval: 15s
+              kubernetes_sd_configs:
+                - role: pod
+                  namespaces:
+                    names: [arc-systems]
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+                  regex: runner-scale-set-listener|controller-manager
+                  action: keep
+                - source_labels: [__meta_kubernetes_pod_container_port_number]
+                  regex: "8080"
+                  action: keep
+                - source_labels: [__meta_kubernetes_pod_label_actions_github_com_scale_set_name]
+                  target_label: scale_set
+                - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+                  target_label: component
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: pod
+      # GitHub side: `cargo xtask ci-otel` pushes OTLP/HTTP JSON here
+      # (.github/workflows/ci-metrics.yml every 15 min; also the NodePort for
+      # a backfill from the host).
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      # The xtask reports DELTA histograms/sums per window; Prometheus wants
+      # cumulative series.
+      deltatocumulative:
+        max_stale: 24h
+      batch:
+        timeout: 5s
+    exporters:
+      prometheusremotewrite:
+        endpoint: http://prometheus.ci-metrics.svc.cluster.local:9090/api/v1/write
+        resource_to_telemetry_conversion:
+          enabled: true
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        metrics/arc:
+          receivers: [prometheus]
+          processors: [batch]
+          exporters: [prometheusremotewrite]
+        metrics/github:
+          receivers: [otlp]
+          processors: [deltatocumulative, batch]
+          exporters: [prometheusremotewrite]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: ci-metrics
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: otel-collector}
+  template:
+    metadata:
+      labels: {app: otel-collector}
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+        - name: collector
+          image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.145.0
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - {name: otlp-http, containerPort: 4318}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otel, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: otel-collector-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: ci-metrics
+spec:
+  type: NodePort
+  selector: {app: otel-collector}
+  ports:
+    - {name: otlp-http, port: 4318, targetPort: 4318, nodePort: 30318}

@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: ci-metrics
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+    # Everything arrives by remote write from the collector; Prometheus only
+    # scrapes itself.
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: ci-metrics
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: {storage: 10Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: ci-metrics
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: prometheus}
+  template:
+    metadata:
+      labels: {app: prometheus}
+    spec:
+      securityContext: {fsGroup: 65534}
+      containers:
+        - name: prometheus
+          image: quay.io/prometheus/prometheus:v3.9.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=60d
+            - --web.enable-remote-write-receiver
+          ports:
+            - {name: http, containerPort: 9090}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus, readOnly: true}
+            - {name: data, mountPath: /prometheus}
+      volumes:
+        - name: config
+          configMap: {name: prometheus-config}
+        - name: data
+          persistentVolumeClaim: {claimName: prometheus-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: ci-metrics
+spec:
+  type: NodePort
+  selector: {app: prometheus}
+  ports:
+    - {name: http, port: 9090, targetPort: 9090, nodePort: 30909}
