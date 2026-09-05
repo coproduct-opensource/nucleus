@@ -74,8 +74,25 @@ enum Command {
     /// workflow. The constraint is the map key, so the unsafe batch is not a
     /// value this can emit.
     RerunPlan,
+    /// Where does one commit's CI time go? Pulls every workflow run for a
+    /// commit through `gh api` and reports per-runner-label run-time and
+    /// queue-wait distributions, the wall clock and critical path, the longest
+    /// jobs with their longest steps, and setup-vs-work overhead. The number a
+    /// CI-optimisation change has to move; run it before and after.
+    CiTimings {
+        /// Commit to report on (default: HEAD).
+        #[arg(long)]
+        sha: Option<String>,
+        /// How many of the longest jobs to list.
+        #[arg(long, default_value_t = 15)]
+        top: usize,
+        /// Dump one JSON object per job instead of the report.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
+mod ci_timings;
 mod rerun_plan;
 
 fn main() -> Result<()> {
@@ -88,6 +105,7 @@ fn main() -> Result<()> {
             changed_files,
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
+        Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
     }
 }
 
