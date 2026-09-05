@@ -226,6 +226,12 @@ lean_lib «DeclassifyProofs» where
 lean_lib «SessionCeilingProofs» where
   roots := #[`SessionCeilingProofs]
 
+-- Guest device surface (six classes, finite enum) and the `pci=off` floor of
+-- nucleus-node's firecracker_config.rs over a tokenised cmdline (#2603).
+-- Mathlib-free; parity with the shipped String function is a nucleus-node proptest.
+lean_lib «GuestDeviceSurfaceProofs» where
+  roots := #[`GuestDeviceSurfaceProofs]
+
 -- GKAT syntax + equational axioms (POPL'20 Fig.1) and the single-state Salomaa
 -- reduction (existence via W1/U5/S1/S4, uniqueness via W3) — the base case of the
 -- completeness reduction, done syntactically. General-n existence is open.

@@ -2058,6 +2058,84 @@ mod tests {
         );
     }
 
+    // ── #2603: the shipped String function agrees with the Lean token model ──
+    //
+    // `crates/portcullis-core/lean/GuestDeviceSurfaceProofs.lean` proves
+    // idempotence, `pci=off ∈ enforce x`, `pci=on ∉ enforce x` and
+    // `count pci=off = 1` over a TOKENISED command line (`Cmdline.enforce`).
+    // Aeneas cannot extract the `String` code, so the bridge is this parity
+    // test: a transcription of the Lean model runs beside the real function
+    // on arbitrary token lists, and the two must agree token for token. The
+    // theorems then transfer to `enforce_pci_off` through the equality.
+
+    /// `GuestDeviceSurface.Tok`, transcribed.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum ModelTok {
+        Pci(bool), // `true` = `pci=off`, `false` = any other value (`pci=on`)
+        Other(String),
+    }
+
+    impl ModelTok {
+        /// The Rust token this model token stands for.
+        fn render(&self) -> String {
+            match self {
+                ModelTok::Pci(true) => "pci=off".to_string(),
+                ModelTok::Pci(false) => "pci=on".to_string(),
+                ModelTok::Other(s) => s.clone(),
+            }
+        }
+    }
+
+    /// `GuestDeviceSurface.Cmdline.enforce`, transcribed: keep the non-`pci`
+    /// tokens in order, append one `pci=off`.
+    fn model_enforce(args: &[ModelTok]) -> Vec<ModelTok> {
+        let mut out: Vec<ModelTok> = args
+            .iter()
+            .filter(|t| !matches!(t, ModelTok::Pci(_)))
+            .cloned()
+            .collect();
+        out.push(ModelTok::Pci(true));
+        out
+    }
+
+    fn model_tok_strategy() -> impl proptest::strategy::Strategy<Value = ModelTok> {
+        use proptest::prelude::*;
+        prop_oneof![
+            2 => Just(ModelTok::Pci(true)),
+            2 => Just(ModelTok::Pci(false)),
+            // Opaque tokens never start with `pci=` and never contain
+            // whitespace — the two facts the tokeniser (split_whitespace)
+            // and `Tok.other` rely on.
+            5 => "[a-z0-9._/=-]{1,12}"
+                .prop_filter("not a pci= token", |s| !s.starts_with("pci="))
+                .prop_map(ModelTok::Other),
+        ]
+    }
+
+    proptest::proptest! {
+        /// `enforce_pci_off(join tokens) = join (model_enforce tokens)`.
+        #[test]
+        fn enforce_pci_off_agrees_with_the_token_model(
+            toks in proptest::collection::vec(model_tok_strategy(), 0..12)
+        ) {
+            let line = toks.iter().map(ModelTok::render).collect::<Vec<_>>().join(" ");
+            let expected = model_enforce(&toks)
+                .iter()
+                .map(ModelTok::render)
+                .collect::<Vec<_>>()
+                .join(" ");
+            proptest::prop_assert_eq!(enforce_pci_off(&line), expected);
+            // The Lean theorems, observed on the shipped function.
+            let once = enforce_pci_off(&line);
+            proptest::prop_assert_eq!(enforce_pci_off(&once), once.clone()); // enforce_idem
+            let pci: Vec<&str> = once
+                .split_whitespace()
+                .filter(|t| t.starts_with("pci="))
+                .collect();
+            proptest::prop_assert_eq!(pci, vec!["pci=off"]); // enforce_pci_tokens + count = 1
+        }
+    }
+
     // ── PCI posture: both halves of the CVE-2026-5747 defence ─────────────
 
     /// THE HOST HALF. Firecracker's virtio-PCI transport is opt-in via
