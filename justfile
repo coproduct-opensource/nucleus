@@ -134,6 +134,12 @@ check:
     cargo fmt --all -- --check
     cargo clippy --all-targets --all-features -- -D warnings
 
+# Regenerate every formal-methods number the docs and ratchets publish from the
+# tree (Kani census, sorry holes, .kani-minimum-proofs, the divergence total),
+# then re-check. One command instead of a reconciliation commit per PR.
+census:
+    bash scripts/formal-numbers.sh --write
+
 # CI-faithful preflight: `check` plus the Feature Matrix gate, under the SAME
 # env CI uses (actions-rust-lang/setup-rust-toolchain exports
 # RUSTFLAGS=-D warnings by default — a local run without it misses promoted
