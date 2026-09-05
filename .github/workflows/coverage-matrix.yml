@@ -141,10 +141,15 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Install cargo-mutants
-        run: cargo install cargo-mutants --locked
+      - name: Install cargo-mutants (baked into the self-hosted image when present)
+        run: command -v cargo-mutants >/dev/null || cargo install cargo-mutants --locked
       - name: Run mutation tests on security-critical modules
+        shell: bash
+        # pipefail so the tool's exit status is the step's (not tee's); the
+        # run is allowed to fail here so the report step below can say WHY.
         run: |
+          set -o pipefail
+          rc=0
           cargo mutants --package portcullis \
             --file crates/portcullis/src/capability.rs \
             --file crates/portcullis/src/guard.rs \
@@ -153,46 +158,40 @@ jobs:
             --file crates/portcullis/src/delegation.rs \
             --file crates/portcullis/src/trust.rs \
             --timeout 120 \
-            -- --all-features 2>&1 | tee /tmp/mutants.txt
-      - name: Check for survived mutants
+            --output mutants-report \
+            -- --all-features 2>&1 | tee /tmp/mutants.txt || rc=$?
+          echo "cargo mutants exit: $rc"
+      - name: The gate reads the machine report, not the console (#2562)
         if: always()
         shell: bash
         run: |
-          # NON-VACUITY FIRST, and this step needed it more than most.
-          #
-          # The gate below is `grep -q SURVIVED || pass`. A cargo-mutants run that
-          # CRASHED, timed out, or failed to build writes no SURVIVED line — so
-          # the else branch fired and reported "All mutants caught by tests."
-          # Absence satisfied by silence: the strongest-sounding result in this
-          # job was the one a total failure also produced.
-          #
-          # The `| tee` on the run step compounded it: without pipefail that step
-          # reported TEE's exit status, so a crashed run did not fail there either.
-          if [ ! -s /tmp/mutants.txt ]; then
-            echo "::error::/tmp/mutants.txt is missing or empty — cargo-mutants did not"
-            echo "::error::produce a report, so 'no survived mutants' means nothing."
+          # `Mutation Testing` passed runs whose log said "cargo build failed in
+          # an unmutated tree, so no mutants were tested": the old guard grepped
+          # for "Found N mutants", which prints before the baseline fails.
+          # scripts/check-mutants-report.sh parses mutants-report/mutants.out/
+          # outcomes.json: tested == total > 0, missed == 0, timeout/unviable
+          # bounded, and the unmutated-tree preamble is itself a failure.
+          if ! scripts/check-mutants-report.sh mutants-report/mutants.out /tmp/mutants.txt 5 50; then
+            echo "::group::baseline log (why the unmutated tree failed, if it did)"
+            tail -60 mutants-report/mutants.out/log/baseline.log 2>/dev/null || echo "(no baseline log)"
+            echo "::endgroup::"
             exit 1
           fi
-          if ! grep -qE "MISSED|CAUGHT|SURVIVED|Found [0-9]+ mutants|mutants tested" /tmp/mutants.txt; then
-            echo "::error::/tmp/mutants.txt contains no cargo-mutants result markers — the"
-            echo "::error::run did not complete, so this check is asserting nothing."
-            sed -n '1,20p' /tmp/mutants.txt
-            exit 1
-          fi
-
+      - name: The mutants gate goes red on a saved failure log and a survivor
+        if: always()
+        run: scripts/check-mutants-report.sh --self-test
+      - name: Mutation summary
+        if: always()
+        shell: bash
+        run: |
           echo "## Mutation Testing Report" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Modules tested:** capability, guard, lattice, certificate, delegation, trust" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          if grep -q "SURVIVED" /tmp/mutants.txt 2>/dev/null; then
-            echo "⚠️ **Survived mutants found** — tests may have coverage gaps:" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            grep "SURVIVED" /tmp/mutants.txt >> "$GITHUB_STEP_SUMMARY" || true
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::Survived mutants detected in security-critical modules"
-            exit 1
+          if [ -s mutants-report/mutants.out/outcomes.json ]; then
+            jq -r '"- **tested:** \((.caught//0)+(.missed//0)+(.timeout//0)+(.unviable//0)) / \(.total_mutants//0)\n- **caught:** \(.caught//0)\n- **survived:** \(.missed//0)\n- **timeout:** \(.timeout//0)\n- **unviable:** \(.unviable//0)"' mutants-report/mutants.out/outcomes.json >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "All mutants caught by tests." >> "$GITHUB_STEP_SUMMARY"
+            echo "no outcomes.json — the run did not produce a report" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   # Layer 3: Verification proof count regression gates
