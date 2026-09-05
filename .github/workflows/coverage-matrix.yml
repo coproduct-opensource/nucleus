@@ -105,10 +105,19 @@ jobs:
         # `bash -e {0}` WITHOUT pipefail, so `cargo llvm-cov ... | tee` reported
         # TEE's exit status: the --fail-under-lines threshold below could never
         # red this required check. Found by the CI-invariant inventory
-        # (2026-09-05); the mutants step below had the same shape.
+        # (2026-09-05); the mutants step below has the same shape (#2628).
+        #
+        # What pipefail exposed on its first run: `cargo llvm-cov --all-features`
+        # had NEVER compiled the workspace on a runner — nucleus-verifier-service
+        # `include_bytes!`s the wasm-pack artifact under sdks/verifier-js/pkg,
+        # which only exists after `wasm-pack build` (wasm-pure-crates.yml
+        # builds it; nothing here does). So the numbers this gate has published
+        # measured nothing. The crate is excluded here, stated rather than
+        # papered over; its own tests run in wasm-pure-crates.yml.
         shell: bash
         run: |
-          cargo llvm-cov --all-features \
+          cargo llvm-cov --workspace --all-features \
+            --exclude nucleus-verifier-service \
             --fail-under-lines 85 \
             --ignore-filename-regex '(tests/|kani\.rs|main\.rs)' 2>&1 | tee /tmp/workspace-cov.txt
       - name: portcullis coverage (security-critical threshold)
@@ -158,9 +167,11 @@ jobs:
       - name: Install cargo-mutants
         run: cargo install cargo-mutants --locked
       - name: Run mutation tests on security-critical modules
-        # pipefail: the checker step below guards the report's presence, but the
-        # run step itself must not report tee's exit status either.
-        shell: bash
+        # Same `| tee` shape as the coverage steps above, and the same
+        # fail-open. NOT repaired here: #2628 rewrites this job (pipefail,
+        # exit-code capture, --all-features on cargo-mutants itself so the
+        # baseline build does not die on feature-gated test imports under
+        # -D warnings, and a machine-readable report) and lands next.
         run: |
           cargo mutants --package portcullis \
             --file crates/portcullis/src/capability.rs \
