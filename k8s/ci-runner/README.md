@@ -12,7 +12,7 @@ back to hosted runners.
 | Piece | Location |
 |---|---|
 | Runner image | `docker/Dockerfile.runner` (OS deps, sccache, just, and every pinned Rust toolchain baked in per runner user) |
-| Scale-set values | `values.yaml` (the `nucleus-k3s` gate pool, 8 small runners) and `values-build.yaml` (the `nucleus-k3s-build` pool, 3 big runners; DERIVED by `render-build-values.sh`, never hand-edited); no credential, both reference the `gh-token` secret |
+| Scale-set values | `values.yaml` (the `nucleus-k3s` gate pool, 8 small runners) and `values-build.yaml` (the `nucleus-k3s-build` pool, 4 big runners; DERIVED by `render-build-values.sh`, never hand-edited); no credential, both reference the `gh-token` secret |
 | Persistent mounts | `/var/lib/nucleus-ci/cargo/registry/{cache,index}` and `/var/lib/nucleus-ci/cache` on the node, uid 1001 (immutable caches only; `registry/src` and the whole cargo git db are per pod) |
 | Warm-up | `warm.sh` (installs rustup 1.96.1 + elan/Lean v4.30.0-rc2 into the mounts) |
 | Job hooks | `hooks/job-started.sh`, `hooks/job-completed.sh` (ConfigMap `runner-hooks`; sccache hit rate and cgroup peaks per job) |
