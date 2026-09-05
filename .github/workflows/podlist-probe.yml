@@ -113,14 +113,18 @@ jobs:
       - name: Install this build as the Tier 2 host (firecracker, jailer, kernel)
         if: steps.scope.outputs.relevant == 'true'
         run: |
+          # Stage the guest image and node BEFORE `nucleus setup`: with
+          # --artifacts local the installer RENAMES the working-tree rootfs
+          # and node into /var/lib/nucleus/artifacts (provision.rs installs
+          # by rename, not copy), so a copy after setup finds nothing.
+          mkdir -p "$HOME/fc"
+          cp build/firecracker/x86_64/rootfs.ext4 "$HOME/fc/podlist-rootfs.ext4"
+          cp target/x86_64-unknown-linux-musl/release/nucleus-node "$HOME/fc/nucleus-node"
           sudo cp target/x86_64-unknown-linux-musl/release/nucleus /usr/local/bin/nucleus
           nucleus setup --skip-verify --artifacts local
           kernel=$(sudo find /var/lib/nucleus /etc/nucleus "$HOME/.nucleus" -name 'vmlinux*' -type f 2>/dev/null | head -1)
           test -n "$kernel" || { echo "::error::nucleus setup left no vmlinux to boot"; exit 1; }
-          mkdir -p "$HOME/fc"
           sudo cp "$kernel" "$HOME/fc/vmlinux"; sudo chown "$(id -u)" "$HOME/fc/vmlinux"
-          cp build/firecracker/x86_64/rootfs.ext4 "$HOME/fc/podlist-rootfs.ext4"
-          cp target/x86_64-unknown-linux-musl/release/nucleus-node "$HOME/fc/nucleus-node"
           ls -la "$HOME/fc"
       - name: Boot A, spawn child C and sibling B, assert the scoped listing
         if: steps.scope.outputs.relevant == 'true'
