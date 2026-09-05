@@ -646,22 +646,58 @@ jobs:
     # crates/nucleus-{agent-card,verify-commerce,envelope,lineage}, so a change
     # anywhere in those crates can break the example's receipt pre-image and
     # version-negotiation invariants without touching examples/**.
-    defaults:
-      run:
-        working-directory: examples/a2a-server
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Scope: on pull_request, the crates the diff touches closed under
+      # reverse dependencies (scripts/affected-crates.sh); anything else, or a
+      # workspace-wide change, is the full run. Outputs: full=true|false and
+      # list=" a b c " (space-padded for contains()).
+      - name: "Scope (pull_request: affected crates; otherwise full)"
+        id: affected
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          full=true; list=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch -q origin "$BASE"
+            rc=0; names=$(scripts/affected-crates.sh "origin/$BASE") || rc=$?
+            if [ "$rc" = 0 ] && [ -n "$names" ]; then full=false; list=" $(printf '%s' "$names" | tr '\n' ' ') "; fi
+            if [ "$rc" = 0 ] && [ -z "$names" ]; then full=false; fi
+          fi
+          { echo "full=$full"; echo "list=$list"; } >> "$GITHUB_OUTPUT"
+          echo "scope: full=$full list=[$list]"
+      # The example path-depends on nucleus-{agent-card,verify-commerce,
+      # envelope,lineage}; run when one of those is affected (closed under
+      # reverse dependencies) or the example itself changed. Measured 51
+      # pool-minutes per 2 h unscoped.
+      - name: Neither the example nor its path dependencies changed
+        id: skip
+        if: ${{ steps.affected.outputs.full != 'true' && !contains(steps.affected.outputs.list, ' nucleus-agent-card ') && !contains(steps.affected.outputs.list, ' nucleus-verify-commerce ') && !contains(steps.affected.outputs.list, ' nucleus-envelope ') && !contains(steps.affected.outputs.list, ' nucleus-lineage ') }}
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if git diff --name-only "origin/$BASE...HEAD" | grep -q '^examples/a2a-server/'; then
+            echo "examples/a2a-server changed — running"; echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "A2A example not affected by this pull request"; echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: ${{ steps.skip.outcome == 'skipped' || steps.skip.outputs.run == 'true' }}
         with:
           components: rustfmt, clippy
           cache: ${{ runner.environment == 'github-hosted' }}
           cache-workspaces: examples/a2a-server
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: cargo test
-        run: cargo test --all-features
+      - name: cargo fmt + clippy + test (examples/a2a-server)
+        if: ${{ steps.skip.outcome == 'skipped' || steps.skip.outputs.run == 'true' }}
+        working-directory: examples/a2a-server
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features
 
   musl-check:
     name: musl type-check (nucleus-node, nucleus-tool-proxy)
@@ -679,18 +715,51 @@ jobs:
     if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Scope: on pull_request, the crates the diff touches closed under
+      # reverse dependencies (scripts/affected-crates.sh); anything else, or a
+      # workspace-wide change, is the full run. Outputs: full=true|false and
+      # list=" a b c " (space-padded for contains()).
+      - name: "Scope (pull_request: affected crates; otherwise full)"
+        id: affected
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          full=true; list=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch -q origin "$BASE"
+            rc=0; names=$(scripts/affected-crates.sh "origin/$BASE") || rc=$?
+            if [ "$rc" = 0 ] && [ -n "$names" ]; then full=false; list=" $(printf '%s' "$names" | tr '\n' ' ') "; fi
+            if [ "$rc" = 0 ] && [ -z "$names" ]; then full=false; fi
+          fi
+          { echo "full=$full"; echo "list=$list"; } >> "$GITHUB_OUTPUT"
+          echo "scope: full=$full list=[$list]"
+      # The two shipped binaries only need re-checking on the musl target when
+      # something in their dependency closure changed (measured 52 pool-minutes
+      # per 2 h unscoped). affected-crates is closed under reverse
+      # dependencies, so a change deep in portcullis-core still runs this.
+      - name: Nothing in nucleus-node / nucleus-tool-proxy's closure changed
+        id: skip
+        if: ${{ steps.affected.outputs.full != 'true' && !contains(steps.affected.outputs.list, ' nucleus-node ') && !contains(steps.affected.outputs.list, ' nucleus-tool-proxy ') }}
+        run: echo "musl type-check not needed for this pull request"
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: ${{ steps.skip.outcome == 'skipped' }}
         with:
           targets: x86_64-unknown-linux-musl
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install musl-gcc (hosted x86 only)
-        if: ${{ runner.environment == 'github-hosted' }}
+        if: ${{ steps.skip.outcome == 'skipped' && runner.environment == 'github-hosted' }}
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Ensure musl target (cache-safe)
+        if: ${{ steps.skip.outcome == 'skipped' }}
         # setup-rust-toolchain's `targets:` is skipped on a toolchain cache hit,
         # so the target can be absent despite being declared → E0463.
         run: rustup target add x86_64-unknown-linux-musl
       - name: cargo check (musl)
+        if: ${{ steps.skip.outcome == 'skipped' }}
         run: |
           if [ "${{ runner.environment }}" = "github-hosted" ]; then
             cargo check -p nucleus-node -p nucleus-tool-proxy --target x86_64-unknown-linux-musl
