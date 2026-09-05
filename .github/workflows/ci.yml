@@ -574,8 +574,16 @@ jobs:
             # zig as the C cross-compiler for the target's build scripts (ring);
             # a type-check never links, so cargo's own `check` is enough.
             zig version
-            CC_x86_64_unknown_linux_musl="zig cc -target x86_64-linux-musl" \
-            AR_x86_64_unknown_linux_musl="zig ar" \
+            # cc-rs takes only the first word of CC as the program, so zig's
+            # multi-word invocation needs wrapper scripts; and sccache cannot
+            # front zig, so the wrapper is disabled for this step.
+            mkdir -p "$HOME/.local/bin"
+            printf '#!/bin/sh\nexec zig cc -target x86_64-linux-musl "$@"\n' > "$HOME/.local/bin/zig-cc-x86_64-musl"
+            printf '#!/bin/sh\nexec zig ar "$@"\n' > "$HOME/.local/bin/zig-ar"
+            chmod 0755 "$HOME/.local/bin/zig-cc-x86_64-musl" "$HOME/.local/bin/zig-ar"
+            RUSTC_WRAPPER= \
+            CC_x86_64_unknown_linux_musl="$HOME/.local/bin/zig-cc-x86_64-musl" \
+            AR_x86_64_unknown_linux_musl="$HOME/.local/bin/zig-ar" \
               cargo check -p nucleus-node -p nucleus-tool-proxy --target x86_64-unknown-linux-musl
           fi
 
