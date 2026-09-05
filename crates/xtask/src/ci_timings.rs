@@ -66,8 +66,13 @@ fn epoch(ts: &str) -> Option<i64> {
     let (date, time) = ts.split_once('T')?;
     let mut d = date.split('-').map(|s| s.parse::<i64>());
     let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
-    let mut t = time.split(':').map(|s| s.parse::<f64>());
-    let (h, mi, s) = (t.next()?.ok()?, t.next()?.ok()?, t.next()?.ok()?);
+    let mut t = time.split(':');
+    let (h, mi) = (
+        t.next()?.parse::<i64>().ok()?,
+        t.next()?.parse::<i64>().ok()?,
+    );
+    // Whole seconds only: the fraction is noise at the minute granularity reported.
+    let s = t.next()?.split('.').next()?.parse::<i64>().ok()?;
     // Days from civil (Howard Hinnant's algorithm).
     let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
     let era = y.div_euclid(400);
@@ -75,7 +80,7 @@ fn epoch(ts: &str) -> Option<i64> {
     let doy = (153 * m + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + (h as i64) * 3600 + (mi as i64) * 60 + s as i64)
+    Some(days * 86_400 + h * 3600 + mi * 60 + s)
 }
 
 fn gh_api(path: &str) -> Result<String> {
@@ -97,20 +102,24 @@ fn head_sha() -> Result<String> {
     Ok(String::from_utf8(out.stdout)?.trim().to_string())
 }
 
-fn percentile(sorted: &[f64], p: f64) -> f64 {
+/// The `pct`-th percentile (0–100) of ascending seconds — nearest-rank.
+fn percentile(sorted: &[i64], pct: usize) -> i64 {
     if sorted.is_empty() {
-        return 0.0;
+        return 0;
     }
-    let idx = ((sorted.len() as f64) * p).ceil() as usize;
+    let idx = (sorted.len() * pct).div_ceil(100);
     sorted[idx.clamp(1, sorted.len()) - 1]
 }
 
-fn median(sorted: &[f64]) -> f64 {
-    percentile(sorted, 0.5)
+fn median(sorted: &[i64]) -> i64 {
+    percentile(sorted, 50)
 }
 
-fn mins(secs: f64) -> String {
-    format!("{:.1}m", secs / 60.0)
+/// Seconds as minutes with one decimal. Durations fit an `i32` comfortably
+/// (an `i32` of seconds is 68 years), so the widening to `f64` is exact.
+fn mins(secs: i64) -> String {
+    let secs = i32::try_from(secs).unwrap_or(i32::MAX);
+    format!("{:.1}m", f64::from(secs) / 60.0)
 }
 
 const SETUP_MARKERS: &[&str] = &[
@@ -220,7 +229,7 @@ pub fn ci_timings(sha: Option<String>, top: usize, json: bool) -> Result<()> {
         .unwrap_or(t0);
     println!(
         "wall: {} (first job created → last job completed); still pending: {}",
-        mins((tend - t0) as f64),
+        mins(tend - t0),
         jobs.len() - done.len()
     );
     if let Some(last) = done
@@ -235,9 +244,9 @@ pub fn ci_timings(sha: Option<String>, top: usize, json: bool) -> Result<()> {
             last.workflow_name,
             last.name,
             last.labels.join(","),
-            mins((c - t0) as f64),
-            mins((s - c) as f64),
-            mins((e - s) as f64)
+            mins(c - t0),
+            mins(s - c),
+            mins(e - s)
         );
     }
 
@@ -257,37 +266,37 @@ pub fn ci_timings(sha: Option<String>, top: usize, json: bool) -> Result<()> {
         if rs.is_empty() {
             continue;
         }
-        let mut d: Vec<f64> = rs
+        let mut d: Vec<i64> = rs
             .iter()
             .map(|j| {
-                (epoch(j.completed_at.as_deref().unwrap()).unwrap_or(0)
-                    - epoch(j.started_at.as_deref().unwrap()).unwrap_or(0)) as f64
+                epoch(j.completed_at.as_deref().unwrap()).unwrap_or(0)
+                    - epoch(j.started_at.as_deref().unwrap()).unwrap_or(0)
             })
             .collect();
-        let mut q: Vec<f64> = rs
+        let mut q: Vec<i64> = rs
             .iter()
             .map(|j| {
-                (epoch(j.started_at.as_deref().unwrap()).unwrap_or(0)
-                    - epoch(&j.created_at).unwrap_or(0)) as f64
+                epoch(j.started_at.as_deref().unwrap()).unwrap_or(0)
+                    - epoch(&j.created_at).unwrap_or(0)
             })
             .collect();
-        d.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        q.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        d.sort_unstable();
+        q.sort_unstable();
         println!(
             "| {lab} | {} | {} | {} | {} | {} | {} | {} | {} |",
             rs.len(),
             mins(median(&d)),
-            mins(percentile(&d, 0.9)),
+            mins(percentile(&d, 90)),
             mins(*d.last().unwrap()),
             mins(d.iter().sum()),
             mins(median(&q)),
-            mins(percentile(&q, 0.9)),
+            mins(percentile(&q, 90)),
             mins(*q.last().unwrap())
         );
     }
 
-    let step_secs = |s: &Step| -> Option<f64> {
-        Some((epoch(s.completed_at.as_deref()?)? - epoch(s.started_at.as_deref()?)?) as f64)
+    let step_secs = |s: &Step| -> Option<i64> {
+        Some(epoch(s.completed_at.as_deref()?)? - epoch(s.started_at.as_deref()?)?)
     };
     println!("\n## longest {top} jobs (run time; two longest steps)");
     let mut by_len: Vec<&&Job> = done.iter().collect();
@@ -296,14 +305,14 @@ pub fn ci_timings(sha: Option<String>, top: usize, json: bool) -> Result<()> {
             - epoch(j.started_at.as_deref().unwrap()).unwrap_or(0))
     });
     for j in by_len.iter().take(top) {
-        let d = (epoch(j.completed_at.as_deref().unwrap()).unwrap_or(0)
-            - epoch(j.started_at.as_deref().unwrap()).unwrap_or(0)) as f64;
-        let mut steps: Vec<(String, f64)> = j
+        let d = epoch(j.completed_at.as_deref().unwrap()).unwrap_or(0)
+            - epoch(j.started_at.as_deref().unwrap()).unwrap_or(0);
+        let mut steps: Vec<(String, i64)> = j
             .steps
             .iter()
             .filter_map(|s| Some((s.name.clone(), step_secs(s)?)))
             .collect();
-        steps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        steps.sort_by_key(|(_, secs)| std::cmp::Reverse(*secs));
         let top2 = steps
             .iter()
             .take(2)
@@ -325,7 +334,7 @@ pub fn ci_timings(sha: Option<String>, top: usize, json: bool) -> Result<()> {
         if j.conclusion.as_deref() != Some("success") {
             continue;
         }
-        let (mut s_t, mut w_t) = (0.0, 0.0);
+        let (mut s_t, mut w_t) = (0i64, 0i64);
         for s in &j.steps {
             let Some(secs) = step_secs(s) else { continue };
             if SETUP_MARKERS.iter().any(|m| s.name.contains(m)) {
@@ -337,8 +346,8 @@ pub fn ci_timings(sha: Option<String>, top: usize, json: bool) -> Result<()> {
         setup.push(s_t);
         work.push(w_t);
     }
-    setup.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    work.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    setup.sort_unstable();
+    work.sort_unstable();
     println!(
         "\n## setup vs work over {} successful jobs\nsetup: median {}s, total {}; work: median {}s, total {}",
         setup.len(),
