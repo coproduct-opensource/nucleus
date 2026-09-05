@@ -170,6 +170,21 @@ if [[ "$DECLARED_TOTAL" -ne "$ACTUAL_TOTAL" ]]; then
 fi
 
 # Shrink-only ratchet against a base ref (CI passes the PR's base SHA).
+#
+# The ratchet is over DIVERGENT sites: everything except class "harness-only".
+# A new `#[cfg(kani)] mod kani_proofs` is a new proof, not a new fork between
+# the verified model and the shipped code, and the first PR to add one after
+# this gate landed (#2633) was blocked by the very rule meant to stop the
+# opposite. `total` still counts every site so the census stays exact.
+divergent_count() {   # <inventory file> -> number of sites whose class is not harness-only
+    awk '
+        /^\[\[site\]\]/ { flush(); insite = 1; count = 1; cls = ""; next }
+        insite && /^count[ \t]*=/ { sub(/^count[ \t]*=[ \t]*/, ""); count = $0 + 0 }
+        insite && /^class[ \t]*=/ { sub(/^class[ \t]*=[ \t]*"/, ""); sub(/".*$/, ""); cls = $0 }
+        function flush() { if (insite && cls != "harness-only") n += count; insite = 0 }
+        END { flush(); print n + 0 }
+    ' "$1"
+}
 if [[ -n "${KANI_DIVERGENCE_BASE:-}" ]]; then
     base="$KANI_DIVERGENCE_BASE"
     if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
@@ -177,18 +192,19 @@ if [[ -n "${KANI_DIVERGENCE_BASE:-}" ]]; then
         git cat-file -e "$base^{commit}" 2>/dev/null || base="FETCH_HEAD"
     fi
     if git cat-file -e "$base:$INVENTORY" 2>/dev/null; then
-        BASE_TOTAL=$(git show "$base:$INVENTORY" | awk '/^total[ \t]*=/ { gsub(/.*=[ \t]*/, ""); print; exit }')
-        if [[ -n "$BASE_TOTAL" && "$ACTUAL_TOTAL" -gt "$BASE_TOTAL" ]]; then
+        BASE_DIVERGENT=$(git show "$base:$INVENTORY" | divergent_count /dev/stdin)
+        DIVERGENT=$(divergent_count "$INVENTORY")
+        if [[ "$DIVERGENT" -gt "$BASE_DIVERGENT" ]]; then
             if [[ "${KANI_DIVERGENCE_ALLOW_GROWTH:-0}" == "1" ]]; then
-                echo "NOTE: divergence total grew $BASE_TOTAL -> $ACTUAL_TOTAL; growth explicitly allowed for this run"
+                echo "NOTE: divergent sites grew $BASE_DIVERGENT -> $DIVERGENT; growth explicitly allowed for this run"
             else
-                echo "GROWTH: divergence total is $ACTUAL_TOTAL, base ($KANI_DIVERGENCE_BASE) had $BASE_TOTAL — the ceiling only shrinks."
+                echo "GROWTH: divergent (non-harness) sites: $DIVERGENT, base ($KANI_DIVERGENCE_BASE) had $BASE_DIVERGENT — the ceiling only shrinks."
                 echo "  Prefer a Kani-tractable representation over a new cfg(kani) fork. If the fork is"
                 echo "  the right call, an owner sets KANI_DIVERGENCE_ALLOW_GROWTH=1 (the 'kani-divergence-growth' PR label)."
                 failures=$((failures + 1))
             fi
         else
-            echo "ratchet: total $ACTUAL_TOTAL <= base $BASE_TOTAL"
+            echo "ratchet: divergent sites $DIVERGENT <= base $BASE_DIVERGENT (total $ACTUAL_TOTAL, harness-only modules excluded)"
         fi
     else
         echo "ratchet: base $KANI_DIVERGENCE_BASE has no $INVENTORY; nothing to shrink from"
