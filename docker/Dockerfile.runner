@@ -10,7 +10,7 @@
 # k8s/ci-runner/warm.sh ahead of time.
 #
 # Build for the node's own architecture (arm64 today):
-#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.1 .
+#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.2 .
 # then import into k3s's containerd (k8s/ci-runner/README.md).
 FROM ghcr.io/actions/actions-runner:2.337.0
 
@@ -24,7 +24,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential clang lld llvm pkg-config cmake \
         libssl-dev protobuf-compiler musl-tools e2fsprogs \
-        git zstd xz-utils python3 python-is-python3 ca-certificates \
+        git zstd xz-utils python3 python-is-python3 python3-requests ca-certificates \
+        swtpm tpm2-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # sccache: the cross-job compile cache (RUSTC_WRAPPER=sccache, store on the
@@ -75,16 +76,62 @@ RUN set -eux; \
 # image rebuild is a deliberate bump, not a drift.
 ARG CARGO_DYLINT_VERSION=6.0.1
 ARG CARGO_AUDIT_VERSION=0.22.0
-ARG CARGO_LLVM_COV_VERSION=0.6.20
-ARG CARGO_HACK_VERSION=0.6.38
-ARG CARGO_NEXTEST_VERSION=0.9.104
+ARG CARGO_LLVM_COV_VERSION=0.9.0
+ARG CARGO_HACK_VERSION=0.6.45
+ARG CARGO_NEXTEST_VERSION=0.9.143
+ARG CARGO_DENY_VERSION=0.20.2
+ARG CARGO_ZIGBUILD_VERSION=0.23.4
 RUN set -eux; \
     cargo install cargo-dylint dylint-link --version ${CARGO_DYLINT_VERSION} --locked; \
     cargo +stable install cargo-audit --version ${CARGO_AUDIT_VERSION} --locked --no-default-features; \
     cargo install cargo-llvm-cov --version ${CARGO_LLVM_COV_VERSION} --locked; \
     cargo install cargo-hack --version ${CARGO_HACK_VERSION} --locked; \
     cargo install cargo-nextest --version ${CARGO_NEXTEST_VERSION} --locked; \
+    cargo install cargo-deny --version ${CARGO_DENY_VERSION} --locked; \
+    cargo install cargo-zigbuild --version ${CARGO_ZIGBUILD_VERSION} --locked; \
     rm -rf /home/runner/.cargo/registry /home/runner/.cargo/git /home/runner/.cargo/.package-cache; \
     mkdir -p /home/runner/.cargo/registry /home/runner/.cargo/git; \
-    cargo dylint --version; cargo audit --version; cargo llvm-cov --version; cargo hack --version; cargo nextest --version
+    cargo dylint --version; cargo audit --version; cargo llvm-cov --version; cargo hack --version; cargo nextest --version; cargo deny --version; cargo zigbuild --version
 
+
+# ── Pure-arm64 CI (2026-09-05): what used to keep lanes on hosted x86 ─────────
+#
+# zig: a C cross-compiler with bundled musl for every target, so the x86_64
+# musl type-check (`cargo zigbuild --target x86_64-unknown-linux-musl`) runs
+# here instead of on a hosted x86 runner that had x86_64-linux-musl-gcc.
+ARG ZIG_VERSION=0.16.0
+ARG ZIG_SHA256=ea4b09bfb22ec6f6
+USER root
+RUN set -eux; \
+    curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz; \
+    echo "$(sha256sum /tmp/zig.tar.xz | cut -c1-16)" | grep -qx "${ZIG_SHA256}"; \
+    mkdir -p /opt/zig && tar xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1; \
+    ln -s /opt/zig/zig /usr/local/bin/zig; rm -f /tmp/zig.tar.xz; zig version
+
+# Charon + Aeneas (the Rust → Lean extraction lanes) at the workflows' pins:
+# the release tarball bundles `aeneas`, `charon`, `charon-driver` and the
+# `rust-toolchain` Charon drives; Charon's nightly (with rustc-dev) is baked
+# next to the others so no job downloads a toolchain.
+ARG AENEAS_RELEASE=nightly-2026.06.10
+ARG CHARON_NIGHTLY=nightly-2026-06-01
+RUN set -eux; \
+    curl -fsSL "https://github.com/AeneasVerif/aeneas/releases/download/${AENEAS_RELEASE}/aeneas-linux-aarch64.tar.gz" -o /tmp/aeneas.tar.gz; \
+    mkdir -p /opt/aeneas && tar xzf /tmp/aeneas.tar.gz -C /opt/aeneas; rm -f /tmp/aeneas.tar.gz; \
+    chown -R runner:runner /opt/aeneas; /opt/aeneas/aeneas -version
+USER runner
+RUN set -eux; \
+    rustup toolchain install ${CHARON_NIGHTLY} --profile minimal -c rustc-dev -c llvm-tools-preview -c rust-src; \
+    rustup target add x86_64-unknown-linux-musl --toolchain stable
+
+# elan + the one Lean toolchain every lean project pins (lean-toolchain files),
+# per runner user like rustup: the Lean jobs stop downloading a 300 MB
+# toolchain each run, and the arch-blind cache key that once restored an x86
+# toolchain over an arm64 mount has nothing left to restore.
+ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.30.0-rc2
+ARG ELAN_VERSION=v4.2.4
+ENV ELAN_HOME=/home/runner/.elan \
+    PATH=/home/runner/.elan/bin:/home/runner/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN set -eux; \
+    curl -fsSL "https://raw.githubusercontent.com/leanprover/elan/${ELAN_VERSION}/elan-init.sh" -o /tmp/elan-init.sh; \
+    sh /tmp/elan-init.sh -y --no-modify-path --default-toolchain "${LEAN_TOOLCHAIN}"; \
+    rm -f /tmp/elan-init.sh; lean --version; lake --version
