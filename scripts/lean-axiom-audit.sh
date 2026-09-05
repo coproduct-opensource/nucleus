@@ -128,12 +128,30 @@ fail=0
 total_audited=0
 IFS=',' read -r -a ROOTS <<< "$MODE"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+# The modules a lib is made of: `lean_lib «X» where roots := #[`A, `B]`. For a
+# lib whose roots are not the bare `X` (the Aeneas extractions: X.Types,
+# X.Funs), there is no X.olean to import, so the tool is told the modules.
+lib_modules() {
+    awk -v lib="$1" '
+      $0 ~ "lean_lib «" lib "» where" { inlib=1; next }
+      inlib && /roots := #\[/ { s=$0; sub(/.*#\[/, "", s); sub(/\].*/, "", s); gsub(/`| /, "", s); print s; exit }
+      inlib && /^[^ ]/ { exit }
+    ' lakefile.lean 2>/dev/null
+}
+
 for root in "${ROOTS[@]}"; do
+    mods=$(lib_modules "$root")
+    extra=()
+    if [ -n "$mods" ] && [ "$mods" != "$root" ]; then extra=(--modules "$mods"); fi
     set +e
-    lake exe axiom-audit --root "$root" --json > "$t/$root.json" 2>"$t/$root.err"
+    lake exe axiom-audit --root "$root" "${extra[@]}" --json > "$t/$root.json" 2>"$t/$root.err"
     rc=$?
     set -e
-    if [ "$rc" = 2 ]; then echo "::error::axiom-audit could not run for root $root:"; cat "$t/$root.err"; jq -r '.error // empty' "$t/$root.json" 2>/dev/null | head -3; exit 2; fi
+    if [ "$rc" = 2 ]; then
+        echo "::error::axiom-audit could not run for root $root${mods:+ (modules $mods)}:"
+        cat "$t/$root.err"; jq -r '.error // empty' "$t/$root.json" 2>/dev/null | head -3 || head -c 400 "$t/$root.json"
+        fail=1; continue
+    fi
     n=$(jq -r '.audited // 0' "$t/$root.json")
     total_audited=$((total_audited + n))
     if [ "$n" = 0 ]; then echo "::error::root $root: nothing audited ($(jq -r '.error // "no declarations"' "$t/$root.json"))"; fail=1; continue; fi
