@@ -6570,6 +6570,7 @@ dependencies = [
  "parking_lot",
  "portcullis",
  "portcullis-effects",
+ "proptest",
  "quanta",
  "rust_decimal",
  "sha2 0.11.0",
