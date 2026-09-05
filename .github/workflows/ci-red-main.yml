@@ -81,10 +81,8 @@ jobs:
               failure|timed_out|cancelled)
                 red=$((red+1))
                 if [ -z "$open" ]; then
-                  gh issue create --repo "$REPO" --label ci-red-main --title "$title" \
-                    --body "The latest push-to-main run of **$name** (\`$wf\`) is **$conclusion** at \`$sha\`: $url
-
-Opened by \`.github/workflows/ci-red-main.yml\`; it closes this issue automatically when the workflow is green on main again. Each later red run is added as a comment." >/dev/null
+                  body=$(printf 'The latest push-to-main run of **%s** (`%s`) is **%s** at `%s`: %s\n\nOpened by `.github/workflows/ci-red-main.yml`; it closes this issue automatically when the workflow is green on main again. Each later red run is added as a comment.' "$name" "$wf" "$conclusion" "$sha" "$url")
+                  gh issue create --repo "$REPO" --label ci-red-main --title "$title" --body "$body" >/dev/null
                   echo "opened: $title ($conclusion, $sha)"
                 else
                   last=$(gh issue view "$open" --repo "$REPO" --json comments --jq '.comments[-1].body // ""')
