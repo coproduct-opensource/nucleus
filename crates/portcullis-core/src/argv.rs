@@ -61,6 +61,15 @@ impl fmt::Display for ArgvRejection {
 
 impl std::error::Error for ArgvRejection {}
 
+/// The refusal as the sealed home's error: `InvalidInput`, message prefixed by
+/// [`ARGV_REFUSED_PREFIX`], so the parity test recognises it on that side
+/// exactly as it recognises the executor's `CommandDenied` reason.
+impl From<ArgvRejection> for std::io::Error {
+    fn from(rejection: ArgvRejection) -> Self {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, rejection.message())
+    }
+}
+
 impl ArgvRejection {
     /// The refusal as the message both spawn boundaries emit.
     pub fn message(&self) -> String {
