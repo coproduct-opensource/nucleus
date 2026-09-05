@@ -4,7 +4,7 @@
 # Build:
 #   cargo build --release -p nucleus-tool-proxy
 #   docker build -f docker/Dockerfile.tool-proxy-minimal -t nucleus-tool-proxy:latest .
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 RUN apt-get update && apt-get install -y ca-certificates git curl && rm -rf /var/lib/apt/lists/*
 COPY target/release/nucleus-tool-proxy /usr/local/bin/
 RUN mkdir -p /workspace

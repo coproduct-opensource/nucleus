@@ -52,7 +52,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   # Pin to the Aeneas prebuilt nightly that does scoped extraction cleanly
@@ -71,6 +71,9 @@ env:
 
 jobs:
   aeneas-decide-pure:
+    # The only job that pushes (the bot branch below); write stays job-scoped.
+    permissions:
+      contents: write
     name: Scoped Aeneas (decide_pure) + auto-commit generated-decide/
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 40
