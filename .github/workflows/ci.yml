@@ -4,6 +4,9 @@ on:
   push:
     branches: ["main"]
   pull_request:
+    # ready_for_review is NOT in the default set. The heavy jobs below skip
+    # drafts, so a draft marked ready must trigger a run or it never gets checks.
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
 
 concurrency:
@@ -187,33 +190,6 @@ jobs:
         shell: bash
         run: scripts/check-lean-libs-built.sh
 
-  # The declassification token path is now LIVE (POST /v1/declassify). Two gates
-  # replace the former dormancy gate:
-  #
-  #  1. sink-scope ENFORCED — a token clears its node for the sinks it signed and
-  #     ONLY those, at most once (the property the dormancy gate deferred).
-  #  2. governor keys SEALED — set_trusted_keys is unreachable from any request
-  #     handler, so the workload cannot enroll its own key (robust declassification
-  #     at the *who* dimension).
-  declassify-sink-scope-enforced:
-    name: Declassify sink scope is enforced
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache: ${{ runner.environment == 'github-hosted' }}
-      - name: A token clears its node for its signed sinks and only those
-        shell: bash
-        run: scripts/check-declassify-sink-scope-enforced.sh
-
-  # C4 ("a governor deliberately released with a single-use token") and C5
-  # ("cannot steer which value that is") are PROVED only if the value-binding,
-  # single-use, and Deny->Pass flip all hold on the graph egress reads, and the
-  # #2235 re-home (endpoint applies on state.flow_graph, not the orphan kernel
-  # graph) is not silently reverted. This gate runs the value-binding + four-run
-  # + flip-back + one-shot tests and asserts the endpoint wiring by inspection.
   declassify-value-bound:
     name: Declassification is value-bound, single-use, and live
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -237,34 +213,6 @@ jobs:
         shell: bash
         run: scripts/check-declassify-governor-keys-sealed.sh
 
-  # C1 ("cannot learn the secrets Nucleus holds on its behalf") is proven over
-  # the seven inbound channels in Lean, but the RUNTIME must withhold for that to
-  # hold on the live path. This gate runs the conformance the re-promotion rests
-  # on: the workload always runs as a distinct unprivileged uid (never the
-  # runtime's — /proc/<pid>/environ fence B), any unclassified NUCLEUS_* key is
-  # refused at admission (fail-closed classifier fence D), and no per-pod secret
-  # rides the guest cmdline. Reverting fence B or D reds this.
-  c1-inbound-fences-enforced:
-    name: C1 inbound fences are enforced
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache: ${{ runner.environment == 'github-hosted' }}
-      - name: uid distinctness, reserved-namespace, and cmdline fences hold
-        shell: bash
-        run: scripts/check-c1-inbound-fences.sh
-
-  # The North Star doc's status table is the project's public claim of what is
-  # PROVED, TESTED, and NOT-YET. It drifted once: a row claimed "tested on the
-  # live path" for the declassification token while the dormancy gate above —
-  # in this same file — asserted that path has no production caller. This gate
-  # makes the table a ledger: every row covers a verbatim clause of the
-  # sentence, resolves an evidence handle, names its falsifier, and may not
-  # contradict any in-tree dormancy declaration. Row and NOT-YET counts are
-  # pinned, so deletions and demotions are visible events.
   north-star-ledger:
     name: The North Star status table cannot outrun its wiring
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -290,57 +238,6 @@ jobs:
       - name: Every extracted predicate's enforcement is still wired
         shell: bash
         run: scripts/check-extracted-callsites.sh
-
-  # C2 — the node records pod lineage on the LIVE path. Boots the real
-  # nucleus-node with the KVM-free local-driver (so no Firecracker/KVM is needed),
-  # creates two sibling pods and a child through the real signed POST /v1/pods,
-  # and asserts the listing serves the recorded parent_pod_id — the input the
-  # cross-pod scoping filter reads. The scoped filter itself is function-tested
-  # (pod_api ownership tests); this covers the lineage it depends on, end to end.
-  cross-pod-lineage:
-    name: The node records pod lineage on the live path (C2)
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Build node (local-driver) + cli + tool-proxy
-        run: cargo build -p nucleus-node --features local-driver -p nucleus-cli -p nucleus-tool-proxy
-      - name: The create API records lineage the listing serves
-        run: |
-          NUCLEUS_NODE_BIN=target/debug/nucleus-node \
-          NUCLEUS_CLI_BIN=target/debug/nucleus \
-          NUCLEUS_TOOL_PROXY_BIN=target/debug/nucleus-tool-proxy \
-            scripts/cross-pod-lineage-check.sh
-      - name: A pod's own scoped listing excludes a non-lineage sibling (C2)
-        run: |
-          NUCLEUS_NODE_BIN=target/debug/nucleus-node \
-          NUCLEUS_CLI_BIN=target/debug/nucleus \
-          NUCLEUS_TOOL_PROXY_BIN=target/debug/nucleus-tool-proxy \
-            scripts/cross-pod-scoped-check.sh
-
-  # Every gate above is a claim that something is checked. This checks the claim.
-  #
-  # It needs full history and a clean tree because it PERTURBS real files and
-  # restores them, so it runs as its own job rather than sharing a checkout with
-  # a job that might have written into the tree.
-  gates-can-fail:
-    name: Gates must fail on their own subject
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    # 30 min (was 10): check-declassify-sink-scope-enforced.sh runs cargo tests,
-    # and the meta-gate runs each probed gate twice (perturbed + restored), so
-    # this job now compiles portcullis. The Rust cache below amortizes it.
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Every gate REDs on a real violation and GREENs when restored
-        shell: bash
-        run: scripts/check-gates-can-fail.sh
 
   ingest-hash-gate:
     name: No-unwitnessed-ingest gate (InputsAuthorized)
@@ -374,10 +271,364 @@ jobs:
       - name: Forbid raw effect primitives outside the sealed RealEffects home
         run: scripts/check-sealed-home.sh
 
+  # ── The workspace build, ONCE per pod ─────────────────────────────────────
+  #
+  # Tests, Doctests, the OWASP gauntlet, the K4 parity pin, and the SDK tests
+  # used to be five jobs, each compiling the workspace on its own ephemeral pod.
+  # On four build runners that is the whole PR wall clock: a rebase wave of
+  # eight PRs queued ~80 compile jobs and took an hour. They are now STEPS of
+  # one job on one warm target dir, with the same five status contexts kept as
+  # reporter jobs below (branch protection names them; nothing is dropped).
+  #
+  # On pull_request the run is SCOPED: only the crates the diff touches, closed
+  # under reverse dependencies (scripts/affected-crates.sh — a change to
+  # portcullis-core re-tests nucleus-node). merge_group and push run the whole
+  # workspace, so integration is validated before anything lands; a
+  # workspace-wide change (Cargo.toml/lock, .github/) forces the full run too.
+  #
+  # Drafts are skipped (a stacked child re-runs everything on every base
+  # change); ready_for_review is a trigger above so the run starts on ready.
+  workspace-tests:
+    name: Workspace build + tests (one pod)
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    needs: changed-crates
+    if: ${{ (needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '') && github.event.pull_request.draft != true }}
+    outputs:
+      tests: ${{ steps.tests.outcome }}
+      sdk: ${{ steps.sdk.outcome }}
+      doctests: ${{ steps.doctests.outcome }}
+      owasp: ${{ steps.owasp.outcome }}
+      k4: ${{ steps.k4.outcome }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          targets: wasm32-unknown-unknown
+          cache: ${{ runner.environment == 'github-hosted' }}
+      # PREREQUISITE, not boilerplate. `nucleus-verifier-service` vendors the
+      # wasm SDK with `include_str!`/`include_bytes!` on sdks/verifier-js/pkg/*,
+      # which only `wasm-pack build` produces. Without it the workspace does not
+      # compile and every step below reds for a reason that is not its own.
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
+        run: wasm-pack build sdks/verifier-js --target web --release
+      - name: "Scope the run (pull_request: affected crates; otherwise the workspace)"
+        id: affected
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          full=true; pk=""; list=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch -q origin "$BASE"
+            rc=0; names=$(scripts/affected-crates.sh "origin/$BASE") || rc=$?
+            if [ "$rc" = 0 ] && [ -n "$names" ]; then
+              full=false
+              pk=$(printf '%s\n' "$names" | sed 's/^/-p /' | tr '\n' ' ')
+              list=" $(printf '%s' "$names" | tr '\n' ' ') "
+            fi
+          fi
+          # sdks/verifier-py is its own workspace; it is affected when one of its
+          # path dependencies is.
+          py=$full
+          if [ "$full" = false ]; then
+            while read -r d; do
+              case "$list" in *" $d "*) py=true ;; esac
+            done < <(grep -oE 'path *= *"[^"]*crates/[^"/]+' sdks/verifier-py/Cargo.toml | sed 's#.*/##' | sort -u)
+          fi
+          { echo "full=$full"; echo "pk=$pk"; echo "list=$list"; echo "py=$py"; } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Scope"
+            echo ""
+            if [ "$full" = true ]; then echo "- whole workspace (\`$EVENT_NAME\`)"; else echo "- affected crates:\`$list\`"; fi
+            echo "- python SDK: \`$py\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      # `--lib --bins --tests` EXCLUDES doctests (measured 82% of the wall clock
+      # at this size: every doc block links the whole crate); they are the next
+      # step so a doctest red is legible on its own context.
+      # nextest: one process per test with cross-binary scheduling, 2–3× the
+      # wall clock of `cargo test` on a workspace this size (nexte.st
+      # benchmarks); baked into the self-hosted image, installed on hosted.
+      # Doctests are not nextest's — they stay on `cargo test --doc` below.
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        if: ${{ runner.environment == 'github-hosted' }}
+        with:
+          tool: cargo-nextest
+      - name: cargo nextest run (lib, bins, tests)
+        id: tests
+        continue-on-error: true
+        env:
+          PK: ${{ steps.affected.outputs.pk }}
+        run: |
+          read -ra PK_ARR <<< "$PK"
+          cargo nextest run --all-features --lib --bins --tests --no-fail-fast "${PK_ARR[@]}"
+      # Node tests run the WASM bindings against the cross-language golden seal
+      # and the accept/reject smoke fixtures; the Python SDK is its own
+      # workspace (the root cargo test never reaches it) and runs the shared
+      # conformance corpus through its bindings. Both report under `Tests`.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: SDK tests (node golden seal + smoke; python conformance + clippy)
+        id: sdk
+        continue-on-error: true
+        env:
+          PY: ${{ steps.affected.outputs.py }}
+        run: |
+          set -euo pipefail
+          (cd sdks/verifier-js && npm test)
+          if [ "$PY" = true ]; then
+            (cd sdks/verifier-py && cargo test && cargo clippy --all-targets -- -D warnings)
+          else
+            echo "python SDK: none of its path dependencies changed — skipped on this pull request"
+          fi
+      - name: cargo test --doc
+        id: doctests
+        continue-on-error: true
+        env:
+          PK: ${{ steps.affected.outputs.pk }}
+        run: |
+          read -ra PK_ARR <<< "$PK"
+          cargo test --all-features --doc "${PK_ARR[@]}"
+      - name: OWASP LLM Top 10 gauntlet (portcullis)
+        id: owasp
+        if: ${{ steps.affected.outputs.full == 'true' || contains(steps.affected.outputs.list, ' portcullis ') }}
+        continue-on-error: true
+        run: cargo test -p portcullis --test owasp_llm_gauntlet --all-features
+      # The model↔Rust contract as a first-class named check: K4
+      # `governance_monotone_iff` is a statement ABOUT the Lean model and only
+      # transfers to the shipped Rust via nucleus-policy-kernel's
+      # tests/model_parity.rs proptest. Selected explicitly so the pin cannot be
+      # silently dropped by scoping.
+      - name: Policy-kernel model↔Rust parity pin (nucleus-policy-kernel)
+        id: k4
+        if: ${{ steps.affected.outputs.full == 'true' || contains(steps.affected.outputs.list, ' nucleus-policy-kernel ') }}
+        continue-on-error: true
+        run: cargo test -p nucleus-policy-kernel
+      - name: Outcomes
+        if: always()
+        env:
+          T: ${{ steps.tests.outcome }}
+          S: ${{ steps.sdk.outcome }}
+          D: ${{ steps.doctests.outcome }}
+          O: ${{ steps.owasp.outcome }}
+          K: ${{ steps.k4.outcome }}
+        run: |
+          echo "tests=$T sdk=$S doctests=$D owasp=$O k4=$K"
+          echo "- tests: $T · sdk: $S · doctests: $D · owasp: $O · k4: $K" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── The live-path gates, ONCE per pod ─────────────────────────────────────
+  #
+  # Three more jobs that each built portcullis / nucleus-node on their own pod:
+  # the declassify sink-scope conformance, the C2 lineage boot, and the gate of
+  # gates (which perturbs and restores real files, so it runs LAST, on a tree
+  # nothing else in this job has written to — cargo's outputs are gitignored).
+  live-path-gates:
+    name: Live-path gates (one pod)
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    if: ${{ github.event.pull_request.draft != true }}
+    outputs:
+      declassify: ${{ steps.declassify.outcome }}
+      lineage: ${{ steps.lineage.outcome }}
+      c1: ${{ steps.c1.outcome }}
+      gates: ${{ steps.gates.outcome }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - name: A token clears its node for its signed sinks and only those
+        id: declassify
+        continue-on-error: true
+        shell: bash
+        run: scripts/check-declassify-sink-scope-enforced.sh
+      # C2 — the node records pod lineage on the LIVE path: boots the real
+      # nucleus-node with the KVM-free local-driver, creates two sibling pods and
+      # a child through the real signed POST /v1/pods, and asserts the listing
+      # serves the recorded parent_pod_id and that a pod's own scoped listing
+      # excludes a non-lineage sibling.
+      - name: The create API records lineage the listing serves; scoped listing excludes a sibling (C2)
+        id: lineage
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cargo build -p nucleus-node --features local-driver -p nucleus-cli -p nucleus-tool-proxy
+          export NUCLEUS_NODE_BIN=target/debug/nucleus-node
+          export NUCLEUS_CLI_BIN=target/debug/nucleus
+          export NUCLEUS_TOOL_PROXY_BIN=target/debug/nucleus-tool-proxy
+          scripts/cross-pod-lineage-check.sh
+          scripts/cross-pod-scoped-check.sh
+      # C1 ("cannot learn the secrets Nucleus holds on its behalf") is proven
+      # over the seven inbound channels in Lean, but the RUNTIME must withhold
+      # for that to hold on the live path: the workload always runs as a
+      # distinct unprivileged uid, any unclassified NUCLEUS_* key is refused at
+      # admission, no per-pod secret rides the guest cmdline. Runs cargo tests
+      # in tool-proxy, node and the IFC kernel — compile-class, so it lives on
+      # this pod (it was 10 gate-pool minutes per PR on a 2-CPU runner).
+      - name: uid distinctness, reserved-namespace, and cmdline fences hold (C1)
+        id: c1
+        continue-on-error: true
+        shell: bash
+        run: scripts/check-c1-inbound-fences.sh
+      # Every gate is a claim that something is checked. This checks the claim:
+      # each check-*.sh must RED on a real violation of its own subject and
+      # GREEN when restored. Needs a clean tree (it perturbs and restores).
+      - name: Every gate REDs on a real violation and GREENs when restored
+        id: gates
+        continue-on-error: true
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::tree is dirty before the gate of gates:"; git status --porcelain; exit 1
+          fi
+          scripts/check-gates-can-fail.sh
+      - name: Outcomes
+        if: always()
+        env:
+          D: ${{ steps.declassify.outcome }}
+          L: ${{ steps.lineage.outcome }}
+          C: ${{ steps.c1.outcome }}
+          G: ${{ steps.gates.outcome }}
+        run: echo "declassify=$D lineage=$L c1=$C gates=$G"
+
+  # ── Status contexts (branch protection names these; keep the names) ──────
+  #
+  # Each reports ONE step of the consolidated jobs above. A step that was
+  # skipped by scoping passes (nothing it covers changed on this PR); a job
+  # that was skipped as a whole passes (docs-only PR / draft — same as before);
+  # a job that failed before reaching its steps fails EVERY context it carries.
+  test:
+    name: Tests
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    needs: workspace-tests
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.workspace-tests.result }}
+          STEP: ${{ needs.workspace-tests.outputs.tests }}
+          STEP2: ${{ needs.workspace-tests.outputs.sdk }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::workspace-tests job: $JOB"; exit 1;; esac
+          case "$STEP:$STEP2" in success:success|success:skipped|skipped:success|skipped:skipped) exit 0;; *) echo "::error::cargo test: $STEP, SDK tests: $STEP2 (see 'Workspace build + tests')"; exit 1;; esac
+
+  doctests:
+    name: Doctests
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    needs: workspace-tests
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.workspace-tests.result }}
+          STEP: ${{ needs.workspace-tests.outputs.doctests }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::workspace-tests job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::cargo test --doc: $STEP (see 'Workspace build + tests')"; exit 1;; esac
+
+  owasp-gauntlet:
+    name: OWASP LLM Security Gauntlet
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    needs: workspace-tests
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.workspace-tests.result }}
+          STEP: ${{ needs.workspace-tests.outputs.owasp }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::workspace-tests job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::OWASP gauntlet: $STEP (see 'Workspace build + tests')"; exit 1;; esac
+
+  policy-kernel-parity:
+    name: Policy-kernel model↔Rust parity (K4)
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    needs: workspace-tests
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.workspace-tests.result }}
+          STEP: ${{ needs.workspace-tests.outputs.k4 }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::workspace-tests job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::K4 parity pin: $STEP (see 'Workspace build + tests')"; exit 1;; esac
+
+  declassify-sink-scope-enforced:
+    name: Declassify sink scope is enforced
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    needs: live-path-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.live-path-gates.result }}
+          STEP: ${{ needs.live-path-gates.outputs.declassify }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::live-path-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::declassify sink scope: $STEP (see 'Live-path gates')"; exit 1;; esac
+
+  cross-pod-lineage:
+    name: The node records pod lineage on the live path (C2)
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    needs: live-path-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.live-path-gates.result }}
+          STEP: ${{ needs.live-path-gates.outputs.lineage }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::live-path-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::C2 lineage: $STEP (see 'Live-path gates')"; exit 1;; esac
+
+  c1-inbound-fences-enforced:
+    name: C1 inbound fences are enforced
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    needs: live-path-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.live-path-gates.result }}
+          STEP: ${{ needs.live-path-gates.outputs.c1 }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::live-path-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::C1 inbound fences: $STEP (see 'Live-path gates')"; exit 1;; esac
+
+  gates-can-fail:
+    name: Gates must fail on their own subject
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    needs: live-path-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.live-path-gates.result }}
+          STEP: ${{ needs.live-path-gates.outputs.gates }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::live-path-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::gate of gates: $STEP (see 'Live-path gates')"; exit 1;; esac
+
   clippy:
     name: Clippy
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
+    if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -392,167 +643,69 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # Doctests, split out of `test` because they were 82% of its wall clock.
-  #
-  # WHY THIS JOB IS REQUIRED, NOT OPTIONAL
-  #
-  # Splitting a slow check into its own job is one edit away from dropping it:
-  # make it `continue-on-error`, or forget to add it to the required set, and the
-  # documented examples stop being verified while the board stays green. This
-  # repo has already produced that exact shape — two Lean proofs that appeared in
-  # a workflow's `paths:` triggers and were compiled by no job at all (#2162).
-  #
-  # Doctests are the ONLY thing checking that the examples in this codebase's
-  # documentation still compile, and the documentation is where most of its
-  # reasoning lives. They must fail the build.
-  doctests:
-    name: Doctests
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 30
-    needs: changed-crates
-    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          targets: wasm32-unknown-unknown
-          cache: ${{ runner.environment == 'github-hosted' }}
-      # PREREQUISITE, not boilerplate. `nucleus-verifier-service` vendors the
-      # wasm SDK with `include_str!`/`include_bytes!` on sdks/verifier-js/pkg/*,
-      # which only `wasm-pack build` produces. Without these two steps the whole
-      # workspace fails to compile and the doctest job REDs for a reason that has
-      # nothing to do with doctests.
-      #
-      # CI found this: splitting a job means carrying its PREREQUISITES, not just
-      # its command, and I moved the command alone.
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-      - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
-        run: wasm-pack build sdks/verifier-js --target web --release
-      - name: cargo test --doc
-        run: cargo test --all-features --doc
-
-  test:
-    name: Tests
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 20
-    needs: changed-crates
-    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          targets: wasm32-unknown-unknown
-          cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-      - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
-        run: wasm-pack build sdks/verifier-js --target web --release
-      # `--lib --bins --tests` EXCLUDES doctests, which run in the `doctests` job
-      # below. Measured on this workspace, warm cache:
-      #
-      #   --lib --bins --tests   152s
-      #   --doc                  702s   <- 82% of the time
-      #
-      # Every doctest is a separate rustc invocation linking the whole crate
-      # against 927 resolved packages, so ~113 doc code blocks cost ~8s each.
-      # That is not pathological, it is what doctests cost at this size — but it
-      # is not per-iteration work, and it was being paid on every run.
-      #
-      # SPLIT, NOT DROPPED. The doctests job below is required; see its comment
-      # for why that distinction is load-bearing.
-      - name: cargo test (lib, bins, tests — doctests run separately)
-        run: cargo test --all-features --lib --bins --tests
-      # Node tests run the WASM bindings against the cross-language golden seal
-      # (settlement + commons) and the accept/reject smoke fixtures — per-PR, not
-      # just on publish, so a binding-layer drift from the proven kernels is caught
-      # here. Node is preinstalled on the ubuntu runner.
-      # Hosted runners ship node; the self-hosted image does not (exit 127 on
-      # the first routed run). setup-node downloads it at runner speed and
-      # never uploads a cache.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-      - name: Node tests (golden seal + smoke) against built wasm
-        working-directory: sdks/verifier-js
-        run: npm test
-      # The Python SDK is its own workspace, so the root `cargo test` above does
-      # not reach it — and until now NOTHING did: it had no CI at all, which is
-      # how it stayed untestable (`extension-module` was unconditional, so every
-      # test target failed to link) and how its commerce bindings went missing
-      # while the JS SDK gained them. Its tests run the shared conformance
-      # corpus, so a drift between the Python surface and the proven kernels
-      # fails here rather than in someone's integration.
-      - name: Python SDK tests (conformance corpus through the bindings)
-        working-directory: sdks/verifier-py
-        run: cargo test
-      - name: Python SDK clippy
-        working-directory: sdks/verifier-py
-        run: cargo clippy --all-targets -- -D warnings
-
   a2a-example:
     name: A2A example server (examples/a2a-server)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
+    if: ${{ github.event.pull_request.draft != true }}
     # examples/a2a-server is its own workspace (root Cargo.toml `exclude`), so
     # the root-level fmt/clippy/test jobs never touch it. This job is NOT
     # path-filtered on purpose: the example path-depends on
     # crates/nucleus-{agent-card,verify-commerce,envelope,lineage}, so a change
     # anywhere in those crates can break the example's receipt pre-image and
     # version-negotiation invariants without touching examples/**.
-    defaults:
-      run:
-        working-directory: examples/a2a-server
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Scope: on pull_request, the crates the diff touches closed under
+      # reverse dependencies (scripts/affected-crates.sh); anything else, or a
+      # workspace-wide change, is the full run. Outputs: full=true|false and
+      # list=" a b c " (space-padded for contains()).
+      - name: "Scope (pull_request: affected crates; otherwise full)"
+        id: affected
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          full=true; list=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch -q origin "$BASE"
+            rc=0; names=$(scripts/affected-crates.sh "origin/$BASE") || rc=$?
+            if [ "$rc" = 0 ] && [ -n "$names" ]; then full=false; list=" $(printf '%s' "$names" | tr '\n' ' ') "; fi
+            if [ "$rc" = 0 ] && [ -z "$names" ]; then full=false; fi
+          fi
+          { echo "full=$full"; echo "list=$list"; } >> "$GITHUB_OUTPUT"
+          echo "scope: full=$full list=[$list]"
+      # The example path-depends on nucleus-{agent-card,verify-commerce,
+      # envelope,lineage}; run when one of those is affected (closed under
+      # reverse dependencies) or the example itself changed. Measured 51
+      # pool-minutes per 2 h unscoped.
+      - name: Neither the example nor its path dependencies changed
+        id: skip
+        if: ${{ steps.affected.outputs.full != 'true' && !contains(steps.affected.outputs.list, ' nucleus-agent-card ') && !contains(steps.affected.outputs.list, ' nucleus-verify-commerce ') && !contains(steps.affected.outputs.list, ' nucleus-envelope ') && !contains(steps.affected.outputs.list, ' nucleus-lineage ') }}
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if git diff --name-only "origin/$BASE...HEAD" | grep -q '^examples/a2a-server/'; then
+            echo "examples/a2a-server changed — running"; echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "A2A example not affected by this pull request"; echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: ${{ steps.skip.outcome == 'skipped' || steps.skip.outputs.run == 'true' }}
         with:
           components: rustfmt, clippy
           cache: ${{ runner.environment == 'github-hosted' }}
           cache-workspaces: examples/a2a-server
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: cargo test
-        run: cargo test --all-features
-
-  owasp-gauntlet:
-    name: OWASP LLM Security Gauntlet
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    needs: changed-crates
-    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Run OWASP LLM Top 10 security tests
-        run: cargo test -p portcullis --test owasp_llm_gauntlet --all-features
-
-  policy-kernel-parity:
-    name: Policy-kernel model↔Rust parity (K4)
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    # The model↔Rust contract, as a FIRST-CLASS named check. The K4 proof
-    # `governance_monotone_iff` (proven axiom-clean in the Portcullis-Core Proven
-    # Lean workflow) is a statement ABOUT the Lean model; it only transfers to the
-    # shipped Rust `decide`/`governance_monotone`/`representative_requests` via the
-    # `nucleus-policy-kernel` `tests/model_parity.rs` proptest, which pins the two
-    # semantics declaration-for-declaration. That parity pin already runs
-    # transitively under the whole-workspace `cargo test --all-features` above, but
-    # this dedicated job selects the crate EXPLICITLY (`-p nucleus-policy-kernel`)
-    # so the contract is a required-able status check that cannot be silently
-    # dropped if the umbrella `test` job is ever path-filtered or refactored —
-    # closing the enforcement loop the Lean-side gate already documents.
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache: ${{ runner.environment == 'github-hosted' }}
-      - name: cargo test -p nucleus-policy-kernel (parity pin)
-        run: cargo test -p nucleus-policy-kernel
+      - name: cargo fmt + clippy + test (examples/a2a-server)
+        if: ${{ steps.skip.outcome == 'skipped' || steps.skip.outputs.run == 'true' }}
+        working-directory: examples/a2a-server
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features
 
   musl-check:
     name: musl type-check (nucleus-node, nucleus-tool-proxy)
@@ -567,20 +720,54 @@ jobs:
     # image; hosted x86 runners keep musl-tools' x86_64-linux-musl-gcc.
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
+    if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Scope: on pull_request, the crates the diff touches closed under
+      # reverse dependencies (scripts/affected-crates.sh); anything else, or a
+      # workspace-wide change, is the full run. Outputs: full=true|false and
+      # list=" a b c " (space-padded for contains()).
+      - name: "Scope (pull_request: affected crates; otherwise full)"
+        id: affected
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          full=true; list=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch -q origin "$BASE"
+            rc=0; names=$(scripts/affected-crates.sh "origin/$BASE") || rc=$?
+            if [ "$rc" = 0 ] && [ -n "$names" ]; then full=false; list=" $(printf '%s' "$names" | tr '\n' ' ') "; fi
+            if [ "$rc" = 0 ] && [ -z "$names" ]; then full=false; fi
+          fi
+          { echo "full=$full"; echo "list=$list"; } >> "$GITHUB_OUTPUT"
+          echo "scope: full=$full list=[$list]"
+      # The two shipped binaries only need re-checking on the musl target when
+      # something in their dependency closure changed (measured 52 pool-minutes
+      # per 2 h unscoped). affected-crates is closed under reverse
+      # dependencies, so a change deep in portcullis-core still runs this.
+      - name: Nothing in nucleus-node / nucleus-tool-proxy's closure changed
+        id: skip
+        if: ${{ steps.affected.outputs.full != 'true' && !contains(steps.affected.outputs.list, ' nucleus-node ') && !contains(steps.affected.outputs.list, ' nucleus-tool-proxy ') }}
+        run: echo "musl type-check not needed for this pull request"
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: ${{ steps.skip.outcome == 'skipped' }}
         with:
           targets: x86_64-unknown-linux-musl
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install musl-gcc (hosted x86 only)
-        if: ${{ runner.environment == 'github-hosted' }}
+        if: ${{ steps.skip.outcome == 'skipped' && runner.environment == 'github-hosted' }}
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Ensure musl target (cache-safe)
+        if: ${{ steps.skip.outcome == 'skipped' }}
         # setup-rust-toolchain's `targets:` is skipped on a toolchain cache hit,
         # so the target can be absent despite being declared → E0463.
         run: rustup target add x86_64-unknown-linux-musl
       - name: cargo check (musl)
+        if: ${{ steps.skip.outcome == 'skipped' }}
         run: |
           if [ "${{ runner.environment }}" = "github-hosted" ]; then
             cargo check -p nucleus-node -p nucleus-tool-proxy --target x86_64-unknown-linux-musl

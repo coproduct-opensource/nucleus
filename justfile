@@ -134,6 +134,21 @@ check:
     cargo fmt --all -- --check
     cargo clippy --all-targets --all-features -- -D warnings
 
+# Everything CI reds in its first minute, locally in about one: gate scripts,
+# ratchets, the formal-methods census, actionlint on touched workflows, fmt,
+# and a per-feature check of the crates this branch touches (the class of red
+# that only shows without a feature). `just prepush-full` adds clippy, the
+# affected crates' tests, and the heavy gate scripts.
+prepush:
+    bash scripts/prepush.sh
+
+prepush-full:
+    bash scripts/prepush.sh --full
+
+# Install `just prepush` as the git pre-push hook (skip once with --no-verify).
+hooks:
+    @printf '#!/bin/sh\nexec bash scripts/prepush.sh\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push && echo "pre-push hook installed"
+
 # CI-faithful preflight: `check` plus the Feature Matrix gate, under the SAME
 # env CI uses (actions-rust-lang/setup-rust-toolchain exports
 # RUSTFLAGS=-D warnings by default — a local run without it misses promoted

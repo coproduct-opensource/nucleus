@@ -13,6 +13,9 @@ on:
   push:
     branches: [main]
   pull_request:
+    # ready_for_review: the jobs below skip drafts, so a draft marked ready must
+    # trigger a run or it never gets these checks.
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
 
 permissions:
@@ -27,34 +30,66 @@ jobs:
     name: cargo hack --each-feature
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
+    if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: cargo-hack
-      # --each-feature = default, no-default-features, and each feature
-      # individually; --no-dev-deps keeps it a consumer's-eye build.
-      - name: Each-feature check (security-load-bearing crates)
+      # Scope: on pull_request, the crates the diff touches closed under
+      # reverse dependencies (scripts/affected-crates.sh); anything else, or a
+      # workspace-wide change, is the full run. Outputs: full=true|false and
+      # list=" a b c " (space-padded for contains()).
+      - name: "Scope (pull_request: affected crates; otherwise full)"
+        id: affected
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
         run: |
-          cargo hack check --each-feature --no-dev-deps \
-            -p portcullis \
-            -p portcullis-core \
-            -p nucleus-lineage \
-            -p nucleus-tool-proxy \
-            -p nucleus-ifc \
-            -p nucleus-envelope \
-            -p nucleus-identity \
-            -p nucleus-creditworthiness
+          set -euo pipefail
+          full=true; list=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch -q origin "$BASE"
+            rc=0; names=$(scripts/affected-crates.sh "origin/$BASE") || rc=$?
+            if [ "$rc" = 0 ] && [ -n "$names" ]; then full=false; list=" $(printf '%s' "$names" | tr '\n' ' ') "; fi
+            if [ "$rc" = 0 ] && [ -z "$names" ]; then full=false; fi
+          fi
+          { echo "full=$full"; echo "list=$list"; } >> "$GITHUB_OUTPUT"
+          echo "scope: full=$full list=[$list]"
+      # --each-feature = default, no-default-features, and each feature
+      # individually; --no-dev-deps keeps it a consumer's-eye build. On a
+      # pull_request only the listed crates the diff affects are checked
+      # (measured 61 pool-minutes per 2 h for the full list); merge_group and
+      # push check all eight before anything lands.
+      - name: Each-feature check (security-load-bearing crates)
+        env:
+          FULL: ${{ steps.affected.outputs.full }}
+          LIST: ${{ steps.affected.outputs.list }}
+        run: |
+          set -euo pipefail
+          all=(portcullis portcullis-core nucleus-lineage nucleus-tool-proxy nucleus-ifc nucleus-envelope nucleus-identity nucleus-creditworthiness)
+          pk=()
+          for c in "${all[@]}"; do
+            if [ "$FULL" = true ]; then pk+=(-p "$c"); else case "$LIST" in *" $c "*) pk+=(-p "$c");; esac; fi
+          done
+          if [ ${#pk[@]} -eq 0 ]; then echo "none of the eight security-load-bearing crates is affected by this pull request — nothing to check"; exit 0; fi
+          echo "checking: ${pk[*]}"
+          cargo hack check --each-feature --no-dev-deps "${pk[@]}"
 
   msrv:
     name: MSRV floor (workspace rust-version)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
+    if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           # Must match [workspace.package] rust-version. Set by wasmtime 48
@@ -67,8 +102,30 @@ jobs:
       # (sdks/verifier-js/pkg/) that only the Tests job builds first;
       # it is excluded here so the MSRV floor checks source, not
       # generated-artifact presence.
-      - name: Check workspace on the MSRV toolchain
-        run: cargo +1.95 check --workspace --all-features --locked --exclude nucleus-verifier-service
+      # Scoped on pull_request to the crates the diff touches (closed under
+      # reverse dependencies, scripts/affected-crates.sh); the whole workspace
+      # on merge_group and push. Measured 13 pool-minutes per PR for the full
+      # check on the build pool — the top named job after the workspace tests.
+      - name: Check on the MSRV toolchain (affected crates on a PR, workspace otherwise)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          pk=()
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch -q origin "$BASE"
+            rc=0; names=$(scripts/affected-crates.sh "origin/$BASE") || rc=$?
+            if [ "$rc" = 0 ] && [ -n "$names" ]; then
+              while read -r n; do [ "$n" = nucleus-verifier-service ] || pk+=(-p "$n"); done <<< "$names"
+              echo "MSRV check scoped to: $names"
+            fi
+          fi
+          if [ ${#pk[@]} -eq 0 ]; then
+            cargo +1.95 check --workspace --all-features --locked --exclude nucleus-verifier-service
+          else
+            cargo +1.95 check --all-features --locked "${pk[@]}"
+          fi
 
   # The Kani floor, enforced on exactly what Kani builds.
   #
@@ -85,6 +142,7 @@ jobs:
     name: Kani toolchain floor (1.93)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
+    if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
