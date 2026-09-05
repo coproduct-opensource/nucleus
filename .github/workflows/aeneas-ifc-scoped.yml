@@ -414,8 +414,10 @@ jobs:
       - name: Install elan (Lean toolchain)
         if: steps.scope.outputs.relevant == 'true' && runner.environment == 'github-hosted'
         run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
-            | sh -s -- -y --no-modify-path
+          # elan-init pinned by tag AND checksum (Scorecard: no download-then-run).
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/v4.2.4/elan-init.sh -o /tmp/elan-init.sh
+          echo "a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53  /tmp/elan-init.sh" | sha256sum -c -
+          sh /tmp/elan-init.sh -y --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: "Lean toolchain + Mathlib cache (hosted: elan + cache action)"
