@@ -10,6 +10,9 @@
 # (CARGO_PROFILE_DEV_DEBUG in values.yaml) finished in 6.3 min cold /
 # 3.6 min warm under an 8 GiB limit. lld ships in the runner image.
 [target.aarch64-unknown-linux-gnu]
+# `linker` survives a job-level RUSTFLAGS (which replaces config rustflags);
+# cc-lld is `cc -fuse-ld=lld` from the runner image.
+linker = "cc-lld"
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 # Dependencies carry no debuginfo at all; workspace crates keep line tables
