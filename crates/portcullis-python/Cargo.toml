@@ -15,4 +15,4 @@ crate-type = ["cdylib"]
 [dependencies]
 portcullis-core = { path = "../portcullis-core" }
 portcullis-effects = { path = "../portcullis-effects" }
-pyo3 = { version = "0.28", features = ["extension-module"] }
+pyo3 = { version = "0.29", features = ["extension-module"] }
