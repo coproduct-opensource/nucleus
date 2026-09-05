@@ -58,6 +58,7 @@ jobs:
             econ-lean.yml
             rubric-lean.yml
         run: |
+          # shellcheck disable=SC2016 — jq's $t and the markdown backticks are literal on purpose.
           set -euo pipefail
           gh label create ci-red-main --repo "$REPO" --color B60205 \
             --description "A load-bearing workflow is red on main (opened/closed by ci-red-main.yml)" \
