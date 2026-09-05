@@ -34,12 +34,9 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  # Hosted x86 on purpose for now: kani-github-action's install step fails on
-  # the arm64 pods ("File exists (os error 17)" from `cargo kani setup`, then
-  # kani-driver cannot find cargo). 2.4 min of hosted time per PR; moving it
-  # is a follow-up. RUSTC_WRAPPER stays cleared for when it does move.
-  RUSTC_WRAPPER: ""
+# Hosted x86 on purpose for now (#2622): kani-github-action's install step
+# fails on the arm64 pods. Do NOT set RUSTC_WRAPPER here, even to "": kani-driver
+# execs the wrapper verbatim and an empty one is "No such file or directory".
 
 jobs:
   # Fast tier: 5 lightweight harnesses — runs on every PR and push
