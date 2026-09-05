@@ -62,7 +62,9 @@ does not fit: +2.5 CPU / +5 GiB of requests over the node, and 5 × 6.2 GiB
 peaks leave no headroom. Throughput comes from fewer compile jobs per PR
 (ci.yml builds the workspace once per pod), not from more runners. Warm
 runners (`minRunners`: 2 gate, 1 build) remove the pod-start latency from
-the short jobs; their idle requests are already reserved at peak.
+the short jobs. Their reservations are permanent, so CPU *requests* were
+lowered (gate 250m, build 2000m; limits unchanged) after new pods failed
+to schedule on "Insufficient cpu" while the build pool sat half idle.
 
 Install the build pool the same way with `-f k8s/ci-runner/values-build.yaml`
 and release name `nucleus-k3s-build`.

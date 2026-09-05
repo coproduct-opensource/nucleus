@@ -77,8 +77,15 @@ template:
           - name: ACTIONS_RUNNER_HOOK_JOB_COMPLETED
             value: /home/runner/hooks/job-completed.sh
         resources:
+          # REQUESTS are what the scheduler reserves; with warm runners those
+          # reservations are permanent. At 500m per gate pod + 2500m per build
+          # pod the node's 14 CPUs were fully requested and new gate pods
+          # intermittently failed to schedule ("Insufficient cpu") while the
+          # build pool sat at two busy — seen 2026-09-05 under the merge-queue
+          # wave. Requests are sized for the idle/average case; the limits
+          # below are what a job may actually burn.
           requests:
-            cpu: "500m"
+            cpu: "250m"
             memory: 1Gi
           limits:
             cpu: "2"
