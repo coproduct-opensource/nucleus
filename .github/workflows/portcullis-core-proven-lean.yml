@@ -48,7 +48,7 @@ permissions:
 jobs:
   portcullis-core-proven-lean:
     name: lake build + sorry-ban (proven tier)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -98,7 +98,7 @@ jobs:
 
 
       - name: Install elan (Lean toolchain)
-        if: steps.scope.outputs.relevant == 'true'
+        if: runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true')
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --no-modify-path
@@ -127,7 +127,7 @@ jobs:
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
         run: |
-          LEAN_NUM_THREADS=2 lake build \
+          LEAN_NUM_THREADS=${{ runner.environment == 'github-hosted' && '4' || '3' }} lake build \
             PortcullisCoreBridge \
             PortcullisCoreIFC \
             IntegrityNoninterferenceExtracted \

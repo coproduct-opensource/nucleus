@@ -81,7 +81,7 @@ jobs:
   # Layer 1: LLVM source-based code coverage with threshold enforcement
   llvm-cov:
     name: Code Coverage (llvm-cov)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -91,8 +91,8 @@ jobs:
         with:
           components: llvm-tools-preview
           cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+      - name: Install cargo-llvm-cov (baked into the self-hosted image)
+        run: command -v cargo-llvm-cov >/dev/null || cargo install cargo-llvm-cov --locked
       - name: Workspace coverage (threshold gate)
         run: |
           cargo llvm-cov --all-features \
@@ -105,9 +105,12 @@ jobs:
             --ignore-filename-regex '(tests/|kani\.rs)' 2>&1 | tee /tmp/portcullis-cov.txt
       - name: Generate JSON coverage report
         if: always()
+        # `report` re-reads the profile the portcullis run above just wrote —
+        # the previous `cargo llvm-cov -p portcullis --json` re-ran every
+        # portcullis test a second time (2.5 min on the self-hosted pool) to
+        # produce the same numbers in a different format.
         run: |
-          cargo llvm-cov --all-features -p portcullis \
-            --json --output-path /tmp/portcullis-cov.json \
+          cargo llvm-cov report --json --output-path /tmp/portcullis-cov.json \
             --ignore-filename-regex '(tests/|kani\.rs)' || true
       - name: Coverage summary
         if: always()

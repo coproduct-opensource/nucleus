@@ -39,11 +39,13 @@ permissions:
 jobs:
   research-lean-build:
     name: lake build + sorry-ratchet (research tier)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install elan (Lean toolchain)
+        # Hosted only: the runner image bakes elan + the pinned Lean toolchain.
+        if: ${{ runner.environment == 'github-hosted' }}
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --no-modify-path
@@ -71,7 +73,7 @@ jobs:
       - name: lake build (research cluster — type-check; a broken proof FAILS here)
         working-directory: crates/portcullis-core/lean
         run: |
-          LEAN_NUM_THREADS=2 lake build \
+          LEAN_NUM_THREADS=${{ runner.environment == 'github-hosted' && '4' || '3' }} lake build \
             MatrixBridge \
             RankNullity \
             AlignmentTaxBridge \

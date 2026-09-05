@@ -34,6 +34,10 @@ concurrency:
 permissions:
   contents: read
 
+# Hosted x86 on purpose for now (#2622): kani-github-action's install step
+# fails on the arm64 pods. Do NOT set RUSTC_WRAPPER here, even to "": kani-driver
+# execs the wrapper verbatim and an empty one is "No such file or directory".
+
 jobs:
   # Fast tier: 5 lightweight harnesses — runs on every PR and push
   # The 3 normalize_* harnesses use build_ordered_permissions() which creates

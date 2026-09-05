@@ -31,7 +31,7 @@ permissions:
 jobs:
   econ-lean:
     name: lake build Nucleus (econ proofs + golden seal)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: No-op (paths not touched)

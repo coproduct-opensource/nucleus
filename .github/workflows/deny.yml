@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   deny:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -37,21 +37,17 @@ jobs:
           - sources
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+      # `cargo deny` itself, not the docker action: the self-hosted scale set
+      # runs jobs in a plain container (no docker), and the image bakes
+      # cargo-deny (docker/Dockerfile.runner CARGO_DENY_VERSION). Hosted
+      # runners install the same pin. The matrix shards by check category.
+      - name: Install cargo-deny (hosted only; baked into the runner image)
+        if: ${{ runner.environment == 'github-hosted' }}
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      # rust-toolchain.toml pins 1.96.1; modern rustup does not install a
+      # toolchain file's channel implicitly, so hosted runners set it up here
+      # (the runner image bakes it).
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          command: check
-          # `args` is NOT an input of this action (its inputs are `arguments`
-          # and `command-arguments`), so it was silently ignored and every shard
-          # ran `cargo deny check` with no category filter — all four checks, in
-          # all four jobs. The matrix has never sharded anything: one failing
-          # category reddened all four shards and none of them named it.
-          command-arguments: "${{ matrix.checks }}"
-          # The action runs in a rust:1.85.0-alpine3.20 container and only calls
-          # `rustup default` when this input is set. Left empty, `cargo metadata`
-          # runs against the workspace's rust-toolchain.toml (1.96.1), and modern
-          # rustup no longer installs a toolchain file's channel implicitly — so
-          # every shard died with
-          #   error: override toolchain '1.96.1-x86_64-unknown-linux-musl' is not installed
-          # Nothing in-repo changed; the pinned action's container drifted under it.
-          # Keep this in step with rust-toolchain.toml.
-          rust-version: "1.96.1"
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - run: cargo deny check ${{ matrix.checks }}

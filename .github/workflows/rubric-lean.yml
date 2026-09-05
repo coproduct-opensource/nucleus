@@ -86,7 +86,7 @@ jobs:
       # pattern — see econ-lean.yml / aeneas.yml) and run `lake build`. No mathlib
       # cache fetch needed; the whole tree builds in seconds.
       - name: Install elan (Lean toolchain)
-        if: steps.scope.outputs.relevant == 'true'
+        if: runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true')
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --no-modify-path
@@ -106,7 +106,7 @@ jobs:
       - name: lake build Nucleus (rubric scoring proofs)
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-rubric/lean
-        run: LEAN_NUM_THREADS=2 lake build
+        run: LEAN_NUM_THREADS=${{ runner.environment == 'github-hosted' && '4' || '3' }} lake build
 
       - name: Ban sorry / admit / native_decide / sorryAx in rubric Lean
         if: steps.scope.outputs.relevant == 'true'

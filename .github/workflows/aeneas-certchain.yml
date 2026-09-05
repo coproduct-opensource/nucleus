@@ -46,7 +46,7 @@ env:
 jobs:
   aeneas-certchain:
     name: Scoped Aeneas (certificate chain) + parity + monotonicity theorem
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 40
 
     steps:
@@ -84,25 +84,33 @@ jobs:
 
       - name: Cache Aeneas binary
         id: cache-aeneas-bin
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: /tmp/aeneas-bin
-          key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
+          key: aeneas-bin-${{ runner.os }}-${{ runner.arch }}-${{ env.AENEAS_RELEASE }}
 
       - name: Download Aeneas pre-built binaries
-        if: steps.cache-aeneas-bin.outputs.cache-hit != 'true'
+        if: steps.cache-aeneas-bin.outputs.cache-hit != 'true' && runner.environment == 'github-hosted'
         run: |
           gh release download "$AENEAS_RELEASE" \
             --repo AeneasVerif/aeneas \
-            --pattern "aeneas-linux-x86_64.tar.gz" \
+            --pattern "aeneas-linux-$(uname -m).tar.gz" \
             --dir /tmp
           mkdir -p /tmp/aeneas-bin
-          tar xzf /tmp/aeneas-linux-x86_64.tar.gz -C /tmp/aeneas-bin
+          tar xzf /tmp/aeneas-linux-"$(uname -m)".tar.gz -C /tmp/aeneas-bin
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Add Aeneas to PATH
-        run: echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+        # Self-hosted: the runner image bakes the same release at /opt/aeneas
+        # (docker/Dockerfile.runner AENEAS_RELEASE) — no download, no cache.
+        run: |
+          if [ -x /opt/aeneas/aeneas ] && [ "${{ runner.environment }}" != "github-hosted" ]; then
+            echo "/opt/aeneas" >> "$GITHUB_PATH"
+          else
+            echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Verify tools
         run: |
@@ -143,16 +151,23 @@ jobs:
           echo "generated-certchain/ canonicalized from the fresh extraction; theorem builds against it."
 
       - name: Install elan (Lean toolchain)
+        if: runner.environment == 'github-hosted'
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      - uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
+      - name: "Lean toolchain + Mathlib cache (hosted: elan + cache action)"
+        if: ${{ runner.environment == 'github-hosted' }}
+        uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
         with:
           lean-project-dir: crates/portcullis-core/lean
           build-target: PortcullisCoreCertChain
           cache-key-prefix: lean-certchain
+      - name: "Mathlib cache (self-hosted: baked elan, persistent ~/.cache/mathlib)"
+        if: ${{ runner.environment != 'github-hosted' }}
+        working-directory: crates/portcullis-core/lean
+        run: lake exe cache get || true
 
       - name: lake build (extracted core + theorem)
         working-directory: crates/portcullis-core/lean

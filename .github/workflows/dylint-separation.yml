@@ -74,7 +74,7 @@ concurrency:
 jobs:
   cb4a-separation:
     name: cb4a_separation (enforced at zero)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     env:
       # dylint drives rustc through its own driver; sccache cannot wrap it
       # ("could not compile proc-macro2 (build script): No such file or
@@ -97,7 +97,7 @@ jobs:
       # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
       # An unpinned `cargo install` would drift the third leg silently.
       - name: Install cargo-dylint
-        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
       # `cd` rather than `--manifest-path`: rustup selects a toolchain from the
       # CURRENT DIRECTORY, so building from the repo root would silently use the
@@ -155,7 +155,7 @@ jobs:
 
   mediated:
     name: mediated (enforced at zero over the sealed effect boundary)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     env:
       # dylint drives rustc through its own driver; sccache cannot wrap it
       # ("could not compile proc-macro2 (build script): No such file or
@@ -174,7 +174,7 @@ jobs:
       # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
       # An unpinned `cargo install` would drift the third leg silently.
       - name: Install cargo-dylint
-        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
       - name: Build the pass
         working-directory: tools/nucleus-mediation-lint
@@ -209,7 +209,7 @@ jobs:
 
   identity-isolation:
     name: workload_identity_isolation (enforced at zero)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     env:
       # dylint drives rustc through its own driver; sccache cannot wrap it
       # ("could not compile proc-macro2 (build script): No such file or
@@ -228,7 +228,7 @@ jobs:
       # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
       # An unpinned `cargo install` would drift the third leg silently.
       - name: Install cargo-dylint
-        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
       # `cd` rather than `--manifest-path`: rustup selects a toolchain from the
       # CURRENT DIRECTORY — see the cb4a job's comment.
@@ -271,7 +271,7 @@ jobs:
 
   unpoliced-http-client:
     name: unpoliced_http_client (guest egress)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     env:
       # dylint drives rustc through its own driver; sccache cannot wrap it
       # ("could not compile proc-macro2 (build script): No such file or
@@ -295,7 +295,7 @@ jobs:
         # was observed hanging runner jobs for 15+ minutes.
         if: ${{ runner.environment == 'github-hosted' }}
       - name: Install dylint
-        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
       - name: Build the pass
         working-directory: tools/nucleus-egress-lint
