@@ -6,12 +6,14 @@ on:
     paths:
       - "crates/portcullis/src/**"
       - "crates/ck-*/src/**"
+      - "crates/nucleus-ifc-kernel/src/**"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   pull_request:
     paths:
       - "crates/portcullis/src/**"
       - "crates/ck-*/src/**"
+      - "crates/nucleus-ifc-kernel/src/**"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   # Bare, unfiltered: the merge queue's own re-validation of the fast-tier
@@ -113,6 +115,53 @@ jobs:
   # minutes. The other 12 harnesses are sharded into the nightly matrix below and,
   # as of 2026-08-31, none of them verifies — the dividing line is BTreeSet<String>,
   # not Kernel::admit. See KANI-STATUS.md.
+  # The six anti-prompt-injection harnesses in nucleus-ifc-kernel/src/flow.rs
+  # (no secret exfiltration, authority confinement, no integrity laundering,
+  # propagation monotone ×2, trusted-user allowed) — the claims flow_graph.rs
+  # and kernel/ifc.rs are live on. Every other Kani job runs `-p portcullis` or
+  # `-p ck-kernel`; until #2563 nothing ran these. All six verify in ~5 s.
+  kani-ifc:
+    name: Kani (IFC kernel: anti-prompt-injection flow harnesses)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+        if: ${{ runner.environment == 'github-hosted' }}
+        with:
+          cache-on-failure: true
+      - name: Cache Kani toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
+      - name: Run Kani (flow.rs harnesses, per-harness timeout)
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          kani-version: "0.67.0"
+          # --harness-timeout is unstable in 0.67 (needs -Z unstable-options):
+          # a harness that stops terminating fails the job instead of hanging
+          # it to the job timeout.
+          args: >-
+            -p nucleus-ifc-kernel
+            --solver cadical
+            -Z unstable-options
+            --harness-timeout 120s
+            --harness proof_no_secret_exfil
+            --harness proof_authority_confinement
+            --harness proof_no_integrity_laundering
+            --harness proof_propagation_monotone
+            --harness proof_propagation_monotone_leq
+            --harness proof_trusted_user_allowed
+      - name: All six flow.rs harnesses are still declared
+        # The harness list above is explicit; if a harness is renamed or
+        # deleted, Kani would silently verify fewer. Pin the count.
+        run: |
+          n=$(grep -c '#\[kani::proof\]' crates/nucleus-ifc-kernel/src/flow.rs)
+          [ "$n" -eq 6 ] || { echo "::error::flow.rs declares $n kani harnesses, this job lists 6 — update the --harness list"; exit 1; }
+
   kani-constitutional:
     name: Kani (constitutional kernel)
     runs-on: ubuntu-24.04
