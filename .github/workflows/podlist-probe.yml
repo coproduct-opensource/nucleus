@@ -126,11 +126,17 @@ jobs:
           test -n "$kernel" || { echo "::error::nucleus setup left no vmlinux to boot"; exit 1; }
           sudo cp "$kernel" "$HOME/fc/vmlinux"; sudo chown "$(id -u)" "$HOME/fc/vmlinux"
           ls -la "$HOME/fc"
+      - name: Build the operator's cert minter (nucleus-identity example, host target)
+        if: steps.scope.outputs.relevant == 'true'
+        # The node's HTTP API is mTLS-only; the harness mints the operator's client
+        # cert from the node's own CA with this example.
+        run: cargo build -p nucleus-identity --example mint_test_client_cert
       - name: Boot A, spawn child C and sibling B, assert the scoped listing
         if: steps.scope.outputs.relevant == 'true'
         run: |
           FC_DIR="$HOME/fc" KERNEL="$HOME/fc/vmlinux" ROOTFS="$HOME/fc/podlist-rootfs.ext4" \
-          NODE_BIN="$HOME/fc/nucleus-node" \
+          NODE_BIN="$HOME/fc/nucleus-node" CLI=/usr/local/bin/nucleus \
+          MINT=target/debug/examples/mint_test_client_cert \
             bash scripts/firecracker/podlist-boot-check.sh
       - name: Show the guest logs on failure
         if: failure() && steps.scope.outputs.relevant == 'true'
