@@ -90,9 +90,15 @@ probe() {
         return
     fi
 
-    local in_ci
-    in_ci="$(grep -rhoE "scripts/$gate[^\"']*" .github/workflows/ 2>/dev/null | head -1 | sed "s|scripts/$gate||" | xargs || true)"
-    if [[ "$in_ci" != "$ci_flags" ]]; then
+    # Every non-comment invocation in the workflows, flags only. A comment that
+    # merely mentions the script is not an invocation (the proof-count note in
+    # kani-nightly.yml was read as flags "(#2561): the"), and a gate CI calls
+    # two ways — `--count` inside a $(...) and `--strict` as the gate — is
+    # probed as the gate, so ANY invocation may match the probe's flags.
+    local invocations in_ci
+    invocations="$(grep -rhE "scripts/$gate" .github/workflows/ 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -oE "scripts/$gate[^\"'\`)]*" | sed "s|scripts/$gate||" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+    if ! printf '%s\n' "$invocations" | grep -qxF -- "$ci_flags"; then
+        in_ci="$(printf '%s\n' "$invocations" | head -1)"
         echo "  FAIL  $gate — CI invokes it as '$gate $in_ci' but this probe uses '$gate $ci_flags'"
         echo "        Probing a gate differently from CI tests something CI does not run."
         failures=$((failures + 1))
