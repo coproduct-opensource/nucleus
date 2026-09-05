@@ -11,6 +11,6 @@
    "inputRev": "v0.1.2",
    "inherited": false,
    "configFile": "lakefile.toml"}],
- "name": "ckPolicy",
+ "name": "nucleus",
  "lakeDir": ".lake",
  "fixedToolchain": false}

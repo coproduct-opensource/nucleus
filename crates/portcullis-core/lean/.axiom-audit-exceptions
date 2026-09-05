@@ -1,0 +1,12 @@
+# Theorems allowed to depend on native_decide (Lean.ofReduceBool / their own
+# `<name>._native.native_decide.ax_*` axiom). One fully-qualified name per line.
+# Read by scripts/lean-axiom-audit.sh; every other native_decide is a red gate.
+# native_decide puts the Lean compiler + the host's evaluator in the TCB of the
+# theorem — disclosed in CONJECTURES.md ("native_decide is in the TCB").
+# Theorems that merely depend on one of these inherit the disclosure; a NEW
+# native_decide anywhere else must be added here, by name, with a reason.
+ChannelAdmission.admission_is_pinned_per_channel
+FlowGraphProofs.invariant_exploit_dag_blocked
+FlowGraphProofs.single_adversarial_taints_chain
+FlowGraphProofs.clean_chain_preserves_trust
+IdentityMaterialNoninterference.delivery_is_flows_to_against_the_ceiling

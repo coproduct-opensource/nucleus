@@ -271,209 +271,23 @@ jobs:
           fi
           echo "OK: every proof hole is confined to the research tier declared in CONJECTURES.md."
 
-      - name: Assert enforcement core is sorryAx-free (#print axioms)
+      - name: Per-theorem axiom audit (every declaration under every proven-tier root)
         if: steps.scope.outputs.relevant == 'true'
-        working-directory: crates/portcullis-core/lean
+        # Replaces the three hand-written PrintAxioms files (#2567), whose theorem
+        # list was maintained by hand — a theorem nobody added was never audited.
+        # The roots are read from THIS workflow's own `lake build` list, so the
+        # audited set and the built set cannot drift. One environment per root,
+        # so the pairwise-incompatible Aeneas extractions (PortcullisCoreIFC /
+        # CapQuantale / Channel) never share an import. Policy, fixtures and the
+        # per-theorem native_decide exceptions: scripts/lean-axiom-audit.sh and
+        # crates/portcullis-core/lean/.axiom-audit-exceptions.
         run: |
-          # The kernel reports which axioms each theorem actually depends on.
-          # A hole anywhere in the dependency graph surfaces as `sorryAx` even
-          # if the textual scan missed it. `Lean.ofReduceBool` (native_decide)
-          # is expected/disclosed and is NOT a failure.
-          #
-          # WHY THREE FILES AND NOT ONE. Every Aeneas extraction opens `namespace
-          # nucleus_ifc_kernel` and re-emits the shared Rust types reachable from its
-          # own signatures, so two extractions that both see (say) `extracted::egress::Dest`
-          # cannot be imported into one Lean environment:
-          #
-          #   import PortcullisCoreChannel.Types failed, environment already contains
-          #   'nucleus_ifc_kernel.extracted.egress.Dest.rec' from PortcullisCoreIFC.Types
-          #
-          # PortcullisCoreIFC, PortcullisCoreCapQuantale and PortcullisCoreChannel are
-          # pairwise incompatible (a triangle), so three groups is the MINIMUM; the base
-          # PortcullisCore extraction is compatible with all three and stays in group 1.
-          # Each theorem appears in exactly one group, so the counts still sum to the total.
-          #
-          # This is a property of the extraction, not a defect to fix here. What matters is
-          # that the audit RUNS: with a single file it did not, and `|| true` hid that.
-
-          cat > PrintAxioms1.lean <<'EOF'
-          import FlowProofs
-          import DeclassifyProofs
-          import SessionCeilingProofs
-          import GuestDeviceSurfaceProofs
-          import ReceiptChainProofs
-          import DecidePureProofs
-          import CompartmentProofs
-          import DelegationProofs
-          import ExposureProofs
-          import IntegrityNoninterferenceExtracted
-          import AssuranceCoverage
-          import UniversalDetection
-          import ExposureLoopFixpointProofs
-          import GkatGuardedLoopBridge
-          import GkatWhileStep
-          import GkatSyntaxProofs
-          import GkatGuardedStringProofs
-          import GkatInexpressibleProofs
-          import GkatUniquenessFrontierProofs
-          import GkatExistenceFrontierProofs
-          import GkatDerivativeProofs
-          import GkatBisimulationProofs
-          import GkatCompletenessProofs
-          import GkatDerivativeFiniteProofs
-          import GkatDecisionProofs
-          import GkatBehaviorProofs
-          import GkatInexpressibilityProofs
-          import GkatCoequationProofs
-          import GkatFaithfulnessProofs
-          import GkatKleeneProofs
-          import SnapshotCloneSafetyProofs
-          import DerivationCascadeAdmissible
-          import CertChainMonotoneExtracted
-          #print axioms FlowProofs.authority_confinement_left
-          #print axioms GuestDeviceSurface.Cmdline.enforce_idem
-          #print axioms GuestDeviceSurface.Cmdline.pciOn_not_mem_enforce
-          #print axioms GuestDeviceSurface.Cmdline.enforce_count_pciOff
-          #print axioms GuestDeviceSurface.devices_maximal
-          #print axioms CertChainMonotoneExtracted.chain_attenuates_monotone
-          #print axioms GkatSyntax.salomaa_solutions_agree
-          #print axioms GkatGS.sound
-          #print axioms GkatGS.left_distrib_fails
-          #print axioms GkatGS.left_distrib_not_gkat_theorem
-          #print axioms GkatInexpr.InLoop_exits_on_not_b
-          #print axioms GkatInexpr.single_b_loop_strictly_weaker
-          #print axioms GkatUniqFrontier.two_state_semantic_uniqueness
-          #print axioms GkatUniqFrontier.productivity_is_necessary
-          #print axioms GkatExistFrontier.two_state_existence_pure_return
-          #print axioms GkatDeriv.den_cons
-          #print axioms GkatDeriv.decDen
-          #print axioms GkatBisim.bisim_sound
-          #print axioms GkatComplete.bisim_upto_iff
-          #print axioms GkatDeriv.derivs_closed
-          #print axioms GkatDeriv.den_run
-          #print axioms GkatDeriv.nonempty_iff_run_halts
-          #print axioms GkatBehavior.langDeriv_den
-          #print axioms GkatDeriv.loop_deriv_halts_on_not_b
-          #print axioms GkatDeriv.loop_no_complementary
-          #print axioms GkatDeriv.complementary_accBounded_false
-          #print axioms GkatDeriv.Reaches.trans
-          #print axioms GkatDeriv.loopActive_step
-          #print axioms GkatDeriv.reaches_mem_derivs
-          #print axioms GkatDeriv.no_selfcycle_act
-          #print axioms GkatDeriv.selfCyclic_loopActive
-          #print axioms GkatDeriv.cycle_common_bound
-          #print axioms GkatDeriv.no_mutreach_complementary
-          #print axioms GkatDeriv.list_pigeonhole
-          #print axioms GkatDeriv.fig3_inexpressible
-          #print axioms GkatCoequation.W_den_test
-          #print axioms GkatCoequation.W_den_act
-          #print axioms GkatCoequation.W_den_seq
-          #print axioms GkatCoequation.W_derivs_seq
-          #print axioms GkatCoequation.W_derivs_ite
-          #print axioms GkatCoequation.W_derivs_wh
-          #print axioms GkatCoequation.den_mem_W
-          #print axioms GkatCoequation.W_not_subset_den
-          #print axioms GkatCoequation.localDet_den
-          #print axioms GkatCoequation.deterministic_den
-          #print axioms GkatCoequation.halt_not_bexp_not_den
-          #print axioms GkatFaithful.left_distrib_not_ba_theorem
-          #print axioms GkatFaithful.two_state_uniqueness_nonvacuous
-          #print axioms GkatFaithful.loop_is_union_of_iterations
-          #print axioms GkatKleene.firstMatch_transG
-          #print axioms GkatKleene.autLang_derivAut
-          #print axioms GkatKleene.WF_derivAut
-          #print axioms GkatKleene.Nested_derivAut
-          #print axioms GkatKleene.fig3_not_nested
-          #print axioms GkatKleene.autLang_eq_of_gbisim
-          #print axioms GkatKleene.den_foldr_ite
-          #print axioms GkatKleene.loopAut_solves
-          #print axioms GkatKleene.sem_solves_autLang
-          #print axioms GkatKleene.solves_autLang
-          #print axioms GkatKleene.semSolves_derivAut
-          #print axioms GkatKleene.buildSol_solves
-          #print axioms GkatKleene.acyclic_expressible
-          #print axioms GkatKleene.selfLoop_solves
-          #print axioms GkatKleene.loopExitAut_solves
-          #print axioms GkatKleene.loopExitAut_expressible
-          #print axioms GkatKleene.wnSol_solves
-          #print axioms GkatKleene.wn_expressible
-          #print axioms GkatKleene.AutMutReach.trans
-          #print axioms GkatKleene.AutBelow.trans
-          #print axioms GkatKleene.AutBelow.congr_left
-          #print axioms GkatKleene.reachCount_lt_of_below
-          #print axioms GkatKleene.reachCount_eq_of_mutReach
-          #print axioms GkatKleene.reachCount_step_le
-          #print axioms GkatKleene.reachCount_lt_of_step_not_mutReach
-          #print axioms GkatKleene.autBelow_wf
-          #print axioms GkatKleene.firstMatch_eq_of_mem_det
-          #print axioms GkatKleene.acyclic_flat_expressible
-          #print axioms GkatKleene.flat_selfloop_expressible
-          #print axioms GkatKleene.wnSolE_solves
-          #print axioms GkatKleene.loopChain_solves
-          #print axioms GkatKleene.loop2Aut_semsolves
-          #print axioms GkatKleene.loop2Aut_expressible
-          #print axioms GkatKleene.loopAut_expressible
-          #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
-          #print axioms Nucleus.Assurance.suite_not_full
-          #print axioms PortcullisCore.UniversalDetection.universal_detection_impossibility
-          #print axioms ExposureLoop.loop_admissible
-          #print axioms ExposureLoop.ceilingFold_eq_lfp
-          #print axioms GkatBridge.guarded_loop_is_lfp
-          #print axioms GkatWhile.whileStep_ratchets
-          #print axioms GkatWhile.solution_unique
-          #print axioms SnapshotCloneSafety.unsafe_persists_under_superset
-          #print axioms DerivationCascade.user_cascade_ratchets
-          EOF
-
-          cat > PrintAxioms2.lean <<'EOF'
-          import CapabilityResiduatedQuantaleProofs
-          #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
-          EOF
-
-          cat > PrintAxioms3.lean <<'EOF'
-          import SnapshotChannelBindingProofs
-          #print axioms SnapshotChannelBinding.mappable_keys_never_reach_workload_via_cmdline
-          EOF
-
-          # Defence 1 - the declarations above ARE the gate. The heredocs name N theorems
-          # in total; the audit must report on N of them. This is the defence that survives
-          # someone re-adding `|| true`, and it is what catches a renamed, deleted or
-          # regrouped theorem: `lake env lean` exits 1 on `error(lean.unknownIdentifier)`,
-          # and that paren form is exactly what a naive grep for 'error' misses.
-          EXPECTED=$(cat PrintAxioms*.lean | grep -c '^#print axioms')
-          REPORTED=0
-          : > AllAxioms.txt
-
-          for f in PrintAxioms*.lean; do
-            # Defence 2 - NO `|| true`. A non-zero lean is a FAILED audit, not an empty
-            # one. The explicit message matters: `set -e` alone would kill the step with
-            # no explanation, which is how the original defect stayed invisible.
-            if ! AXIOMS="$(lake env lean "$f" 2>&1)"; then
-              echo "$AXIOMS"
-              echo "::error::the axiom audit did not run to completion ($f: lean exited non-zero)."
-              exit 1
-            fi
-            echo "$AXIOMS"
-            printf '%s\n' "$AXIOMS" >> AllAxioms.txt
-            n=$(printf '%s\n' "$AXIOMS" \
-              | grep -c "depends on axioms\|does not depend on any axioms" || true)
-            echo "  -> $f: $(grep -c '^#print axioms' "$f") declared, $n reported"
-            REPORTED=$((REPORTED + n))
-          done
-          rm -f PrintAxioms*.lean
-
-          if [ "$REPORTED" -ne "$EXPECTED" ]; then
-            echo "::error::audit incomplete: declared $EXPECTED theorems, got $REPORTED axiom reports."
-            echo "::error::a theorem was renamed, deleted, or failed to resolve. The audit shrank."
-            exit 1
-          fi
-
-          if grep -q 'sorryAx' AllAxioms.txt; then
-            echo "::error::an enforcement-core theorem depends on sorryAx (an unproven hole)."
-            exit 1
-          fi
-          if grep -q 'ofReduceBool' AllAxioms.txt; then
-            echo "NOTE: native_decide (Lean.ofReduceBool) is in the TCB of the audited theorems - disclosed, see CONJECTURES.md."
-          fi
-          rm -f AllAxioms.txt
-          echo "OK: all $EXPECTED audited theorems reported across 3 groups, none depends on sorryAx."
+          roots=$(sed -n '/lake build \\/,/^$/p' .github/workflows/portcullis-core-proven-lean.yml \
+            | grep -oE '^\s+[A-Za-z0-9]+ \\' | tr -d ' \\' | paste -sd, -)
+          n=$(echo "$roots" | tr ',' '\n' | wc -l | tr -d ' ')
+          [ "$n" -ge 40 ] || { echo "::error::only $n roots parsed from the build list — the audit would be partial"; exit 1; }
+          echo "auditing $n roots"
+          scripts/lean-axiom-audit.sh crates/portcullis-core/lean "$roots"
+      - name: The axiom audit goes red on axiom / admit / native_decide fixtures
+        if: steps.scope.outputs.relevant == 'true'
+        run: scripts/lean-axiom-audit.sh crates/portcullis-core/lean --self-test

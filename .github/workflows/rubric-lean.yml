@@ -132,30 +132,14 @@ jobs:
           fi
           echo "No sorry / admit / native_decide / sorryAx across $FILES file(s) — rubric scoring proofs are complete and kernel-checked."
 
-      - name: Assert theorems are sorryAx-free (#print axioms)
+      - name: Per-theorem axiom audit (every declaration under Nucleus)
         if: steps.scope.outputs.relevant == 'true'
-        working-directory: crates/nucleus-rubric/lean
-        run: |
-          # Ask the kernel which axioms each soundness theorem actually depends on.
-          # A `sorry` (or any hole) anywhere in a proof's dependency graph surfaces
-          # here as `sorryAx`, even if the source-level grep above missed it.
-          cat > PrintAxioms.lean <<'EOF'
-          import Nucleus.Rubric
-          open Nucleus.Rubric
-          #print axioms faithfulTotal_inert_under_non_rv
-          #print axioms ranksAtLeast_refl
-          #print axioms ranksAtLeast_trans
-          #print axioms ranksAtLeast_total
-          #print axioms faithfulTotal_mono_in_rv_grade
-          #print axioms dominates_strengthens_total
-          #print axioms scalarized_winner_undominated
-          EOF
-          # `lake env lean` type-checks against the already-built library.
-          AXIOMS="$(lake env lean PrintAxioms.lean)"
-          echo "$AXIOMS"
-          rm -f PrintAxioms.lean
-          if echo "$AXIOMS" | grep -q 'sorryAx'; then
-            echo "ERROR: a rubric theorem depends on 'sorryAx' (an unproven hole)."
-            exit 1
-          fi
-          echo "No theorem depends on sorryAx — proofs are kernel-complete."
+        # Replaces the hand-listed `#print axioms` grep for `sorryAx` (#2567): the
+        # audit walks EVERY declaration the compiled oleans define, allows only
+        # propext / Classical.choice / Quot.sound, tolerates native_decide per
+        # theorem via crates/nucleus-rubric/lean/.axiom-audit-exceptions, guards a positive count
+        # against the sources, and ratchets top-level `axiom` declarations.
+        run: scripts/lean-axiom-audit.sh crates/nucleus-rubric/lean Nucleus
+      - name: The axiom audit goes red on axiom / admit / native_decide fixtures
+        if: steps.scope.outputs.relevant == 'true'
+        run: scripts/lean-axiom-audit.sh crates/nucleus-rubric/lean --self-test

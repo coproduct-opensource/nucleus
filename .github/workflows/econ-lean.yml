@@ -125,6 +125,18 @@ jobs:
           fi
           echo "No sorry / native_decide — econ proofs are complete and kernel-checked."
 
+      - name: Per-theorem axiom audit (every declaration under Nucleus)
+        if: steps.scope.outputs.relevant == 'true'
+        # Replaces the hand-listed `#print axioms` grep for `sorryAx` (#2567): the
+        # audit walks EVERY declaration the compiled oleans define, allows only
+        # propext / Classical.choice / Quot.sound, tolerates native_decide per
+        # theorem via crates/nucleus-econ-kernels/lean/.axiom-audit-exceptions, guards a positive count
+        # against the sources, and ratchets top-level `axiom` declarations.
+        run: scripts/lean-axiom-audit.sh crates/nucleus-econ-kernels/lean Nucleus
+      - name: The axiom audit goes red on axiom / admit / native_decide fixtures
+        if: steps.scope.outputs.relevant == 'true'
+        run: scripts/lean-axiom-audit.sh crates/nucleus-econ-kernels/lean --self-test
+
       - name: Golden-vector sync (regenerate Golden.lean from JSON, assert no drift)
         if: steps.scope.outputs.relevant == 'true'
         run: |
