@@ -283,6 +283,18 @@ perturb_twin_paths_ignore() {
     fi
 }
 
+perturb_ci_assurance_overclaim() {
+    # Flip CI-10 (the strict-rebase livelock, NOT-YET) to PROVED, citing a
+    # theorem that does not exist. Two independent reds: the pinned NOT-YET
+    # count no longer matches, and the evidence handle does not dereference.
+    sed -i.gate-bak 's/^| CI-10 | \(.*\) | NOT-YET | `ci\/merge-queue.toml#strict` | — |$/| CI-10 | \1 | PROVED | `ci\/lean\/CiSpec\/Queue.lean#T8_strict_livelock` | `scripts\/check-ci-spec.sh` |/' "$1"
+    rm -f "$1.gate-bak"
+    if ! grep -q '^| CI-10 | .* | PROVED | `ci/lean/CiSpec/Queue.lean#T8_strict_livelock`' "$1"; then
+        echo "  ERROR: the CI-10 row changed shape; this perturbation must be updated."
+        return 1
+    fi
+}
+
 perturb_golden_lean() {
     # One extra line in the generated file: the regeneration no longer
     # matches, which is the seal's whole subject.
@@ -489,6 +501,13 @@ probe check-ci-spec-bite.sh "" ci/lean/CiSpecBite.lean \
 probe check-ci-spec-golden.sh "" ci/lean/CiSpec/Golden.lean \
       "a hand-edited golden vector" \
       perturb_golden_lean
+
+# The CI assurance ledger: promoting a NOT-YET row to PROVED without lowering
+# the pin (and without a theorem behind it) is the exact overclaim it exists
+# to catch — the same founding defect as the North Star ledger's C4.
+probe check-ci-assurance-ledger.sh "" docs/assurance/ci-assurance.md \
+      "a NOT-YET row promoted to PROVED with no evidence or pin change" \
+      perturb_ci_assurance_overclaim
 
 probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
       "an unlisted cfg(not(kani)) fork" \

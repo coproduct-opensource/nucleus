@@ -369,6 +369,20 @@ jobs:
         shell: bash
         run: scripts/check-ci-spec.sh
 
+  # The CI assurance ledger (docs/assurance/ci-assurance.md): every claim ADR
+  # 0002 makes about the pipeline names a clause of its sentence verbatim, a
+  # status from a closed vocabulary, evidence that dereferences, and the gate
+  # that catches regression; the population is pinned both ways. Pure grep.
+  ci-assurance-ledger:
+    name: The CI assurance ledger cannot outrun its wiring
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every row is verbatim, dereferenced, wired, and pinned
+        shell: bash
+        run: scripts/check-ci-assurance-ledger.sh
+
   ingest-hash-gate:
     name: No-unwitnessed-ingest gate (InputsAuthorized)
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

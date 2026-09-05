@@ -115,6 +115,50 @@ hasn't drifted from the committed code.
 - Scenario 11: Exposure tracks regardless of file arguments
 - Scenario 12: Policy/code mismatch detected by compiler hash
 
+### 9. CI Pipeline & Merge Queue (Lean 4 — unbounded, hand-written model; Rust mirror; trace-validated)
+
+The CI pipeline and the merge queue are held to the same standard as the runtime
+(ADR 0002, `docs/assurance/ci-assurance.md` — the machine-checked ledger of this section).
+
+**What's proved (`ci/lean`, Mathlib-free, 0 sorry, axioms propext / Quot.sound):**
+- `twin_covers` (T2): a path-filtered required workflow and its `-noop` twin, with
+  `paths-ignore == paths`, never leave a non-empty change with NEITHER report; the
+  straddling case (both fire) is stated as the residual (`twin_both_iff`).
+- `T1_required_verdicts_exist`: under the I3 decision (every required context has a
+  real, `merge_group`-triggered, unskippable producer), every required context carries a
+  verdict on the queue branch — GitHub's "skipped counts as passed" cannot pass it by
+  silence (`vacuous_merge_without_I3` is the bite).
+- `consistent_run` / `T4_merge_order` / `T5_cancel_safe` / `T6_push_dequeues`: the queue
+  state machine's accounting, merge order, cancel-safety for dequeued PRs, and push-dequeues,
+  for every reachable state.
+- `T7_no_timeout_ejection`: Graham's list-scheduling bound in `Nat` — with build
+  concurrency 1 and no competing runs, a group with `Σ ds + q·L ≤ (q+1)·T` finishes by `T`.
+  The bites (`CiSpecBite.lean`, by `decide`) reproduce the 2026-09-05 defects: the
+  drifted twin that fired both, the detector-skippable `Tests`, the head cancel that
+  ejects, and the 60-minute budget that did not fit the group's work.
+
+**What's decided on every PR (`crates/ci-spec`, the theorems' hypotheses):** twin
+completeness, producer injectivity, reported-and-unskippable under `merge_group`,
+concurrency safety, scope parity, gate integrity (proofcard GI001–GI005 plus GI006, the
+numeric-operand rule the Proof Count Ratchet's bug earned), timeouts within the queue
+budget, wired-and-inventoried gates, non-vacuity of the model itself.
+
+**What's NOT proved:**
+- The Lean model is hand-written; the CI configuration is not extracted into it. The
+  Rust mirror (`crates/ci-spec/src/queue.rs`) is bound to the Lean by golden vectors
+  rendered into `Golden.lean` and checked by `decide` and by proptest — probabilistic and
+  finite; a bounded Kani harness over the mirror is NOT-YET (CBMC did not finish).
+- The concrete first-least-loaded scheduler is not proved to be an instance of the
+  schedules T7 covers; `needs:` chains and speculative groups are not modelled.
+- The strict-rebase livelock (T8) is stated, not proved.
+- `ci-spec` reads YAML and does not run gates; cross-step dataflow is allowlisted with
+  its reason; gate detection is the `exit 1` / `::error::` heuristic.
+
+**Correspondence to the live path:** `cargo xtask ci-spec live-parity` holds
+`ci/required-checks.txt` and `ci/merge-queue.toml` in lockstep with branch protection and
+the ruleset on a schedule; `cargo xtask ci-spec trace-check` replays the merge queue's real
+timeline events through the mirror nightly, and a rejected transition is a red.
+
 ## What We DON'T Verify
 
 These are important security properties that have NO formal verification:

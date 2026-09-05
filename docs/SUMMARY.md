@@ -19,6 +19,7 @@
 - [Assurance](assurance/formal-methods.md)
   - [Verified Claims](verified-claims.md)
   - [Hardening Checklist](assurance/hardening-checklist.md)
+  - [CI Assurance](assurance/ci-assurance.md)
 - [RFCs]()
   - [Agent Control Plane on Fly Machines](rfcs/agent-control-plane-on-fly.md)
   - [Verified Agent Commerce (x402 / A2A)](rfcs/verified-agent-commerce-quickstart.md)
