@@ -625,7 +625,7 @@ pub(crate) fn reject_credential_readable_workload(
 /// Read from the environment of the running process via `std`, so this needs no
 /// new dependency — a credential-adjacent control is a poor place to widen the
 /// dependency surface, and the LiteLLM compromise is the reminder why.
-fn nix_getuid() -> u32 {
+pub(crate) fn nix_getuid() -> u32 {
     std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap_or_else(|_| {
         // Not Linux, or no procfs. Fall back to a value that cannot equal a
         // configured uid, so the check errs toward ACCEPTING an explicit
