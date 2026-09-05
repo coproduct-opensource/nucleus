@@ -451,6 +451,12 @@ jobs:
       # (settlement + commons) and the accept/reject smoke fixtures — per-PR, not
       # just on publish, so a binding-layer drift from the proven kernels is caught
       # here. Node is preinstalled on the ubuntu runner.
+      # Hosted runners ship node; the self-hosted image does not (exit 127 on
+      # the first routed run). setup-node downloads it at runner speed and
+      # never uploads a cache.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
       - name: Node tests (golden seal + smoke) against built wasm
         working-directory: sdks/verifier-js
         run: npm test
