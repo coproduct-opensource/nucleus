@@ -1,0 +1,34 @@
+# CI throughput metrics for the self-hosted pools (k8s/ci-metrics/README.md).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci-metrics
+---
+# The collector discovers the ARC listener and controller pods to scrape.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: ci-metrics
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ci-metrics-otel-collector
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-metrics-otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ci-metrics-otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: ci-metrics

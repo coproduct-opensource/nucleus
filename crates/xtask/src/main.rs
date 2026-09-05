@@ -109,6 +109,20 @@ enum Command {
         #[arg(long)]
         baseline: String,
     },
+    /// Push the last N minutes of GitHub Actions job timings to an OTLP
+    /// endpoint as OpenTelemetry metrics (queue wait, duration, conclusions,
+    /// merge-queue depth). See crates/xtask/src/ci_otel.rs.
+    CiOtel {
+        /// Window in minutes (a job counts when its completed_at is inside).
+        #[arg(long, default_value_t = 15)]
+        since: u64,
+        /// OTLP/HTTP base URL (default: $OTEL_EXPORTER_OTLP_ENDPOINT, else the in-cluster collector).
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Print the OTLP JSON instead of sending it.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -159,6 +173,7 @@ enum CiSpecCmd {
     },
 }
 
+mod ci_otel;
 mod ci_spec;
 mod ci_timings;
 mod rerun_plan;
@@ -191,6 +206,11 @@ fn main() -> Result<()> {
         Command::ScoreboardRatchet { current, baseline } => {
             scoreboard::scoreboard_ratchet(&current, &baseline)
         }
+        Command::CiOtel {
+            since,
+            endpoint,
+            dry_run,
+        } => ci_otel::ci_otel(since, endpoint, dry_run),
     }
 }
 
