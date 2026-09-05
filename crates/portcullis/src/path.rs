@@ -61,6 +61,14 @@ impl std::fmt::Display for PathDenial {
     }
 }
 
+/// The allow pattern that matches NO path: the bottom of the allowed dimension
+/// (#2474). An empty `allowed` set means UNRESTRICTED in this representation,
+/// so the meet of two disjoint restricted sets — whose intersection is empty —
+/// must not be written as the empty set, or two narrow grants would meet to
+/// everything. It is written as this one pattern instead. A NUL byte never
+/// occurs in a real path, so `glob_match` can never match it.
+pub const NOTHING_ALLOWED: &str = "\u{0}nothing-allowed";
+
 /// Path access lattice with allowed/blocked semantics.
 ///
 /// - `allowed`: Glob patterns for allowed paths. Empty means "all allowed".
@@ -72,6 +80,7 @@ impl std::fmt::Display for PathDenial {
 /// - All paths are canonicalized to prevent `../../../.env` traversal attacks
 /// - Symlinks are resolved and checked against the work_dir sandbox
 /// - Paths outside the work_dir are blocked when sandbox is enabled
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PathLattice {
@@ -107,7 +116,14 @@ impl PathLattice {
         } else if other.allowed.is_empty() {
             self.allowed.clone()
         } else {
-            self.allowed.intersection(&other.allowed).cloned().collect()
+            // Disjoint restricted sets meet to NOTHING, not to "unrestricted".
+            let inter: HashSet<String> =
+                self.allowed.intersection(&other.allowed).cloned().collect();
+            if inter.is_empty() {
+                HashSet::from([NOTHING_ALLOWED.to_string()])
+            } else {
+                inter
+            }
         };
 
         let blocked: HashSet<String> = self.blocked.union(&other.blocked).cloned().collect();
@@ -137,7 +153,18 @@ impl PathLattice {
 
     /// Join operation: union of allowed, intersection of blocked.
     pub fn join(&self, other: &Self) -> Self {
-        let allowed: HashSet<String> = self.allowed.union(&other.allowed).cloned().collect();
+        // Nothing-allowed is the identity of join in the allowed dimension, and
+        // UNRESTRICTED (empty) absorbs: joining with the top is the top. A plain
+        // union read the empty set as the bottom (#2474).
+        let allowed: HashSet<String> = if self.allows_nothing() {
+            other.allowed.clone()
+        } else if other.allows_nothing() {
+            self.allowed.clone()
+        } else if self.allowed.is_empty() || other.allowed.is_empty() {
+            HashSet::new()
+        } else {
+            self.allowed.union(&other.allowed).cloned().collect()
+        };
 
         let blocked = if self.blocked.is_empty() || other.blocked.is_empty() {
             HashSet::new()
@@ -310,9 +337,27 @@ impl PathLattice {
         })
     }
 
+    /// Does this lattice allow no path at all (the bottom of the allowed
+    /// dimension, produced by the meet of disjoint restrictions)?
+    #[must_use]
+    pub fn allows_nothing(&self) -> bool {
+        self.allowed.len() == 1 && self.allowed.contains(NOTHING_ALLOWED)
+    }
+
     /// Check if this lattice is less than or equal to another.
+    ///
+    /// An EMPTY `allowed` set means unrestricted (every path allowed), so it
+    /// is the TOP of the allowed dimension — not the bottom the vacuous
+    /// subset test would make it. An unrestricted `self` is therefore `≤`
+    /// `other` only when `other` is unrestricted too (#2474).
     pub fn leq(&self, other: &Self) -> bool {
-        let allowed_ok = other.allowed.is_empty() || self.allowed.is_subset(&other.allowed);
+        let allowed_ok = if self.allows_nothing() {
+            true
+        } else if self.allowed.is_empty() {
+            other.allowed.is_empty()
+        } else {
+            other.allowed.is_empty() || self.allowed.is_subset(&other.allowed)
+        };
         let blocked_ok = other.blocked.is_subset(&self.blocked);
         allowed_ok && blocked_ok
     }
@@ -937,5 +982,77 @@ mod denial_display_tests {
         }
         .to_string();
         assert!(shown.contains("**/.ssh/**"), "got {shown:?}");
+    }
+}
+
+/// #2474: an empty `allowed` set is UNRESTRICTED — the top of that dimension —
+/// so the order must never place it below a restricted set.
+#[cfg(test)]
+mod leq_unrestricted_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn with_allowed(globs: &[&str]) -> PathLattice {
+        PathLattice {
+            allowed: globs.iter().map(|s| s.to_string()).collect(),
+            ..PathLattice::default()
+        }
+    }
+
+    #[test]
+    fn an_unrestricted_path_lattice_is_never_below_a_restricted_one() {
+        let unrestricted = with_allowed(&[]);
+        let restricted = with_allowed(&["src/**"]);
+        assert!(!unrestricted.leq(&restricted), "the inversion #2474 found");
+        assert!(restricted.leq(&unrestricted));
+        assert!(unrestricted.leq(&unrestricted));
+        assert!(restricted.leq(&restricted));
+        // The meet agrees with the order: meet(unrestricted, restricted) = restricted.
+        let m = unrestricted.meet(&restricted);
+        assert_eq!(m.allowed, restricted.allowed);
+        assert!(m.leq(&unrestricted) && m.leq(&restricted));
+
+        // Disjoint restrictions meet to NOTHING, which is below both and
+        // admits no path — never to "unrestricted".
+        let other = with_allowed(&["docs/**"]);
+        let none = restricted.meet(&other);
+        assert!(none.allows_nothing(), "{:?}", none.allowed);
+        assert!(none.leq(&restricted) && none.leq(&other) && none.leq(&unrestricted));
+        assert!(!unrestricted.leq(&none));
+        assert!(
+            !none.can_access(std::path::Path::new("src/lib.rs")),
+            "denied"
+        );
+        assert!(
+            !none.can_access(std::path::Path::new("docs/x.md")),
+            "denied"
+        );
+        assert_eq!(
+            none.join(&other).allowed,
+            other.allowed,
+            "nothing is the identity of join"
+        );
+    }
+
+    proptest! {
+        /// Over arbitrary small allow sets (empty included): the meet is a
+        /// lower bound of both operands, the order is reflexive, and an
+        /// unrestricted lattice is below a restricted one in no case.
+        #[test]
+        fn meet_is_a_lower_bound_and_unrestricted_is_top(
+            a in proptest::collection::hash_set("[a-c]/\\*\\*", 0..3),
+            b in proptest::collection::hash_set("[a-c]/\\*\\*", 0..3),
+        ) {
+            let pa = PathLattice { allowed: a.clone(), ..PathLattice::default() };
+            let pb = PathLattice { allowed: b.clone(), ..PathLattice::default() };
+            let m = pa.meet(&pb);
+            prop_assert!(m.leq(&pa));
+            prop_assert!(m.leq(&pb));
+            prop_assert!(pa.leq(&pa));
+            if a.is_empty() && !b.is_empty() {
+                prop_assert!(!pa.leq(&pb));
+                prop_assert!(pb.leq(&pa));
+            }
+        }
     }
 }

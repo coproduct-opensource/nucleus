@@ -2324,4 +2324,77 @@ mod tests {
             "expected ChainTooDeep, got {result:?}"
         );
     }
+
+    /// #2474 regression: a validly signed child block whose paths and commands
+    /// are UNRESTRICTED (empty allow sets) under a parent restricted to
+    /// `src/**` / `cargo test` used to pass the monotone check, because an
+    /// empty set is vacuously a subset of anything. `verify_certificate` must
+    /// refuse it as `MonotoneViolation`, and an honest narrower child must
+    /// still verify.
+    #[test]
+    fn a_child_claiming_unrestricted_paths_or_commands_is_refused() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let root_pub = root_key.public_key().as_ref().to_vec();
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let mut root_perms = PermissionLattice::permissive();
+        root_perms.paths.allowed = ["src/**".to_string()].into_iter().collect();
+        root_perms.commands.allowed = ["cargo test".to_string()].into_iter().collect();
+        let (cert, holder) = LatticeCertificate::mint(
+            root_perms.clone(),
+            "spiffe://test/human/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+        assert!(verify_certificate(&cert, &root_pub, Utc::now(), 10).is_ok());
+
+        // The escalation: unrestricted paths + commands, signed by the holder.
+        let mut widened = PermissionLattice::permissive();
+        widened.paths.allowed.clear();
+        widened.commands.allowed.clear();
+        widened.commands.allowed_rules.clear();
+        let child_key = generate_key(&rng);
+        let (_, justification) = meet_with_justification(&root_perms, &widened);
+        let mut block = DelegationBlock {
+            effective_permissions: widened,
+            justification,
+            from_identity: cert.authority.root_identity.clone(),
+            to_identity: "spiffe://test/agent/a".into(),
+            not_after,
+            sink_scope: SinkScope::unrestricted(),
+            prev_block_hash: cert.authority.block_hash(),
+            signature: Vec::new(),
+            next_key: child_key.public_key().as_ref().to_vec(),
+        };
+        block.signature = holder.sign(&block.signing_payload()).as_ref().to_vec();
+        let pop = LatticeCertificate::pop_payload_for_block_hash(&block.block_hash());
+        let escalated = LatticeCertificate {
+            authority: cert.authority.clone(),
+            blocks: vec![block],
+            final_signature: child_key.sign(&pop).as_ref().to_vec(),
+        };
+        assert!(
+            matches!(
+                verify_certificate(&escalated, &root_pub, Utc::now(), 10),
+                Err(CertificateError::MonotoneViolation { block_index: 1 })
+            ),
+            "an unrestricted child under a restricted parent is a widening"
+        );
+
+        // The control: an honest narrower child still verifies.
+        let mut narrower = root_perms.clone();
+        narrower.paths.allowed = ["src/lib.rs".to_string()].into_iter().collect();
+        let (child, _) = cert
+            .delegate(
+                &narrower,
+                "spiffe://test/agent/b".into(),
+                not_after,
+                &holder,
+                &rng,
+            )
+            .unwrap();
+        assert!(verify_certificate(&child, &root_pub, Utc::now(), 10).is_ok());
+    }
 }

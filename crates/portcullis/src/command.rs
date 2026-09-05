@@ -5,6 +5,12 @@ use std::collections::HashSet;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// The allow entry that matches NO command: the bottom of the allowed
+/// dimension (#2474). An empty `allowed` set means UNRESTRICTED here, so the
+/// meet of two disjoint restricted sets is written as this one entry rather
+/// than as the empty set. A NUL byte never occurs in a parsed command word.
+pub const NOTHING_ALLOWED: &str = "\u{0}nothing-allowed";
+
 /// Shell command access lattice.
 ///
 /// Controls which shell commands can be executed. Uses a combination of:
@@ -23,6 +29,7 @@ use serde::{Deserialize, Serialize};
 /// - Quoting tricks (`"rm" "-rf"`)
 /// - IFS manipulation
 /// - Argument injection
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct CommandLattice {
@@ -139,7 +146,14 @@ impl CommandLattice {
         } else if other.allowed.is_empty() {
             self.allowed.clone()
         } else {
-            self.allowed.intersection(&other.allowed).cloned().collect()
+            // Disjoint restricted sets meet to NOTHING, not to "unrestricted".
+            let inter: HashSet<String> =
+                self.allowed.intersection(&other.allowed).cloned().collect();
+            if inter.is_empty() {
+                HashSet::from([NOTHING_ALLOWED.to_string()])
+            } else {
+                inter
+            }
         };
 
         let blocked: HashSet<String> = self.blocked.union(&other.blocked).cloned().collect();
@@ -157,7 +171,17 @@ impl CommandLattice {
 
     /// Join operation: union of allowed, intersection of blocked.
     pub fn join(&self, other: &Self) -> Self {
-        let allowed: HashSet<String> = self.allowed.union(&other.allowed).cloned().collect();
+        // Nothing-allowed is the identity of join; UNRESTRICTED (empty) absorbs
+        // (#2474: a plain union read the empty set as the bottom).
+        let allowed: HashSet<String> = if self.allows_nothing() {
+            other.allowed.clone()
+        } else if other.allows_nothing() {
+            self.allowed.clone()
+        } else if self.allowed.is_empty() || other.allowed.is_empty() {
+            HashSet::new()
+        } else {
+            self.allowed.union(&other.allowed).cloned().collect()
+        };
 
         let blocked = if self.blocked.is_empty() || other.blocked.is_empty() {
             HashSet::new()
@@ -359,17 +383,40 @@ impl CommandLattice {
         false
     }
 
+    /// Does this lattice allow no command at all in the `allowed` dimension?
+    #[must_use]
+    pub fn allows_nothing(&self) -> bool {
+        self.allowed.len() == 1 && self.allowed.contains(NOTHING_ALLOWED)
+    }
+
     /// Check if this lattice is less than or equal to another.
+    ///
+    /// An EMPTY `allowed` (or `allowed_rules`) means unrestricted — the TOP of
+    /// that dimension, not the bottom the vacuous subset test would make it.
+    /// An unrestricted `self` is `≤` `other` only when `other` is unrestricted
+    /// in the same dimension (#2474).
     pub fn leq(&self, other: &Self) -> bool {
-        // Our allowed must be subset of other's (or other allows all)
-        let allowed_ok = other.allowed.is_empty() || self.allowed.is_subset(&other.allowed);
+        // Our allowed must be a subset of other's; unrestricted only under unrestricted.
+        let allowed_ok = if self.allows_nothing() {
+            true
+        } else if self.allowed.is_empty() {
+            other.allowed.is_empty()
+        } else {
+            other.allowed.is_empty() || self.allowed.is_subset(&other.allowed)
+        };
         // Other's blocked must be subset of ours
         let blocked_ok = other.blocked.is_subset(&self.blocked);
-        let allowed_rules_ok = other.allowed_rules.is_empty()
-            || self
-                .allowed_rules
-                .iter()
-                .all(|rule| other.allowed_rules.contains(rule));
+        let allowed_rules_ok = if rules_allow_nothing(&self.allowed_rules) {
+            true
+        } else if self.allowed_rules.is_empty() {
+            other.allowed_rules.is_empty()
+        } else {
+            other.allowed_rules.is_empty()
+                || self
+                    .allowed_rules
+                    .iter()
+                    .all(|rule| other.allowed_rules.contains(rule))
+        };
         let blocked_rules_ok = other
             .blocked_rules
             .iter()
@@ -779,6 +826,16 @@ fn is_dangerous_exec_form(program: &str, args: &[String]) -> bool {
     }
 }
 
+/// The rule that matches no command: the bottom of the `allowed_rules`
+/// dimension (#2474), for the same reason as [`NOTHING_ALLOWED`].
+fn nothing_allowed_rule() -> CommandPattern {
+    CommandPattern::exact(NOTHING_ALLOWED, &[] as &[&str])
+}
+
+fn rules_allow_nothing(rules: &[CommandPattern]) -> bool {
+    rules.len() == 1 && rules[0] == nothing_allowed_rule()
+}
+
 fn meet_allowed_rules(a: &[CommandPattern], b: &[CommandPattern]) -> Vec<CommandPattern> {
     if a.is_empty() && b.is_empty() {
         return Vec::new();
@@ -789,18 +846,28 @@ fn meet_allowed_rules(a: &[CommandPattern], b: &[CommandPattern]) -> Vec<Command
     if b.is_empty() {
         return a.to_vec();
     }
-    a.iter().filter(|rule| b.contains(rule)).cloned().collect()
+    let inter: Vec<CommandPattern> = a.iter().filter(|rule| b.contains(rule)).cloned().collect();
+    if inter.is_empty() {
+        // Disjoint rule sets meet to NOTHING, not to "unrestricted".
+        vec![nothing_allowed_rule()]
+    } else {
+        inter
+    }
 }
 
 fn join_allowed_rules(a: &[CommandPattern], b: &[CommandPattern]) -> Vec<CommandPattern> {
     if a.is_empty() && b.is_empty() {
         return Vec::new();
     }
-    if a.is_empty() {
+    if rules_allow_nothing(a) {
         return b.to_vec();
     }
-    if b.is_empty() {
+    if rules_allow_nothing(b) {
         return a.to_vec();
+    }
+    // Unrestricted (empty) absorbs the join (#2474).
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
     }
     let mut rules = a.to_vec();
     for rule in b {
@@ -1220,5 +1287,87 @@ mod tests {
         // But auth/config still blocked
         assert!(!lattice.can_execute("gh auth login"));
         assert!(!lattice.can_execute("gh config set editor vim"));
+    }
+}
+
+/// #2474: empty `allowed` / `allowed_rules` are UNRESTRICTED — the top of
+/// those dimensions — so the order must never place them below a restricted set.
+#[cfg(test)]
+mod leq_unrestricted_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn with_allowed(cmds: &[&str]) -> CommandLattice {
+        let mut c = CommandLattice {
+            allowed: HashSet::new(),
+            blocked: HashSet::new(),
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
+            allow_metacharacters: false,
+        };
+        for cmd in cmds {
+            c.allow(*cmd);
+        }
+        c
+    }
+
+    #[test]
+    fn an_unrestricted_command_lattice_is_never_below_a_restricted_one() {
+        let unrestricted = with_allowed(&[]);
+        let restricted = with_allowed(&["cargo test"]);
+        assert!(!unrestricted.leq(&restricted), "the inversion #2474 found");
+        assert!(restricted.leq(&unrestricted));
+        let m = unrestricted.meet(&restricted);
+        assert_eq!(m.allowed, restricted.allowed);
+        assert!(m.leq(&unrestricted) && m.leq(&restricted));
+
+        // Disjoint restrictions meet to NOTHING: below both, executes nothing.
+        let other = with_allowed(&["git status"]);
+        let none = restricted.meet(&other);
+        assert!(none.allows_nothing(), "{:?}", none.allowed);
+        assert!(none.leq(&restricted) && none.leq(&other) && none.leq(&unrestricted));
+        assert!(!unrestricted.leq(&none));
+        assert!(!none.can_execute("cargo test") && !none.can_execute("git status"));
+        assert_eq!(none.join(&other).allowed, other.allowed);
+        assert!(
+            unrestricted.join(&restricted).allowed.is_empty(),
+            "the top absorbs the join"
+        );
+
+        // Disjoint rule sets meet to a rule that matches nothing.
+        let mut ra = with_allowed(&[]);
+        ra.allow_rule(CommandPattern::exact("cargo", &[] as &[&str]));
+        let mut rb = with_allowed(&[]);
+        rb.allow_rule(CommandPattern::exact("git", &[] as &[&str]));
+        let rn = ra.meet(&rb);
+        assert!(rn.leq(&ra) && rn.leq(&rb) && !rn.can_execute("cargo build"));
+
+        // The same for allowed_rules.
+        let mut ruled = with_allowed(&[]);
+        ruled.allow_rule(CommandPattern::exact("cargo", &[] as &[&str]));
+        assert!(
+            !unrestricted.leq(&ruled),
+            "unrestricted rules are not below a rule set"
+        );
+        assert!(ruled.leq(&unrestricted));
+    }
+
+    proptest! {
+        #[test]
+        fn meet_is_a_lower_bound_and_unrestricted_is_top(
+            a in proptest::collection::hash_set("(cargo|git|ls)", 0..3),
+            b in proptest::collection::hash_set("(cargo|git|ls)", 0..3),
+        ) {
+            let mut ca = with_allowed(&[]); ca.allowed = a.clone();
+            let mut cb = with_allowed(&[]); cb.allowed = b.clone();
+            let m = ca.meet(&cb);
+            prop_assert!(m.leq(&ca));
+            prop_assert!(m.leq(&cb));
+            prop_assert!(ca.leq(&ca));
+            if a.is_empty() && !b.is_empty() {
+                prop_assert!(!ca.leq(&cb));
+                prop_assert!(cb.leq(&ca));
+            }
+        }
     }
 }
