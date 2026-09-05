@@ -64,6 +64,7 @@
 
 pub mod async_traits;
 pub mod runtime;
+mod spawn;
 
 pub mod authority;
 pub mod receipt;
@@ -426,16 +427,9 @@ pub struct RealEffects {
     _private: (),
 }
 
-/// The argv predicate this home applies, re-exported so the executor applies
-/// the very same function (nucleus has no direct portcullis-core edge).
+/// The argv predicate this home applies (#2573), re-exported so the executor
+/// applies the very same function (nucleus has no direct portcullis-core edge).
 pub use portcullis_core::argv;
-
-/// An argv refusal as the sealed home's error: `InvalidInput`, message
-/// prefixed by [`portcullis_core::argv::ARGV_REFUSED_PREFIX`] so the parity
-/// test in nucleus recognises it on this side exactly as on the executor's.
-pub fn argv_refused(rejection: portcullis_core::argv::ArgvRejection) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, rejection.message())
-}
 
 impl RealEffects {
     pub(crate) fn new() -> Self {
@@ -600,11 +594,9 @@ impl ShellEffect for RealEffects {
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
         authority: Authority,
     ) -> io::Result<Output> {
-        // The ONE argv predicate both spawn boundaries apply (#2573): refused
-        // before the authority is spent, because a refused argv is not a
-        // spawn and must not consume the right to one. `Executor` applies the
-        // same function on its side, so the two cannot disagree.
-        portcullis_core::argv::check_argv(program, args).map_err(argv_refused)?;
+        // The ONE argv predicate both spawn boundaries apply (#2573), before the
+        // authority is spent: a refused argv is not a spawn.
+        portcullis_core::argv::check_argv(program, args)?;
         // Spent here and dropped: the right to spawn is consumed at the spawn.
         let spent = authority
             .spend(
@@ -613,41 +605,7 @@ impl ShellEffect for RealEffects {
             )
             .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
         drop(spent);
-        // Reproduces `Executor::spawn_checked` exactly so the raw spawn can
-        // relocate here losslessly: env_clear + envs(allowlist), piped
-        // stdout/stderr, stdin pipe-vs-null, host hardening via the injected
-        // hook, and stdin-fed vs plain output.
-        let mut cmd = Command::new(program);
-        cmd.args(args)
-            .current_dir(cwd)
-            .env_clear() // Security: prevent secret leakage from parent
-            .envs(allowed_env) // Only explicitly allowed vars
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // Stdin: pipe it when the caller has data to write, otherwise close it.
-        if stdin.is_some() {
-            cmd.stdin(Stdio::piped());
-        } else {
-            cmd.stdin(Stdio::null());
-        }
-
-        // Host-hardening hook (e.g. `HostSandbox::harden_std`), applied just
-        // before spawn. `None` reproduces the un-hardened spawn.
-        if let Some(harden) = harden {
-            harden(&mut cmd);
-        }
-
-        if let Some(input) = stdin {
-            let mut child = cmd.spawn()?;
-            if let Some(ref mut stdin_pipe) = child.stdin {
-                use std::io::Write as _;
-                stdin_pipe.write_all(input)?;
-            }
-            child.wait_with_output()
-        } else {
-            cmd.output()
-        }
+        spawn::spawn_sync(program, args, cwd, stdin, allowed_env, harden)
     }
 }
 
@@ -664,11 +622,9 @@ impl AsyncShellSpawnEffect for RealEffects {
         timeout: Option<std::time::Duration>,
         authority: Authority,
     ) -> io::Result<Output> {
-        // The ONE argv predicate both spawn boundaries apply (#2573): refused
-        // before the authority is spent, because a refused argv is not a
-        // spawn and must not consume the right to one. `Executor` applies the
-        // same function on its side, so the two cannot disagree.
-        portcullis_core::argv::check_argv(program, args).map_err(argv_refused)?;
+        // The ONE argv predicate both spawn boundaries apply (#2573), before the
+        // authority is spent: a refused argv is not a spawn.
+        portcullis_core::argv::check_argv(program, args)?;
         // Spent here and dropped: the right to spawn is consumed at the spawn.
         let spent = authority
             .spend(
