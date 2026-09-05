@@ -962,6 +962,9 @@ impl LatticeCertificate {
     /// (with the crypto stubbed, so the lattice and chain checks are the
     /// subject). Not reachable from a shipping build.
     #[cfg(any(test, kani))]
+    // Only the Kani harnesses call it; under `cfg(test)` alone it is unused, and
+    // CI's clippy runs with `-D warnings` on `--all-targets`.
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn from_parts(
         authority: AuthorityBlock,
         blocks: Vec<DelegationBlock>,
