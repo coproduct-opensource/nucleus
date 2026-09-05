@@ -290,9 +290,11 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
             }
         })
     };
+    // Unit left empty on the counts: the collector's Prometheus exporter turns
+    // unit "1" into a `_ratio` suffix, which a queue depth is not.
     let gauge = |name: &str, desc: &str, v: u64| -> Value {
         json!({
-            "name": name, "description": desc, "unit": "1",
+            "name": name, "description": desc, "unit": "",
             "gauge": {"dataPoints": [{"timeUnixNano": now_ns, "asInt": v.to_string()}]}
         })
     };
@@ -309,7 +311,7 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
                     hist_metric("ci.job.duration", "seconds a job ran (completed_at - started_at)", &duration),
                     hist_metric("ci.workflow.duration", "seconds from run creation to completion", &wf_duration),
                     json!({
-                        "name": "ci.job.completed", "description": "jobs completed in the window, by conclusion", "unit": "1",
+                        "name": "ci.job.completed", "description": "jobs completed in the window, by conclusion", "unit": "",
                         "sum": {"aggregationTemporality": 1, "isMonotonic": true,
                             "dataPoints": completed.iter().map(|(a, n)| json!({
                                 "attributes": attrs_json(a),
