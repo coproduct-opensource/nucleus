@@ -116,25 +116,25 @@ create() {
     spec "$1" "$2"
     N create "$FC_DIR/$1.json" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["id"], d.get("proxy_addr",""))'
 }
-# create_child <name> <rootfs> <parent_proxy_addr> -> prints pod id; the node
-# records parent = the pod whose proxy asked (lineage proven by the proxy path,
-# exactly as scripts/cross-pod-scoped-check.sh does on the local driver).
+# create_child <name> <rootfs> <parent_pod_id> -> prints pod id. Operator-set
+# lineage: the CLI sends `x-nucleus-parent-pod-id`, which the node honours for
+# a non-pod caller (pod_api::resolve_parent_pod_id) and records parent = A.
+# (A's own tool-proxy is not reachable from the host for a Firecracker pod —
+# it fronts the guest over vsock — so the local-driver trick of creating C
+# through A's proxy does not apply here.)
 create_child() {
     spec "$1" "$2"
-    local payload; payload="$(python3 -c "import json,sys; print(json.dumps({'spec_yaml': open(sys.argv[1]).read(), 'reason': 'podlist boot check: A creates its own child C'}))" "$FC_DIR/$1.json")"
-    curl -s -X POST "$3/v1/pod/create" -H 'content-type: application/json' -d "$payload" \
-        | python3 -c 'import sys,json; print(json.load(sys.stdin)["pod_id"])'
+    N create "$FC_DIR/$1.json" --parent-pod-id "$3" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])'
 }
 operator_ids() {
     N pods | python3 -c 'import sys,json; d=json.load(sys.stdin); pods=d if isinstance(d,list) else d.get("pods",[]); print(",".join(sorted(p["id"] for p in pods)))'
 }
 
 echo "podlist-boot-check: booting A (orchestrator, the probe)"
-read -r A APROXY <<<"$(create orch-a "$FC_DIR/rootfs-check-a.ext4")"
+read -r A _APROXY <<<"$(create orch-a "$FC_DIR/rootfs-check-a.ext4")"
 [ -n "$A" ] || die "A was not created"
-[ -n "$APROXY" ] || die "A has no proxy_addr — cannot create its child through its own proxy"
-echo "podlist-boot-check: booting child C (via A's proxy) + sibling B in parallel"
-( create_child child-c "$FC_DIR/rootfs-check-c.ext4" "$APROXY" > "$FC_DIR/c.id" 2>"$FC_DIR/c.err" ) &
+echo "podlist-boot-check: booting child C (parent A, operator-set) + sibling B in parallel"
+( create_child child-c "$FC_DIR/rootfs-check-c.ext4" "$A" > "$FC_DIR/c.id" 2>"$FC_DIR/c.err" ) &
 ( create sibling-b "$FC_DIR/rootfs-check-b.ext4" | cut -d' ' -f1 > "$FC_DIR/b.id" 2>"$FC_DIR/b.err" ) &
 wait
 C="$(cat "$FC_DIR/c.id" 2>/dev/null)"; B="$(cat "$FC_DIR/b.id" 2>/dev/null)"
