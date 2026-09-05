@@ -351,6 +351,20 @@ jobs:
       - name: Forbid non-hashing agent-path ingest observes (content-address every input)
         run: scripts/check-ingest-hashed.sh
 
+  kani-divergence-gate:
+    name: cfg(kani) divergences are inventoried and ratcheted
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every cfg(kani) site is listed and justified; the total only shrinks
+        env:
+          # The script fetches this ref itself (checkout is depth 1).
+          KANI_DIVERGENCE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          # Owner override for a deliberate new divergence: the PR label.
+          KANI_DIVERGENCE_ALLOW_GROWTH: ${{ contains(github.event.pull_request.labels.*.name, 'kani-divergence-growth') && '1' || '0' }}
+        run: scripts/check-kani-divergence.sh
+
   sealed-home-gate:
     name: Sealed-home integrity gate (North Star)
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
