@@ -290,6 +290,10 @@ jobs:
           rustup toolchain install nightly-2026-04-16 \
             --component rustc-dev,llvm-tools-preview --profile minimal
       - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.1
+        # Hosted only: the self-hosted scale set has persistent registry and
+        # sccache mounts, and this action's restore of a hosted x86 cache blob
+        # was observed hanging runner jobs for 15+ minutes.
+        if: ${{ runner.environment == 'github-hosted' }}
       - name: Install dylint
         run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
