@@ -6,6 +6,8 @@ use std::process::Command;
 
 mod identity;
 
+use nucleus_guest_init::boot::{self, Boot, MountSpec, SealedProof};
+
 #[cfg(target_os = "linux")]
 use nix::mount::{MsFlags, mount};
 #[cfg(target_os = "linux")]
@@ -71,7 +73,11 @@ fn timed<T>(name: &str, f: impl FnOnce() -> T) -> T {
 
 fn main() {
     if let Err(err) = run() {
+        // PID 1 exiting panics the kernel: that IS the fail-closed outcome
+        // (#2589), reached deliberately with the reason on the console, not
+        // by the old path of swallowing the error and falling off the end.
         eprintln!("nucleus-guest-init error: {err}");
+        std::process::exit(1);
     }
 }
 
@@ -105,21 +111,44 @@ fn run() -> Result<(), String> {
     ensure_dir("/etc/nucleus")?;
     ensure_dir("/work")?;
 
-    for m in GUEST_MOUNTS {
-        mount_fs(m.source, m.target, m.fstype, m.ms_flags(), None);
+    // Booting → Mounted: every load-bearing mount succeeds or the boot stops
+    // with a named error (#2589). The typestate carries the boot from here to
+    // `exec`; see nucleus_guest_init::boot.
+    let boot = Boot::start()
+        .mount_all(&mount_specs(), |m| {
+            let gm = GUEST_MOUNTS
+                .iter()
+                .find(|g| g.target == m.target)
+                .expect("mount_specs is derived from GUEST_MOUNTS");
+            mount_fs(m.source, m.target, m.fstype, gm.ms_flags(), None)
+        })
+        .map_err(|e| e.to_string())?;
+    for missing in &boot.optional_mount_failures {
+        eprintln!("optional mount {missing} failed — continuing without it");
     }
 
-    if Path::new("/dev/vdb").exists() {
-        mount_fs(
+    // `/work` is optional: a guest without a data volume, or a read-only one,
+    // is legitimate (workload.rs allows a read-only /work).
+    if Path::new("/dev/vdb").exists()
+        && let Err(err) = mount_fs(
             "/dev/vdb",
             "/work",
             "ext4",
             MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
             None,
-        );
+        )
+    {
+        eprintln!("optional mount /work failed — continuing without it: {err}");
     }
 
-    let spec_path = resolve_pod_spec()?;
+    // Never a shell: a missing spec is a named boot error.
+    let spec_path = boot::resolve_pod_spec(
+        POD_SPEC_PATH,
+        FALLBACK_POD_SPEC,
+        |p| Path::new(p).exists(),
+        |from, to| fs::copy(from, to).is_ok(),
+    )
+    .map_err(|e| e.to_string())?;
     let net_config = parse_net_config("/proc/cmdline");
 
     if let Some(net) = net_config.as_ref() {
@@ -468,7 +497,12 @@ fn run() -> Result<(), String> {
         export!("NUCLEUS_TOOL_PROXY_BOOT_REPORT", report);
     }
 
-    remount_root_ro()?;
+    // Mounted → Provisioned → Sealed: the remount is the seal, and `exec`
+    // exists only on the sealed boot — reordering these is a type error.
+    let boot = boot
+        .provisioned()
+        .seal(remount_root_ro)
+        .map_err(|e| e.to_string())?;
 
     // NOTE: the loopback interface is DOWN here. Measured in a booted guest —
     // `/sys/class/net/lo/flags` reads `0x8` (LOOPBACK without IFF_UP) and
@@ -491,8 +525,21 @@ fn run() -> Result<(), String> {
     // Anything that makes the guest bind a TCP socket — a spec without vsock, a
     // second listener, a health endpoint on 127.0.0.1 — reintroduces the need,
     // and `EADDRNOTAVAIL` from PID 1 panics the kernel rather than logging.
-    exec_proxy(&spec_path, child_env);
-    Ok(())
+    let err = boot.exec(|proof| exec_proxy(proof, &spec_path, child_env));
+    Err(format!("failed to exec {PROXY_BIN}: {err}"))
+}
+
+/// The typestate's view of `GUEST_MOUNTS`: which mounts are load-bearing.
+fn mount_specs() -> Vec<MountSpec> {
+    GUEST_MOUNTS
+        .iter()
+        .map(|m| MountSpec {
+            source: m.source,
+            target: m.target,
+            fstype: m.fstype,
+            load_bearing: m.load_bearing,
+        })
+        .collect()
 }
 
 /// One guest mount, with its hardening flags as PLAIN BOOLS.
@@ -511,6 +558,10 @@ pub(crate) struct GuestMount {
     pub nodev: bool,
     /// Binaries cannot be executed from here.
     pub noexec: bool,
+    /// A failed mount of this entry aborts the boot (#2589). Every
+    /// pseudo-filesystem here is load-bearing: the proxy needs /proc and /dev,
+    /// the identity handshake needs /run, the audit fallback needs /tmp.
+    pub load_bearing: bool,
 }
 
 impl GuestMount {
@@ -554,6 +605,7 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
         nosuid: true,
         nodev: true,
         noexec: true,
+        load_bearing: true,
     },
     GuestMount {
         source: "sys",
@@ -562,6 +614,7 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
         nosuid: true,
         nodev: true,
         noexec: true,
+        load_bearing: true,
     },
     GuestMount {
         source: "dev",
@@ -570,6 +623,7 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
         nosuid: true,
         nodev: false,
         noexec: false,
+        load_bearing: true,
     },
     GuestMount {
         source: "tmpfs",
@@ -578,6 +632,7 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
         nosuid: true,
         nodev: true,
         noexec: true,
+        load_bearing: true,
     },
     GuestMount {
         source: "tmpfs",
@@ -586,6 +641,7 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
         nosuid: true,
         nodev: true,
         noexec: true,
+        load_bearing: true,
     },
 ];
 
@@ -593,17 +649,25 @@ fn ensure_dir(path: &str) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|err| format!("create {path}: {err}"))
 }
 
-fn mount_fs(source: &str, target: &str, fstype: &str, flags: MsFlags, data: Option<&str>) {
+/// One `mount(2)`. The CALLER decides what a failure means (load-bearing
+/// aborts the boot, optional continues); this no longer swallows errors.
+fn mount_fs(
+    source: &str,
+    target: &str,
+    fstype: &str,
+    flags: MsFlags,
+    data: Option<&str>,
+) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         let data_bytes = data.map(|value| value.as_bytes());
-        if let Err(err) = mount(Some(source), target, Some(fstype), flags, data_bytes) {
-            eprintln!("mount {source} -> {target} ({fstype}) failed: {err}");
-        }
+        mount(Some(source), target, Some(fstype), flags, data_bytes)
+            .map_err(|err| format!("mount {source} -> {target} ({fstype}) failed: {err}"))
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (source, target, fstype, flags, data);
+        Ok(())
     }
 }
 
@@ -641,23 +705,6 @@ fn remount_root_ro() -> Result<(), String> {
         })?;
     }
     Ok(())
-}
-
-fn resolve_pod_spec() -> Result<String, String> {
-    if Path::new(POD_SPEC_PATH).exists() {
-        return Ok(POD_SPEC_PATH.to_string());
-    }
-
-    if Path::new(FALLBACK_POD_SPEC).exists() {
-        if fs::copy(FALLBACK_POD_SPEC, POD_SPEC_PATH).is_ok() {
-            return Ok(POD_SPEC_PATH.to_string());
-        }
-        return Ok(FALLBACK_POD_SPEC.to_string());
-    }
-
-    eprintln!("missing pod spec (expected {POD_SPEC_PATH} or {FALLBACK_POD_SPEC})");
-    let _ = Command::new("/bin/sh").status();
-    Err("pod spec missing".to_string())
 }
 
 fn read_secret(path: &str) -> Option<String> {
@@ -758,7 +805,15 @@ fn attest_egress_confinement() {
     }
 }
 
-fn exec_proxy(spec_path: &str, child_env: Vec<(std::ffi::OsString, std::ffi::OsString)>) {
+/// The launcher. It demands a `SealedProof`, which only `Boot<Sealed>::exec`
+/// can mint, so no code path reaches the tool-proxy before the rootfs is
+/// read-only (#2589). `exec(2)` does not return on success; the error is
+/// returned so `run()` can fail the boot.
+fn exec_proxy(
+    _sealed: SealedProof,
+    spec_path: &str,
+    child_env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> std::io::Error {
     // Article 12 record-keeping ON for the live path (EU AI Act Art. 12): every
     // mediation verdict is recorded, and — when a mediator key was delivered
     // (`fetch_mediation_key` above) — signed into a MediationReceipt. The log
@@ -766,17 +821,16 @@ fn exec_proxy(spec_path: &str, child_env: Vec<(std::ffi::OsString, std::ffi::OsS
     // workload cannot tamper), and NOT under the agent workspace (which the
     // proxy's own path check would refuse). The chain is session-derived when no
     // audit secret is configured — weaker than an operator secret, but present.
+    // Scoped to this child: see `child_env` above.
     attest_egress_confinement();
 
-    let err = Command::new(PROXY_BIN)
+    Command::new(PROXY_BIN)
         .arg("--spec")
         .arg(spec_path)
         .arg("--art12-log")
         .arg("/run/nucleus/art12.jsonl")
-        // Scoped to this child: see `child_env` above.
         .envs(child_env)
-        .exec();
-    eprintln!("failed to exec {PROXY_BIN}: {err}");
+        .exec()
 }
 
 #[derive(Debug)]
