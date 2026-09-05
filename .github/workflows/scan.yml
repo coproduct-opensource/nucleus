@@ -20,7 +20,10 @@ permissions:
 jobs:
   scan:
     name: Scan PodSpecs
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Compile-class: `cargo build -p nucleus-audit --release` before the scan.
+    # On the gate pool (0.5 CPU request, 2 CPU limit) it was 11 pool-minutes
+    # per PR — the second-largest named consumer in the CI metrics.
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       security-events: write
     steps:
