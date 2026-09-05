@@ -51,6 +51,10 @@ jobs:
 
       - name: Cache Lake / Mathlib build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5 # zizmor: ignore[cache-poisoning]
+        # Hosted only: the self-hosted runners keep their caches on persistent
+        # mounts, and uploading a cache from them was observed pinning a runner in
+        # the save step for 15+ minutes.
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           path: |
             crates/portcullis-core/lean/.lake
