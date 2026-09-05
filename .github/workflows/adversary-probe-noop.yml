@@ -1,0 +1,29 @@
+name: Adversary probe contains a live attacker (falsifier)
+
+# The requireable twin of adversary-probe.yml (#2604): same job NAME, runs only
+# on pull_request events whose changed paths are OUTSIDE the probe's declared
+# inputs (paths-ignore mirrors adversary-probe.yml's paths exactly), and passes
+# vacuously. It does NOT run in the merge queue: there the real workflow runs
+# and decides scope from the group's diff.
+on:
+  pull_request:
+    paths-ignore:
+      - "crates/nucleus-adversary-probe/**"
+      - "scripts/check-adversary-probe.sh"
+      - ".github/workflows/adversary-probe.yml"
+
+concurrency:
+  group: adversary-probe-noop-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  adversary-probe-falsifier:
+    name: adversary probe distinguishes contained / breach / inconclusive
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - name: No-op (probe inputs not touched)
+        run: echo "no adversary-probe inputs changed - gate vacuously green; the real falsifier ran on the PR that touched them"

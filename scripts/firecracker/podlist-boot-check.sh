@@ -35,6 +35,12 @@ FC_DIR="${FC_DIR:-$HOME/fc}"
 KERNEL="${KERNEL:-$FC_DIR/vmlinux}"
 ROOTFS="${ROOTFS:-$FC_DIR/podlist-rootfs.ext4}"
 NODE_BIN="${NODE_BIN:-$FC_DIR/nucleus-node}"
+# The node's HTTP API is mTLS-only (no HMAC fallback since the certificate
+# convergence): the operator is `nucleus node …` with a client cert minted from
+# the node's own CA by nucleus-identity's mint_test_client_cert example.
+CLI="${CLI:-$(command -v nucleus || true)}"
+MINT="${MINT:-target/debug/examples/mint_test_client_cert}"
+TRUST_DOMAIN="${TRUST_DOMAIN:-nucleus.local}"   # the node's --identity-trust-domain default
 STATE_DIR="${STATE_DIR:-$FC_DIR/state-podlist-check}"
 # Keep this base SHORT: the jailer nests the per-pod vsock socket at
 # <base>/firecracker/<uuid>/root/vsock.sock_<port>, and a long base overruns the
@@ -47,6 +53,12 @@ SECRET="${AUTH_SECRET:-harness-node-secret}"
 
 die() { echo "podlist-boot-check: $*" >&2; exit 1; }
 for f in "$KERNEL" "$ROOTFS" "$NODE_BIN"; do [ -s "$f" ] || die "missing input $f"; done
+[ -x "$CLI" ] || die "missing nucleus CLI (set CLI=…)"
+if [ ! -x "$MINT" ]; then
+    echo "podlist-boot-check: building nucleus-identity's mint_test_client_cert example…"
+    cargo build -p nucleus-identity --example mint_test_client_cert >/dev/null 2>&1 || die "mint_test_client_cert build failed"
+fi
+[ -x "$MINT" ] || die "missing $MINT"
 [ -e /dev/kvm ] || die "no /dev/kvm — this must run on a Linux host with KVM"
 command -v firecracker >/dev/null || die "firecracker is not on PATH"
 command -v jailer >/dev/null || die "jailer is not on PATH (needed for concurrent pods)"
@@ -66,51 +78,64 @@ sudo -b env RUST_LOG="${RUST_LOG:-warn}" \
     NUCLEUS_JAILER_PATH="$(command -v jailer)" \
     NUCLEUS_JAILER_CHROOT_BASE="$JAIL_DIR" \
     NUCLEUS_FIRECRACKER_NETNS=false \
-    "$NODE_BIN" --listen "$ADDR" --state-dir "$STATE_DIR" --auth-secret "$SECRET" \
+    "$NODE_BIN" --listen "$ADDR" --state-dir "$STATE_DIR" \
     --proxy-auth-secret "$SECRET" --proxy-approval-secret "$SECRET" \
     --identity-workload-api-socket "$FC_DIR/wapi.sock" > "$FC_DIR/node-podlist-check.log" 2>&1
 sleep 5
 pgrep -x nucleus-node >/dev/null || { tail -20 "$FC_DIR/node-podlist-check.log"; die "node did not start"; }
 
-# create <name> <rootfs> [parent_pod_id] -> prints pod id
-create() {
-    local name=$1 rootfs=$2 parent=${3:-}
+# The operator identity: the node's default root minter is
+# spiffe://<trust-domain>/ns/system/sa/cli, so mint exactly that from the CA
+# the node just persisted (it runs as root; copy the CA dir out to read it).
+IDENTITY_DIR="$FC_DIR/cli-identity"; sudo rm -rf "$IDENTITY_DIR" "$FC_DIR/ca-copy"
+ca_ready=0
+for _ in $(seq 1 60); do sudo test -f "$STATE_DIR/ca/ca-key.pem" && { ca_ready=1; break; }; sleep 0.5; done
+[ "$ca_ready" = 1 ] || { tail -20 "$FC_DIR/node-podlist-check.log"; die "node never persisted its CA under $STATE_DIR/ca"; }
+sudo cp -r "$STATE_DIR/ca" "$FC_DIR/ca-copy" && sudo chown -R "$(id -u)" "$FC_DIR/ca-copy"
+"$MINT" --ca-dir "$FC_DIR/ca-copy" --trust-domain "$TRUST_DOMAIN" \
+    --namespace system --service-account cli --out-dir "$IDENTITY_DIR" > "$FC_DIR/mint.log" 2>&1 \
+    || { cat "$FC_DIR/mint.log"; die "minting the operator client cert failed"; }
+N() {
+    "$CLI" node --url "https://$ADDR" \
+        --tls-cert "$IDENTITY_DIR/cert.pem" --tls-key "$IDENTITY_DIR/key.pem" \
+        --trust-bundle "$IDENTITY_DIR/trust-bundle.pem" "$@" 2>/dev/null | grep -viE "Starting nucleus|config_path"
+}
+ready=0
+for _ in $(seq 1 60); do N health >/dev/null 2>&1 && { ready=1; break; }; sleep 0.5; done
+[ "$ready" = 1 ] || { tail -20 "$FC_DIR/node-podlist-check.log"; die "node not healthy over mTLS"; }
+
+# spec <name> <rootfs> -> writes $FC_DIR/<name>.json
+spec() {
+    local name=$1 rootfs=$2
     cat > "$FC_DIR/$name.json" <<JSON
 {"apiVersion":"nucleus/v1","kind":"Pod","metadata":{"name":"$name","labels":{"enable_pod_mgmt":"true"}},"spec":{"work_dir":"/work","timeout_seconds":120,"policy":{"type":"profile","name":"orchestrator"},"image":{"kernel_path":"$KERNEL","rootfs_path":"$rootfs","read_only":false},"vsock":{"guest_cid":3,"port":5005}}}
 JSON
-    PARENT="$parent" python3 - "$FC_DIR/$name.json" "$SECRET" "$ADDR" <<'PY'
-import hmac,hashlib,sys,os,time,json,urllib.request,urllib.error
-spec,secret,addr=sys.argv[1],sys.argv[2].encode(),sys.argv[3]
-body=open(spec,"rb").read(); ts,actor=str(int(time.time())),"boot-harness"
-sig=hmac.new(secret,ts.encode()+b"."+actor.encode()+b"."+body,hashlib.sha256).hexdigest()
-h={"content-type":"application/json","x-nucleus-timestamp":ts,"x-nucleus-actor":actor,"x-nucleus-signature":sig}
-p=os.environ.get("PARENT","")
-if p: h["x-nucleus-parent-pod-id"]=p   # operator-set lineage: node records parent=A
-req=urllib.request.Request(f"http://{addr}/v1/pods",data=body,method="POST",headers=h)
-try: print(json.load(urllib.request.urlopen(req,timeout=120))["id"])
-except urllib.error.HTTPError as e: sys.stderr.write("CREATE %d %s\n"%(e.code,e.read().decode()[:300])); sys.exit(1)
-PY
 }
-
+# create <name> <rootfs> -> prints "<id> <proxy_addr>" (operator-created, no parent)
+create() {
+    spec "$1" "$2"
+    N create "$FC_DIR/$1.json" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["id"], d.get("proxy_addr",""))'
+}
+# create_child <name> <rootfs> <parent_pod_id> -> prints pod id. Operator-set
+# lineage: the CLI sends `x-nucleus-parent-pod-id`, which the node honours for
+# a non-pod caller (pod_api::resolve_parent_pod_id) and records parent = A.
+# (A's own tool-proxy is not reachable from the host for a Firecracker pod —
+# it fronts the guest over vsock — so the local-driver trick of creating C
+# through A's proxy does not apply here.)
+create_child() {
+    spec "$1" "$2"
+    N create "$FC_DIR/$1.json" --parent-pod-id "$3" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])'
+}
 operator_ids() {
-    python3 - "$SECRET" "$ADDR" <<'PY'
-import hmac,hashlib,sys,time,json,urllib.request,urllib.error
-secret,addr=sys.argv[1].encode(),sys.argv[2]
-ts,actor=str(int(time.time())),"boot-harness"
-sig=hmac.new(secret,ts.encode()+b"."+actor.encode()+b".",hashlib.sha256).hexdigest()
-req=urllib.request.Request(f"http://{addr}/v1/pods",method="GET",headers={"x-nucleus-timestamp":ts,"x-nucleus-actor":actor,"x-nucleus-signature":sig})
-try:
-    d=json.load(urllib.request.urlopen(req,timeout=30)); pods=d if isinstance(d,list) else d.get("pods",[])
-    print(",".join(sorted(p["id"] for p in pods)))
-except urllib.error.HTTPError as e: sys.stderr.write("OP %d %s\n"%(e.code,e.read().decode()[:200]))
-PY
+    N pods | python3 -c 'import sys,json; d=json.load(sys.stdin); pods=d if isinstance(d,list) else d.get("pods",[]); print(",".join(sorted(p["id"] for p in pods)))'
 }
 
 echo "podlist-boot-check: booting A (orchestrator, the probe)"
-A="$(create orch-a "$FC_DIR/rootfs-check-a.ext4")"; [ -n "$A" ] || die "A was not created"
-echo "podlist-boot-check: booting child C + sibling B in parallel"
-( create child-c "$FC_DIR/rootfs-check-c.ext4" "$A" > "$FC_DIR/c.id" 2>"$FC_DIR/c.err" ) &
-( create sibling-b "$FC_DIR/rootfs-check-b.ext4"           > "$FC_DIR/b.id" 2>"$FC_DIR/b.err" ) &
+read -r A _APROXY <<<"$(create orch-a "$FC_DIR/rootfs-check-a.ext4")"
+[ -n "$A" ] || die "A was not created"
+echo "podlist-boot-check: booting child C (parent A, operator-set) + sibling B in parallel"
+( create_child child-c "$FC_DIR/rootfs-check-c.ext4" "$A" > "$FC_DIR/c.id" 2>"$FC_DIR/c.err" ) &
+( create sibling-b "$FC_DIR/rootfs-check-b.ext4" | cut -d' ' -f1 > "$FC_DIR/b.id" 2>"$FC_DIR/b.err" ) &
 wait
 C="$(cat "$FC_DIR/c.id" 2>/dev/null)"; B="$(cat "$FC_DIR/b.id" 2>/dev/null)"
 [ -n "$C" ] || die "child C was not created: $(cat "$FC_DIR/c.err" 2>/dev/null)"

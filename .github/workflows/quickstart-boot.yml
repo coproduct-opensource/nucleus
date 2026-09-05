@@ -50,6 +50,11 @@ on:
       - "scripts/firecracker/**"
       - "scripts/lima/**"
       - ".github/workflows/quickstart-boot.yml"
+  # `paths:` under merge_group is ignored by GitHub; each job's scope step
+  # re-derives it from the group's diff, so the merge queue boots a pod exactly
+  # when a queued change touches the boot inputs (ci/merge-group-scope-parity.sh
+  # keeps PATTERN and the list above in agreement).
+  merge_group:
   push:
     branches: [main]
   schedule:
@@ -85,12 +90,40 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Is this change in scope?
+        id: scope
+        env:
+          # Never interpolate ${{ }} into a run script (zizmor hardening).
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+          PATTERN: '^\.github/workflows/quickstart\-boot\.yml$|^crates/nucleus\-cli/|^crates/nucleus\-node/|^crates/nucleus\-spec/|^crates/nucleus\-guest\-init/|^crates/nucleus\-tool\-proxy/|^crates/nucleus\-workload\-probe/|^crates/nucleus\-egress\-probe/|^scripts/check\-egress\-probe\.sh$|^examples/openclaw\-demo/probe\-pod\.yaml$|^scripts/firecracker/|^scripts/lima/'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "merge_group" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${HEAD:-}" ]; then
+            # Fail OPEN: an unknown range must run, never skip.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE "$PATTERN"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "in scope -- running."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "nothing in this merge group touches the probe's inputs; skipping (the PR that touched them ran it)"
+          fi
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        if: steps.scope.outputs.relevant == 'true'
         with:
           toolchain: stable
       - name: Build the egress probe
+        if: steps.scope.outputs.relevant == 'true'
         run: cargo build --release -p nucleus-egress-probe
       - name: Falsify — the probe must track the fence in all three states
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # iptables is present on ubuntu-24.04; the script uses sudo for netns.
           EGRESS_PROBE_BIN=target/release/nucleus-egress-probe \
@@ -101,16 +134,44 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Is this change in scope?
+        id: scope
+        env:
+          # Never interpolate ${{ }} into a run script (zizmor hardening).
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+          PATTERN: '^\.github/workflows/quickstart\-boot\.yml$|^crates/nucleus\-cli/|^crates/nucleus\-node/|^crates/nucleus\-spec/|^crates/nucleus\-guest\-init/|^crates/nucleus\-tool\-proxy/|^crates/nucleus\-workload\-probe/|^crates/nucleus\-egress\-probe/|^scripts/check\-egress\-probe\.sh$|^examples/openclaw\-demo/probe\-pod\.yaml$|^scripts/firecracker/|^scripts/lima/'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "merge_group" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${HEAD:-}" ]; then
+            # Fail OPEN: an unknown range must run, never skip.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE "$PATTERN"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "in scope -- running."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "nothing in this merge group touches the probe's inputs; skipping (the PR that touched them ran it)"
+          fi
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        if: steps.scope.outputs.relevant == 'true'
         with:
           toolchain: stable
       - name: Print the pin manifest
+        if: steps.scope.outputs.relevant == 'true'
         id: pins
         run: |
           cargo run -q -p nucleus-cli -- verify --pins > pins.json
           cat pins.json
 
       - name: Kernels must resolve and match their baked digest
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           set -euo pipefail
           fail=0
@@ -143,6 +204,7 @@ jobs:
           exit $fail
 
       - name: Release assets — missing is an error, unpublished is a notice
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           set -euo pipefail
           version=$(jq -r 'map(select(.release)) | .[0].release' pins.json)
@@ -249,7 +311,33 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Is this change in scope?
+        id: scope
+        env:
+          # Never interpolate ${{ }} into a run script (zizmor hardening).
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+          PATTERN: '^\.github/workflows/quickstart\-boot\.yml$|^crates/nucleus\-cli/|^crates/nucleus\-node/|^crates/nucleus\-spec/|^crates/nucleus\-guest\-init/|^crates/nucleus\-tool\-proxy/|^crates/nucleus\-workload\-probe/|^crates/nucleus\-egress\-probe/|^scripts/check\-egress\-probe\.sh$|^examples/openclaw\-demo/probe\-pod\.yaml$|^scripts/firecracker/|^scripts/lima/'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "merge_group" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${HEAD:-}" ]; then
+            # Fail OPEN: an unknown range must run, never skip.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE "$PATTERN"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "in scope -- running."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "nothing in this merge group touches the probe's inputs; skipping (the PR that touched them ran it)"
+          fi
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        if: steps.scope.outputs.relevant == 'true'
         with:
           # `toolchain` is REQUIRED when the action is pinned by SHA: the tag name
           # is what would otherwise supply it, and a SHA carries no tag.
@@ -263,6 +351,7 @@ jobs:
           toolchain: stable
 
       - name: This runner must actually have KVM
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # Asserted, not assumed. Without /dev/kvm Firecracker does not start,
           # and every later step would fail for a reason that looks like nucleus.
@@ -278,6 +367,7 @@ jobs:
           ls -l /dev/vhost-vsock
 
       - name: Build the guest and host binaries
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools e2fsprogs
@@ -299,6 +389,7 @@ jobs:
             -p nucleus-cli -p nucleus-node $rootfs_pkgs
 
       - name: Build the guest rootfs
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # The CA bundle this installs is load-bearing: without it the
           # tool-proxy's drand client fails and, as PID 1, takes the guest
@@ -318,6 +409,7 @@ jobs:
           test -s build/firecracker/x86_64/rootfs.ext4
 
       - name: Install this build as the Tier 2 host
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           sudo cp target/x86_64-unknown-linux-musl/release/nucleus /usr/local/bin/nucleus
           # --artifacts local: gate THIS commit, not the last release. Using
@@ -325,6 +417,7 @@ jobs:
           nucleus setup --skip-verify --artifacts local
 
       - name: Plant a canary in the NODE's environment
+        if: steps.scope.outputs.relevant == 'true'
         shell: bash
         run: |
           # The node's environment holds every HMAC secret the runtime has, and
@@ -343,6 +436,7 @@ jobs:
           echo "NUCLEUS_E2E_CANARY=$CANARY" >> "$GITHUB_ENV"
 
       - name: Boot a real pod and assert what the guest did
+        if: steps.scope.outputs.relevant == 'true'
         shell: bash
         run: |
           # The whole point. Asserts, in order: the pod is created; a permitted
@@ -352,6 +446,7 @@ jobs:
           nucleus verify --tier2 --here
 
       - name: The in-guest posture probe actually ran (presence, not just verdict)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # verify's probe needle is conditional on the sentinel appearing, so it
           # cannot fail vacuously — but a probe that failed to EXEC (missing from
@@ -380,6 +475,7 @@ jobs:
           echo "in-guest workload probe: PASS present, FAIL absent"
 
       - name: The in-guest egress backstop actually held (C6 phase 2, presence + verdict)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # The egress probe runs as the same booted workload (network.allow: []),
           # so the pod is under net::apply_default_deny. It asserts, from inside
@@ -408,6 +504,7 @@ jobs:
           echo "in-guest egress backstop: PASS present, FAIL absent"
 
       - name: The in-guest adversary was contained (active attacker, presence + verdict)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # nucleus-adversary-probe runs as the same booted workload — an ACTIVE
           # attacker that tries to steal a mediator secret from PID 1, tamper the
@@ -447,6 +544,7 @@ jobs:
           echo "in-guest adversary: CONTAINED present, BREACH absent, control live, all stages attempted"
 
       - name: A signed MediationReceipt was emitted on the live path (presence + shape)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # The end-to-end tooth for the receipt arc: `verify --tier2` runs a
           # PERMITTED command (allow) and a FORBIDDEN command (deny) through the
@@ -474,6 +572,7 @@ jobs:
           printf '%s\n' "$markers" | head -8
 
       - name: A relying party verifies the pod's receipts against a node-anchored key
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # The marker step above proves receipts were EMITTED. This one is the
           # host-side relying-party check: recover the FULL signed receipts from
@@ -552,6 +651,7 @@ jobs:
           fi
 
       - name: Delivery conformance (observed inventory vs the extracted oracle)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           # The probe emits its observed environment inventory
           # (NUCLEUS_WORKLOAD_ENV: <name>, names only) into the guest log. This

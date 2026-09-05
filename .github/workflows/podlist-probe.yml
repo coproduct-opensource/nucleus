@@ -1,0 +1,144 @@
+name: podlist-probe
+
+# The C2 cross-pod backstop on a REAL guest (#2604): pod A, booted under
+# Firecracker with a jailer, calls the scoped POD_LIST over its own vsock and the
+# host asserts the listing is confined to A's lineage (A and its child C, never
+# sibling B). `scripts/firecracker/podlist-boot-check.sh` is the harness;
+# `crates/nucleus-podlist-probe` is the in-guest workload. Until this workflow
+# existed the probe had no CI lane at all — it was baked and never booted.
+#
+# Boot-gated like quickstart-boot.yml: x86_64 hosted runners have /dev/kvm; the
+# job REFUSES a runner without it rather than skipping, so runner unavailability
+# is red, never green. The noop twin (podlist-probe-noop.yml) passes only when
+# the declared paths are untouched on a pull_request; in the merge queue this
+# workflow runs and decides scope itself from the group's diff.
+#
+# What this does not cover: aarch64 Firecracker (no hosted arm64 runner has
+# KVM; the weekly metal job in quickstart-boot.yml does) and Apple Silicon's
+# `vz` driver, which is a different driver and not Firecracker coverage.
+on:
+  pull_request:
+    paths:
+      - "crates/nucleus-podlist-probe/**"
+      - "crates/nucleus-node/**"
+      - "crates/nucleus-tool-proxy/**"
+      - "crates/nucleus-guest-init/**"
+      - "examples/openclaw-demo/podlist-probe-pod.yaml"
+      - "scripts/firecracker/podlist-boot-check.sh"
+      - "scripts/firecracker/build-rootfs.sh"
+      - "scripts/cross-build.sh"
+      - ".github/workflows/podlist-probe.yml"
+  # `paths:` under merge_group is ignored by GitHub; the scope step re-derives
+  # it from the group's diff (ci/merge-group-scope-parity.sh keeps the two in
+  # agreement).
+  merge_group:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: podlist-probe-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  podlist-probe:
+    name: the C2 podlist probe is served a lineage-scoped listing on a real guest (x86_64)
+    # KVM: hosted x86_64 runners expose /dev/kvm; the self-hosted arm64 scale set
+    # does not, so this job is deliberately NOT behind vars.CI_RUNNER.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Is this change in scope?
+        id: scope
+        env:
+          # Never interpolate ${{ }} into a run script (zizmor hardening).
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+          PATTERN: '^\.github/workflows/podlist\-probe\.yml$|^crates/nucleus\-podlist\-probe/|^crates/nucleus\-node/|^crates/nucleus\-tool\-proxy/|^crates/nucleus\-guest\-init/|^examples/openclaw\-demo/podlist\-probe\-pod\.yaml$|^scripts/firecracker/podlist\-boot\-check\.sh$|^scripts/firecracker/build\-rootfs\.sh$|^scripts/cross\-build\.sh$'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "merge_group" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${HEAD:-}" ]; then
+            # Fail OPEN: an unknown range must run, never skip.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE "$PATTERN"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "in scope -- running."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "nothing in this merge group touches the probe's inputs; skipping (the PR that touched them ran it)"
+          fi
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        if: steps.scope.outputs.relevant == 'true'
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - name: This runner must actually have KVM and vsock (refuse, never skip)
+        if: steps.scope.outputs.relevant == 'true'
+        run: |
+          test -e /dev/kvm || { echo "::error::no /dev/kvm on this runner — the probe cannot boot; this is RED, not a skip"; exit 1; }
+          sudo chmod 666 /dev/kvm
+          sudo modprobe vhost_vsock
+          test -e /dev/vhost-vsock || { echo "::error::no /dev/vhost-vsock"; exit 1; }
+      - name: Build the host, guest and probe binaries (musl)
+        if: steps.scope.outputs.relevant == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools e2fsprogs
+          # The build runs on the toolchain rust-toolchain.toml pins, not `stable`,
+          # so the musl target must be added to THAT toolchain (as quickstart-boot does).
+          rustup target add x86_64-unknown-linux-musl
+          rustup target list --installed | grep -q x86_64-unknown-linux-musl
+          rootfs_pkgs=$(bash scripts/cross-build.sh --list-packages | sed 's/^/-p /' | tr '\n' ' ')
+          echo "rootfs packages: $rootfs_pkgs"
+          # shellcheck disable=SC2086
+          cargo build --release --target x86_64-unknown-linux-musl \
+            -p nucleus-cli -p nucleus-node -p nucleus-podlist-probe $rootfs_pkgs
+      - name: Build the podlist guest rootfs (probe baked, orchestrator pod spec)
+        if: steps.scope.outputs.relevant == 'true'
+        run: |
+          POD_SPEC="$PWD/examples/openclaw-demo/podlist-probe-pod.yaml" \
+          PODLIST_PROBE_BIN="$PWD/target/x86_64-unknown-linux-musl/release/nucleus-podlist-probe" \
+            ARCH=x86_64 bash ./scripts/firecracker/build-rootfs.sh
+          test -s build/firecracker/x86_64/rootfs.ext4
+      - name: Install this build as the Tier 2 host (firecracker, jailer, kernel)
+        if: steps.scope.outputs.relevant == 'true'
+        run: |
+          # Stage the guest image and node BEFORE `nucleus setup`: with
+          # --artifacts local the installer RENAMES the working-tree rootfs
+          # and node into /var/lib/nucleus/artifacts (provision.rs installs
+          # by rename, not copy), so a copy after setup finds nothing.
+          mkdir -p "$HOME/fc"
+          cp build/firecracker/x86_64/rootfs.ext4 "$HOME/fc/podlist-rootfs.ext4"
+          cp target/x86_64-unknown-linux-musl/release/nucleus-node "$HOME/fc/nucleus-node"
+          sudo cp target/x86_64-unknown-linux-musl/release/nucleus /usr/local/bin/nucleus
+          nucleus setup --skip-verify --artifacts local
+          kernel=$(sudo find /var/lib/nucleus /etc/nucleus "$HOME/.nucleus" -name 'vmlinux*' -type f 2>/dev/null | head -1)
+          test -n "$kernel" || { echo "::error::nucleus setup left no vmlinux to boot"; exit 1; }
+          sudo cp "$kernel" "$HOME/fc/vmlinux"; sudo chown "$(id -u)" "$HOME/fc/vmlinux"
+          ls -la "$HOME/fc"
+      - name: Build the operator's cert minter (nucleus-identity example, host target)
+        if: steps.scope.outputs.relevant == 'true'
+        # The node's HTTP API is mTLS-only; the harness mints the operator's client
+        # cert from the node's own CA with this example.
+        run: cargo build -p nucleus-identity --example mint_test_client_cert
+      - name: Boot A, spawn child C and sibling B, assert the scoped listing
+        if: steps.scope.outputs.relevant == 'true'
+        run: |
+          FC_DIR="$HOME/fc" KERNEL="$HOME/fc/vmlinux" ROOTFS="$HOME/fc/podlist-rootfs.ext4" \
+          NODE_BIN="$HOME/fc/nucleus-node" CLI=/usr/local/bin/nucleus \
+          MINT=target/debug/examples/mint_test_client_cert \
+            bash scripts/firecracker/podlist-boot-check.sh
+      - name: Show the guest logs on failure
+        if: failure() && steps.scope.outputs.relevant == 'true'
+        run: |
+          find "$HOME/fc" -name '*.log' -exec sh -c 'echo "== $1 =="; tail -80 "$1"' _ {} \; 2>/dev/null || true

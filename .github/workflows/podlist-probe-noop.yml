@@ -1,0 +1,36 @@
+name: podlist-probe
+
+# The requireable twin of podlist-probe.yml (#2604): same job NAME, runs only on
+# pull_request events whose changed paths are OUTSIDE the probe's declared
+# inputs (paths-ignore mirrors podlist-probe.yml's paths exactly), and passes
+# vacuously. It does NOT run in the merge queue: there the real workflow runs
+# and decides scope from the group's diff, so an unavailable KVM runner shows
+# as red, never as this twin's green.
+on:
+  pull_request:
+    paths-ignore:
+      - "crates/nucleus-podlist-probe/**"
+      - "crates/nucleus-node/**"
+      - "crates/nucleus-tool-proxy/**"
+      - "crates/nucleus-guest-init/**"
+      - "examples/openclaw-demo/podlist-probe-pod.yaml"
+      - "scripts/firecracker/podlist-boot-check.sh"
+      - "scripts/firecracker/build-rootfs.sh"
+      - "scripts/cross-build.sh"
+      - ".github/workflows/podlist-probe.yml"
+
+concurrency:
+  group: podlist-probe-noop-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  podlist-probe:
+    name: the C2 podlist probe is served a lineage-scoped listing on a real guest (x86_64)
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - name: No-op (probe inputs not touched)
+        run: echo "no podlist-probe inputs changed - gate vacuously green; the real boot ran on the PR that touched them"

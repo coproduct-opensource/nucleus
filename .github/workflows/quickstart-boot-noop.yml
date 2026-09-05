@@ -37,7 +37,6 @@ on:
       - "scripts/firecracker/**"
       - "scripts/lima/**"
       - ".github/workflows/quickstart-boot.yml"
-  merge_group:
 
 concurrency:
   # Supersede a PR's older in-flight runs; NEVER cancel anything else.
@@ -56,5 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: No-op (boot paths not touched, or in the merge queue)
-        run: echo "no boot-affecting paths changed (or merge_group) — gate vacuously green; the real boot ran on the PR that touched them"
+      - name: No-op (boot paths not touched)
+        run: |
+          echo "no boot-affecting paths changed - gate vacuously green."
+          echo "In the merge queue the REAL workflow runs and decides scope itself (#2604); an unavailable KVM runner is red there, never green."
