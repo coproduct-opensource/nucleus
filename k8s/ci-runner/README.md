@@ -40,6 +40,10 @@ podman save localhost/nucleus-ci-runner:0.2.2 | sudo k3s ctr -n k8s.io images im
 sudo bash k8s/ci-runner/warm.sh
 
 # 3. the job hooks (per-job sccache hit rate + pod resource peaks in every job log)
+#    and the per-pod cargo config (lld for the host target; see cargo-config.toml)
+sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl create configmap runner-cargo-config \
+  -n arc-runners --from-file=config.toml=k8s/ci-runner/cargo-config.toml --dry-run=client -o yaml \
+  | sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl apply -f -
 sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl create configmap runner-hooks \
   -n arc-runners --from-file=k8s/ci-runner/hooks/ --dry-run=client -o yaml \
   | sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl apply -f -

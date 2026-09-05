@@ -60,6 +60,11 @@ template:
             value: 30G
           - name: CARGO_INCREMENTAL
             value: "0"
+          # Debuginfo the linker can afford: full DWARF made GNU ld take
+          # 2.75-3.4 GB per test binary and OOM-killed the heavy jobs; line
+          # tables keep panics readable. Pairs with cargo-config.toml (lld).
+          - name: CARGO_PROFILE_DEV_DEBUG
+            value: line-tables-only
           # Two cargo jobs per runner: memory scales with parallel rustc/ld
           # processes, and the limit below is sized for two.
           - name: CARGO_BUILD_JOBS
@@ -96,6 +101,10 @@ template:
           - name: runner-hooks
             mountPath: /home/runner/hooks
             readOnly: true
+          - name: runner-cargo-config
+            mountPath: /home/runner/.cargo/config.toml
+            subPath: config.toml
+            readOnly: true
     volumes:
       # Host-path directories on the k3s node, owned by uid 1001 (the image's
       # `runner` user): created by k8s/ci-runner/README.md's setup step.
@@ -115,3 +124,7 @@ template:
         configMap:
           name: runner-hooks
           defaultMode: 0755
+      # `kubectl create configmap runner-cargo-config --from-file=config.toml=k8s/ci-runner/cargo-config.toml`
+      - name: runner-cargo-config
+        configMap:
+          name: runner-cargo-config
