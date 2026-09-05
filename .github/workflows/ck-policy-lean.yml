@@ -111,7 +111,7 @@ jobs:
       - name: lake build Ck (monotonicity-gate soundness proofs)
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/ck-policy/lean
-        run: lake build
+        run: lake build --jobs=2
 
       - name: Ban sorry / admit / native_decide / sorryAx in ck-policy Lean
         if: steps.scope.outputs.relevant == 'true'
