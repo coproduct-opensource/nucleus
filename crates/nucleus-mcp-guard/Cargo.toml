@@ -23,6 +23,8 @@ portcullis = { path = "../portcullis", default-features = false, features = ["sp
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true, features = [
     "rt-multi-thread",

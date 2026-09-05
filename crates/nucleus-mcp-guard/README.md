@@ -101,6 +101,18 @@ Set `"replace_defaults": true` to start from scratch.
   as `MCP_TOOL_UNVERIFIED`, on the first listing too — the publisher's
   signature, not first sight, is the trust. An empty trust store is a startup
   error, never a check that accepts everything.
+- **The task's own tool surface, from the pod certificate.** When the node
+  delivered a pod certificate (`NUCLEUS_POD_CERT`, verified against the pinned
+  `NUCLEUS_CERT_ROOT_PUBKEY`) that approves a tool surface, every served tool
+  must be on it at its approved descriptor digest or it is refused as
+  `MCP_TOOL_UNAPPROVED`. The surface is a signed, narrow-only dimension of the
+  certificate: a child pod can drop tools, never add them. A certificate with
+  no surface constrains nothing; an invalid one is a startup error.
+- **The pod's compartment, from the same certificate.** When the certificate
+  names a compartment (`research` < `draft` < `execute` < `breakglass`, a
+  signed dimension a child pod can only lower), a tool whose signed manifest
+  lists `allowed_compartments` is refused outside them as
+  `MCP_TOOL_WRONG_COMPARTMENT` — at listing, and therefore at call.
 - **Pinning is trust-on-first-use.** That is a real bound and worth stating
   plainly: TOFU defends the *rug-pull* — benign at approval, mutated later — and
   the metadata-tainting is what covers a server that was hostile from the start.
