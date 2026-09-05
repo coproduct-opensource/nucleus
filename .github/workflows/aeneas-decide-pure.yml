@@ -102,6 +102,7 @@ jobs:
       # --- Aeneas prebuilt binaries (Charon + Aeneas, no OCaml build) ---
       - name: Cache Aeneas binary
         id: cache-aeneas-bin
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: /tmp/aeneas-bin

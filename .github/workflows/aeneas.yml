@@ -243,6 +243,7 @@ jobs:
 
       # Cache-poisoning ignored: formal-proof build only, no published artifacts.
       - name: Cache Lake / Mathlib build artifacts
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5 # zizmor: ignore[cache-poisoning]
         with:
           path: |
