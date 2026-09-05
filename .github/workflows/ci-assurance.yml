@@ -1,0 +1,87 @@
+name: CI assurance
+
+# The tree's two claims about GitHub's configuration — ci/required-checks.txt
+# (the required status-check contexts) and ci/merge-queue.toml (the
+# merge-queue ruleset constants) — held in lockstep with what GitHub
+# actually enforces. Every ci-spec invariant reasons from those files; drift
+# means the invariants are about a configuration nobody runs.
+#
+# Runs on a schedule (a UI edit to branch protection or the ruleset has no
+# commit to trigger on), on dispatch, and on a push to main that touches
+# either ledger. Drift opens or updates an issue, so a silent UI change
+# becomes a visible red within 30 minutes.
+#
+# TOKEN: reading branch protection needs repository "Administration: read",
+# which GITHUB_TOKEN does not have. The job uses the CI_ASSURANCE_TOKEN
+# secret (a fine-grained PAT: Administration read + Metadata read). Without
+# it the check exits 2 — "could not look" — and the job is RED, never green:
+# a parity check that passes because it could not see would be the vacuity
+# it exists to find.
+
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "ci/required-checks.txt"
+      - "ci/merge-queue.toml"
+      - "crates/ci-spec/src/live.rs"
+      - ".github/workflows/ci-assurance.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ci-assurance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live-parity:
+    name: Required-check ledger and merge-queue pin match GitHub
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - name: Ledger == branch protection; queue pin == ruleset
+        id: parity
+        shell: bash
+        env:
+          # Falls back to GITHUB_TOKEN, which CANNOT read protection: the
+          # step then exits 2 and the job is red with the reason printed.
+          GH_TOKEN: ${{ secrets.CI_ASSURANCE_TOKEN || github.token }}
+        run: |
+          set -o pipefail
+          rc=0
+          cargo run -q -p xtask -- ci-spec live-parity 2>&1 | tee /tmp/live-parity.txt || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::live-parity could not look (exit 2) — not a pass. Is CI_ASSURANCE_TOKEN set?"
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the required-check ledger or the merge-queue pin drifted from GitHub (exit $rc)"
+            exit 1
+          fi
+      - name: Open or update the drift issue
+        if: ${{ failure() && github.event_name != 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC: ${{ steps.parity.outputs.rc }}
+        run: |
+          title="ci-assurance: required-check ledger / merge-queue pin drifted from GitHub"
+          body="$(printf '%s\n\n```\n%s\n```\n\nRun: %s\n' \
+            "Scheduled live-parity found drift (exit ${RC:-?}; 2 = could not look, usually a missing CI_ASSURANCE_TOKEN)." \
+            "$(tail -60 /tmp/live-parity.txt 2>/dev/null || echo '(no output captured)')" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number' || true)
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh issue create --title "$title" --label ci --body "$body" || gh issue create --title "$title" --body "$body"
+          fi

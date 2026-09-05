@@ -116,6 +116,19 @@ enum CiSpecCmd {
         #[arg(long)]
         repo: Option<String>,
     },
+    /// Live parity: ci/required-checks.txt == GitHub branch protection, and
+    /// ci/merge-queue.toml == the live merge-queue ruleset. Observation via
+    /// `gh api` (needs a token that can read branch protection); a fetch
+    /// that fails is exit 2, never a pass.
+    LiveParity {
+        #[arg(long)]
+        repo: Option<String>,
+        /// GitHub repository, owner/name.
+        #[arg(long, default_value = "coproduct-opensource/nucleus")]
+        github: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 mod ci_spec;
@@ -136,6 +149,9 @@ fn main() -> Result<()> {
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
             CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
+            CiSpecCmd::LiveParity { repo, github, json } => {
+                ci_spec::live_parity(repo, &github, json)
+            }
         },
     }
 }

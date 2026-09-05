@@ -82,3 +82,78 @@ fn repo_root(repo: Option<String>) -> Result<PathBuf> {
         Ok(std::env::current_dir()?)
     }
 }
+
+/// `ci-spec live-parity`: the ledgers against GitHub. Exit 0 in lockstep,
+/// 1 drift, 2 could not look (no token, API error, partial response).
+pub fn live_parity(repo: Option<String>, github: &str, json: bool) -> Result<()> {
+    let root = repo_root(repo)?;
+    let model = ci_spec::loader::from_repo(&root)?;
+
+    let fetch = |path: &str| -> Result<String, String> {
+        let out = std::process::Command::new("gh")
+            .args(["api", path])
+            .output()
+            .map_err(|e| format!("run gh api {path}: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "gh api {path} failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        String::from_utf8(out.stdout).map_err(|e| e.to_string())
+    };
+
+    let looked =
+        (|| -> Result<(ci_spec::live::LiveProtection, ci_spec::live::LiveQueue), String> {
+            let prot = fetch(&format!("repos/{github}/branches/main/protection"))?;
+            let rs = fetch(&format!(
+                "repos/{github}/rulesets/{}",
+                model.queue.ruleset_id
+            ))?;
+            Ok((
+                ci_spec::live::parse_protection(&prot)?,
+                ci_spec::live::parse_ruleset(&rs, model.queue.ruleset_id)?,
+            ))
+        })();
+
+    let (live, queue) = match looked {
+        Ok(v) => v,
+        Err(e) => {
+            // "Could not look" is exit 2 and a red job — reporting it as a
+            // pass would be the exact vacuity the parity check exists to find.
+            eprintln!("::error::live-parity could not look: {e}");
+            eprintln!(
+                "  (reading branch protection needs a token with repository Administration: \
+                 read — set CI_ASSURANCE_TOKEN; GITHUB_TOKEN cannot)"
+            );
+            std::process::exit(2);
+        }
+    };
+
+    let findings = ci_spec::live::parity(&model, &live, &queue);
+    let report = ci_spec::Report {
+        workflows: model.workflows.len(),
+        jobs: model.workflows.iter().map(|w| w.jobs.len()).sum(),
+        gates: 0,
+        required_contexts: model.ledger.contexts.len(),
+        findings,
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "live-parity: ledger {} contexts, GitHub {} contexts, strict pinned={} live={}",
+            model.ledger.contexts.len(),
+            live.contexts.len(),
+            model.queue.strict,
+            live.strict
+        );
+        print!("{}", report.render());
+    }
+    let code = report.exit_code();
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
