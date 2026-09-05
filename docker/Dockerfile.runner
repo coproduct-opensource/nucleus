@@ -45,8 +45,9 @@ RUN set -eux; \
 # ~/.cargo/bin is shared between pods: the first cohort runs shared them on a
 # host-path mount and one job's `rustup override`, plus a concurrent reinstall
 # of the rustup binary, intermittently broke every other job ("rustup: command
-# not found", wrong toolchain). Only the cargo registry/git caches and the
-# sccache/Mathlib stores are mounted (values.yaml). Everything the workflows
+# not found", wrong toolchain). Only the immutable cargo caches (registry
+# cache + index, git db) and the sccache/Mathlib stores are mounted
+# (values.yaml); registry/src is extracted per pod. Everything the workflows
 # pin is here: 1.96.1 (rust-toolchain.toml), stable, 1.95/1.93 (MSRV and Kani
 # floors), the dylint nightly with rustc-dev, and the musl/wasm targets.
 USER runner
