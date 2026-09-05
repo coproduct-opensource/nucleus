@@ -145,7 +145,14 @@ jobs:
 
       - name: Add Aeneas to PATH
         if: steps.scope.outputs.relevant == 'true'
-        run: echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+        # Self-hosted: the runner image bakes the same release at /opt/aeneas
+        # (docker/Dockerfile.runner AENEAS_RELEASE) — no download, no cache.
+        run: |
+          if [ -x /opt/aeneas/aeneas ] && [ "${{ runner.environment }}" != "github-hosted" ]; then
+            echo "/opt/aeneas" >> "$GITHUB_PATH"
+          else
+            echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Verify tools
         if: steps.scope.outputs.relevant == 'true'
