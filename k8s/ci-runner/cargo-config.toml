@@ -1,0 +1,23 @@
+# Mounted at /home/runner/.cargo/config.toml on every self-hosted runner pod
+# (ConfigMap `runner-cargo-config`, k8s/ci-runner/values.yaml). Cargo merges
+# this with the repository's .cargo/config.toml; nothing in-repo sets
+# build.rustflags or a target-level rustflags for the host, so this applies.
+#
+# lld instead of GNU ld for the host target: measured 2026-09-05 on the CI
+# node, GNU ld reached 2.75-3.4 GB RSS per test binary with full debuginfo
+# and two parallel links OOM-killed 4.5-7 GiB pods (Tests, Doctests,
+# Mutation Testing). The same build with lld + line-tables debuginfo
+# (CARGO_PROFILE_DEV_DEBUG in values.yaml) finished in 6.3 min cold /
+# 3.6 min warm under an 8 GiB limit. lld ships in the runner image.
+[target.aarch64-unknown-linux-gnu]
+# `linker` survives a job-level RUSTFLAGS (which replaces config rustflags);
+# cc-lld is `cc -fuse-ld=lld` from the runner image.
+linker = "cc-lld"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# Dependencies carry no debuginfo at all; workspace crates keep line tables
+# (CARGO_PROFILE_DEV_DEBUG in values.yaml). Each heavy job's per-pod target/
+# measured ~20 GB with line tables everywhere — four concurrent pods filled
+# the node's disk and kubelet evicted the runners for DiskPressure.
+[profile.dev.package."*"]
+debug = false

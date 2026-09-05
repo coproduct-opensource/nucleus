@@ -1,3 +1,10 @@
+# DERIVED from values.yaml by k8s/ci-runner/render-build-values.sh — do not
+# hand-edit. The `nucleus-k3s-build` pool: 3 big runners for the compile-class
+# jobs (see values.yaml for the two-pool rationale).
+#
+#   helm upgrade --install nucleus-k3s-build \
+#     oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+#     --version 0.14.2 -n arc-runners -f k8s/ci-runner/values-build.yaml
 # Helm values for the `nucleus-k3s` runner scale set (gha-runner-scale-set
 # 0.14.2) on the Lima `pci-k3s` VM. The GitHub credential is NOT here: it is
 # the pre-existing `gh-token` secret in the arc-runners namespace.
@@ -11,7 +18,7 @@
 # variable CI_RUNNER sends everything back to hosted runners in one place.
 githubConfigUrl: https://github.com/coproduct-opensource/nucleus
 githubConfigSecret: gh-token
-runnerScaleSetName: nucleus-k3s
+runnerScaleSetName: nucleus-k3s-build
 
 # TWO POOLS on one node (the Lima VM at 12 vCPU / 28 GiB; `limactl edit
 # pci-k3s --cpus 12 --memory 28`, VM stopped):
@@ -32,7 +39,7 @@ runnerScaleSetName: nucleus-k3s
 # CARGO_BUILD_JOBS parallel rustc/ld processes — an unbounded cargo under a
 # 6 GiB limit OOM-killed the linker; Lake needs LEAN_NUM_THREADS capped too.
 minRunners: 0
-maxRunners: 8
+maxRunners: 3
 
 template:
   spec:
@@ -61,7 +68,7 @@ template:
           # Two cargo jobs per runner: memory scales with parallel rustc/ld
           # processes, and the limit below is sized for two.
           - name: CARGO_BUILD_JOBS
-            value: "2"
+            value: "3"
           # Job hooks (k8s/ci-runner/hooks/): per-job sccache hit rate and pod
           # resource peaks in every job log. `kubectl create configmap
           # runner-hooks --from-file=k8s/ci-runner/hooks/` keeps them current.
@@ -71,11 +78,11 @@ template:
             value: /home/runner/hooks/job-completed.sh
         resources:
           requests:
-            cpu: "500m"
-            memory: 1Gi
+            cpu: "2500m"
+            memory: 5Gi
           limits:
-            cpu: "2"
-            memory: 3Gi
+            cpu: "4"
+            memory: 8Gi
         volumeMounts:
           # Only IMMUTABLE caches are shared: the registry's .crate files and
           # index. `registry/src` is extracted per pod — sharing it let one
