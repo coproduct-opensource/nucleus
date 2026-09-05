@@ -55,7 +55,10 @@ env:
 
 jobs:
   aeneas-oidc-spiffe:
-    name: Scoped Aeneas (Rust → Lean 4) + parity tests
+    # Distinct from the IFC pair's context: two twin pairs sharing one job
+    # name produced two same-named check runs on every PR, so either gate's
+    # result could stand in for the other's (CI-invariant inventory, 2026-09-05).
+    name: Scoped Aeneas OIDC→SPIFFE (Rust → Lean 4) + parity tests
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
 

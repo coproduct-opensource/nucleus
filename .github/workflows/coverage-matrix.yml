@@ -51,7 +51,14 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ]; then
             # Unshallowed fetch of the base ref: a shallow base would leave
             # the three-dot merge-base unreachable for `git diff`.
-            git fetch origin "$BASE" || true
+            #
+            # A failed fetch used to be swallowed (`|| true`); the diff below
+            # then failed, which failed THIS job, which reported every
+            # dependent required check (llvm-cov, mutants, proof-ratchet) as
+            # SKIPPED — and GitHub counts a skipped required check as passed.
+            # Let the fetch fail loudly. This job is being added to the
+            # required set so a red here blocks instead of vacating.
+            git fetch origin "$BASE"
             changed="$(git diff --name-only "origin/$BASE...HEAD")"
           else
             # merge_group / push / workflow_dispatch: run everything.
@@ -94,11 +101,18 @@ jobs:
       - name: Install cargo-llvm-cov (baked into the self-hosted image)
         run: command -v cargo-llvm-cov >/dev/null || cargo install cargo-llvm-cov --locked
       - name: Workspace coverage (threshold gate)
+        # `shell: bash` gives `-eo pipefail`. GitHub's default `run` shell is
+        # `bash -e {0}` WITHOUT pipefail, so `cargo llvm-cov ... | tee` reported
+        # TEE's exit status: the --fail-under-lines threshold below could never
+        # red this required check. Found by the CI-invariant inventory
+        # (2026-09-05); the mutants step below had the same shape.
+        shell: bash
         run: |
           cargo llvm-cov --all-features \
             --fail-under-lines 85 \
             --ignore-filename-regex '(tests/|kani\.rs|main\.rs)' 2>&1 | tee /tmp/workspace-cov.txt
       - name: portcullis coverage (security-critical threshold)
+        shell: bash
         run: |
           cargo llvm-cov --all-features -p portcullis \
             --fail-under-lines 87 \
@@ -144,6 +158,9 @@ jobs:
       - name: Install cargo-mutants
         run: cargo install cargo-mutants --locked
       - name: Run mutation tests on security-critical modules
+        # pipefail: the checker step below guards the report's presence, but the
+        # run step itself must not report tee's exit status either.
+        shell: bash
         run: |
           cargo mutants --package portcullis \
             --file crates/portcullis/src/capability.rs \
