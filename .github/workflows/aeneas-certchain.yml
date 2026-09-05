@@ -156,11 +156,17 @@ jobs:
             | sh -s -- -y --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      - uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
+      - name: Lean toolchain + Mathlib cache (hosted: elan + cache action)
+        if: ${{ runner.environment == 'github-hosted' }}
+        uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
         with:
           lean-project-dir: crates/portcullis-core/lean
           build-target: PortcullisCoreCertChain
           cache-key-prefix: lean-certchain
+      - name: Mathlib cache (self-hosted: baked elan, persistent ~/.cache/mathlib)
+        if: ${{ runner.environment != 'github-hosted' }}
+        working-directory: crates/portcullis-core/lean
+        run: lake exe cache get || true
 
       - name: lake build (extracted core + theorem)
         working-directory: crates/portcullis-core/lean
