@@ -85,3 +85,35 @@ jobs:
           else
             gh issue create --title "$title" --label ci --body "$body" || gh issue create --title "$title" --body "$body"
           fi
+
+  # The merge queue's real history, replayed through the model
+  # (ci/lean/CiSpec/Queue.lean via its Rust mirror). A transition the model
+  # rejects is a model bug or a GitHub behaviour the model does not capture;
+  # a window with no enqueue or no merge is UNDECIDED (exit 2), never clean.
+  # Reads PR timelines only, which GITHUB_TOKEN can do.
+  trace-check:
+    name: The merge queue's last day replays through the model
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    if: ${{ github.event_name != 'push' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - name: Replay 24h of merge-queue events through CiSpec.Queue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          rc=0
+          cargo run -q -p xtask -- ci-spec trace-check --since-hours 24 2>&1 | tee /tmp/trace-check.txt || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "::warning::trace-check found too little history to replay (exit 2) — not a pass, not a violation"
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the queue model rejected a transition GitHub performed (exit $rc)"
+            exit 1
+          fi

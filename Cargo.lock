@@ -2102,6 +2102,7 @@ name = "ci-spec"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "proptest",
  "regex",
  "serde",
  "serde_json",

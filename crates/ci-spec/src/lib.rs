@@ -47,10 +47,13 @@
 use serde::Serialize;
 
 pub mod expr;
+pub mod golden;
 pub mod invariants;
 pub mod live;
 pub mod loader;
 pub mod model;
+pub mod queue;
+pub mod trace;
 
 /// How bad a finding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]

@@ -106,6 +106,13 @@ jobs:
         working-directory: ci/lean
         run: LEAN_NUM_THREADS=${{ runner.environment == 'github-hosted' && '4' || '3' }} lake build CiSpec CiSpecBite
 
+      # The golden seal: Golden.lean is generated from the Rust mirror's vectors
+      # (crates/ci-spec/tests/golden/queue_traces.json) and checked by `decide`
+      # in the build above; regenerate-and-diff pins the two implementations.
+      - name: Golden.lean matches its vectors (Rust mirror ↔ Lean model)
+        if: steps.scope.outputs.relevant == 'true'
+        run: scripts/check-ci-spec-golden.sh
+
       - name: Ban sorry / admit / native_decide / sorryAx in the CI model
         if: steps.scope.outputs.relevant == 'true'
         run: |
