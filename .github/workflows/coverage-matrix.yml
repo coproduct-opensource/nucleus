@@ -81,7 +81,7 @@ jobs:
   # Layer 1: LLVM source-based code coverage with threshold enforcement
   llvm-cov:
     name: Code Coverage (llvm-cov)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}

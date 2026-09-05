@@ -33,7 +33,7 @@ permissions:
 jobs:
   ck-policy-aeneas:
     name: charon+aeneas drift + lake build (extracted-core soundness)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: No-op (paths not touched)

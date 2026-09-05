@@ -16,7 +16,7 @@ concurrency:
 jobs:
   check:
     name: Check clippy ceiling
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     steps:
@@ -35,7 +35,7 @@ jobs:
   # on every invocation.
   ratchet-falsifier:
     name: The ratchet REDs when the ceiling is below actual
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     steps:
@@ -66,7 +66,7 @@ jobs:
 
   ratchet-down:
     name: Ratchet ceiling down
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:

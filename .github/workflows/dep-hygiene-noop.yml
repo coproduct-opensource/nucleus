@@ -34,7 +34,7 @@ permissions:
 jobs:
   dep-hygiene:
     name: version ceiling + wasm closure
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: No-op (paths not touched)

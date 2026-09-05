@@ -195,7 +195,7 @@ jobs:
   #     at the *who* dimension).
   declassify-sink-scope-enforced:
     name: Declassify sink scope is enforced
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -297,7 +297,7 @@ jobs:
   # (pod_api ownership tests); this covers the lineage it depends on, end to end.
   cross-pod-lineage:
     name: The node records pod lineage on the live path (C2)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -326,7 +326,7 @@ jobs:
   # a job that might have written into the tree.
   gates-can-fail:
     name: Gates must fail on their own subject
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     # 30 min (was 10): check-declassify-sink-scope-enforced.sh runs cargo tests,
     # and the meta-gate runs each probed gate twice (perturbed + restored), so
     # this job now compiles portcullis. The Rust cache below amortizes it.
@@ -360,7 +360,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -391,7 +391,7 @@ jobs:
   # reasoning lives. They must fail the build.
   doctests:
     name: Doctests
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -418,7 +418,7 @@ jobs:
 
   test:
     name: Tests
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -476,7 +476,7 @@ jobs:
 
   a2a-example:
     name: A2A example server (examples/a2a-server)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     # examples/a2a-server is its own workspace (root Cargo.toml `exclude`), so
     # the root-level fmt/clippy/test jobs never touch it. This job is NOT
@@ -503,7 +503,7 @@ jobs:
 
   owasp-gauntlet:
     name: OWASP LLM Security Gauntlet
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -517,7 +517,7 @@ jobs:
 
   policy-kernel-parity:
     name: Policy-kernel model↔Rust parity (K4)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     # The model↔Rust contract, as a FIRST-CLASS named check. The K4 proof
     # `governance_monotone_iff` (proven axiom-clean in the Portcullis-Core Proven

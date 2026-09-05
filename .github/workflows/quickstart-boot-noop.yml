@@ -53,7 +53,7 @@ permissions:
 jobs:
   boot-a-real-pod:
     name: a real nucleus pod boots and is enforced (x86_64)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: No-op (boot paths not touched, or in the merge queue)

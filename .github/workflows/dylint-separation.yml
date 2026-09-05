@@ -74,7 +74,7 @@ concurrency:
 jobs:
   cb4a-separation:
     name: cb4a_separation (enforced at zero)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     env:
       # dylint drives rustc through its own driver; sccache cannot wrap it
       # ("could not compile proc-macro2 (build script): No such file or
@@ -155,7 +155,7 @@ jobs:
 
   mediated:
     name: mediated (enforced at zero over the sealed effect boundary)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     env:
       # dylint drives rustc through its own driver; sccache cannot wrap it
       # ("could not compile proc-macro2 (build script): No such file or
@@ -209,7 +209,7 @@ jobs:
 
   identity-isolation:
     name: workload_identity_isolation (enforced at zero)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     env:
       # dylint drives rustc through its own driver; sccache cannot wrap it
       # ("could not compile proc-macro2 (build script): No such file or
@@ -271,7 +271,7 @@ jobs:
 
   unpoliced-http-client:
     name: unpoliced_http_client (guest egress)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     env:
       # dylint drives rustc through its own driver; sccache cannot wrap it
       # ("could not compile proc-macro2 (build script): No such file or
