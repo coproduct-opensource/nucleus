@@ -150,7 +150,12 @@ jobs:
         run: |
           set -o pipefail
           rc=0
-          cargo mutants --package portcullis \
+          # --all-features on cargo-mutants ITSELF: args after `--` reach only
+          # `cargo test`, so the baseline BUILD ran without features and, under
+          # RUSTFLAGS=-D warnings, died on feature-gated imports in
+          # tests/adversarial.rs — the "cargo build failed in an unmutated
+          # tree" every run showed once the gate stopped looking away.
+          cargo mutants --package portcullis --all-features \
             --file crates/portcullis/src/capability.rs \
             --file crates/portcullis/src/guard.rs \
             --file crates/portcullis/src/lattice.rs \
@@ -158,8 +163,7 @@ jobs:
             --file crates/portcullis/src/delegation.rs \
             --file crates/portcullis/src/trust.rs \
             --timeout 120 \
-            --output mutants-report \
-            -- --all-features 2>&1 | tee /tmp/mutants.txt || rc=$?
+            --output mutants-report 2>&1 | tee /tmp/mutants.txt || rc=$?
           echo "cargo mutants exit: $rc"
       - name: The gate reads the machine report, not the console (#2562)
         if: always()
