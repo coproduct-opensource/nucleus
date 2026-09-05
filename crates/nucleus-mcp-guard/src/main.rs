@@ -41,6 +41,13 @@ enum Cmd {
         /// the attack is to be benign at approval time and mutate later.
         #[arg(long, value_name = "PATH")]
         pin_file: Option<PathBuf>,
+        /// Project directory with `.nucleus/manifests/*.toml` (signed tool
+        /// manifests, each pinning a descriptor `schema_hash`) and
+        /// `.nucleus/trust/*.pub` (publisher keys). Every served tool must match
+        /// a signed manifest or it is refused as MCP_TOOL_UNVERIFIED (#1637).
+        /// Startup fails if the trust store has no keys.
+        #[arg(long, value_name = "DIR")]
+        manifests: Option<PathBuf>,
         #[arg(last = true, required = true, num_args = 1..)]
         server: Vec<String>,
     },
@@ -102,6 +109,7 @@ async fn main() -> Result<()> {
             observe,
             enforce: _,
             pin_file,
+            manifests,
             server,
         } => {
             let (cmd, args) = server.split_first().context("missing MCP server command")?;
@@ -109,6 +117,7 @@ async fn main() -> Result<()> {
             let config = GuardConfig {
                 mode: mode_for_flag(observe),
                 pin_file,
+                manifests,
             };
             let report = proxy::run_stdio_proxy_with(monitor, cmd, args, config).await?;
             (report, true) // stdout is the MCP channel — report must go to stderr

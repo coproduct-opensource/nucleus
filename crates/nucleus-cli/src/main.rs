@@ -47,6 +47,7 @@ mod shell;
 mod start;
 mod stop;
 mod token;
+mod trust;
 // Completeness by 2-safety: the observation function, the canonicaliser and the
 // comparison. Reached from `nucleus two-safety` via `twosafety_boot`, which is
 // the implementation of its `Boot` trait that boots real pods.
@@ -77,6 +78,9 @@ struct Cli {
 enum Commands {
     /// Audit agent configurations for security risks (Tier 0)
     Audit(audit::AuditArgs),
+
+    /// Manage the trusted publisher keys for signed MCP tool manifests
+    Trust(trust::TrustArgs),
 
     /// Secure your MCP servers — audit, policy, enforce
     Guard(guard::GuardArgs),
@@ -204,6 +208,7 @@ async fn main() -> Result<()> {
         Commands::Observe(args) => observe::execute(args),
         Commands::Replay(args) => replay::execute(args),
         Commands::Token(args) => token::execute(args),
+        Commands::Trust(args) => trust::execute(args),
         Commands::Identity(args) => identity::execute(args),
         Commands::Node(args) => node::execute(args).await,
         Commands::Lineage(args) => lineage::execute(args),

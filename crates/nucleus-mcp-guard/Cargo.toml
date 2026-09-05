@@ -15,9 +15,11 @@ path = "src/main.rs"
 [dependencies]
 # The engine: the model-level lethal-trifecta IFC decision (FlowDeclaration → IfcVerdict).
 nucleus-ifc = { path = "../nucleus-ifc", features = ["decision"] }
-# Tool-schema pinning (rug-pull detection). `default-features = false` keeps
-# cedar/crypto out of the guard: `tool_schema` needs only sha2 + BTreeMap.
-portcullis = { path = "../portcullis", default-features = false }
+# Tool-schema pinning (rug-pull detection) and, since #1637, signed-manifest
+# verification: `spec` loads `.nucleus/manifests/*.toml`, `crypto` verifies
+# their Ed25519 signatures under `.nucleus/trust/*.pub`. `default-features =
+# false` still keeps cedar out of the guard.
+portcullis = { path = "../portcullis", default-features = false, features = ["spec", "crypto"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -29,3 +31,6 @@ tokio = { workspace = true, features = [
     "io-std",
     "process",
 ] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
