@@ -438,7 +438,7 @@ UNCOVERED_CEILING=2
 #   check-mediation-dylint.sh — needs the pinned dylint nightly + cargo-dylint
 #     (this job runs only stable Rust). Its `--self-test` appends an unmediated
 #     raw-I/O sink to the sealed effect home and asserts the finding count goes
-#     non-zero; it runs in the `mediated` job of dylint-separation.yml, BEFORE the
+#     non-zero; it runs in the `dylint` job of dylint-separation.yml, BEFORE the
 #     enforcing run, every CI invocation.
 #   check-egress-probe.sh — is itself a falsifier, not a watcher of an external
 #     subject: it reconstructs the net::apply_default_deny fence in a netns and
@@ -464,7 +464,7 @@ UNCOVERED_CEILING=2
 #     'adversary-probe-falsifier' job of adversary-probe.yml; the perturbation is
 #     internal, so there is no external subject for this script to break.
 SELF_FALSIFIED=(
-    "check-mediation-dylint.sh    --self-test in the 'mediated' job (dylint-separation.yml)"
+    "check-mediation-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
     "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)"
     "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)"
     "check-clippy-ratchet.sh     ceiling-below-actual in the 'ratchet-falsifier' job (clippy-ratchet.yml)"
