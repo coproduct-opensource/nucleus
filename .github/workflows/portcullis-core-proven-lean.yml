@@ -141,6 +141,7 @@ jobs:
             DelegationProofs \
             DerivationProofs \
             SessionCeilingProofs \
+            GuestDeviceSurfaceProofs \
             GkatSyntaxProofs \
             GkatGuardedStringProofs \
             GkatInexpressibleProofs \
@@ -299,6 +300,7 @@ jobs:
           import FlowProofs
           import DeclassifyProofs
           import SessionCeilingProofs
+          import GuestDeviceSurfaceProofs
           import ReceiptChainProofs
           import DecidePureProofs
           import CompartmentProofs
@@ -329,6 +331,10 @@ jobs:
           import DerivationCascadeAdmissible
           import CertChainMonotoneExtracted
           #print axioms FlowProofs.authority_confinement_left
+          #print axioms GuestDeviceSurface.Cmdline.enforce_idem
+          #print axioms GuestDeviceSurface.Cmdline.pciOn_not_mem_enforce
+          #print axioms GuestDeviceSurface.Cmdline.enforce_count_pciOff
+          #print axioms GuestDeviceSurface.devices_maximal
           #print axioms CertChainMonotoneExtracted.chain_attenuates_monotone
           #print axioms GkatSyntax.salomaa_solutions_agree
           #print axioms GkatGS.sound
