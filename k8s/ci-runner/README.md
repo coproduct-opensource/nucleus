@@ -15,6 +15,8 @@ back to hosted runners.
 | Scale-set values | `values.yaml` (no credential; references the `gh-token` secret) |
 | Persistent mounts | `/var/lib/nucleus-ci/cargo/registry/{cache,index}` and `/var/lib/nucleus-ci/cache` on the node, uid 1001 (immutable caches only; `registry/src` and the whole cargo git db are per pod) |
 | Warm-up | `warm.sh` (installs rustup 1.96.1 + elan/Lean v4.30.0-rc2 into the mounts) |
+| Job hooks | `hooks/job-started.sh`, `hooks/job-completed.sh` (ConfigMap `runner-hooks`; sccache hit rate and cgroup peaks per job) |
+| Timing report | `cargo xtask ci-timings --sha <commit>` (per-label run/queue distributions, critical path, longest steps) |
 
 Toolchains are in the image and nothing mutable under `~/.rustup` or
 `~/.cargo/bin` is shared: the first cohort runs shared them and one job's
@@ -37,7 +39,12 @@ podman save localhost/nucleus-ci-runner:0.2.0 | sudo k3s ctr -n k8s.io images im
 # 2. persistent mounts + toolchains
 sudo bash k8s/ci-runner/warm.sh
 
-# 3. the scale set (controller `arc` in arc-systems is already installed)
+# 3. the job hooks (per-job sccache hit rate + pod resource peaks in every job log)
+sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl create configmap runner-hooks \
+  -n arc-runners --from-file=k8s/ci-runner/hooks/ --dry-run=client -o yaml \
+  | sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl apply -f -
+
+# 4. the scale set (controller `arc` in arc-systems is already installed)
 sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install nucleus-k3s \
   oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
   --version 0.14.2 -n arc-runners -f k8s/ci-runner/values.yaml

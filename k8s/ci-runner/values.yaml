@@ -46,6 +46,13 @@ template:
           # processes, and the limit below is sized for two.
           - name: CARGO_BUILD_JOBS
             value: "2"
+          # Job hooks (k8s/ci-runner/hooks/): per-job sccache hit rate and pod
+          # resource peaks in every job log. `kubectl create configmap
+          # runner-hooks --from-file=k8s/ci-runner/hooks/` keeps them current.
+          - name: ACTIONS_RUNNER_HOOK_JOB_STARTED
+            value: /home/runner/hooks/job-started.sh
+          - name: ACTIONS_RUNNER_HOOK_JOB_COMPLETED
+            value: /home/runner/hooks/job-completed.sh
         resources:
           requests:
             cpu: "1500m"
@@ -67,6 +74,9 @@ template:
             mountPath: /home/runner/.cargo/registry/index
           - name: cache
             mountPath: /home/runner/.cache
+          - name: runner-hooks
+            mountPath: /home/runner/hooks
+            readOnly: true
     volumes:
       # Host-path directories on the k3s node, owned by uid 1001 (the image's
       # `runner` user): created by k8s/ci-runner/README.md's setup step.
@@ -82,3 +92,7 @@ template:
         hostPath:
           path: /var/lib/nucleus-ci/cache
           type: Directory
+      - name: runner-hooks
+        configMap:
+          name: runner-hooks
+          defaultMode: 0755
