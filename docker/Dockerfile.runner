@@ -91,7 +91,7 @@ RUN set -eux; \
     cargo install cargo-zigbuild --version ${CARGO_ZIGBUILD_VERSION} --locked; \
     rm -rf /home/runner/.cargo/registry /home/runner/.cargo/git /home/runner/.cargo/.package-cache; \
     mkdir -p /home/runner/.cargo/registry /home/runner/.cargo/git; \
-    cargo dylint --version; cargo audit --version; cargo llvm-cov --version; cargo hack --version; cargo nextest --version; cargo deny --version; cargo zigbuild --version
+    cargo dylint --version; cargo audit --version; cargo llvm-cov --version; cargo hack --version; cargo nextest --version; cargo deny --version; cargo-zigbuild --version
 
 
 # ── Pure-arm64 CI (2026-09-05): what used to keep lanes on hosted x86 ─────────
