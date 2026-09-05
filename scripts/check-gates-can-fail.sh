@@ -205,6 +205,14 @@ lean_lib «GateOfGatesUnbuiltProbe» where
 LEAN
 }
 
+perturb_kani_harness_deleted() {
+    # One `#[kani::proof]` attribute removed: the harness becomes an ordinary
+    # function and the census drops by one. The ratchet is exact (#2561), so
+    # this must be red; a floor below the true count would let it pass.
+    local tmp; tmp="$(mktemp)"
+    awk 'BEGIN{done=0} /#\[kani::proof\]/ && !done {done=1; next} {print}' "$1" > "$tmp"; cat "$tmp" > "$1"; rm -f "$tmp"
+}
+
 perturb_test_helpers_in_prod() {
     # `test-helpers` reachable from a SHIPPING build, which is the gate's whole
     # subject: with it on, `discharge::test_helpers::bundle_for` mints a
@@ -372,6 +380,8 @@ probe check-test-helpers-not-in-production.sh "" crates/nucleus-tool-proxy/Cargo
       "test-helpers enabled on a non-dev edge"  perturb_test_helpers_in_prod
 probe check-lean-libs-built.sh "" crates/portcullis-core/lean/lakefile.lean \
       "a lean_lib nothing builds"               perturb_lean_lib_unbuilt
+probe check-kani-proof-count.sh "--strict" crates/portcullis/src/kani.rs \
+      "a deleted Kani harness"                  perturb_kani_harness_deleted
 probe check-declassify-sink-scope-enforced.sh "" crates/portcullis/src/flow_graph.rs \
       "the applied sink mask widened to admit every sink" \
       perturb_declassify_unscope
