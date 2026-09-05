@@ -17,11 +17,17 @@
 #     `Lean.ofReduceBool` on older toolchains) is tolerated ONLY for
 #     declarations named, one per line, in <project>/.axiom-audit-exceptions —
 #     per theorem, never per workflow, so nothing is laundered;
-#   * `sorryAx` and any home-rolled axiom fail, always;
+#   * an `axiom <name>` line in the exceptions file names an EXTERNAL-MODEL
+#     axiom — one Aeneas emits in a generated FunsExternal.lean for a Rust
+#     function it cannot translate (today: `Iterator::fold` on slices) —
+#     tolerated for every declaration, because it is the model of an
+#     external, not a proof hole; each is disclosed by name with its reason;
+#   * `sorryAx` and any other home-rolled axiom fail, always;
 #   * the audit must have covered at least as many declarations as the
 #     audited roots' sources declare with `theorem`/`lemma` (a positive-count
 #     guard: an audit that silently covered nothing cannot pass);
-#   * `axiom <name> :` declarations in the project's own sources are ratcheted against
+#   * `axiom <name>` declarations in the project's own sources (generated
+#     FunsExternal.lean included) are ratcheted against
 #     <project>/.axiom-ratchet (absent = 0).
 #
 # Usage:
@@ -56,11 +62,15 @@ lake build axiom-audit >/dev/null 2>&1 || { echo "::error::lake build axiom-audi
 # $1 = report path, $2 = exceptions file (may be absent).
 apply_policy() {
     local report=$1 exc=$2
-    local excs='[]'
+    local excs='[]' axexcs='[]'
     if [ -f "$exc" ]; then
-        excs=$(grep -vE '^\s*(#|$)' "$exc" | jq -R . | jq -s .)
+        excs=$(grep -vE '^[[:space:]]*(#|$)' "$exc" | grep -vE '^axiom[[:space:]]' | jq -R . | jq -s .)
+        # `axiom <name>` lines: external-model axioms, tolerated for every
+        # declaration that depends on them (see the header). POSIX classes:
+        # BSD sed has no `\s`.
+        axexcs=$({ grep -E '^axiom[[:space:]]' "$exc" || true; } | sed -E 's/^axiom[[:space:]]+//; s/[[:space:]].*$//' | jq -R . | jq -s .)
     fi
-    jq -r --argjson allowed "$ALLOWED" --argjson excs "$excs" '
+    jq -r --argjson allowed "$ALLOWED" --argjson excs "$excs" --argjson axexcs "$axexcs" '
       def native_of($d): ($d + "._native.native_decide.ax_");
       def owner($ax): ($ax | capture("^(?<o>.*)\\._native\\.native_decide\\.ax_") | .o) // null;
       # a declaration is fine when every non-allowed axiom it uses is the
@@ -71,6 +81,7 @@ apply_policy() {
         ($axs | map(select(. as $a | ($allowed | index($a)) | not)) | all(
           (. == "Lean.ofReduceBool" and ($excs | index($decl)) != null)
           or (owner(.) as $o | $o != null and (($excs | index($o)) != null))
+          or (. as $a | ($axexcs | index($a)) != null)
         ));
       .violations[] | select(tolerated(.decl; .axioms) | not) | "  \(.decl) depends on \(.axioms | join(", "))"
     ' "$report"
@@ -178,9 +189,15 @@ else
 fi
 
 # `axiom` ratchet over the project's own sources.
-# `axiom <name> :` / `axiom <name> (` — a real declaration, not the word in a
-# doc comment (BudgetConservation.lean has "axiom; edges after used theorem").
-ax=$({ grep -rhoE "^\s*(private |protected )?axiom\s+[A-Za-z_][A-Za-z0-9_.']*\s*[:(]" --include='*.lean' --exclude-dir=.lake . 2>/dev/null || true; } | wc -l | tr -d ' ')
+# `axiom <name> :` / `axiom <name> (` / `axiom <name>` at end of line (Aeneas
+# emits the binders on the next line in generated FunsExternal.lean) — a real
+# declaration, not the word in a doc comment (BudgetConservation.lean has
+# "axiom; edges after used theorem").
+# Aeneas' `*_Template.lean` files are scaffolding no lean_lib compiles (the
+# lakefile never names them), so their placeholder axioms are not declarations
+# in any audited environment; a name must not end in `.` so a doc comment's
+# "axiom system." is not counted.
+ax=$({ grep -rhoE "^\s*(private |protected )?axiom\s+[A-Za-z_][A-Za-z0-9_.']*[A-Za-z0-9_']\s*([:(]|$)" --include='*.lean' --exclude='*_Template.lean' --exclude-dir=.lake . 2>/dev/null || true; } | wc -l | tr -d ' ')
 ceiling=0; [ -f "$RATCHET_FILE" ] && ceiling=$(tr -d ' \n' < "$RATCHET_FILE")
 if [ "$ax" -gt "$ceiling" ]; then
     echo "::error::$ax top-level 'axiom' declaration(s) in $PROJECT (ceiling $ceiling in $RATCHET_FILE)"; fail=1
