@@ -4,8 +4,15 @@ on:
   push:
     branches: ["main"]
   pull_request:
+    # ready_for_review: llvm-cov and mutants skip drafts, so a draft marked
+    # ready must trigger a run or it never gets these checks.
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   workflow_dispatch:
+  schedule:
+    # Nightly FULL mutation run. Pull requests mutate only their diff (below);
+    # this is where every mutant of the six modules is tried again.
+    - cron: "23 4 * * *"
 
 concurrency:
   # Supersede a PR's older in-flight runs; NEVER cancel anything else.
@@ -84,7 +91,7 @@ jobs:
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     needs: changed-crates
-    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
+    if: ${{ (needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '') && github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -138,16 +145,46 @@ jobs:
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     needs: changed-crates
-    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
+    if: ${{ (needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '') && github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install cargo-mutants (baked into the self-hosted image when present)
         run: command -v cargo-mutants >/dev/null || cargo install cargo-mutants --locked
+      # A full run of the six modules is ~30 min of a gate runner and ran on
+      # every rebase of every PR. On pull_request only the mutants overlapping
+      # the PR's diff are tried (`--in-diff`, cargo-mutants' own incremental
+      # mode); a PR that touches none of the six files has nothing to mutate
+      # and the gate passes as "no mutants in diff". merge_group, push, the
+      # nightly schedule and workflow_dispatch run everything.
+      - name: Scope to the diff on pull requests
+        id: mutscope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          run=true; in_diff=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch -q origin "$BASE"
+            git diff "origin/$BASE...HEAD" > git.diff
+            if grep -qE '^\+\+\+ b/crates/portcullis/src/(capability|guard|lattice|certificate|delegation|trust)\.rs$' git.diff; then
+              in_diff="--in-diff git.diff"
+            else
+              run=false
+            fi
+          fi
+          { echo "run=$run"; echo "in_diff=$in_diff"; } >> "$GITHUB_OUTPUT"
+          echo "mutants: run=$run ${in_diff:+(diff-scoped)}"
       - name: Run mutation tests on security-critical modules
+        if: ${{ steps.mutscope.outputs.run == 'true' }}
         shell: bash
+        env:
+          IN_DIFF: ${{ steps.mutscope.outputs.in_diff }}
         # pipefail so the tool's exit status is the step's (not tee's); the
         # run is allowed to fail here so the report step below can say WHY.
         run: |
@@ -158,7 +195,9 @@ jobs:
           # RUSTFLAGS=-D warnings, died on feature-gated imports in
           # tests/adversarial.rs — the "cargo build failed in an unmutated
           # tree" every run showed once the gate stopped looking away.
-          cargo mutants --package portcullis --all-features \
+          # IN_DIFF is "--in-diff git.diff" or empty: a deliberate word-split.
+          # shellcheck disable=SC2086
+          cargo mutants --package portcullis --all-features $IN_DIFF \
             --file crates/portcullis/src/capability.rs \
             --file crates/portcullis/src/guard.rs \
             --file crates/portcullis/src/lattice.rs \
@@ -169,7 +208,7 @@ jobs:
             --output mutants-report 2>&1 | tee /tmp/mutants.txt || rc=$?
           echo "cargo mutants exit: $rc"
       - name: The gate reads the machine report, not the console (#2562)
-        if: always()
+        if: ${{ always() && steps.mutscope.outputs.run == 'true' }}
         shell: bash
         run: |
           # `Mutation Testing` passed runs whose log said "cargo build failed in
@@ -190,12 +229,18 @@ jobs:
       - name: Mutation summary
         if: always()
         shell: bash
+        env:
+          RUN: ${{ steps.mutscope.outputs.run }}
+          IN_DIFF: ${{ steps.mutscope.outputs.in_diff }}
         run: |
           echo "## Mutation Testing Report" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Modules tested:** capability, guard, lattice, certificate, delegation, trust" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [ -s mutants-report/mutants.out/outcomes.json ]; then
+          if [ "$RUN" != "true" ]; then
+            echo "no mutants in this pull request's diff (none of the six modules changed); the nightly schedule runs them all" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -s mutants-report/mutants.out/outcomes.json ]; then
+            echo "**Scope:** ${IN_DIFF:-full}" >> "$GITHUB_STEP_SUMMARY"
             jq -r '"- **tested:** \((.caught//0)+(.missed//0)+(.timeout//0)+(.unviable//0)) / \(.total_mutants//0)\n- **caught:** \(.caught//0)\n- **survived:** \(.missed//0)\n- **timeout:** \(.timeout//0)\n- **unviable:** \(.unviable//0)"' mutants-report/mutants.out/outcomes.json >> "$GITHUB_STEP_SUMMARY"
           else
             echo "no outcomes.json — the run did not produce a report" >> "$GITHUB_STEP_SUMMARY"
