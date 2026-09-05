@@ -24,7 +24,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential clang lld llvm pkg-config cmake \
         libssl-dev protobuf-compiler musl-tools e2fsprogs \
-        git zstd xz-utils python3 ca-certificates \
+        git zstd xz-utils python3 python-is-python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # sccache: the cross-job compile cache (RUSTC_WRAPPER=sccache, store on the
