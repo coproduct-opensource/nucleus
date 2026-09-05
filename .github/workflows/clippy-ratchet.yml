@@ -132,7 +132,12 @@ jobs:
           git checkout -b "$BRANCH"
           git add "$RATCHET_FILE"
           git commit -m "chore(clippy-ratchet): ceiling $CEILING -> $NEW (actual $ACTUAL)"
-          git push -u origin "$BRANCH"
+          # Force: the branch is bot-owned and single-commit. When an earlier
+          # run pushed it but never got its PR open (or the PR was closed), the
+          # branch outlives the PR and a plain push is rejected with "fetch
+          # first" on EVERY later push to main — which is how this job was red
+          # for a full day with four orphaned chore/clippy-ratchet-* branches.
+          git push -f -u origin "$BRANCH"
 
           gh pr create \
             --base main --head "$BRANCH" \
