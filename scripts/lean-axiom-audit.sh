@@ -19,8 +19,8 @@
 #     per theorem, never per workflow, so nothing is laundered;
 #   * `sorryAx` and any home-rolled axiom fail, always;
 #   * the audit must have covered at least as many declarations as the
-#     project's sources declare with `theorem`/`lemma` (a positive-count guard:
-#     an audit that silently covered nothing cannot pass);
+#     audited roots' sources declare with `theorem`/`lemma` (a positive-count
+#     guard: an audit that silently covered nothing cannot pass);
 #   * `axiom <name> :` declarations in the project's own sources are ratcheted against
 #     <project>/.axiom-ratchet (absent = 0).
 #
@@ -76,10 +76,19 @@ apply_policy() {
     ' "$report"
 }
 
-# Count the source-level theorem/lemma declarations under the project (its own
-# sources, not .lake). A lower bound the audit must meet.
+# Count the source-level theorem/lemma declarations that belong to the audited
+# roots: <Root>.lean, <Root>/**, and any generated*/<Root>/** (Aeneas
+# extractions). A project holds research-tier files outside its proven roots,
+# so the whole tree would over-count; the audited set is what must be covered.
 source_theorem_count() {
-    { grep -rhoE '^\s*(private |protected |noncomputable )*(theorem|lemma)\s' --include='*.lean' --exclude-dir=.lake . 2>/dev/null || true; } | wc -l | tr -d ' '
+    local files=() r
+    for r in "$@"; do
+        [ -f "$r.lean" ] && files+=("$r.lean")
+        [ -d "$r" ] && while IFS= read -r f; do files+=("$f"); done < <(find "$r" -name '*.lean' -not -path '*/.lake/*')
+        for g in generated*/"$r"; do [ -d "$g" ] && while IFS= read -r f; do files+=("$f"); done < <(find "$g" -name '*.lean'); done
+    done
+    [ ${#files[@]} -gt 0 ] || { echo 0; return; }
+    { grep -hoE '^\s*(private |protected |noncomputable )*(theorem|lemma)\s' "${files[@]}" 2>/dev/null || true; } | wc -l | tr -d ' '
 }
 
 self_test() {
@@ -138,7 +147,7 @@ for root in "${ROOTS[@]}"; do
 done
 
 # Positive-count guard against the sources.
-src=$(source_theorem_count)
+src=$(source_theorem_count "${ROOTS[@]}")
 if [ "$total_audited" -lt "$src" ]; then
     echo "::error::audited $total_audited declaration(s) but the sources declare $src theorem/lemma(s) — a root is missing from the audit"
     fail=1
