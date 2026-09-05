@@ -351,14 +351,22 @@ jobs:
       # `--lib --bins --tests` EXCLUDES doctests (measured 82% of the wall clock
       # at this size: every doc block links the whole crate); they are the next
       # step so a doctest red is legible on its own context.
-      - name: cargo test (lib, bins, tests)
+      # nextest: one process per test with cross-binary scheduling, 2–3× the
+      # wall clock of `cargo test` on a workspace this size (nexte.st
+      # benchmarks); baked into the self-hosted image, installed on hosted.
+      # Doctests are not nextest's — they stay on `cargo test --doc` below.
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        if: ${{ runner.environment == 'github-hosted' }}
+        with:
+          tool: cargo-nextest
+      - name: cargo nextest run (lib, bins, tests)
         id: tests
         continue-on-error: true
         env:
           PK: ${{ steps.affected.outputs.pk }}
         run: |
           read -ra PK_ARR <<< "$PK"
-          cargo test --all-features --lib --bins --tests "${PK_ARR[@]}"
+          cargo nextest run --all-features --lib --bins --tests --no-fail-fast "${PK_ARR[@]}"
       # Node tests run the WASM bindings against the cross-language golden seal
       # and the accept/reject smoke fixtures; the Python SDK is its own
       # workspace (the root cargo test never reaches it) and runs the shared
