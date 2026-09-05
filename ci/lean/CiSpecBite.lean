@@ -91,3 +91,43 @@ theorem cancelling_the_head_ejects_it :
   decide
 
 end CiSpecBite
+
+namespace CiSpecBite
+
+open CiSpec
+
+-- ── The 2026-09-04 stall, in minutes ─────────────────────────────────────
+
+/-- One merge group's required jobs, in build-pool minutes, from the OTel
+    readout of 2026-09-05 (Mutation Testing, the clippy ceiling, llvm-cov,
+    cargo hack, Tests, the Lean builds, the small gates). Rounded. -/
+def groupJobs : List Nat := [45, 30, 28, 25, 23, 20, 15, 15, 10, 10, 5, 5]
+
+/-- **Bite of T7 (the budget).** With four build runners and the queue's
+    60-minute check timeout of 2026-09-04, T7's hypothesis is FALSE — the
+    group's work plus three times its longest job exceeds four hours of
+    budget — greedy scheduling consumes the ENTIRE 60 minutes with the pool
+    to itself (so any queue wait at all ejects), and with 50 minutes of
+    pull-request runs already on each runner it overruns outright. The
+    ejections were not bad luck; the budget did not fit the work. -/
+theorem budget_60_did_not_fit :
+    ¬ (groupJobs.sum + 3 * 45 ≤ 4 * 60) ∧
+    60 ≤ makespan (greedy 4 groupJobs) ∧
+    60 < makespan (greedyFrom [50, 50, 50, 50] groupJobs) := by
+  decide
+
+/-- The repair (ruleset 22351600, ci/merge-queue.toml): a 360-minute budget.
+    T7's hypothesis holds, and greedy finishes with room to spare. -/
+theorem budget_360_fits :
+    groupJobs.sum + 3 * 45 ≤ 4 * 360 ∧ makespan (greedy 4 groupJobs) ≤ 360 := by
+  decide
+
+/-- **Bite of T7 (competing runs).** Pull-request runs already occupying
+    the pool are non-zero initial loads: with 50 minutes on each runner the
+    same group finishes 50 minutes later. "Cancel every competing run" is
+    what returns the initial loads to zero. -/
+theorem competing_runs_delay_the_group :
+    makespan (greedy 4 groupJobs) + 50 ≤ makespan (greedyFrom [50, 50, 50, 50] groupJobs) := by
+  decide
+
+end CiSpecBite
