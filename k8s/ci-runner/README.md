@@ -13,7 +13,7 @@ back to hosted runners.
 |---|---|
 | Runner image | `docker/Dockerfile.runner` (OS deps, sccache, just, and every pinned Rust toolchain baked in per runner user) |
 | Scale-set values | `values.yaml` (no credential; references the `gh-token` secret) |
-| Persistent mounts | `/var/lib/nucleus-ci/cargo/registry/{cache,index}`, `/var/lib/nucleus-ci/cargo/git/db` and `/var/lib/nucleus-ci/cache` on the node, uid 1001 (immutable caches only; `registry/src` and `git/checkouts` are per pod) |
+| Persistent mounts | `/var/lib/nucleus-ci/cargo/registry/{cache,index}` and `/var/lib/nucleus-ci/cache` on the node, uid 1001 (immutable caches only; `registry/src` and the whole cargo git db are per pod) |
 | Warm-up | `warm.sh` (installs rustup 1.96.1 + elan/Lean v4.30.0-rc2 into the mounts) |
 
 Toolchains are in the image and nothing mutable under `~/.rustup` or

@@ -54,16 +54,17 @@ template:
             memory: 4500Mi
         volumeMounts:
           # Only IMMUTABLE caches are shared: the registry's .crate files and
-          # index, and cargo's bare git db. `registry/src` and `git/checkouts`
-          # are extracted per pod — sharing them let one job's re-extraction
-          # yank a source tree out from under another job's sccache hash
-          # ("Failed to open file for hashing: …/registry/src/…/host.rs").
+          # index. `registry/src` is extracted per pod — sharing it let one
+          # job's re-extraction yank a source tree out from under another
+          # job's sccache hash ("Failed to open file for hashing"). Cargo's
+          # git db is per pod too: four dylint jobs cloning rust-clippy into
+          # one shared db at once failed with "failed to clone into
+          # …/git/db/rust-clippy-…: no error"; a clone is seconds on this
+          # downlink, a shared-db race is a red job.
           - name: cargo-registry-cache
             mountPath: /home/runner/.cargo/registry/cache
           - name: cargo-registry-index
             mountPath: /home/runner/.cargo/registry/index
-          - name: cargo-git-db
-            mountPath: /home/runner/.cargo/git/db
           - name: cache
             mountPath: /home/runner/.cache
     volumes:
@@ -76,10 +77,6 @@ template:
       - name: cargo-registry-index
         hostPath:
           path: /var/lib/nucleus-ci/cargo/registry/index
-          type: DirectoryOrCreate
-      - name: cargo-git-db
-        hostPath:
-          path: /var/lib/nucleus-ci/cargo/git/db
           type: DirectoryOrCreate
       - name: cache
         hostPath:
