@@ -10,7 +10,7 @@
 # k8s/ci-runner/warm.sh ahead of time.
 #
 # Build for the node's own architecture (arm64 today):
-#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.4 .
+#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.5 .
 # then import into k3s's containerd (k8s/ci-runner/README.md).
 FROM ghcr.io/actions/actions-runner:2.337.0
 
@@ -166,3 +166,17 @@ RUN set -eux; \
     printf '#!/bin/sh\nexec cc -fuse-ld=lld "$@"\n' > /usr/local/bin/cc-lld; chmod 0755 /usr/local/bin/cc-lld; \
     ls /usr/lib/aarch64-linux-gnu/libpython3*.so >/dev/null; cc-lld --version | head -1
 USER runner
+
+# bc — the Aeneas lanes' axiom-audit script does arithmetic with it.
+# leantar — the aarch64 Lean release tarball ships an x86-64 `leantar`
+# (Mathlib's `lake exe cache get` then dies with a shell "Syntax error");
+# replace it with the aarch64 build from leangz.
+ARG LEANTAR_VERSION=v0.1.20
+USER root
+RUN set -eux; apt-get update; apt-get install -y --no-install-recommends bc; rm -rf /var/lib/apt/lists/*
+USER runner
+RUN set -eux; \
+    tc=/home/runner/.elan/toolchains/leanprover--lean4---v4.30.0-rc2/bin; \
+    curl -fsSL "https://github.com/digama0/leangz/releases/download/${LEANTAR_VERSION}/leantar-${LEANTAR_VERSION}-aarch64-unknown-linux-musl.tar.gz" | tar xz -C /tmp; \
+    install -m 0755 "$(find /tmp -name leantar -type f | head -1)" "$tc/leantar"; \
+    "$tc/leantar" --version; rm -rf /tmp/leantar*

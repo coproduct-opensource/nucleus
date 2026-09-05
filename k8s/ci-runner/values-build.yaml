@@ -47,7 +47,7 @@ template:
       - name: runner
         # Built from docker/Dockerfile.runner and imported into k3s's
         # containerd (README.md); never pulled from a registry.
-        image: localhost/nucleus-ci-runner:0.2.4
+        image: localhost/nucleus-ci-runner:0.2.5
         imagePullPolicy: Never
         command: ["/home/runner/run.sh"]
         env:
