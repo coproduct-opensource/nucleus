@@ -21,6 +21,9 @@ jobs:
   scan:
     name: Scan PodSpecs
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Required context: without a timeout the job inherits GitHub's 360-minute
+    # default, which is the whole merge-queue check budget (ci-spec I7).
+    timeout-minutes: 20
     permissions:
       security-events: write
     steps:

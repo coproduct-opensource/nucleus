@@ -1,0 +1,17 @@
+# Gate-integrity findings that are KNOWN and carry a reason, read by
+# `cargo xtask ci-spec check`. Key is `RULE <workflow>::<job>/<step>`.
+#
+# Every entry is checked for staleness: if the finding no longer fires, the
+# entry is itself a finding (CI-ALLOW-STALE) — an allowlist that outlives its
+# subject would silently allow the next real instance.
+#
+# The reasons below are the checker's known limits, not the gates' virtues.
+
+# Cross-STEP dataflow is not modelled. These `Reject sorry` greps name
+# explicit files that the preceding `lake build` step in the SAME job has just
+# compiled, so "the file is missing" cannot reach the grep; and the per-theorem
+# axiom audit (scripts/lean-axiom-audit.sh) in the same job is the
+# authoritative sorry check — this grep is the textual backstop.
+GI002 .github/workflows/aeneas-ifc-scoped.yml::aeneas-ifc-scoped/Reject sorry (proof holes) | files built by the preceding lake build step; axiom audit is authoritative
+GI002 .github/workflows/aeneas-oidc-spiffe.yml::aeneas-oidc-spiffe/Reject sorry (proof holes) | files built by the preceding lake build step; axiom audit is authoritative
+

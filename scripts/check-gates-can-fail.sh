@@ -270,6 +270,31 @@ perturb_ledger_restore_false_row() {
     mv "$f.gate-tmp" "$f"
 }
 
+perturb_twin_paths_ignore() {
+    # Drop one entry from the noop twin's paths-ignore. The lists must be
+    # set-equal to the real twin's paths (ci-spec I1); a PR touching the
+    # dropped path now fires BOTH twins under one context name.
+    sed -i.gate-bak '/^      - "\.kani-minimum-proofs"$/d' "$1"
+    rm -f "$1.gate-bak"
+    if grep -q '"\.kani-minimum-proofs"' "$1"; then
+        echo "  ERROR: the kani-nightly-noop paths-ignore entry changed shape;"
+        echo "         this perturbation no longer applies and must be updated."
+        return 1
+    fi
+}
+
+perturb_cancel_in_progress() {
+    # A merge_group-triggered workflow that cancels in-flight runs
+    # unconditionally (ci-spec I4): a newer run aborts a queue entry.
+    sed -i.gate-bak 's/^  cancel-in-progress: .*$/  cancel-in-progress: true/' "$1"
+    rm -f "$1.gate-bak"
+    if ! grep -q '^  cancel-in-progress: true$' "$1"; then
+        echo "  ERROR: the zizmor.yml concurrency block changed shape;"
+        echo "         this perturbation no longer applies and must be updated."
+        return 1
+    fi
+}
+
 echo "Probing whether each gate fails on its own subject..."
 echo
 
@@ -425,6 +450,17 @@ probe check-extracted-callsites.sh "" crates/nucleus-tool-proxy/src/workload.rs 
 probe check-no-hmac-auth.sh "" crates/nucleus-node/src/auth.rs \
       "a retired NUCLEUS_NODE_AUTH_SECRET reference reintroduced" \
       perturb_no_hmac_auth
+
+# CI-1 (crates/ci-spec): the CI configuration itself. Two probes, one per
+# founding-defect class: a twin whose paths-ignore drifted from the real
+# twin's paths (both twins fire, or neither), and a merge_group-triggered
+# workflow that cancels its own in-flight runs (ejects a queue entry).
+probe check-ci-spec.sh "" .github/workflows/kani-nightly-noop.yml \
+      "a noop twin missing one of the real twin's paths" \
+      perturb_twin_paths_ignore
+probe check-ci-spec.sh "" .github/workflows/zizmor.yml \
+      "cancel-in-progress true under merge_group" \
+      perturb_cancel_in_progress
 
 probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
       "an unlisted cfg(not(kani)) fork" \

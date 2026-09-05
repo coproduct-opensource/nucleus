@@ -1,0 +1,21 @@
+[package]
+name = "ci-spec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Typed model of nucleus's CI configuration and the invariants the merge queue relies on — a decision procedure, not a linter"
+# Dev/CI tooling — never published.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }

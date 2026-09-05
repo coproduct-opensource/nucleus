@@ -1,0 +1,27 @@
+# The merge-queue ruleset constants, pinned in the tree.
+#
+# These are the numbers the capacity theorem (ci/lean/CiSpec/Capacity.lean)
+# and the timeout invariant (ci-spec I7) reason about. They are ALSO live
+# settings on GitHub, editable in the UI; `cargo xtask ci-spec live-parity`
+# reports drift between this file and `GET /repos/…/rulesets/<ruleset_id>`,
+# so a UI edit is a red on the schedule rather than a silent change of the
+# theorem's hypotheses.
+#
+# History: on 2026-09-04 the check timeout was 60 minutes and build
+# concurrency 2, with pull_request runs sharing the same 4–5 build runners.
+# Entries were ejected by TIMEOUT, not by any red check, and roughly nothing
+# merged for 15 hours. The theorem's bite (CiSpecBite.lean) is that trace.
+
+ruleset_id = 22351600
+check_response_timeout_minutes = 360
+max_entries_to_build = 1
+max_entries_to_merge = 1
+min_entries_to_merge = 1
+min_entries_to_merge_wait_minutes = 0
+grouping_strategy = "ALLGREEN"
+merge_method = "SQUASH"
+
+# Classic branch protection `required_status_checks.strict`. `true` forces a
+# rebase before every merge, which with a queue means a rebase cycle; the
+# queue itself tests the merged result, which is what strict was for.
+strict = false
