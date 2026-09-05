@@ -1,0 +1,28 @@
+name: IFC Kernel Lean Proofs
+# The no-op twin of ifc-lean.yml: reports the same job name on pull requests
+# that touch none of its paths, so "lake build Ifc (…)" can be a required
+# status check without every PR paying for a Lean build. The real workflow's
+# `paths:` and this file's `paths-ignore:` must list the same files.
+
+on:
+  pull_request:
+    paths-ignore:
+      - "crates/nucleus-ifc-kernel/lean/**"
+      - ".github/workflows/ifc-lean.yml"
+      - "scripts/lean-axiom-audit.sh"
+
+concurrency:
+  group: ifc-lean-noop-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ifc-lean:
+    name: lake build Ifc (DerivationClass lattice + no-silent-cleansing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op (paths not touched)
+        run: echo "no relevant paths changed — gate vacuously green"
