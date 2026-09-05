@@ -534,7 +534,10 @@ jobs:
 
   musl-check:
     name: musl type-check (nucleus-node, nucleus-tool-proxy)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Hosted on purpose: `cargo check --target x86_64-unknown-linux-musl` runs
+    # build scripts (ring) that need x86_64-linux-musl-gcc, which only the
+    # hosted x86 image has; the arm64 scale set cannot cross-compile it.
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     # The release pipeline builds static musl binaries, but every other job here
     # compiles against glibc — so glibc-only code (v2.0.1: __rlimit_resource_t in
