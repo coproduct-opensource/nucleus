@@ -345,7 +345,7 @@ jobs:
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
         run: wasm-pack build sdks/verifier-js --target web --release
       - name: "Scope the run (pull_request: affected crates; otherwise the workspace)"
-        id: scope
+        id: affected
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.ref }}
@@ -383,7 +383,7 @@ jobs:
         id: tests
         continue-on-error: true
         env:
-          PK: ${{ steps.scope.outputs.pk }}
+          PK: ${{ steps.affected.outputs.pk }}
         run: |
           read -ra PK_ARR <<< "$PK"
           cargo test --all-features --lib --bins --tests "${PK_ARR[@]}"
@@ -398,7 +398,7 @@ jobs:
         id: sdk
         continue-on-error: true
         env:
-          PY: ${{ steps.scope.outputs.py }}
+          PY: ${{ steps.affected.outputs.py }}
         run: |
           set -euo pipefail
           (cd sdks/verifier-js && npm test)
@@ -411,13 +411,13 @@ jobs:
         id: doctests
         continue-on-error: true
         env:
-          PK: ${{ steps.scope.outputs.pk }}
+          PK: ${{ steps.affected.outputs.pk }}
         run: |
           read -ra PK_ARR <<< "$PK"
           cargo test --all-features --doc "${PK_ARR[@]}"
       - name: OWASP LLM Top 10 gauntlet (portcullis)
         id: owasp
-        if: ${{ steps.scope.outputs.full == 'true' || contains(steps.scope.outputs.list, ' portcullis ') }}
+        if: ${{ steps.affected.outputs.full == 'true' || contains(steps.affected.outputs.list, ' portcullis ') }}
         continue-on-error: true
         run: cargo test -p portcullis --test owasp_llm_gauntlet --all-features
       # The model↔Rust contract as a first-class named check: K4
@@ -427,7 +427,7 @@ jobs:
       # silently dropped by scoping.
       - name: Policy-kernel model↔Rust parity pin (nucleus-policy-kernel)
         id: k4
-        if: ${{ steps.scope.outputs.full == 'true' || contains(steps.scope.outputs.list, ' nucleus-policy-kernel ') }}
+        if: ${{ steps.affected.outputs.full == 'true' || contains(steps.affected.outputs.list, ' nucleus-policy-kernel ') }}
         continue-on-error: true
         run: cargo test -p nucleus-policy-kernel
       - name: Outcomes
