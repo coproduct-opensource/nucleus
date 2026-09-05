@@ -661,13 +661,57 @@ fn mount_fs(
     #[cfg(target_os = "linux")]
     {
         let data_bytes = data.map(|value| value.as_bytes());
-        mount(Some(source), target, Some(fstype), flags, data_bytes)
-            .map_err(|err| format!("mount {source} -> {target} ({fstype}) failed: {err}"))
+        match mount(Some(source), target, Some(fstype), flags, data_bytes) {
+            Ok(()) => Ok(()),
+            // Already mounted — the kernel mounts devtmpfs on /dev itself when
+            // built with CONFIG_DEVTMPFS_MOUNT, and the guest kernel is. The
+            // old fail-open `mount_fs` hid this behind a log line; the first
+            // load-bearing version aborted every boot on it (the x86_64 boot
+            // lane: "mount dev -> /dev (devtmpfs) failed: EBUSY").
+            //
+            // EBUSY alone is not proof the mount is there, so require the
+            // target to actually be a mount point, and then REMOUNT with our
+            // flags: the kernel's automount carries none of them, and a /dev
+            // without nosuid is not the /dev this list promises.
+            Err(nix::errno::Errno::EBUSY) if is_mountpoint(target) => {
+                eprintln!(
+                    "mount {source} -> {target} ({fstype}): already mounted by the kernel; remounting with the required flags"
+                );
+                mount(
+                    None::<&str>,
+                    target,
+                    None::<&str>,
+                    flags | MsFlags::MS_REMOUNT,
+                    data_bytes,
+                )
+                .map_err(|err| {
+                    format!("remount {target} ({fstype}) with the required flags failed: {err}")
+                })
+            }
+            Err(err) => Err(format!(
+                "mount {source} -> {target} ({fstype}) failed: {err}"
+            )),
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (source, target, fstype, flags, data);
         Ok(())
+    }
+}
+
+/// True when `path` is the root of a mount: its device differs from its
+/// parent's, or it is `/`. Pure stat, so it works before /proc is mounted.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn is_mountpoint(path: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    let parent = Path::new(path).parent().unwrap_or(Path::new("/"));
+    match fs::metadata(parent) {
+        Ok(pmeta) => meta.dev() != pmeta.dev() || meta.ino() == pmeta.ino(),
+        Err(_) => false,
     }
 }
 
@@ -926,6 +970,14 @@ fn parse_cmdline_secret(cmdline: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn is_mountpoint_root_yes_fresh_dir_no() {
+        assert!(super::is_mountpoint("/"));
+        let dir = std::env::temp_dir().join(format!("guest-init-mp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!super::is_mountpoint(dir.to_str().unwrap()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// **Every guest pseudo-filesystem is hardened, and `/tmp` and `/run`
     /// especially.**
