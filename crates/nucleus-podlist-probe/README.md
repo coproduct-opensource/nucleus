@@ -35,3 +35,17 @@ drains stderr into the guest console, where the harness greps it back):
   listing; `ids=` is the host's to check.
 - `NUCLEUS_PODLIST_PROBE: FAIL: <reason>` (exit 1) — missing/empty/malformed
   reply, a refusal object, or self absent (an unscoped/failed query).
+
+## CI lane
+
+`.github/workflows/podlist-probe.yml` boots this probe on a real x86_64
+Firecracker guest on every pull request that touches its inputs (the probe, the
+node, the tool proxy, guest-init, the pod spec, the harness, the rootfs build)
+and in the merge queue, where it decides scope from the group's diff. Its
+requireable twin, `podlist-probe-noop.yml`, passes only when those inputs are
+untouched on a pull request; a runner without `/dev/kvm` is red in the real
+lane, never green (#2604).
+
+Coverage boundary: hosted arm64 runners have no KVM, so aarch64 Firecracker is
+the weekly metal job in `quickstart-boot.yml` only; Apple Silicon's `vz` driver
+(`nucleus setup` on a Mac) is a different driver, not Firecracker coverage.
