@@ -578,7 +578,14 @@ jobs:
             # multi-word invocation needs wrapper scripts; and sccache cannot
             # front zig, so the wrapper is disabled for this step.
             mkdir -p "$HOME/.local/bin"
-            printf '#!/bin/sh\nexec zig cc -target x86_64-linux-musl "$@"\n' > "$HOME/.local/bin/zig-cc-x86_64-musl"
+            # cc-rs also passes clang's --target=x86_64-unknown-linux-musl, which
+            # zig rejects ("UnknownOperatingSystem"); the wrapper drops it and
+            # supplies zig's own triple.
+            cat > "$HOME/.local/bin/zig-cc-x86_64-musl" <<'W'
+          #!/bin/bash
+          args=(); for a in "$@"; do case "$a" in --target=*) ;; *) args+=("$a");; esac; done
+          exec zig cc -target x86_64-linux-musl "${args[@]}"
+          W
             printf '#!/bin/sh\nexec zig ar "$@"\n' > "$HOME/.local/bin/zig-ar"
             chmod 0755 "$HOME/.local/bin/zig-cc-x86_64-musl" "$HOME/.local/bin/zig-ar"
             RUSTC_WRAPPER= \

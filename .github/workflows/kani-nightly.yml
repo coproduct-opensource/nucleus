@@ -35,7 +35,10 @@ permissions:
   contents: read
 
 env:
-  # Kani drives its own rustc; sccache in front of it broke the build on the scale set (#2493).
+  # Hosted x86 on purpose for now: kani-github-action's install step fails on
+  # the arm64 pods ("File exists (os error 17)" from `cargo kani setup`, then
+  # kani-driver cannot find cargo). 2.4 min of hosted time per PR; moving it
+  # is a follow-up. RUSTC_WRAPPER stays cleared for when it does move.
   RUSTC_WRAPPER: ""
 
 jobs:
@@ -45,7 +48,7 @@ jobs:
   # They require 15+ minutes each and are verified in the nightly full tier.
   kani-fast:
     name: Kani
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: github.event_name != 'schedule'
     steps:
@@ -115,7 +118,7 @@ jobs:
   # not Kernel::admit. See KANI-STATUS.md.
   kani-constitutional:
     name: Kani (constitutional kernel)
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: github.event_name != 'schedule'
     steps:
@@ -174,7 +177,7 @@ jobs:
   # deliberate edit here too — the proof-count gate below catches the omission.
   kani-constitutional-full:
     name: "CK full: ${{ matrix.harness }}"
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
@@ -236,7 +239,7 @@ jobs:
   # rather than what was attempted.
   kani-constitutional-full-summary:
     name: Kani (constitutional kernel full)
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     needs: kani-constitutional-full
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     steps:
@@ -261,7 +264,7 @@ jobs:
 
   kani-full:
     name: Kani (full)
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     # Was 60. The job has never reached it: it dies after 3-10 minutes with
     # exit 143 and "runner has received a shutdown signal", which is the
     # signature of cbmc exhausting the runner's 16 GB rather than a timeout.
