@@ -48,7 +48,7 @@ permissions:
 jobs:
   portcullis-core-proven-lean:
     name: lake build + sorry-ban (proven tier)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,16 +106,16 @@ jobs:
 
       # Cache-poisoning ignored: formal-proof build only, no published artifacts.
       - name: Cache Lake / Mathlib build artifacts
-        if: steps.scope.outputs.relevant == 'true'
+        if: ${{ runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true') }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5 # zizmor: ignore[cache-poisoning]
         with:
           path: |
             crates/portcullis-core/lean/.lake
             ~/.elan
             ~/.cache/mathlib
-          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
+          key: lean-aeneas-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
           restore-keys: |
-            lean-aeneas-${{ runner.os }}-
+            lean-aeneas-${{ runner.os }}-${{ runner.arch }}-
 
       # Prebuilt Mathlib oleans from Azure: ~5 min vs ~1 h cold compile.
       - name: Fetch Mathlib cache (prebuilt oleans)
@@ -127,7 +127,7 @@ jobs:
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
         run: |
-          lake build \
+          LEAN_NUM_THREADS=2 lake build \
             PortcullisCoreBridge \
             PortcullisCoreIFC \
             IntegrityNoninterferenceExtracted \

@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       # Deliberately NOT overriding rustflags: the default `-D warnings` is the
       # condition that fails the release, so the gate must run under it too.
       - name: Build the crates release.yml publishes
@@ -106,7 +106,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           components: rustfmt
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
@@ -163,7 +163,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: The discharge seal is not reachable from any shipping build
         shell: bash
         run: scripts/check-test-helpers-not-in-production.sh
@@ -201,7 +201,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: A token clears its node for its signed sinks and only those
         shell: bash
         run: scripts/check-declassify-sink-scope-enforced.sh
@@ -220,7 +220,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: A token releases only the committed value, once, on the live graph
         shell: bash
         run: scripts/check-declassify-value-bound.sh
@@ -250,7 +250,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: uid distinctness, reserved-namespace, and cmdline fences hold
         shell: bash
         run: scripts/check-c1-inbound-fences.sh
@@ -303,7 +303,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Build node (local-driver) + cli + tool-proxy
         run: cargo build -p nucleus-node --features local-driver -p nucleus-cli -p nucleus-tool-proxy
       - name: The create API records lineage the listing serves
@@ -335,7 +335,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Every gate REDs on a real violation and GREENs when restored
         shell: bash
         run: scripts/check-gates-can-fail.sh
@@ -368,7 +368,7 @@ jobs:
         with:
           components: clippy
           targets: wasm32-unknown-unknown
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
@@ -400,7 +400,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           targets: wasm32-unknown-unknown
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       # PREREQUISITE, not boilerplate. `nucleus-verifier-service` vendors the
       # wasm SDK with `include_str!`/`include_bytes!` on sdks/verifier-js/pkg/*,
       # which only `wasm-pack build` produces. Without these two steps the whole
@@ -427,7 +427,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           targets: wasm32-unknown-unknown
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
@@ -451,6 +451,12 @@ jobs:
       # (settlement + commons) and the accept/reject smoke fixtures — per-PR, not
       # just on publish, so a binding-layer drift from the proven kernels is caught
       # here. Node is preinstalled on the ubuntu runner.
+      # Hosted runners ship node; the self-hosted image does not (exit 127 on
+      # the first routed run). setup-node downloads it at runner speed and
+      # never uploads a cache.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
       - name: Node tests (golden seal + smoke) against built wasm
         working-directory: sdks/verifier-js
         run: npm test
@@ -486,7 +492,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           components: rustfmt, clippy
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-workspaces: examples/a2a-server
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -505,7 +511,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Run OWASP LLM Top 10 security tests
         run: cargo test -p portcullis --test owasp_llm_gauntlet --all-features
 
@@ -528,13 +534,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: cargo test -p nucleus-policy-kernel (parity pin)
         run: cargo test -p nucleus-policy-kernel
 
   musl-check:
     name: musl type-check (nucleus-node, nucleus-tool-proxy)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Hosted on purpose: `cargo check --target x86_64-unknown-linux-musl` runs
+    # build scripts (ring) that need x86_64-linux-musl-gcc, which only the
+    # hosted x86 image has; the arm64 scale set cannot cross-compile it.
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     # The release pipeline builds static musl binaries, but every other job here
     # compiles against glibc — so glibc-only code (v2.0.1: __rlimit_resource_t in
@@ -547,7 +556,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           targets: x86_64-unknown-linux-musl
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install musl-gcc
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Ensure musl target (cache-safe)
@@ -569,7 +578,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: nightly
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: install cargo-fuzz
         # Pin version, but DROP --locked so cargo resolves a rustix newer
         # than the 0.36.5 cargo-fuzz bundles (0.36.5 uses rustc-internal

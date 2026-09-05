@@ -75,6 +75,11 @@ jobs:
   cb4a-separation:
     name: cb4a_separation (enforced at zero)
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    env:
+      # dylint drives rustc through its own driver; sccache cannot wrap it
+      # ("could not compile proc-macro2 (build script): No such file or
+      # directory" on the self-hosted runners, where RUSTC_WRAPPER is pod-wide).
+      RUSTC_WRAPPER: ""
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -151,6 +156,11 @@ jobs:
   mediated:
     name: mediated (enforced at zero over the sealed effect boundary)
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    env:
+      # dylint drives rustc through its own driver; sccache cannot wrap it
+      # ("could not compile proc-macro2 (build script): No such file or
+      # directory" on the self-hosted runners, where RUSTC_WRAPPER is pod-wide).
+      RUSTC_WRAPPER: ""
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -200,6 +210,11 @@ jobs:
   identity-isolation:
     name: workload_identity_isolation (enforced at zero)
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    env:
+      # dylint drives rustc through its own driver; sccache cannot wrap it
+      # ("could not compile proc-macro2 (build script): No such file or
+      # directory" on the self-hosted runners, where RUSTC_WRAPPER is pod-wide).
+      RUSTC_WRAPPER: ""
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -257,6 +272,11 @@ jobs:
   unpoliced-http-client:
     name: unpoliced_http_client (guest egress)
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    env:
+      # dylint drives rustc through its own driver; sccache cannot wrap it
+      # ("could not compile proc-macro2 (build script): No such file or
+      # directory" on the self-hosted runners, where RUSTC_WRAPPER is pod-wide).
+      RUSTC_WRAPPER: ""
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -270,6 +290,10 @@ jobs:
           rustup toolchain install nightly-2026-04-16 \
             --component rustc-dev,llvm-tools-preview --profile minimal
       - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.1
+        # Hosted only: the self-hosted scale set has persistent registry and
+        # sccache mounts, and this action's restore of a hosted x86 cache blob
+        # was observed hanging runner jobs for 15+ minutes.
+        if: ${{ runner.environment == 'github-hosted' }}
       - name: Install dylint
         run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 

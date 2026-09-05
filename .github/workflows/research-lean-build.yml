@@ -39,7 +39,7 @@ permissions:
 jobs:
   research-lean-build:
     name: lake build + sorry-ratchet (research tier)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -51,14 +51,18 @@ jobs:
 
       - name: Cache Lake / Mathlib build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5 # zizmor: ignore[cache-poisoning]
+        # Hosted only: the self-hosted runners keep their caches on persistent
+        # mounts, and uploading a cache from them was observed pinning a runner in
+        # the save step for 15+ minutes.
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           path: |
             crates/portcullis-core/lean/.lake
             ~/.elan
             ~/.cache/mathlib
-          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
+          key: lean-aeneas-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
           restore-keys: |
-            lean-aeneas-${{ runner.os }}-
+            lean-aeneas-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Fetch Mathlib cache (prebuilt oleans)
         working-directory: crates/portcullis-core/lean
@@ -67,7 +71,7 @@ jobs:
       - name: lake build (research cluster — type-check; a broken proof FAILS here)
         working-directory: crates/portcullis-core/lean
         run: |
-          lake build \
+          LEAN_NUM_THREADS=2 lake build \
             MatrixBridge \
             RankNullity \
             AlignmentTaxBridge \

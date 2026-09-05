@@ -33,7 +33,7 @@ permissions:
 jobs:
   rubric-lean:
     name: lake build Nucleus (rubric scoring proofs)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,20 +93,20 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Cache Lake build artifacts
-        if: steps.scope.outputs.relevant == 'true'
+        if: ${{ runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true') }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: |
             crates/nucleus-rubric/lean/.lake
             ~/.elan
-          key: lean-rubric-${{ runner.os }}-${{ hashFiles('crates/nucleus-rubric/lean/lean-toolchain', 'crates/nucleus-rubric/lean/lakefile.lean') }}
+          key: lean-rubric-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/nucleus-rubric/lean/lean-toolchain', 'crates/nucleus-rubric/lean/lakefile.lean') }}
           restore-keys: |
-            lean-rubric-${{ runner.os }}-
+            lean-rubric-${{ runner.os }}-${{ runner.arch }}-
 
       - name: lake build Nucleus (rubric scoring proofs)
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-rubric/lean
-        run: lake build
+        run: LEAN_NUM_THREADS=2 lake build
 
       - name: Ban sorry / admit / native_decide / sorryAx in rubric Lean
         if: steps.scope.outputs.relevant == 'true'

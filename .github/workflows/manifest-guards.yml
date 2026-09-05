@@ -36,7 +36,7 @@ permissions:
 jobs:
   manifest-guards:
     name: Manifest Guards
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     env:
       CARGO_TERM_COLOR: never
@@ -45,7 +45,7 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       - name: Cargo metadata smoke (whole workspace parses, empty stderr)
         run: |
@@ -100,7 +100,9 @@ jobs:
         run: |
           set -euo pipefail
           ver=1.7.12
-          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ver}/actionlint_${ver}_linux_amd64.tar.gz" \
+          # Match the runner's architecture: the self-hosted scale set is arm64.
+          case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ver}/actionlint_${ver}_linux_${arch}.tar.gz" \
             | tar xz actionlint
           # Syntax and expression errors only. Shellcheck style inside `run:`
           # blocks is a separate, noisier question and is not gated here.

@@ -25,7 +25,7 @@ jobs:
   # passing status check.
   changed-crates:
     name: Detect Changed Crates
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       all: ${{ steps.detect.outputs.all }}
@@ -81,7 +81,7 @@ jobs:
   # Layer 1: LLVM source-based code coverage with threshold enforcement
   llvm-cov:
     name: Code Coverage (llvm-cov)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -90,7 +90,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           components: llvm-tools-preview
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
       - name: Workspace coverage (threshold gate)
@@ -129,7 +129,7 @@ jobs:
   # Layer 2: Mutation testing on security-critical modules
   mutants:
     name: Mutation Testing
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -137,7 +137,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install cargo-mutants
         run: cargo install cargo-mutants --locked
       - name: Run mutation tests on security-critical modules
@@ -198,7 +198,7 @@ jobs:
   # conformance suite survives. Here we gate Kani proof harnesses and report counts.
   proof-ratchet:
     name: Proof Count Ratchet
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}

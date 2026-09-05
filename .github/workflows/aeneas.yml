@@ -61,6 +61,10 @@ jobs:
       # publishes no artifacts (it merely also runs on `release published`).
       - name: Rust / cargo cache (Charon target dir)
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1 # zizmor: ignore[cache-poisoning]
+        # Hosted only: the self-hosted scale set has persistent registry and
+        # sccache mounts, and this action's restore of a hosted x86 cache blob
+        # was observed hanging runner jobs for 15+ minutes.
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: crates/nucleus-ifc-kernel
           key: charon-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
