@@ -1,0 +1,27 @@
+# Theorems allowed to depend on native_decide (Lean.ofReduceBool / their own
+# `<name>._native.native_decide.ax_*` axiom). One fully-qualified name per line.
+# Read by scripts/lean-axiom-audit.sh; every other native_decide is a red gate.
+# native_decide puts the Lean compiler + the host's evaluator in the TCB of the
+# theorem — disclosed in CONJECTURES.md ("native_decide is in the TCB").
+# Theorems that merely depend on one of these inherit the disclosure; a NEW
+# native_decide anywhere else must be added here, by name, with a reason.
+ChannelAdmission.admission_is_pinned_per_channel
+FlowGraphProofs.invariant_exploit_dag_blocked
+FlowGraphProofs.single_adversarial_taints_chain
+FlowGraphProofs.clean_chain_preserves_trust
+IdentityMaterialNoninterference.delivery_is_flows_to_against_the_ceiling
+
+# External-model axioms (`axiom <name>`): declarations Aeneas emits in a
+# generated FunsExternal.lean for a Rust function it cannot translate. They
+# are the MODEL of an external, not a proof hole, and are tolerated for every
+# declaration that depends on them. Each is also counted by the `axiom`
+# ratchet (.axiom-ratchet), so a new one is red twice until it is named here.
+#
+# Rust `Iterator::fold` on a slice iterator. Emitted identically in
+# generated-attenuation/PortcullisCoreAttenuation/FunsExternal.lean and
+# generated-certchain/PortcullisCoreCertChain/FunsExternal.lean; the extracted
+# `attenuation.chain_effective_authority` and `certchain.chain_attenuates` are
+# folds over the chain. The theorems about them (AttenuationChainExtracted,
+# CertChainMonotoneExtracted) are stated over the extracted functions and
+# audit clean of this axiom; only the extracted bodies themselves carry it.
+axiom core.slice.iter.Iter.Insts.CoreIterTraitsIteratorIteratorSharedAT.fold

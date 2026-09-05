@@ -41,6 +41,14 @@ require mathlib from git
   "https://github.com/leanprover-community/mathlib4.git" @ "v4.30.0-rc2"
 
 -- The Aeneas-generated core (committed verbatim — DO NOT hand-edit).
+-- Second-opinion axiom audit (#2567): `lake exe axiom-audit --root <Lib>` walks
+-- every declaration under the root from the compiled oleans and fails on
+-- sorryAx, native_decide's axiom or any home-rolled `axiom`. Dependency-free
+-- (imports only `Lean`), so it builds under this toolchain. Driven by
+-- scripts/lean-axiom-audit.sh, never called bare.
+require «axiom-audit» from git
+  "https://github.com/leanprover-community/axiom-audit" @ "v0.1.2"
+
 lean_lib «CkPolicy» where
   roots := #[`CkPolicy.Types, `CkPolicy.Funs]
   srcDir := "generated"
