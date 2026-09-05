@@ -10,7 +10,7 @@
 # k8s/ci-runner/warm.sh ahead of time.
 #
 # Build for the node's own architecture (arm64 today):
-#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.0 .
+#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.1 .
 # then import into k3s's containerd (k8s/ci-runner/README.md).
 FROM ghcr.io/actions/actions-runner:2.337.0
 
@@ -65,4 +65,26 @@ RUN set -eux; \
     rustc --version; cargo --version; \
     rm -rf /home/runner/.cargo/registry /home/runner/.cargo/git; \
     mkdir -p /home/runner/.cargo/registry /home/runner/.cargo/git /home/runner/.cache
+
+# The cargo tools the routed workflows install at job start, baked instead:
+# `cargo xtask ci-timings` on PR #2617 showed "Install cargo-dylint" at 1.9 min
+# in each of four dylint jobs and cargo-llvm-cov / cargo-hack / cargo-audit
+# installs of 1–2.5 min per job — runner time spent rebuilding the same
+# binaries every PR. Versions mirror the workflows' pins (dylint 6.0.1,
+# cargo-audit 0.22.0); the rest are `--locked` at the versions below so an
+# image rebuild is a deliberate bump, not a drift.
+ARG CARGO_DYLINT_VERSION=6.0.1
+ARG CARGO_AUDIT_VERSION=0.22.0
+ARG CARGO_LLVM_COV_VERSION=0.6.20
+ARG CARGO_HACK_VERSION=0.6.38
+ARG CARGO_NEXTEST_VERSION=0.9.104
+RUN set -eux; \
+    cargo install cargo-dylint dylint-link --version ${CARGO_DYLINT_VERSION} --locked; \
+    cargo +stable install cargo-audit --version ${CARGO_AUDIT_VERSION} --locked --no-default-features; \
+    cargo install cargo-llvm-cov --version ${CARGO_LLVM_COV_VERSION} --locked; \
+    cargo install cargo-hack --version ${CARGO_HACK_VERSION} --locked; \
+    cargo install cargo-nextest --version ${CARGO_NEXTEST_VERSION} --locked; \
+    rm -rf /home/runner/.cargo/registry /home/runner/.cargo/git /home/runner/.cargo/.package-cache; \
+    mkdir -p /home/runner/.cargo/registry /home/runner/.cargo/git; \
+    cargo dylint --version; cargo audit --version; cargo llvm-cov --version; cargo hack --version; cargo nextest --version
 
