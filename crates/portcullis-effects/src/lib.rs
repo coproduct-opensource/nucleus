@@ -426,6 +426,17 @@ pub struct RealEffects {
     _private: (),
 }
 
+/// The argv predicate this home applies, re-exported so the executor applies
+/// the very same function (nucleus has no direct portcullis-core edge).
+pub use portcullis_core::argv;
+
+/// An argv refusal as the sealed home's error: `InvalidInput`, message
+/// prefixed by [`portcullis_core::argv::ARGV_REFUSED_PREFIX`] so the parity
+/// test in nucleus recognises it on this side exactly as on the executor's.
+pub fn argv_refused(rejection: portcullis_core::argv::ArgvRejection) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, rejection.message())
+}
+
 impl RealEffects {
     pub(crate) fn new() -> Self {
         Self {
@@ -589,6 +600,11 @@ impl ShellEffect for RealEffects {
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
         authority: Authority,
     ) -> io::Result<Output> {
+        // The ONE argv predicate both spawn boundaries apply (#2573): refused
+        // before the authority is spent, because a refused argv is not a
+        // spawn and must not consume the right to one. `Executor` applies the
+        // same function on its side, so the two cannot disagree.
+        portcullis_core::argv::check_argv(program, args).map_err(argv_refused)?;
         // Spent here and dropped: the right to spawn is consumed at the spawn.
         let spent = authority
             .spend(
@@ -648,6 +664,11 @@ impl AsyncShellSpawnEffect for RealEffects {
         timeout: Option<std::time::Duration>,
         authority: Authority,
     ) -> io::Result<Output> {
+        // The ONE argv predicate both spawn boundaries apply (#2573): refused
+        // before the authority is spent, because a refused argv is not a
+        // spawn and must not consume the right to one. `Executor` applies the
+        // same function on its side, so the two cannot disagree.
+        portcullis_core::argv::check_argv(program, args).map_err(argv_refused)?;
         // Spent here and dropped: the right to spawn is consumed at the spawn.
         let spent = authority
             .spend(

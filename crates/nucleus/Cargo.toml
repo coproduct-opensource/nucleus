@@ -69,6 +69,7 @@ shell-words = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
+proptest = { workspace = true }
 # test-helpers: `discharge::test_helpers` can obtain a DischargedBundle without
 # discharging it, so it is feature-gated and enabled here only, never in the
 # production dependency above.

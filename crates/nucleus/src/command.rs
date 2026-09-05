@@ -426,12 +426,8 @@ impl<'a> Executor<'a> {
             reason: "malformed command (unbalanced quotes)".into(),
         })?;
 
-        if args.is_empty() {
-            return Err(NucleusError::CommandDenied {
-                command: command.to_string(),
-                reason: "empty command".into(),
-            });
-        }
+        // The ONE argv predicate both spawn boundaries apply (#2573).
+        refuse_bad_argv(&args, command)?;
 
         // Check capability level
         self.check_capability(command, &args, None)?;
@@ -543,12 +539,8 @@ impl<'a> Executor<'a> {
             guard.check()?;
         }
 
-        if args.is_empty() {
-            return Err(NucleusError::CommandDenied {
-                command: String::new(),
-                reason: "empty command".into(),
-            });
-        }
+        // The ONE argv predicate both spawn boundaries apply (#2573).
+        refuse_bad_argv(args, &args.join(" "))?;
 
         // Build a display string for logging/auditing (not for execution)
         let display_command = args.join(" ");
@@ -629,12 +621,8 @@ impl<'a> Executor<'a> {
             reason: "malformed command (unbalanced quotes)".into(),
         })?;
 
-        if args.is_empty() {
-            return Err(NucleusError::CommandDenied {
-                command: command.to_string(),
-                reason: "empty command".into(),
-            });
-        }
+        // The ONE argv predicate both spawn boundaries apply (#2573).
+        refuse_bad_argv(&args, command)?;
 
         // Check capability level (with approval token)
         self.check_capability(command, &args, Some(approval))?;
@@ -698,12 +686,8 @@ impl<'a> Executor<'a> {
             reason: "malformed command (unbalanced quotes)".into(),
         })?;
 
-        if args.is_empty() {
-            return Err(NucleusError::CommandDenied {
-                command: command.to_string(),
-                reason: "empty command".into(),
-            });
-        }
+        // The ONE argv predicate both spawn boundaries apply (#2573).
+        refuse_bad_argv(&args, command)?;
 
         // Check capability level
         self.check_capability(command, &args, None)?;
@@ -756,12 +740,8 @@ impl<'a> Executor<'a> {
             reason: "malformed command (unbalanced quotes)".into(),
         })?;
 
-        if args.is_empty() {
-            return Err(NucleusError::CommandDenied {
-                command: command.to_string(),
-                reason: "empty command".into(),
-            });
-        }
+        // The ONE argv predicate both spawn boundaries apply (#2573).
+        refuse_bad_argv(&args, command)?;
 
         // Check capability level (with approval token)
         self.check_capability(command, &args, Some(approval))?;
@@ -948,6 +928,20 @@ fn program_basename(prog: &str) -> &str {
 }
 
 /// Check if the command is a git push operation.
+/// Refuse a malformed argv with the shared predicate (`portcullis_effects::argv`),
+/// as a `CommandDenied` whose reason carries the shared prefix. This is the
+/// executor's half of the parity with `RealEffects::run_argv`, which applies
+/// the same function to the same argv and refuses with the same message —
+/// see `tests::argv_parity`.
+fn refuse_bad_argv(args: &[String], display: &str) -> Result<()> {
+    portcullis_effects::argv::split_and_check(args)
+        .map(|_| ())
+        .map_err(|rejection| NucleusError::CommandDenied {
+            command: display.to_string(),
+            reason: rejection.message(),
+        })
+}
+
 fn is_git_push_command(args: &[String]) -> bool {
     args.len() >= 2 && program_basename(&args[0]) == "git" && args[1] == "push"
 }
@@ -1850,6 +1844,93 @@ mod tests {
             // key is unique to this test, so no other test reads or writes it.
 
             unsafe { std::env::remove_var("TEST_ASYNC_PARENT_SECRET") };
+        }
+    }
+
+    /// `Executor` ≡ `RealEffects::run_argv` on argv admission (#2573).
+    ///
+    /// Over generated argvs — empty, empty program, NUL bytes in the program
+    /// or in any argument, and well-formed — the executor refuses with a
+    /// `CommandDenied` carrying the shared prefix EXACTLY when the sealed home
+    /// refuses with an `InvalidInput` carrying the same prefix, and both agree
+    /// with `argv::split_and_check`. Accepted argvs name a program that does
+    /// not exist, so the spawn fails with ENOENT on both sides and no process
+    /// is ever run; the property is about the refusal, not the spawn.
+    mod argv_parity {
+        use super::*;
+        use portcullis_effects::argv::{ARGV_REFUSED_PREFIX, split_and_check};
+        use proptest::prelude::*;
+
+        fn token() -> impl Strategy<Value = String> {
+            proptest::collection::vec(prop_oneof![Just('a'), Just('-'), Just('\0')], 0..3)
+                .prop_map(|cs| cs.into_iter().collect())
+        }
+
+        fn argv() -> impl Strategy<Value = Vec<String>> {
+            let program = prop_oneof![
+                Just(String::new()),
+                token().prop_map(|t| format!("/nonexistent/nucleus-argv-parity-{t}")),
+            ];
+            let args = proptest::collection::vec(token(), 0..3);
+            prop_oneof![
+                Just(Vec::new()),
+                (program, args).prop_map(|(p, a)| std::iter::once(p).chain(a).collect()),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+            #[test]
+            fn executor_and_sealed_home_refuse_the_same_argv(argv in argv()) {
+                let verdict = split_and_check(&argv);
+
+                // Executor side: the public array entry.
+                let tmp = tempdir().unwrap();
+                let policy = test_policy();
+                let budget_policy = test_budget();
+                let mut kernel = Kernel::new(policy.clone());
+                let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+                let budget = AtomicBudget::new(&budget_policy);
+                let guard = MonotonicGuard::seconds(10);
+                let executor = Executor::new(&policy, &sandbox, &budget)
+                    .with_time_guard(&guard)
+                    .allow_unsandboxed_local();
+                let dt = run_token(&mut kernel, "argv-parity");
+                let exec = executor.run_args(&argv, None, None, &dt, Authority::new(allowed_bundle()));
+                let exec_refused = matches!(
+                    &exec,
+                    Err(NucleusError::CommandDenied { reason, .. }) if reason.starts_with(ARGV_REFUSED_PREFIX)
+                );
+                prop_assert_eq!(exec_refused, verdict.is_err(), "executor: {:?}", exec.as_ref().err());
+                if let Err(rejection) = verdict {
+                    let same_reason = matches!(&exec, Err(NucleusError::CommandDenied { reason, .. }) if *reason == rejection.message());
+                    prop_assert!(same_reason, "executor reason differs: {:?}", exec.as_ref().err());
+                }
+
+                // Sealed-home side: the same argv straight into `run_argv`.
+                if let Some((program, args)) = argv.split_first() {
+                    let home = production_effects_concrete(core_capabilities(&policy.capabilities));
+                    let r = home.run_argv(
+                        program,
+                        args,
+                        tmp.path(),
+                        None,
+                        &BTreeMap::new(),
+                        None,
+                        Authority::new(allowed_bundle()),
+                    );
+                    let home_refused = matches!(
+                        &r,
+                        Err(e) if e.kind() == io::ErrorKind::InvalidInput && e.to_string().starts_with(ARGV_REFUSED_PREFIX)
+                    );
+                    prop_assert_eq!(home_refused, verdict.is_err(), "sealed home: {:?}", r.as_ref().err());
+                    if let Err(rejection) = verdict {
+                        prop_assert_eq!(r.unwrap_err().to_string(), rejection.message());
+                    }
+                } else {
+                    prop_assert_eq!(verdict, Err(portcullis_effects::argv::ArgvRejection::EmptyArgv));
+                }
+            }
         }
     }
 }
