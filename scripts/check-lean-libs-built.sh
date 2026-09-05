@@ -91,14 +91,17 @@ barebuilt=$(for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
                 ' "$wf" 2>/dev/null
             done | sed "s#^\./##; s#/\$##" | sort -u)
 
-# "<importing file>\t<module>" pairs, so a lib's OWN root importing its own
+# "<importing file> <module>" pairs (space-separated: paths here carry no
+# spaces, and a literal tab is not portable between BSD and GNU sed/grep — the
+# first version of this went red on Linux and green on macOS), so a lib's OWN
+# root importing its own
 # submodules (Ifc.lean: `import Ifc.Lattice`) cannot count as the lib being
 # imported by something that is built — that self-hop was how #2564's package
 # read as covered while no workflow ever elaborated it.
 imported_pairs=$(find . \( -name .lake -o -name target -o -name node_modules -o -name .git -o -name .claude \) -prune -o -name "*.lean" -print0 2>/dev/null \
            | xargs -0 grep -HoE "^import [A-Za-z][A-Za-z0-9_.]*" 2>/dev/null \
-           | sed 's/:import /\t/' | sort -u)
-imported=$(printf '%s\n' "$imported_pairs" | cut -f2 | sort -u)
+           | sed 's/:import / /' | sort -u)
+imported=$(printf '%s\n' "$imported_pairs" | cut -d' ' -f2 | sort -u)
 
 if [[ -z "$imported" ]]; then
     echo "ERROR: no \`import\` lines found in any .lean file. The scan is broken,"
@@ -145,7 +148,7 @@ for lf in $lakefiles; do
         for r in $roots; do
             # Imported directly (or as a parent of a submodule import) by a file
             # OUTSIDE this lib's own sources (<pkg>/<Root>.lean, <pkg>/<Root>/).
-            if printf '%s\n' "$imported_pairs" | grep -E "\t$r(\.|$)$" \
+            if printf '%s\n' "$imported_pairs" | grep -E " $r(\.|$)$" \
                  | grep -vqE "^\./$pkgdir/$r(\.lean|/)"; then hit=1; break; fi
         done
         if [[ "$hit" -eq 1 ]]; then
