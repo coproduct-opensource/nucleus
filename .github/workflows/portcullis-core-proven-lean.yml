@@ -127,7 +127,7 @@ jobs:
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
         run: |
-          lake build --jobs=2 \
+          LEAN_NUM_THREADS=2 lake build \
             PortcullisCoreBridge \
             PortcullisCoreIFC \
             IntegrityNoninterferenceExtracted \
