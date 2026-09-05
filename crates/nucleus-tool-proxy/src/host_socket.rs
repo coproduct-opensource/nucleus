@@ -175,8 +175,10 @@ pub(crate) fn unix_url(path: &Path) -> String {
 }
 
 fn current_uid() -> u32 {
-    // SAFETY: `geteuid` has no preconditions and cannot fail.
-    unsafe { libc::geteuid() }
+    // The same std-only uid read the workload launcher uses (`/proc/self`
+    // owner on Linux, cwd owner elsewhere): no FFI, so no `unsafe` block for
+    // the exemplar ratchet to count, and one definition of "our uid".
+    crate::workload::nix_getuid()
 }
 
 /// The axum listener that enforces [`PeerPolicy`] at accept time.
