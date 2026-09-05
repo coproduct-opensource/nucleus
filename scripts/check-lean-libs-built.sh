@@ -164,7 +164,6 @@ ALLOWED_UNBUILT=(
     "DiamondActions|research spike, never wired"
     "RealWorldActions|research spike, never wired"
     "LipschitzEquivariance|research spike, never wired"
-    "GovernanceCompletenessSpike|research spike, never wired"
 )
 
 is_allowed() {

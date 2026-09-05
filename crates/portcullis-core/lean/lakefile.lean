@@ -590,7 +590,10 @@ lean_lib «RepairAlgebraProofs» where
 -- CategoryProofs remains a lean_lib target above (pre-existing) but is excluded
 -- from the proven-tier build list in portcullis-core-proven-lean.yml.
 
--- K4 SPIKE: governance-monotonicity completeness (mathlib-free model + crux proof)
+-- K4: governance-monotonicity completeness (mathlib-free model + crux proof).
+-- Production's proof-of-record: nucleus-policy-kernel/tests/model_parity.rs pins
+-- the shipped `decide`/`governance_monotone` to `governance_monotone_iff` here,
+-- so it is BUILT and axiom-audited in the proven tier (#2565), not a spike.
 lean_lib «GovernanceCompletenessSpike» where
   roots := #[`GovernanceCompletenessSpike]
 
