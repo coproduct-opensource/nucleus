@@ -34,6 +34,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Kani drives its own rustc; sccache in front of it broke the build on the scale set (#2493).
+  RUSTC_WRAPPER: ""
+
 jobs:
   # Fast tier: 5 lightweight harnesses — runs on every PR and push
   # The 3 normalize_* harnesses use build_ordered_permissions() which creates
