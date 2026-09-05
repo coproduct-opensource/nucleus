@@ -73,9 +73,17 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # CLIPPY_RATCHET_TOKEN: a fine-grained PAT (or App token) with contents
+      # + pull-requests write. A branch pushed and a PR opened with the default
+      # GITHUB_TOKEN never trigger `pull_request` workflows, so the bot's PR
+      # gets no required checks and auto-merge sits pending forever — that is
+      # why four chore/clippy-ratchet-* branches were orphaned. With the
+      # secret set the PR runs CI and auto-merges like any other; without it
+      # everything still works except that last step, which warns.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.CLIPPY_RATCHET_TOKEN || secrets.GITHUB_TOKEN }}
+          persist-credentials: true
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           components: clippy
@@ -83,7 +91,7 @@ jobs:
 
       - name: Ratchet down
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CLIPPY_RATCHET_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           RATCHET_FILE=".clippy-ratchet.toml"

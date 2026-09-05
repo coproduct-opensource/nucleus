@@ -1,0 +1,109 @@
+name: main is red
+
+# A red job on main was invisible for a day (the clippy ratchet-down job,
+# 2026-09-05: every push to main failed at "Ratchet ceiling down" and nothing
+# surfaced it). This polls the latest push-to-main run of each load-bearing
+# workflow and keeps ONE open issue per red workflow, labelled `ci-red-main`,
+# closed automatically when the workflow is green again.
+#
+# Polling on a schedule rather than `workflow_run` on purpose: workflow_run is
+# a privileged trigger the zizmor gate flags, and a 20-minute delay is fine
+# for a signal that used to be absent.
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: ci-red-main
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Open an issue per red workflow on main; close it when green
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - name: Reconcile issues with the latest push-to-main conclusions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # Workflow FILES to watch: the ones whose red on main means something
+          # shipped broken or a gate stopped gating. Workflows that are red for
+          # a known, tracked reason belong in an issue, not off this list.
+          WATCH: >-
+            ci.yml
+            clippy-ratchet.yml
+            audit.yml
+            coverage-matrix.yml
+            feature-matrix.yml
+            kani-nightly.yml
+            line-ratchet.yml
+            formal-numbers.yml
+            manifest-guards.yml
+            portcullis-core-proven-lean.yml
+            quickstart-boot.yml
+            dep-hygiene.yml
+            deny.yml
+            zizmor.yml
+            dylint-separation.yml
+            aeneas-ifc-scoped.yml
+            ck-policy-lean.yml
+            econ-lean.yml
+            rubric-lean.yml
+        run: |
+          set -euo pipefail
+          gh label create ci-red-main --repo "$REPO" --color B60205 \
+            --description "A load-bearing workflow is red on main (opened/closed by ci-red-main.yml)" \
+            --force >/dev/null
+          red=0
+          for wf in $WATCH; do
+            [ -f ".github/workflows/$wf" ] 2>/dev/null || true   # no checkout; names are what matter
+            latest=$(gh run list --repo "$REPO" --workflow "$wf" --branch main --event push \
+                       --limit 1 --json conclusion,url,headSha,name,createdAt \
+                       --jq '.[0] // empty')
+            [ -n "$latest" ] || continue
+            conclusion=$(jq -r .conclusion <<<"$latest")
+            name=$(jq -r .name <<<"$latest")
+            url=$(jq -r .url <<<"$latest")
+            sha=$(jq -r '.headSha[0:8]' <<<"$latest")
+            title="CI is red on main: $name"
+            open=$(gh issue list --repo "$REPO" --label ci-red-main --state open \
+                     --search "in:title \"$title\"" --json number,title \
+                     --jq --arg t "$title" '.[] | select(.title==$t) | .number' | head -1)
+            case "$conclusion" in
+              failure|timed_out|cancelled)
+                red=$((red+1))
+                if [ -z "$open" ]; then
+                  gh issue create --repo "$REPO" --label ci-red-main --title "$title" \
+                    --body "The latest push-to-main run of **$name** (\`$wf\`) is **$conclusion** at \`$sha\`: $url
+
+Opened by \`.github/workflows/ci-red-main.yml\`; it closes this issue automatically when the workflow is green on main again. Each later red run is added as a comment." >/dev/null
+                  echo "opened: $title ($conclusion, $sha)"
+                else
+                  last=$(gh issue view "$open" --repo "$REPO" --json comments --jq '.comments[-1].body // ""')
+                  if ! grep -q "$sha" <<<"$last"; then
+                    gh issue comment "$open" --repo "$REPO" --body "Still red: **$conclusion** at \`$sha\`: $url" >/dev/null
+                    echo "commented #$open: $title ($conclusion, $sha)"
+                  else
+                    echo "unchanged #$open: $title ($conclusion, $sha)"
+                  fi
+                fi
+                ;;
+              success)
+                if [ -n "$open" ]; then
+                  gh issue close "$open" --repo "$REPO" --comment "Green again at \`$sha\`: $url" >/dev/null
+                  echo "closed #$open: $title"
+                fi
+                ;;
+              *) echo "skip: $name ($conclusion)";;
+            esac
+          done
+          echo "red workflows on main: $red"
+          echo "- red workflows on main: **$red**" >> "$GITHUB_STEP_SUMMARY"
