@@ -90,8 +90,23 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Push the last N minutes of GitHub Actions job timings to an OTLP
+    /// endpoint as OpenTelemetry metrics (queue wait, duration, conclusions,
+    /// merge-queue depth). See crates/xtask/src/ci_otel.rs.
+    CiOtel {
+        /// Window in minutes (a job counts when its completed_at is inside).
+        #[arg(long, default_value_t = 15)]
+        since: u64,
+        /// OTLP/HTTP base URL (default: $OTEL_EXPORTER_OTLP_ENDPOINT, else the in-cluster collector).
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Print the OTLP JSON instead of sending it.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
+mod ci_otel;
 mod ci_timings;
 mod rerun_plan;
 
@@ -106,6 +121,11 @@ fn main() -> Result<()> {
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
+        Command::CiOtel {
+            since,
+            endpoint,
+            dry_run,
+        } => ci_otel::ci_otel(since, endpoint, dry_run),
     }
 }
 

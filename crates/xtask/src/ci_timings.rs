@@ -61,7 +61,7 @@ struct Step {
 
 /// Seconds since the Unix epoch for an RFC 3339 UTC timestamp (`…Z`).
 /// Hand-rolled to keep xtask dependency-free of a time crate.
-fn epoch(ts: &str) -> Option<i64> {
+pub(crate) fn epoch(ts: &str) -> Option<i64> {
     let ts = ts.strip_suffix('Z')?;
     let (date, time) = ts.split_once('T')?;
     let mut d = date.split('-').map(|s| s.parse::<i64>());

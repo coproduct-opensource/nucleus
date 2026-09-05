@@ -1,0 +1,52 @@
+name: CI metrics (OpenTelemetry)
+
+# Every 15 minutes: push the GitHub side of CI throughput — per-job queue
+# wait and duration, completions by conclusion, merge-queue depth — to the
+# OpenTelemetry collector on the self-hosted cluster (k8s/ci-metrics), where
+# the actions-runner-controller listeners' runner-side metrics already land.
+# `cargo xtask ci-otel` (crates/xtask/src/ci_otel.rs) does the pull and the
+# OTLP/HTTP export. Runs only on the self-hosted pool: the collector's
+# in-cluster address is not reachable from a hosted runner.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "window in minutes (default 15; use 1440 for a day's backfill)"
+        default: "15"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ci-metrics
+  cancel-in-progress: false
+
+jobs:
+  export:
+    name: Push job timings to the collector
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Only meaningful on the self-hosted pool
+        id: where
+        env:
+          RUNNER_ENV: ${{ runner.environment }}
+        run: |
+          if [ "$RUNNER_ENV" = "self-hosted" ]; then echo "run=true" >> "$GITHUB_OUTPUT";
+          else echo "run=false" >> "$GITHUB_OUTPUT"; echo "hosted runner: the in-cluster collector is unreachable — nothing to do"; fi
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: ${{ steps.where.outputs.run == 'true' }}
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - name: cargo xtask ci-otel
+        if: ${{ steps.where.outputs.run == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINCE: ${{ inputs.since || '15' }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.ci-metrics.svc.cluster.local:4318
+        run: cargo xtask ci-otel --since "$SINCE"
