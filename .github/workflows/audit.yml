@@ -25,7 +25,10 @@ permissions:
 
 jobs:
   audit:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Hosted: `actions-rust-lang/audit` runs a python script that imports
+    # `requests`, which the self-hosted runner image does not ship; the job is
+    # small and has no cache to upload, so hosted costs nothing here.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
@@ -51,12 +54,6 @@ jobs:
       - name: Pre-install cargo-audit with its own locked dependency tree
         run: cargo +stable install cargo-audit --version 0.22.0 --locked --no-default-features
         shell: bash
-      # The audit action shells out to `python`; the self-hosted runner image
-      # ships python3 only (python-is-python3 is added in the next image).
-      - name: Ensure a `python` executable exists (self-hosted image)
-        if: ${{ runner.environment != 'github-hosted' }}
-        shell: bash
-        run: command -v python >/dev/null || sudo ln -sf "$(command -v python3)" /usr/local/bin/python
       - uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1
         with:
           denyWarnings: true
