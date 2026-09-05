@@ -121,7 +121,7 @@ RUN set -eux; \
     # the x86-64 dynamic loader (/lib64/ld-linux-x86-64.so.2 — a packaging
     # slip in the release); point them at the real one.
     for b in charon charon-driver; do patchelf --set-interpreter /lib/ld-linux-aarch64.so.1 /opt/aeneas/$b; done; \
-    chown -R runner:runner /opt/aeneas; /opt/aeneas/aeneas -version; /opt/aeneas/charon --version
+    chown -R runner:runner /opt/aeneas; /opt/aeneas/aeneas -version; /opt/aeneas/charon version
 USER runner
 RUN set -eux; \
     # Everything the tarball's rust-toolchain file names, so rustup has nothing
