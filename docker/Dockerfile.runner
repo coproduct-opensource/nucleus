@@ -10,7 +10,7 @@
 # k8s/ci-runner/warm.sh ahead of time.
 #
 # Build for the node's own architecture (arm64 today):
-#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.1.2 .
+#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.0 .
 # then import into k3s's containerd (k8s/ci-runner/README.md).
 FROM ghcr.io/actions/actions-runner:2.337.0
 
@@ -41,29 +41,27 @@ RUN set -eux; \
       | tar xz -C /usr/local/bin just; \
     sccache --version; just --version
 
-# The runner does NOT hand its own PATH to job steps: it reads `.path` (and
-# `.env`) from its root directory and uses that as every step's PATH — which is
-# how the hosted images expose their toolchains. Without this file the first
-# cohort run failed four jobs with `cargo: command not found` / `rustup: command
-# not found` / sccache unreachable as RUSTC_WRAPPER.
-RUN printf '%s\n' "/home/runner/.cargo/bin:/home/runner/.elan/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > /home/runner/.path \
-    && printf '%s\n' "RUSTUP_HOME=/home/runner/.rustup" "CARGO_HOME=/home/runner/.cargo" "ELAN_HOME=/home/runner/.elan" > /home/runner/.env \
-    && chown runner:runner /home/runner/.path /home/runner/.env
-
-# rustup's mutable state (settings.toml: default toolchain, per-directory
-# overrides) is PER POD, baked here; only `toolchains/` is a shared mount. The
-# first cohort run shared all of ~/.rustup and one job's `rustup override set
-# 1.93` in the checkout directory leaked rustc 1.93 into every other job on
-# every runner (wasm build, parity, clippy ceiling all failed on the wrong
-# toolchain).
-RUN mkdir -p /home/runner/.rustup/toolchains /home/runner/.rustup/downloads /home/runner/.rustup/tmp /home/runner/.rustup/update-hashes \
-    && printf '%s\n' 'version = "12"' 'default_toolchain = "1.96.1-aarch64-unknown-linux-gnu"' 'profile = "default"' > /home/runner/.rustup/settings.toml \
-    && chown -R runner:runner /home/runner/.rustup
-
+# Toolchains are IN THE IMAGE, per runner user, and nothing under ~/.rustup or
+# ~/.cargo/bin is shared between pods: the first cohort runs shared them on a
+# host-path mount and one job's `rustup override`, plus a concurrent reinstall
+# of the rustup binary, intermittently broke every other job ("rustup: command
+# not found", wrong toolchain). Only the cargo registry/git caches and the
+# sccache/Mathlib stores are mounted (values.yaml). Everything the workflows
+# pin is here: 1.96.1 (rust-toolchain.toml), stable, 1.95/1.93 (MSRV and Kani
+# floors), the dylint nightly with rustc-dev, and the musl/wasm targets.
 USER runner
-# The persistent mounts land here; the PATH entries make whatever they hold
-# visible to the runner process itself (steps get theirs from `.path` above).
 ENV RUSTUP_HOME=/home/runner/.rustup \
     CARGO_HOME=/home/runner/.cargo \
-    ELAN_HOME=/home/runner/.elan \
-    PATH=/home/runner/.cargo/bin:/home/runner/.elan/bin:/usr/local/bin:/usr/bin:/bin
+    PATH=/home/runner/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN set -eux; \
+    curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal \
+      --default-toolchain 1.96.1 -c clippy -c rustfmt; \
+    rustup toolchain install stable 1.95 1.93 --profile minimal -c clippy -c rustfmt; \
+    rustup toolchain install nightly-2026-04-16 --profile minimal -c rustc-dev -c llvm-tools-preview -c clippy -c rustfmt; \
+    rustup target add x86_64-unknown-linux-musl wasm32-unknown-unknown --toolchain 1.96.1; \
+    rustup target add wasm32-unknown-unknown --toolchain stable; \
+    rustup default 1.96.1; \
+    rustc --version; cargo --version; \
+    rm -rf /home/runner/.cargo/registry /home/runner/.cargo/git; \
+    mkdir -p /home/runner/.cargo/registry /home/runner/.cargo/git /home/runner/.cache
+

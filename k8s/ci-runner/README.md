@@ -11,13 +11,16 @@ back to hosted runners.
 
 | Piece | Location |
 |---|---|
-| Runner image | `docker/Dockerfile.runner` (OS deps + sccache + just; nothing else) |
+| Runner image | `docker/Dockerfile.runner` (OS deps, sccache, just, and every pinned Rust toolchain baked in per runner user) |
 | Scale-set values | `values.yaml` (no credential; references the `gh-token` secret) |
-| Persistent mounts | `/var/lib/nucleus-ci/{rustup,cargo,cache,elan}` on the node, uid 1001 |
+| Persistent mounts | `/var/lib/nucleus-ci/cargo/{registry,git}` and `/var/lib/nucleus-ci/cache` on the node, uid 1001 (caches only) |
 | Warm-up | `warm.sh` (installs rustup 1.96.1 + elan/Lean v4.30.0-rc2 into the mounts) |
 
-The toolchains and caches are on the mounts, not in the image, so an image
-rebuild never invalidates a cache and a toolchain bump never needs one.
+Toolchains are in the image and nothing mutable under `~/.rustup` or
+`~/.cargo/bin` is shared: the first cohort runs shared them and one job's
+`rustup override`, plus a concurrent rustup reinstall, intermittently broke
+every other job. Only the caches are on the mounts, so an image rebuild never
+invalidates a cache.
 `sccache` (`RUSTC_WRAPPER`) is the cross-job compile cache; the cargo registry
 and the Mathlib `lake exe cache` store are persistent for the same reason.
 
@@ -28,8 +31,8 @@ and the Mathlib `lake exe cache` store are persistent for the same reason.
 sudo apt-get install -y podman
 
 # 1. build the image for the node's architecture and hand it to k3s
-podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.1.2 .
-podman save localhost/nucleus-ci-runner:0.1.2 | sudo k3s ctr -n k8s.io images import -
+podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.0 .
+podman save localhost/nucleus-ci-runner:0.2.0 | sudo k3s ctr -n k8s.io images import -
 
 # 2. persistent mounts + toolchains
 sudo bash k8s/ci-runner/warm.sh
