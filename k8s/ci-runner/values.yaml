@@ -27,7 +27,7 @@ template:
       - name: runner
         # Built from docker/Dockerfile.runner and imported into k3s's
         # containerd (README.md); never pulled from a registry.
-        image: localhost/nucleus-ci-runner:0.1.1
+        image: localhost/nucleus-ci-runner:0.1.2
         imagePullPolicy: Never
         command: ["/home/runner/run.sh"]
         env:
@@ -59,8 +59,10 @@ template:
           limits:
             memory: 8Gi
         volumeMounts:
+          # Only the toolchains are shared; rustup's settings.toml (default
+          # toolchain, directory overrides) stays per pod, baked in the image.
           - name: rustup
-            mountPath: /home/runner/.rustup
+            mountPath: /home/runner/.rustup/toolchains
           - name: cargo
             mountPath: /home/runner/.cargo
           - name: cache
@@ -72,7 +74,7 @@ template:
       # `runner` user): created by k8s/ci-runner/README.md's setup step.
       - name: rustup
         hostPath:
-          path: /var/lib/nucleus-ci/rustup
+          path: /var/lib/nucleus-ci/rustup/toolchains
           type: Directory
       - name: cargo
         hostPath:

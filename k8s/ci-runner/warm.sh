@@ -11,7 +11,7 @@
 # exactly what a runner pod sees.
 set -euo pipefail
 
-IMAGE="${IMAGE:-localhost/nucleus-ci-runner:0.1.1}"
+IMAGE="${IMAGE:-localhost/nucleus-ci-runner:0.1.2}"
 ROOT="${ROOT:-/var/lib/nucleus-ci}"
 RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-1.96.1}"   # rust-toolchain.toml
 LEAN_TOOLCHAIN="${LEAN_TOOLCHAIN:-leanprover/lean4:v4.30.0-rc2}"  # every lean-toolchain in the tree

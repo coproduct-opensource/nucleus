@@ -28,8 +28,8 @@ and the Mathlib `lake exe cache` store are persistent for the same reason.
 sudo apt-get install -y podman
 
 # 1. build the image for the node's architecture and hand it to k3s
-podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.1.1 .
-podman save localhost/nucleus-ci-runner:0.1.1 | sudo k3s ctr -n k8s.io images import -
+podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.1.2 .
+podman save localhost/nucleus-ci-runner:0.1.2 | sudo k3s ctr -n k8s.io images import -
 
 # 2. persistent mounts + toolchains
 sudo bash k8s/ci-runner/warm.sh

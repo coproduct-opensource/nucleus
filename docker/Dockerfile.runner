@@ -10,7 +10,7 @@
 # k8s/ci-runner/warm.sh ahead of time.
 #
 # Build for the node's own architecture (arm64 today):
-#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.1.1 .
+#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.1.2 .
 # then import into k3s's containerd (k8s/ci-runner/README.md).
 FROM ghcr.io/actions/actions-runner:2.337.0
 
@@ -49,6 +49,16 @@ RUN set -eux; \
 RUN printf '%s\n' "/home/runner/.cargo/bin:/home/runner/.elan/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > /home/runner/.path \
     && printf '%s\n' "RUSTUP_HOME=/home/runner/.rustup" "CARGO_HOME=/home/runner/.cargo" "ELAN_HOME=/home/runner/.elan" > /home/runner/.env \
     && chown runner:runner /home/runner/.path /home/runner/.env
+
+# rustup's mutable state (settings.toml: default toolchain, per-directory
+# overrides) is PER POD, baked here; only `toolchains/` is a shared mount. The
+# first cohort run shared all of ~/.rustup and one job's `rustup override set
+# 1.93` in the checkout directory leaked rustc 1.93 into every other job on
+# every runner (wasm build, parity, clippy ceiling all failed on the wrong
+# toolchain).
+RUN mkdir -p /home/runner/.rustup/toolchains /home/runner/.rustup/downloads /home/runner/.rustup/tmp /home/runner/.rustup/update-hashes \
+    && printf '%s\n' 'version = "12"' 'default_toolchain = "1.96.1-aarch64-unknown-linux-gnu"' 'profile = "default"' > /home/runner/.rustup/settings.toml \
+    && chown -R runner:runner /home/runner/.rustup
 
 USER runner
 # The persistent mounts land here; the PATH entries make whatever they hold
