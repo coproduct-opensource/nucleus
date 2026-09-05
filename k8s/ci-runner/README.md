@@ -54,6 +54,16 @@ sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install nucleus-k3s
   --version 0.14.2 -n arc-runners -f k8s/ci-runner/values.yaml
 ```
 
+Sizing, measured 2026-09-05 under a full rebase wave (14 vCPU / 32 GiB VM):
+build pods peak at 5.0–6.2 GiB (`memory.peak` from the job-completed hook,
+limit 8 GiB); with all runners present the node sits at 97 % CPU requests
+and 86 % memory requests and 87–93 % CPU utilisation. A fifth build runner
+does not fit: +2.5 CPU / +5 GiB of requests over the node, and 5 × 6.2 GiB
+peaks leave no headroom. Throughput comes from fewer compile jobs per PR
+(ci.yml builds the workspace once per pod), not from more runners. Warm
+runners (`minRunners`: 2 gate, 1 build) remove the pod-start latency from
+the short jobs; their idle requests are already reserved at peak.
+
 Install the build pool the same way with `-f k8s/ci-runner/values-build.yaml`
 and release name `nucleus-k3s-build`.
 

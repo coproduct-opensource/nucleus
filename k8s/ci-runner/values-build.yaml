@@ -41,7 +41,11 @@ runnerScaleSetName: nucleus-k3s-build
 # Sizing lesson kept from the first cohort: the memory limit must be sized for
 # CARGO_BUILD_JOBS parallel rustc/ld processes — an unbounded cargo under a
 # 6 GiB limit OOM-killed the linker; Lake needs LEAN_NUM_THREADS capped too.
-minRunners: 0
+# Warm runners. A job on a pool with none idle pays pod creation + runner
+# registration before its first step (~20–40 s measured on this VM); two warm
+# gate runners cover the short gate jobs that arrive in bursts on every push.
+# Cost while idle: 2 × (0.5 CPU, 1 GiB) requests, already reserved at peak.
+minRunners: 1
 maxRunners: 4
 
 template:
