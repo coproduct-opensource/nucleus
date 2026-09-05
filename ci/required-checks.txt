@@ -12,7 +12,7 @@
 # `cargo xtask ci-spec live-parity` compares this file with the live branch
 # protection; a mismatch is a red on the schedule, never a silent re-sync.
 #
-# PINNED = 48
+# PINNED = 49
 
 # --- ci.yml -------------------------------------------------------------
 Detect changed crates
@@ -60,6 +60,7 @@ Scan PodSpecs
 Analyze
 
 # --- twin-paired (real + -noop) ----------------------------------------
+lake build CiSpec (pipeline + merge-queue theorems)
 Scoped Aeneas (Rust → Lean 4) + parity tests
 Scoped Aeneas OIDC→SPIFFE (Rust → Lean 4) + parity tests
 lake build Ck (monotonicity-gate soundness proofs)

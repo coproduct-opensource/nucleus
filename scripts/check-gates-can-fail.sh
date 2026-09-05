@@ -283,6 +283,14 @@ perturb_twin_paths_ignore() {
     fi
 }
 
+perturb_bite_semantics() {
+    # A new type in the bite: the differential is no longer about CiSpec's
+    # model. Appended after the namespace closes, so the file stays valid
+    # Lean and only the no-new-semantics rule is violated.
+    append_line "$1" 'structure GateOfGatesProbe where'
+    append_line "$1" '  x : Nat'
+}
+
 perturb_cancel_in_progress() {
     # A merge_group-triggered workflow that cancels in-flight runs
     # unconditionally (ci-spec I4): a newer run aborts a queue entry.
@@ -461,6 +469,13 @@ probe check-ci-spec.sh "" .github/workflows/kani-nightly-noop.yml \
 probe check-ci-spec.sh "" .github/workflows/zizmor.yml \
       "cancel-in-progress true under merge_group" \
       perturb_cancel_in_progress
+
+# The CI-model bite (ci/lean/CiSpecBite.lean) may only DROP hypotheses of
+# CiSpec theorems; new semantics would make its counterexamples about a
+# different model. The gate is textual, so its subject is a planted type.
+probe check-ci-spec-bite.sh "" ci/lean/CiSpecBite.lean \
+      "a structure declared in the bite" \
+      perturb_bite_semantics
 
 probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
       "an unlisted cfg(not(kani)) fork" \
