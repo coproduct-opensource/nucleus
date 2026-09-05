@@ -13,6 +13,9 @@ on:
   push:
     branches: [main]
   pull_request:
+    # ready_for_review: the jobs below skip drafts, so a draft marked ready must
+    # trigger a run or it never gets these checks.
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
 
 permissions:
@@ -27,6 +30,7 @@ jobs:
     name: cargo hack --each-feature
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
+    if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -53,6 +57,7 @@ jobs:
     name: MSRV floor (workspace rust-version)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
+    if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -85,6 +90,7 @@ jobs:
     name: Kani toolchain floor (1.93)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
+    if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
