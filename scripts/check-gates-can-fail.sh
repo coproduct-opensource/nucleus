@@ -445,11 +445,18 @@ UNCOVERED_CEILING=2
 #     meta-anti-leak check. Those perturbations run every CI invocation in the
 #     'adversary-probe-falsifier' job of adversary-probe.yml; the perturbation is
 #     internal, so there is no external subject for this script to break.
+#   check-mutants-report.sh — its subject is a cargo-mutants outcomes.json that
+#     exists only after a mutants run, so there is no tree file to perturb here.
+#     Its `--self-test` builds four synthetic reports (unmutated-tree failure,
+#     a missed mutant, a partial run, excess timeouts) and asserts each is red
+#     and a clean one green; it runs in the `mutants` job of
+#     coverage-matrix.yml before the enforcing step, every CI invocation.
 SELF_FALSIFIED=(
     "check-mediation-dylint.sh    --self-test in the 'mediated' job (dylint-separation.yml)"
     "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)"
     "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)"
     "check-clippy-ratchet.sh     ceiling-below-actual in the 'ratchet-falsifier' job (clippy-ratchet.yml)"
+    "check-mutants-report.sh     --self-test in the 'mutants' job (coverage-matrix.yml)"
 )
 
 echo
