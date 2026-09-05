@@ -53,23 +53,33 @@ template:
           limits:
             memory: 4500Mi
         volumeMounts:
-          # Only caches are shared. Toolchains live in the image (Dockerfile).
-          - name: cargo-registry
-            mountPath: /home/runner/.cargo/registry
-          - name: cargo-git
-            mountPath: /home/runner/.cargo/git
+          # Only IMMUTABLE caches are shared: the registry's .crate files and
+          # index, and cargo's bare git db. `registry/src` and `git/checkouts`
+          # are extracted per pod — sharing them let one job's re-extraction
+          # yank a source tree out from under another job's sccache hash
+          # ("Failed to open file for hashing: …/registry/src/…/host.rs").
+          - name: cargo-registry-cache
+            mountPath: /home/runner/.cargo/registry/cache
+          - name: cargo-registry-index
+            mountPath: /home/runner/.cargo/registry/index
+          - name: cargo-git-db
+            mountPath: /home/runner/.cargo/git/db
           - name: cache
             mountPath: /home/runner/.cache
     volumes:
       # Host-path directories on the k3s node, owned by uid 1001 (the image's
       # `runner` user): created by k8s/ci-runner/README.md's setup step.
-      - name: cargo-registry
+      - name: cargo-registry-cache
         hostPath:
-          path: /var/lib/nucleus-ci/cargo/registry
+          path: /var/lib/nucleus-ci/cargo/registry/cache
           type: DirectoryOrCreate
-      - name: cargo-git
+      - name: cargo-registry-index
         hostPath:
-          path: /var/lib/nucleus-ci/cargo/git
+          path: /var/lib/nucleus-ci/cargo/registry/index
+          type: DirectoryOrCreate
+      - name: cargo-git-db
+        hostPath:
+          path: /var/lib/nucleus-ci/cargo/git/db
           type: DirectoryOrCreate
       - name: cache
         hostPath:
