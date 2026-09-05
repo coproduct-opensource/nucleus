@@ -17,21 +17,28 @@ runnerScaleSetName: nucleus-k3s
 # pci-k3s --cpus 12 --memory 28`, VM stopped):
 #
 #   nucleus-k3s        this file        8 small runners  — the seconds-long gates
-#   nucleus-k3s-build  values-build.yaml 3 big runners    — cargo test / clippy /
+#   nucleus-k3s-build  values-build.yaml 4 big runners    — cargo test / clippy /
 #                                                          hack / llvm-cov / dylint
 #
 # Why: `cargo xtask ci-timings` on PR #2617 measured 33 of 40 self-hosted jobs
 # at <= 90 s of run time but 152 minutes of COMBINED queue wait, because one
 # FIFO pool let 10-minute compiles hold every slot while gates queued behind
 # them (p90 queue wait 7.2 min, critical path = a 40 s job that waited 11.6
-# min). Requests: 8 x 0.5 + 3 x 2.5 = 11.5 vCPU; 8 x 1 + 3 x 5 = 23 GiB.
+# min). Requests: 8 x 0.5 + 4 x 2.5 = 14 vCPU (the VM's 14); 8 x 1 + 4 x 5 = 28 GiB
+# of 32. The first clean run after the split (#2620, 86 jobs) had the build
+# pool's queue at p90 22 min with 88 min of build-pool work over 3 runners —
+# the fourth runner is the cheapest 25% there is.
 # Workflows pick the pool with `runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER
 # || 'ubuntu-latest' }}` on the heavy jobs and `vars.CI_RUNNER` on the rest.
 #
 # Sizing lesson kept from the first cohort: the memory limit must be sized for
 # CARGO_BUILD_JOBS parallel rustc/ld processes — an unbounded cargo under a
 # 6 GiB limit OOM-killed the linker; Lake needs LEAN_NUM_THREADS capped too.
-minRunners: 0
+# Warm runners. A job on a pool with none idle pays pod creation + runner
+# registration before its first step (~20–40 s measured on this VM); two warm
+# gate runners cover the short gate jobs that arrive in bursts on every push.
+# Cost while idle: 2 × (0.5 CPU, 1 GiB) requests, already reserved at peak.
+minRunners: 2
 maxRunners: 8
 
 template:
@@ -70,8 +77,15 @@ template:
           - name: ACTIONS_RUNNER_HOOK_JOB_COMPLETED
             value: /home/runner/hooks/job-completed.sh
         resources:
+          # REQUESTS are what the scheduler reserves; with warm runners those
+          # reservations are permanent. At 500m per gate pod + 2500m per build
+          # pod the node's 14 CPUs were fully requested and new gate pods
+          # intermittently failed to schedule ("Insufficient cpu") while the
+          # build pool sat at two busy — seen 2026-09-05 under the merge-queue
+          # wave. Requests are sized for the idle/average case; the limits
+          # below are what a job may actually burn.
           requests:
-            cpu: "500m"
+            cpu: "250m"
             memory: 1Gi
           limits:
             cpu: "2"

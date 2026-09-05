@@ -106,7 +106,7 @@ jobs:
       - name: lake build Nucleus (rubric scoring proofs)
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-rubric/lean
-        run: LEAN_NUM_THREADS=${{ runner.environment == 'github-hosted' && '4' || '3' }} lake build
+        run: LEAN_NUM_THREADS=4 lake build
 
       - name: Ban sorry / admit / native_decide / sorryAx in rubric Lean
         if: steps.scope.outputs.relevant == 'true'

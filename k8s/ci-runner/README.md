@@ -12,7 +12,7 @@ back to hosted runners.
 | Piece | Location |
 |---|---|
 | Runner image | `docker/Dockerfile.runner` (OS deps, sccache, just, and every pinned Rust toolchain baked in per runner user) |
-| Scale-set values | `values.yaml` (the `nucleus-k3s` gate pool, 8 small runners) and `values-build.yaml` (the `nucleus-k3s-build` pool, 3 big runners; DERIVED by `render-build-values.sh`, never hand-edited); no credential, both reference the `gh-token` secret |
+| Scale-set values | `values.yaml` (the `nucleus-k3s` gate pool, 8 small runners) and `values-build.yaml` (the `nucleus-k3s-build` pool, 4 big runners; DERIVED by `render-build-values.sh`, never hand-edited); no credential, both reference the `gh-token` secret |
 | Persistent mounts | `/var/lib/nucleus-ci/cargo/registry/{cache,index}` and `/var/lib/nucleus-ci/cache` on the node, uid 1001 (immutable caches only; `registry/src` and the whole cargo git db are per pod) |
 | Warm-up | `warm.sh` (installs rustup 1.96.1 + elan/Lean v4.30.0-rc2 into the mounts) |
 | Job hooks | `hooks/job-started.sh`, `hooks/job-completed.sh` (ConfigMap `runner-hooks`; sccache hit rate and cgroup peaks per job) |
@@ -53,6 +53,18 @@ sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install nucleus-k3s
   oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
   --version 0.14.2 -n arc-runners -f k8s/ci-runner/values.yaml
 ```
+
+Sizing, measured 2026-09-05 under a full rebase wave (14 vCPU / 32 GiB VM):
+build pods peak at 5.0–6.2 GiB (`memory.peak` from the job-completed hook,
+limit 8 GiB); with all runners present the node sits at 97 % CPU requests
+and 86 % memory requests and 87–93 % CPU utilisation. A fifth build runner
+does not fit: +2.5 CPU / +5 GiB of requests over the node, and 5 × 6.2 GiB
+peaks leave no headroom. Throughput comes from fewer compile jobs per PR
+(ci.yml builds the workspace once per pod), not from more runners. Warm
+runners (`minRunners`: 2 gate, 1 build) remove the pod-start latency from
+the short jobs. Their reservations are permanent, so CPU *requests* were
+lowered (gate 250m, build 2000m; limits unchanged) after new pods failed
+to schedule on "Insufficient cpu" while the build pool sat half idle.
 
 Install the build pool the same way with `-f k8s/ci-runner/values-build.yaml`
 and release name `nucleus-k3s-build`.

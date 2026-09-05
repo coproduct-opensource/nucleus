@@ -110,7 +110,7 @@ jobs:
       - name: lake build Nucleus (econ proofs + golden seal)
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-econ-kernels/lean
-        run: LEAN_NUM_THREADS=${{ runner.environment == 'github-hosted' && '4' || '3' }} lake build
+        run: LEAN_NUM_THREADS=4 lake build
 
       - name: Ban sorry / native_decide in econ Lean
         if: steps.scope.outputs.relevant == 'true'
