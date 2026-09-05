@@ -121,7 +121,7 @@ jobs:
   # and kernel/ifc.rs are live on. Every other Kani job runs `-p portcullis` or
   # `-p ck-kernel`; until #2563 nothing ran these. All six verify in ~5 s.
   kani-ifc:
-    name: Kani (IFC kernel: anti-prompt-injection flow harnesses)
+    name: "Kani (IFC kernel: anti-prompt-injection flow harnesses)"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: github.event_name != 'schedule'

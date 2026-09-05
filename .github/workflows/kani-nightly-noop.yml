@@ -42,7 +42,7 @@ jobs:
         run: echo "no relevant paths changed — gate vacuously green"
 
   kani-ifc:
-    name: Kani (IFC kernel: anti-prompt-injection flow harnesses)
+    name: "Kani (IFC kernel: anti-prompt-injection flow harnesses)"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
