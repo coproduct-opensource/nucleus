@@ -27,9 +27,13 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
 MODE=${1:---strict}
 FLOOR_FILE=.kani-minimum-proofs
-PATTERN='#\[kani::proof\]'
+# The ATTRIBUTE, anchored at line start: the same rule scripts/formal-numbers.sh
+# uses for the published census, so the two never disagree. A bare
+# `#\[kani::proof\]` also counted nucleus-audit's own string literal and a
+# comment in ck-kernel (117 vs 115).
+PATTERN='^[[:space:]]*#\[kani::proof'
 
-count_in() { { grep -rho "$PATTERN" "$@" 2>/dev/null || true; } | wc -l | tr -d ' '; }
+count_in() { { grep -rhE "$PATTERN" "$@" 2>/dev/null || true; } | wc -l | tr -d ' '; }
 
 total=0
 breakdown=""
