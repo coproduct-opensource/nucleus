@@ -44,6 +44,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install elan (Lean toolchain)
+        # Hosted only: the runner image bakes elan + the pinned Lean toolchain.
+        if: ${{ runner.environment == 'github-hosted' }}
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --no-modify-path
