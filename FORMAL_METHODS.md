@@ -163,7 +163,7 @@ These are important security properties that have NO formal verification:
 | Permission algebra | Kani BMC | Distributivity, monotonicity, monoid | Bounded | ~45 harnesses | PR (fast) + nightly |
 
 <<<<<<< HEAD
-**Total: 115 Kani BMC harnesses repo-wide** (portcullis 66, portcullis-core 25,
+**Total: 117 Kani BMC harnesses repo-wide** (portcullis 68, portcullis-core 25,
 ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1; recount with
 `scripts/formal-numbers.sh --print` — a bare `grep -rc` says 117 because it also
 counts a doc comment in ck-kernel and the string inside nucleus-audit's own
@@ -335,7 +335,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 | Tool | Type | Count | What It Proves |
 |------|------|-------|----------------|
 | **Lean 4 + Mathlib** | Unbounded, kernel-checked | ~277 theorems (security core; `sorry`-free, CI-gated) | HeytingAlgebra, IFC flow rules, compartment safety, delegation narrowing, DerivationClass lattice |
-| **Kani** | Bounded model checking | 115 harnesses repo-wide (portcullis 66, portcullis-core 25, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1) | DecisionToken linearity, lattice distributivity, exposure monoid, constitutional kernel invariants |
+| **Kani** | Bounded model checking | 117 harnesses repo-wide (portcullis 68, portcullis-core 25, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1) | DecisionToken linearity, lattice distributivity, exposure monoid, constitutional kernel invariants |
 | **Proptest** | Property-based testing | ~47 suites incl. `verus_conformance.rs` | Full PermissionLattice composition (the surviving "Verus" artifact — property tests, not SMT) |
 | **Red team** | Adversarial testing | 162 scenarios | OWASP LLM Top 10, DPI flow attacks, delegation chain attacks |
 
