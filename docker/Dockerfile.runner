@@ -25,7 +25,7 @@ RUN apt-get update \
         build-essential clang lld llvm pkg-config cmake \
         libssl-dev protobuf-compiler musl-tools e2fsprogs \
         git zstd xz-utils python3 python-is-python3 python3-requests ca-certificates \
-        swtpm tpm2-tools \
+        swtpm tpm2-tools patchelf \
     && rm -rf /var/lib/apt/lists/*
 
 # sccache: the cross-job compile cache (RUSTC_WRAPPER=sccache, store on the
@@ -117,10 +117,18 @@ ARG CHARON_NIGHTLY=nightly-2026-06-01
 RUN set -eux; \
     curl -fsSL "https://github.com/AeneasVerif/aeneas/releases/download/${AENEAS_RELEASE}/aeneas-linux-aarch64.tar.gz" -o /tmp/aeneas.tar.gz; \
     mkdir -p /opt/aeneas && tar xzf /tmp/aeneas.tar.gz -C /opt/aeneas; rm -f /tmp/aeneas.tar.gz; \
-    chown -R runner:runner /opt/aeneas; /opt/aeneas/aeneas -version
+    # Upstream's aarch64 charon/charon-driver are AArch64 code that REQUEST
+    # the x86-64 dynamic loader (/lib64/ld-linux-x86-64.so.2 — a packaging
+    # slip in the release); point them at the real one.
+    for b in charon charon-driver; do patchelf --set-interpreter /lib/ld-linux-aarch64.so.1 /opt/aeneas/$b; done; \
+    chown -R runner:runner /opt/aeneas; /opt/aeneas/aeneas -version; /opt/aeneas/charon --version
 USER runner
 RUN set -eux; \
-    rustup toolchain install ${CHARON_NIGHTLY} --profile minimal -c rustc-dev -c llvm-tools-preview -c rust-src; \
+    # Everything the tarball's rust-toolchain file names, so rustup has nothing
+    # to auto-install when charon selects it (miri + the cross targets included).
+    rustup toolchain install ${CHARON_NIGHTLY} --profile minimal -c rustc-dev -c llvm-tools-preview -c rust-src -c miri \
+      -t x86_64-unknown-linux-gnu -t x86_64-apple-darwin -t x86_64-pc-windows-msvc -t aarch64-apple-darwin \
+      -t i686-unknown-linux-gnu -t powerpc64-unknown-linux-gnu -t riscv64gc-unknown-none-elf; \
     rustup target add x86_64-unknown-linux-musl --toolchain stable
 
 # elan + the one Lean toolchain every lean project pins (lean-toolchain files),
