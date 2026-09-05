@@ -60,6 +60,8 @@ jobs:
     if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           # Must match [workspace.package] rust-version. Set by wasmtime 48
@@ -72,8 +74,30 @@ jobs:
       # (sdks/verifier-js/pkg/) that only the Tests job builds first;
       # it is excluded here so the MSRV floor checks source, not
       # generated-artifact presence.
-      - name: Check workspace on the MSRV toolchain
-        run: cargo +1.95 check --workspace --all-features --locked --exclude nucleus-verifier-service
+      # Scoped on pull_request to the crates the diff touches (closed under
+      # reverse dependencies, scripts/affected-crates.sh); the whole workspace
+      # on merge_group and push. Measured 13 pool-minutes per PR for the full
+      # check on the build pool — the top named job after the workspace tests.
+      - name: Check on the MSRV toolchain (affected crates on a PR, workspace otherwise)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          pk=()
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch -q origin "$BASE"
+            rc=0; names=$(scripts/affected-crates.sh "origin/$BASE") || rc=$?
+            if [ "$rc" = 0 ] && [ -n "$names" ]; then
+              while read -r n; do [ "$n" = nucleus-verifier-service ] || pk+=(-p "$n"); done <<< "$names"
+              echo "MSRV check scoped to: $names"
+            fi
+          fi
+          if [ ${#pk[@]} -eq 0 ]; then
+            cargo +1.95 check --workspace --all-features --locked --exclude nucleus-verifier-service
+          else
+            cargo +1.95 check --all-features --locked "${pk[@]}"
+          fi
 
   # The Kani floor, enforced on exactly what Kani builds.
   #
