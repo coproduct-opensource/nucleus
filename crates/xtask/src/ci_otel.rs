@@ -11,7 +11,8 @@
 //! Metrics (all with unit `s` where a duration):
 //!   * `ci.job.queue_wait`  histogram  {workflow, runner, event}
 //!     started_at − created_at: time waiting for a runner
-//!   * `ci.job.duration`    histogram  {workflow, job, runner, event}
+//!   * `ci.job.duration`    histogram  {workflow, job_name, runner, event}
+//!     (`job_name`, not `job`: Prometheus reserves `job` for service.name)
 //!     completed_at − started_at
 //!   * `ci.job.completed`   sum (delta) {workflow, runner, event, conclusion}
 //!   * `ci.workflow.duration` histogram {workflow, event}
@@ -250,7 +251,7 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
             duration
                 .entry(vec![
                     ("workflow", wf.clone()),
-                    ("job", j.name.clone()),
+                    ("job_name", j.name.clone()),
                     ("runner", runner.clone()),
                     ("event", run.event.clone()),
                 ])
@@ -267,10 +268,18 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
         }
     }
 
-    let mq: Value = serde_json::from_str(&gh_api(
-        "graphql -f query={repository(owner:\"coproduct-opensource\",name:\"nucleus\"){mergeQueue(branch:\"main\"){entries(first:1){totalCount}}}}",
-    ).unwrap_or_else(|_| "{}".into()))
-    .unwrap_or(Value::Null);
+    let mq: Value = Command::new("gh")
+        .args([
+            "api",
+            "graphql",
+            "-f",
+            "query={repository(owner:\"coproduct-opensource\",name:\"nucleus\"){mergeQueue(branch:\"main\"){entries(first:1){totalCount}}}}",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+        .unwrap_or(Value::Null);
     let mq_depth = mq["data"]["repository"]["mergeQueue"]["entries"]["totalCount"]
         .as_u64()
         .unwrap_or(0);
