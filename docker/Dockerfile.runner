@@ -12,7 +12,7 @@
 # Build for the node's own architecture (arm64 today):
 #   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.5 .
 # then import into k3s's containerd (k8s/ci-runner/README.md).
-FROM ghcr.io/actions/actions-runner:2.337.0
+FROM ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
 
 USER root
 ENV DEBIAN_FRONTEND=noninteractive

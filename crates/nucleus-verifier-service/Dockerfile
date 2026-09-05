@@ -6,7 +6,7 @@
 #
 #   docker build -f crates/nucleus-verifier-service/Dockerfile -t nucleus-verifier .
 
-FROM rust:1.95-slim-bookworm AS build
+FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS build
 WORKDIR /work
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --bin nucleus-verifier-service && \
     cp /work/target/release/nucleus-verifier-service /usr/local/bin/nucleus-verifier-service
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 COPY --from=build /usr/local/bin/nucleus-verifier-service /usr/local/bin/nucleus-verifier-service
 EXPOSE 8080
 # Default env: bind on all interfaces, DB on the mounted volume. The
