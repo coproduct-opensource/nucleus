@@ -142,6 +142,53 @@ argument, but it is currently on the wrong side of the tractability line: it bui
 very thing it is trying to bridge. A version over interned ids would verify and would
 carry real weight.
 
+## portcullis: what the per-PR harnesses prove
+
+`crates/portcullis/src/kani.rs` runs five harnesses on every PR and push (the `Kani` job
+in `kani-nightly.yml`). Every one of them traverses `CapabilityLattice` or `ExposureSet`,
+and both types are **narrower under Kani than in production**: their `extensions` field
+(`BTreeMap<ExtensionOperation, CapabilityLevel>` / `BTreeSet<ExtensionExposureLabel>`) is
+`#[cfg(not(kani))]`, for the same reason the ck-kernel tier above never terminates — CBMC
+cannot construct the heap-backed collection. So `meet`, `join`, `leq`, `union`,
+`is_superset_of`, the Heyting `implies`, the permission digest, and
+`UninhabitableState::is_triggered` all take a different path in the proof than in the
+binary.
+
+Every such site is enumerated with a justification in `kani-divergence.toml`, and
+`scripts/check-kani-divergence.sh` (the `cfg(kani) divergences are inventoried and
+ratcheted` job) fails on an unlisted site, a stale entry, or any growth of the total
+against the PR base. The count is 62 sites in 41 distinct (file, attribute, guarded line)
+groups; 11 are harness modules that change nothing, 26 are the mechanical struct-literal
+consequences of the two omitted fields, and the rest are the operations and predicates
+listed below.
+
+The harnesses are therefore relabelled here as **`*_core_dims`** proofs. The source
+names are unchanged for now (the `--harness` arguments in the workflow and the proof-count
+census key on them); the label states what each one actually establishes.
+
+| harness (as `*_core_dims`) | proves | does **not** prove |
+| --- | --- | --- |
+| `proof_capability_distributive_core_dims` | meet distributes over join on the 13 core capability dimensions | the same law on extension dimensions — covered by `test_extension_mock_matches_production_btreemap` (exhaustive, 2 keys × 4 states), not by BMC |
+| `proof_exposureset_monoid_identity_core_dims` | `empty()` is the two-sided identity of `union` on the three frozen labels | identity for the extension-label set half of `union` (set union with `{}`; true by construction, not machine-checked) |
+| `proof_exposureset_uninhabitable_iff_count_three_core_dims` | `is_uninhabitable() ⟺ count() == 3` | nothing narrower: both sides read only the three core bools in every build, so this one is exact for production too |
+| `proof_operation_exposure_completeness_core_dims` | every `Operation` maps to a core `ExposureLabel` set as specified | anything about extension exposure labels (none are attached to operations today) |
+| `proof_clinejection_blocked_core_dims` | the CLI-injection path is denied given the core `UntrustedContent`/`ExfilVector` exposure | denial decisions that depend on `required_ext_labels`: `is_triggered` sets `ext_met = true` under Kani, so a combo with extension requirements is proved *at least as* denied as production, not equal to it |
+
+Two sites are semantic divergences rather than domain narrowings, and are worth naming
+outside the table:
+
+- **`certificate.rs` permission digest** omits the extension bytes under Kani. Any digest
+  property proved under Kani holds for extension-free permissions only.
+- **`uninhabitable_state.rs` `is_triggered`** treats every required extension label as met
+  under Kani. The direction is fail-closed (the verified predicate denies at least as often
+  as production), but it is not the production predicate; the extension cases are covered
+  by two unit tests only.
+
+The way out is the one KANI-STATUS already names for ck-kernel: a Kani-tractable
+representation for the extension dimensions (fixed slots or interned ids, as `LedgerCore`
+did for the budget ledger) with a refinement argument to the `BTreeMap`. Until then the
+divergence total in `kani-divergence.toml` may only shrink.
+
 ## What runs today
 
 `src/kani.rs` carries `#![cfg(kani)]`, so **its harnesses compile only under `cargo kani`** —

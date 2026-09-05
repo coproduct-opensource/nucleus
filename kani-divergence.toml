@@ -1,0 +1,320 @@
+# cfg(kani) divergence inventory — enforced by scripts/check-kani-divergence.sh (#2574).
+#
+# Every attribute-form `#[cfg(kani)]`, `#[cfg(not(kani))]`, `#![cfg(kani)]` and
+# `#[cfg_attr(kani, ..)]` under crates/**/*.rs is a place where what Kani verifies
+# and what ships can differ. Each one is listed here with the line it guards, a
+# class, and a justification. The lint fails on an unlisted site, on a listed
+# site that no longer exists, on a `total` that does not match the census, and
+# (against the PR base) on any growth: the total only shrinks. Removing a
+# divergence means making the production representation Kani-tractable
+# (fixed-slot / bitmask, as `LedgerCore` did for the budget ledger), not
+# deleting the proof.
+#
+# Classes:
+#   harness-only              proof harness modules; no production path changes
+#   extensions-omitted-field  a BTreeMap/BTreeSet field compiled out under Kani (the root cause)
+#   extensions-omitted-ctor   a struct literal initialising that field (no divergence of its own)
+#   extensions-omitted-op     an operation over that field skipped/absent under Kani
+#   extensions-omitted-test   a unit test that needs the field
+#   semantic-divergence       the verified predicate/digest differs from production in value,
+#                             not just in domain — read the entry; each states the direction
+#
+# The harness consequence of the extensions-omitted family is recorded in
+# KANI-STATUS.md ("portcullis: what the per-PR harnesses prove"): every portcullis
+# harness over CapabilityLattice or ExposureSet is a `*_core_dims` proof.
+
+
+total = 62
+
+[[site]]
+file = "crates/ck-kernel/src/kani.rs"
+attr = "#![cfg(kani)]"
+guards = "<whole file>"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/nucleus-econ-kernels/proofs/welfare_no_overflow.rs"
+attr = "#![cfg(kani)]"
+guards = "<whole file>"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/nucleus-econ-kernels/src/lib.rs"
+attr = "#[cfg(kani)]"
+guards = "mod welfare_no_overflow_proofs;"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/nucleus-ifc-kernel/src/flow.rs"
+attr = "#[cfg(kani)]"
+guards = "mod kani_proofs {"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/nucleus-node/src/session_mint.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: std::collections::BTreeMap::new(),"
+class = "extensions-omitted-ctor"
+why = "Struct-literal consequence of `CapabilityLattice::extensions` being `cfg(not(kani))` (see capability.rs field entry). Adds no divergence of its own: it initialises a field that does not exist in the verified model."
+
+[[site]]
+file = "crates/portcullis-core/src/declassify.rs"
+attr = "#[cfg(kani)]"
+guards = "mod kani_declassify_proofs {"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/portcullis-core/src/delegation.rs"
+attr = "#[cfg(kani)]"
+guards = "mod kani_delegation_proofs {"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/portcullis-core/src/envelope.rs"
+attr = "#[cfg(kani)]"
+guards = "mod kani_witness_requirement_proofs {"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/portcullis-core/src/lib.rs"
+attr = "#[cfg(kani)]"
+guards = "mod kani_ifc_label_proofs {"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/portcullis-core/src/manifest.rs"
+attr = "#[cfg(kani)]"
+guards = "mod kani_proofs {"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/portcullis/src/capability.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: BTreeMap::new(),"
+count = 3
+class = "extensions-omitted-ctor"
+why = "Struct-literal consequence of `CapabilityLattice::extensions` being `cfg(not(kani))` (see capability.rs field entry). Adds no divergence of its own: it initialises a field that does not exist in the verified model."
+
+[[site]]
+file = "crates/portcullis/src/capability.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: ext,"
+count = 2
+class = "extensions-omitted-op"
+why = "Result-literal half of the meet/join extension computation above; same justification."
+
+[[site]]
+file = "crates/portcullis/src/capability.rs"
+attr = "#[cfg(not(kani))]"
+guards = "let ext = if self.extensions.is_empty() && other.extensions.is_empty() {"
+count = 2
+class = "extensions-omitted-op"
+why = "`meet`/`join` compute the extension pointwise min/max only in production. Under Kani meet and join are over the 13 core dimensions: `proof_capability_distributive` and the meet_* harnesses prove distributivity/idempotence/commutativity/associativity of the CORE lattice; the extension half is covered by the exhaustive mock-vs-BTreeMap test, not by BMC."
+
+[[site]]
+file = "crates/portcullis/src/capability.rs"
+attr = "#[cfg(not(kani))]"
+guards = "pub extensions: BTreeMap<ExtensionOperation, CapabilityLevel>,"
+class = "extensions-omitted-field"
+why = "ROOT of the largest family. The extension dimensions live in a BTreeMap, which CBMC cannot construct tractably (see KANI-STATUS.md, `BTreeSet<String>`). Under Kani `CapabilityLattice` is the 13 core dimensions only, so every portcullis harness over it is a `*_core_dims` proof. Extension lattice laws are covered by `test_extension_mock_matches_production_btreemap` (exhaustive 2 keys x 4 states), not by Kani."
+
+[[site]]
+file = "crates/portcullis/src/capability.rs"
+attr = "#[cfg(not(kani))]"
+guards = "pub fn extension_level(&self, op: &ExtensionOperation) -> CapabilityLevel {"
+class = "extensions-omitted-op"
+why = "Accessor over the omitted field. Not callable under Kani; harnesses cannot observe extension levels."
+
+[[site]]
+file = "crates/portcullis/src/capability.rs"
+attr = "#[cfg(not(kani))]"
+guards = "{"
+class = "extensions-omitted-op"
+why = "`leq` skips the extension pointwise-<= branch under Kani. Every harness asserting `a.leq(&b)` (attenuation_leq_*, delegation_ceiling, apply_record_monotone, normalize_*) proves the order on the 13 core dimensions only; a production `leq` can additionally return false on an extension key. Direction: production is STRICTER, never looser, than the verified predicate."
+
+[[site]]
+file = "crates/portcullis/src/certificate.rs"
+attr = "#[cfg(not(kani))]"
+guards = "{"
+class = "semantic-divergence"
+why = "The permission digest omits the extension bytes under Kani. A digest proved stable/injective under Kani is proved so for extension-FREE permissions; two production permissions differing only in extensions hash differently (BTreeMap iteration is key-ordered, so this remains deterministic), which Kani never exercises. Any future harness over `permission_digest` is a `_core_dims` proof until this site is removed."
+
+[[site]]
+file = "crates/portcullis/src/dropout.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: std::collections::BTreeMap::new(),"
+class = "extensions-omitted-ctor"
+why = "Struct-literal consequence of `CapabilityLattice::extensions` being `cfg(not(kani))` (see capability.rs field entry). Adds no divergence of its own: it initialises a field that does not exist in the verified model."
+
+[[site]]
+file = "crates/portcullis/src/guard.rs"
+attr = "#[cfg(kani)]"
+guards = "core_ok"
+class = "semantic-divergence"
+why = "`is_superset_of` under Kani is the core-label superset only; production additionally requires `other.extensions ⊆ self.extensions`. The E1 monotonicity assertion is therefore proved for core labels; production is stricter. Pair of the `{` entry below."
+
+[[site]]
+file = "crates/portcullis/src/guard.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions,"
+class = "extensions-omitted-op"
+why = "`union` takes the BTreeSet union only in production. Under Kani union is OR over three bools: the monoid-law harnesses (`proof_exposureset_monoid_identity`/`_laws`, `_union_monotone`) prove the core monoid; set union is associative/commutative/idempotent with {} as identity by construction, but that half is not machine-checked."
+
+[[site]]
+file = "crates/portcullis/src/guard.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: std::collections::BTreeSet<ExtensionExposureLabel>,"
+class = "extensions-omitted-field"
+why = "ROOT of the ExposureSet family: the extension exposure labels live in a BTreeSet, intractable for CBMC. Under Kani `ExposureSet` is exactly three bools, so `proof_exposureset_*`, `proof_operation_exposure_completeness`, `proof_clinejection_blocked`, `proof_exposure_*` and `proof_guard_denial_soundness` prove properties of the three FROZEN core labels. The uninhabitable predicate itself (`is_uninhabitable`) reads only the core bools in both builds, so that predicate is not narrowed."
+
+[[site]]
+file = "crates/portcullis/src/guard.rs"
+attr = "#[cfg(not(kani))]"
+guards = "for ext in &self.extensions {"
+class = "extensions-omitted-op"
+why = "`Display` renders extension labels only in production. Cosmetic; no harness asserts on the rendering."
+
+[[site]]
+file = "crates/portcullis/src/guard.rs"
+attr = "#[cfg(not(kani))]"
+guards = "let extensions = if self.extensions.is_empty() && other.extensions.is_empty() {"
+class = "extensions-omitted-op"
+why = "`union` takes the BTreeSet union only in production. Under Kani union is OR over three bools: the monoid-law harnesses (`proof_exposureset_monoid_identity`/`_laws`, `_union_monotone`) prove the core monoid; set union is associative/commutative/idempotent with {} as identity by construction, but that half is not machine-checked."
+
+[[site]]
+file = "crates/portcullis/src/guard.rs"
+attr = "#[cfg(not(kani))]"
+guards = "pub fn contains_extension(&self, label: &ExtensionExposureLabel) -> bool {"
+class = "extensions-omitted-op"
+why = "Constructor/accessor over the omitted BTreeSet field. Not callable under Kani."
+
+[[site]]
+file = "crates/portcullis/src/guard.rs"
+attr = "#[cfg(not(kani))]"
+guards = "pub fn extension_labels(&self) -> impl Iterator<Item = &ExtensionExposureLabel> {"
+class = "extensions-omitted-op"
+why = "Constructor/accessor over the omitted BTreeSet field. Not callable under Kani."
+
+[[site]]
+file = "crates/portcullis/src/guard.rs"
+attr = "#[cfg(not(kani))]"
+guards = "pub fn extension_singleton(label: ExtensionExposureLabel) -> Self {"
+class = "extensions-omitted-op"
+why = "Constructor/accessor over the omitted BTreeSet field. Not callable under Kani."
+
+[[site]]
+file = "crates/portcullis/src/guard.rs"
+attr = "#[cfg(not(kani))]"
+guards = "{"
+class = "extensions-omitted-op"
+why = "Production branch of `is_superset_of` (core AND extension subset). See the `core_ok` entry."
+
+[[site]]
+file = "crates/portcullis/src/heyting.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: ext,"
+class = "extensions-omitted-op"
+why = "`implies` computes the pointwise Heyting implication over extension keys only in production (sparse: absent = Always). Under Kani `proof_r1_heyting_adjunction` / `proof_r2_pseudo_complement` prove the adjunction over the 13 core dimensions; the extension adjunction is covered by the three `test_heyting_adjunction_extensions_*` unit tests below (27 explicit triples + sparse cases), not by BMC."
+
+[[site]]
+file = "crates/portcullis/src/heyting.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: std::collections::BTreeMap::new(),"
+class = "extensions-omitted-ctor"
+why = "Struct-literal consequence of `CapabilityLattice::extensions` being `cfg(not(kani))` (see capability.rs field entry). Adds no divergence of its own: it initialises a field that does not exist in the verified model."
+
+[[site]]
+file = "crates/portcullis/src/heyting.rs"
+attr = "#[cfg(not(kani))]"
+guards = "fn leq_himp(&self, himp: &Self) -> bool {"
+class = "extensions-omitted-op"
+why = "`leq_himp` (absent-key = Always comparison for implication results) exists only in production because it is only meaningful with the sparse extension map. Under Kani the Heyting harnesses compare with core `leq`, which is exact for the 13 core dimensions."
+
+[[site]]
+file = "crates/portcullis/src/heyting.rs"
+attr = "#[cfg(not(kani))]"
+guards = "fn test_heyting_adjunction_extensions_exhaustive() {"
+class = "extensions-omitted-test"
+why = "Unit test that exercises extension keys; cannot compile when the field is absent. These tests ARE the coverage for the extension half of the Heyting adjunction that the Kani harnesses do not prove."
+
+[[site]]
+file = "crates/portcullis/src/heyting.rs"
+attr = "#[cfg(not(kani))]"
+guards = "fn test_heyting_adjunction_extensions_regression() {"
+class = "extensions-omitted-test"
+why = "Unit test that exercises extension keys; cannot compile when the field is absent. These tests ARE the coverage for the extension half of the Heyting adjunction that the Kani harnesses do not prove."
+
+[[site]]
+file = "crates/portcullis/src/heyting.rs"
+attr = "#[cfg(not(kani))]"
+guards = "fn test_heyting_adjunction_extensions_sparse_leq_himp() {"
+class = "extensions-omitted-test"
+why = "Unit test that exercises extension keys; cannot compile when the field is absent. These tests ARE the coverage for the extension half of the Heyting adjunction that the Kani harnesses do not prove."
+
+[[site]]
+file = "crates/portcullis/src/heyting.rs"
+attr = "#[cfg(not(kani))]"
+guards = "let ext = {"
+class = "extensions-omitted-op"
+why = "`implies` computes the pointwise Heyting implication over extension keys only in production (sparse: absent = Always). Under Kani `proof_r1_heyting_adjunction` / `proof_r2_pseudo_complement` prove the adjunction over the 13 core dimensions; the extension adjunction is covered by the three `test_heyting_adjunction_extensions_*` unit tests below (27 explicit triples + sparse cases), not by BMC."
+
+[[site]]
+file = "crates/portcullis/src/kani.rs"
+attr = "#![cfg(kani)]"
+guards = "<whole file>"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/portcullis/src/lattice.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: std::collections::BTreeMap::new(),"
+count = 16
+class = "extensions-omitted-ctor"
+why = "Struct-literal consequence of `CapabilityLattice::extensions` being `cfg(not(kani))` (see capability.rs field entry). Adds no divergence of its own: it initialises a field that does not exist in the verified model."
+
+[[site]]
+file = "crates/portcullis/src/lib.rs"
+attr = "#[cfg(kani)]"
+guards = "mod kani;"
+class = "harness-only"
+why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
+
+[[site]]
+file = "crates/portcullis/src/profile.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: std::collections::BTreeMap::new(),"
+class = "extensions-omitted-ctor"
+why = "Struct-literal consequence of `CapabilityLattice::extensions` being `cfg(not(kani))` (see capability.rs field entry). Adds no divergence of its own: it initialises a field that does not exist in the verified model."
+
+[[site]]
+file = "crates/portcullis/src/trust.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: std::collections::BTreeMap::new(),"
+count = 3
+class = "extensions-omitted-ctor"
+why = "Struct-literal consequence of `CapabilityLattice::extensions` being `cfg(not(kani))` (see capability.rs field entry). Adds no divergence of its own: it initialises a field that does not exist in the verified model."
+
+[[site]]
+file = "crates/portcullis/src/uninhabitable_state.rs"
+attr = "#[cfg(kani)]"
+guards = "let ext_met = true;"
+class = "semantic-divergence"
+why = "`UninhabitableState::is_triggered` treats every required EXTENSION label as met under Kani (`ext_met = true`), because `ExposureSet::contains_extension` does not exist there. Effect: for a combo with `required_ext_labels` non-empty the verified predicate triggers on the core labels alone, i.e. it is at least as eager to deny as production (fail-closed direction), but it is NOT the production predicate. Harnesses over `is_triggered` prove the canonical combo (no extension requirements) exactly; combos with extension requirements are covered by `test_extension_combo_triggered` / `test_extension_combo_not_triggered_missing_ext` only."
+
+[[site]]
+file = "crates/portcullis/src/uninhabitable_state.rs"
+attr = "#[cfg(not(kani))]"
+guards = "let ext_met = self"
+class = "semantic-divergence"
+why = "Production half of the `is_triggered` extension check; see the `let ext_met = true;` entry."
+

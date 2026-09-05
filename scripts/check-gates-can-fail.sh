@@ -352,6 +352,20 @@ perturb_extracted_callsite() {
     fi
 }
 
+perturb_kani_divergence_unlisted() {
+    # A brand-new production fork the inventory does not know about: a
+    # `#[cfg(not(kani))]` guarding a real function. Exactly the gate's subject —
+    # an unlisted divergence (and one more than the base, so the shrink ratchet
+    # would also bite in CI).
+    cat >> "$1" <<'RUST'
+
+#[cfg(not(kani))]
+pub fn gate_of_gates_unlisted_divergence_probe() -> bool {
+    true
+}
+RUST
+}
+
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
@@ -395,6 +409,10 @@ probe check-extracted-callsites.sh "" crates/nucleus-tool-proxy/src/workload.rs 
 probe check-no-hmac-auth.sh "" crates/nucleus-node/src/auth.rs \
       "a retired NUCLEUS_NODE_AUTH_SECRET reference reintroduced" \
       perturb_no_hmac_auth
+
+probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
+      "an unlisted cfg(not(kani)) fork" \
+      perturb_kani_divergence_unlisted
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #
