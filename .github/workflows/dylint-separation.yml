@@ -72,26 +72,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  cb4a-separation:
-    name: cb4a_separation (enforced at zero)
+  # ONE pod for all four passes (CI review, 2026-09-05). Each pass used to be
+  # its own job: four pods, four nightly installs, and — the expensive part —
+  # four separate builds of the linted crates' dependency graphs under the
+  # dylint driver, which sccache cannot front. Measured 3 min per job on the
+  # build pool, ~12 pool-minutes per PR. Here the nightly is installed once
+  # and the driver's target dir is shared, so the dependency graph compiles
+  # once. The four passes are sequential steps with their original names;
+  # none of them is a required status check, so no context is lost.
+  dylint:
+    name: Dylint passes (one pod)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    if: ${{ github.event.pull_request.draft != true }}
     env:
       # dylint drives rustc through its own driver; sccache cannot wrap it
       # ("could not compile proc-macro2 (build script): No such file or
       # directory" on the self-hosted runners, where RUSTC_WRAPPER is pod-wide).
       RUSTC_WRAPPER: ""
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The toolchain is a LOCKSTEP TRIPLE with clippy_utils and dylint_linting;
-      # rust-toolchain.toml inside the lint crate pins it. `rustc-dev` and
+      # rust-toolchain.toml inside each lint crate pins it. `rustc-dev` and
       # `llvm-tools-preview` are mandatory — without them the `extern crate
       # rustc_*` declarations do not resolve.
       - name: Install the pinned nightly
         run: |
           rustup toolchain install nightly-2026-04-16 \
             --component rustc-dev,llvm-tools-preview --profile minimal
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.1
+        # Hosted only: the self-hosted scale set has persistent registry and
+        # sccache mounts, and this action's restore of a hosted x86 cache blob
+        # was observed hanging runner jobs for 15+ minutes.
+        if: ${{ runner.environment == 'github-hosted' }}
 
       # Version-pinned: the crates' manifests call the toolchain, clippy_utils rev
       # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
@@ -99,6 +113,8 @@ jobs:
       - name: Install cargo-dylint
         run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
+      # ── cb4a_separation (enforced at zero) ──────────────────────────────
+      #
       # `cd` rather than `--manifest-path`: rustup selects a toolchain from the
       # CURRENT DIRECTORY, so building from the repo root would silently use the
       # workspace's stable toolchain and fail to resolve `extern crate rustc_*`.
@@ -153,29 +169,7 @@ jobs:
             exit 1
           fi
 
-  mediated:
-    name: mediated (enforced at zero over the sealed effect boundary)
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    env:
-      # dylint drives rustc through its own driver; sccache cannot wrap it
-      # ("could not compile proc-macro2 (build script): No such file or
-      # directory" on the self-hosted runners, where RUSTC_WRAPPER is pod-wide).
-      RUSTC_WRAPPER: ""
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install the pinned nightly
-        run: |
-          rustup toolchain install nightly-2026-04-16 \
-            --component rustc-dev,llvm-tools-preview --profile minimal
-
-      # Version-pinned: the crates' manifests call the toolchain, clippy_utils rev
-      # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
-      # An unpinned `cargo install` would drift the third leg silently.
-      - name: Install cargo-dylint
-        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
-
+      # ── mediated (enforced at zero over the sealed effect boundary) ─────
       - name: Build the pass
         working-directory: tools/nucleus-mediation-lint
         run: cargo build
@@ -207,31 +201,7 @@ jobs:
           DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-mediation-lint/target/debug
         run: scripts/check-mediation-dylint.sh
 
-  identity-isolation:
-    name: workload_identity_isolation (enforced at zero)
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    env:
-      # dylint drives rustc through its own driver; sccache cannot wrap it
-      # ("could not compile proc-macro2 (build script): No such file or
-      # directory" on the self-hosted runners, where RUSTC_WRAPPER is pod-wide).
-      RUSTC_WRAPPER: ""
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install the pinned nightly
-        run: |
-          rustup toolchain install nightly-2026-04-16 \
-            --component rustc-dev,llvm-tools-preview --profile minimal
-
-      # Version-pinned: the crates' manifests call the toolchain, clippy_utils rev
-      # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
-      # An unpinned `cargo install` would drift the third leg silently.
-      - name: Install cargo-dylint
-        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
-
-      # `cd` rather than `--manifest-path`: rustup selects a toolchain from the
-      # CURRENT DIRECTORY — see the cb4a job's comment.
+      # ── workload_identity_isolation (enforced at zero) ──────────────────
       - name: Build the pass
         working-directory: tools/nucleus-identity-lint
         run: cargo build
@@ -269,34 +239,7 @@ jobs:
             exit 1
           fi
 
-  unpoliced-http-client:
-    name: unpoliced_http_client (guest egress)
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    env:
-      # dylint drives rustc through its own driver; sccache cannot wrap it
-      # ("could not compile proc-macro2 (build script): No such file or
-      # directory" on the self-hosted runners, where RUSTC_WRAPPER is pod-wide).
-      RUSTC_WRAPPER: ""
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Same LOCKSTEP TRIPLE as the job above, and installed the same way: plain
-      # rustup, no action. Pinning the toolchain action to a commit hash
-      # would also satisfy zizmor, but the ref was doing nothing here — the
-      # toolchain is chosen by `toolchain:`, not by the action ref — so dropping
-      # the action removes the supply-chain surface instead of pinning it.
-      - name: Install the pinned nightly
-        run: |
-          rustup toolchain install nightly-2026-04-16 \
-            --component rustc-dev,llvm-tools-preview --profile minimal
-      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.1
-        # Hosted only: the self-hosted scale set has persistent registry and
-        # sccache mounts, and this action's restore of a hosted x86 cache blob
-        # was observed hanging runner jobs for 15+ minutes.
-        if: ${{ runner.environment == 'github-hosted' }}
-      - name: Install dylint
-        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
-
+      # ── unpoliced_http_client (guest egress) ────────────────────────────
       - name: Build the pass
         working-directory: tools/nucleus-egress-lint
         run: cargo build
