@@ -134,8 +134,12 @@ t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 lib_modules() {
     awk -v lib="$1" '
       $0 ~ "lean_lib «" lib "» where" { inlib=1; next }
-      inlib && /roots := #\[/ { s=$0; sub(/.*#\[/, "", s); sub(/\].*/, "", s); gsub(/`| /, "", s); print s; exit }
-      inlib && /^[^ ]/ { exit }
+      # `roots := #[...]` may span lines (the Aeneas extraction libs list one
+      # module per line); accumulate until the closing bracket.
+      inlib && /roots := #\[/ { s=$0; sub(/.*#\[/, "", s); inroots=1 }
+      inlib && inroots && !/roots := #\[/ { s=s $0 }
+      inlib && inroots && /\]/ { sub(/\].*/, "", s); gsub(/`|[ \t]/, "", s); print s; exit }
+      inlib && !inroots && /^[^ ]/ { exit }
     ' lakefile.lean 2>/dev/null
 }
 
