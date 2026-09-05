@@ -24,7 +24,7 @@
 # harness over CapabilityLattice or ExposureSet is a `*_core_dims` proof.
 
 
-total = 62
+total = 63
 
 [[site]]
 file = "crates/ck-kernel/src/kani.rs"
@@ -318,3 +318,10 @@ guards = "let ext_met = self"
 class = "semantic-divergence"
 why = "Production half of the `is_triggered` extension check; see the `let ext_met = true;` entry."
 
+
+[[site]]
+file = "crates/portcullis-core/src/argv.rs"
+attr = "#[cfg(kani)]"
+guards = "mod kani_proofs {"
+class = "harness-only"
+why = "Proof harness module for the spawn-boundary argv predicate (proof_argv_check_fail_closed, #2573). Compiled only under `cargo kani`; the predicate itself is unconditional."
