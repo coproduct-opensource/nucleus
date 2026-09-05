@@ -97,7 +97,7 @@ jobs:
       # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
       # An unpinned `cargo install` would drift the third leg silently.
       - name: Install cargo-dylint
-        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
       # `cd` rather than `--manifest-path`: rustup selects a toolchain from the
       # CURRENT DIRECTORY, so building from the repo root would silently use the
@@ -174,7 +174,7 @@ jobs:
       # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
       # An unpinned `cargo install` would drift the third leg silently.
       - name: Install cargo-dylint
-        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
       - name: Build the pass
         working-directory: tools/nucleus-mediation-lint
@@ -228,7 +228,7 @@ jobs:
       # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
       # An unpinned `cargo install` would drift the third leg silently.
       - name: Install cargo-dylint
-        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
       # `cd` rather than `--manifest-path`: rustup selects a toolchain from the
       # CURRENT DIRECTORY — see the cb4a job's comment.
@@ -295,7 +295,7 @@ jobs:
         # was observed hanging runner jobs for 15+ minutes.
         if: ${{ runner.environment == 'github-hosted' }}
       - name: Install dylint
-        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
 
       - name: Build the pass
         working-directory: tools/nucleus-egress-lint
