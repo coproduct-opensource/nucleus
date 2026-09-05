@@ -30,6 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: cargo-hack
@@ -60,6 +62,7 @@ jobs:
           # features. The Kani floor is lower and is enforced by the
           # `kani-msrv` job below — see the comment in the root Cargo.toml.
           toolchain: "1.95"
+          cache: ${{ runner.environment == 'github-hosted' }}
       # nucleus-verifier-service include_str!s the wasm-pack artifact
       # (sdks/verifier-js/pkg/) that only the Tests job builds first;
       # it is excluded here so the MSRV floor checks source, not
@@ -88,5 +91,6 @@ jobs:
         with:
           # Must match the rustc that kani-verifier bundles; bump with Kani.
           toolchain: "1.93"
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Check the Kani-verified crates on Kani's toolchain
         run: cargo +1.93 check -p ck-kernel -p portcullis -p portcullis-core --locked

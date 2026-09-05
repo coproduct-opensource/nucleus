@@ -83,7 +83,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         if: steps.scope.outputs.relevant == 'true'
         with:
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Extract base manifest + changed files
         if: steps.scope.outputs.relevant == 'true'
         # Pass github.base_ref via env (never interpolate ${{ }} into a run
