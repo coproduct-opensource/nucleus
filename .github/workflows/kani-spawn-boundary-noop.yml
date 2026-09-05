@@ -1,0 +1,31 @@
+name: Kani spawn boundary
+
+# NO-OP TWIN of kani-spawn-boundary.yml, so its job can be a REQUIRED status
+# check (#2430). Same workflow name, same job name, `paths-ignore` mirroring
+# the real workflow's `paths` exactly: one of the twins reports the context on
+# every PR. merge_group is not twinned — the real workflow runs unconditionally
+# there.
+
+on:
+  pull_request:
+    paths-ignore:
+      - "crates/portcullis-core/src/argv.rs"
+      - "crates/portcullis-effects/src/lib.rs"
+      - "crates/nucleus/src/command.rs"
+      - ".github/workflows/kani-spawn-boundary.yml"
+
+concurrency:
+  group: kani-spawn-boundary-noop-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kani-argv:
+    name: "Kani (spawn boundary: argv predicate fail-closed)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op (paths not touched)
+        run: echo "no relevant paths changed — gate vacuously green"

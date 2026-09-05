@@ -1,0 +1,72 @@
+name: Kani spawn boundary
+
+# The argv predicate at the spawn boundary (#2573): `Executor::spawn_checked`
+# and `RealEffects::run_argv` apply ONE function, `portcullis_core::argv`, and
+# `proof_argv_check_fail_closed` proves that function refuses every malformed
+# shape it names and nothing well-formed. Its own workflow rather than a step
+# in kani-nightly.yml so the harness runs per PR on exactly the files that can
+# change what it proves. kani-spawn-boundary-noop.yml is the twin that reports
+# the same context on PRs not touching these paths (#2430).
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/portcullis-core/src/argv.rs"
+      - "crates/portcullis-effects/src/lib.rs"
+      - "crates/nucleus/src/command.rs"
+      - ".github/workflows/kani-spawn-boundary.yml"
+  pull_request:
+    paths:
+      - "crates/portcullis-core/src/argv.rs"
+      - "crates/portcullis-effects/src/lib.rs"
+      - "crates/nucleus/src/command.rs"
+      - ".github/workflows/kani-spawn-boundary.yml"
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+# Hosted x86 on purpose (#2622): kani-github-action's install step fails on
+# the arm64 pods. Do NOT set RUSTC_WRAPPER here, even to "".
+jobs:
+  kani-argv:
+    name: "Kani (spawn boundary: argv predicate fail-closed)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+        if: ${{ runner.environment == 'github-hosted' }}
+        with:
+          cache-on-failure: true
+      - name: Cache Kani toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
+      - name: Run Kani (proof_argv_check_fail_closed)
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          kani-version: "0.67.0"
+          args: >-
+            -p portcullis-core
+            --solver cadical
+            -Z unstable-options
+            --harness-timeout 120s
+            --harness proof_argv_check_fail_closed
+      - name: The harness and both call sites are still there
+        # Kani verifying a harness that nothing applies proves nothing about
+        # the spawn. Pin the harness AND the two call sites of the predicate.
+        run: |
+          grep -q '#\[kani::proof\]' crates/portcullis-core/src/argv.rs || { echo "::error::argv.rs lost its kani harness"; exit 1; }
+          n=$(grep -c 'portcullis_core::argv::check_argv(program, args)' crates/portcullis-effects/src/lib.rs)
+          [ "$n" -eq 2 ] || { echo "::error::RealEffects applies check_argv at $n sites, expected 2 (run_argv + run_argv_async)"; exit 1; }
+          m=$(grep -c 'refuse_bad_argv(' crates/nucleus/src/command.rs)
+          [ "$m" -ge 6 ] || { echo "::error::Executor applies refuse_bad_argv at $m sites, expected the definition + 5 entries"; exit 1; }
