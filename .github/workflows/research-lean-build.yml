@@ -71,7 +71,7 @@ jobs:
       - name: lake build (research cluster — type-check; a broken proof FAILS here)
         working-directory: crates/portcullis-core/lean
         run: |
-          LEAN_NUM_THREADS=2 lake build \
+          LEAN_NUM_THREADS=${{ runner.environment == 'github-hosted' && '4' || '3' }} lake build \
             MatrixBridge \
             RankNullity \
             AlignmentTaxBridge \
