@@ -95,7 +95,6 @@ use std::fmt;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "crypto")]
 use crate::delegation::meet_with_justification;
 use crate::delegation::MeetJustification;
 use crate::PermissionLattice;
@@ -629,8 +628,10 @@ impl AuthorityBlock {
     }
 
     /// Compute the SHA-256 hash of this block (including the signature).
+    /// SHA-256 over the signing payload and the signature: the link the next
+    /// block's `prev_block_hash` must equal.
     #[cfg(feature = "crypto")]
-    fn block_hash(&self) -> Vec<u8> {
+    pub(crate) fn block_hash(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(self.signing_payload());
         hasher.update(&self.signature);
@@ -674,8 +675,10 @@ impl DelegationBlock {
     }
 
     /// Compute the SHA-256 hash of this block (including the signature).
+    /// SHA-256 over the signing payload and the signature: the link the next
+    /// block's `prev_block_hash` must equal.
     #[cfg(feature = "crypto")]
-    fn block_hash(&self) -> Vec<u8> {
+    pub(crate) fn block_hash(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(self.signing_payload());
         hasher.update(&self.signature);
@@ -954,6 +957,46 @@ impl LatticeCertificate {
         })
     }
 
+    /// Assemble a certificate from its parts WITHOUT signing — for tests and
+    /// Kani harnesses that drive `verify_certificate` over hand-built chains
+    /// (with the crypto stubbed, so the lattice and chain checks are the
+    /// subject). Not reachable from a shipping build.
+    #[cfg(any(test, kani))]
+    // Only the Kani harnesses call it; under `cfg(test)` alone it is unused, and
+    // CI's clippy runs with `-D warnings` on `--all-targets`.
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn from_parts(
+        authority: AuthorityBlock,
+        blocks: Vec<DelegationBlock>,
+        final_signature: Vec<u8>,
+    ) -> Self {
+        Self {
+            authority,
+            blocks,
+            final_signature,
+        }
+    }
+
+    /// The lattice half of [`Self::mint_child`], with no keys and no signing:
+    /// the request is validated against the parent by
+    /// [`PermissionLattice::delegate_to`] (budget past the parent's remaining
+    /// and an expired parent are REFUSED, never clamped) and the child's
+    /// effective permissions are the meet. `mint_child_with_scope` calls this
+    /// and then signs; the Kani harness `proof_mint_child_core_*` drives it
+    /// directly (#2477), which is as close to `mint_child` as a model checker
+    /// can get with Ed25519 outside its reach.
+    ///
+    /// # Errors
+    /// [`crate::DelegationError`] from `delegate_to`.
+    pub fn attenuate_for_child(
+        parent: &PermissionLattice,
+        requested: &PermissionLattice,
+        reason: &str,
+    ) -> Result<PermissionLattice, crate::DelegationError> {
+        parent.delegate_to(requested, reason)?;
+        Ok(meet_with_justification(parent, requested).0)
+    }
+
     /// Mint a child certificate, validated at BOTH layers: the lattice's own
     /// budget/expiry (via [`PermissionLattice::delegate_to`]) and the
     /// certificate chain's own depth/expiry/key/scope checks (via
@@ -1024,8 +1067,7 @@ impl LatticeCertificate {
         current_holder_key: &Ed25519KeyPair,
         rng: &dyn SecureRandom,
     ) -> Result<(Self, Ed25519KeyPair), CertificateMintChildError> {
-        self.effective_permissions()
-            .delegate_to(requested, reason)
+        Self::attenuate_for_child(self.effective_permissions(), requested, reason)
             .map_err(CertificateMintChildError::Lattice)?;
         self.delegate_with_scope(
             requested,
@@ -1107,7 +1149,8 @@ impl LatticeCertificate {
 
     /// Compute the proof-of-possession payload from a block hash.
     #[cfg(feature = "crypto")]
-    fn pop_payload_for_block_hash(block_hash: &[u8]) -> Vec<u8> {
+    /// The proof-of-possession payload the holder signs over the last block's hash.
+    pub(crate) fn pop_payload_for_block_hash(block_hash: &[u8]) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(b"lattice-cert-pop-v1:");
         payload.extend_from_slice(block_hash);

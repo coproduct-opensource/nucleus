@@ -12,6 +12,8 @@ use crate::{
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+mod certificate_harnesses;
+
 fn level_from_u8(value: u8) -> CapabilityLevel {
     match value % 3 {
         0 => CapabilityLevel::Never,
@@ -2006,11 +2008,14 @@ fn proof_denied_set_persists() {
 // Certificate invariant harnesses — lattice monotonicity in delegation
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **C1 — Delegated permissions must be ≤ parent's permissions.**
+/// **C1 — The meet is deflationary on the capability dimension.**
 ///
-/// For any two PermissionLattice values, if child.leq(parent) is false,
-/// then the delegation should be rejected. This verifies the monotone
-/// attenuation invariant that verify_certificate checks.
+/// For symbolic capability levels, `meet(parent, child) ≤ parent`, and when
+/// `child ≤ parent` the meet is also `≤ child`. This is a property of
+/// `PermissionLattice::meet`/`leq` ALONE — it does not call
+/// `verify_certificate`; the harness that drives the real verifier over a
+/// hand-built chain is `proof_verify_certificate_accepts_only_attenuating_children`
+/// below (#2476).
 #[kani::proof]
 #[kani::solver(cadical)]
 fn proof_delegation_monotone_attenuation() {
@@ -2062,23 +2067,6 @@ fn proof_hash_determinism() {
     let r2 = h2.finalize();
     assert_eq!(r1[0], r2[0], "SHA-256 must be deterministic");
     assert_eq!(r1[1], r2[1]);
-}
-
-/// **C3 — Chain depth check is monotone.**
-///
-/// verify_certificate rejects chains deeper than max_chain_depth.
-/// Verify that for any n > max, n blocks are rejected.
-#[kani::proof]
-fn proof_chain_depth_rejects_deep() {
-    let n: usize = kani::any();
-    let max: usize = kani::any();
-    kani::assume(n > 0 && n <= 10);
-    kani::assume(max > 0 && max <= 10);
-
-    if n > max {
-        // A chain of n blocks with max_chain_depth = max should be rejected
-        assert!(n > max, "deep chain must exceed limit");
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
