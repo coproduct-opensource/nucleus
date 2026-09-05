@@ -132,8 +132,11 @@ jobs:
   # Layer 2: Mutation testing on security-critical modules
   mutants:
     name: Mutation Testing
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 30
+    # Compile-class: cargo-mutants builds and tests portcullis once per mutant.
+    # On the gate pool (0.5 CPU request, 2 CPU limit) it hit the 30-minute
+    # timeout on every run of 2026-09-05 and reported "cancelled".
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
     steps:
