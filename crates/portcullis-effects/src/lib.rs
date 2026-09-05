@@ -72,7 +72,7 @@ pub mod receipt;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
 use crate::authority::Authority;
@@ -223,7 +223,7 @@ pub trait ShellEffect {
     /// * `program` / `args` — the argv; no shell is ever involved.
     /// * `cwd` — the already-validated working directory (`current_dir`).
     /// * `stdin` — `Some(bytes)` to feed the child stdin over a pipe, `None` to
-    ///   close it with `Stdio::null()`.
+    ///   close it with `std::process::Stdio::null()`.
     /// * `allowed_env` — the environment allowlist; the child is spawned with
     ///   `env_clear()` then `envs(allowed_env)`, so no parent variable leaks.
     /// * `harden` — an optional hook applied to the built [`Command`] just
@@ -639,14 +639,14 @@ impl AsyncShellSpawnEffect for RealEffects {
             .current_dir(cwd)
             .env_clear() // Security: prevent secret leakage from parent
             .envs(allowed_env) // Only explicitly allowed vars
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
         if stdin.is_some() {
-            cmd.stdin(Stdio::piped());
+            cmd.stdin(std::process::Stdio::piped());
         } else {
-            cmd.stdin(Stdio::null());
+            cmd.stdin(std::process::Stdio::null());
         }
 
         if let Some(harden) = harden {
