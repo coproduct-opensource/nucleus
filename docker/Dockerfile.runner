@@ -10,7 +10,7 @@
 # k8s/ci-runner/warm.sh ahead of time.
 #
 # Build for the node's own architecture (arm64 today):
-#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.2 .
+#   podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.3 .
 # then import into k3s's containerd (k8s/ci-runner/README.md).
 FROM ghcr.io/actions/actions-runner:2.337.0
 
@@ -143,3 +143,15 @@ RUN set -eux; \
     curl -fsSL "https://raw.githubusercontent.com/leanprover/elan/${ELAN_VERSION}/elan-init.sh" -o /tmp/elan-init.sh; \
     sh /tmp/elan-init.sh -y --no-modify-path --default-toolchain "${LEAN_TOOLCHAIN}"; \
     rm -f /tmp/elan-init.sh; lean --version; lake --version
+
+# Late layer (cheap to rebuild): the small CLIs individual jobs reach for.
+# xxd — scripts/tpm-credential-activation-check.sh; gh — release downloads
+# the hosted path uses and any `gh api` a gate script makes.
+USER root
+RUN set -eux; \
+    apt-get update; apt-get install -y --no-install-recommends xxd; \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update; apt-get install -y --no-install-recommends gh; \
+    rm -rf /var/lib/apt/lists/*; gh --version | head -1; xxd -v
+USER runner
