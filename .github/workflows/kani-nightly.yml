@@ -41,7 +41,7 @@ jobs:
   # They require 15+ minutes each and are verified in the nightly full tier.
   kani-fast:
     name: Kani
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     if: github.event_name != 'schedule'
     steps:
@@ -111,7 +111,7 @@ jobs:
   # not Kernel::admit. See KANI-STATUS.md.
   kani-constitutional:
     name: Kani (constitutional kernel)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     if: github.event_name != 'schedule'
     steps:
@@ -170,7 +170,7 @@ jobs:
   # deliberate edit here too — the proof-count gate below catches the omission.
   kani-constitutional-full:
     name: "CK full: ${{ matrix.harness }}"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
@@ -232,7 +232,7 @@ jobs:
   # rather than what was attempted.
   kani-constitutional-full-summary:
     name: Kani (constitutional kernel full)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: kani-constitutional-full
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     steps:
@@ -257,7 +257,7 @@ jobs:
 
   kani-full:
     name: Kani (full)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     # Was 60. The job has never reached it: it dies after 3-10 minutes with
     # exit 143 and "runner has received a shutdown signal", which is the
     # signature of cbmc exhausting the runner's 16 GB rather than a timeout.

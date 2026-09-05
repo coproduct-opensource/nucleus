@@ -52,7 +52,7 @@ concurrency:
 jobs:
   tpm-credential-activation:
     name: TPM ActivateCredential accepts make_credential_ecc (C9)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,7 +60,8 @@ jobs:
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
 
-      - name: Install swtpm + tpm2-tools
+      - name: Install swtpm + tpm2-tools (hosted; baked into the runner image)
+        if: ${{ runner.environment == 'github-hosted' }}
         run: sudo apt-get update && sudo apt-get install -y -qq swtpm tpm2-tools
 
       # Assert the stack is actually present, so a broken install cannot make the
@@ -78,7 +79,7 @@ jobs:
 
   guest-net-isolation:
     name: Constant guest address never reaches the host (#2205)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

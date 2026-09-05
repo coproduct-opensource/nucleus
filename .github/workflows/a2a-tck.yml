@@ -46,7 +46,7 @@ jobs:
   tck:
     continue-on-error: true
     name: a2a-tck --level must (jsonrpc + http_json)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     # ADVISORY — the target does not pass --level must yet (79.5% MUST at
     # a2a-tck@29063fe; full breakdown in the uploaded compatibility report).

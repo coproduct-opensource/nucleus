@@ -77,7 +77,7 @@ env:
 jobs:
   aeneas-ifc-scoped:
     name: Scoped Aeneas (Rust → Lean 4) + parity tests
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 40
 
     steps:
@@ -153,17 +153,17 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: /tmp/aeneas-bin
-          key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
+          key: aeneas-bin-${{ runner.os }}-${{ runner.arch }}-${{ env.AENEAS_RELEASE }}
 
       - name: Download Aeneas pre-built binaries
         if: steps.scope.outputs.relevant == 'true' && (steps.cache-aeneas-bin.outputs.cache-hit != 'true')
         run: |
           gh release download "$AENEAS_RELEASE" \
             --repo AeneasVerif/aeneas \
-            --pattern "aeneas-linux-x86_64.tar.gz" \
+            --pattern "aeneas-linux-$(uname -m).tar.gz" \
             --dir /tmp
           mkdir -p /tmp/aeneas-bin
-          tar xzf /tmp/aeneas-linux-x86_64.tar.gz -C /tmp/aeneas-bin
+          tar xzf /tmp/aeneas-linux-"$(uname -m)".tar.gz -C /tmp/aeneas-bin
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -406,7 +406,7 @@ jobs:
 
       # --- Build the theorem + capture the REAL axiom set ---
       - name: Install elan (Lean toolchain)
-        if: steps.scope.outputs.relevant == 'true'
+        if: steps.scope.outputs.relevant == 'true' && runner.environment == 'github-hosted'
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --no-modify-path
