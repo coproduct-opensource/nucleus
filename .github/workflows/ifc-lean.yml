@@ -1,0 +1,110 @@
+name: IFC Kernel Lean Proofs
+# Elaborates crates/nucleus-ifc-kernel/lean (the DerivationClass join-semilattice
+# laws and no-silent-cleansing in Ifc/Lattice.lean) and audits every declaration's
+# axioms. Before #2564 no workflow built this package: the lean_lib coverage gate
+# counted `@[default_target]` as "built" although nothing ever ran a bare
+# `lake build` there, so its 19 theorems were never elaborated in CI.
+#
+# Twin: ifc-lean-noop.yml reports the same job name for PRs that do not touch
+# these paths, so the job can be a required status check.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/nucleus-ifc-kernel/lean/**"
+      - ".github/workflows/ifc-lean.yml"
+      - "scripts/lean-axiom-audit.sh"
+  pull_request:
+    paths:
+      - "crates/nucleus-ifc-kernel/lean/**"
+      - ".github/workflows/ifc-lean.yml"
+      - "scripts/lean-axiom-audit.sh"
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ifc-lean-real-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ifc-lean:
+    name: lake build Ifc (DerivationClass lattice + no-silent-cleansing)
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # GitHub ignores `paths:` for merge_group events, so the scope is
+      # re-implemented here as a regex over the group's diff (ci/merge-group-
+      # scope-parity.sh asserts the two agree).
+      - name: Is this change in scope?
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+          PATTERN: '^crates/nucleus-ifc-kernel/lean/|^\.github/workflows/ifc-lean\.yml$|^scripts/lean-axiom-audit\.sh$'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "merge_group" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "$EVENT: GitHub's own paths: filter already applied."
+            exit 0
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${HEAD:-}" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "merge_group with no base/head sha — running to be safe."
+            exit 0
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE "$PATTERN"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "in scope — running."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "no file in this merge group matches $PATTERN — skipping the"
+            echo "expensive steps. This job still reports, so it remains usable"
+            echo "as a required status check."
+          fi
+
+      - name: Install elan (Lean toolchain)
+        # Hosted only: the self-hosted runner image bakes elan and the pinned toolchain.
+        if: runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true')
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lake build artifacts
+        # Hosted only: uploads from the self-hosted pool pin a runner for the
+        # save step; its caches live on persistent mounts instead.
+        if: ${{ runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true') }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            crates/nucleus-ifc-kernel/lean/.lake
+            ~/.elan
+          key: lean-ifc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/nucleus-ifc-kernel/lean/lean-toolchain', 'crates/nucleus-ifc-kernel/lean/lakefile.lean', 'crates/nucleus-ifc-kernel/lean/lake-manifest.json') }}
+          restore-keys: |
+            lean-ifc-${{ runner.os }}-${{ runner.arch }}-
+
+      # A BARE `lake build` in the package directory: this is exactly what the
+      # lean_lib coverage gate (scripts/check-lean-libs-built.sh) now requires
+      # before it counts a package's @[default_target] libs as built.
+      - name: lake build Ifc (DerivationClass lattice + no-silent-cleansing)
+        if: steps.scope.outputs.relevant == 'true'
+        working-directory: crates/nucleus-ifc-kernel/lean
+        run: LEAN_NUM_THREADS=4 lake build
+
+      - name: Per-theorem axiom audit (every declaration under Ifc)
+        if: steps.scope.outputs.relevant == 'true'
+        run: scripts/lean-axiom-audit.sh crates/nucleus-ifc-kernel/lean Ifc
+
+      - name: The axiom audit goes red on axiom / admit / native_decide fixtures
+        if: steps.scope.outputs.relevant == 'true'
+        run: scripts/lean-axiom-audit.sh crates/nucleus-ifc-kernel/lean --self-test

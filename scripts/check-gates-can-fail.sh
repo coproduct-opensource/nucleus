@@ -205,6 +205,16 @@ lean_lib «GateOfGatesUnbuiltProbe» where
 LEAN
 }
 
+perturb_default_target_unbuilt() {
+    # A package whose libs are `@[default_target]` but which NO workflow
+    # bare-builds: delete the bare `lake build` step from the one workflow that
+    # builds nucleus-ifc-kernel/lean. Before #2564 the coverage gate counted
+    # `@[default_target]` alone as "built" and this package read as covered
+    # while its 19 theorems were never elaborated in CI.
+    local tmp; tmp="$(mktemp)"
+    grep -v 'run: LEAN_NUM_THREADS=4 lake build$' "$1" > "$tmp"; cat "$tmp" > "$1"; rm -f "$tmp"
+}
+
 perturb_test_helpers_in_prod() {
     # `test-helpers` reachable from a SHIPPING build, which is the gate's whole
     # subject: with it on, `discharge::test_helpers::bundle_for` mints a
@@ -372,6 +382,8 @@ probe check-test-helpers-not-in-production.sh "" crates/nucleus-tool-proxy/Cargo
       "test-helpers enabled on a non-dev edge"  perturb_test_helpers_in_prod
 probe check-lean-libs-built.sh "" crates/portcullis-core/lean/lakefile.lean \
       "a lean_lib nothing builds"               perturb_lean_lib_unbuilt
+probe check-lean-libs-built.sh "" .github/workflows/ifc-lean.yml \
+      "a default_target package no workflow bare-builds" perturb_default_target_unbuilt
 probe check-declassify-sink-scope-enforced.sh "" crates/portcullis/src/flow_graph.rs \
       "the applied sink mask widened to admit every sink" \
       perturb_declassify_unscope
