@@ -37,7 +37,7 @@ permissions:
 jobs:
   econ-lean:
     name: lake build Nucleus (econ proofs + golden seal)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,9 +103,9 @@ jobs:
           path: |
             crates/nucleus-econ-kernels/lean/.lake
             ~/.elan
-          key: lean-econ-${{ runner.os }}-${{ hashFiles('crates/nucleus-econ-kernels/lean/lean-toolchain', 'crates/nucleus-econ-kernels/lean/lakefile.lean') }}
+          key: lean-econ-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/nucleus-econ-kernels/lean/lean-toolchain', 'crates/nucleus-econ-kernels/lean/lakefile.lean') }}
           restore-keys: |
-            lean-econ-${{ runner.os }}-
+            lean-econ-${{ runner.os }}-${{ runner.arch }}-
 
       - name: lake build Nucleus (econ proofs + golden seal)
         if: steps.scope.outputs.relevant == 'true'

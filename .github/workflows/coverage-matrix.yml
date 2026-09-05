@@ -25,7 +25,7 @@ jobs:
   # passing status check.
   changed-crates:
     name: Detect Changed Crates
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       all: ${{ steps.detect.outputs.all }}
@@ -81,7 +81,7 @@ jobs:
   # Layer 1: LLVM source-based code coverage with threshold enforcement
   llvm-cov:
     name: Code Coverage (llvm-cov)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -129,7 +129,7 @@ jobs:
   # Layer 2: Mutation testing on security-critical modules
   mutants:
     name: Mutation Testing
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
@@ -198,7 +198,7 @@ jobs:
   # conformance suite survives. Here we gate Kani proof harnesses and report counts.
   proof-ratchet:
     name: Proof Count Ratchet
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}

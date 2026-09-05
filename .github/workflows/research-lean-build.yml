@@ -39,7 +39,7 @@ permissions:
 jobs:
   research-lean-build:
     name: lake build + sorry-ratchet (research tier)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -56,9 +56,9 @@ jobs:
             crates/portcullis-core/lean/.lake
             ~/.elan
             ~/.cache/mathlib
-          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
+          key: lean-aeneas-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
           restore-keys: |
-            lean-aeneas-${{ runner.os }}-
+            lean-aeneas-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Fetch Mathlib cache (prebuilt oleans)
         working-directory: crates/portcullis-core/lean

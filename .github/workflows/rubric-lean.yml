@@ -33,7 +33,7 @@ permissions:
 jobs:
   rubric-lean:
     name: lake build Nucleus (rubric scoring proofs)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -99,9 +99,9 @@ jobs:
           path: |
             crates/nucleus-rubric/lean/.lake
             ~/.elan
-          key: lean-rubric-${{ runner.os }}-${{ hashFiles('crates/nucleus-rubric/lean/lean-toolchain', 'crates/nucleus-rubric/lean/lakefile.lean') }}
+          key: lean-rubric-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/nucleus-rubric/lean/lean-toolchain', 'crates/nucleus-rubric/lean/lakefile.lean') }}
           restore-keys: |
-            lean-rubric-${{ runner.os }}-
+            lean-rubric-${{ runner.os }}-${{ runner.arch }}-
 
       - name: lake build Nucleus (rubric scoring proofs)
         if: steps.scope.outputs.relevant == 'true'
