@@ -213,34 +213,6 @@ jobs:
         shell: bash
         run: scripts/check-declassify-governor-keys-sealed.sh
 
-  # C1 ("cannot learn the secrets Nucleus holds on its behalf") is proven over
-  # the seven inbound channels in Lean, but the RUNTIME must withhold for that to
-  # hold on the live path. This gate runs the conformance the re-promotion rests
-  # on: the workload always runs as a distinct unprivileged uid (never the
-  # runtime's — /proc/<pid>/environ fence B), any unclassified NUCLEUS_* key is
-  # refused at admission (fail-closed classifier fence D), and no per-pod secret
-  # rides the guest cmdline. Reverting fence B or D reds this.
-  c1-inbound-fences-enforced:
-    name: C1 inbound fences are enforced
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache: ${{ runner.environment == 'github-hosted' }}
-      - name: uid distinctness, reserved-namespace, and cmdline fences hold
-        shell: bash
-        run: scripts/check-c1-inbound-fences.sh
-
-  # The North Star doc's status table is the project's public claim of what is
-  # PROVED, TESTED, and NOT-YET. It drifted once: a row claimed "tested on the
-  # live path" for the declassification token while the dormancy gate above —
-  # in this same file — asserted that path has no production caller. This gate
-  # makes the table a ledger: every row covers a verbatim clause of the
-  # sentence, resolves an evidence handle, names its falsifier, and may not
-  # contradict any in-tree dormancy declaration. Row and NOT-YET counts are
-  # pinned, so deletions and demotions are visible events.
   north-star-ledger:
     name: The North Star status table cannot outrun its wiring
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -456,6 +428,7 @@ jobs:
     outputs:
       declassify: ${{ steps.declassify.outcome }}
       lineage: ${{ steps.lineage.outcome }}
+      c1: ${{ steps.c1.outcome }}
       gates: ${{ steps.gates.outcome }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -483,6 +456,18 @@ jobs:
           export NUCLEUS_TOOL_PROXY_BIN=target/debug/nucleus-tool-proxy
           scripts/cross-pod-lineage-check.sh
           scripts/cross-pod-scoped-check.sh
+      # C1 ("cannot learn the secrets Nucleus holds on its behalf") is proven
+      # over the seven inbound channels in Lean, but the RUNTIME must withhold
+      # for that to hold on the live path: the workload always runs as a
+      # distinct unprivileged uid, any unclassified NUCLEUS_* key is refused at
+      # admission, no per-pod secret rides the guest cmdline. Runs cargo tests
+      # in tool-proxy, node and the IFC kernel — compile-class, so it lives on
+      # this pod (it was 10 gate-pool minutes per PR on a 2-CPU runner).
+      - name: uid distinctness, reserved-namespace, and cmdline fences hold (C1)
+        id: c1
+        continue-on-error: true
+        shell: bash
+        run: scripts/check-c1-inbound-fences.sh
       # Every gate is a claim that something is checked. This checks the claim:
       # each check-*.sh must RED on a real violation of its own subject and
       # GREEN when restored. Needs a clean tree (it perturbs and restores).
@@ -500,8 +485,9 @@ jobs:
         env:
           D: ${{ steps.declassify.outcome }}
           L: ${{ steps.lineage.outcome }}
+          C: ${{ steps.c1.outcome }}
           G: ${{ steps.gates.outcome }}
-        run: echo "declassify=$D lineage=$L gates=$G"
+        run: echo "declassify=$D lineage=$L c1=$C gates=$G"
 
   # ── Status contexts (branch protection names these; keep the names) ──────
   #
@@ -599,6 +585,21 @@ jobs:
         run: |
           case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::live-path-gates job: $JOB"; exit 1;; esac
           case "$STEP" in success|skipped) exit 0;; *) echo "::error::C2 lineage: $STEP (see 'Live-path gates')"; exit 1;; esac
+
+  c1-inbound-fences-enforced:
+    name: C1 inbound fences are enforced
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    needs: live-path-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.live-path-gates.result }}
+          STEP: ${{ needs.live-path-gates.outputs.c1 }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::live-path-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::C1 inbound fences: $STEP (see 'Live-path gates')"; exit 1;; esac
 
   gates-can-fail:
     name: Gates must fail on their own subject
