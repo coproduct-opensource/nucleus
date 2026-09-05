@@ -13,14 +13,15 @@ githubConfigUrl: https://github.com/coproduct-opensource/nucleus
 githubConfigSecret: gh-token
 runnerScaleSetName: nucleus-k3s
 
-# Scale-to-zero; four at most. The node is the Lima VM at 12 vCPU / 28 GiB
-# (`limactl edit pci-k3s --cpus 12 --memory 28`). Each runner is held to 3
-# cargo jobs (CARGO_BUILD_JOBS below) and a 6 GiB memory limit: the first
-# smoke run let cargo use every core under a 6 GiB limit and the memory cgroup
-# OOM-killed the linker mid-build. Four runners x 3 jobs saturates the CPU;
-# four x 6 GiB fits the node with the runner's own overhead.
+# Scale-to-zero; six at most. The node is the Lima VM at 12 vCPU / 28 GiB
+# (`limactl edit pci-k3s --cpus 12 --memory 28`, VM stopped). Most cohort jobs
+# are seconds-long gates where per-job overhead dominates, so more, smaller
+# runners beat fewer, bigger ones: each runner is held to 2 cargo jobs
+# (CARGO_BUILD_JOBS below) and a 4.5 GiB memory limit (six x 4.5 GiB fits the
+# node). The first smoke run let cargo use every core under a 6 GiB limit and
+# the memory cgroup OOM-killed the linker mid-build; the limit is sized for two.
 minRunners: 0
-maxRunners: 4
+maxRunners: 6
 
 template:
   spec:
@@ -41,16 +42,16 @@ template:
             value: 30G
           - name: CARGO_INCREMENTAL
             value: "0"
-          # A quarter of the node's cores per runner: memory scales with
-          # parallel rustc/ld processes, and the limit below is sized for three.
+          # Two cargo jobs per runner: memory scales with parallel rustc/ld
+          # processes, and the limit below is sized for two.
           - name: CARGO_BUILD_JOBS
-            value: "3"
+            value: "2"
         resources:
           requests:
-            cpu: "2500m"
-            memory: 3Gi
+            cpu: "1500m"
+            memory: 2Gi
           limits:
-            memory: 6Gi
+            memory: 4500Mi
         volumeMounts:
           # Only caches are shared. Toolchains live in the image (Dockerfile).
           - name: cargo-registry
