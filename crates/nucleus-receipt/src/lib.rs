@@ -108,6 +108,12 @@ pub enum Projection {
     Flow(serde_json::Value),
     /// Economic functor — a bid+match record with Clarke-pivot payments.
     Economic(serde_json::Value),
+    /// CI functor — a continuous-integration gate verdict: the gate definition,
+    /// scope and environment digests it is keyed on, the tree it ran at, the
+    /// verdict, and the log/output digests. The typed body lives in the
+    /// consuming CI system; this crate keeps it as `serde_json::Value` like
+    /// every other projection.
+    Ci(serde_json::Value),
 }
 
 impl Projection {
@@ -118,6 +124,7 @@ impl Projection {
             Projection::Capability(_) => "capability",
             Projection::Flow(_) => "flow",
             Projection::Economic(_) => "economic",
+            Projection::Ci(_) => "ci",
         }
     }
 }
@@ -366,6 +373,7 @@ mod tests {
             Projection::Economic(serde_json::Value::Null).kind(),
             "economic"
         );
+        assert_eq!(Projection::Ci(serde_json::Value::Null).kind(), "ci");
     }
 
     #[test]
