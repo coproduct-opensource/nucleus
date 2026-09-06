@@ -524,11 +524,10 @@ jobs:
         id: gates
         continue-on-error: true
         shell: bash
-        run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "::error::tree is dirty before the gate of gates:"; git status --porcelain; exit 1
-          fi
-          scripts/check-gates-can-fail.sh
+        # The script itself refuses a dirty tree (its first check), so the step is the gate
+        # and nothing else: the CI-spec model reads an inline `exit 1` under
+        # continue-on-error as a decision that changes no outcome (GI004).
+        run: scripts/check-gates-can-fail.sh
       - name: Outcomes
         if: always()
         env:
