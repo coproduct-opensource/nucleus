@@ -103,6 +103,7 @@ expect FORMAL_METHODS.md 'Total: [0-9]+ Kani BMC harnesses repo-wide' "$total_ka
 expect FORMAL_METHODS.md '[0-9]+ open `sorry` proof holes across' "$sorry_total" "open sorry count"
 expect FORMAL_METHODS.md 'proof holes across [0-9]+' "$sorry_files" "sorry file count"
 expect NORTH_STAR.md '\| Kani BMC harnesses \| [0-9]+ \|' "$total_kani" "Kani total"
+expect docs/verified-claims.md '\([0-9]+ harnesses repo-wide' "$total_kani" "Kani total (verified-claims)"
 expect NORTH_STAR.md 'Open `sorry` holes \| [0-9]+ across [0-9]+' "$sorry_total" "open sorry count"
 expect "$LEAN/CONJECTURES.md" '[0-9]+ proof-hole `sorry` terms across exactly' "$sorry_total" "manifest sorry count"
 expect "$LEAN/CONJECTURES.md" 'across exactly [0-9]+ files' "$sorry_files" "manifest file count"

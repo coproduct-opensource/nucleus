@@ -98,6 +98,17 @@ enum Command {
         #[command(subcommand)]
         cmd: CiSpecCmd,
     },
+    /// The exemplar scoreboard's anti-Goodhart ratchet (lower-is-better
+    /// metrics may not rise, higher-is-better may not fall, `_GUARD`s may
+    /// not drop). Ported from exemplar-scoreboard.yml's python3 heredoc.
+    ScoreboardRatchet {
+        /// The freshly generated scoreboard.json.
+        #[arg(long)]
+        current: String,
+        /// The pinned baseline (scripts/exemplar-baseline.json).
+        #[arg(long)]
+        baseline: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -151,6 +162,7 @@ enum CiSpecCmd {
 mod ci_spec;
 mod ci_timings;
 mod rerun_plan;
+mod scoreboard;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
@@ -176,6 +188,9 @@ fn main() -> Result<()> {
                 json,
             } => ci_spec::trace_check(&github, since_hours, json),
         },
+        Command::ScoreboardRatchet { current, baseline } => {
+            scoreboard::scoreboard_ratchet(&current, &baseline)
+        }
     }
 }
 
