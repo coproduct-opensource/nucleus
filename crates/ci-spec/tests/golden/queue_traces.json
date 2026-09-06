@@ -1,0 +1,40 @@
+{
+  "_comment": "Golden traces pinning crates/ci-spec/src/queue.rs to ci/lean/CiSpec/Queue.lean and Capacity.lean. Rust replays them in tests/golden.rs; `cargo xtask ci-spec gen-golden` renders them as `by decide` examples into ci/lean/CiSpec/Golden.lean, which CI regenerates and diffs. Events: enqueue N | pass N | fail N | push N | cancel N | merge.",
+  "traces": [
+    {
+      "name": "one_pr_merges",
+      "events": ["enqueue 1", "pass 1", "merge"],
+      "expect": { "queue": [], "merged_log": [1], "enq_log": [1], "loc": { "1": "merged" } }
+    },
+    {
+      "name": "merge_is_in_enqueue_order",
+      "events": ["enqueue 1", "enqueue 2", "pass 2", "merge", "pass 1", "merge", "merge"],
+      "expect": { "queue": [], "merged_log": [1, 2], "enq_log": [1, 2], "loc": { "1": "merged", "2": "merged" } }
+    },
+    {
+      "name": "timeout_ejects_the_head_and_the_next_moves_up",
+      "events": ["enqueue 1", "enqueue 2", "fail 1", "pass 2", "merge"],
+      "expect": { "queue": [], "merged_log": [2], "enq_log": [1, 2], "loc": { "1": "ejected", "2": "merged" } }
+    },
+    {
+      "name": "push_dequeues_and_a_re_enqueue_goes_to_the_tail",
+      "events": ["enqueue 1", "enqueue 2", "push 1", "enqueue 1", "pass 2", "merge"],
+      "expect": { "queue": [1], "merged_log": [2], "enq_log": [1, 2, 1], "loc": { "1": "queued", "2": "merged" } }
+    },
+    {
+      "name": "cancelling_the_head_ejects_it",
+      "events": ["enqueue 1", "pass 1", "cancel 1"],
+      "expect": { "queue": [], "merged_log": [], "enq_log": [1], "loc": { "1": "ejected" } }
+    },
+    {
+      "name": "cancelling_a_dequeued_pr_changes_nothing_in_the_queue",
+      "events": ["enqueue 1", "enqueue 2", "pass 1", "push 2", "cancel 2"],
+      "expect": { "queue": [1], "merged_log": [], "enq_log": [1, 2], "loc": { "1": "queued", "2": "waiting" } }
+    }
+  ],
+  "capacity": [
+    { "name": "the_2026_09_04_group_on_four_runners", "runners": 4, "initial": [0, 0, 0, 0], "jobs": [45, 30, 28, 25, 23, 20, 15, 15, 10, 10, 5, 5], "makespan": 60 },
+    { "name": "the_same_group_behind_50_minutes_of_pr_runs", "runners": 4, "initial": [50, 50, 50, 50], "jobs": [45, 30, 28, 25, 23, 20, 15, 15, 10, 10, 5, 5], "makespan": 110 },
+    { "name": "one_runner_is_the_sum", "runners": 1, "initial": [0], "jobs": [3, 4, 5], "makespan": 12 }
+  ]
+}

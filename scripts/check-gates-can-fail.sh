@@ -283,6 +283,12 @@ perturb_twin_paths_ignore() {
     fi
 }
 
+perturb_golden_lean() {
+    # One extra line in the generated file: the regeneration no longer
+    # matches, which is the seal's whole subject.
+    append_line "$1" '-- gate-of-gates: a hand edit the generator would not produce'
+}
+
 perturb_bite_semantics() {
     # A new type in the bite: the differential is no longer about CiSpec's
     # model. Appended after the namespace closes, so the file stays valid
@@ -476,6 +482,13 @@ probe check-ci-spec.sh "" .github/workflows/zizmor.yml \
 probe check-ci-spec-bite.sh "" ci/lean/CiSpecBite.lean \
       "a structure declared in the bite" \
       perturb_bite_semantics
+
+# The golden seal between the Rust queue mirror and the Lean model: a hand
+# edit to the generated Golden.lean (or a JSON vector changed without
+# regenerating) must diff red.
+probe check-ci-spec-golden.sh "" ci/lean/CiSpec/Golden.lean \
+      "a hand-edited golden vector" \
+      perturb_golden_lean
 
 probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
       "an unlisted cfg(not(kani)) fork" \

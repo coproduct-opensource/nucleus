@@ -157,3 +157,127 @@ pub fn live_parity(repo: Option<String>, github: &str, json: bool) -> Result<()>
     }
     Ok(())
 }
+
+/// `ci-spec gen-golden`: render crates/ci-spec/tests/golden/queue_traces.json
+/// as ci/lean/CiSpec/Golden.lean on stdout.
+pub fn gen_golden(repo: Option<String>) -> Result<()> {
+    let root = repo_root(repo)?;
+    let json = std::fs::read_to_string(root.join("crates/ci-spec/tests/golden/queue_traces.json"))?;
+    let g = ci_spec::golden::parse(&json).map_err(|e| anyhow::anyhow!(e))?;
+    // Never render vectors the Rust mirror itself does not reproduce.
+    ci_spec::golden::check_rust(&g)
+        .map_err(|e| anyhow::anyhow!("golden vector fails in Rust: {e}"))?;
+    print!(
+        "{}",
+        ci_spec::golden::render_lean(&g).map_err(|e| anyhow::anyhow!(e))?
+    );
+    Ok(())
+}
+
+/// `ci-spec trace-check`: replay the last `since_hours` of merge-queue
+/// history (PR timeline events, via `gh api graphql`) through the queue
+/// model. Exit 0 clean, 1 a transition the model rejects, 2 vacuous window
+/// or could not look.
+pub fn trace_check(github: &str, since_hours: u64, json: bool) -> Result<()> {
+    let (owner, name) = github
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("--github must be owner/name"))?;
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        .saturating_sub(since_hours * 3600);
+    // PRs updated in the window carry every merge-queue event of the window.
+    let query = format!(
+        "{{repository(owner:\"{owner}\",name:\"{name}\"){{pullRequests(last:60, orderBy:{{field:UPDATED_AT, direction:ASC}}, states:[OPEN, MERGED, CLOSED]){{nodes{{number updatedAt \
+         timelineItems(last:30, itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT, MERGED_EVENT]){{nodes{{__typename \
+         ... on AddedToMergeQueueEvent{{createdAt}} ... on RemovedFromMergeQueueEvent{{createdAt reason}} ... on MergedEvent{{createdAt}}}}}}}}}}}}}}"
+    );
+    let out = std::process::Command::new("gh")
+        .args(["api", "graphql", "-f", &format!("query={query}")])
+        .output()?;
+    if !out.status.success() {
+        eprintln!(
+            "::error::trace-check could not look: gh api graphql failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        std::process::exit(2);
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let mut events: Vec<ci_spec::trace::TraceEvent> = Vec::new();
+    let since_rfc = ci_timings_rfc3339(since);
+    for pr in v["data"]["repository"]["pullRequests"]["nodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        let number = u32::try_from(pr["number"].as_u64().unwrap_or(0)).unwrap_or(0);
+        for it in pr["timelineItems"]["nodes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+        {
+            let at = it["createdAt"].as_str().unwrap_or("").to_string();
+            if at.as_str() < since_rfc.as_str() {
+                continue;
+            }
+            let kind = match it["__typename"].as_str().unwrap_or("") {
+                "AddedToMergeQueueEvent" => ci_spec::trace::Kind::Added,
+                "MergedEvent" => ci_spec::trace::Kind::Merged,
+                "RemovedFromMergeQueueEvent" => ci_spec::trace::Kind::Removed {
+                    reason: it["reason"].as_str().unwrap_or("").to_string(),
+                },
+                _ => continue,
+            };
+            events.push(ci_spec::trace::TraceEvent {
+                at,
+                pr: number,
+                kind,
+            });
+        }
+    }
+    let r = ci_spec::trace::replay(&events);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&r)?);
+    } else {
+        println!(
+            "trace-check: {} timeline events in the last {since_hours}h — {} enqueues, {} merges, {} ejections",
+            r.events, r.enqueues, r.merges, r.ejections
+        );
+        for v in &r.violations {
+            println!("  VIOLATION: {v}");
+        }
+        if let Some(v) = &r.vacuous {
+            println!("  UNDECIDED: {v}");
+        }
+        if r.exit_code() == 0 {
+            println!("ok: the model accepts every transition GitHub performed");
+        }
+    }
+    let code = r.exit_code();
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+fn ci_timings_rfc3339(secs: u64) -> String {
+    // Days since epoch → civil date (Howard Hinnant's algorithm), UTC.
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let z = i64::try_from(days).expect("day count fits i64") + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}

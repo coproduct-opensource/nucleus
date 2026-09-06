@@ -129,6 +129,23 @@ enum CiSpecCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Render crates/ci-spec/tests/golden/queue_traces.json as
+    /// ci/lean/CiSpec/Golden.lean (stdout). CI regenerates and diffs.
+    GenGolden {
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Replay the merge queue's recent history (PR timeline events via
+    /// `gh api graphql`) through the queue model. Exit 0 clean, 1 a
+    /// transition the model rejects, 2 vacuous window / could not look.
+    TraceCheck {
+        #[arg(long, default_value = "coproduct-opensource/nucleus")]
+        github: String,
+        #[arg(long, default_value_t = 24)]
+        since_hours: u64,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 mod ci_spec;
@@ -152,6 +169,12 @@ fn main() -> Result<()> {
             CiSpecCmd::LiveParity { repo, github, json } => {
                 ci_spec::live_parity(repo, &github, json)
             }
+            CiSpecCmd::GenGolden { repo } => ci_spec::gen_golden(repo),
+            CiSpecCmd::TraceCheck {
+                github,
+                since_hours,
+                json,
+            } => ci_spec::trace_check(&github, since_hours, json),
         },
     }
 }
