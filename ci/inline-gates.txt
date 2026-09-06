@@ -12,13 +12,6 @@
 # (annotations are carried forward).
 #
 # UNCOVERED_CEILING = 80
-#
-# 2026-09-06: 71 → 80. The build-once consolidation (#2635) reports each of the
-# eight consolidated steps back to its required context through a thin relay
-# step (`case $JOB/$STEP`); each relay is a new inline gate with no falsifier of
-# its own — the step it relays keeps its falsifier under its own key. The ninth
-# is kani-spawn-boundary.yml::kani-argv, an existing inline gate the inventory
-# had never listed. Shrinks again when the relays get a self-test.
 
 a2a-tck.yml::tck::Start the target on :9999 | UNCOVERED: no falsifier yet
 action-smoke-test.yml::dry-run::Dry-run: safe_pr_fixer profile | UNCOVERED: no falsifier yet
@@ -66,10 +59,10 @@ ck-policy-lean.yml::ck-policy-lean::Ban sorry / admit / native_decide / sorryAx 
 clippy-ratchet.yml::ratchet-falsifier::RED on a ceiling below actual, GREEN when restored | UNCOVERED: no falsifier yet
 coverage-matrix.yml::mutants::Check for survived mutants | UNCOVERED: no falsifier yet
 crates-publish.yml::publish::Publish in dependency order (idempotent) | UNCOVERED: no falsifier yet
-dylint-separation.yml::cb4a-separation::Run cb4a_separation over the broker crates | UNCOVERED: no falsifier yet
-dylint-separation.yml::identity-isolation::Run workload_identity_isolation over the spawn-path crate | UNCOVERED: no falsifier yet
-dylint-separation.yml::unpoliced-http-client::Prove the pass fires (positive control) | UNCOVERED: no falsifier yet
-dylint-separation.yml::unpoliced-http-client::Run unpoliced_http_client over the guest crates | UNCOVERED: no falsifier yet
+dylint-separation.yml::dylint::Run cb4a_separation over the broker crates | UNCOVERED: no falsifier yet
+dylint-separation.yml::dylint::Run workload_identity_isolation over the spawn-path crate | UNCOVERED: no falsifier yet
+dylint-separation.yml::dylint::Prove the pass fires (positive control) | UNCOVERED: no falsifier yet
+dylint-separation.yml::dylint::Run unpoliced_http_client over the guest crates | UNCOVERED: no falsifier yet
 econ-lean.yml::econ-lean::Ban sorry / native_decide in econ Lean | UNCOVERED: no falsifier yet
 econ-lean.yml::econ-lean::Golden-vector sync (regenerate Golden.lean from JSON, assert no drift) | UNCOVERED: no falsifier yet
 kani-nightly.yml::kani-ifc::All six flow.rs harnesses are still declared | UNCOVERED: no falsifier yet
