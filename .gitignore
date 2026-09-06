@@ -65,3 +65,6 @@ nucleus_ifc_kernel.llbc
 
 # Lean build artifacts of the CI model (ci/lean); the other Lean packages live under crates/
 ci/lean/.lake/
+
+# The Vault CTF build output (trunk); docs.yml rebuilds it and `fly deploy` expects a local build
+crates/ctf-engine/dist/

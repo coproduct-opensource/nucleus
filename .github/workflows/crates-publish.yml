@@ -34,7 +34,6 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write # required for the crates.io OIDC token exchange
 
 env:
   CARGO_TERM_COLOR: never
@@ -44,6 +43,9 @@ jobs:
     name: cargo publish (keyless, dependency order)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # required for the crates.io OIDC token exchange (job-scoped: Scorecard Token-Permissions)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # No cache restore here: this job publishes to crates.io, so it must
