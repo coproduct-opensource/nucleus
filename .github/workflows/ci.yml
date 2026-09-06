@@ -407,7 +407,10 @@ jobs:
           PK: ${{ steps.affected.outputs.pk }}
         run: |
           read -ra PK_ARR <<< "$PK"
-          cargo nextest run --all-features --lib --bins --tests --no-fail-fast "${PK_ARR[@]}"
+          # No target filters: nextest already runs every test binary (lib, bins, tests),
+          # and `--lib` makes cargo refuse a scoped run that names only a bin-only crate
+          # ("no library targets found in package `xtask`" failed Tests on #2655).
+          cargo nextest run --all-features --no-fail-fast "${PK_ARR[@]}"
       # Node tests run the WASM bindings against the cross-language golden seal
       # and the accept/reject smoke fixtures; the Python SDK is its own
       # workspace (the root cargo test never reaches it) and runs the shared
@@ -435,7 +438,23 @@ jobs:
           PK: ${{ steps.affected.outputs.pk }}
         run: |
           read -ra PK_ARR <<< "$PK"
-          cargo test --all-features --doc "${PK_ARR[@]}"
+          # `cargo test --doc` refuses a package without a library target, and a scoped run
+          # may name only bin-only crates (xtask). Keep the affected packages that have one;
+          # when none does there are no doctests to run and that is a pass, not a skip.
+          if [ "${#PK_ARR[@]}" -eq 0 ]; then
+            cargo test --all-features --doc
+          else
+            libs="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(any(.targets[]; any(.kind[]; test("^(lib|rlib|dylib|proc-macro)$")))) | .name')"
+            doc=()
+            for ((i = 1; i < ${#PK_ARR[@]}; i += 2)); do
+              if printf '%s\n' "$libs" | grep -qx -- "${PK_ARR[i]}"; then doc+=(-p "${PK_ARR[i]}"); fi
+            done
+            if [ "${#doc[@]}" -eq 0 ]; then
+              echo "no affected crate has a library target; no doctests to run"
+            else
+              cargo test --all-features --doc "${doc[@]}"
+            fi
+          fi
       - name: OWASP LLM Top 10 gauntlet (portcullis)
         id: owasp
         if: ${{ steps.affected.outputs.full == 'true' || contains(steps.affected.outputs.list, ' portcullis ') }}
