@@ -616,8 +616,12 @@ jobs:
 
   fuzz:
     name: Fuzz
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    # Compile-class (builds every fuzz target from source): the build pool,
+    # like Tests. On the 3 GiB gate pool it only ever passed with a warm
+    # sccache; the first cold run on a fresh node (2026-09-06) was OOM-killed
+    # at 10 min and the job hung as "in progress" with a dead runner.
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
     needs: changed-crates
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
     steps:
