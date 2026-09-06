@@ -1,0 +1,42 @@
+# Who this repository trusts to say a gate held.
+#
+# A gatehouse receipt is accepted only while its signer is in this file AND the signer's
+# `KeyEvent::Add` leaf is included in a cosigned checkpoint of the log below — the two-direction
+# pin. Nothing in nucleus reads this file yet: the shadow workflow still builds a throwaway
+# developer trust snapshot per run, and the merge queue is still GitHub's. It becomes
+# load-bearing at the cut, when `gatehouse/required` is the only required context and the
+# verifier reads this file to decide whose receipts count. It is committed now so the keys are
+# reviewed in the open, on their own, rather than inside the cut PR.
+#
+# Rotation: a new key is added here in the same change that provisions it; the old key's
+# `valid_to` is set to the index of its rotation leaf and its receipts stay valid inside the
+# window. A signer a re-run refutes is quarantined by the control plane and its receipts are
+# void from that leaf on, whatever this file says — the file grants trust, it cannot restore it.
+
+tenant = "nucleus"
+# The SPIFFE trust domain the tenant is (ADR 0001): identities the control plane issues are
+# named under it.
+trust_domain = "spiffe://gatehouse/nucleus"
+
+[log]
+# The receipt log's origin line and its C2SP signed-note verifier key (name+hex key id+base64
+# of 0x01 ‖ public key). Checkpoints that do not verify under this key are not this log's.
+origin = "gatehouse.coproduct.one/nucleus/v1"
+vkey = "nucleus-log+3ec0c8fd+AfSJG+jQ0AfWvKGGNDn7uR190MoWEhDMR7/31LOB0Ldj"
+public_key_hex = "f4891be8d0d007d6bca1863439fbb91d7dd0ca161210cc47bff7d4b381d0b763"
+
+# Witness cosignatures are not required yet: no witness is provisioned (assurance row A-6 is
+# NOT-YET). When one is, `k` rises above zero and `witnesses` lists their vkeys.
+[log.policy]
+k = 0
+witnesses = []
+
+# The certificate authority whose job credentials make a run NodeAttested. The control plane
+# holds the private half; a pod never sees it, only the signed statement binding its one-run
+# key to (job, gate definition, environment, tree, substrate, agent).
+[[ca]]
+kid = "nucleus-node-ca"
+public_key_hex = "96a8dbdee21f5fc3cc21babf3ccf767d23dec7d58fe2ba662eabfd86e7a8a7d9"
+kind = "node"
+tier = "node_attested"
+valid_from = 0
