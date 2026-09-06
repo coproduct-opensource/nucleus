@@ -20,7 +20,9 @@ permissions:
 
 concurrency:
   group: feature-matrix-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Was `github.ref != refs/heads/main`, which is TRUE for a merge_group ref
+  # and could abort a queue entry mid-flight. Only PR pushes supersede.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   each-feature:

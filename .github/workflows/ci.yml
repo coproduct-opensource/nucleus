@@ -46,7 +46,13 @@ jobs:
           if [ "$EVENT_NAME" = "merge_group" ] || [ "$EVENT_NAME" = "push" ]; then
             all=true
           else
-            git fetch origin "$BASE" || true
+            # A failed fetch used to be swallowed (`|| true`); the diff below
+            # then failed, which failed THIS job, which reported Tests, Fuzz,
+            # OWASP and Doctests as SKIPPED — and GitHub counts a skipped
+            # required check as passed. Let the fetch fail loudly. This job is
+            # being added to the required set so a red here blocks instead of
+            # vacating.
+            git fetch origin "$BASE"
             changed="$(git diff --name-only "origin/$BASE...HEAD")"
             if printf '%s\n' "$changed" | grep -qE '^Cargo\.toml$|^Cargo\.lock$|^\.github/'; then
               all=true

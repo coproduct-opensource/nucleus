@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: zizmor-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Supersede a PR's older in-flight runs; NEVER cancel a merge_group entry
+  # or a push-to-main run (the house rule every other gated workflow follows).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   zizmor:

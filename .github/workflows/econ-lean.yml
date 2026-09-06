@@ -115,6 +115,15 @@ jobs:
       - name: Ban sorry / native_decide in econ Lean
         if: steps.scope.outputs.relevant == 'true'
         run: |
+          # Non-vacuity: this gate is a grep, and a grep over a path that no
+          # longer matches exits non-zero, takes the else branch, and prints the
+          # success line having scanned NOTHING. rubric-lean and ck-policy-lean
+          # carry this floor; this one was missing it (inventory, 2026-09-05).
+          FILES=$(find crates/nucleus-econ-kernels/lean/Nucleus -name '*.lean' | wc -l | tr -d ' ')
+          if [ "$FILES" -lt 1 ]; then
+            echo "::error::no .lean files under crates/nucleus-econ-kernels/lean/Nucleus — the econ sorry-ban scanned nothing."
+            exit 1
+          fi
           # Match the tactic/term forms (`:= sorry`, `:= by sorry`, a lone `sorry`,
           # or `native_decide`) — NOT the word "sorry" in "0 sorry" doc comments.
           if grep -rnE \
