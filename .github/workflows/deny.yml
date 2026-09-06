@@ -27,6 +27,9 @@ permissions:
 jobs:
   deny:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Required contexts: without a timeout the job inherits GitHub's 360-minute
+    # default, which is the whole merge-queue check budget (ci-spec I7).
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

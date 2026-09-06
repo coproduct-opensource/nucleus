@@ -1,0 +1,71 @@
+# The required status-check contexts on `main` — the in-repo copy of what
+# branch protection enforces, read by `cargo xtask ci-spec check`.
+#
+# Until 2026-09-05 this set lived only in GitHub's database, so nothing in
+# the tree could ask "does every required context have exactly one producer,
+# reported in the merge queue, that cannot be skipped?". Now it can.
+#
+# PINNED is the population pin and may only GROW. Removing a context is an
+# owner decision: lower the pin in the same change and record why, dated,
+# here. (The north-star ledger's two-direction convention.)
+#
+# `cargo xtask ci-spec live-parity` compares this file with the live branch
+# protection; a mismatch is a red on the schedule, never a silent re-sync.
+#
+# PINNED = 48
+
+# --- ci.yml -------------------------------------------------------------
+Detect changed crates
+Rustfmt
+Clippy
+Tests
+Fuzz
+OWASP LLM Security Gauntlet
+Ed25519 verify_strict gate (M-3)
+Sandbox trusted-base gate
+Fail-closed verifier gate
+Mediation backstop gate (North Star)
+test-helpers is not reachable from a shipping build
+Every lean_lib is type-checked by something
+Declassify sink scope is enforced
+Declassification is value-bound, single-use, and live
+Governor trusted-key set is not workload-writable
+C1 inbound fences are enforced
+The North Star status table cannot outrun its wiring
+Extracted predicates have live call sites (C8)
+The node records pod lineage on the live path (C2)
+Gates must fail on their own subject
+No-unwitnessed-ingest gate (InputsAuthorized)
+Sealed-home integrity gate (North Star)
+Policy-kernel model↔Rust parity (K4)
+musl type-check (nucleus-node, nucleus-tool-proxy)
+
+# --- coverage-matrix.yml ------------------------------------------------
+Detect Changed Crates
+Code Coverage (llvm-cov)
+Mutation Testing
+Proof Count Ratchet
+
+# --- single-producer, unfiltered ----------------------------------------
+audit
+deny (advisories)
+deny (bans)
+deny (licenses)
+deny (sources)
+cargo hack --each-feature
+MSRV floor (workspace rust-version)
+zizmor (high+ gate)
+Manifest Guards
+Scan PodSpecs
+Analyze
+
+# --- twin-paired (real + -noop) ----------------------------------------
+Scoped Aeneas (Rust → Lean 4) + parity tests
+Scoped Aeneas OIDC→SPIFFE (Rust → Lean 4) + parity tests
+lake build Ck (monotonicity-gate soundness proofs)
+charon+aeneas drift + lake build (extracted-core soundness)
+lake build Nucleus (econ proofs + golden seal)
+lake build Nucleus (rubric scoring proofs)
+version ceiling + wasm closure
+Kani
+Kani (constitutional kernel)

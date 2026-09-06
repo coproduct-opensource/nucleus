@@ -348,6 +348,27 @@ jobs:
         shell: bash
         run: scripts/check-gates-can-fail.sh
 
+  # CI-1: the CI configuration itself is sound. A typed model of every
+  # workflow, the required-check ledger (ci/required-checks.txt) and the
+  # merge-queue pin (ci/merge-queue.toml), and the invariants the queue relies
+  # on decided over it — one producer per required context, twin lists
+  # set-equal, nothing skippable under merge_group, no fail-open gate shape,
+  # timeouts inside the queue budget, every gate wired and inventoried. Each
+  # invariant carries a fixture of the defect it was written for
+  # (crates/ci-spec/tests). Exit 2 ("could not look") is red, never green.
+  ci-spec:
+    name: CI configuration is sound (CI-1)
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - name: Every merge-queue invariant holds over the workflow model
+        shell: bash
+        run: scripts/check-ci-spec.sh
+
   ingest-hash-gate:
     name: No-unwitnessed-ingest gate (InputsAuthorized)
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

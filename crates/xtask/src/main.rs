@@ -90,8 +90,35 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// CI configuration is sound (CI-1): decide the invariants the merge queue
+    /// relies on over a typed model of the workflows, the required-check
+    /// ledger (ci/required-checks.txt) and the merge-queue pin
+    /// (ci/merge-queue.toml). Exit 0 clean, 1 violation, 2 could not look.
+    CiSpec {
+        #[command(subcommand)]
+        cmd: CiSpecCmd,
+    },
 }
 
+#[derive(Subcommand)]
+enum CiSpecCmd {
+    /// Run every invariant and report.
+    Check {
+        /// Repository root (default: the git toplevel).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Emit the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the inline-gate inventory (ci/inline-gates.txt shape).
+    InlineGates {
+        #[arg(long)]
+        repo: Option<String>,
+    },
+}
+
+mod ci_spec;
 mod ci_timings;
 mod rerun_plan;
 
@@ -106,6 +133,10 @@ fn main() -> Result<()> {
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
+        Command::CiSpec { cmd } => match cmd {
+            CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
+            CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
+        },
     }
 }
 
