@@ -1,0 +1,22 @@
+-- nucleus's gatehouse pipeline (informational until the executor and the queue land; see
+-- .github/workflows/gatehouse-plan.yml). Five gates over the tree, each with its inputs as
+-- scope globs, a pinned environment, a hermetic capability, its command and timeout. The
+-- admissibility proof at the bottom is computed by evaluation and checked by the writ kernel.
+-- Tuples follow gatehouse's prelude/ci.writ:
+--   Cap  = (net, exec, wallMs, cpuMs, memMb, fsRead, fsWrite, secrets)   net tag 3 0 = None, exec tag 3 1 = Scoped
+--   Gate = (name, hash, scope, env, cap, cmd, timeoutMs, outputs)         hash is filled by the elaborator (zeroed when hashed)
+-- env = the rust:1.96.1-slim-bookworm image index digest (rust-toolchain.toml pins 1.96.1).
+import "sha256:2a14b3be34215e3e5afe1b7828ffcf85be2e77969a002262402e13588f12c0dc" as ci
+let env : Digest = #d"e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3"
+let ceiling : ci.Cap = (tag 3 0, tag 3 1, 3600000, 3600000, 16384, [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**", #b"crates/portcullis-core/lean/**", #b".github/workflows/**", #b"ci/**", #b"crates/ci-spec/**", #b"scripts/check-ci-spec.sh"] : Bytes, [#b"target/**", #b"crates/portcullis-core/lean/.lake/**"] : Bytes, [] : Bytes)
+let rcap : ci.Cap = (tag 3 0, tag 3 1, 3600000, 3600000, 8192, [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**"] : Bytes, [#b"target/**"] : Bytes, [] : Bytes)
+let lcap : ci.Cap = (tag 3 0, tag 3 1, 3600000, 3600000, 16384, [#b"crates/portcullis-core/lean/**"] : Bytes, [#b"crates/portcullis-core/lean/.lake/**"] : Bytes, [] : Bytes)
+let scap : ci.Cap = (tag 3 0, tag 3 1, 900000, 900000, 4096, [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b".github/workflows/**", #b"ci/**", #b"crates/ci-spec/**", #b"scripts/check-ci-spec.sh"] : Bytes, [#b"target/**"] : Bytes, [] : Bytes)
+let fmt : ci.Gate = (#b"fmt", #d"0000000000000000000000000000000000000000000000000000000000000001", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**"] : Bytes, env, rcap, [#b"cargo", #b"fmt", #b"--all", #b"--", #b"--check"] : Bytes, 300000, [] : Bytes)
+let clippy : ci.Gate = (#b"clippy", #d"0000000000000000000000000000000000000000000000000000000000000002", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**"] : Bytes, env, rcap, [#b"cargo", #b"clippy", #b"--all-targets", #b"--all-features", #b"--", #b"-D", #b"warnings"] : Bytes, 2400000, [] : Bytes)
+let testCore : ci.Gate = (#b"test-core", #d"0000000000000000000000000000000000000000000000000000000000000003", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**"] : Bytes, env, rcap, [#b"cargo", #b"test", #b"--all-features", #b"--lib", #b"--bins", #b"--tests"] : Bytes, 3600000, [] : Bytes)
+let leanBuild : ci.Gate = (#b"lean-build", #d"0000000000000000000000000000000000000000000000000000000000000004", [#b"crates/portcullis-core/lean/**"] : Bytes, env, lcap, [#b"lake", #b"build", #b"PortcullisCoreBridge"] : Bytes, 3600000, [] : Bytes)
+let ciSpec : ci.Gate = (#b"ci-spec", #d"0000000000000000000000000000000000000000000000000000000000000005", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b".github/workflows/**", #b"ci/**", #b"crates/ci-spec/**", #b"scripts/check-ci-spec.sh"] : Bytes, env, scap, [#b"scripts/check-ci-spec.sh"] : Bytes, 900000, [] : Bytes)
+let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec] : ci.Gate, [(1, 0), (2, 0)] : ci.Edge)
+let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy", #b"test-core", #b"lean-build", #b"ci-spec"] : Bytes, 14400000, 64)
+let admissible : So (ci.admissible_b pipeline policy) = oh
