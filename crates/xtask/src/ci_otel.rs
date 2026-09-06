@@ -215,7 +215,7 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
                 wf_duration
                     .entry(vec![("workflow", wf.clone()), ("event", run.event.clone())])
                     .or_default()
-                    .observe((u - c).max(0) as f64);
+                    .observe(secs_f64(u - c));
             }
         }
         let list: JobList = serde_json::from_str(&gh_api(&format!(
@@ -247,7 +247,7 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
                     ("event", run.event.clone()),
                 ])
                 .or_default()
-                .observe((started - created).max(0) as f64);
+                .observe(secs_f64(started - created));
             duration
                 .entry(vec![
                     ("workflow", wf.clone()),
@@ -256,7 +256,7 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
                     ("event", run.event.clone()),
                 ])
                 .or_default()
-                .observe((done - started).max(0) as f64);
+                .observe(secs_f64(done - started));
             *completed
                 .entry(vec![
                     ("workflow", wf.clone()),
@@ -389,4 +389,10 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
     }
     eprintln!("ci-otel: exported to {endpoint} (http {code})");
     Ok(())
+}
+
+/// A non-negative duration in seconds as an f64 without a lossy cast: clamped at u32::MAX
+/// (136 years), which no CI job reaches, then widened exactly.
+fn secs_f64(d: i64) -> f64 {
+    f64::from(u32::try_from(d.max(0)).unwrap_or(u32::MAX))
 }
