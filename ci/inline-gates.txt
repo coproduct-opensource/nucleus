@@ -42,6 +42,8 @@ aeneas.yml::aeneas-translate::Aeneas Lean 4 translation | UNCOVERED: no falsifie
 aeneas.yml::aeneas-translate::Verify generated Lean matches committed | UNCOVERED: no falsifier yet
 aeneas.yml::aeneas-translate::Reject sorry (proof holes) | UNCOVERED: no falsifier yet
 ci-assurance.yml::live-parity::Ledger == branch protection; queue pin == ruleset | falsified by crates/ci-spec/tests/live_parity.rs (CI-LP-MISSING/EXTRA/QUEUE/STRICT/VACUOUS fixtures); exit 2 is red in the step
+ci-spec-lean.yml::ci-spec-lean::Ban sorry / admit / native_decide / sorryAx in the CI model | falsified by the "The sorry-ban REDs on a planted sorry" step in the same job, every run
+ci-spec-lean.yml::ci-spec-lean::The sorry-ban REDs on a planted sorry | self-falsifying: internal perturbation (plants a sorry, asserts the grep finds it)
 ck-policy-aeneas.yml::ck-policy-aeneas::Verify generated Lean matches committed (drift gate) | UNCOVERED: no falsifier yet
 ck-policy-aeneas.yml::ck-policy-aeneas::Ban sorry / admit / native_decide in our proof file | UNCOVERED: no falsifier yet
 ck-policy-lean.yml::ck-policy-lean::Ban sorry / admit / native_decide / sorryAx in ck-policy Lean | UNCOVERED: no falsifier yet

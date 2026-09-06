@@ -62,3 +62,6 @@ nucleus_ifc_kernel.llbc
 # Scratch build scripts for the Firecracker boot harness (staged into the repo
 # root so a container mount can see them). Not part of the build.
 /.fc*.sh
+
+# Lean build artifacts of the CI model (ci/lean); the other Lean packages live under crates/
+ci/lean/.lake/
