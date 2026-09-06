@@ -97,7 +97,9 @@ pub fn scoreboard_ratchet(current: &str, baseline: &str) -> Result<()> {
     flatten(&base, "", &mut b);
     let compared = c.keys().filter(|k| b.contains_key(*k)).count();
     if compared < 3 {
-        eprintln!("::error::only {compared} metric(s) shared between {current} and {baseline} — the ratchet compared nothing");
+        eprintln!(
+            "::error::only {compared} metric(s) shared between {current} and {baseline} — the ratchet compared nothing"
+        );
         std::process::exit(1);
     }
     let (fail, improved) = ratchet(&cur, &base);
@@ -122,10 +124,16 @@ mod tests {
     #[test]
     fn lower_is_better_regresses_upward_and_improves_downward() {
         let base = json!({"a": {"sorry_admit": 5, "extracted_proofs": 4}});
-        let (f, i) = ratchet(&json!({"a": {"sorry_admit": 6, "extracted_proofs": 4}}), &base);
+        let (f, i) = ratchet(
+            &json!({"a": {"sorry_admit": 6, "extracted_proofs": 4}}),
+            &base,
+        );
         assert_eq!(f.len(), 1);
         assert!(i.is_empty());
-        let (f, i) = ratchet(&json!({"a": {"sorry_admit": 3, "extracted_proofs": 6}}), &base);
+        let (f, i) = ratchet(
+            &json!({"a": {"sorry_admit": 3, "extracted_proofs": 6}}),
+            &base,
+        );
         assert!(f.is_empty());
         assert_eq!(i.len(), 2);
     }
@@ -135,7 +143,10 @@ mod tests {
         // The anti-Goodhart pairing: deleting theorems lowers vacuous_lean AND
         // drops lean_theorems_GUARD; the guard must fail.
         let base = json!({"vacuous_lean": 10, "lean_theorems_GUARD": 900});
-        let (f, _) = ratchet(&json!({"vacuous_lean": 0, "lean_theorems_GUARD": 100}), &base);
+        let (f, _) = ratchet(
+            &json!({"vacuous_lean": 0, "lean_theorems_GUARD": 100}),
+            &base,
+        );
         assert_eq!(f.len(), 1);
         assert!(f[0].contains("GUARD"));
     }
