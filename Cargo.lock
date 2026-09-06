@@ -7639,6 +7639,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "nucleus-lineage",
+ "redb",
  "serde",
  "serde_json",
  "sha2 0.11.0",
