@@ -1,0 +1,108 @@
+# gatehouse shadow mode — INFORMATIONAL (not a required context).
+#
+# Runs this repository's fmt gate (.gatehouse/gates/fmt.json) the gatehouse way on the hosted
+# runner: the scope materialized from HEAD (nothing outside it exists in the sandbox), the
+# declared environment, the command under its timeout, a receipt signed by a developer credential,
+# pushed to a local log with an inclusion proof, and verified — then runs `cargo fmt --all --
+# --check` directly and prints whether the two agree. Seven days of agreement is the evidence the
+# gatehouse plan asks for before any gate becomes required (milestone 4 → 5). gatehouse is a
+# private repository, so the job runs only when the GATEHOUSE_TOKEN secret exists; without it the
+# job says so and passes. It never fails on disagreement — only when the loop itself errors.
+name: gatehouse shadow
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  shadow-fmt:
+    name: The fmt gate, run the gatehouse way, agrees with the GitHub check (shadow, informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GATEHOUSE_REF: 75ad1b6ef791b48e85d4e479b54e35811ade23c9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Is the gatehouse token available?
+        id: tok
+        env:
+          T: ${{ secrets.GATEHOUSE_TOKEN }}
+        run: |
+          if [ -n "$T" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GATEHOUSE_TOKEN is not set: shadow mode cannot look (informational; see the header of this workflow)"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.tok.outputs.present == 'true'
+        with:
+          repository: coproduct-private/gatehouse
+          ref: ${{ env.GATEHOUSE_REF }}
+          token: ${{ secrets.GATEHOUSE_TOKEN }}
+          path: gatehouse
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: steps.tok.outputs.present == 'true'
+        with:
+          components: rustfmt
+          cache: false
+      - name: Build gate and gatehouse-runner
+        if: steps.tok.outputs.present == 'true'
+        run: cargo build --locked --manifest-path gatehouse/Cargo.toml -p gate -p gatehouse-runner
+      - name: The fmt gate, the gatehouse way
+        if: steps.tok.outputs.present == 'true'
+        id: gh
+        env:
+          GATE: gatehouse/target/debug/gate
+          RUNNER: gatehouse/target/debug/gatehouse-runner
+        run: |
+          set -euo pipefail
+          W="$(mktemp -d)"
+          CA_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+          "$GATE" login --dev --ca-key "$CA_KEY" --ca-kid dev-ca --subject shadow --out "$W/dev.json"
+          KID="$(jq -r .credential.body.kid "$W/dev.json")"; SK="$(jq -r .signing_key_hex "$W/dev.json")"
+          jq --arg rh "${RUSTUP_HOME:-$HOME/.rustup}" --arg ch "${CARGO_HOME:-$HOME/.cargo}" \
+            '.env.env_vars = {RUSTUP_HOME: $rh, CARGO_HOME: $ch}' .gatehouse/gates/fmt.json > "$W/fmt.json"
+          PLAN="$(printf 'p%.0s' $(seq 1 64))"
+          jq -n --arg plan "$PLAN" --arg kid "$KID" --arg sk "$SK" --arg rd "$(sha256sum "$RUNNER" | cut -d' ' -f1)" \
+            --slurpfile g "$W/fmt.json" \
+            '{repo: "coproduct-opensource/nucleus", repo_path: ".", tree_spec: "HEAD", plan: $plan, gate_name: "fmt",
+              gate: $g[0], canary: null, kid: $kid, signing_key_hex: $sk, substrate: "developer",
+              credential_kind: "dev_credential", credential_tier: "developer", runner_digest: $rd, binding: null}' > "$W/job.json"
+          set +e
+          "$RUNNER" "$W/job.json" "$W/receipt.json"; RC=$?
+          set -e
+          echo "runner exit $RC (0 held, 1 failed, 2 errored)"
+          [ "$RC" -ne 2 ] || { echo "::error::the runner errored"; exit 1; }
+          "$GATE" receipt push "$W/receipt.json" --log "$W/log.json" --proof "$W/proof.json"
+          "$GATE" trust dev "$W/dev.json" --ca-key "$CA_KEY" --log "$W/log.json" --out "$W/trust.json"
+          "$GATE" expect "$W/fmt.json" --repo . --tree HEAD --class optional --plan "$PLAN" --out "$W/expect.json"
+          set +e
+          OUT="$("$GATE" receipt verify "$W/receipt.json" --trust "$W/trust.json" --expect "$W/expect.json" --inclusion "$W/proof.json")"; VC=$?
+          set -e
+          echo "$OUT"
+          case "$VC" in 0) echo "held=HELD" >> "$GITHUB_OUTPUT";; 1) echo "held=not-held" >> "$GITHUB_OUTPUT";; *) echo "::error::verify could not look: $OUT"; exit 1;; esac
+      - name: The same check, the GitHub way, and the agreement line
+        if: steps.tok.outputs.present == 'true'
+        env:
+          GH_HELD: ${{ steps.gh.outputs.held }}
+        run: |
+          set +e
+          cargo fmt --all -- --check >/dev/null 2>&1; FC=$?
+          set -e
+          if [ "$FC" -eq 0 ]; then GITHUB=pass; else GITHUB=fail; fi
+          if { [ "$GH_HELD" = HELD ] && [ "$GITHUB" = pass ]; } || { [ "$GH_HELD" = not-held ] && [ "$GITHUB" = fail ]; }; then AGREE=true; else AGREE=false; fi
+          LINE="shadow: gatehouse=$GH_HELD github=$GITHUB agree=$AGREE"
+          echo "$LINE"
+          echo "$LINE" >> "$GITHUB_STEP_SUMMARY"
