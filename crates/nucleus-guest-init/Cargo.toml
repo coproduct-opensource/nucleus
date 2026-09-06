@@ -8,6 +8,10 @@ description = "Guest init for Firecracker images"
 repository = "https://github.com/coproduct-opensource/nucleus"
 readme = "README.md"
 
+[lib]
+name = "nucleus_guest_init"
+path = "src/lib.rs"
+
 [[bin]]
 name = "nucleus-guest-init"
 path = "src/main.rs"
