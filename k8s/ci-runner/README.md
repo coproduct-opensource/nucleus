@@ -54,6 +54,18 @@ sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install nucleus-k3s
   --version 0.14.2 -n arc-runners -f k8s/ci-runner/values.yaml
 ```
 
+Metrics: the controller chart is installed with `-f k8s/ci-runner/controller-values.yaml`
+(`metrics:` on `:8080/metrics` for the controller-manager and every listener);
+`k8s/ci-metrics` scrapes them. After changing it, delete the listener pods so
+they are recreated with the metrics port:
+
+```sh
+sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install arc \
+  oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
+  --version 0.14.2 -n arc-systems -f k8s/ci-runner/controller-values.yaml
+sudo kubectl delete pod -n arc-systems -l app.kubernetes.io/component=runner-scale-set-listener
+```
+
 Install the build pool the same way with `-f k8s/ci-runner/values-build.yaml`
 and release name `nucleus-k3s-build`.
 
