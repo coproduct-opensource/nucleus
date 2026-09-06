@@ -64,7 +64,7 @@ ck-policy-aeneas.yml::ck-policy-aeneas::Verify generated Lean matches committed 
 ck-policy-aeneas.yml::ck-policy-aeneas::Ban sorry / admit / native_decide in our proof file | UNCOVERED: no falsifier yet
 ck-policy-lean.yml::ck-policy-lean::Ban sorry / admit / native_decide / sorryAx in ck-policy Lean | UNCOVERED: no falsifier yet
 clippy-ratchet.yml::ratchet-falsifier::RED on a ceiling below actual, GREEN when restored | UNCOVERED: no falsifier yet
-coverage-matrix.yml::mutants::Check for survived mutants | UNCOVERED: no falsifier yet
+coverage-matrix.yml::mutants::The gate reads the machine report, not the console (#2562) | UNCOVERED: no falsifier yet
 crates-publish.yml::publish::Publish in dependency order (idempotent) | UNCOVERED: no falsifier yet
 dylint-separation.yml::dylint::Run cb4a_separation over the broker crates | UNCOVERED: no falsifier yet
 dylint-separation.yml::dylint::Run workload_identity_isolation over the spawn-path crate | UNCOVERED: no falsifier yet
