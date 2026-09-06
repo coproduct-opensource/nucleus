@@ -165,8 +165,12 @@ pub fn gen_golden(repo: Option<String>) -> Result<()> {
     let json = std::fs::read_to_string(root.join("crates/ci-spec/tests/golden/queue_traces.json"))?;
     let g = ci_spec::golden::parse(&json).map_err(|e| anyhow::anyhow!(e))?;
     // Never render vectors the Rust mirror itself does not reproduce.
-    ci_spec::golden::check_rust(&g).map_err(|e| anyhow::anyhow!("golden vector fails in Rust: {e}"))?;
-    print!("{}", ci_spec::golden::render_lean(&g).map_err(|e| anyhow::anyhow!(e))?);
+    ci_spec::golden::check_rust(&g)
+        .map_err(|e| anyhow::anyhow!("golden vector fails in Rust: {e}"))?;
+    print!(
+        "{}",
+        ci_spec::golden::render_lean(&g).map_err(|e| anyhow::anyhow!(e))?
+    );
     Ok(())
 }
 
@@ -206,8 +210,12 @@ pub fn trace_check(github: &str, since_hours: u64, json: bool) -> Result<()> {
         .cloned()
         .unwrap_or_default()
     {
-        let number = pr["number"].as_u64().unwrap_or(0) as u32;
-        for it in pr["timelineItems"]["nodes"].as_array().cloned().unwrap_or_default() {
+        let number = u32::try_from(pr["number"].as_u64().unwrap_or(0)).unwrap_or(0);
+        for it in pr["timelineItems"]["nodes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+        {
             let at = it["createdAt"].as_str().unwrap_or("").to_string();
             if at.as_str() < since_rfc.as_str() {
                 continue;
@@ -220,7 +228,11 @@ pub fn trace_check(github: &str, since_hours: u64, json: bool) -> Result<()> {
                 },
                 _ => continue,
             };
-            events.push(ci_spec::trace::TraceEvent { at, pr: number, kind });
+            events.push(ci_spec::trace::TraceEvent {
+                at,
+                pr: number,
+                kind,
+            });
         }
     }
     let r = ci_spec::trace::replay(&events);
@@ -252,7 +264,7 @@ fn ci_timings_rfc3339(secs: u64) -> String {
     // Days since epoch → civil date (Howard Hinnant's algorithm), UTC.
     let days = secs / 86400;
     let rem = secs % 86400;
-    let z = days as i64 + 719_468;
+    let z = i64::try_from(days).expect("day count fits i64") + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;

@@ -60,13 +60,22 @@ pub fn check_rust(g: &GoldenFile) -> Result<usize, String> {
         let evs = events_of(t)?;
         let s = run(State::init(), &evs);
         if s.queue != t.expect.queue {
-            return Err(format!("{}: queue {:?} ≠ {:?}", t.name, s.queue, t.expect.queue));
+            return Err(format!(
+                "{}: queue {:?} ≠ {:?}",
+                t.name, s.queue, t.expect.queue
+            ));
         }
         if s.merged_log != t.expect.merged_log {
-            return Err(format!("{}: merged_log {:?} ≠ {:?}", t.name, s.merged_log, t.expect.merged_log));
+            return Err(format!(
+                "{}: merged_log {:?} ≠ {:?}",
+                t.name, s.merged_log, t.expect.merged_log
+            ));
         }
         if s.enq_log != t.expect.enq_log {
-            return Err(format!("{}: enq_log {:?} ≠ {:?}", t.name, s.enq_log, t.expect.enq_log));
+            return Err(format!(
+                "{}: enq_log {:?} ≠ {:?}",
+                t.name, s.enq_log, t.expect.enq_log
+            ));
         }
         for (p, l) in &t.expect.loc {
             let p: u32 = p.parse().map_err(|_| format!("{}: bad pr {p:?}", t.name))?;
@@ -78,7 +87,12 @@ pub fn check_rust(g: &GoldenFile) -> Result<usize, String> {
     }
     for c in &g.capacity {
         if c.initial.len() != c.runners {
-            return Err(format!("{}: {} initial loads for {} runners", c.name, c.initial.len(), c.runners));
+            return Err(format!(
+                "{}: {} initial loads for {} runners",
+                c.name,
+                c.initial.len(),
+                c.runners
+            ));
         }
         let got = makespan(&greedy_from(&c.initial, &c.jobs));
         if got != c.makespan {
@@ -122,7 +136,10 @@ pub fn render_lean(g: &GoldenFile) -> Result<String, String> {
         let run_expr = format!("run State.init [{}]", lean_evs.join(", "));
         let mut conj = vec![
             format!("({run_expr}).queue = {}", lean_list(&t.expect.queue)),
-            format!("({run_expr}).mergedLog = {}", lean_list(&t.expect.merged_log)),
+            format!(
+                "({run_expr}).mergedLog = {}",
+                lean_list(&t.expect.merged_log)
+            ),
             format!("({run_expr}).enqLog = {}", lean_list(&t.expect.enq_log)),
         ];
         for (p, l) in &t.expect.loc {

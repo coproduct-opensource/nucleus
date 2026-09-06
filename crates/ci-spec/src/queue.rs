@@ -123,18 +123,18 @@ impl State {
     /// `loc p` (total: `Waiting` past the end).
     #[must_use]
     pub fn loc(&self, p: u32) -> Loc {
-        self.loc.get(p as usize).copied().unwrap_or(Loc::Waiting)
+        self.loc.get(ix(p)).copied().unwrap_or(Loc::Waiting)
     }
 
     /// `checks p` (total: `false` past the end).
     #[must_use]
     pub fn check(&self, p: u32) -> bool {
-        self.checks.get(p as usize).copied().unwrap_or(false)
+        self.checks.get(ix(p)).copied().unwrap_or(false)
     }
 
     /// `upd loc p l`.
     fn set_loc(&mut self, p: u32, l: Loc) {
-        let i = p as usize;
+        let i = ix(p);
         if self.loc.len() <= i {
             self.loc.resize(i + 1, Loc::Waiting);
         }
@@ -143,7 +143,7 @@ impl State {
 
     /// `setB checks p b`.
     fn set_check(&mut self, p: u32, b: bool) {
-        let i = p as usize;
+        let i = ix(p);
         if self.checks.len() <= i {
             self.checks.resize(i + 1, false);
         }
@@ -161,8 +161,11 @@ impl State {
     /// and the queue has no duplicates.
     #[must_use]
     pub fn consistent(&self) -> bool {
-        let n = self.loc.len().max(self.queue.iter().map(|p| *p as usize + 1).max().unwrap_or(0));
-        for p in 0..n as u32 {
+        let n = self
+            .loc
+            .len()
+            .max(self.queue.iter().map(|p| ix(*p) + 1).max().unwrap_or(0));
+        for p in 0..u32::try_from(n).expect("queue size fits u32") {
             let in_q = self.queue.contains(&p);
             if in_q != (self.loc(p) == Loc::Queued) {
                 return false;
@@ -335,6 +338,12 @@ pub fn makespan(l: &[u64]) -> u64 {
     l.iter().fold(0, |a, b| a.max(*b))
 }
 
+/// A PR index as a slot: `u32 → usize` is lossless on every target we build for, and the
+/// `try_from` keeps the cast ratchet honest instead of hiding a truncation behind `as`.
+fn ix(p: u32) -> usize {
+    usize::try_from(p).expect("u32 index fits usize")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,7 +360,10 @@ mod tests {
     /// T5's guarded case: cancelling a DEQUEUED PR's run is a no-op on the queue.
     #[test]
     fn cancelling_a_dequeued_pr_is_safe() {
-        let s = run(State::init(), &[Ev::Enqueue(1), Ev::Enqueue(2), Ev::Pass(1), Ev::Push(2)]);
+        let s = run(
+            State::init(),
+            &[Ev::Enqueue(1), Ev::Enqueue(2), Ev::Pass(1), Ev::Push(2)],
+        );
         let before = merge_enabled(&s);
         let s2 = step(s.clone(), Ev::Cancel(2));
         assert_eq!(s2.queue, s.queue);
@@ -370,7 +382,10 @@ mod tests {
 
     #[test]
     fn try_step_reports_out_of_order_merge() {
-        let s = run(State::init(), &[Ev::Enqueue(1), Ev::Enqueue(2), Ev::Pass(2)]);
+        let s = run(
+            State::init(),
+            &[Ev::Enqueue(1), Ev::Enqueue(2), Ev::Pass(2)],
+        );
         // Head is 1 and its checks are not green: merging is illegal.
         let err = try_step(s, Ev::Merge).expect_err("merge must be illegal");
         assert!(matches!(err.1, Illegal::HeadNotGreen(1)));

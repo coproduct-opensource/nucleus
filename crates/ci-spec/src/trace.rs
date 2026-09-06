@@ -87,10 +87,10 @@ pub fn to_model_events(events: &[TraceEvent]) -> Vec<(TraceEvent, Ev)> {
     let mut ids: Vec<u32> = Vec::new();
     let mut id_of = |pr: u32| -> u32 {
         match ids.iter().position(|x| *x == pr) {
-            Some(i) => i as u32,
+            Some(i) => u32::try_from(i).expect("pr count fits u32"),
             None => {
                 ids.push(pr);
-                (ids.len() - 1) as u32
+                u32::try_from(ids.len() - 1).expect("pr count fits u32")
             }
         }
     };
@@ -184,10 +184,22 @@ mod tests {
     fn a_real_day_replays_clean() {
         let t = vec![
             ev("2026-09-05T19:00:00Z", 2628, Kind::Added),
-            ev("2026-09-05T20:10:00Z", 2628, Kind::Removed { reason: "CI failed".into() }),
+            ev(
+                "2026-09-05T20:10:00Z",
+                2628,
+                Kind::Removed {
+                    reason: "CI failed".into(),
+                },
+            ),
             ev("2026-09-05T21:37:57Z", 2636, Kind::Added),
             ev("2026-09-05T21:54:58Z", 2636, Kind::Merged),
-            ev("2026-09-05T21:54:58Z", 2636, Kind::Removed { reason: "merged".into() }),
+            ev(
+                "2026-09-05T21:54:58Z",
+                2636,
+                Kind::Removed {
+                    reason: "merged".into(),
+                },
+            ),
         ];
         let r = replay(&t);
         assert_eq!(r.violations, Vec::<String>::new());
@@ -220,7 +232,13 @@ mod tests {
     fn a_window_starting_mid_flight_is_truncation_not_violation() {
         // #2628's Removed arrives with no Added in the window.
         let t = vec![
-            ev("2026-09-05T20:10:00Z", 2628, Kind::Removed { reason: "CI failed".into() }),
+            ev(
+                "2026-09-05T20:10:00Z",
+                2628,
+                Kind::Removed {
+                    reason: "CI failed".into(),
+                },
+            ),
             ev("2026-09-05T21:37:57Z", 2636, Kind::Added),
             ev("2026-09-05T21:54:58Z", 2636, Kind::Merged),
         ];
