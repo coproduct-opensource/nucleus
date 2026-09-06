@@ -319,9 +319,26 @@ jobs:
           find dist -type f \( -name "*.tar.gz" -o -name "*.ext4.gz" -o -name "*.yaml" \) -exec mv {} release/ \;
           ls -lah release
       - name: Attest build provenance
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release/*
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      # The attestation above lives in GitHub's attestation store, which release consumers (and
+      # Scorecard's Signed-Releases probes) never see: they look at asset names. So the same
+      # Sigstore bundle is published next to the assets as `*.intoto.jsonl` (verify with
+      # `gh attestation verify --bundle`), and every asset gets a keyless Sigstore signature
+      # bundle `<asset>.sigstore.json` (verify with `cosign verify-blob --bundle`), both
+      # bound to this workflow's OIDC identity rather than to any long-lived key.
+      - name: Publish provenance and per-asset signature bundles as release assets
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          cp "${{ steps.attest.outputs.bundle-path }}" "release/nucleus-${VERSION}.provenance.intoto.jsonl"
+          for f in release/*.tar.gz release/*.ext4.gz release/*.yaml; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+          done
+          ls -lah release
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v2
         with:
