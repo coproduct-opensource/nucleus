@@ -208,7 +208,7 @@ These are important security properties that have NO formal verification:
 
 **Total: 116 Kani BMC harnesses repo-wide** (portcullis 66, portcullis-core 26,
 ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1; recount with
-`scripts/formal-numbers.sh --print` — a bare `grep -rc` says 118 because it also
+`scripts/formal-numbers.sh --print` — a bare `grep -rc` says 119 because it also
 counts a doc comment in ck-kernel and the string inside nucleus-audit's own
 counter; CI runs the script and fails on drift) **+ ~277 kernel-checked
 Lean 4 theorems** in the security core. The Lean *security* core is `sorry`-free;
