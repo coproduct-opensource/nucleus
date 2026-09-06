@@ -6,7 +6,7 @@ that enforces it on every pull request.
 
 **Verification stack:**
 - **Lean 4** kernel-checked proofs via Aeneas extraction (types + theorems)
-- **Kani BMC** bounded model checking of Rust implementations (115 harnesses repo-wide: portcullis 66, portcullis-core 25, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1)
+- **Kani BMC** bounded model checking of Rust implementations (116 harnesses repo-wide: portcullis 66, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1)
 - **Rust type system** structural enforcement via sealed types and phantom tags
 
 For why the enforcement boundary is proved rather than tested — and how that
