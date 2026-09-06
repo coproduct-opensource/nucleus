@@ -90,9 +90,15 @@ probe() {
         return
     fi
 
-    local in_ci
-    in_ci="$(grep -rhoE "scripts/$gate[^\"']*" .github/workflows/ 2>/dev/null | head -1 | sed "s|scripts/$gate||" | xargs || true)"
-    if [[ "$in_ci" != "$ci_flags" ]]; then
+    # Every non-comment invocation in the workflows, flags only. A comment that
+    # merely mentions the script is not an invocation (the proof-count note in
+    # kani-nightly.yml was read as flags "(#2561): the"), and a gate CI calls
+    # two ways — `--count` inside a $(...) and `--strict` as the gate — is
+    # probed as the gate, so ANY invocation may match the probe's flags.
+    local invocations in_ci
+    invocations="$(grep -rhE "scripts/$gate" .github/workflows/ 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -oE "scripts/$gate[^\"'\`)]*" | sed "s|scripts/$gate||" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+    if ! printf '%s\n' "$invocations" | grep -qxF -- "$ci_flags"; then
+        in_ci="$(printf '%s\n' "$invocations" | head -1)"
         echo "  FAIL  $gate — CI invokes it as '$gate $in_ci' but this probe uses '$gate $ci_flags'"
         echo "        Probing a gate differently from CI tests something CI does not run."
         failures=$((failures + 1))
@@ -203,6 +209,14 @@ perturb_lean_lib_unbuilt() {
 lean_lib «GateOfGatesUnbuiltProbe» where
   roots := #[`GateOfGatesUnbuiltProbe]
 LEAN
+}
+
+perturb_kani_harness_deleted() {
+    # One `#[kani::proof]` attribute removed: the harness becomes an ordinary
+    # function and the census drops by one. The ratchet is exact (#2561), so
+    # this must be red; a floor below the true count would let it pass.
+    local tmp; tmp="$(mktemp)"
+    awk 'BEGIN{done=0} /#\[kani::proof\]/ && !done {done=1; next} {print}' "$1" > "$tmp"; cat "$tmp" > "$1"; rm -f "$tmp"
 }
 
 perturb_test_helpers_in_prod() {
@@ -386,6 +400,8 @@ probe check-test-helpers-not-in-production.sh "" crates/nucleus-tool-proxy/Cargo
       "test-helpers enabled on a non-dev edge"  perturb_test_helpers_in_prod
 probe check-lean-libs-built.sh "" crates/portcullis-core/lean/lakefile.lean \
       "a lean_lib nothing builds"               perturb_lean_lib_unbuilt
+probe check-kani-proof-count.sh "--strict" crates/portcullis/src/kani.rs \
+      "a deleted Kani harness"                  perturb_kani_harness_deleted
 probe check-declassify-sink-scope-enforced.sh "" crates/portcullis/src/flow_graph.rs \
       "the applied sink mask widened to admit every sink" \
       perturb_declassify_unscope
