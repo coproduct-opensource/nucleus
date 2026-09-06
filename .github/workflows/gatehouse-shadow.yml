@@ -106,3 +106,30 @@ jobs:
           LINE="shadow: gatehouse=$GH_HELD github=$GITHUB agree=$AGREE"
           echo "$LINE"
           echo "$LINE" >> "$GITHUB_STEP_SUMMARY"
+          echo "gh=$GH_HELD" >> "$GITHUB_OUTPUT"
+          echo "github=$GITHUB" >> "$GITHUB_OUTPUT"
+        id: agree
+      - name: Report the observation to the gatehouse control plane (only when one is named)
+        # docs (gatehouse) hard-cut.md §3: the shadow week is measured per gate by the control
+        # plane's shadow report; the verdict pair is posted here, agreement is computed there.
+        # GATEHOUSE_CONTROL_URL / GATEHOUSE_TENANT are repository VARIABLES (not secrets): the
+        # endpoint is informational and unauthenticated for now. A failed post is a warning,
+        # never a red — nothing required depends on this job.
+        if: steps.tok.outputs.present == 'true' && vars.GATEHOUSE_CONTROL_URL != ''
+        env:
+          CONTROL_URL: ${{ vars.GATEHOUSE_CONTROL_URL }}
+          TENANT: ${{ vars.GATEHOUSE_TENANT || 'nucleus' }}
+          PR: ${{ github.event.pull_request.number || 0 }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GH_HELD: ${{ steps.agree.outputs.gh }}
+          GITHUB_VERDICT: ${{ steps.agree.outputs.github }}
+        run: |
+          case "$GH_HELD" in HELD) GATEHOUSE=held;; *) GATEHOUSE=not-held;; esac
+          BODY="$(jq -cn --argjson pr "$PR" --arg head "$HEAD_SHA" --arg gh "$GATEHOUSE" --arg github "$GITHUB_VERDICT" \
+            '{pr: $pr, head_sha: $head, gate: "fmt", gatehouse: $gh, github: $github}')"
+          if curl -sS --fail-with-body --max-time 20 -H 'content-type: application/json' \
+               -X POST --data "$BODY" "${CONTROL_URL%/}/v1/$TENANT/shadow"; then
+            echo "reported: $BODY"
+          else
+            echo "::warning::the shadow observation could not be reported to $CONTROL_URL (informational)"
+          fi
