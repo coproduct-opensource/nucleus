@@ -24,7 +24,7 @@
 # harness over CapabilityLattice or ExposureSet is a `*_core_dims` proof.
 
 
-total = 63
+total = 72
 
 [[site]]
 file = "crates/ck-kernel/src/kani.rs"
@@ -145,6 +145,7 @@ why = "`leq` skips the extension pointwise-<= branch under Kani. Every harness a
 file = "crates/portcullis/src/certificate.rs"
 attr = "#[cfg(not(kani))]"
 guards = "{"
+count = 2
 class = "semantic-divergence"
 why = "The permission digest omits the extension bytes under Kani. A digest proved stable/injective under Kani is proved so for extension-FREE permissions; two production permissions differing only in extensions hash differently (BTreeMap iteration is key-ordered, so this remains deterministic), which Kani never exercises. Any future harness over `permission_digest` is a `_core_dims` proof until this site is removed."
 
@@ -325,3 +326,66 @@ attr = "#[cfg(kani)]"
 guards = "mod kani_proofs {"
 class = "harness-only"
 why = "Proof harness module for the spawn-boundary argv predicate (proof_argv_check_fail_closed, #2573). Compiled only under `cargo kani`; the predicate itself is unconditional."
+
+# ── #2485 / #2484: the tool surface and the compartment are dimensions of
+# `CapabilityLattice::extensions`, the root-cause field compiled out under Kani.
+# Every site below is a consequence of that one omission, not a new fork: the
+# modules and the delegation-path calls read or write `extensions`, so under Kani
+# there is nothing for them to read. They leave together with the field. The
+# harnesses over delegation remain `_core_dims` proofs (KANI-STATUS.md).
+
+[[site]]
+file = "crates/portcullis/src/lib.rs"
+attr = "#[cfg(not(kani))]"
+guards = "pub mod cert_compartment;"
+class = "extensions-omitted-op"
+why = "The compartment module reads and clamps `CapabilityLattice::extensions` (the `compartment/` key); with the field compiled out under Kani the module has nothing to operate on. Its own tests and the mcp-guard enforcement run in production builds."
+
+[[site]]
+file = "crates/portcullis/src/lib.rs"
+attr = "#[cfg(not(kani))]"
+guards = "pub mod tool_surface;"
+class = "extensions-omitted-op"
+why = "The tool-surface module reads and narrows `CapabilityLattice::extensions` (the `mcp-tool/` keys); same root cause as the compartment module."
+
+[[site]]
+file = "crates/portcullis/src/certificate.rs"
+attr = "#[cfg(not(kani))]"
+guards = "Compartment(crate::cert_compartment::CompartmentHopError),"
+class = "extensions-omitted-op"
+why = "The delegation error variant that carries a compartment hop error; the type lives in the module above. Under Kani the variant does not exist, so a Kani harness over delegation never observes a compartment refusal (extension-free permissions have no compartment)."
+
+[[site]]
+file = "crates/portcullis/src/certificate.rs"
+attr = "#[cfg(not(kani))]"
+guards = "Self::Compartment(e) => write!(f, \"compartment: {e}\"),"
+class = "extensions-omitted-op"
+why = "The Display arm for the variant above."
+
+[[site]]
+file = "crates/portcullis/src/certificate.rs"
+attr = "#[cfg(not(kani))]"
+guards = "if let Some(c) = crate::cert_compartment::compartment_of(&root_permissions.capabilities) {"
+class = "extensions-omitted-op"
+why = "Root minting clamps the root's named dimensions to its compartment ceiling. Under Kani the root has no extensions, so no compartment and no clamp: the root Kani mints is the requested lattice unchanged, which is what the extension-free harnesses assume."
+
+[[site]]
+file = "crates/portcullis/src/certificate.rs"
+attr = "#[cfg(not(kani))]"
+guards = "crate::tool_surface::inherit_surface("
+class = "extensions-omitted-op"
+why = "A silent child inherits the parent's tool surface before the meet. Under Kani there is no surface to inherit; the meet the harnesses check is over the core dimensions only."
+
+[[site]]
+file = "crates/portcullis/src/certificate.rs"
+attr = "#[cfg(not(kani))]"
+guards = "if !crate::tool_surface::surface_preserved("
+class = "extensions-omitted-op"
+why = "The refusal of a child that sheds the tool-surface marker (`ToolSurfaceDropped`). Not reachable under Kani (no marker exists); the refusal is pinned by the production tests `shedding_the_marker_is_detectable` and `a_delegated_certificate_narrows_the_tool_surface`."
+
+[[site]]
+file = "crates/portcullis/src/certificate.rs"
+attr = "#[cfg(not(kani))]"
+guards = "crate::cert_compartment::check_effective("
+class = "extensions-omitted-op"
+why = "The refusal of an effective lattice above the parent's compartment. Same domain as the site above: unreachable for extension-free permissions; pinned by the compartment tests in production builds."
