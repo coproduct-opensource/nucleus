@@ -79,7 +79,7 @@ jobs:
             echo "relevant=false" >> "$GITHUB_OUTPUT"
             echo "nothing in this merge group touches the probe's inputs; skipping (the PR that touched them ran it)"
           fi
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         if: steps.scope.outputs.relevant == 'true'
         with:
           toolchain: stable
