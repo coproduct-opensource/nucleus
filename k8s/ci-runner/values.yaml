@@ -56,8 +56,17 @@ template:
             value: sccache
           - name: SCCACHE_DIR
             value: /home/runner/.cache/sccache
+          # 12G, not 30G, and the number is a disk budget rather than a preference.
+          # The node has 96G. containerd holds ~28G (the runner image alone is 11.4G), elan and
+          # rustup ~4G, and a merge-group build wants tens of gigabytes of checkout and target
+          # dirs at once. At 30G sccache filled to its cap, the node crossed the kubelet's
+          # DiskPressure threshold and EVICTED the runner pod mid-job — which surfaces as
+          # "The self-hosted runner lost communication with the server" and ejects the pull
+          # request from the merge queue with no failing step and 404'd logs. Observed three
+          # times on 2026-09-07 before the cause was found. Raise this only alongside a bigger
+          # disk.
           - name: SCCACHE_CACHE_SIZE
-            value: 30G
+            value: 12G
           - name: CARGO_INCREMENTAL
             value: "0"
           # Debuginfo the linker can afford: full DWARF made GNU ld take
