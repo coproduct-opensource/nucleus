@@ -163,9 +163,19 @@ impl Step {
     }
 }
 
+fn github_owns_the_merge() -> String {
+    "github".to_string()
+}
+
 /// The merge-queue ruleset constants, pinned in `ci/merge-queue.toml`.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct QueueConfig {
+    /// Who enforces the merge. `github` — the ruleset below carries the `merge_queue` rule and
+    /// GitHub builds every group. `gatehouse` — gatehouse's queue verifies receipts and calls
+    /// the merge API itself, and no ruleset may carry a `merge_queue` rule; the constants below
+    /// then describe gatehouse's queue, which is what the capacity theorem is about either way.
+    #[serde(default = "github_owns_the_merge")]
+    pub owner: String,
     pub ruleset_id: u64,
     pub check_response_timeout_minutes: u64,
     pub max_entries_to_build: u64,
