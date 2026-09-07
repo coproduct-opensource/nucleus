@@ -42,7 +42,7 @@ jobs:
             github: scripts/check-ci-spec.sh
             components: rustfmt
     env:
-      GATEHOUSE_REF: 75ad1b6ef791b48e85d4e479b54e35811ade23c9
+      GATEHOUSE_REF: cf8462d6c2999e31aefcc02db774923f940c2a17
       GATE_NAME: ${{ matrix.gate }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
