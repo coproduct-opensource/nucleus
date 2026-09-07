@@ -72,6 +72,13 @@ jobs:
         with:
           components: ${{ matrix.components }}
           cache: false
+          # Do not lint a foreign checkout. This action defaults `rustflags: -D warnings` and
+          # exports it through $GITHUB_ENV, where it applies to the gatehouse build too — and
+          # `-D warnings` implies `-D missing-docs`, which stops that build dead. It also leaked
+          # into the runner as an undeclared environment input, which is the very thing a shadow
+          # gate exists to notice. The GitHub-side commands carry their own denial where they
+          # need it (the clippy gate passes `-D warnings` on its own command line).
+          rustflags: ''
       - name: Build gate and gatehouse-runner
         if: steps.tok.outputs.present == 'true'
         run: cargo build --locked --manifest-path gatehouse/Cargo.toml -p gate -p gatehouse-runner
