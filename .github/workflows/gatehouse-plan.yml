@@ -36,7 +36,7 @@ jobs:
     env:
       # The gatehouse commit whose `gate` checks the plan (its embedded prelude must match the
       # import hash in .gatehouse/pipeline.writ).
-      GATEHOUSE_REF: 564e9ed27f490cb6fc14f7df9f815e5e2ea9cc4e
+      GATEHOUSE_REF: cf8462d6c2999e31aefcc02db774923f940c2a17
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,6 +64,13 @@ jobs:
         if: steps.tok.outputs.present == 'true'
         with:
           cache: false
+          # Do not lint a foreign checkout. This action defaults `rustflags: -D warnings` and
+          # exports it through $GITHUB_ENV, where it applies to the gatehouse build too — and
+          # `-D warnings` implies `-D missing-docs`, which stops that build dead. It also leaked
+          # into the runner as an undeclared environment input, which is the very thing a shadow
+          # gate exists to notice. The GitHub-side commands carry their own denial where they
+          # need it (the clippy gate passes `-D warnings` on its own command line).
+          rustflags: ''
       - name: gate plan check .gatehouse/pipeline.writ
         if: steps.tok.outputs.present == 'true'
         run: |
