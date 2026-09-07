@@ -186,28 +186,36 @@ jobs:
       - name: Install cargo-mutants (baked into the self-hosted image when present)
         run: command -v cargo-mutants >/dev/null || cargo install cargo-mutants --locked
       # A full run of the six modules is ~30 min of a gate runner and ran on
-      # every rebase of every PR. On pull_request only the mutants overlapping
-      # the PR's diff are tried (`--in-diff`, cargo-mutants' own incremental
-      # mode); a PR that touches none of the six files has nothing to mutate
-      # and the gate passes as "no mutants in diff". merge_group, push, the
-      # nightly schedule and workflow_dispatch run everything.
-      - name: Scope to the diff on pull requests
+      # every rebase of every PR. On pull_request and merge_group only the
+      # mutants overlapping the change are tried (`--in-diff`, cargo-mutants'
+      # own incremental mode); a change touching none of the six files has
+      # nothing to mutate and the gate passes as "no mutants in diff". A merge
+      # group is the same change about to land, so it is scoped the same way —
+      # unscoped it exceeded the 45-minute job timeout on the build pool and
+      # took the whole group down with it (2026-09-06). push, the nightly
+      # schedule and workflow_dispatch still run everything.
+      - name: Scope to the diff of the change under review
         id: mutscope
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.ref }}
+          BASE: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
         run: |
           set -euo pipefail
           run=true; in_diff=""
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            git fetch -q origin "$BASE"
-            git diff "origin/$BASE...HEAD" > git.diff
-            if grep -qE '^\+\+\+ b/crates/portcullis/src/(capability|guard|lattice|certificate|delegation|trust)\.rs$' git.diff; then
-              in_diff="--in-diff git.diff"
-            else
-              run=false
-            fi
-          fi
+          case "$EVENT_NAME" in
+            pull_request | merge_group)
+              # Defaulting errs toward a WIDER diff (more mutants tried), never a
+              # narrower one, so a missing base ref cannot quietly shrink the gate.
+              base="${BASE#refs/heads/}"; base="${base:-main}"
+              git fetch -q origin "$base"
+              git diff "origin/$base...HEAD" > git.diff
+              if grep -qE '^\+\+\+ b/crates/portcullis/src/(capability|guard|lattice|certificate|delegation|trust)\.rs$' git.diff; then
+                in_diff="--in-diff git.diff"
+              else
+                run=false
+              fi
+              ;;
+          esac
           { echo "run=$run"; echo "in_diff=$in_diff"; } >> "$GITHUB_OUTPUT"
           echo "mutants: run=$run ${in_diff:+(diff-scoped)}"
       - name: Run mutation tests on security-critical modules
