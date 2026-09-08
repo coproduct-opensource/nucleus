@@ -29,16 +29,19 @@
 //! authority: a sealed grant carries the lattice the ceiling admitted, and a
 //! certificate delegated from it can only narrow (`effect_surface`).
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::certificate::canonical_permissions_hash;
 use crate::task_grant::TaskGrant;
 use crate::token::{AttenuationToken, TokenError};
 use crate::{effect_surface, CapabilityLevel, ExtensionOperation, PermissionLattice};
 
+// Sealing and verifying sign and check Ed25519 signatures: `crypto` only.
+// The data types above are always available, so a build without `crypto`
+// can still read and render a sealed grant.
 #[cfg(feature = "crypto")]
-use crate::certificate::LatticeCertificate;
+use crate::certificate::{canonical_permissions_hash, LatticeCertificate};
+#[cfg(feature = "crypto")]
+use chrono::{DateTime, Utc};
 #[cfg(feature = "crypto")]
 use ring::signature::{Ed25519KeyPair, KeyPair};
 
