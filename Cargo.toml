@@ -256,3 +256,15 @@ risc0-zkvm = "3.0"
 # Build
 tonic-prost-build = "0.14"
 protoc-bin-vendored = "3.2"
+
+# The OIDC keystore file is passphrase-wrapped with scrypt at a pinned work
+# factor (see nucleus-oidc-provider/src/keystore/file.rs). scrypt's ROMix loop
+# is memory-hard by design; unoptimized it is ~30x slower, which turns every
+# keystore open in a debug test binary into half a minute of CPU. Optimizing
+# the KDF crates alone keeps the tests on the production code path and the
+# production work factor without the debug-build penalty.
+[profile.dev.package.scrypt]
+opt-level = 3
+
+[profile.dev.package.salsa20]
+opt-level = 3
