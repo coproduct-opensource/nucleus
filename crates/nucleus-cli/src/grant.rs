@@ -234,10 +234,10 @@ pub fn write_sealed(sealed: &SealedTaskGrant, path: &Path) -> Result<()> {
     let json = serde_json::to_string_pretty(sealed)?;
     std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))?;
     eprintln!(
-        "sealed grant {} written to {} (signer {}, {} effects, expires {})",
+        "sealed grant {} written to {} (cert {}, {} effects, expires {})",
         sealed.grant.id,
         path.display(),
-        &sealed.signer_hex()[..16],
+        &sealed.fingerprint_hex()[..16],
         sealed.grant.can.len(),
         sealed.grant.not_after.format("%Y-%m-%d %H:%M UTC")
     );
@@ -273,10 +273,10 @@ pub fn verified_line(v: &VerifiedGrant) -> String {
     let remaining = g.not_after - Utc::now();
     let mins = remaining.num_minutes().max(0);
     format!(
-        "grant {} verified: sealed by {} ({}…), {} effects, {} left, no confirmation needed",
+        "grant {} verified: sealed by {} (cert {}…), {} effects, {} left, no confirmation needed",
         g.id,
         v.approver(),
-        &v.signer_hex()[..16],
+        &v.fingerprint_hex()[..16],
         g.can.len(),
         if mins >= 60 {
             format!("{}h{:02}m", mins / 60, mins % 60)

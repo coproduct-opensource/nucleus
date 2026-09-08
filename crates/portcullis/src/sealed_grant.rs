@@ -235,6 +235,12 @@ impl SealedTaskGrant {
         hex::encode(self.token.root_public_key())
     }
 
+    /// Hex of the certificate fingerprint: how a sealed grant is named in
+    /// messages (it identifies the seal without echoing key material).
+    pub fn fingerprint_hex(&self) -> String {
+        hex::encode(self.token.fingerprint())
+    }
+
     /// Verify the sealed grant at `now` against `trusted_signers` (32-byte
     /// Ed25519 public keys) and, when given, the digest of the repository
     /// context it is about to be reused in. See the module doc for the
