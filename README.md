@@ -75,6 +75,10 @@ cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-cli
 
 nucleus audit [PATH]                # Tier 0: scan agent configs, no runtime (CI exit codes)
 nucleus run --local "your task"     # Tier 1: run with enforced permissions (process-level, no VM)
+nucleus run --goal "fix the failing CI build" --dry-run
+                                    # State the outcome; nucleus proposes the minimum
+                                    # authority (Can / Cannot / Limits / Risk) and runs
+                                    # after one confirmation. See docs/permissions.md.
 ```
 
 ### Tier 2 — real microVM isolation (macOS)

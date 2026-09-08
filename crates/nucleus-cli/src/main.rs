@@ -28,6 +28,7 @@ mod constants;
 mod doctor;
 mod envelope;
 mod envelope_verify;
+mod goal;
 mod guard;
 mod identity;
 mod keychain;

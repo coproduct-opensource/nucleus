@@ -1,0 +1,63 @@
+# Built-in semantic effects: the public network.
+#
+# Package registries are named effects because "download Rust dependencies"
+# is what a person means when they approve crates.io, and a host list is not
+# a meaning. `hosts` here is the host→meaning table the compiler and the
+# egress policy share.
+
+[plugin]
+name = "web"
+version = 1
+
+[[effect]]
+id = "package-registry-crates"
+title = "Download Rust dependencies (crates.io)"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["crates.io", "static.crates.io", "index.crates.io"]
+[effect.matches]
+commands = ["cargo fetch", "cargo update", "cargo add"]
+http = [
+  { method = "GET", host = "crates.io", path = "/*" },
+  { method = "GET", host = "static.crates.io", path = "/*" },
+  { method = "GET", host = "index.crates.io", path = "/*" },
+]
+
+[[effect]]
+id = "package-registry-npm"
+title = "Download JavaScript dependencies (npm)"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["registry.npmjs.org"]
+[effect.matches]
+commands = ["npm install", "npm ci", "pnpm install", "yarn install"]
+http = [{ method = "GET", host = "registry.npmjs.org", path = "/*" }]
+
+[[effect]]
+id = "package-registry-pypi"
+title = "Download Python dependencies (PyPI)"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["pypi.org", "files.pythonhosted.org"]
+[effect.matches]
+commands = ["pip install", "uv pip install", "uv sync", "poetry install"]
+http = [
+  { method = "GET", host = "pypi.org", path = "/*" },
+  { method = "GET", host = "files.pythonhosted.org", path = "/*" },
+]
+
+[[effect]]
+id = "search"
+title = "Search the web"
+risk = "read"
+[effect.lowers]
+operations = ["web_search"]
+sinks = ["http_egress"]
+[effect.matches]
+mcp_tools = ["web_search", "search"]

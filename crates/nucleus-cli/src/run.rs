@@ -24,7 +24,7 @@ use crate::keychain::{SecretKind, SecretStore};
 use crate::profiles;
 
 /// Resolved configuration from args, config file, and Keychain
-struct ResolvedConfig {
+pub(crate) struct ResolvedConfig {
     node_url: String,
     /// mTLS, when the identity `nucleus setup` provisions (Move A step 6) is
     /// present — the preferred path, and the only one that still works
@@ -43,7 +43,7 @@ struct ResolvedConfig {
 /// Resolve configuration from multiple sources (args > keychain > config > defaults).
 ///
 /// Returns `None` when `--local` is set (no node config needed).
-fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<ResolvedConfig>> {
+pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<ResolvedConfig>> {
     if args.local {
         return Ok(None);
     }
@@ -128,8 +128,42 @@ fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<ResolvedConf
 /// to run the tool-proxy as a local subprocess instead (suitable for CI).
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Task prompt (use - for stdin)
-    pub prompt: String,
+    /// Task prompt (use - for stdin). Not needed with --goal.
+    #[arg(required_unless_present = "goal")]
+    pub prompt: Option<String>,
+
+    /// State the outcome you want instead of a profile: nucleus compiles the
+    /// goal into the minimum authority it needs (met with --ceiling), shows
+    /// what the agent can and cannot do, and runs after one confirmation.
+    #[arg(long, conflicts_with_all = ["config"])]
+    pub goal: Option<String>,
+
+    /// The profile a --goal grant may never exceed. The one knob that widens.
+    #[arg(long, default_value = "codegen")]
+    pub ceiling: String,
+
+    /// Effects to grant in addition to what the goal implies (comma-separated
+    /// ids such as github/read-ci-logs). See `nucleus profiles`.
+    #[arg(long, value_delimiter = ',')]
+    pub effects: Vec<String>,
+
+    /// Accept the compiled grant without prompting (required without a TTY).
+    #[arg(long)]
+    pub yes: bool,
+
+    /// How much of the grant to show: plain | technical | policy-trace.
+    #[arg(long, default_value = "plain")]
+    pub explain: String,
+
+    /// An external effect proposer: a program that reads {goal, context,
+    /// catalog} as JSON on stdin and writes {effects: [...]} on stdout. Its
+    /// output is validated against the catalog and clamped under --ceiling.
+    #[arg(long, value_name = "PROGRAM")]
+    pub proposer: Option<PathBuf>,
+
+    /// Write the compiled grant as JSON (with --goal).
+    #[arg(long, value_name = "PATH")]
+    pub save_grant: Option<PathBuf>,
 
     /// Working directory (default: current directory)
     #[arg(short = 'd', long, default_value = ".")]
@@ -238,6 +272,10 @@ pub struct RunArgs {
 
 /// Execute the run command
 pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
+    if args.goal.is_some() {
+        return crate::goal::execute(args, global_config_path).await;
+    }
+
     // Load global config
     let global_config = Config::load(global_config_path)?;
 
@@ -245,12 +283,14 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     let resolved = resolve_config(&args, &global_config)?;
 
     // Read prompt from stdin if "-"
-    let prompt = if args.prompt == "-" {
-        let mut buffer = String::new();
-        io::stdin().read_to_string(&mut buffer)?;
-        buffer.trim().to_string()
-    } else {
-        args.prompt.clone()
+    let prompt = match args.prompt.as_deref() {
+        Some("-") => {
+            let mut buffer = String::new();
+            io::stdin().read_to_string(&mut buffer)?;
+            buffer.trim().to_string()
+        }
+        Some(p) => p.to_string(),
+        None => String::new(),
     };
 
     if prompt.is_empty() {
@@ -318,26 +358,37 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
             println!("  Rootfs read-only: {}", args.rootfs_read_only);
         }
         println!();
-        println!("Capabilities:");
-        println!("  read_files: {:?}", policy.capabilities.read_files);
-        println!("  write_files: {:?}", policy.capabilities.write_files);
-        println!("  run_bash: {:?}", policy.capabilities.run_bash);
-        println!("  git_push: {:?}", policy.capabilities.git_push);
-        println!("  web_fetch: {:?}", policy.capabilities.web_fetch);
+        print!(
+            "{}",
+            portcullis::render_capabilities(&policy, "Capabilities:")
+        );
         return Ok(());
     }
 
+    dispatch(&args, resolved, &policy, &work_dir, &prompt).await
+}
+
+/// Run `prompt` under `policy` in whichever mode the args select. Shared by
+/// the profile path and the `--goal` path, which differ only in where the
+/// policy came from.
+pub(crate) async fn dispatch(
+    args: &RunArgs,
+    resolved: Option<ResolvedConfig>,
+    policy: &PermissionLattice,
+    work_dir: &Path,
+    prompt: &str,
+) -> Result<()> {
     if args.hook {
-        return run_hook(&args, &policy, &work_dir, &prompt).await;
+        return run_hook(args, policy, work_dir, prompt).await;
     }
 
     if args.local {
-        run_local(&args, &policy, &work_dir, &prompt).await
+        run_local(args, policy, work_dir, prompt).await
     } else {
         let resolved = resolved.ok_or_else(|| {
             anyhow!("node config required for Firecracker mode. Use --local for CI.")
         })?;
-        run_enforced(&args, &resolved, &policy, &work_dir, &prompt).await
+        run_enforced(args, &resolved, policy, work_dir, prompt).await
     }
 }
 

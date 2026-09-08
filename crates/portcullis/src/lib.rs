@@ -128,6 +128,12 @@ pub mod art12_record;
 /// Kernel decision engine — complete mediation with monotone session state.
 pub mod delegation;
 pub mod dropout;
+/// Semantic effect catalog: the human-sized authority vocabulary
+/// (`github/read-ci-logs`) that lowers to core dimensions, sinks and hosts.
+///
+/// Requires the `spec` feature (TOML).
+#[cfg(feature = "spec")]
+pub mod effect_catalog;
 /// Bash command egress analysis — detect network exfiltration.
 pub mod egress;
 /// Egress policy — host pattern matching for outbound traffic control.
@@ -182,6 +188,12 @@ pub mod receipt_sign;
 /// (feature `dlc`); consulted by the kernel, composable as a `PolicyCheck`.
 #[cfg(feature = "dlc")]
 pub mod says_admission;
+/// The task grant a goal compiles to, and its progressive-disclosure
+/// rendering (Goal / Can / Cannot / Limits / Risk).
+///
+/// Requires the `spec` feature.
+#[cfg(feature = "spec")]
+pub mod task_grant;
 #[cfg(feature = "crypto")]
 pub use receipt_sign::{receipt_hash, sign_receipt, verify_receipt};
 #[cfg(feature = "remote-audit")]
@@ -227,6 +239,11 @@ pub use capability::{
     IncompatibilityConstraint, Obligations, Operation, OperationParseError, SinkClass, StateRisk,
 };
 pub use command::{ArgPattern, CommandLattice, CommandPattern};
+#[cfg(feature = "spec")]
+pub use effect_catalog::{
+    EffectCatalog, EffectCatalogError, EffectId, EffectRisk, EffectSpec, HttpMatch,
+    LoweredAuthority,
+};
 pub use exposure_core::{apply_record, classify_operation, project_exposure, should_deny};
 pub use frame::{
     verify_nucleus_laws, BoundedLattice, CompleteLattice, ComposedNucleus, DistributiveLattice,
@@ -258,6 +275,11 @@ pub use permissive::{
 };
 pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
 pub use region::CodeRegion;
+#[cfg(feature = "spec")]
+pub use task_grant::{
+    render as render_grant, render_capabilities, ClippedEffect, CompilerProvenance, Disclosure,
+    GrantLimits, RiskSummary, TaskGrant,
+};
 pub use time::TimeLattice;
 pub use trust::{EnforcementResult, TrustProfile};
 pub use weakening::{

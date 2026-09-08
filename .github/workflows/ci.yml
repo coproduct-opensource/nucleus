@@ -245,6 +245,20 @@ jobs:
         shell: bash
         run: scripts/check-extracted-callsites.sh
 
+  # The delegation compiler (crates/nucleus-task-compiler) turns a goal into
+  # a minimum-authority grant and must never open a socket: an LLM-backed
+  # proposer is a child process outside nucleus, not a dependency of the
+  # compiler. Text-level so the gate-of-gates can probe it without cargo.
+  task-compiler-offline:
+    name: The task compiler is offline by construction
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: No network crate in its dependency tables, no socket type in its sources
+        shell: bash
+        run: scripts/check-task-compiler-offline.sh
+
   # CI-1: the CI configuration itself is sound. A typed model of every
   # workflow, the required-check ledger (ci/required-checks.txt) and the
   # merge-queue pin (ci/merge-queue.toml), and the invariants the queue relies

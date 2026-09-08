@@ -1,0 +1,33 @@
+# Built-in semantic effects: the workspace filesystem.
+#
+# An effect is the unit of authority a person reads and approves ("edit
+# workspace files"), not the lattice dimension it lowers to. The compiler
+# (crates/nucleus-task-compiler) lowers a set of effects into the 13-dim
+# CapabilityLattice + sinks + hosts; the reverse indexes (`matches`) let a
+# trace be attributed back to the effect that authorised it.
+
+[plugin]
+name = "fs"
+version = 1
+
+[[effect]]
+id = "read-workspace"
+title = "Read and search workspace files"
+risk = "read"
+level = "always"
+[effect.lowers]
+operations = ["read_files", "glob_search", "grep_search"]
+[effect.matches]
+mcp_tools = ["read", "glob", "grep", "read_file", "list_directory", "search_files"]
+commands = ["cat", "ls", "find", "rg", "grep", "head", "tail", "sed -n", "wc"]
+
+[[effect]]
+id = "edit-workspace"
+title = "Edit workspace files"
+risk = "write_local"
+[effect.lowers]
+operations = ["write_files", "edit_files"]
+sinks = ["workspace_write"]
+[effect.matches]
+mcp_tools = ["write", "edit", "write_file", "edit_file", "create_directory", "move_file"]
+commands = ["sed -i", "tee", "mv", "cp", "mkdir", "touch"]

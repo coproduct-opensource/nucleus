@@ -6604,6 +6604,7 @@ dependencies = [
  "nucleus-node-binding",
  "nucleus-proto",
  "nucleus-spec",
+ "nucleus-task-compiler",
  "portcullis",
  "rand 0.10.2",
  "rcgen",
@@ -7413,6 +7414,21 @@ dependencies = [
  "serde_json",
  "tokio",
  "x509-parser",
+]
+
+[[package]]
+name = "nucleus-task-compiler"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "portcullis",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]
