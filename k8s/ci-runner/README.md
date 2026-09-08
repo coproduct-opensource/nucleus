@@ -32,9 +32,18 @@ and the Mathlib `lake exe cache` store are persistent for the same reason.
 # 0. tools (once): podman to build, k3s's containerd to run
 sudo apt-get install -y podman
 
-# 1. build the image for the node's architecture and hand it to k3s
+# 1. build the image for the node's architecture and PUSH it to the in-cluster
+#    registry. Do not side-load it into containerd with imagePullPolicy: Never:
+#    that has failed twice, silently. kubelet's image GC (85/80) counts an image
+#    as unused when no container references it, and ARC scales the runner set to
+#    ZERO when idle -- so the image is unreferenced almost always and is
+#    collected the moment the node fills. Pods then sit in ErrImageNeverPull,
+#    nothing FAILS, and every PR check stays QUEUED forever. From the registry,
+#    GC is harmless: kubelet fetches it again.
 podman build -f docker/Dockerfile.runner -t localhost/nucleus-ci-runner:0.2.5 .
-podman save localhost/nucleus-ci-runner:0.2.5 | sudo k3s ctr -n k8s.io images import -
+podman tag localhost/nucleus-ci-runner:0.2.5 localhost:30500/nucleus-ci-runner:0.2.5
+podman push --tls-verify=false localhost:30500/nucleus-ci-runner:0.2.5
+# (/etc/rancher/k3s/registries.yaml already declares localhost:30500 insecure.)
 
 # 2. persistent mounts + toolchains
 sudo bash k8s/ci-runner/warm.sh
