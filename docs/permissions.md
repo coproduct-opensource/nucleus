@@ -412,6 +412,45 @@ milestone (the lattice, the host list and the command prefixes); attributing
 receipts to effects and enforcing per effect at the credential boundary are the
 milestones after this one.
 
+### When something is denied: every denial is a proposal
+
+A denial answers four questions, not one: what the agent tried, why exactly it
+was refused, the least authority that would have allowed it, and what that
+authority would change. Each `--goal` / `--grant` run prints one proposal per
+distinct denial after the usage lines; `nucleus grant propose --grant FILE
+--input trace.jsonl` prints them for any trace (`--json` for the structured
+form):
+
+```
+denied:  git_commit `-m fix` — the grant holds git_commit at never
+minimum: git/commit (commit changes locally) · git_commit: never → low_risk
+risk:    medium → medium
+grant:   nucleus grant widen --grant tests.grant --effects git/commit   (one confirmation, same ceiling)
+         or for this run only: an approver may escalate it for 118m (needs a node with an escalation policy; not in --local)
+
+denied:  git_push `origin main` — the grant holds git_push at never
+minimum: git/push-branch (push a branch to the remote) · git_push: never → low_risk · hosts github.com
+risk:    medium → uninhabitable: adds an exfiltration vector; all three legs present, the kernel will ask before each git_push
+outside: git/push-branch is outside ceiling safe-pr-fixer — a wider ceiling is a separate decision (--ceiling …)
+```
+
+The proposal is bounded by the same ceiling as the grant. Three outcomes:
+
+- **grantable**: an effect vouches for the attempt and the ceiling admits it.
+  `nucleus grant widen` recompiles the goal with that effect added and re-seals
+  after the same single confirmation a new goal would ask for (`C(T) = 1`).
+  What the ceiling still clips is named and left out, never granted.
+- **outside the ceiling**: nothing is offered. Widening the ceiling is a
+  separate decision, and the line says so.
+- **repair, not authority**: information-flow denials, blocked secret paths,
+  expired or exhausted grants, and layers below the grant (isolation,
+  enterprise policy, delegation, Cedar) get a repair line instead of a grant
+  command, because more authority would not help and might make the flow worse.
+
+The risk line is the uninhabitable-state analysis before and after: which
+exposure leg the minimum adds, and whether the kernel will start asking for
+approval because all three legs would then be present.
+
 ### Learning from a run: the grant is the ceiling, the trace is the proposal
 
 Every `--goal` and `--grant` run leaves a kernel trace

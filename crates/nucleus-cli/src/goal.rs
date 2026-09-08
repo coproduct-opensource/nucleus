@@ -212,6 +212,21 @@ fn learn_from_run(
     print!("{}", portcullis::render_usage(&usage, catalog));
     println!("  trace:   {}", trace.display());
 
+    // Every denial, as a proposal: what would have allowed it, and what it
+    // would cost. The grant file is named when there is one to widen.
+    let grant_ref = args
+        .save_grant
+        .as_ref()
+        .or(args.grant.as_ref())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<grant>".to_string());
+    if let Ok(proposals) = crate::grant::proposals_for(grant, catalog, &text) {
+        for p in &proposals {
+            println!();
+            print!("{}", portcullis::render_proposal(p, catalog, &grant_ref));
+        }
+    }
+
     let nothing_to_drop = usage.unused.is_empty()
         && usage
             .operations_granted

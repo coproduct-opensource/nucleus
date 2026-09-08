@@ -20,7 +20,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use clap::{Args, Subcommand};
 use portcullis::{
-    Disclosure, EffectCatalog, SealedTaskGrant, TaskGrant, VerifiedGrant, render_grant,
+    Disclosure, EffectCatalog, EscalationProposal, SealedTaskGrant, TaskGrant, VerifiedGrant,
+    render_grant, render_proposal,
 };
 use ring::signature::{Ed25519KeyPair, KeyPair};
 
@@ -41,6 +42,71 @@ pub enum GrantCommand {
     Seal(SealArgs),
     /// Verify a sealed grant and show what it allows.
     Show(ShowArgs),
+    /// Turn every denial in a run's trace into an escalation proposal: what
+    /// was attempted, why it was refused, the least authority that would
+    /// allow it, the risk delta, and the one command that grants it.
+    Propose(ProposeArgs),
+    /// Re-seal a grant with effects added (or a raised budget), under the
+    /// same ceiling, after the same single confirmation.
+    Widen(WidenArgs),
+}
+
+#[derive(Args)]
+pub struct ProposeArgs {
+    /// The grant the run executed under (sealed or plain JSON).
+    #[arg(long, value_name = "FILE")]
+    pub grant: PathBuf,
+
+    /// The run's kernel trace (JSONL of decisions).
+    #[arg(short, long, value_name = "FILE")]
+    pub input: PathBuf,
+
+    /// Repository whose `.nucleus/effects` extend the catalog.
+    #[arg(short = 'd', long, default_value = ".")]
+    pub dir: String,
+
+    /// Emit the proposals as JSON instead of text.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args)]
+pub struct WidenArgs {
+    /// The grant to widen (sealed or plain JSON).
+    #[arg(long, value_name = "FILE")]
+    pub grant: PathBuf,
+
+    /// Effects to add (comma-separated ids such as git/commit).
+    #[arg(long, value_delimiter = ',')]
+    pub effects: Vec<String>,
+
+    /// A raised spend ceiling in USD (never above the ceiling profile's).
+    #[arg(long)]
+    pub max_cost: Option<f64>,
+
+    /// Accept without prompting (required without a TTY).
+    #[arg(long)]
+    pub yes: bool,
+
+    /// How much of the grant to show: plain | technical | policy-trace.
+    #[arg(long, default_value = "plain")]
+    pub explain: String,
+
+    /// Repository the grant is for (default: current directory).
+    #[arg(short = 'd', long, default_value = ".")]
+    pub dir: String,
+
+    /// Where to write the re-sealed grant (default: overwrite --grant).
+    #[arg(short = 'o', long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+
+    /// Ed25519 key (PKCS#8 PEM) to sign with; created if missing.
+    #[arg(long, env = "NUCLEUS_GRANT_KEY", value_name = "PATH")]
+    pub grant_key: Option<PathBuf>,
+
+    /// Identity recorded as the approver.
+    #[arg(long, value_name = "IDENTITY")]
+    pub approver: Option<String>,
 }
 
 #[derive(Args)]
@@ -117,7 +183,134 @@ pub fn execute(args: GrantArgs) -> Result<()> {
     match args.command {
         GrantCommand::Seal(a) => seal(a),
         GrantCommand::Show(a) => show(a),
+        GrantCommand::Propose(a) => propose(a),
+        GrantCommand::Widen(a) => widen(a),
     }
+}
+
+// ── propose / widen ───────────────────────────────────────────────────────
+
+/// The proposals for every distinct denial in `trace_text`, under `grant`.
+pub fn proposals_for(
+    grant: &TaskGrant,
+    catalog: &EffectCatalog,
+    trace_text: &str,
+) -> Result<Vec<EscalationProposal>> {
+    let denials = portcullis::denials_in_trace(trace_text);
+    if denials.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ceiling = crate::profiles::resolve(&grant.ceiling_profile).ok_or_else(|| {
+        anyhow!(
+            "the grant's ceiling profile '{}' is not known on this host",
+            grant.ceiling_profile
+        )
+    })?;
+    let cost = portcullis::WeakeningCostConfig::default();
+    Ok(denials
+        .iter()
+        .map(|d| {
+            portcullis::propose_escalation(
+                grant,
+                &ceiling,
+                catalog,
+                &cost,
+                d.operation,
+                &d.subject,
+                &d.reason,
+            )
+        })
+        .collect())
+}
+
+fn propose(args: ProposeArgs) -> Result<()> {
+    let grant = read_grant(&args.grant)?;
+    let work_dir = PathBuf::from(shellexpand::tilde(&args.dir).to_string());
+    let catalog = load_catalog(&work_dir)?;
+    let text = std::fs::read_to_string(&args.input)
+        .with_context(|| format!("reading the trace at {}", args.input.display()))?;
+    let proposals = proposals_for(&grant, &catalog, &text)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&proposals)?);
+        return Ok(());
+    }
+    if proposals.is_empty() {
+        println!("no denials in {}", args.input.display());
+        return Ok(());
+    }
+    let grant_ref = args.grant.display().to_string();
+    for (i, p) in proposals.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        print!("{}", render_proposal(p, &catalog, &grant_ref));
+    }
+    Ok(())
+}
+
+fn widen(args: WidenArgs) -> Result<()> {
+    let grant = read_grant(&args.grant)?;
+    let work_dir = shellexpand::tilde(&args.dir).to_string();
+    let work_dir = PathBuf::from(&work_dir)
+        .canonicalize()
+        .with_context(|| format!("working directory {}", args.dir))?;
+    let mut effects: Vec<String> = grant.can.iter().map(|e| e.to_string()).collect();
+    for e in &args.effects {
+        let e = e.trim();
+        if !e.is_empty() && !effects.iter().any(|x| x == e) {
+            effects.push(e.to_string());
+        }
+    }
+    if args.effects.iter().all(|e| e.trim().is_empty()) && args.max_cost.is_none() {
+        bail!("nothing to widen: pass --effects and/or --max-cost");
+    }
+    let request = GoalRequest {
+        goal: grant.goal.clone(),
+        ceiling: grant.ceiling_profile.clone(),
+        effects,
+        proposer: None,
+        max_cost: args.max_cost,
+    };
+    let widened = compile_goal(&request, &work_dir)?;
+    let catalog = load_catalog(&work_dir)?;
+    let level: Disclosure = args.explain.parse().map_err(|e: String| anyhow!(e))?;
+    let added: Vec<String> = widened
+        .can
+        .difference(&grant.can)
+        .map(|e| e.to_string())
+        .collect();
+    let still_clipped: Vec<String> = args
+        .effects
+        .iter()
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty() && !widened.can.iter().any(|c| c.to_string() == *e))
+        .collect();
+    if !still_clipped.is_empty() {
+        eprintln!(
+            "note: {} stay outside ceiling {} (a wider ceiling is a separate decision)",
+            still_clipped.join(", "),
+            grant.ceiling_profile
+        );
+    }
+    eprintln!(
+        "widening grant {}: adds {}",
+        grant.id,
+        if added.is_empty() {
+            "no effects".to_string()
+        } else {
+            added.join(", ")
+        }
+    );
+    match confirm(&widened, &catalog, level, args.yes, "[S]eal")? {
+        Decision::Accept | Decision::SaveOnly => {}
+        Decision::Abort => bail!("aborted: the widened grant was not sealed"),
+    }
+    let key = load_or_create_grant_key(args.grant_key.as_deref())?;
+    let approver = args.approver.clone().unwrap_or_else(approver_identity);
+    let sealed = SealedTaskGrant::seal(widened, approver, &key);
+    let out = args.output.clone().unwrap_or_else(|| args.grant.clone());
+    write_sealed(&sealed, &out)?;
+    Ok(())
 }
 
 // ── keys ──────────────────────────────────────────────────────────────────

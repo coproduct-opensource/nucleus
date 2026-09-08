@@ -146,6 +146,13 @@ pub mod egress;
 pub mod egress_extract;
 pub mod egress_policy;
 pub mod escalation;
+/// Every denial as a structured escalation proposal: what was attempted,
+/// why it was refused, the least authority that would allow it, the risk
+/// delta, and how to grant it within the ceiling.
+///
+/// Requires the `spec` feature.
+#[cfg(all(feature = "spec", not(kani)))]
+pub mod escalation_proposal;
 pub mod exposure_core;
 pub mod flow_graph;
 pub mod frame;
@@ -258,6 +265,11 @@ pub use command::{ArgPattern, CommandLattice, CommandPattern};
 pub use effect_catalog::{
     EffectCatalog, EffectCatalogError, EffectId, EffectRisk, EffectSpec, HttpMatch,
     LoweredAuthority,
+};
+#[cfg(all(feature = "spec", not(kani)))]
+pub use escalation_proposal::{
+    denials_in_trace, propose as propose_escalation, render_proposal, Attempt, Blocked,
+    EscalationProposal, Minimum, RiskDelta, Scope, TraceDenial,
 };
 pub use exposure_core::{apply_record, classify_operation, project_exposure, should_deny};
 pub use frame::{
