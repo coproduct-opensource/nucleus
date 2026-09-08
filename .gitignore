@@ -62,3 +62,9 @@ nucleus_ifc_kernel.llbc
 # Scratch build scripts for the Firecracker boot harness (staged into the repo
 # root so a container mount can see them). Not part of the build.
 /.fc*.sh
+
+# Lean build artifacts of the CI model (ci/lean); the other Lean packages live under crates/
+ci/lean/.lake/
+
+# The Vault CTF build output (trunk); docs.yml rebuilds it and `fly deploy` expects a local build
+crates/ctf-engine/dist/

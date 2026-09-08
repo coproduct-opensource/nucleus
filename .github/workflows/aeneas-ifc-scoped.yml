@@ -119,7 +119,7 @@ jobs:
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon
         if: steps.scope.outputs.relevant == 'true'
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: ${{ env.CHARON_NIGHTLY }}
           components: rustc-dev,llvm-tools-preview,rust-src
@@ -138,7 +138,7 @@ jobs:
       # They close the model<->code gap that the Lean theorem then builds on.
       - name: Stable toolchain (for cargo test)
         if: steps.scope.outputs.relevant == 'true'
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: stable
 
@@ -414,8 +414,12 @@ jobs:
       - name: Install elan (Lean toolchain)
         if: steps.scope.outputs.relevant == 'true' && runner.environment == 'github-hosted'
         run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
-            | sh -s -- -y --no-modify-path
+          # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
+          # script is handed to an interpreter (Scorecard Pinned-Dependencies).
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  /tmp/elan.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/elan.tar.gz -C /tmp elan-init
+          /tmp/elan-init -y --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: "Lean toolchain + Mathlib cache (hosted: elan + cache action)"

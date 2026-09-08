@@ -64,6 +64,7 @@
 
 pub mod async_traits;
 pub mod runtime;
+mod spawn;
 
 pub mod authority;
 pub mod receipt;
@@ -71,7 +72,7 @@ pub mod receipt;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
 use crate::authority::Authority;
@@ -222,7 +223,7 @@ pub trait ShellEffect {
     /// * `program` / `args` — the argv; no shell is ever involved.
     /// * `cwd` — the already-validated working directory (`current_dir`).
     /// * `stdin` — `Some(bytes)` to feed the child stdin over a pipe, `None` to
-    ///   close it with `Stdio::null()`.
+    ///   close it with `std::process::Stdio::null()`.
     /// * `allowed_env` — the environment allowlist; the child is spawned with
     ///   `env_clear()` then `envs(allowed_env)`, so no parent variable leaks.
     /// * `harden` — an optional hook applied to the built [`Command`] just
@@ -426,6 +427,10 @@ pub struct RealEffects {
     _private: (),
 }
 
+/// The argv predicate this home applies (#2573), re-exported so the executor
+/// applies the very same function (nucleus has no direct portcullis-core edge).
+pub use portcullis_core::argv;
+
 impl RealEffects {
     pub(crate) fn new() -> Self {
         Self {
@@ -589,6 +594,9 @@ impl ShellEffect for RealEffects {
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
         authority: Authority,
     ) -> io::Result<Output> {
+        // The ONE argv predicate both spawn boundaries apply (#2573), before the
+        // authority is spent: a refused argv is not a spawn.
+        portcullis_core::argv::check_argv(program, args)?;
         // Spent here and dropped: the right to spawn is consumed at the spawn.
         let spent = authority
             .spend(
@@ -597,41 +605,7 @@ impl ShellEffect for RealEffects {
             )
             .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
         drop(spent);
-        // Reproduces `Executor::spawn_checked` exactly so the raw spawn can
-        // relocate here losslessly: env_clear + envs(allowlist), piped
-        // stdout/stderr, stdin pipe-vs-null, host hardening via the injected
-        // hook, and stdin-fed vs plain output.
-        let mut cmd = Command::new(program);
-        cmd.args(args)
-            .current_dir(cwd)
-            .env_clear() // Security: prevent secret leakage from parent
-            .envs(allowed_env) // Only explicitly allowed vars
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // Stdin: pipe it when the caller has data to write, otherwise close it.
-        if stdin.is_some() {
-            cmd.stdin(Stdio::piped());
-        } else {
-            cmd.stdin(Stdio::null());
-        }
-
-        // Host-hardening hook (e.g. `HostSandbox::harden_std`), applied just
-        // before spawn. `None` reproduces the un-hardened spawn.
-        if let Some(harden) = harden {
-            harden(&mut cmd);
-        }
-
-        if let Some(input) = stdin {
-            let mut child = cmd.spawn()?;
-            if let Some(ref mut stdin_pipe) = child.stdin {
-                use std::io::Write as _;
-                stdin_pipe.write_all(input)?;
-            }
-            child.wait_with_output()
-        } else {
-            cmd.output()
-        }
+        spawn::spawn_sync(program, args, cwd, stdin, allowed_env, harden)
     }
 }
 
@@ -648,6 +622,9 @@ impl AsyncShellSpawnEffect for RealEffects {
         timeout: Option<std::time::Duration>,
         authority: Authority,
     ) -> io::Result<Output> {
+        // The ONE argv predicate both spawn boundaries apply (#2573), before the
+        // authority is spent: a refused argv is not a spawn.
+        portcullis_core::argv::check_argv(program, args)?;
         // Spent here and dropped: the right to spawn is consumed at the spawn.
         let spent = authority
             .spend(
@@ -662,14 +639,14 @@ impl AsyncShellSpawnEffect for RealEffects {
             .current_dir(cwd)
             .env_clear() // Security: prevent secret leakage from parent
             .envs(allowed_env) // Only explicitly allowed vars
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
         if stdin.is_some() {
-            cmd.stdin(Stdio::piped());
+            cmd.stdin(std::process::Stdio::piped());
         } else {
-            cmd.stdin(Stdio::null());
+            cmd.stdin(std::process::Stdio::null());
         }
 
         if let Some(harden) = harden {

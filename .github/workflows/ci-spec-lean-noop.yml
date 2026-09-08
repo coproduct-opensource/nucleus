@@ -1,0 +1,35 @@
+name: CI Spec Lean Proofs
+
+# NO-OP TWIN of ci-spec-lean.yml, so its job can be a REQUIRED status check.
+# Branch protection evaluates required contexts on the PR itself; the real
+# workflow is path-filtered on pull_request, so a PR not touching its paths
+# would never report the context and block forever. This twin has the SAME
+# workflow name and SAME job name, with `paths-ignore` exactly mirroring the
+# original's `paths` — ci-spec I1 checks that equality, and
+# ci/lean/CiSpec/Pipeline.lean (`twin_covers`) is the theorem that says why
+# it must hold. (merge_group is NOT twinned — the real workflow already runs
+# unconditionally there.)
+
+on:
+  pull_request:
+    paths-ignore:
+      - "ci/lean/**"
+      - "scripts/check-ci-spec-bite.sh"
+      - ".github/workflows/ci-spec-lean.yml"
+
+concurrency:
+  # Supersede a PR's older in-flight runs; NEVER cancel anything else.
+  group: ci-spec-lean-noop-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ci-spec-lean:
+    name: lake build CiSpec (pipeline + merge-queue theorems)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op (paths not touched)
+        run: echo "no relevant paths changed — gate vacuously green"

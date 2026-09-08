@@ -12,28 +12,14 @@ name: Aeneas IFC (scoped extraction + noninterference)
 on:
   pull_request:
     paths-ignore:
-      - "crates/nucleus-ifc-kernel/src/extracted/**"
-      - "crates/portcullis-core/lean/generated-ifc/**"
-      - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
-      - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
-      - "crates/portcullis-core/lean/generated-mediation/**"
-      - "crates/portcullis-core/lean/generated-egress/**"
-      - "crates/portcullis-core/lean/generated-credential/**"
-      - "crates/portcullis-core/lean/generated-identity/**"
-      - "crates/portcullis-core/lean/generated-channel/**"
-      - "crates/portcullis-core/lean/generated-declass/**"
-      - "crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean"
-      # These two were missing while the real workflow's `paths` had them, so a
-      # cap-quantale-only PR fired BOTH twins under the same context name —
-      # the exactly-one-twin invariant this file exists for.
-      - "crates/portcullis-core/lean/generated-cap-quantale/**"
-      - "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean"
-      - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
-      - "crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean"
-      - "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean"
-      - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
-      - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
-      - "crates/portcullis-core/lean/lakefile.lean"
+      # EXACTLY the real workflow's `pull_request.paths`, no more and no less.
+      # This list used to enumerate 24 specific files — a strict SUBSET of the
+      # real twin's `crates/nucleus-ifc-kernel/**` + `crates/portcullis-core/lean/**`
+      # — so a change to e.g. nucleus-ifc-kernel/src/lib.rs fired BOTH twins
+      # under one context name. Twin lists are set-equal by construction now;
+      # the invariant is checked by ci-spec (I1) once it lands.
+      - "crates/nucleus-ifc-kernel/**"
+      - "crates/portcullis-core/lean/**"
       - ".github/workflows/aeneas-ifc-scoped.yml"
 
 concurrency:

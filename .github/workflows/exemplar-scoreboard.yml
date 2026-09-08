@@ -43,37 +43,12 @@ jobs:
       - name: Compute scoreboard
         run: bash scripts/exemplar-scoreboard.sh scoreboard.json
 
+      # The ratchet was the last `python3` heredoc on the gate path; it is now
+      # `cargo xtask scoreboard-ratchet` (crates/xtask/src/scoreboard.rs), with
+      # the same LOWER/HIGHER/_GUARD rules, unit-tested, and a non-vacuity
+      # floor (fewer than three shared metrics is a red, not a pass).
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Ratchet against baseline (with anti-Goodhart guards)
-        run: |
-          python3 - <<'PY'
-          import json, sys
-          cur  = json.load(open("scoreboard.json"))
-          base = json.load(open("scripts/exemplar-baseline.json"))
-          def flat(d, p=""):
-              o = {}
-              for k, v in d.items():
-                  if isinstance(v, dict): o.update(flat(v, p+k+"."))
-                  elif isinstance(v, (int, float)) and not isinstance(v, bool): o[p+k] = v
-              return o
-          c, b = flat(cur), flat(base)
-          LOWER  = {"permissive_verify","vacuous_lean","sorry_admit","mediation_drift",
-                    "effect_stubs","unsafe_blocks","stale_verus_dirs"}
-          HIGHER = {"extracted_proofs","crates_lints_workspace","extraction_ratio_pct","lints_adoption_pct"}
-          fail, improved = [], []
-          for k, cv in c.items():
-              name, bv = k.split(".")[-1], b.get(k)
-              if bv is None: continue
-              if name in LOWER:
-                  if cv > bv: fail.append(f"{name} regressed {bv}->{cv} (lower is better)")
-                  elif cv < bv: improved.append(f"{name} {bv}->{cv}")
-              elif name in HIGHER:
-                  if cv < bv: fail.append(f"{name} regressed {bv}->{cv} (higher is better)")
-                  elif cv > bv: improved.append(f"{name} {bv}->{cv}")
-              elif name.endswith("_GUARD"):
-                  if cv < bv: fail.append(f"anti-gaming GUARD {name} dropped {bv}->{cv} (verifier/theorems deleted?)")
-          for i in improved: print(f"::notice::improved {i} — lower scripts/exemplar-baseline.json to ratchet it in")
-          if fail:
-              for f in fail: print(f"::error::{f}")
-              sys.exit(1)
-          print("exemplar scoreboard: no regressions vs baseline")
-          PY
+        run: cargo run -q -p xtask -- scoreboard-ratchet --current scoreboard.json --baseline scripts/exemplar-baseline.json

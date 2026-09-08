@@ -20,6 +20,7 @@ on:
     paths-ignore:
       - "crates/portcullis/src/**"
       - "crates/ck-*/src/**"
+      - "crates/nucleus-ifc-kernel/src/**"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
 
@@ -40,6 +41,13 @@ jobs:
       - name: No-op (paths not touched)
         run: echo "no relevant paths changed — gate vacuously green"
 
+  kani-ifc:
+    name: "Kani (IFC kernel: anti-prompt-injection flow harnesses)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op (paths not touched)
+        run: echo "no relevant paths changed — gate vacuously green"
   kani-constitutional:
     name: Kani (constitutional kernel)
     runs-on: ubuntu-latest

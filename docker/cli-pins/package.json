@@ -4,6 +4,6 @@
   "private": true,
   "description": "Lockfile-pinned CLI dependencies for hash-verified Docker installs",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.71"
+    "@anthropic-ai/claude-code": "2.1.263"
   }
 }

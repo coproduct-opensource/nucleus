@@ -6,7 +6,7 @@ that enforces it on every pull request.
 
 **Verification stack:**
 - **Lean 4** kernel-checked proofs via Aeneas extraction (types + theorems)
-- **Kani BMC** bounded model checking of Rust implementations (114 harnesses repo-wide: portcullis 64, portcullis-core 31, ck-kernel 17, +2)
+- **Kani BMC** bounded model checking of Rust implementations (118 harnesses repo-wide: portcullis 68, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1)
 - **Rust type system** structural enforcement via sealed types and phantom tags
 
 For why the enforcement boundary is proved rather than tested — and how that
@@ -393,8 +393,8 @@ enforcement of IFC constraints.
 |---|---|---|---|
 | IFC semilattice | Lean 4 | 19 theorems | Label algebra, join/meet laws, absorption |
 | Derivation monotonicity | Lean 4 | 9 theorems | Taint propagation, no-cleansing |
-| Capability Heyting algebra | Kani BMC | portcullis-core (31 harnesses) | Meet/join/implies, adjunction |
-| Kernel invariants | Kani BMC | portcullis (64) + ck-kernel (17) harnesses | Exposure, delegation, guards, flow |
+| Capability Heyting algebra | Kani BMC | portcullis-core (25 harnesses) | Meet/join/implies, adjunction |
+| Kernel invariants | Kani BMC | portcullis (66) + ck-kernel (17) harnesses | Exposure, delegation, guards, flow |
 | Discharge sealing | Rust types | 1 compile-fail test | No forging of `DischargedBundle` |
 | Type-level IFC | Rust types | 1 compile-fail test | No `Adversarial` -> `Trusted` flow |
 | Confidentiality downflow | Unit tests | 21 tests | No `Secret` -> `Public` flow |

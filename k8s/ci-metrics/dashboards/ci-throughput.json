@@ -1,0 +1,368 @@
+{
+ "uid": "ci-throughput",
+ "title": "CI throughput",
+ "tags": [
+  "ci"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "refresh": "1m",
+ "time": {
+  "from": "now-24h",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "stat",
+   "title": "Merge queue depth",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 6,
+    "h": 5
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "ci_merge_queue_depth",
+     "legendFormat": "__auto"
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   }
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "Workflow runs queued / in progress",
+   "gridPos": {
+    "x": 6,
+    "y": 0,
+    "w": 6,
+    "h": 5
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "ci_runs_queued",
+     "legendFormat": "queued"
+    },
+    {
+     "refId": "B",
+     "expr": "ci_runs_in_progress",
+     "legendFormat": "in progress"
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   }
+  },
+  {
+   "id": 3,
+   "type": "timeseries",
+   "title": "Jobs queued for a runner (ARC assigned \u2212 running)",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 5
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (scale_set) (gha_assigned_jobs - gha_running_jobs)",
+     "legendFormat": "{{scale_set}}"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "type": "timeseries",
+   "title": "Runners: busy / idle / desired per pool",
+   "gridPos": {
+    "x": 0,
+    "y": 5,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (scale_set) (gha_busy_runners)",
+     "legendFormat": "busy {{scale_set}}"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (scale_set) (gha_idle_runners)",
+     "legendFormat": "idle {{scale_set}}"
+    },
+    {
+     "refId": "C",
+     "expr": "sum by (scale_set) (gha_desired_runners)",
+     "legendFormat": "desired {{scale_set}}"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "type": "timeseries",
+   "title": "Job queue wait p50 / p95 by runner pool (GitHub side)",
+   "gridPos": {
+    "x": 12,
+    "y": 5,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.5, sum by (le, runner) (rate(ci_job_queue_wait_seconds_bucket[30m])))",
+     "legendFormat": "p50 {{runner}}"
+    },
+    {
+     "refId": "B",
+     "expr": "histogram_quantile(0.95, sum by (le, runner) (rate(ci_job_queue_wait_seconds_bucket[30m])))",
+     "legendFormat": "p95 {{runner}}"
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "type": "timeseries",
+   "title": "Jobs completed per hour by conclusion",
+   "gridPos": {
+    "x": 0,
+    "y": 13,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (conclusion) (increase(ci_job_completed_total[1h]))",
+     "legendFormat": "{{conclusion}}"
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "type": "timeseries",
+   "title": "Job duration p50 / p95 by workflow (top)",
+   "gridPos": {
+    "x": 12,
+    "y": 13,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.5, sum by (le, workflow) (rate(ci_job_duration_seconds_bucket[1h])))",
+     "legendFormat": "p50 {{workflow}}"
+    },
+    {
+     "refId": "B",
+     "expr": "histogram_quantile(0.95, sum by (le, workflow) (rate(ci_job_duration_seconds_bucket[1h])))",
+     "legendFormat": "p95 {{workflow}}"
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "type": "timeseries",
+   "title": "Pod start-up (ARC job startup) p50 / p95",
+   "gridPos": {
+    "x": 0,
+    "y": 21,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.5, sum by (le, scale_set) (rate(gha_job_startup_duration_seconds_bucket[30m])))",
+     "legendFormat": "p50 {{scale_set}}"
+    },
+    {
+     "refId": "B",
+     "expr": "histogram_quantile(0.95, sum by (le, scale_set) (rate(gha_job_startup_duration_seconds_bucket[30m])))",
+     "legendFormat": "p95 {{scale_set}}"
+    }
+   ]
+  },
+  {
+   "id": 9,
+   "type": "timeseries",
+   "title": "Pool utilisation (busy / max)",
+   "gridPos": {
+    "x": 12,
+    "y": 21,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (scale_set) (gha_busy_runners) / sum by (scale_set) (gha_max_runners)",
+     "legendFormat": "{{scale_set}}"
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "type": "timeseries",
+   "title": "Workflow duration p95 by event (PR vs merge group vs push)",
+   "gridPos": {
+    "x": 0,
+    "y": 29,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.95, sum by (le, event) (rate(ci_workflow_duration_seconds_bucket[2h])))",
+     "legendFormat": "{{event}}"
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "type": "timeseries",
+   "title": "Jobs completed per hour by runner pool",
+   "gridPos": {
+    "x": 12,
+    "y": 29,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (runner) (increase(ci_job_completed_total[1h]))",
+     "legendFormat": "{{runner}}"
+    }
+   ]
+  }
+ ]
+}

@@ -90,9 +90,15 @@ probe() {
         return
     fi
 
-    local in_ci
-    in_ci="$(grep -rhoE "scripts/$gate[^\"']*" .github/workflows/ 2>/dev/null | head -1 | sed "s|scripts/$gate||" | xargs || true)"
-    if [[ "$in_ci" != "$ci_flags" ]]; then
+    # Every non-comment invocation in the workflows, flags only. A comment that
+    # merely mentions the script is not an invocation (the proof-count note in
+    # kani-nightly.yml was read as flags "(#2561): the"), and a gate CI calls
+    # two ways — `--count` inside a $(...) and `--strict` as the gate — is
+    # probed as the gate, so ANY invocation may match the probe's flags.
+    local invocations in_ci
+    invocations="$(grep -rhE "scripts/$gate" .github/workflows/ 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -oE "scripts/$gate[^\"'\`)]*" | sed "s|scripts/$gate||" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+    if ! printf '%s\n' "$invocations" | grep -qxF -- "$ci_flags"; then
+        in_ci="$(printf '%s\n' "$invocations" | head -1)"
         echo "  FAIL  $gate — CI invokes it as '$gate $in_ci' but this probe uses '$gate $ci_flags'"
         echo "        Probing a gate differently from CI tests something CI does not run."
         failures=$((failures + 1))
@@ -215,6 +221,14 @@ perturb_default_target_unbuilt() {
     grep -v 'run: LEAN_NUM_THREADS=4 lake build$' "$1" > "$tmp"; cat "$tmp" > "$1"; rm -f "$tmp"
 }
 
+perturb_kani_harness_deleted() {
+    # One `#[kani::proof]` attribute removed: the harness becomes an ordinary
+    # function and the census drops by one. The ratchet is exact (#2561), so
+    # this must be red; a floor below the true count would let it pass.
+    local tmp; tmp="$(mktemp)"
+    awk 'BEGIN{done=0} /#\[kani::proof\]/ && !done {done=1; next} {print}' "$1" > "$tmp"; cat "$tmp" > "$1"; rm -f "$tmp"
+}
+
 perturb_test_helpers_in_prod() {
     # `test-helpers` reachable from a SHIPPING build, which is the gate's whole
     # subject: with it on, `discharge::test_helpers::bundle_for` mints a
@@ -264,6 +278,57 @@ perturb_ledger_restore_false_row() {
         return 1
     fi
     mv "$f.gate-tmp" "$f"
+}
+
+perturb_twin_paths_ignore() {
+    # Drop one entry from the noop twin's paths-ignore. The lists must be
+    # set-equal to the real twin's paths (ci-spec I1); a PR touching the
+    # dropped path now fires BOTH twins under one context name.
+    sed -i.gate-bak '/^      - "\.kani-minimum-proofs"$/d' "$1"
+    rm -f "$1.gate-bak"
+    if grep -q '"\.kani-minimum-proofs"' "$1"; then
+        echo "  ERROR: the kani-nightly-noop paths-ignore entry changed shape;"
+        echo "         this perturbation no longer applies and must be updated."
+        return 1
+    fi
+}
+
+perturb_ci_assurance_overclaim() {
+    # Flip CI-10 (the strict-rebase livelock, NOT-YET) to PROVED, citing a
+    # theorem that does not exist. Two independent reds: the pinned NOT-YET
+    # count no longer matches, and the evidence handle does not dereference.
+    sed -i.gate-bak 's/^| CI-10 | \(.*\) | NOT-YET | `ci\/merge-queue.toml#strict` | — |$/| CI-10 | \1 | PROVED | `ci\/lean\/CiSpec\/Queue.lean#T8_strict_livelock` | `scripts\/check-ci-spec.sh` |/' "$1"
+    rm -f "$1.gate-bak"
+    if ! grep -q '^| CI-10 | .* | PROVED | `ci/lean/CiSpec/Queue.lean#T8_strict_livelock`' "$1"; then
+        echo "  ERROR: the CI-10 row changed shape; this perturbation must be updated."
+        return 1
+    fi
+}
+
+perturb_golden_lean() {
+    # One extra line in the generated file: the regeneration no longer
+    # matches, which is the seal's whole subject.
+    append_line "$1" '-- gate-of-gates: a hand edit the generator would not produce'
+}
+
+perturb_bite_semantics() {
+    # A new type in the bite: the differential is no longer about CiSpec's
+    # model. Appended after the namespace closes, so the file stays valid
+    # Lean and only the no-new-semantics rule is violated.
+    append_line "$1" 'structure GateOfGatesProbe where'
+    append_line "$1" '  x : Nat'
+}
+
+perturb_cancel_in_progress() {
+    # A merge_group-triggered workflow that cancels in-flight runs
+    # unconditionally (ci-spec I4): a newer run aborts a queue entry.
+    sed -i.gate-bak 's/^  cancel-in-progress: .*$/  cancel-in-progress: true/' "$1"
+    rm -f "$1.gate-bak"
+    if ! grep -q '^  cancel-in-progress: true$' "$1"; then
+        echo "  ERROR: the zizmor.yml concurrency block changed shape;"
+        echo "         this perturbation no longer applies and must be updated."
+        return 1
+    fi
 }
 
 echo "Probing whether each gate fails on its own subject..."
@@ -362,6 +427,20 @@ perturb_extracted_callsite() {
     fi
 }
 
+perturb_kani_divergence_unlisted() {
+    # A brand-new production fork the inventory does not know about: a
+    # `#[cfg(not(kani))]` guarding a real function. Exactly the gate's subject —
+    # an unlisted divergence (and one more than the base, so the shrink ratchet
+    # would also bite in CI).
+    cat >> "$1" <<'RUST'
+
+#[cfg(not(kani))]
+pub fn gate_of_gates_unlisted_divergence_probe() -> bool {
+    true
+}
+RUST
+}
+
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
@@ -384,6 +463,8 @@ probe check-lean-libs-built.sh "" crates/portcullis-core/lean/lakefile.lean \
       "a lean_lib nothing builds"               perturb_lean_lib_unbuilt
 probe check-lean-libs-built.sh "" .github/workflows/ifc-lean.yml \
       "a default_target package no workflow bare-builds" perturb_default_target_unbuilt
+probe check-kani-proof-count.sh "--strict" crates/portcullis/src/kani.rs \
+      "a deleted Kani harness"                  perturb_kani_harness_deleted
 probe check-declassify-sink-scope-enforced.sh "" crates/portcullis/src/flow_graph.rs \
       "the applied sink mask widened to admit every sink" \
       perturb_declassify_unscope
@@ -407,6 +488,42 @@ probe check-extracted-callsites.sh "" crates/nucleus-tool-proxy/src/workload.rs 
 probe check-no-hmac-auth.sh "" crates/nucleus-node/src/auth.rs \
       "a retired NUCLEUS_NODE_AUTH_SECRET reference reintroduced" \
       perturb_no_hmac_auth
+
+# CI-1 (crates/ci-spec): the CI configuration itself. Two probes, one per
+# founding-defect class: a twin whose paths-ignore drifted from the real
+# twin's paths (both twins fire, or neither), and a merge_group-triggered
+# workflow that cancels its own in-flight runs (ejects a queue entry).
+probe check-ci-spec.sh "" .github/workflows/kani-nightly-noop.yml \
+      "a noop twin missing one of the real twin's paths" \
+      perturb_twin_paths_ignore
+probe check-ci-spec.sh "" .github/workflows/zizmor.yml \
+      "cancel-in-progress true under merge_group" \
+      perturb_cancel_in_progress
+
+# The CI-model bite (ci/lean/CiSpecBite.lean) may only DROP hypotheses of
+# CiSpec theorems; new semantics would make its counterexamples about a
+# different model. The gate is textual, so its subject is a planted type.
+probe check-ci-spec-bite.sh "" ci/lean/CiSpecBite.lean \
+      "a structure declared in the bite" \
+      perturb_bite_semantics
+
+# The golden seal between the Rust queue mirror and the Lean model: a hand
+# edit to the generated Golden.lean (or a JSON vector changed without
+# regenerating) must diff red.
+probe check-ci-spec-golden.sh "" ci/lean/CiSpec/Golden.lean \
+      "a hand-edited golden vector" \
+      perturb_golden_lean
+
+# The CI assurance ledger: promoting a NOT-YET row to PROVED without lowering
+# the pin (and without a theorem behind it) is the exact overclaim it exists
+# to catch — the same founding defect as the North Star ledger's C4.
+probe check-ci-assurance-ledger.sh "" docs/assurance/ci-assurance.md \
+      "a NOT-YET row promoted to PROVED with no evidence or pin change" \
+      perturb_ci_assurance_overclaim
+
+probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
+      "an unlisted cfg(not(kani)) fork" \
+      perturb_kani_divergence_unlisted
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #
@@ -432,7 +549,7 @@ UNCOVERED_CEILING=2
 #   check-mediation-dylint.sh — needs the pinned dylint nightly + cargo-dylint
 #     (this job runs only stable Rust). Its `--self-test` appends an unmediated
 #     raw-I/O sink to the sealed effect home and asserts the finding count goes
-#     non-zero; it runs in the `mediated` job of dylint-separation.yml, BEFORE the
+#     non-zero; it runs in the `dylint` job of dylint-separation.yml, BEFORE the
 #     enforcing run, every CI invocation.
 #   check-egress-probe.sh — is itself a falsifier, not a watcher of an external
 #     subject: it reconstructs the net::apply_default_deny fence in a netns and
@@ -457,11 +574,18 @@ UNCOVERED_CEILING=2
 #     meta-anti-leak check. Those perturbations run every CI invocation in the
 #     'adversary-probe-falsifier' job of adversary-probe.yml; the perturbation is
 #     internal, so there is no external subject for this script to break.
+#   check-mutants-report.sh — its subject is a cargo-mutants outcomes.json that
+#     exists only after a mutants run, so there is no tree file to perturb here.
+#     Its `--self-test` builds four synthetic reports (unmutated-tree failure,
+#     a missed mutant, a partial run, excess timeouts) and asserts each is red
+#     and a clean one green; it runs in the `mutants` job of
+#     coverage-matrix.yml before the enforcing step, every CI invocation.
 SELF_FALSIFIED=(
-    "check-mediation-dylint.sh    --self-test in the 'mediated' job (dylint-separation.yml)"
+    "check-mediation-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
     "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)"
     "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)"
     "check-clippy-ratchet.sh     ceiling-below-actual in the 'ratchet-falsifier' job (clippy-ratchet.yml)"
+    "check-mutants-report.sh     --self-test in the 'mutants' job (coverage-matrix.yml)"
 )
 
 echo

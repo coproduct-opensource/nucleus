@@ -53,8 +53,12 @@ pub mod cosign;
 pub mod parse;
 pub mod server;
 pub mod store;
+#[cfg(feature = "persist")]
+pub mod store_redb;
 
 pub use cosign::{CosignVerifyError, WitnessKey, verify_cosign_line};
 pub use parse::{AddCheckpointRequest, Checkpoint, ParseError, parse_add_checkpoint};
 pub use server::{Decision, WitnessState, add_checkpoint_handler, decide};
 pub use store::{CosignedPosition, InMemoryStore, OriginRecord, OriginStore, TrustedLogKey};
+#[cfg(feature = "persist")]
+pub use store_redb::{RedbStore, StoreError};

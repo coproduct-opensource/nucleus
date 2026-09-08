@@ -20,6 +20,8 @@ permissions:
   contents: read
 
 jobs:
+  # Workflow files: the supply-chain surface. The context name `Analyze` is required on main
+  # (ci/required-checks.txt); keep it stable.
   analyze:
     name: Analyze
     runs-on: ubuntu-latest
@@ -31,4 +33,22 @@ jobs:
       - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           languages: actions
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+
+  # The runtime itself. Build-free extraction (no cargo build), so it costs extraction time
+  # only; it is what makes CodeQL a SAST tool for this repo rather than a linter for its CI
+  # (Scorecard SAST). Not a required context: advisory until its runtime on this workspace
+  # is measured.
+  analyze-rust:
+    name: Analyze (rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: rust
+          build-mode: none
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4

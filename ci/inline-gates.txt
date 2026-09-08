@@ -1,0 +1,106 @@
+# Every inline gate step (a `run:` containing `exit 1` or `::error::`) and what
+# FALSIFIES it — a `*-falsifier` job, a check-gates-can-fail.sh probe, or a
+# `--self-test` mode — or `UNCOVERED: <reason>`.
+#
+# WHY: scripts/check-gates-can-fail.sh covers scripts/check-*.sh only. Every
+# required gate the 2026-09-05 inventory found green-by-construction (the proof
+# count ratchet, the llvm-cov thresholds) was an INLINE step, outside that
+# domain. This file puts them in one. The domain is derived by ci-spec (I8):
+# an unlisted gate is red, a stale entry is red, and UNCOVERED only shrinks.
+#
+# Regenerate with `cargo xtask ci-spec inline-gates > ci/inline-gates.txt`
+# (annotations are carried forward).
+#
+# UNCOVERED_CEILING = 80
+#
+# 2026-09-06: 71 → 80. The build-once consolidation (#2635) reports each of the
+# eight consolidated steps back to its required context through a thin relay
+# step (`case $JOB/$STEP`); each relay is a new inline gate with no falsifier of
+# its own — the step it relays keeps its falsifier under its own key. The ninth
+# is kani-spawn-boundary.yml::kani-argv, an existing inline gate the inventory
+# had never listed. Shrinks again when the relays get a self-test.
+
+a2a-tck.yml::tck::Start the target on :9999 | UNCOVERED: no falsifier yet
+action-smoke-test.yml::dry-run::Dry-run: safe_pr_fixer profile | UNCOVERED: no falsifier yet
+action-smoke-test.yml::dry-run::Dry-run: all profiles | UNCOVERED: no falsifier yet
+action-smoke-test.yml::dry-run::Dry-run: lattice invariants | UNCOVERED: no falsifier yet
+action-smoke-test.yml::dry-run::Dry-run: entrypoint script validation | UNCOVERED: no falsifier yet
+aeneas-certchain.yml::aeneas-certchain::Aeneas Lean 4 translation (scoped slice) | UNCOVERED: no falsifier yet
+aeneas-certchain.yml::aeneas-certchain::Canonicalize generated-certchain from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-certchain.yml::aeneas-certchain::Assert clean axiom set (no sorryAx / opaque axioms) | UNCOVERED: no falsifier yet
+aeneas-decide-pure.yml::aeneas-decide-pure::Aeneas Lean 4 translation (scoped slice) | UNCOVERED: no falsifier yet
+aeneas-decide-pure.yml::aeneas-decide-pure::Canonicalize generated-decide from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Aeneas Lean 4 translation (scoped slice) | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Canonicalize generated-ifc from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Canonicalize generated-mediation from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Canonicalize generated-egress from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Canonicalize generated-credential from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Canonicalize generated-cap-quantale from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Canonicalize generated-identity from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Canonicalize generated-channel from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Canonicalize generated-declass from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Assert clean axiom set (no sorryAx / opaque axioms) | UNCOVERED: no falsifier yet
+aeneas-ifc-scoped.yml::aeneas-ifc-scoped::Reject sorry (proof holes) | UNCOVERED: no falsifier yet
+aeneas-oidc-spiffe.yml::aeneas-oidc-spiffe::Aeneas Lean 4 translation (scoped slice) | UNCOVERED: no falsifier yet
+aeneas-oidc-spiffe.yml::aeneas-oidc-spiffe::Canonicalize generated/ from the fresh extraction | UNCOVERED: no falsifier yet
+aeneas-oidc-spiffe.yml::aeneas-oidc-spiffe::Assert clean axiom set (no sorryAx / opaque axioms) | UNCOVERED: no falsifier yet
+aeneas-oidc-spiffe.yml::aeneas-oidc-spiffe::Reject sorry (proof holes) | UNCOVERED: no falsifier yet
+aeneas.yml::aeneas-translate::Aeneas Lean 4 translation | UNCOVERED: no falsifier yet
+aeneas.yml::aeneas-translate::Verify generated Lean matches committed | UNCOVERED: no falsifier yet
+aeneas.yml::aeneas-translate::Reject sorry (proof holes) | UNCOVERED: no falsifier yet
+ci-assurance.yml::live-parity::Ledger == branch protection; queue pin == ruleset | falsified by crates/ci-spec/tests/live_parity.rs (CI-LP-MISSING/EXTRA/QUEUE/STRICT/VACUOUS fixtures); exit 2 is red in the step
+ci-assurance.yml::trace-check::Replay 24h of merge-queue events through CiSpec.Queue | falsified by crates/ci-spec/src/trace.rs fixtures (a violation, a vacuous window, a truncated window); exit 2 is red in the step
+ci-spec-lean.yml::ci-spec-lean::Ban sorry / admit / native_decide / sorryAx in the CI model | falsified by the "The sorry-ban REDs on a planted sorry" step in the same job, every run
+ci-spec-lean.yml::ci-spec-lean::The sorry-ban REDs on a planted sorry | self-falsifying: internal perturbation (plants a sorry, asserts the grep finds it)
+ci.yml::test::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
+ci.yml::doctests::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
+ci.yml::owasp-gauntlet::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
+ci.yml::policy-kernel-parity::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
+ci.yml::declassify-sink-scope-enforced::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
+ci.yml::cross-pod-lineage::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
+ci.yml::c1-inbound-fences-enforced::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
+ci.yml::gates-can-fail::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
+ck-policy-aeneas.yml::ck-policy-aeneas::Verify generated Lean matches committed (drift gate) | UNCOVERED: no falsifier yet
+ck-policy-aeneas.yml::ck-policy-aeneas::Ban sorry / admit / native_decide in our proof file | UNCOVERED: no falsifier yet
+ck-policy-lean.yml::ck-policy-lean::Ban sorry / admit / native_decide / sorryAx in ck-policy Lean | UNCOVERED: no falsifier yet
+clippy-ratchet.yml::ratchet-falsifier::RED on a ceiling below actual, GREEN when restored | UNCOVERED: no falsifier yet
+coverage-matrix.yml::mutants::The gate reads the machine report, not the console (#2562) | UNCOVERED: no falsifier yet
+crates-publish.yml::publish::Publish in dependency order (idempotent) | UNCOVERED: no falsifier yet
+dylint-separation.yml::dylint::Run cb4a_separation over the broker crates | UNCOVERED: no falsifier yet
+dylint-separation.yml::dylint::Run workload_identity_isolation over the spawn-path crate | UNCOVERED: no falsifier yet
+dylint-separation.yml::dylint::Prove the pass fires (positive control) | UNCOVERED: no falsifier yet
+dylint-separation.yml::dylint::Run unpoliced_http_client over the guest crates | UNCOVERED: no falsifier yet
+econ-lean.yml::econ-lean::Ban sorry / native_decide in econ Lean | UNCOVERED: no falsifier yet
+econ-lean.yml::econ-lean::Golden-vector sync (regenerate Golden.lean from JSON, assert no drift) | UNCOVERED: no falsifier yet
+kani-nightly.yml::kani-ifc::All six flow.rs harnesses are still declared | UNCOVERED: no falsifier yet
+kani-spawn-boundary.yml::kani-argv::The harness and both call sites are still there | UNCOVERED: no falsifier yet
+lean-build.yml::lean-build-core::Reject sorry (proof holes) | UNCOVERED: no falsifier yet
+line-ratchet.yml::ratchet-down::Ratchet down | UNCOVERED: no falsifier yet
+manifest-guards.yml::manifest-guards::Cargo metadata smoke (whole workspace parses, empty stderr) | UNCOVERED: no falsifier yet
+oidc-keyless-prototype.yml::keyless-oidc-e2e::Confirm the OIDC request env vars are present | UNCOVERED: no falsifier yet
+portcullis-core-proven-lean.yml::portcullis-core-proven-lean::Proof-hole scan (no sorry/admit outside the research manifest) | UNCOVERED: no falsifier yet
+portcullis-core-proven-lean.yml::portcullis-core-proven-lean::Per-theorem axiom audit (every declaration under every proven-tier root) | UNCOVERED: no falsifier yet
+quickstart-boot.yml::pins-resolve::Kernels must resolve and match their baked digest | UNCOVERED: no falsifier yet
+quickstart-boot.yml::pins-resolve::Release assets — missing is an error, unpublished is a notice | UNCOVERED: no falsifier yet
+quickstart-boot.yml::boot-a-real-pod-aarch64::This runner must be arm64 with KVM and vsock | UNCOVERED: no falsifier yet
+quickstart-boot.yml::boot-a-real-pod::This runner must actually have KVM | UNCOVERED: no falsifier yet
+quickstart-boot.yml::boot-a-real-pod::Build the guest rootfs | UNCOVERED: no falsifier yet
+quickstart-boot.yml::boot-a-real-pod::The in-guest posture probe actually ran (presence, not just verdict) | UNCOVERED: no falsifier yet
+quickstart-boot.yml::boot-a-real-pod::The in-guest egress backstop actually held (C6 phase 2, presence + verdict) | UNCOVERED: no falsifier yet
+quickstart-boot.yml::boot-a-real-pod::The in-guest adversary was contained (active attacker, presence + verdict) | UNCOVERED: no falsifier yet
+quickstart-boot.yml::boot-a-real-pod::A signed MediationReceipt was emitted on the live path (presence + shape) | UNCOVERED: no falsifier yet
+quickstart-boot.yml::boot-a-real-pod::A relying party verifies the pod's receipts against a node-anchored key | UNCOVERED: no falsifier yet
+quickstart-boot.yml::boot-a-real-pod::Delivery conformance (observed inventory vs the extracted oracle) | UNCOVERED: no falsifier yet
+red-team-agent.yml::live-adversary::Anti-vacuity — the lane resolved to a known state (never silent-green) | UNCOVERED: no falsifier yet
+release.yml::dry-run-assert::Every build job must have succeeded | UNCOVERED: no falsifier yet
+release.yml::dry-run-assert::A rootfs image exists for every architecture | UNCOVERED: no falsifier yet
+research-lean-build.yml::research-lean-build::Sorry ratchet (must not exceed baseline) | UNCOVERED: no falsifier yet
+rubric-lean.yml::rubric-lean::Ban sorry / admit / native_decide / sorryAx in rubric Lean | UNCOVERED: no falsifier yet
+scan.yml::scan::Scan example PodSpecs | UNCOVERED: no falsifier yet
+scan.yml::scan-action::Verify verdict | UNCOVERED: no falsifier yet
+tpm-and-net-isolation.yml::tpm-credential-activation::Assert the TPM stack is present | UNCOVERED: no falsifier yet
+tpm-and-net-isolation.yml::guest-net-isolation::Assert netns + iptables are available | UNCOVERED: no falsifier yet
+trust-registry.yml::enrollment-gate::Determine the single claimed domain | UNCOVERED: no falsifier yet
+trust-registry.yml::enrollment-gate::Request OIDC proof-of-control token | UNCOVERED: no falsifier yet
+uniform-primitive-lean.yml::uniform-primitive-lean::Reject sorry / admit (the spine must stay sorry-free) | UNCOVERED: no falsifier yet
+uniform-primitive-lean.yml::uniform-primitive-lean::Axiom ratchet (layer-bridge count = distance-to-done; may only drop) | UNCOVERED: no falsifier yet
