@@ -40,7 +40,7 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
-lakefiles=$(find . \( -name .lake -o -name target -o -name node_modules -o -name .git \) -prune -o -name "lakefile.lean" -print | sort)
+lakefiles=$(find . \( -name .lake -o -name target -o -name node_modules -o -name .git -o -name .claude \) -prune -o -name "lakefile.lean" -print | sort)
 if [[ -z "$lakefiles" ]]; then
     echo "ERROR: no lakefile.lean found. This gate is looking in the wrong place,"
     echo "so a clean result below would mean nothing."
@@ -66,16 +66,42 @@ fi
 named=$(for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
             [[ -f "$wf" ]] || continue
             # Join continuations, then pull every word after `lake build`.
-            sed -e :a -e '/\\$/N; s/\\\n/ /; ta' "$wf" 2>/dev/null \
+            # `name:` and comment lines are dropped first: a job or step NAMED
+            # "lake build Ck (…)", or a comment saying so, is prose, not a build,
+            # and both counted as builds before #2564.
+            grep -vE '^\s*((-\s*)?name:|#)' "$wf" 2>/dev/null \
+                | sed -e :a -e '/\\$/N; s/\\\n/ /; ta' \
                 | grep -oE "lake build( +[A-Za-z][A-Za-z0-9_]*)+" \
                 | sed 's/lake build//'
         done | tr ' ' '\n' | grep -vE '^$' | sort -u)
 
 # Every module imported by any Lean source in the tree. A lib whose root module
 # appears here is compiled as a dependency of whoever imports it.
-imported=$(find . \( -name .lake -o -name target -o -name node_modules -o -name .git \) -prune -o -name "*.lean" -print0 2>/dev/null \
-           | xargs -0 grep -hoE "^import [A-Za-z][A-Za-z0-9_.]*" 2>/dev/null \
-           | sed 's/^import //' | sort -u)
+# Packages some workflow BARE-builds: a step with `working-directory: <pkg>`
+# whose `run:` is a bare `lake build` (no target). Only such a package's
+# `@[default_target]` libs count as built — `@[default_target]` on its own is
+# a promise about what a bare build WOULD do, and #2564 found a package
+# (nucleus-ifc-kernel/lean) where no workflow ever made one.
+barebuilt=$(for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
+                [[ -f "$wf" ]] || continue
+                awk '
+                  /working-directory:[[:space:]]*/ { wd=$0; sub(/.*working-directory:[[:space:]]*/, "", wd); sub(/[[:space:]]*$/, "", wd) }
+                  /^[[:space:]]*- / { wd="" }
+                  /run:.*lake build[[:space:]]*$/ && wd != "" { print wd }
+                ' "$wf" 2>/dev/null
+            done | sed "s#^\./##; s#/\$##" | sort -u)
+
+# "<importing file> <module>" pairs (space-separated: paths here carry no
+# spaces, and a literal tab is not portable between BSD and GNU sed/grep — the
+# first version of this went red on Linux and green on macOS), so a lib's OWN
+# root importing its own
+# submodules (Ifc.lean: `import Ifc.Lattice`) cannot count as the lib being
+# imported by something that is built — that self-hop was how #2564's package
+# read as covered while no workflow ever elaborated it.
+imported_pairs=$(find . \( -name .lake -o -name target -o -name node_modules -o -name .git -o -name .claude \) -prune -o -name "*.lean" -print0 2>/dev/null \
+           | xargs -0 grep -HoE "^import [A-Za-z][A-Za-z0-9_.]*" 2>/dev/null \
+           | sed 's/:import / /' | sort -u)
+imported=$(printf '%s\n' "$imported_pairs" | cut -d' ' -f2 | sort -u)
 
 if [[ -z "$imported" ]]; then
     echo "ERROR: no \`import\` lines found in any .lean file. The scan is broken,"
@@ -88,11 +114,13 @@ covered=0
 declare -a UNBUILT=()
 
 for lf in $lakefiles; do
-    pkgdir="$(dirname "$lf")"
+    pkgdir="$(dirname "$lf")"; pkgdir="${pkgdir#./}"
     # Does this package have a default target? If so a bare `lake build` covers
     # it, and bare invocations are common enough that we must not flag it.
     has_default=0
-    grep -q "@\[default_target\]" "$lf" && has_default=1
+    # A package's default targets are built only if a workflow bare-builds it.
+    # A package's default targets are built only if a workflow bare-builds it.
+    if grep -q "@\[default_target\]" "$lf" && grep -qx "$pkgdir" <<<"$barebuilt"; then has_default=1; fi
 
     # `lean_lib «Name»` — the guillemets are how every lakefile here writes it.
     while IFS= read -r lib; do
@@ -118,8 +146,10 @@ for lf in $lakefiles; do
 
         hit=0
         for r in $roots; do
-            # Imported directly, or as a parent of a submodule import.
-            if grep -qE "^$r(\.|$)" <<<"$imported"; then hit=1; break; fi
+            # Imported directly (or as a parent of a submodule import) by a file
+            # OUTSIDE this lib's own sources (<pkg>/<Root>.lean, <pkg>/<Root>/).
+            if printf '%s\n' "$imported_pairs" | grep -E " $r(\.|$)$" \
+                 | grep -vqE "^\./$pkgdir/$r(\.lean|/)"; then hit=1; break; fi
         done
         if [[ "$hit" -eq 1 ]]; then
             covered=$((covered + 1)); continue
@@ -137,7 +167,7 @@ if [[ "$total" -lt 2 ]]; then
     exit 1
 fi
 
-echo "lean_lib coverage: $total declared, $covered covered (named target, default target, or imported)"
+echo "lean_lib coverage: $total declared, $covered covered (named target, bare-built default target, or imported)"
 
 # Known-unbuilt, named with a reason rather than tolerated as a count. A bare
 # number would let one library be fixed while another silently took its place;
