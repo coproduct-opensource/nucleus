@@ -104,18 +104,38 @@ pub fn live_parity(repo: Option<String>, github: &str, json: bool) -> Result<()>
         String::from_utf8(out.stdout).map_err(|e| e.to_string())
     };
 
-    let looked =
-        (|| -> Result<(ci_spec::live::LiveProtection, ci_spec::live::LiveQueue), String> {
-            let prot = fetch(&format!("repos/{github}/branches/main/protection"))?;
-            let rs = fetch(&format!(
-                "repos/{github}/rulesets/{}",
-                model.queue.ruleset_id
-            ))?;
-            Ok((
-                ci_spec::live::parse_protection(&prot)?,
-                ci_spec::live::parse_ruleset(&rs, model.queue.ruleset_id)?,
-            ))
-        })();
+    let looked = (|| -> Result<
+        (
+            ci_spec::live::LiveProtection,
+            Option<ci_spec::live::LiveQueue>,
+        ),
+        String,
+    > {
+        let prot = fetch(&format!("repos/{github}/branches/main/protection"))?;
+        let protection = ci_spec::live::parse_protection(&prot)?;
+        if model.queue.owner == "gatehouse" {
+            // The claim is about EVERY ruleset, not one pinned id: a queue re-enabled under a
+            // new ruleset would merge this branch while gatehouse thought it owned the merge.
+            let listing = fetch(&format!("repos/{github}/rulesets"))?;
+            for id in ci_spec::live::parse_ruleset_ids(&listing)? {
+                let rs = fetch(&format!("repos/{github}/rulesets/{id}"))?;
+                if ci_spec::live::ruleset_has_merge_queue(&rs)? {
+                    // Parsed as GitHub's queue so parity reports the owner conflict with the
+                    // ruleset's own numbers rather than a bare "it exists".
+                    return Ok((protection, Some(ci_spec::live::parse_ruleset(&rs, id)?)));
+                }
+            }
+            return Ok((protection, None));
+        }
+        let rs = fetch(&format!(
+            "repos/{github}/rulesets/{}",
+            model.queue.ruleset_id
+        ))?;
+        Ok((
+            protection,
+            Some(ci_spec::live::parse_ruleset(&rs, model.queue.ruleset_id)?),
+        ))
+    })();
 
     let (live, queue) = match looked {
         Ok(v) => v,
@@ -131,7 +151,7 @@ pub fn live_parity(repo: Option<String>, github: &str, json: bool) -> Result<()>
         }
     };
 
-    let findings = ci_spec::live::parity(&model, &live, &queue);
+    let findings = ci_spec::live::parity(&model, &live, queue.as_ref());
     let report = ci_spec::Report {
         workflows: model.workflows.len(),
         jobs: model.workflows.iter().map(|w| w.jobs.len()).sum(),

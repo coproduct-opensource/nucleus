@@ -119,11 +119,31 @@ pub fn parse_ruleset(json: &str, expected_id: u64) -> Result<LiveQueue, String> 
     serde_json::from_value(params).map_err(|e| format!("merge_queue parameters: {e}"))
 }
 
+/// Every ruleset id in the `GET /repos/{o}/{r}/rulesets` listing. Used when gatehouse owns the
+/// merge: the claim to check is then about EVERY ruleset, not one pinned id, because a queue
+/// re-enabled under a new ruleset is exactly the drift that would go unnoticed.
+pub fn parse_ruleset_ids(json: &str) -> Result<Vec<u64>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        id: u64,
+    }
+    let rows: Vec<Row> =
+        serde_json::from_str(json).map_err(|e| format!("ruleset listing JSON: {e}"))?;
+    Ok(rows.into_iter().map(|r| r.id).collect())
+}
+
+/// Whether one ruleset response carries a `merge_queue` rule. A disabled ruleset carries none
+/// that anything enforces, so only an `active` one counts.
+pub fn ruleset_has_merge_queue(json: &str) -> Result<bool, String> {
+    let r: RulesetJson = serde_json::from_str(json).map_err(|e| format!("ruleset JSON: {e}"))?;
+    Ok(r.enforcement == "active" && r.rules.iter().any(|x| x.kind == "merge_queue"))
+}
+
 /// Decide parity: ledger == live protection, and the queue pin == the
 /// live ruleset. Both directions on the contexts — a live requirement the
 /// ledger does not know about means every invariant here was decided over
 /// an incomplete set.
-pub fn parity(m: &Model, live: &LiveProtection, queue: &LiveQueue) -> Vec<Finding> {
+pub fn parity(m: &Model, live: &LiveProtection, queue: Option<&LiveQueue>) -> Vec<Finding> {
     let mut out = Vec::new();
     const F: &str = "ci/required-checks.txt";
 
@@ -180,6 +200,42 @@ pub fn parity(m: &Model, live: &LiveProtection, queue: &LiveQueue) -> Vec<Findin
 
     const Q: &str = "ci/merge-queue.toml";
     let p = &m.queue;
+    // Who enforces the merge is itself a two-sided claim: the pin says whose queue this is, and
+    // the live configuration must agree. GitHub's queue still running while the pin says
+    // gatehouse means two queues merge the same branch; the pin saying GitHub while no ruleset
+    // enforces one means nothing builds a group at all.
+    let queue = match (p.owner.as_str(), queue) {
+        ("gatehouse", None) => {
+            return out;
+        }
+        ("gatehouse", Some(_)) => {
+            out.push(finding(
+                "CI-LP-QUEUE-OWNER",
+                Severity::Critical,
+                Q,
+                0,
+                "owner",
+                "the pin says gatehouse owns the merge, but a ruleset still enforces GitHub's                  merge queue: two queues would merge this branch, and the one whose receipts                  are verified is not the one GitHub obeys"
+                    .into(),
+                "delete the merge_queue rule from the ruleset, or set owner = \"github\" back",
+            ));
+            return out;
+        }
+        (_, None) => {
+            out.push(finding(
+                "CI-LP-QUEUE-OWNER",
+                Severity::Critical,
+                Q,
+                0,
+                "owner",
+                "the pin says GitHub owns the merge, but no active ruleset carries a merge_queue                  rule: nothing builds a group, and the capacity theorem is about a queue that                  does not run"
+                    .into(),
+                "restore the ruleset, or set owner = \"gatehouse\" in the change that hands the                  merge over",
+            ));
+            return out;
+        }
+        (_, Some(q)) => q,
+    };
     let diffs: Vec<(&str, String, String)> = [
         (
             "check_response_timeout_minutes",
@@ -243,8 +299,10 @@ pub fn parity(m: &Model, live: &LiveProtection, queue: &LiveQueue) -> Vec<Findin
             0,
             "strict",
             format!(
-                "pinned strict = {} but branch protection says {}: `strict = true` with a queue \
-                 forces a rebase before every merge, the livelock of 2026-09-04",
+                "pinned strict = {} but branch protection says {}: with GitHub's queue \
+                 `strict = true` forces a rebase before every merge, the livelock of \
+                 2026-09-04; with gatehouse's it is what makes the tree a receipt was verified \
+                 at the tree that gets merged",
                 p.strict, live.strict
             ),
             "align the pin and the setting",
