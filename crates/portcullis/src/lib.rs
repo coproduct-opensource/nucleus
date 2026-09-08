@@ -98,6 +98,9 @@ pub mod cedar_bridge;
 // VerifiedPermissions, …) and non-crypto logic are ring-free; only the
 // sign/verify/mint/delegate fns inside are `#[cfg(feature = "crypto")]`-gated
 // (ring can't compile to WASM). The kernel needs the types, not the signing.
+/// The two run metrics ADR 0004 names, ρ and C(T), from the kernel's
+/// effective lattice and decision trace. Feature-free.
+pub mod authority_metrics;
 #[cfg(not(kani))]
 pub mod cert_compartment;
 pub mod certificate;
@@ -339,6 +342,9 @@ pub use audit::{
     AuditEntry, AuditLog, ChainVerificationError, IdentityAuditSummary, PermissionEvent,
     RetentionPolicy,
 };
+#[cfg(feature = "serde")]
+pub use authority_metrics::decisions_in_trace;
+pub use authority_metrics::{summarise_authority, AuthoritySummary};
 pub use certificate::{
     canonical_permissions_hash, CertificateDelegationError, CertificateError,
     CertificateMintChildError, LatticeCertificate, SinkScope, VerifiedPermissions,

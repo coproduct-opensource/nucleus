@@ -76,6 +76,10 @@ pub struct Metadata {
     /// Optional labels.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// The task grant this pod runs under (ADR 0004), when it runs under one.
+    /// Carried into the exit report's authority summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_grant_id: Option<String>,
 }
 
 /// Inner spec fields.
@@ -764,6 +768,14 @@ pub struct ExitReport {
     pub art12_records: u64,
     #[serde(default)]
     pub art12_dropped: u64,
+
+    // ── Authority (ADR 0004, written by the tool proxy at shutdown) ──────
+    /// What the session was granted and what it used: the dimensions above
+    /// `Never`, the dimensions decisions exercised, ρ (granted ÷ used),
+    /// allowed / denied / approval-gated decision counts, and the task grant
+    /// it ran under. `None` on a report written before this field existed.
+    #[serde(default)]
+    pub authority: Option<portcullis::AuthoritySummary>,
 }
 
 /// An upstream the workload may call without holding the credential.
@@ -1607,6 +1619,32 @@ spec:
             }
             _ => panic!("expected PermissionDenied"),
         }
+    }
+
+    #[test]
+    fn metadata_task_grant_id_round_trips_and_is_absent_by_default() {
+        let bare = Metadata::default();
+        let yaml = serde_yaml::to_string(&bare).expect("serialize");
+        assert!(!yaml.contains("task_grant_id"), "{yaml}");
+        let with = Metadata {
+            task_grant_id: Some("6f1c0000-0000-0000-0000-000000000001".into()),
+            ..Default::default()
+        };
+        let yaml = serde_yaml::to_string(&with).expect("serialize");
+        let back: Metadata = serde_yaml::from_str(&yaml).expect("parse");
+        assert_eq!(
+            back.task_grant_id.as_deref(),
+            Some("6f1c0000-0000-0000-0000-000000000001")
+        );
+    }
+
+    #[test]
+    fn an_exit_report_without_an_authority_summary_still_parses() {
+        let json = r#"{"workspace_hash":"w","audit_tail_hash":"t","audit_entry_count":0,"timestamp_unix":1}"#;
+        let report: ExitReport = serde_json::from_str(json).expect("older report parses");
+        assert!(report.authority.is_none());
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"authority\":null"), "{json}");
     }
 
     #[test]

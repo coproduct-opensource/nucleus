@@ -108,5 +108,5 @@ with two invariants DX work may not violate:
 | 2 | `effect/` certificate keys (`effect_surface`), `SealedTaskGrant` (grant + signed certificate, binding keys), `nucleus run --save-grant` / `--grant`, `nucleus grant seal|show` (C(T)=0) | this PR |
 | 3 | Trace → effect attribution (`grant_usage`), ρ over dimensions and effects, post-run usage lines and "save a narrower profile", `nucleus observe --grant --narrow --save`, user profiles in `~/.config/nucleus/profiles` (never wider than a canonical name) | this PR |
 | 4 | `EscalationProposal` (`escalation_proposal`): attempt, reason, minimum effect and raised dimensions, risk delta, scopes (always / this run), outside-ceiling and repair outcomes; `denials_in_trace`; post-run proposals; `nucleus grant propose\|widen`. Carriage inside MCP / tool-proxy / hook / SDK denial payloads is the next step | this PR |
-| 5 | ρ and C(T) in `ExitReport` and the run summary | |
+| 5 | `AuthoritySummary` (`authority_metrics`, feature-free): ρ over dimensions, C(T) = confirmations + approvals, decision counts; in `ExitReport.authority`, the MCP `session_summary`, and the run's closing line; `PodSpec.metadata.task_grant_id` | this PR |
 | 6 | Per-effect enforcement at the credential boundary (method+path) | |

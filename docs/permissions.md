@@ -412,6 +412,27 @@ milestone (the lattice, the host list and the command prefixes); attributing
 receipts to effects and enforcing per effect at the credential boundary are the
 milestones after this one.
 
+### Two numbers every run reports: ρ and C(T)
+
+The exit report (`.nucleus-exit-report.json`, written by the tool proxy), the MCP
+server's `session_summary` trace line, and the line a `--goal` / `--grant` run
+ends with all carry the same `authority` summary, computed from the kernel's
+effective lattice and its decision trace:
+
+```
+authority: 3 of 6 granted dimensions used · ρ = 2.00 · C(T) = 1 (1 confirmation, 0 approvals during the run) · 41 allowed · 1 denied
+```
+
+- **ρ (authority overhead)** = granted dimensions ÷ used dimensions. ρ → 1 is
+  the goal; it is undefined, not infinite, when nothing was used.
+- **C(T) (delegation clicks)** = confirmations before the run (1 for a new goal,
+  0 for a sealed grant) + approvals the kernel asked for during it. Every click
+  beyond one is either ceremony or a boundary the task needed moved, and the
+  proposals below say which.
+
+A pod spec may name the grant it runs under (`metadata.task_grant_id`); `--goal`
+and `--grant` runs set it, and the exit report carries it back.
+
 ### When something is denied: every denial is a proposal
 
 A denial answers four questions, not one: what the agent tried, why exactly it

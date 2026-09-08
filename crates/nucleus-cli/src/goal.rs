@@ -130,9 +130,11 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     }
 
     let mut args = args;
+    args.task_grant_id = Some(grant.id.to_string());
     let trace = default_trace(&mut args, grant.id)?;
     run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await?;
-    learn_from_run(&args, &grant, &catalog, trace.as_deref())
+    // One confirmation: the person decided, at the prompt or with --yes.
+    learn_from_run(&args, &grant, &catalog, trace.as_deref(), 1)
 }
 
 /// Entry point, reached from `run::execute` when `--grant` is set: verify
@@ -168,9 +170,11 @@ pub async fn execute_grant(args: RunArgs, global_config_path: &str) -> Result<()
     let goal = grant.goal.clone();
     let grant = grant.clone();
     let mut args = args;
+    args.task_grant_id = Some(grant.id.to_string());
     let trace = default_trace(&mut args, grant.id)?;
     run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await?;
-    learn_from_run(&args, &grant, &catalog, trace.as_deref())
+    // Zero confirmations: the decision was sealed earlier (C(T) = 0).
+    learn_from_run(&args, &grant, &catalog, trace.as_deref(), 0)
 }
 
 /// A goal or grant run always leaves a trace to learn from: unless
@@ -196,6 +200,7 @@ fn learn_from_run(
     grant: &TaskGrant,
     catalog: &EffectCatalog,
     trace: Option<&Path>,
+    confirmations: u64,
 ) -> Result<()> {
     let Some(trace) = trace else {
         return Ok(());
@@ -210,6 +215,16 @@ fn learn_from_run(
     let usage = portcullis::attribute_usage(grant, catalog, &observations);
     println!();
     print!("{}", portcullis::render_usage(&usage, catalog));
+
+    // ρ over dimensions and C(T) (ADR 0004): the same numbers the exit
+    // report and the MCP session summary carry, from the same trace.
+    let decisions = portcullis::decisions_in_trace(&text);
+    if !decisions.is_empty() {
+        let mut summary = portcullis::summarise_authority(&grant.lattice, &decisions);
+        summary.confirmations = confirmations;
+        summary.task_grant_id = Some(grant.id.to_string());
+        println!("  {}", summary.render());
+    }
     println!("  trace:   {}", trace.display());
 
     // Every denial, as a proposal: what would have allowed it, and what it
