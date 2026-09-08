@@ -90,10 +90,94 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// CI configuration is sound (CI-1): decide the invariants the merge queue
+    /// relies on over a typed model of the workflows, the required-check
+    /// ledger (ci/required-checks.txt) and the merge-queue pin
+    /// (ci/merge-queue.toml). Exit 0 clean, 1 violation, 2 could not look.
+    CiSpec {
+        #[command(subcommand)]
+        cmd: CiSpecCmd,
+    },
+    /// The exemplar scoreboard's anti-Goodhart ratchet (lower-is-better
+    /// metrics may not rise, higher-is-better may not fall, `_GUARD`s may
+    /// not drop). Ported from exemplar-scoreboard.yml's python3 heredoc.
+    ScoreboardRatchet {
+        /// The freshly generated scoreboard.json.
+        #[arg(long)]
+        current: String,
+        /// The pinned baseline (scripts/exemplar-baseline.json).
+        #[arg(long)]
+        baseline: String,
+    },
+    /// Push the last N minutes of GitHub Actions job timings to an OTLP
+    /// endpoint as OpenTelemetry metrics (queue wait, duration, conclusions,
+    /// merge-queue depth). See crates/xtask/src/ci_otel.rs.
+    CiOtel {
+        /// Window in minutes (a job counts when its completed_at is inside).
+        #[arg(long, default_value_t = 15)]
+        since: u64,
+        /// OTLP/HTTP base URL (default: $OTEL_EXPORTER_OTLP_ENDPOINT, else the in-cluster collector).
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Print the OTLP JSON instead of sending it.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
+#[derive(Subcommand)]
+enum CiSpecCmd {
+    /// Run every invariant and report.
+    Check {
+        /// Repository root (default: the git toplevel).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Emit the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the inline-gate inventory (ci/inline-gates.txt shape).
+    InlineGates {
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Live parity: ci/required-checks.txt == GitHub branch protection, and
+    /// ci/merge-queue.toml == the live merge-queue ruleset. Observation via
+    /// `gh api` (needs a token that can read branch protection); a fetch
+    /// that fails is exit 2, never a pass.
+    LiveParity {
+        #[arg(long)]
+        repo: Option<String>,
+        /// GitHub repository, owner/name.
+        #[arg(long, default_value = "coproduct-opensource/nucleus")]
+        github: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render crates/ci-spec/tests/golden/queue_traces.json as
+    /// ci/lean/CiSpec/Golden.lean (stdout). CI regenerates and diffs.
+    GenGolden {
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Replay the merge queue's recent history (PR timeline events via
+    /// `gh api graphql`) through the queue model. Exit 0 clean, 1 a
+    /// transition the model rejects, 2 vacuous window / could not look.
+    TraceCheck {
+        #[arg(long, default_value = "coproduct-opensource/nucleus")]
+        github: String,
+        #[arg(long, default_value_t = 24)]
+        since_hours: u64,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+mod ci_otel;
+mod ci_spec;
 mod ci_timings;
 mod rerun_plan;
+mod scoreboard;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
@@ -106,6 +190,27 @@ fn main() -> Result<()> {
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
+        Command::CiSpec { cmd } => match cmd {
+            CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
+            CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
+            CiSpecCmd::LiveParity { repo, github, json } => {
+                ci_spec::live_parity(repo, &github, json)
+            }
+            CiSpecCmd::GenGolden { repo } => ci_spec::gen_golden(repo),
+            CiSpecCmd::TraceCheck {
+                github,
+                since_hours,
+                json,
+            } => ci_spec::trace_check(&github, since_hours, json),
+        },
+        Command::ScoreboardRatchet { current, baseline } => {
+            scoreboard::scoreboard_ratchet(&current, &baseline)
+        }
+        Command::CiOtel {
+            since,
+            endpoint,
+            dry_run,
+        } => ci_otel::ci_otel(since, endpoint, dry_run),
     }
 }
 

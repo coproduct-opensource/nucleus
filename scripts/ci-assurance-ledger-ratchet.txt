@@ -1,0 +1,15 @@
+# CI assurance ledger population pin — read by scripts/check-ci-assurance-ledger.sh.
+#
+# Both directions (the north-star ledger convention):
+#   CLAUSES may only GROW — a row leaving docs/assurance/ci-assurance.md means the
+#     sentence was weakened (an owner decision, made here) or a row was deleted to
+#     dodge a red, which is the exact move a shrinkable count pays.
+#   NOT_YET may only SHRINK — and the pin is lowered in the same change that earns
+#     the promotion, so every promotion is on the record with its evidence beside
+#     it. The one legitimate RAISE is a demotion: a row found to be overclaimed.
+#
+# 2026-09-05: created with 10 rows, 2 NOT-YET (CI-9 the concrete scheduler as an
+#   instance of Sched + needs: chains; CI-10 the strict-rebase livelock, T8; CI-11 the
+#   bounded Kani proof of the Rust mirror, which CBMC could not finish on this host).
+CLAUSES=11
+NOT_YET=3

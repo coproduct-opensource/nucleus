@@ -26,6 +26,9 @@ permissions:
 jobs:
   audit:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Required context: without a timeout the job inherits GitHub's 360-minute
+    # default, which is the whole merge-queue check budget (ci-spec I7).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
@@ -51,6 +54,12 @@ jobs:
       - name: Pre-install cargo-audit with its own locked dependency tree
         run: cargo +stable install cargo-audit --version 0.22.0 --locked --no-default-features
         shell: bash
-      - uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1
-        with:
-          denyWarnings: true
+      # `cargo audit` directly, not `actions-rust-lang/audit`: on GitHub-hosted
+      # runners the action's Python wrapper crashed decoding cargo-audit's
+      # stderr (`UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb7`) —
+      # the gate was red for the wrapper, not for an advisory. The pre-install
+      # above pins cargo-audit 0.22.0 with its own locked tree; this runs it.
+      # `--deny warnings` is what the action's `denyWarnings: true` did.
+      - name: cargo audit (deny warnings)
+        shell: bash
+        run: cargo +stable audit --deny warnings

@@ -115,6 +115,50 @@ hasn't drifted from the committed code.
 - Scenario 11: Exposure tracks regardless of file arguments
 - Scenario 12: Policy/code mismatch detected by compiler hash
 
+### 9. CI Pipeline & Merge Queue (Lean 4 — unbounded, hand-written model; Rust mirror; trace-validated)
+
+The CI pipeline and the merge queue are held to the same standard as the runtime
+(ADR 0002, `docs/assurance/ci-assurance.md` — the machine-checked ledger of this section).
+
+**What's proved (`ci/lean`, Mathlib-free, 0 sorry, axioms propext / Quot.sound):**
+- `twin_covers` (T2): a path-filtered required workflow and its `-noop` twin, with
+  `paths-ignore == paths`, never leave a non-empty change with NEITHER report; the
+  straddling case (both fire) is stated as the residual (`twin_both_iff`).
+- `T1_required_verdicts_exist`: under the I3 decision (every required context has a
+  real, `merge_group`-triggered, unskippable producer), every required context carries a
+  verdict on the queue branch — GitHub's "skipped counts as passed" cannot pass it by
+  silence (`vacuous_merge_without_I3` is the bite).
+- `consistent_run` / `T4_merge_order` / `T5_cancel_safe` / `T6_push_dequeues`: the queue
+  state machine's accounting, merge order, cancel-safety for dequeued PRs, and push-dequeues,
+  for every reachable state.
+- `T7_no_timeout_ejection`: Graham's list-scheduling bound in `Nat` — with build
+  concurrency 1 and no competing runs, a group with `Σ ds + q·L ≤ (q+1)·T` finishes by `T`.
+  The bites (`CiSpecBite.lean`, by `decide`) reproduce the 2026-09-05 defects: the
+  drifted twin that fired both, the detector-skippable `Tests`, the head cancel that
+  ejects, and the 60-minute budget that did not fit the group's work.
+
+**What's decided on every PR (`crates/ci-spec`, the theorems' hypotheses):** twin
+completeness, producer injectivity, reported-and-unskippable under `merge_group`,
+concurrency safety, scope parity, gate integrity (proofcard GI001–GI005 plus GI006, the
+numeric-operand rule the Proof Count Ratchet's bug earned), timeouts within the queue
+budget, wired-and-inventoried gates, non-vacuity of the model itself.
+
+**What's NOT proved:**
+- The Lean model is hand-written; the CI configuration is not extracted into it. The
+  Rust mirror (`crates/ci-spec/src/queue.rs`) is bound to the Lean by golden vectors
+  rendered into `Golden.lean` and checked by `decide` and by proptest — probabilistic and
+  finite; a bounded Kani harness over the mirror is NOT-YET (CBMC did not finish).
+- The concrete first-least-loaded scheduler is not proved to be an instance of the
+  schedules T7 covers; `needs:` chains and speculative groups are not modelled.
+- The strict-rebase livelock (T8) is stated, not proved.
+- `ci-spec` reads YAML and does not run gates; cross-step dataflow is allowlisted with
+  its reason; gate detection is the `exit 1` / `::error::` heuristic.
+
+**Correspondence to the live path:** `cargo xtask ci-spec live-parity` holds
+`ci/required-checks.txt` and `ci/merge-queue.toml` in lockstep with branch protection and
+the ruleset on a schedule; `cargo xtask ci-spec trace-check` replays the merge queue's real
+timeline events through the mirror nightly, and a rejected transition is a red.
+
 ## What We DON'T Verify
 
 These are important security properties that have NO formal verification:
@@ -162,9 +206,9 @@ These are important security properties that have NO formal verification:
 | I/O confinement | Kani BMC | Never→Deny, delegation narrowing | Bounded | 2 harnesses | Every PR |
 | Permission algebra | Kani BMC | Distributivity, monotonicity, monoid | Bounded | ~45 harnesses | PR (fast) + nightly |
 
-**Total: 115 Kani BMC harnesses repo-wide** (portcullis 66, portcullis-core 25,
+**Total: 118 Kani BMC harnesses repo-wide** (portcullis 68, portcullis-core 26,
 ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1; recount with
-`scripts/formal-numbers.sh --print` — a bare `grep -rc` says 117 because it also
+`scripts/formal-numbers.sh --print` — a bare `grep -rc` says 119 because it also
 counts a doc comment in ck-kernel and the string inside nucleus-audit's own
 counter; CI runs the script and fails on drift) **+ ~277 kernel-checked
 Lean 4 theorems** in the security core. The Lean *security* core is `sorry`-free;
@@ -292,7 +336,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 
 | Component | Maturity | Evidence |
 |-----------|----------|----------|
-| **Permission lattice** (portcullis) | Verified | ~165K LOC, 66 Kani BMC proofs in the `portcullis` crate (115 repo-wide), Lean 4 lattice/IFC proofs, proptest conformance suite. (Verus removed — see note below.) |
+| **Permission lattice** (portcullis) | Verified | ~165K LOC, 66 Kani BMC proofs in the `portcullis` crate (116 repo-wide), Lean 4 lattice/IFC proofs, proptest conformance suite. (Verus removed — see note below.) |
 | **Uninhabitable state detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
 | **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
 | **Delegation chains** | Verified | Monotone attenuation with `meet_with_justification`, Lean proofs for delegation narrowing |
@@ -329,7 +373,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 | Tool | Type | Count | What It Proves |
 |------|------|-------|----------------|
 | **Lean 4 + Mathlib** | Unbounded, kernel-checked | ~277 theorems (security core; `sorry`-free, CI-gated) | HeytingAlgebra, IFC flow rules, compartment safety, delegation narrowing, DerivationClass lattice |
-| **Kani** | Bounded model checking | 115 harnesses repo-wide (portcullis 66, portcullis-core 25, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1) | DecisionToken linearity, lattice distributivity, exposure monoid, constitutional kernel invariants |
+| **Kani** | Bounded model checking | 118 harnesses repo-wide (portcullis 68, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1) | DecisionToken linearity, lattice distributivity, exposure monoid, constitutional kernel invariants |
 | **Proptest** | Property-based testing | ~47 suites incl. `verus_conformance.rs` | Full PermissionLattice composition (the surviving "Verus" artifact — property tests, not SMT) |
 | **Red team** | Adversarial testing | 162 scenarios | OWASP LLM Top 10, DPI flow attacks, delegation chain attacks |
 

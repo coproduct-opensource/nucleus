@@ -1,0 +1,56 @@
+{
+  "scope": {
+    "include": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".github/workflows/**",
+      "ci/**",
+      "crates/ci-spec/**",
+      "scripts/check-ci-spec.sh"
+    ],
+    "exclude": [],
+    "external": [],
+    "git_history": false
+  },
+  "env": {
+    "image": "sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "platform": "linux/amd64",
+    "toolchains": {
+      "rust": "1.96.1"
+    },
+    "env_vars": {}
+  },
+  "cap": {
+    "net": "none",
+    "fs_read": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".github/workflows/**",
+      "ci/**",
+      "crates/ci-spec/**",
+      "scripts/check-ci-spec.sh"
+    ],
+    "fs_write": [
+      "target/**"
+    ],
+    "exec": "scoped",
+    "wall_ms": 900000,
+    "cpu_ms": 900000,
+    "mem_mb": 4096,
+    "secrets": []
+  },
+  "cmd": [
+    "scripts/check-ci-spec.sh"
+  ],
+  "cwd": "",
+  "timeout_s": 900,
+  "outputs": [],
+  "resources": {
+    "cpus": 2,
+    "mem_mb": 4096,
+    "disk_mb": 4096
+  },
+  "falsifier": null
+}

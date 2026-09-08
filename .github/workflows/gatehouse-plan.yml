@@ -1,0 +1,78 @@
+# gatehouse plan check — INFORMATIONAL (not a required context).
+#
+# .gatehouse/pipeline.writ is this repository's proof-carrying pipeline: every gate with its
+# inputs as scope globs, a pinned environment, a hermetic capability, its command and timeout,
+# and an admissibility proof (acyclic, hermetic, inside the policy ceiling, required gates
+# covered, inside the queue budget) that `gate plan check` elaborates and kernel-checks.
+# gatehouse is a private repository, so the check runs only when the GATEHOUSE_TOKEN secret
+# exists (a fine-grained token with contents:read on coproduct-private/gatehouse); without it
+# the job says so and passes, because it decides nothing yet. It becomes a gate when the
+# gatehouse executor and queue take over (milestone 5 of the gatehouse plan).
+name: gatehouse plan
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".gatehouse/**"
+      - ".github/workflows/gatehouse-plan.yml"
+  pull_request:
+    paths:
+      - ".gatehouse/**"
+      - ".github/workflows/gatehouse-plan.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  plan-check:
+    name: The pipeline elaborates and its admissibility proof checks (gatehouse, informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # The gatehouse commit whose `gate` checks the plan (its embedded prelude must match the
+      # import hash in .gatehouse/pipeline.writ).
+      GATEHOUSE_REF: cf8462d6c2999e31aefcc02db774923f940c2a17
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Is the gatehouse token available?
+        id: tok
+        env:
+          T: ${{ secrets.GATEHOUSE_TOKEN }}
+        run: |
+          if [ -n "$T" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GATEHOUSE_TOKEN is not set: the plan check cannot look (informational; see the header of this workflow)"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.tok.outputs.present == 'true'
+        with:
+          repository: coproduct-private/gatehouse
+          ref: ${{ env.GATEHOUSE_REF }}
+          token: ${{ secrets.GATEHOUSE_TOKEN }}
+          path: gatehouse
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: steps.tok.outputs.present == 'true'
+        with:
+          cache: false
+          # Do not lint a foreign checkout. This action defaults `rustflags: -D warnings` and
+          # exports it through $GITHUB_ENV, where it applies to the gatehouse build too — and
+          # `-D warnings` implies `-D missing-docs`, which stops that build dead. It also leaked
+          # into the runner as an undeclared environment input, which is the very thing a shadow
+          # gate exists to notice. The GitHub-side commands carry their own denial where they
+          # need it (the clippy gate passes `-D warnings` on its own command line).
+          rustflags: ''
+      - name: gate plan check .gatehouse/pipeline.writ
+        if: steps.tok.outputs.present == 'true'
+        run: |
+          cargo build --locked --manifest-path gatehouse/Cargo.toml -p gate
+          gatehouse/target/debug/gate plan check .gatehouse/pipeline.writ

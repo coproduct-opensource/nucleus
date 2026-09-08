@@ -1,0 +1,160 @@
+# gatehouse shadow mode — INFORMATIONAL (not a required context).
+#
+# Runs this repository's CHEAP gates (.gatehouse/gates/{fmt,clippy,ci-spec}.json; test-core and
+# lean-build are defined there too but are not shadowed on the hosted runner yet — an hour of
+# tests and a Lean build are the executor's job) the gatehouse way on the hosted runner: the scope materialized from HEAD (nothing outside it exists in the sandbox), the
+# declared environment, the command under its timeout, a receipt signed by a developer credential,
+# pushed to a local log with an inclusion proof, and verified — then runs `cargo fmt --all --
+# --check` directly and prints whether the two agree. Seven days of agreement is the evidence the
+# gatehouse plan asks for before any gate becomes required (milestone 4 → 5). gatehouse is a
+# private repository, so the job runs only when the GATEHOUSE_TOKEN secret exists; without it the
+# job says so and passes. It never fails on disagreement — only when the loop itself errors.
+name: gatehouse shadow
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    name: "The ${{ matrix.gate }} gate, run the gatehouse way, agrees with the GitHub check (shadow, informational)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - gate: fmt
+            github: cargo fmt --all -- --check
+            components: rustfmt
+          - gate: clippy
+            github: cargo clippy --all-targets --all-features -- -D warnings
+            components: clippy
+          - gate: ci-spec
+            github: scripts/check-ci-spec.sh
+            components: rustfmt
+    env:
+      GATEHOUSE_REF: cf8462d6c2999e31aefcc02db774923f940c2a17
+      GATE_NAME: ${{ matrix.gate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Is the gatehouse token available?
+        id: tok
+        env:
+          T: ${{ secrets.GATEHOUSE_TOKEN }}
+        run: |
+          if [ -n "$T" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GATEHOUSE_TOKEN is not set: shadow mode cannot look (informational; see the header of this workflow)"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.tok.outputs.present == 'true'
+        with:
+          repository: coproduct-private/gatehouse
+          ref: ${{ env.GATEHOUSE_REF }}
+          token: ${{ secrets.GATEHOUSE_TOKEN }}
+          path: gatehouse
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: steps.tok.outputs.present == 'true'
+        with:
+          components: ${{ matrix.components }}
+          cache: false
+          # Do not lint a foreign checkout. This action defaults `rustflags: -D warnings` and
+          # exports it through $GITHUB_ENV, where it applies to the gatehouse build too — and
+          # `-D warnings` implies `-D missing-docs`, which stops that build dead. It also leaked
+          # into the runner as an undeclared environment input, which is the very thing a shadow
+          # gate exists to notice. The GitHub-side commands carry their own denial where they
+          # need it (the clippy gate passes `-D warnings` on its own command line).
+          rustflags: ''
+      - name: Build gate and gatehouse-runner
+        if: steps.tok.outputs.present == 'true'
+        run: cargo build --locked --manifest-path gatehouse/Cargo.toml -p gate -p gatehouse-runner
+      - name: The gate, the gatehouse way
+        if: steps.tok.outputs.present == 'true'
+        id: gh
+        env:
+          GATE: gatehouse/target/debug/gate
+          RUNNER: gatehouse/target/debug/gatehouse-runner
+        run: |
+          set -euo pipefail
+          W="$(mktemp -d)"
+          CA_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+          "$GATE" login --dev --ca-key "$CA_KEY" --ca-kid dev-ca --subject shadow --out "$W/dev.json"
+          KID="$(jq -r .credential.body.kid "$W/dev.json")"; SK="$(jq -r .signing_key_hex "$W/dev.json")"
+          jq --arg rh "${RUSTUP_HOME:-$HOME/.rustup}" --arg ch "${CARGO_HOME:-$HOME/.cargo}" \
+            '.env.env_vars = {RUSTUP_HOME: $rh, CARGO_HOME: $ch}' ".gatehouse/gates/$GATE_NAME.json" > "$W/gate.json"
+          PLAN="$(printf 'p%.0s' $(seq 1 64))"
+          jq -n --arg plan "$PLAN" --arg kid "$KID" --arg sk "$SK" --arg rd "$(sha256sum "$RUNNER" | cut -d' ' -f1)" \
+            --slurpfile g "$W/gate.json" --arg gn "$GATE_NAME" \
+            '{repo: "coproduct-opensource/nucleus", repo_path: ".", tree_spec: "HEAD", plan: $plan, gate_name: $gn,
+              gate: $g[0], canary: null, kid: $kid, signing_key_hex: $sk, substrate: "developer",
+              credential_kind: "dev_credential", credential_tier: "developer", runner_digest: $rd, binding: null}' > "$W/job.json"
+          set +e
+          "$RUNNER" "$W/job.json" "$W/receipt.json"; RC=$?
+          set -e
+          echo "runner exit $RC (0 held, 1 failed, 2 errored)"
+          [ "$RC" -ne 2 ] || { echo "::error::the runner errored"; exit 1; }
+          "$GATE" receipt push "$W/receipt.json" --log "$W/log.json" --proof "$W/proof.json"
+          "$GATE" trust dev "$W/dev.json" --ca-key "$CA_KEY" --log "$W/log.json" --out "$W/trust.json"
+          "$GATE" expect "$W/gate.json" --repo . --tree HEAD --class optional --plan "$PLAN" --out "$W/expect.json"
+          set +e
+          OUT="$("$GATE" receipt verify "$W/receipt.json" --trust "$W/trust.json" --expect "$W/expect.json" --inclusion "$W/proof.json")"; VC=$?
+          set -e
+          echo "$OUT"
+          case "$VC" in 0) echo "held=HELD" >> "$GITHUB_OUTPUT";; 1) echo "held=not-held" >> "$GITHUB_OUTPUT";; *) echo "::error::verify could not look: $OUT"; exit 1;; esac
+      - name: The same check, the GitHub way, and the agreement line
+        if: steps.tok.outputs.present == 'true'
+        env:
+          GH_HELD: ${{ steps.gh.outputs.held }}
+          GITHUB_WAY: ${{ matrix.github }}
+        run: |
+          set +e
+          bash -c "$GITHUB_WAY" >/dev/null 2>&1; FC=$?
+          set -e
+          if [ "$FC" -eq 0 ]; then GITHUB=pass; else GITHUB=fail; fi
+          if { [ "$GH_HELD" = HELD ] && [ "$GITHUB" = pass ]; } || { [ "$GH_HELD" = not-held ] && [ "$GITHUB" = fail ]; }; then AGREE=true; else AGREE=false; fi
+          LINE="shadow: gate=$GATE_NAME gatehouse=$GH_HELD github=$GITHUB agree=$AGREE"
+          echo "$LINE"
+          echo "$LINE" >> "$GITHUB_STEP_SUMMARY"
+          echo "gh=$GH_HELD" >> "$GITHUB_OUTPUT"
+          echo "github=$GITHUB" >> "$GITHUB_OUTPUT"
+        id: agree
+      - name: Report the observation to the gatehouse control plane (only when one is named)
+        # docs (gatehouse) hard-cut.md §3: the shadow week is measured per gate by the control
+        # plane's shadow report; the verdict pair is posted here, agreement is computed there.
+        # GATEHOUSE_CONTROL_URL / GATEHOUSE_TENANT are repository VARIABLES (not secrets); the
+        # write routes on the control plane need the GATEHOUSE_AGENT_TOKEN SECRET. A failed
+        # post is a warning, never a red — nothing required depends on this job.
+        if: steps.tok.outputs.present == 'true' && vars.GATEHOUSE_CONTROL_URL != ''
+        env:
+          CONTROL_URL: ${{ vars.GATEHOUSE_CONTROL_URL }}
+          TENANT: ${{ vars.GATEHOUSE_TENANT || 'nucleus' }}
+          PR: ${{ github.event.pull_request.number || 0 }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GH_HELD: ${{ steps.agree.outputs.gh }}
+          GITHUB_VERDICT: ${{ steps.agree.outputs.github }}
+          AGENT_TOKEN: ${{ secrets.GATEHOUSE_AGENT_TOKEN }}
+        run: |
+          case "$GH_HELD" in HELD) GATEHOUSE=held;; *) GATEHOUSE=not-held;; esac
+          BODY="$(jq -cn --argjson pr "$PR" --arg head "$HEAD_SHA" --arg gate "$GATE_NAME" --arg gh "$GATEHOUSE" --arg github "$GITHUB_VERDICT" \
+            '{pr: $pr, head_sha: $head, gate: $gate, gatehouse: $gh, github: $github}')"
+          if curl -sS --fail-with-body --max-time 20 -H 'content-type: application/json' \
+               ${AGENT_TOKEN:+-H "Authorization: Bearer $AGENT_TOKEN"} \
+               -X POST --data "$BODY" "${CONTROL_URL%/}/v1/$TENANT/shadow"; then
+            echo "reported: $BODY"
+          else
+            echo "::warning::the shadow observation could not be reported to $CONTROL_URL (informational)"
+          fi

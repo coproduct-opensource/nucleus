@@ -1,0 +1,46 @@
+{
+  "scope": {
+    "include": [
+      "crates/portcullis-core/lean/**"
+    ],
+    "exclude": [],
+    "external": [],
+    "git_history": false
+  },
+  "env": {
+    "image": "sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "platform": "linux/amd64",
+    "toolchains": {
+      "rust": "1.96.1"
+    },
+    "env_vars": {}
+  },
+  "cap": {
+    "net": "none",
+    "fs_read": [
+      "crates/portcullis-core/lean/**"
+    ],
+    "fs_write": [
+      "crates/portcullis-core/lean/.lake/**"
+    ],
+    "exec": "scoped",
+    "wall_ms": 3600000,
+    "cpu_ms": 3600000,
+    "mem_mb": 16384,
+    "secrets": []
+  },
+  "cmd": [
+    "lake",
+    "build",
+    "PortcullisCoreBridge"
+  ],
+  "cwd": "",
+  "timeout_s": 3600,
+  "outputs": [],
+  "resources": {
+    "cpus": 2,
+    "mem_mb": 16384,
+    "disk_mb": 4096
+  },
+  "falsifier": null
+}
