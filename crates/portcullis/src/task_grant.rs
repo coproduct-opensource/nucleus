@@ -222,13 +222,14 @@ fn render_plain(out: &mut String, grant: &TaskGrant, catalog: &EffectCatalog) {
     let _ = writeln!(out, "Cannot:  {}", join_dot(cannot));
 
     // Limits.
-    let hours = grant.limits.duration_secs as f64 / 3600.0;
+    let secs = grant.limits.duration_secs;
     let mut limits = vec![
         format!("${:.2}", grant.limits.max_cost_usd),
-        if hours >= 1.0 {
-            format!("{hours:.0}h")
+        if secs >= 3600 {
+            // Nearest hour, in integers: no float cast to ratchet.
+            format!("{}h", (secs + 1800) / 3600)
         } else {
-            format!("{}m", grant.limits.duration_secs / 60)
+            format!("{}m", secs / 60)
         },
     ];
     if grant.limits.hosts.is_empty() {

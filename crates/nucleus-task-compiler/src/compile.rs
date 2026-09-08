@@ -196,7 +196,7 @@ pub fn compile(input: CompileInput<'_>) -> Result<TaskGrant, CompileError> {
 
     let created_at = Utc::now();
     let not_after = lattice.time.valid_until;
-    let duration_secs = (not_after - created_at).num_seconds().max(0) as u64;
+    let duration_secs = u64::try_from((not_after - created_at).num_seconds()).unwrap_or(0);
     let mut blocked_paths: Vec<String> = lattice.paths.blocked.iter().cloned().collect();
     blocked_paths.sort();
 
