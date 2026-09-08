@@ -396,7 +396,7 @@ jobs:
       # wall clock of `cargo test` on a workspace this size (nexte.st
       # benchmarks); baked into the self-hosted image, installed on hosted.
       # Doctests are not nextest's — they stay on `cargo test --doc` below.
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
         if: ${{ runner.environment == 'github-hosted' }}
         with:
           tool: cargo-nextest
