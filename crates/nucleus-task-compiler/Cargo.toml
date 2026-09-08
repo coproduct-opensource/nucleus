@@ -1,0 +1,30 @@
+[package]
+name = "nucleus-task-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The delegation compiler: a natural-language goal plus repository context compiled into a minimum-authority task grant, meet-clamped under a ceiling profile"
+repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
+keywords = ["ai", "security", "agents", "least-privilege", "delegation"]
+categories = ["development-tools", "command-line-utilities"]
+
+# Deliberately offline: this crate reads the repository and the effect
+# catalog and never opens a socket. `scripts/check-task-compiler-offline.sh`
+# fails CI if a network crate is added here; the pluggable proposer is a
+# child process precisely so that an LLM-backed proposer lives outside
+# nucleus (CLAUDE.md vendor neutrality) and outside this closure.
+[dependencies]
+portcullis = { path = "../portcullis", features = ["spec"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+rust_decimal = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

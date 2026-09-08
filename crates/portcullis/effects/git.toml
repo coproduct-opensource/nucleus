@@ -1,0 +1,43 @@
+# Built-in semantic effects: version control.
+#
+# `commit` and `push-branch` are deliberately separate effects: the canonical
+# safe-pr-fixer profile lets an agent commit locally while a trusted CI
+# wrapper pushes, and the compiler must be able to express exactly that.
+
+[plugin]
+name = "git"
+version = 1
+
+[[effect]]
+id = "read-history"
+title = "Read git history and status"
+risk = "read"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec"]
+[effect.matches]
+mcp_tools = ["git_status", "git_log", "git_diff", "git_show"]
+commands = ["git status", "git log", "git diff", "git show", "git branch", "git blame", "git rev-parse"]
+
+[[effect]]
+id = "commit"
+title = "Commit changes locally"
+risk = "write_local"
+[effect.lowers]
+operations = ["git_commit"]
+sinks = ["git_commit"]
+[effect.matches]
+mcp_tools = ["git_add", "git_commit"]
+commands = ["git add", "git commit", "git checkout -b", "git switch -c", "git stash"]
+
+[[effect]]
+id = "push-branch"
+title = "Push a branch to the remote"
+risk = "publish"
+[effect.lowers]
+operations = ["git_push"]
+sinks = ["git_push"]
+hosts = ["github.com"]
+[effect.matches]
+mcp_tools = ["git_push", "push_files"]
+commands = ["git push"]

@@ -335,6 +335,76 @@ time:
 
 ---
 
+## Running by goal
+
+You do not have to pick a profile. State the outcome and nucleus compiles it into
+the minimum authority the task needs, shows it in plain language, and runs after
+one confirmation:
+
+```
+$ nucleus run --goal "fix the failing CI build" --ceiling safe-pr-fixer --dry-run
+Goal:    fix the failing CI build
+Can:     read and search workspace files · read git history and status · read CI logs and workflow runs · edit workspace files · run the test suite · commit changes locally
+Cannot:  push to remote branches · open or merge pull requests · reach hosts other than api.github.com · spawn agents or pods
+Limits:  $5.00 · 2h · api.github.com only · no .aws, .env, .ssh
+Risk:    all 3 exposure legs present → the kernel asks for approval before run_bash
+```
+
+How it is derived, and why it cannot be wider than you allow:
+
+1. The repository is probed (ecosystem, CI system, git remotes, MCP configs) and a
+   rule table maps goal phrases to **semantic effects** (below). Every rule that
+   fired is recorded in the grant (`--explain policy-trace`).
+2. The effects are lowered to the 13 capability dimensions, sinks and hosts.
+3. The result is **met with the `--ceiling` profile** (default `codegen`), so the
+   grant is never wider than the ceiling. An effect the ceiling does not admit is
+   listed under *Cannot* with the reason, never silently dropped or granted.
+4. Without a TTY the run refuses unless you pass `--yes`; `--dry-run` only shows the
+   grant; `--save-grant PATH` writes it as JSON; `--explain technical` adds the grid;
+   `--effects github/read-issue,web/search` adds effects the goal did not imply.
+
+A goal nothing recognises is an error naming the remedy. It never falls back to a
+permissive profile.
+
+An orchestrator may supply its own proposer with `--proposer PROGRAM` (JSON on
+stdin, `{"effects": [...]}` on stdout). Its answer is validated against the catalog
+and clamped under the ceiling like everything else, so it can only narrow.
+
+## Semantic effects
+
+An effect is the unit of authority a person reads. Each lowers to core dimensions,
+sinks and hosts, and carries how it is recognised (MCP tool names, command
+prefixes, HTTP method+host+path), which is what later attributes a run's receipts
+back to the effects that authorised it. The built-in catalog:
+
+| Effect | Means | Lowers to |
+|---|---|---|
+| `fs/read-workspace` | Read and search workspace files | `read_files`, `glob_search`, `grep_search` (always) |
+| `fs/edit-workspace` | Edit workspace files | `write_files`, `edit_files` |
+| `shell/run-tests` | Run the test suite | `run_bash` (`cargo test`, `npm test`, `pytest`, …) |
+| `shell/run-build` | Build the project | `run_bash` (`cargo build`, `npm run build`, …) |
+| `shell/run-lint` | Run formatters and linters | `run_bash` (`cargo clippy`, `ruff`, …) |
+| `git/read-history` | Read git history and status | `run_bash` (`git status`, `git log`, `git diff`, …) |
+| `git/commit` | Commit changes locally | `git_commit` |
+| `git/push-branch` | Push a branch to the remote | `git_push`, host `github.com` |
+| `web/package-registry-crates` | Download Rust dependencies | `web_fetch`, hosts `crates.io`, `static.crates.io`, `index.crates.io` |
+| `web/package-registry-npm` | Download JavaScript dependencies | `web_fetch`, host `registry.npmjs.org` |
+| `web/package-registry-pypi` | Download Python dependencies | `web_fetch`, hosts `pypi.org`, `files.pythonhosted.org` |
+| `web/search` | Search the web | `web_search` |
+| `github/read-issue` | Read issues | `web_fetch`, `GET api.github.com/repos/*/issues*` |
+| `github/read-ci-logs` | Read CI logs and workflow runs | `web_fetch`, `GET api.github.com/repos/*/actions/*` |
+| `github/read-pull-request` | Read pull requests and reviews | `web_fetch`, `GET api.github.com/repos/*/pulls*` |
+| `github/comment` | Comment on issues and pull requests | `create_pr`, `POST …/comments` |
+| `github/open-pr` | Open a pull request | `create_pr`, `git_push`, `POST api.github.com/repos/*/pulls` |
+| `github/merge-pr` | Merge a pull request | `git_push`, `PUT api.github.com/repos/*/pulls/*/merge` |
+
+A repository adds its own under `.nucleus/effects/*.toml` (same format as
+`crates/portcullis/effects/`). In this milestone an effect is enforced by the
+lattice it lowers to, the host list, and the command prefixes it vouches for; an
+agent that reaches a host with `curl` rather than an MCP tool is bounded by host,
+not by method and path. See `docs/adr/0004-delegation-compiler.md` for the
+milestones that close that gap.
+
 ## Delegation (Sub-agents)
 
 When delegating to a sub-agent, permissions can only go **down**, never up:

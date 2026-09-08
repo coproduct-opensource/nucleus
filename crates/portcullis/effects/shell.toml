@@ -1,0 +1,43 @@
+# Built-in semantic effects: running the project's own toolchain.
+#
+# Every effect here lowers to `run_bash`, which the kernel treats as an
+# exfiltration vector (a shell can reach anything). The `commands` reverse
+# index is what distinguishes "run the tests" from "run anything": it is the
+# vocabulary a later milestone narrows `CommandLattice` with.
+
+[plugin]
+name = "shell"
+version = 1
+
+[[effect]]
+id = "run-tests"
+title = "Run the test suite"
+risk = "execute"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec"]
+[effect.matches]
+mcp_tools = ["run", "bash", "execute_command"]
+commands = ["cargo test", "cargo nextest", "npm test", "pnpm test", "yarn test", "pytest", "python -m pytest", "go test", "make test", "make check"]
+
+[[effect]]
+id = "run-build"
+title = "Build the project"
+risk = "execute"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec"]
+[effect.matches]
+mcp_tools = ["run", "bash", "execute_command"]
+commands = ["cargo build", "cargo check", "npm run build", "pnpm build", "yarn build", "go build", "make", "python -m build"]
+
+[[effect]]
+id = "run-lint"
+title = "Run formatters and linters"
+risk = "execute"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec"]
+[effect.matches]
+mcp_tools = ["run", "bash", "execute_command"]
+commands = ["cargo clippy", "cargo fmt", "npm run lint", "pnpm lint", "eslint", "prettier", "ruff", "black", "go vet", "gofmt"]

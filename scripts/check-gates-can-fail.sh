@@ -219,6 +219,13 @@ perturb_kani_harness_deleted() {
     awk 'BEGIN{done=0} /#\[kani::proof\]/ && !done {done=1; next} {print}' "$1" > "$tmp"; cat "$tmp" > "$1"; rm -f "$tmp"
 }
 
+perturb_compiler_online() {
+    # A network crate appended to the task compiler's manifest. It lands in
+    # whichever dependency table is last, which is why the gate reads every
+    # table and not only [dependencies].
+    printf '\nreqwest = "0.12"\n' >> "$1"
+}
+
 perturb_test_helpers_in_prod() {
     # `test-helpers` reachable from a SHIPPING build, which is the gate's whole
     # subject: with it on, `discharge::test_helpers::bundle_for` mints a
@@ -453,6 +460,8 @@ probe check-lean-libs-built.sh "" crates/portcullis-core/lean/lakefile.lean \
       "a lean_lib nothing builds"               perturb_lean_lib_unbuilt
 probe check-kani-proof-count.sh "--strict" crates/portcullis/src/kani.rs \
       "a deleted Kani harness"                  perturb_kani_harness_deleted
+probe check-task-compiler-offline.sh "" crates/nucleus-task-compiler/Cargo.toml \
+      "a network crate in the task compiler"    perturb_compiler_online
 probe check-declassify-sink-scope-enforced.sh "" crates/portcullis/src/flow_graph.rs \
       "the applied sink mask widened to admit every sink" \
       perturb_declassify_unscope

@@ -1,0 +1,97 @@
+# Built-in semantic effects: a GitHub-hosted repository.
+#
+# These are the authority units a person reads ("read CI logs", "open a pull
+# request"), each lowered to core dimensions and pinned to api.github.com.
+# The `http` index is the host→meaning table: one method+path per effect,
+# so a later milestone can enforce the effect at the credential boundary
+# rather than by host alone. Until then the effect is enforced at the MCP
+# tool surface, the egress host list, and the `commands` prefixes.
+
+[plugin]
+name = "github"
+version = 1
+
+[[effect]]
+id = "read-issue"
+title = "Read issues"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["api.github.com"]
+[effect.matches]
+mcp_tools = ["issue_read", "get_issue", "list_issues", "search_issues"]
+commands = ["gh issue view", "gh issue list"]
+http = [{ method = "GET", host = "api.github.com", path = "/repos/*/issues*" }]
+
+[[effect]]
+id = "read-ci-logs"
+title = "Read CI logs and workflow runs"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["api.github.com"]
+[effect.matches]
+mcp_tools = ["get_job_logs", "actions_get", "actions_list", "list_workflow_runs", "get_check_run"]
+commands = ["gh run view", "gh run list", "gh run download", "gh api repos/*/actions"]
+http = [
+  { method = "GET", host = "api.github.com", path = "/repos/*/actions/*" },
+  { method = "GET", host = "api.github.com", path = "/repos/*/check-runs/*" },
+  { method = "GET", host = "api.github.com", path = "/repos/*/commits/*/check-runs" },
+]
+
+[[effect]]
+id = "read-pull-request"
+title = "Read pull requests and reviews"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["api.github.com"]
+[effect.matches]
+mcp_tools = ["pull_request_read", "get_pull_request", "list_pull_requests"]
+commands = ["gh pr view", "gh pr list", "gh pr diff", "gh pr checks"]
+http = [{ method = "GET", host = "api.github.com", path = "/repos/*/pulls*" }]
+
+[[effect]]
+id = "comment"
+title = "Comment on issues and pull requests"
+risk = "publish"
+[effect.lowers]
+operations = ["create_pr"]
+sinks = ["pr_comment_write"]
+hosts = ["api.github.com"]
+[effect.matches]
+mcp_tools = ["add_issue_comment", "add_reply_to_pull_request_comment", "pull_request_review_write"]
+commands = ["gh pr comment", "gh issue comment", "gh pr review"]
+http = [
+  { method = "POST", host = "api.github.com", path = "/repos/*/issues/*/comments" },
+  { method = "POST", host = "api.github.com", path = "/repos/*/pulls/*/reviews" },
+]
+
+[[effect]]
+id = "open-pr"
+title = "Open a pull request"
+risk = "publish"
+[effect.lowers]
+operations = ["create_pr", "git_push"]
+sinks = ["git_push", "pr_comment_write"]
+hosts = ["api.github.com", "github.com"]
+[effect.matches]
+mcp_tools = ["create_pull_request"]
+commands = ["gh pr create"]
+http = [{ method = "POST", host = "api.github.com", path = "/repos/*/pulls" }]
+
+[[effect]]
+id = "merge-pr"
+title = "Merge a pull request"
+risk = "mutate_remote"
+[effect.lowers]
+operations = ["git_push"]
+sinks = ["git_push"]
+hosts = ["api.github.com"]
+[effect.matches]
+mcp_tools = ["merge_pull_request", "enable_pr_auto_merge"]
+commands = ["gh pr merge"]
+http = [{ method = "PUT", host = "api.github.com", path = "/repos/*/pulls/*/merge" }]
