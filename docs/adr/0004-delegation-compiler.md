@@ -104,8 +104,8 @@ with two invariants DX work may not violate:
 
 | # | Delivers | Status |
 |---|---|---|
-| 1 | Effect catalog, `TaskGrant` + renderer, `nucleus-task-compiler`, `nucleus run --goal` preview and single confirmation, offline gate | this ADR's PR |
-| 2 | `effect/` certificate keys, `SealedTaskGrant`, `nucleus run --grant` (C(T)=0) | next |
+| 1 | Effect catalog, `TaskGrant` + renderer, `nucleus-task-compiler`, `nucleus run --goal` preview and single confirmation, offline gate | #2675 |
+| 2 | `effect/` certificate keys (`effect_surface`), `SealedTaskGrant` (grant + signed certificate, binding keys), `nucleus run --save-grant` / `--grant`, `nucleus grant seal|show` (C(T)=0) | this PR |
 | 3 | Receipt → effect attribution, ρ, post-run "save narrower profile", `~/.nucleus/profiles` | |
 | 4 | Structured `EscalationProposal` on every denial, carried to MCP / tool-proxy / hook / SDK, `nucleus grant --scope action\|run\|always` | |
 | 5 | ρ and C(T) in `ExitReport` and the run summary | |

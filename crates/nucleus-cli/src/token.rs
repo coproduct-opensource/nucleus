@@ -161,7 +161,7 @@ fn write_output(data: &str, path: Option<&PathBuf>) -> Result<()> {
 }
 
 /// Write a PKCS#8 key as PEM, owner-read-only.
-fn write_key_pem(path: &PathBuf, pkcs8_bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_key_pem(path: &std::path::Path, pkcs8_bytes: &[u8]) -> Result<()> {
     let pem = pkcs8_to_pem(pkcs8_bytes);
     std::fs::write(path, &pem)
         .with_context(|| format!("Failed to write key to {}", path.display()))?;
@@ -175,7 +175,7 @@ fn write_key_pem(path: &PathBuf, pkcs8_bytes: &[u8]) -> Result<()> {
 }
 
 /// Encode a PKCS#8 key as PEM.
-fn pkcs8_to_pem(pkcs8_bytes: &[u8]) -> String {
+pub(crate) fn pkcs8_to_pem(pkcs8_bytes: &[u8]) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(pkcs8_bytes);
     let mut pem = String::from("-----BEGIN PRIVATE KEY-----\n");
     for chunk in b64.as_bytes().chunks(64) {
@@ -187,7 +187,7 @@ fn pkcs8_to_pem(pkcs8_bytes: &[u8]) -> String {
 }
 
 /// Decode a PEM key to PKCS#8 DER bytes.
-fn pem_to_pkcs8(pem: &str) -> Result<Vec<u8>> {
+pub(crate) fn pem_to_pkcs8(pem: &str) -> Result<Vec<u8>> {
     let b64: String = pem
         .lines()
         .filter(|l| !l.starts_with("-----"))

@@ -360,7 +360,8 @@ How it is derived, and why it cannot be wider than you allow:
    grant is never wider than the ceiling. An effect the ceiling does not admit is
    listed under *Cannot* with the reason, never silently dropped or granted.
 4. Without a TTY the run refuses unless you pass `--yes`; `--dry-run` only shows the
-   grant; `--save-grant PATH` writes it as JSON; `--explain technical` adds the grid;
+   grant; `--save-grant PATH` seals the accepted grant for reuse (below);
+   `--explain technical` adds the grid;
    `--effects github/read-issue,web/search` adds effects the goal did not imply.
 
 A goal nothing recognises is an error naming the remedy. It never falls back to a
@@ -369,6 +370,47 @@ permissive profile.
 An orchestrator may supply its own proposer with `--proposer PROGRAM` (JSON on
 stdin, `{"effects": [...]}` on stdout). Its answer is validated against the catalog
 and clamped under the ceiling like everything else, so it can only narrow.
+
+### Reusing a grant: zero prompts for a task you already approved
+
+The confirmation is the approval, so it should be given once. `--save-grant PATH`
+seals the grant you accept into a signed file, and `--grant PATH` runs it again
+without asking:
+
+```
+$ nucleus run --goal "run the tests" --save-grant tests.grant     # confirm once: [R]un · [s]eal only
+$ nucleus run --grant tests.grant                                 # no prompt
+grant 6f1c… verified: sealed by nucleus://grant-approver/laptop/ada (3b9e0a1c…), 3 effects, 1h58m left, no confirmation needed
+Goal:    run the tests
+Can:     read and search workspace files · read git history and status · run the test suite
+…
+```
+
+`nucleus grant seal --goal "…" -o FILE` seals without running (for a grant a CI job
+will use), and `nucleus grant show FILE` verifies and renders one.
+
+What a sealed grant is: the five lines you read, and beside them a root
+certificate whose permissions are the grant's lattice **plus one `effect/<plugin>/<id>`
+key per granted effect** plus keys binding the grant id, the goal digest and the
+repository digest — signed with the Ed25519 grant key nucleus creates at
+`~/.config/nucleus/keys/grant-signer.pem` on first use. `--grant` refuses, before
+anything runs, when:
+
+- the signer is not this host's key (or a `--grant-signer HEX` you trust — this is
+  how a CI job holds only the public half of a key a person sealed with);
+- the certificate does not verify (signature, expiry, proof of possession);
+- the readable grant no longer re-lowers to the signed permissions — editing the
+  goal, the effects, the lattice, the limits or the expiry in the file is detected;
+- the repository's context digest (ecosystem, CI system, remotes, MCP configs) is
+  not the one the grant was compiled against: `re-run with --goal to approve it again`.
+
+A certificate delegated from a sealed grant can drop effects but never add one:
+the `effect/` keys follow the tool-surface rule (`min(absent, Always) = Never`), a
+silent child inherits the parent's set, and a child that sheds the dimension is
+refused. What the `effect/` keys enforce at run time is unchanged in this
+milestone (the lattice, the host list and the command prefixes); attributing
+receipts to effects and enforcing per effect at the credential boundary are the
+milestones after this one.
 
 ## Semantic effects
 

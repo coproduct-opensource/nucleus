@@ -108,6 +108,9 @@ pub mod constraint;
 // Uses `CapabilityLattice::extensions`, which is compiled out under Kani.
 #[cfg(not(kani))]
 pub mod tool_surface;
+// The granted effect set on a certificate (ADR 0004): same map, its own keys.
+#[cfg(not(kani))]
+pub mod effect_surface;
 pub mod trace_monitor;
 pub mod uninhabitable_state;
 
@@ -188,6 +191,12 @@ pub mod receipt_sign;
 /// (feature `dlc`); consulted by the kernel, composable as a `PolicyCheck`.
 #[cfg(feature = "dlc")]
 pub mod says_admission;
+/// A task grant sealed into a signed certificate: the `effect/` keys, the
+/// binding keys, and the verification a `nucleus run --grant` reuse needs.
+///
+/// Requires the `spec` feature; sealing and verifying need `crypto` too.
+#[cfg(all(feature = "spec", not(kani)))]
+pub mod sealed_grant;
 /// The task grant a goal compiles to, and its progressive-disclosure
 /// rendering (Goal / Can / Cannot / Limits / Risk).
 ///
@@ -275,6 +284,8 @@ pub use permissive::{
 };
 pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
 pub use region::CodeRegion;
+#[cfg(all(feature = "spec", not(kani)))]
+pub use sealed_grant::{SealedGrantError, SealedTaskGrant, VerifiedGrant, GRANT_BINDING_MARKER};
 #[cfg(feature = "spec")]
 pub use task_grant::{
     render as render_grant, render_capabilities, ClippedEffect, CompilerProvenance, Disclosure,
