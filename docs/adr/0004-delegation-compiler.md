@@ -106,7 +106,7 @@ with two invariants DX work may not violate:
 |---|---|---|
 | 1 | Effect catalog, `TaskGrant` + renderer, `nucleus-task-compiler`, `nucleus run --goal` preview and single confirmation, offline gate | #2675 |
 | 2 | `effect/` certificate keys (`effect_surface`), `SealedTaskGrant` (grant + signed certificate, binding keys), `nucleus run --save-grant` / `--grant`, `nucleus grant seal|show` (C(T)=0) | this PR |
-| 3 | Receipt → effect attribution, ρ, post-run "save narrower profile", `~/.nucleus/profiles` | |
+| 3 | Trace → effect attribution (`grant_usage`), ρ over dimensions and effects, post-run usage lines and "save a narrower profile", `nucleus observe --grant --narrow --save`, user profiles in `~/.config/nucleus/profiles` (never wider than a canonical name) | this PR |
 | 4 | Structured `EscalationProposal` on every denial, carried to MCP / tool-proxy / hook / SDK, `nucleus grant --scope action\|run\|always` | |
 | 5 | ρ and C(T) in `ExitReport` and the run summary | |
 | 6 | Per-effect enforcement at the credential boundary (method+path) | |

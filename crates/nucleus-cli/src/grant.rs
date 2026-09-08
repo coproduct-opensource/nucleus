@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use clap::{Args, Subcommand};
-use portcullis::{Disclosure, EffectCatalog, SealedTaskGrant, VerifiedGrant, render_grant};
+use portcullis::{
+    Disclosure, EffectCatalog, SealedTaskGrant, TaskGrant, VerifiedGrant, render_grant,
+};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 
 use crate::config::nucleus_dir;
@@ -245,6 +247,19 @@ pub fn write_sealed(sealed: &SealedTaskGrant, path: &Path) -> Result<()> {
 }
 
 // ── show / verify ─────────────────────────────────────────────────────────
+
+/// Read a grant from disk for attribution: a sealed grant (its readable
+/// half) or a plain grant JSON. No verification: usage attribution reads
+/// what was granted, it grants nothing.
+pub fn read_grant(path: &Path) -> Result<TaskGrant> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading the grant at {}", path.display()))?;
+    if let Ok(sealed) = serde_json::from_str::<SealedTaskGrant>(&text) {
+        return Ok(sealed.grant);
+    }
+    serde_json::from_str::<TaskGrant>(&text)
+        .with_context(|| format!("{} is neither a sealed nor a plain grant", path.display()))
+}
 
 /// Read a sealed grant from disk.
 pub fn read_sealed(path: &Path) -> Result<SealedTaskGrant> {

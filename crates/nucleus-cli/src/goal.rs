@@ -129,7 +129,10 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         }
     }
 
-    run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await
+    let mut args = args;
+    let trace = default_trace(&mut args, grant.id)?;
+    run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await?;
+    learn_from_run(&args, &grant, &catalog, trace.as_deref())
 }
 
 /// Entry point, reached from `run::execute` when `--grant` is set: verify
@@ -163,7 +166,92 @@ pub async fn execute_grant(args: RunArgs, global_config_path: &str) -> Result<()
         return Ok(());
     }
     let goal = grant.goal.clone();
-    run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await
+    let grant = grant.clone();
+    let mut args = args;
+    let trace = default_trace(&mut args, grant.id)?;
+    run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await?;
+    learn_from_run(&args, &grant, &catalog, trace.as_deref())
+}
+
+/// A goal or grant run always leaves a trace to learn from: unless
+/// `--kernel-trace` named one, `~/.config/nucleus/traces/<grant id>.jsonl`.
+/// Only the MCP-mediated modes write it (hook mode has no kernel trace).
+fn default_trace(args: &mut RunArgs, grant_id: uuid::Uuid) -> Result<Option<PathBuf>> {
+    if args.hook {
+        return Ok(args.kernel_trace.clone());
+    }
+    if args.kernel_trace.is_none() {
+        let dir = crate::config::nucleus_dir()?.join("traces");
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        args.kernel_trace = Some(dir.join(format!("{grant_id}.jsonl")));
+    }
+    Ok(args.kernel_trace.clone())
+}
+
+/// After a run: attribute its trace to the grant, print the usage lines,
+/// and (at a terminal) offer to keep a profile with the unused authority
+/// removed. Learning only narrows; nothing here can widen the grant.
+fn learn_from_run(
+    args: &RunArgs,
+    grant: &TaskGrant,
+    catalog: &EffectCatalog,
+    trace: Option<&Path>,
+) -> Result<()> {
+    let Some(trace) = trace else {
+        return Ok(());
+    };
+    let Ok(text) = std::fs::read_to_string(trace) else {
+        return Ok(());
+    };
+    let observations = portcullis::observe::parse_jsonl_observations(&text);
+    if observations.is_empty() {
+        return Ok(());
+    }
+    let usage = portcullis::attribute_usage(grant, catalog, &observations);
+    println!();
+    print!("{}", portcullis::render_usage(&usage, catalog));
+    println!("  trace:   {}", trace.display());
+
+    let nothing_to_drop = usage.unused.is_empty()
+        && usage
+            .operations_granted
+            .iter()
+            .all(|op| usage.operations_used.contains(op));
+    if nothing_to_drop || args.yes || !io::stdin().is_terminal() {
+        if !nothing_to_drop {
+            println!(
+                "  narrower profile: nucleus observe --grant <grant> --input {} --narrow NAME --save",
+                trace.display()
+            );
+        }
+        return Ok(());
+    }
+
+    print!(
+        "
+Save a profile with the unused authority removed? name (empty to skip): "
+    );
+    io::stdout().flush()?;
+    let mut line = String::new();
+    io::stdin().lock().read_line(&mut line)?;
+    let name = line.trim();
+    if name.is_empty() {
+        return Ok(());
+    }
+    if !crate::profiles::is_valid_profile_name(name) {
+        bail!("{name}: {}", crate::profiles::PROFILE_NAME_HELP);
+    }
+    let narrowed = portcullis::narrow_grant(grant, &usage, name);
+    let yaml = narrowed.profile.to_yaml().map_err(|e| anyhow!("{e}"))?;
+    let path = crate::observe::install_profile(name, &yaml)?;
+    println!(
+        "profile '{name}' installed at {} ({} effects and {} dimensions removed); \
+         next time: nucleus run --profile {name} … or --ceiling {name}",
+        path.display(),
+        narrowed.dropped_effects.len(),
+        narrowed.dropped_operations.len()
+    );
+    Ok(())
 }
 
 /// Everything from here is the ordinary run path with a compiled lattice in

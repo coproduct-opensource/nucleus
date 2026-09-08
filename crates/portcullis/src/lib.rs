@@ -154,6 +154,12 @@ pub mod galois;
 /// (hard gate / soft gate / none), for EU AI Act Article 12 decision records.
 pub mod gate_class;
 pub mod graded;
+/// Attribute a run's observations to the grant's effects, compute the
+/// authority overhead ρ, and narrow the grant to what was used.
+///
+/// Requires the `spec` feature.
+#[cfg(all(feature = "spec", not(kani)))]
+pub mod grant_usage;
 pub mod guard;
 pub mod heyting;
 /// Verified hook adapter — pure decision pipeline for agent tool-call hooks.
@@ -264,6 +270,11 @@ pub use galois::{
     TrustDomainBridge,
 };
 pub use graded::{Graded, GradedPermissionCheck, GradedPipeline, RiskCost, RiskGrade};
+#[cfg(all(feature = "spec", not(kani)))]
+pub use grant_usage::{
+    attribute as attribute_usage, narrow as narrow_grant, profile_from_lattice, render_usage,
+    Narrowed, OperationCount, UsageReport, ALL_OPERATIONS,
+};
 #[allow(deprecated)]
 pub use guard::{
     operation_exposure, CheckProof, CompositeGuard, ExecuteError, ExposureLabel, ExposureSet,
