@@ -266,6 +266,17 @@ pub(crate) async fn credentialed_egress(
         ));
     };
 
+    // Per-effect gate (ADR 0004): the host performs credentialed calls as
+    // `POST`, so that is the shape a granted effect must vouch for.
+    if let Ok(parsed) = url::Url::parse(&url) {
+        state.effect_gate.admit_http_recorded(
+            "POST",
+            &parsed,
+            state.verdict_sink.as_ref(),
+            crate::actor_from_auth(None),
+        )?;
+    }
+
     // The same gate a tool call gets. A tainted session calling its model API is
     // exfiltration by the same definition that governs `web_fetch`, and treating
     // it differently would be the hole this whole module exists to close.

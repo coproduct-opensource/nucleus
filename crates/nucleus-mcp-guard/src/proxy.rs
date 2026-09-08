@@ -292,6 +292,10 @@ pub const MCP_TOOL_UNAPPROVED: &str = "MCP_TOOL_UNAPPROVED";
 /// pod's compartment.
 pub const MCP_TOOL_WRONG_COMPARTMENT: &str = "MCP_TOOL_WRONG_COMPARTMENT";
 
+/// The refusal code for a served tool that none of the effects sealed into
+/// the pod certificate vouches for (ADR 0004, milestone 6).
+pub const MCP_TOOL_OUTSIDE_EFFECTS: &str = "MCP_TOOL_OUTSIDE_EFFECTS";
+
 /// The approved tool surface the pod certificate carries (#2485): `name →
 /// descriptor digest`, a signed, narrow-only dimension of the pod's authority
 /// (`portcullis::tool_surface`). Where present it is the task-level basis for
@@ -303,6 +307,11 @@ pub struct PodGrant {
     surface: Option<std::collections::BTreeMap<String, String>>,
     /// The pod's compartment, when the certificate carries one (#2484).
     compartment: Option<portcullis::cert_compartment::Compartment>,
+    /// The tool names the certificate's granted effects vouch for (ADR 0004):
+    /// `Some` when the certificate carries an effect dimension. A tool
+    /// outside this set is refused however it was approved or pinned, since
+    /// the person granted effects, not tools.
+    effect_tools: Option<std::collections::BTreeSet<String>>,
 }
 
 impl PodGrant {
@@ -342,11 +351,17 @@ impl PodGrant {
         let grant = Self::from_lattice(&verified.effective().capabilities);
         match &grant {
             Some(g) => eprintln!(
-                "[mcp-guard] pod certificate verified; tool surface: {}; compartment: {}",
+                "[mcp-guard] pod certificate verified; tool surface: {}; compartment: {}; effects: {}",
                 g.surface
                     .as_ref()
                     .map_or("none".to_string(), |s| format!("{} tool(s)", s.len())),
-                g.compartment.map_or("none".to_string(), |c| c.to_string())
+                g.compartment.map_or("none".to_string(), |c| c.to_string()),
+                g.effect_tools
+                    .as_ref()
+                    .map_or("none".to_string(), |t| format!(
+                        "vouch for {} tool name(s)",
+                        t.len()
+                    ))
             ),
             None => eprintln!(
                 "[mcp-guard] pod certificate verified; it carries no tool surface and no compartment"
@@ -359,10 +374,48 @@ impl PodGrant {
     pub fn from_lattice(caps: &portcullis::CapabilityLattice) -> Option<Self> {
         let surface = tool_surface::approved_tools(caps);
         let compartment = portcullis::cert_compartment::compartment_of(caps);
-        (surface.is_some() || compartment.is_some()).then_some(Self {
+        let effect_tools = portcullis::effect_surface::granted_effects(caps).map(|granted| {
+            // The catalog is the vocabulary; the repository may extend it.
+            let mut catalog = portcullis::EffectCatalog::builtin()
+                .unwrap_or_else(|_| portcullis::EffectCatalog::empty());
+            if let Ok(cwd) = std::env::current_dir() {
+                let _ = catalog.load_from_dir(&cwd.join(".nucleus/effects"));
+            }
+            catalog
+                .iter()
+                .filter(|e| granted.contains(&e.id.to_string()))
+                .flat_map(|e| e.mcp_tools.iter().cloned())
+                .collect()
+        });
+        (surface.is_some() || compartment.is_some() || effect_tools.is_some()).then_some(Self {
             surface,
             compartment,
+            effect_tools,
         })
+    }
+
+    /// Every served tool the granted effects do not vouch for, with the
+    /// reason. Empty when the certificate carries no effect dimension.
+    fn outside_effects(&self, tools: &[ToolTriple]) -> Vec<(String, String)> {
+        let Some(vouched) = &self.effect_tools else {
+            return Vec::new();
+        };
+        tools
+            .iter()
+            .filter_map(|(n, _, _)| {
+                let bare = n.rsplit("__").next().unwrap_or(n);
+                (!vouched.contains(n.as_str()) && !vouched.contains(bare)).then(|| {
+                    (
+                        n.clone(),
+                        format!(
+                            "no effect sealed into the pod certificate vouches for it \
+                             ({} tool name(s) are vouched for)",
+                            vouched.len()
+                        ),
+                    )
+                })
+            })
+            .collect()
     }
 
     /// Every served tool the surface does not approve, with the reason.
@@ -441,6 +494,16 @@ pub fn vet_tools_list(
             if let Ok(mut m) = monitor.lock() {
                 m.observe_untrusted_metadata(&name);
             }
+            if !blocked.contains(&name) {
+                blocked.push(name);
+            }
+        }
+        // The task's granted effects (ADR 0004): the person granted
+        // `github/read-ci-logs`, not `create_pull_request`. A served tool no
+        // granted effect vouches for is refused at call time like any other
+        // blocked tool.
+        for (name, why) in surface.outside_effects(tools) {
+            eprintln!("[mcp-guard] /!\\ {MCP_TOOL_OUTSIDE_EFFECTS}: tool `{name}`: {why}");
             if !blocked.contains(&name) {
                 blocked.push(name);
             }
@@ -855,6 +918,36 @@ mod tests {
         // Non-vacuity: ordinary traffic is not mistaken for a listing.
         let call = serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"content":"hi"}});
         assert!(parse_tools_list(&call).is_none());
+    }
+
+    /// The task's granted effects (ADR 0004, milestone 6): a served tool no
+    /// granted effect names is blocked, whatever the surface or the pins say,
+    /// and one a granted effect names is not.
+    #[test]
+    fn a_tool_outside_the_granted_effects_is_blocked() {
+        let mut caps = portcullis::CapabilityLattice::permissive();
+        assert!(portcullis::effect_surface::grant_effect(
+            &mut caps,
+            "github/read-ci-logs"
+        ));
+        let grant = PodGrant::from_lattice(&caps).expect("an effect dimension");
+        let tools: Vec<ToolTriple> = vec![
+            ("get_job_logs".into(), "CI logs".into(), "{}".into()),
+            ("github__actions_list".into(), "runs".into(), "{}".into()),
+            (
+                "create_pull_request".into(),
+                "open a PR".into(),
+                "{}".into(),
+            ),
+        ];
+        let mut reg = ToolSchemaRegistry::new();
+        let mon = Mutex::new(SessionMonitor::new(Classifier::default()));
+        let blocked = vet_tools_list(&mut reg, &mon, &tools, &None, None, Some(&grant));
+        assert_eq!(blocked, vec!["create_pull_request".to_string()]);
+
+        // No effect dimension: the layer is inert.
+        let plain = portcullis::CapabilityLattice::permissive();
+        assert!(PodGrant::from_lattice(&plain).is_none());
     }
 
     #[test]

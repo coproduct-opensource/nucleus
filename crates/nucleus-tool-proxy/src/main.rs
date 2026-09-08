@@ -38,6 +38,7 @@ mod cert_bridge;
 mod declassify;
 mod dlc_admission;
 mod drand_setup;
+mod effect_gate;
 mod egress;
 mod escalate;
 mod exit_report;
@@ -422,6 +423,9 @@ pub(crate) struct AppState {
     /// (`pod_cert.rs`). `None` only for a pod created before its node issued
     /// certificates.
     pod_cert: Option<Arc<pod_cert::PodCertificate>>,
+    /// The certificate's granted effects, read with the catalog: per-effect
+    /// egress enforcement (ADR 0004, `effect_gate.rs`).
+    effect_gate: Arc<effect_gate::EffectGate>,
     /// Credentials loaded from orchestrator environment for injection into sub-pods.
     orchestrator_credentials: std::collections::BTreeMap<String, String>,
     /// Permission market for Lagrangian pricing of capability dimensions.
@@ -1979,6 +1983,7 @@ async fn main() -> Result<(), ApiError> {
             .as_deref()
             .and_then(|hex_str| hex::decode(hex_str).ok())
             .map(Arc::new),
+        effect_gate: effect_gate::EffectGate::new(pod_cert.as_deref(), &spec.spec.work_dir),
         pod_cert,
         exposure_guard,
         file_lockdown,
@@ -3552,6 +3557,11 @@ async fn web_fetch(
     let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| ApiError::WebFetch(format!("invalid method: {}", method)))?;
+    // Per-effect gate (ADR 0004): a sealed grant's effects vouch for method +
+    // host + path, not just the host. Refused before any discharge is minted.
+    state
+        .effect_gate
+        .admit_http_recorded(method.as_str(), &url, sink.as_ref(), actor.clone())?;
     let headers: Vec<(String, String)> = req.headers.unwrap_or_default().into_iter().collect();
     let body: Option<Vec<u8>> = req.body.map(|b| b.into_bytes());
 
