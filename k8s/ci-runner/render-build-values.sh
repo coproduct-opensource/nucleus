@@ -17,11 +17,11 @@ cd "$(dirname "$0")"
 #     --version 0.14.2 -n arc-runners -f k8s/ci-runner/values-build.yaml
 HDR
   sed -e 's/^runnerScaleSetName: nucleus-k3s$/runnerScaleSetName: nucleus-k3s-build/' \
-      -e 's/^maxRunners: 8$/maxRunners: 4/' \
+      -e 's/^maxRunners: 8$/maxRunners: 2/' \
       -e 's/^minRunners: 2$/minRunners: 1/' \
-      -e '/name: CARGO_BUILD_JOBS/{n;s/value: "2"/value: "3"/;}' \
+      -e '/name: CARGO_BUILD_JOBS/{n;s/value: "2"/value: "9"/;}' \
       -e '/^          requests:$/,/^          limits:$/{s/cpu: "250m"/cpu: "2000m"/;s/memory: 1Gi/memory: 5Gi/;}' \
-      -e '/^          limits:$/,/^        volumeMounts:$/{s/cpu: "2"/cpu: "4"/;s/memory: 3Gi/memory: 8Gi/;}' \
+      -e '/^          limits:$/,/^        volumeMounts:$/{s/cpu: "2"/cpu: "10"/;s/memory: 3Gi/memory: 8Gi/;}' \
       values.yaml
 } > values-build.yaml
 echo "rendered values-build.yaml"

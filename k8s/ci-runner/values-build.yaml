@@ -46,7 +46,7 @@ runnerScaleSetName: nucleus-k3s-build
 # gate runners cover the short gate jobs that arrive in bursts on every push.
 # Cost while idle: 2 × (0.5 CPU, 1 GiB) requests, already reserved at peak.
 minRunners: 1
-maxRunners: 4
+maxRunners: 2
 
 template:
   spec:
@@ -70,8 +70,17 @@ template:
             value: sccache
           - name: SCCACHE_DIR
             value: /home/runner/.cache/sccache
+          # 12G, not 30G, and the number is a disk budget rather than a preference.
+          # The node has 96G. containerd holds ~28G (the runner image alone is 11.4G), elan and
+          # rustup ~4G, and a merge-group build wants tens of gigabytes of checkout and target
+          # dirs at once. At 30G sccache filled to its cap, the node crossed the kubelet's
+          # DiskPressure threshold and EVICTED the runner pod mid-job — which surfaces as
+          # "The self-hosted runner lost communication with the server" and ejects the pull
+          # request from the merge queue with no failing step and 404'd logs. Observed three
+          # times on 2026-09-07 before the cause was found. Raise this only alongside a bigger
+          # disk.
           - name: SCCACHE_CACHE_SIZE
-            value: 30G
+            value: 12G
           - name: CARGO_INCREMENTAL
             value: "0"
           # Debuginfo the linker can afford: full DWARF made GNU ld take
@@ -79,10 +88,14 @@ template:
           # tables keep panics readable. Pairs with cargo-config.toml (lld).
           - name: CARGO_PROFILE_DEV_DEBUG
             value: line-tables-only
-          # Two cargo jobs per runner: memory scales with parallel rustc/ld
-          # processes, and the limit below is sized for two.
+          # Nine cargo jobs, matching the CPU limit below. This and the limit
+          # move together: whichever is lower is the one that decides how fast
+          # a build runs, so raising one alone buys nothing. Measured
+          # 2026-09-07: the node sat at 27% CPU while the job that decides the
+          # merge group's wall-clock — "Workspace build + tests (one pod)", 13
+          # minutes — was capped at four of twelve vCPU and three cargo jobs.
           - name: CARGO_BUILD_JOBS
-            value: "3"
+            value: "9"
           # Job hooks (k8s/ci-runner/hooks/): per-job sccache hit rate and pod
           # resource peaks in every job log. `kubectl create configmap
           # runner-hooks --from-file=k8s/ci-runner/hooks/` keeps them current.
@@ -102,7 +115,7 @@ template:
             cpu: "2000m"
             memory: 5Gi
           limits:
-            cpu: "4"
+            cpu: "10"
             memory: 8Gi
         volumeMounts:
           # Only IMMUTABLE caches are shared: the registry's .crate files and
