@@ -217,3 +217,47 @@ Until that lands, the honest claim is narrower than the one this file opened wit
 > Five harnesses verify, and they prove lattice arithmetic over bitmasks. Nothing that
 > touches the kernel's actual policy types has been verified, and the bridge between the
 > two representations is unverified too.
+
+## Named scheduling inventory
+
+`cargo xtask kani-coverage` matches Rust proof attributes to the package and
+harness selectors in Kani action jobs, including the explicit nightly matrix.
+A package-wide lane covers its `src` harnesses; out-of-target proof files do
+not get coverage merely because the package is named. This static scheduling
+check does not establish compiler reachability, successful execution, or proof
+success. Those require the per-harness Kani logs. Disabled lanes do not count.
+
+The following missing lanes are explicit debt, not verified coverage. A newly
+uncovered harness fails the gate unless it gets a lane or a named reason here;
+stale exceptions and exceptions for harnesses that now have lanes also fail.
+
+<!-- KANI-UNSCHEDULED:BEGIN -->
+| Harness | Why it is not scheduled |
+| --- | --- |
+| `crates/nucleus-econ-kernels/proofs/welfare_no_overflow.rs::welfare_sum_bounded` | No Cargo target or nightly lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/declassify.rs::proof_declassification_only_weakens_restrictions` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/delegation.rs::proof_delegation_chain_monotone` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/delegation.rs::proof_narrow_idempotent` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/delegation.rs::proof_narrow_monotone` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/envelope.rs::proof_ai_derived_never_verified_ready_without_witness` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/envelope.rs::proof_verified_lane_implies_witness_or_deterministic` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/envelope.rs::proof_verified_write_requires_witness` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_derivation_join_monotone` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_derivation_no_silent_cleansing` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_absorption_join_meet` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_absorption_meet_join` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_bottom_join_identity` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_join_associative` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_join_commutative` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_join_idempotent` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_leq_consistent_with_join` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_meet_associative` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_meet_commutative` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_meet_idempotent` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/lib.rs::proof_ifc_top_meet_identity` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/manifest.rs::proof_directive_from_transitive_rejected` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/manifest.rs::proof_empty_capabilities_rejected` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/manifest.rs::proof_remote_unlabeled_rejected` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/manifest.rs::proof_safe_local_admitted` | No matching portcullis-core CI lane yet; tracked in #2581. |
+| `crates/portcullis-core/src/manifest.rs::proof_trusted_from_remote_rejected` | No matching portcullis-core CI lane yet; tracked in #2581. |
+<!-- KANI-UNSCHEDULED:END -->

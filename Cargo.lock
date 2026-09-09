@@ -13715,6 +13715,9 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "syn 2.0.117",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]
