@@ -40,6 +40,17 @@
   * Time and runners (that is `CiSpec.Capacity`, the next file).
   * Speculative groups (`max_entries_to_build > 1`) — this repository runs
     at 1, and the pin in ci/merge-queue.toml is what live-parity holds.
+  * Batched merges (`max_entries_to_merge > 1`) — this repository runs at 8.
+    `step` merges the head alone and guards it on that PR's own checks
+    (`s.checks h`); a batch merges a PREFIX of the queue on the group's
+    combined checks, so an entry can land on a green its own run never
+    produced, and a red batch is bisected rather than ejecting one entry.
+    T4 is unaffected: a prefix leaves `mergedLog` a subsequence of `enqLog`
+    either way, so merges still happen in enqueue order. What is no longer
+    literal is the per-entry guard, and T3/T5/T6 are about queue membership
+    rather than that guard. Modelling a batch as `n` consecutive `.merge`
+    events is sound for order and wrong for the guard; the honest statement
+    is that this file bounds order, not per-entry attribution.
 -/
 
 namespace CiSpec
