@@ -280,14 +280,21 @@ impl SnapshotStore {
         Self { root, host }
     }
 
-    /// Where a base with this name lives, published or not yet.
-    pub fn published_dir(&self, name: &str) -> PathBuf {
-        self.root.join("by-derivation").join(name)
+    /// Where a base for this derivation lives, published or not yet.
+    ///
+    /// Takes the `Derivation` rather than its name on purpose. `Derivation::name()` is a SHA-256
+    /// digest rendered as 64 lowercase hex characters, so the component joined here cannot hold a
+    /// separator or `..` — and taking the derivation makes that STRUCTURAL instead of a comment:
+    /// there is no longer a `pub fn` here that will join an arbitrary caller-supplied string under
+    /// the store root. `Path::join` with an absolute or `../`-bearing component silently escapes,
+    /// so the only safe version of this function is one that cannot be handed such a component.
+    pub fn published_dir(&self, derivation: &Derivation) -> PathBuf {
+        self.root.join("by-derivation").join(derivation.name())
     }
 
     /// Is there a base for this derivation that this host may restore?
     pub fn lookup(&self, derivation: &Derivation) -> Lookup {
-        let dir = self.published_dir(&derivation.name());
+        let dir = self.published_dir(derivation);
         let raw = match std::fs::read_to_string(dir.join("manifest.json")) {
             Ok(raw) => raw,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Lookup::Absent,
@@ -381,7 +388,7 @@ impl SnapshotStore {
         }
         fsync(&incoming.dir).map_err(PublishError::Io)?;
 
-        let target = self.published_dir(&derivation.name());
+        let target = self.published_dir(derivation);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(PublishError::Io)?;
         }

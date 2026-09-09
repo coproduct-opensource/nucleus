@@ -147,7 +147,7 @@ pub(crate) fn place_base(
         }
         Lookup::Present(_) => {}
     }
-    let dir = store.published_dir(&derivation.name());
+    let dir = store.published_dir(derivation);
     for (src, name) in [
         (dir.join("vmstate"), in_jail::SNAPSHOT_VMSTATE),
         (dir.join("mem"), in_jail::SNAPSHOT_MEM),
