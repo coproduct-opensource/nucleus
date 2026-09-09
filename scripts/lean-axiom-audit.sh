@@ -42,6 +42,8 @@
 # (scripts/check-gates-can-fail.sh discipline).
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 PROJECT=${1:?project dir}
 MODE=${2:?root list or --self-test}
 cd "$PROJECT"
