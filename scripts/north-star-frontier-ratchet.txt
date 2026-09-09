@@ -31,6 +31,22 @@
 #   shipped command lattice for interpreter forms. TESTED, not DECIDED: it is
 #   a unit test under the `Tests` context, not a live pod round-trip (that is
 #   F4's delegation matrix).
+# 2026-09-09: lowered 12 -> 11. F7 ("as its principal is willing to
+#   authorize" — per-target scope authored and one containment primitive)
+#   NOT-YET -> TESTED. Every certificate mint site passed
+#   SinkScope::unrestricted(), so the carrier's only per-target attenuation
+#   was unreachable, and three containment semantics (exact-string
+#   SinkScope::contains, a hand-rolled segment matcher in DelegationScope,
+#   and a string-intersection PathLattice::meet under which src/** ⊓
+#   src/foo/** was NOTHING) disagreed about one relation. Now: the profile's
+#   path allowlist is lifted into SinkScope at all four mint sites, and
+#   portcullis_core::glob::glob_subsumes (gatehouse's subsetGlob, golden
+#   cases ported, plus the two sound cases nucleus relied on) decides
+#   containment at all three sites. Evidence: unit tests on the primitive,
+#   the proptest that the meet is below both sides under the semantic order,
+#   and a per-PR Kani harness proving the component boundary over the whole
+#   bounded input space (kani-spawn-boundary.yml). TESTED, not PROVED: the
+#   Lean side still models the path dimension by the abstract meet.
 CLAUSES=16
-NOT_YET=12
+NOT_YET=11
 DORMANT_GATES=0

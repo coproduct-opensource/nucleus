@@ -575,6 +575,18 @@ mod path_tests {
             prop_assert_eq!(a.join(&a), a);
         }
 
+        /// The meet is a lower bound of both sides under the SEMANTIC order —
+        /// every kept pattern is under some pattern of each side.
+        #[test]
+        fn path_meet_is_below_both_sides(
+            a in arb_path_lattice(),
+            b in arb_path_lattice(),
+        ) {
+            let m = a.meet(&b);
+            prop_assert!(m.leq(&a));
+            prop_assert!(m.leq(&b));
+        }
+
         #[test]
         fn path_blocked_grows_in_meet(
             a in arb_path_lattice(),

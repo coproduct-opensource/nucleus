@@ -348,7 +348,7 @@ impl PodAuthority {
                     child_identity.clone(),
                     not_after,
                     &reason,
-                    SinkScope::unrestricted(),
+                    SinkScope::from_lattice(&requested),
                     &parent.holder,
                     &child_key,
                 )
@@ -416,7 +416,7 @@ impl PodAuthority {
                     child_identity.clone(),
                     not_after,
                     &reason,
-                    SinkScope::unrestricted(),
+                    SinkScope::from_lattice(&requested),
                     &bridge,
                     &child_key,
                 )
@@ -445,7 +445,7 @@ impl PodAuthority {
                     child_identity.clone(),
                     not_after,
                     &reason,
-                    SinkScope::unrestricted(),
+                    SinkScope::from_lattice(&requested),
                     &bridge,
                     &child_key,
                 )

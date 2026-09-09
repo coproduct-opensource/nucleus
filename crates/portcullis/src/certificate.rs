@@ -472,6 +472,27 @@ impl SinkScope {
         Self::default()
     }
 
+    /// The scope a lattice already expresses: its path allowlist becomes the
+    /// certificate's path dimension, so a profile that says `paths.allowed:
+    /// [src/**]` is carried into every block minted for it — and re-verified
+    /// per hop — rather than every mint site passing `unrestricted()` and the
+    /// only per-target attenuation the carrier has staying unreachable.
+    ///
+    /// Same "empty = unrestricted" reading on both sides, so nothing is
+    /// mis-scoped by the lift. A lattice that allows NOTHING (the meet of
+    /// disjoint restrictions) yields a scope that admits no path, as it
+    /// should. Hosts and git refs have no lattice dimension yet and stay
+    /// unrestricted here.
+    pub fn from_lattice(perms: &PermissionLattice) -> Self {
+        let mut allowed_paths: Vec<String> = perms.paths.allowed.iter().cloned().collect();
+        allowed_paths.sort();
+        Self {
+            allowed_paths,
+            allowed_hosts: Vec::new(),
+            allowed_git_refs: Vec::new(),
+        }
+    }
+
     /// Check if `child` is a subset of `self` (monotone attenuation).
     ///
     /// Rules:
@@ -479,28 +500,42 @@ impl SinkScope {
     /// - If parent is restricted, child must be a subset (every child entry must match a parent entry)
     /// - An empty child vec inherits the parent's restrictions
     pub fn contains(&self, child: &SinkScope) -> bool {
-        subset_check(&self.allowed_paths, &child.allowed_paths)
-            && subset_check(&self.allowed_hosts, &child.allowed_hosts)
-            && subset_check(&self.allowed_git_refs, &child.allowed_git_refs)
+        subset_check(&self.allowed_paths, &child.allowed_paths, |c, p| {
+            portcullis_core::glob::glob_subsumes(c, p)
+        }) && subset_check(&self.allowed_hosts, &child.allowed_hosts, host_covered)
+            && subset_check(&self.allowed_git_refs, &child.allowed_git_refs, |c, p| {
+                portcullis_core::glob::glob_subsumes(c, p)
+            })
     }
 }
 
-/// Check if `child_list` ⊆ `parent_list`.
+/// Check if `child_list` ⊆ `parent_list` under `covered(child, parent)`.
 /// An empty parent means unrestricted (any child is allowed).
-/// A non-empty parent requires every child entry to be present in the parent.
-/// An empty child inherits (is considered within) the parent scope.
-fn subset_check(parent: &[String], child: &[String]) -> bool {
+/// A non-empty parent requires every child entry to be COVERED by some parent
+/// entry — semantically, not by string equality: a child scoped to
+/// `src/foo/**` is inside a parent scoped to `src/**`, and refusing it (as the
+/// verbatim comparison did) made the carrier's only per-target attenuation
+/// unusable for anything but a copy of the parent's list.
+/// An empty child inherits (is considered within) the parent scope? No — a
+/// child with no restrictions would be wider than the parent, so it is NOT a
+/// subset of a restricted parent.
+fn subset_check(parent: &[String], child: &[String], covered: impl Fn(&str, &str) -> bool) -> bool {
     if parent.is_empty() {
         // Parent unrestricted — any child restriction is fine
         return true;
     }
     if child.is_empty() {
         // Child unrestricted but parent is restricted — NOT a subset
-        // A child with no restrictions would be wider than the parent
         return false;
     }
-    // Every child entry must exist in parent
-    child.iter().all(|c| parent.iter().any(|p| p == c))
+    child.iter().all(|c| parent.iter().any(|p| covered(c, p)))
+}
+
+/// Host containment: a child host is inside a parent entry when it is the
+/// same host or a subdomain of it — the same reading the kernel's
+/// `check_sink_scope` applies to a subject at decision time.
+fn host_covered(child: &str, parent: &str) -> bool {
+    child == parent || child.ends_with(&format!(".{parent}"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

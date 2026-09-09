@@ -61,6 +61,7 @@ jobs:
             -Z unstable-options
             --harness-timeout 120s
             --harness proof_argv_check_fail_closed
+            --harness proof_glob_subsumes_respects_the_component_boundary
       - name: The harness and both call sites are still there
         # Kani verifying a harness that nothing applies proves nothing about
         # the spawn. Pin the harness AND the two call sites of the predicate.

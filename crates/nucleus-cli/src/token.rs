@@ -299,7 +299,7 @@ fn delegate(args: DelegateArgs) -> Result<()> {
             args.identity.clone(),
             not_after,
             "nucleus token delegate",
-            SinkScope::unrestricted(),
+            SinkScope::from_lattice(&child_permissions),
             &holder_key,
             &child_key,
         )

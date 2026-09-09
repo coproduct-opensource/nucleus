@@ -38,128 +38,19 @@ use crate::SinkClass;
 // Glob matching — dependency-free, recursive byte-level matcher
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Returns `true` if `parent_pattern` glob-covers `child`.
-///
-/// Coverage means every concrete path matched by `child` is also matched by
-/// `parent_pattern`. When `child` is a literal path (no glob characters),
-/// this reduces to `path_glob_match(parent_pattern, child)`. When `child`
-/// is itself a glob, we check structural subsumption: the parent must be
-/// at least as broad as the child.
+/// Returns `true` if `parent_pattern` glob-covers `child` — every concrete
+/// path matched by `child` is also matched by `parent_pattern`. This is
+/// [`crate::glob::glob_subsumes`] with the arguments in coverage order; the
+/// segment matcher that used to live here is that module now, so this scope
+/// and the certificate's `SinkScope` and the path lattice's meet all decide
+/// containment the same way.
 fn glob_covers(parent: &str, child: &str) -> bool {
-    // Fast path: exact string equality.
-    if parent == child {
-        return true;
-    }
-    // If child has no glob characters, it's a literal — just match it.
-    if !has_glob_chars(child) {
-        return path_glob_match(parent, child);
-    }
-    // Child is also a glob. Check if parent structurally subsumes it.
-    // A parent `**` or `**/X` always covers any child.
-    if parent == "**" || parent == "**/*" {
-        return true;
-    }
-    // If both share the same prefix before globs diverge, and the parent's
-    // glob is at least as broad, the parent covers the child.
-    // Strategy: split on `/` segments and compare pairwise.
-    glob_subsumes_segments(parent, child)
+    crate::glob::glob_subsumes(child, parent)
 }
 
-/// Segment-by-segment glob subsumption check.
-///
-/// A parent segment covers a child segment if:
-/// - parent segment is `**` (covers any number of child segments)
-/// - parent segment is `*` and child segment is `*` or a literal
-/// - parent segment equals child segment exactly
-fn glob_subsumes_segments(parent: &str, child: &str) -> bool {
-    let p_segs: Vec<&str> = parent.split('/').collect();
-    let c_segs: Vec<&str> = child.split('/').collect();
-    subsumes_inner(&p_segs, &c_segs)
-}
-
-fn subsumes_inner(parent: &[&str], child: &[&str]) -> bool {
-    if parent.is_empty() {
-        return child.is_empty();
-    }
-    if parent[0] == "**" {
-        // `**` can consume zero or more child segments
-        let rest = &parent[1..];
-        for i in 0..=child.len() {
-            if subsumes_inner(rest, &child[i..]) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if child.is_empty() {
-        return false;
-    }
-    // A parent `*` covers any single child segment (literal or `*`)
-    if parent[0] == "*" && child[0] != "**" {
-        return subsumes_inner(&parent[1..], &child[1..]);
-    }
-    // Exact segment match (handles literal = literal, `**` = `**`, etc.)
-    if parent[0] == child[0] {
-        return subsumes_inner(&parent[1..], &child[1..]);
-    }
-    false
-}
-
-/// Match a concrete path against a glob pattern.
-///
-/// Glob syntax:
-/// - `*` matches any characters except `/`
-/// - `**` matches any characters including `/` (zero or more path segments)
-/// - All other characters match literally
-///
-/// This is a dependency-free recursive matcher operating on bytes.
+/// Match a concrete path against a glob pattern. See [`crate::glob::glob_match`].
 pub fn path_glob_match(pattern: &str, path: &str) -> bool {
-    match_inner(pattern.as_bytes(), path.as_bytes())
-}
-
-fn match_inner(pattern: &[u8], text: &[u8]) -> bool {
-    if pattern.is_empty() {
-        return text.is_empty();
-    }
-    if pattern.len() >= 2 && pattern[0] == b'*' && pattern[1] == b'*' {
-        let rest = if pattern.len() > 2 && pattern[2] == b'/' {
-            &pattern[3..] // skip `**/`
-        } else {
-            &pattern[2..] // bare `**` at end
-        };
-        // `**` matches zero or more characters including `/`
-        for i in 0..=text.len() {
-            if match_inner(rest, &text[i..]) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if pattern[0] == b'*' {
-        // `*` matches zero or more non-`/` characters
-        let rest = &pattern[1..];
-        for i in 0..=text.len() {
-            if i > 0 && text[i - 1] == b'/' {
-                break;
-            }
-            if match_inner(rest, &text[i..]) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if text.is_empty() {
-        return false;
-    }
-    if pattern[0] == text[0] {
-        return match_inner(&pattern[1..], &text[1..]);
-    }
-    false
-}
-
-/// Returns true if the string contains glob metacharacters (`*`).
-fn has_glob_chars(s: &str) -> bool {
-    s.contains('*')
+    crate::glob::glob_match(pattern, path)
 }
 
 /// Scope restrictions for a delegation — which resources the delegate may touch.
@@ -457,6 +348,35 @@ mod kani_delegation_proofs {
         // Scope intersection with itself should preserve all elements
         assert!(result.scope.is_subset_of(&c.scope));
         assert!(c.scope.is_subset_of(&result.scope));
+    }
+
+    // ── The glob-subsumption primitive every containment site calls ──
+    // Lives in this module rather than a new `#[cfg(kani)]` site in glob.rs
+    // because the divergence census (kani-divergence.toml) only shrinks.
+    use crate::glob::glob_subsumes;
+
+    /// **The component boundary holds for every input.** For any `narrow` of
+    /// up to four bytes over a small alphabet, if it is judged under `a/**`
+    /// then it IS `a` or begins with `a/` — a byte-prefix sibling (`ab`,
+    /// `ab/**`) is never accepted. This is the property a byte-prefix check
+    /// would violate, proved over the whole bounded input space rather than
+    /// the golden cases.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    #[kani::unwind(8)]
+    fn proof_glob_subsumes_respects_the_component_boundary() {
+        let bytes: [u8; 4] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= 4);
+        for b in &bytes[..len] {
+            kani::assume(*b == b'a' || *b == b'b' || *b == b'/' || *b == b'*');
+        }
+        let narrow = core::str::from_utf8(&bytes[..len]).unwrap();
+        if glob_subsumes(narrow, "a/**") {
+            assert!(narrow == "a" || narrow.starts_with("a/"));
+        }
+        // Reflexive on the same space.
+        assert!(glob_subsumes(narrow, narrow));
     }
 }
 

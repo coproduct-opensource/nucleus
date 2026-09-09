@@ -104,11 +104,23 @@ impl PathLattice {
         }
     }
 
-    /// Meet operation: intersection of allowed, union of blocked.
+    /// Meet operation: the paths allowed by BOTH, union of blocked.
+    ///
+    /// "Allowed by both" is decided on what the patterns MEAN, not on the
+    /// pattern strings: `src/**` ⊓ `src/foo/**` is `src/foo/**`. It used to
+    /// be the string intersection, which is empty — NOTHING — so a child that
+    /// delegated itself a narrower path set than its parent's was left able
+    /// to write nowhere, and the only way to attenuate was to copy the
+    /// parent's list verbatim. The meet keeps every pattern of either side
+    /// that is under some pattern of the other side
+    /// ([`portcullis_core::glob::glob_subsumes`]); each kept pattern is
+    /// therefore allowed by both, and disjoint restrictions still meet to
+    /// NOTHING. Commutative and idempotent by construction (property-tested).
     ///
     /// The work_dir is taken from the first lattice if set, otherwise from the second.
     /// If both have work_dirs, the more restrictive (shorter prefix) is used.
     pub fn meet(&self, other: &Self) -> Self {
+        use portcullis_core::glob::glob_subsumes;
         let allowed = if self.allowed.is_empty() && other.allowed.is_empty() {
             HashSet::new()
         } else if self.allowed.is_empty() {
@@ -116,9 +128,21 @@ impl PathLattice {
         } else if other.allowed.is_empty() {
             self.allowed.clone()
         } else {
+            let under = |a: &HashSet<String>, b: &HashSet<String>| {
+                a.iter()
+                    .filter(|p| b.iter().any(|q| glob_subsumes(p, q)))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            let mut inter: HashSet<String> = under(&self.allowed, &other.allowed)
+                .into_iter()
+                .chain(under(&other.allowed, &self.allowed))
+                .collect();
+            // NOTHING is absorbing: it is a sentinel, not a pattern.
+            if self.allows_nothing() || other.allows_nothing() {
+                inter.clear();
+            }
             // Disjoint restricted sets meet to NOTHING, not to "unrestricted".
-            let inter: HashSet<String> =
-                self.allowed.intersection(&other.allowed).cloned().collect();
             if inter.is_empty() {
                 HashSet::from([NOTHING_ALLOWED.to_string()])
             } else {
@@ -356,7 +380,13 @@ impl PathLattice {
         } else if self.allowed.is_empty() {
             other.allowed.is_empty()
         } else {
-            other.allowed.is_empty() || self.allowed.is_subset(&other.allowed)
+            // Every allowed pattern of `self` is under some pattern of
+            // `other` — semantically, the same relation `meet` is built on.
+            other.allowed.is_empty()
+                || portcullis_core::glob::all_subsumed(
+                    self.allowed.iter().map(String::as_str),
+                    other.allowed.iter().map(String::as_str),
+                )
         };
         let blocked_ok = other.blocked.is_subset(&self.blocked);
         allowed_ok && blocked_ok

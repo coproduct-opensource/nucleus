@@ -109,6 +109,7 @@ pub mod enterprise;
 #[cfg(feature = "envelope")]
 pub mod envelope;
 pub mod flow_algebra;
+pub mod glob;
 pub mod hash_types;
 pub mod labeled;
 #[cfg(feature = "serde")]
