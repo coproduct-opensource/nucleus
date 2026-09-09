@@ -253,3 +253,7 @@ are unverified, not passes. The completed core run reported 18 verified and
 The three remaining source harnesses are behind the `envelope` feature;
 the full nightly lane enables that feature explicitly. The Linux nightly shards use a 600-second budget
 and still require execution evidence before #2581 can be considered resolved.
+
+With `envelope` enabled, all three envelope harnesses verified locally with
+unwind bound 16 and unwinding assertions enabled. The explicit per-harness
+bound prevents unbounded expansion of recursive error cleanup.
