@@ -7,6 +7,9 @@ on:
       - "crates/portcullis/src/**"
       - "crates/ck-*/src/**"
       - "crates/nucleus-ifc-kernel/src/**"
+      - "crates/portcullis-core/**"
+      - "crates/nucleus-econ-kernels/**"
+      - "scripts/kani-bounded.sh"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   pull_request:
@@ -14,6 +17,9 @@ on:
       - "crates/portcullis/src/**"
       - "crates/ck-*/src/**"
       - "crates/nucleus-ifc-kernel/src/**"
+      - "crates/portcullis-core/**"
+      - "crates/nucleus-econ-kernels/**"
+      - "scripts/kani-bounded.sh"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   # Bare, unfiltered: the merge queue's own re-validation of the fast-tier
@@ -365,3 +371,100 @@ jobs:
             echo "- **Per-harness results:** see the Run Kani step log."
             echo "- **Solver:** CaDiCaL"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  kani-core-fast:
+    name: Kani (portcullis-core fast)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
+      - name: Verify named harnesses within memory and time budgets
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          kani-version: "0.67.0"
+          command: bash scripts/kani-bounded.sh
+          args: >-
+            -p portcullis-core --solver cadical
+            -Z unstable-options --harness-timeout 120s
+            --harness proof_ifc_join_commutative
+            --harness proof_ifc_join_associative
+            --harness proof_ifc_join_idempotent
+            --harness proof_ifc_meet_commutative
+            --harness proof_ifc_meet_idempotent
+
+  kani-core-full:
+    name: "Core full: ${{ matrix.harness }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        harness:
+          - proof_declassification_only_weakens_restrictions
+          - proof_delegation_chain_monotone
+          - proof_narrow_idempotent
+          - proof_narrow_monotone
+          - proof_ai_derived_never_verified_ready_without_witness
+          - proof_verified_lane_implies_witness_or_deterministic
+          - proof_verified_write_requires_witness
+          - proof_derivation_join_monotone
+          - proof_derivation_no_silent_cleansing
+          - proof_ifc_absorption_join_meet
+          - proof_ifc_absorption_meet_join
+          - proof_ifc_bottom_join_identity
+          - proof_ifc_join_associative
+          - proof_ifc_join_commutative
+          - proof_ifc_join_idempotent
+          - proof_ifc_leq_consistent_with_join
+          - proof_ifc_meet_associative
+          - proof_ifc_meet_commutative
+          - proof_ifc_meet_idempotent
+          - proof_ifc_top_meet_identity
+          - proof_directive_from_transitive_rejected
+          - proof_empty_capabilities_rejected
+          - proof_remote_unlabeled_rejected
+          - proof_safe_local_admitted
+          - proof_trusted_from_remote_rejected
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
+      - name: Verify named harnesses within memory and time budgets
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          kani-version: "0.67.0"
+          command: bash scripts/kani-bounded.sh
+          args: >-
+            -p portcullis-core --solver cadical
+            -Z unstable-options --harness-timeout 600s
+            --harness ${{ matrix.harness }}
+
+  kani-econ-full:
+    name: Kani (welfare sum overflow)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
+      - name: Verify named harnesses within memory and time budgets
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          kani-version: "0.67.0"
+          command: bash scripts/kani-bounded.sh
+          args: >-
+            -p nucleus-econ-kernels --solver cadical
+            -Z unstable-options --harness-timeout 600s
+            --harness welfare_sum_bounded

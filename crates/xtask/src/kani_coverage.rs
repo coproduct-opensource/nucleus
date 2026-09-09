@@ -17,9 +17,22 @@ struct Harness {
 }
 
 #[derive(Default)]
-struct Proofs(Vec<String>);
+struct Proofs(Vec<String>, Vec<String>);
 
 impl<'ast> Visit<'ast> for Proofs {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        for attr in &item.attrs {
+            if attr.path().is_ident("path")
+                && let syn::Meta::NameValue(value) = &attr.meta
+                && let syn::Expr::Lit(value) = &value.value
+                && let syn::Lit::Str(path) = &value.lit
+            {
+                self.1.push(path.value());
+            }
+        }
+        syn::visit::visit_item_mod(self, item);
+    }
+
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
         if item.attrs.iter().any(|a| {
             let segments: Vec<_> = a
@@ -53,6 +66,7 @@ fn rust_files(path: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<()> {
 
 fn sources(root: &Path) -> Result<Vec<Harness>> {
     let mut harnesses = Vec::new();
+    let mut linked_sources = BTreeSet::new();
     for entry in std::fs::read_dir(root.join("crates"))? {
         let path = entry?.path();
         if !path.join("Cargo.toml").exists() {
@@ -72,6 +86,14 @@ fn sources(root: &Path) -> Result<Vec<Harness>> {
                     .with_context(|| format!("parsing {}", file.display()))?;
                 let mut proofs = Proofs::default();
                 proofs.visit_file(&ast);
+                if directory == "src" {
+                    for linked in &proofs.1 {
+                        let linked = file.parent().context("source has no parent")?.join(linked);
+                        if linked.exists() {
+                            linked_sources.insert(linked.canonicalize()?);
+                        }
+                    }
+                }
                 for name in proofs.0 {
                     harnesses.push(Harness {
                         key: format!("{}::{name}", file.strip_prefix(root)?.display()),
@@ -82,6 +104,13 @@ fn sources(root: &Path) -> Result<Vec<Harness>> {
                 }
             }
         }
+    }
+    for harness in &mut harnesses {
+        let (file, _) = harness
+            .key
+            .rsplit_once("::")
+            .context("invalid harness key")?;
+        harness.source_target |= linked_sources.contains(&root.join(file).canonicalize()?);
     }
     harnesses.sort_by(|a, b| a.key.cmp(&b.key));
     if harnesses.is_empty() {
@@ -158,6 +187,14 @@ fn workflow_lanes(path: &str, workflow: &Value) -> Result<Vec<Lane>> {
                     .is_some_and(|s| s.starts_with("model-checking/kani-github-action@"))
             {
                 continue;
+            }
+            if let Some(command) = step["with"]["command"].as_str()
+                && !matches!(
+                    command,
+                    "cargo-kani" | "cargo kani" | "bash scripts/kani-bounded.sh"
+                )
+            {
+                bail!("{path}: unsupported Kani action command {command}");
             }
             let args = step["with"]["args"]
                 .as_str()
@@ -279,6 +316,10 @@ mod tests {
         let mut proofs = Proofs::default();
         proofs.visit_file(&file);
         assert_eq!(proofs.0, ["actual"]);
+        let file = syn::parse_file("#[cfg(kani)] #[path = \"../proofs/overflow.rs\"] mod proofs;")
+            .unwrap();
+        proofs.visit_file(&file);
+        assert_eq!(proofs.1, ["../proofs/overflow.rs"]);
     }
 
     #[test]
@@ -308,6 +349,9 @@ mod tests {
         let lanes = workflow_lanes("ci", &yaml).unwrap();
         assert_eq!(lanes.len(), 2);
         assert_eq!(lanes[1].selectors, ["proof_b"]);
+        let mut non_verifier = yaml.clone();
+        non_verifier["jobs"]["proof"]["steps"][0]["with"]["command"] = Value::String("echo".into());
+        assert!(workflow_lanes("ci", &non_verifier).is_err());
         let mut disabled_yaml = yaml;
         disabled_yaml["jobs"]["proof"]["if"] = Value::Bool(false);
         assert!(workflow_lanes("ci", &disabled_yaml).unwrap().is_empty());
