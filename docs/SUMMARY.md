@@ -1,7 +1,7 @@
 # Summary
 
 - [Overview](index.md)
-- [North Star: Formally Verified Runtime](north-star.md)
+- [North Star](north-star.md)
 - [Quickstart]()
   - [Local (Linux)](quickstart/local.md)
   - [macOS](quickstart/macos.md)

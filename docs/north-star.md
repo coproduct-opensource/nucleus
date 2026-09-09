@@ -1,5 +1,83 @@
 # Nucleus North Star
 
+## The North Star
+
+**Nucleus should continuously expand the frontier of safely delegatable machine
+agency: any model should be able to do as much useful real-world work as its
+principal is willing to authorize, while being structurally incapable of
+exceeding that authorization.**
+
+Read it as five clauses, each with its own ledger rows below:
+
+1. **"any model"** — the boundary is beneath the agent, not a contract with one
+   vendor's CLI; a second model, framework, or non-LLM worker gets the same
+   guarantees, and that is *measured*, not asserted.
+2. **"as much useful real-world work"** — the set of effects a principal can
+   hand over (files, shell, network, git, credentialed APIs, subagents) grows,
+   and the friction of handing them over shrinks.
+3. **"as its principal is willing to authorize"** — the principal can say
+   exactly what they mean (scope, time, budget, counterparties, approval
+   paths), that authorization is attenuated and delegated offline-verifiably,
+   approvals bind to actions and name their approver, and revocation reaches
+   every carrier ever issued.
+4. **"structurally incapable of exceeding that authorization"** — no bypass,
+   no heuristic on the critical path, a small enumerated trusted base, and a
+   proof that the checker that ships is the checker that was proved. The
+   confidentiality sentence and its C-rows below are this clause's
+   sub-ledger.
+5. **"continuously expand the frontier"** — the safely-delegatable envelope is
+   a *number* the tree recomputes on every change and pins in both
+   directions, so utility cannot be bought by opening sinks and safety cannot
+   be bought by shrinking the corpus.
+
+What the sentence does **not** claim travels with it: it excludes timing,
+cache, and other microarchitectural channels; availability and
+resource-contention channels; and any statement about model *behaviour* —
+the claim is about the enforcement boundary, not the agent. LLM spend is the
+orchestrator's to meter; nucleus meters only what it mediates.
+
+The gap analysis that produced this sentence's ledger — six subsystem maps,
+five state-of-the-art surveys, five per-clause gap analyses each checked by a
+skeptical verifier, and a sequenced roadmap — is in
+`reviews/north-star-frontier/` (`SYNTHESIS.md` is the index). Every NOT-YET
+row below names the roadmap item that earns it.
+
+#### Frontier ledger
+
+The same machine-checked ledger discipline as the confidentiality table
+further down (`scripts/check-north-star-ledger.sh`, second call; population
+pinned in `scripts/north-star-frontier-ratchet.txt`). Two statuses are
+borrowed from gatehouse's assurance ledger: **DECIDED** — a decision procedure
+runs on every change over the real tree, with a founding-defect fixture;
+**RATCHETED** — a number recomputed from the tree on every change, pinned in
+both directions in the same change that moves it, with a named `_GUARD`
+partner and the non-vacuity rule that a number measured only on green is
+vacuous.
+
+| # | Clause (verbatim from the sentence) | Status | Evidence | Falsified by |
+| --- | --- | --- | --- | --- |
+| F1 | "any model" — a second vendor, an open-weight model behind a generic client, and a non-LLM worker each run in-guest and every published metric is reported per model (`models_covered` grow-only) | NOT-YET | `crates/nucleus-tool-proxy/tests/red_team_harness.rs#LLM_API_URL`, `.github/workflows/red-team-agent.yml`, `reviews/north-star-frontier/SYNTHESIS.md` (N-26, Q-4) | — |
+| F2 | "any model" — the agent process holds no ambient host authority in any shipped tier: the boundary is the pod, not one CLI's disallow-list and hook contract | NOT-YET | `crates/nucleus-cli/src/constants.rs#DISALLOWED_BUILTIN_TOOLS`, `crates/nucleus-spec/src/lib.rs#pub struct WorkloadSpec`, `reviews/north-star-frontier/SYNTHESIS.md` (N-01, Q-1) | — |
+| F3 | "as much useful real-world work" — the default exec tool round-trips over the wire: the MCP face and the proxy agree on the request shape, and a contract test drives every advertised tool | NOT-YET | `crates/nucleus-mcp/src/main.rs#struct RunRequest`, `crates/nucleus-tool-proxy/src/main.rs#struct RunRequest`, `reviews/north-star-frontier/SYNTHESIS.md` (N-03, PR-1) | — |
+| F4 | "as much useful real-world work" — a delegation matrix (profile × operation × tier) is published and grow-only, each row showing its denied variant refusing by policy | NOT-YET | `docs/perf/RUBRIC-LEDGER.md`, `crates/nucleus-cli/src/profiles.rs`, `reviews/north-star-frontier/SYNTHESIS.md` (N-28) | — |
+| F5 | "as much useful real-world work" — credentialed effects (git push, pull request, cloud API) are reachable from the agent through the broker with method/path scoping and a receipt | NOT-YET | `crates/nucleus-tool-proxy/src/egress.rs`, `crates/nucleus-spec/src/lib.rs#CredentialedEgressSpec`, `reviews/north-star-frontier/SYNTHESIS.md` (N-04, Q-3) | — |
+| F6 | "as its principal is willing to authorize" — an approval is consulted on the decision path, consumed exactly once, and recorded under the key that verified it, on every auth tier | NOT-YET | `crates/nucleus-tool-proxy/src/mediation.rs#RequiresApproval`, `crates/nucleus-tool-proxy/src/main.rs#approve_operation`, `crates/nucleus-tool-proxy/src/auth.rs#select_auth_tier`, `reviews/north-star-frontier/SYNTHESIS.md` (N-05, N-06, PR-2) | — |
+| F7 | "as its principal is willing to authorize" — per-target scope (paths, hosts, git refs) is authored from the profile on every mint path, and one semantic glob-subsumption primitive decides containment everywhere | NOT-YET | `crates/nucleus-node/src/pod_authority.rs#SinkScope::unrestricted`, `crates/nucleus-node/src/session_mint.rs#allowed_paths`, `crates/portcullis/src/path.rs#pub fn meet`, `reviews/north-star-frontier/SYNTHESIS.md` (N-09, PR-3) | — |
+| F8 | "as its principal is willing to authorize" — revocation reaches every issued offline-verifiable carrier: a revoked prefix fails every descendant | NOT-YET | `crates/portcullis/src/certificate.rs#pub fn verify_certificate`, `reviews/north-star-frontier/SYNTHESIS.md` (N-07, Q-2) | — |
+| F9 | "as its principal is willing to authorize" — delegated authority only tightens along the chain: the per-hop step of `chain_attenuates` is Aeneas-extracted and its monotonicity is a kernel-checked theorem | PROVED | `crates/portcullis-core/lean/CertChainMonotoneExtracted.lean`, `crates/portcullis-core/src/certchain.rs#chain_attenuates` | `.github/workflows/portcullis-core-proven-lean.yml` |
+| F10 | "structurally incapable of exceeding that authorization" — no consequential sink is reachable from the effect API without discharging an `Authority` (Tier-A total mediation over the closed sink enum) | PROVED | `crates/portcullis-core/lean/MediationScopeExtracted.lean#no_sink_reachable_without_discharge`, `crates/portcullis-effects/src/runtime.rs` | `scripts/check-mediation.sh` |
+| F11 | "structurally incapable of exceeding that authorization" — the confidentiality sub-ledger (C1–C9, below) carries no NOT-YET row | NOT-YET | `scripts/north-star-ledger-ratchet.txt#NOT_YET`, `docs/cross-pod-view.md` (C2), `crates/nucleus-identity/src/attestation.rs` (C9) | — |
+| F12 | "structurally incapable of exceeding that authorization" — the fine-grained decision point (flow graph, taint ceiling, budget, egress allowlist) survives compromise of the guest it polices | NOT-YET | `crates/nucleus-guest-init/src/main.rs`, `crates/nucleus-node/src/broker_perform.rs`, `reviews/north-star-frontier/SYNTHESIS.md` (N-02, L-1) | — |
+| F13 | "structurally incapable of exceeding that authorization" — Tier 1 (`nucleus run --local`) is a principal boundary: distinct uid, no shared secret readable by the agent, Landlock/seccomp on children | NOT-YET | `crates/nucleus/src/hardening.rs`, `reviews/north-star-frontier/SYNTHESIS.md` (N-19) | — |
+| F14 | "continuously expand the frontier" — utility under authorization is measured per canonical profile under that profile's lattice (`frontier.json`), with `corpus_steps` and `denied_at_exfil_vector` as guards that may not fall | NOT-YET | `crates/nucleus-flow-replay/src/lib.rs#ReplaySummary`, `reviews/north-star-frontier/SYNTHESIS.md` (N-27, PR-4) | — |
+| F15 | "continuously expand the frontier" — the exemplar scoreboard is a required merge-queue check whose baselines are pinned in the same change that moves them | NOT-YET | `crates/xtask/src/scoreboard.rs#HIGHER`, `ci/required-checks.txt`, `reviews/north-star-frontier/SYNTHESIS.md` (N-30, PR-4) | — |
+| F16 | "continuously expand the frontier" — the proof counts this document publishes are recomputed from the tree on every change and a mismatch is red | TESTED | `scripts/formal-numbers.sh#expect` | `scripts/formal-numbers.sh` |
+
+*Clause fragments quote the sentence above; the ledger gate checks they do.
+Several rows share a fragment because they earn it separately — the shape
+gatehouse's ledger uses for its A-2/A-3 and A-12/A-13 pairs.*
+
+
 ## Vision
 
 **Nucleus makes "agent jailbreak → silent damage" provably impossible by
@@ -515,7 +593,7 @@ Immediate felt safety:
 - Approval prompts for risky actions (uninhabitable state triggers)
 - Same policy language as Tier 2
 
-### Tier 2: `nucleus run --vm`
+### Tier 2: `nucleus run` (node-backed pod; `nucleus setup` provisions it)
 
 Hard containment:
 
@@ -536,7 +614,7 @@ MCP is the de facto agent-tool protocol. Nucleus is an MCP-aware mediator:
 - `nucleus run` accepts MCP server configs and proxies them through the policy
   engine
 - Any MCP client gets enforcement for free — no SDK adoption required
-- **Current state:** `nucleus-mcp` crate provides Claude Code ↔ tool-proxy
+- **Current state:** `nucleus-mcp` crate provides vendor-CLI ↔ tool-proxy
   bridging. Extend to general MCP mediation.
 
 ## The Python SDK
@@ -687,7 +765,7 @@ Each rung is shippable independently.
 
 ### Rung 1 — Kani + Lean Proofs (in progress)
 
-- 113 Kani harnesses + ~277 Lean theorems verified in CI (minimum gate)
+- Kani harnesses + Lean theorems verified in CI (minimum gate); the live counts are in the [Verification North Star](#verification-north-star-verify-rust-std-equivalence) table below, recounted by `scripts/formal-numbers.sh`
 - Covers: lattice laws, uninhabitable state operator, Heyting algebra, S4 modal
   operators, exposure monoid, graded monad laws, Galois connections, fail-closed
   auth, capability coverage, budget monotonicity, delegation ceiling
@@ -723,6 +801,49 @@ Each rung is shippable independently.
 The moonshot is not "prove all the code." The moonshot is: **make the proven
 kernel tiny enough that proving it is realistic.** This is how seL4 thinking
 wins: reduce the surface you must trust.
+
+## Verification North Star: verify-rust-std Equivalence
+
+**Target:** Reach parity with AWS's [verify-rust-std](https://github.com/model-checking/verify-rust-std) effort in verification density — measured by proof-to-code ratio, not absolute count.
+
+### Current State (September 2026)
+
+Verus was removed from the workspace (see `FORMAL_METHODS.md`); its role —
+unbounded algebraic properties over the enforcement core — is now Lean 4 over
+Aeneas-extracted Rust. The earlier "297 Verus VCs" line in this file was stale
+for months; the numbers below are recomputed from the tree
+(`grep -rc '#\[kani::proof\]' crates`).
+
+| Metric | Count | Where |
+|---|---|---|
+| Kani BMC harnesses | 118 | portcullis 68, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1 (`scripts/formal-numbers.sh`) |
+| Lean 4 theorems over **extracted** Rust | ~280 in the security core | IFC noninterference family, ck-policy gate, `chain_effective_authority`, certificate-chain monotonicity (`chain_attenuates`, #2451); `decide_pure` is proved over a hand model (`DecidePureProofs.lean`), not extracted |
+| Open `sorry` holes | 23 across 10 files | research tier only (`CONJECTURES.md`); the proven tier is `sorry`-free and CI-gated |
+| Budget conservation | Kani E1/E2 over the shipped `LedgerCore` | `Σ child allocations + consumed ≤ max` |
+
+### Targets
+
+| Milestone | Kani harnesses | Extracted Lean | What |
+|---|---|---|---|
+| **Current** | 116 | ~277 theorems | Lattice laws, BMC safety, IFC noninterference, budget conservation |
+| **T1** | 150 | verify_certificate extracted (#2451) | Prove the certificate chain's monotonicity soundness over the real code |
+| **T2** | 200 | identity/card verification extracted (#2452) | Reconciler convergence, executor pool fairness |
+| **T3: verify-rust-std density** | — | — | Proof-to-code ratio ≥ AWS std lib effort |
+
+### Credible Claims (honest framing)
+
+- **"Most formally verified AI agent permission system"** — true today, zero competition
+- **"Lean proofs over Aeneas-extracted production Rust, regenerated on every PR"** — the IFC core, the amendment gate, and chain attenuation; not hand-written models of the code (the decision function `decide_pure` is still a hand model — see the table)
+- **"Only AI orchestrator with runtime conservation laws backed by formal verification"** — Gas Town, Agent Sandbox, Kagent have zero
+- **NOT "most formally verified OSS project"** — seL4 (200K lines Isabelle proof) and CompCert are orders of magnitude ahead in absolute terms
+- **NOT "uses both Verus and Kani"** — Verus is gone; do not repeat the old claim
+
+### Strategy
+
+1. **Maximize proof-to-code ratio** on the enforcement boundary (portcullis), not on application logic
+2. **Automate harness generation** — follow Hifitime's pattern of auto-generating Kani harnesses for new functions
+3. **Lean over extracted Rust for algebraic properties** (lattice laws, monotonicity, noninterference), **Kani for safety** (no panics, bounded behavior)
+4. **Conservation laws bridge the gap** — runtime enforcement of invariants that are too expensive to statically verify
 
 ## Supply Chain Integrity (Exposure Tracking Use Case)
 
@@ -782,7 +903,7 @@ PR-sized increments that ship value while converging on the moonshot:
 | PR5 | Executable spec + model checking | Lock semantics early, prevent drift |
 | PR6 | Proofs of the core invariants | Monotonicity + source-sink safety |
 | PR7 | `nucleus observe` | Progressive discovery mode, formal policy output |
-| PR8 | MCP mediation layer | General MCP interposition, not just Claude Code bridging |
+| PR8 | MCP mediation layer | General MCP interposition, not just one vendor CLI's bridging |
 | PR9 | VM mode hardening | Shrink ambient authority further, pre-warmed pools, <500ms target |
 | PR10 | Attenuation tokens | Delegation that can only reduce power, "no escalation" cryptographically natural |
 

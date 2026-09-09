@@ -1,0 +1,25 @@
+# North Star FRONTIER ledger population pin — read by
+# scripts/check-north-star-ledger.sh (second call), the same two-direction
+# convention as north-star-ledger-ratchet.txt:
+#   CLAUSES may only GROW — a row leaving the ledger is either the sentence
+#     weakened (an owner's call, made in the open) or a row deleted to dodge
+#     a red, which is the exact move a shrinkable count pays.
+#   NOT_YET may only SHRINK — and the pin is lowered in the same change that
+#     earns the promotion, so every promotion is on the record with its
+#     evidence handle beside it. The one legitimate RAISE is a demotion.
+#   DORMANT_GATES pins the cross-declaration guard's domain (scripts/
+#     check-*dormant*.sh), so the guard cannot go idle unnoticed.
+#
+# 2026-09-09: created at 16 rows / 13 NOT-YET. The frontier sentence
+#   ("Nucleus should continuously expand the frontier of safely delegatable
+#   machine agency …") was adopted as the North Star and its five clauses
+#   were ledgered from the gap analysis in reviews/north-star-frontier/.
+#   Two rows are PROVED on day one (F9 chain attenuation, F10 Tier-A total
+#   mediation) and one is TESTED (F16 formal-numbers recount); everything
+#   else is NOT-YET by construction — the ledger exists so that promotions
+#   are earned one falsifier at a time, not asserted. Each NOT-YET row names
+#   the roadmap item that earns it (reviews/north-star-frontier/SYNTHESIS.md
+#   §4).
+CLAUSES=16
+NOT_YET=13
+DORMANT_GATES=0

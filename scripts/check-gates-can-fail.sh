@@ -270,6 +270,24 @@ perturb_ledger_restore_false_row() {
     mv "$f.gate-tmp" "$f"
 }
 
+perturb_frontier_promote_without_evidence() {
+    # Promote the first NOT-YET frontier row to PROVED without lowering the
+    # pin and without naming a falsifier — the two-way ratchet must red on the
+    # NOT-YET count falling below its pin AND on an earned status with no gate.
+    local f="$1"
+    if ! awk '
+        !done && /^\| F[0-9]+ \|/ && / \| NOT-YET \| / { sub(/ \| NOT-YET \| /, " | PROVED | "); done = 1 }
+        { print }
+        END { exit done ? 0 : 1 }
+    ' "$f" > "$f.gate-tmp"; then
+        rm -f "$f.gate-tmp"
+        echo "  ERROR: no NOT-YET '| F<n> |' row found in $f;"
+        echo "         the frontier ledger has no NOT-YET row left and this perturbation must be updated."
+        return 1
+    fi
+    mv "$f.gate-tmp" "$f"
+}
+
 perturb_twin_paths_ignore() {
     # Drop one entry from the noop twin's paths-ignore. The lists must be
     # set-equal to the real twin's paths (ci-spec I1); a PR touching the
@@ -462,6 +480,9 @@ probe check-declassify-governor-keys-sealed.sh "" crates/nucleus-tool-proxy/src/
 probe check-north-star-ledger.sh "" docs/north-star.md \
       "the original overclaiming declassification status row restored" \
       perturb_ledger_restore_false_row
+probe check-north-star-ledger.sh "" docs/north-star.md \
+      "a frontier NOT-YET row promoted with no falsifier and no pin change" \
+      perturb_frontier_promote_without_evidence
 probe check-c1-inbound-fences.sh "" crates/nucleus-tool-proxy/src/workload.rs \
       "the reserved-namespace fence D neutered" \
       perturb_c1_inbound_fence

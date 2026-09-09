@@ -10,7 +10,7 @@ on:
     branches: ["main"]
     paths:
       - "FORMAL_METHODS.md"
-      - "NORTH_STAR.md"
+      - "docs/north-star.md"
       - "crates/portcullis-core/lean/CONJECTURES.md"
       - "crates/**/*.lean"
       - "crates/**/*.rs"
@@ -19,7 +19,7 @@ on:
   pull_request:
     paths:
       - "FORMAL_METHODS.md"
-      - "NORTH_STAR.md"
+      - "docs/north-star.md"
       - "crates/portcullis-core/lean/CONJECTURES.md"
       - "crates/**/*.lean"
       - "crates/**/*.rs"
