@@ -94,7 +94,7 @@ quickstart-boot.yml::boot-a-real-pod::Delivery conformance (observed inventory v
 red-team-agent.yml::live-adversary::Anti-vacuity — the lane resolved to a known state (never silent-green) | UNCOVERED: no falsifier yet
 release.yml::dry-run-assert::Every build job must have succeeded | UNCOVERED: no falsifier yet
 release.yml::dry-run-assert::A rootfs image exists for every architecture | UNCOVERED: no falsifier yet
-research-lean-build.yml::research-lean-build::Sorry ratchet (must not exceed baseline) | UNCOVERED: no falsifier yet
+research-lean-build.yml::research-sorry-ratchet::Sorry ratchet (must not exceed baseline) | UNCOVERED: no falsifier yet
 rubric-lean.yml::rubric-lean::Ban sorry / admit / native_decide / sorryAx in rubric Lean | UNCOVERED: no falsifier yet
 scan.yml::scan::Scan example PodSpecs | UNCOVERED: no falsifier yet
 scan.yml::scan-action::Verify verdict | UNCOVERED: no falsifier yet

@@ -3,7 +3,8 @@ name = "nucleus-econ-kernels"
 license.workspace = true
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# Kani 0.67 bundles rustc 1.93; this crate is in the welfare-proof dependency closure.
+rust-version = "1.93"
 authors.workspace = true
 repository.workspace = true
 description = "Integer-only economic kernels (VCG, Ring 0 budget, Lagrangian) lifted from sibling repos with per-file provenance comments. No f64 — see docs/ECON-PRECISION.md."

@@ -1,0 +1,16 @@
+# The worker image's base: docker/Dockerfile.runner, the SAME tool set the k3s scale set runs,
+# built for x86_64. It exists as its own config because the repository root holds an unrelated
+# fly.toml (nucleus-ctf) whose [build] wins over a --dockerfile flag — the build then silently
+# builds the wrong image.
+#
+#   cd <repo root>
+#   fly deploy . --config ci/fly-runner/base.toml --image-label base-<n> \
+#     --build-only --push --remote-only --yes
+#
+# Then put the digest it prints in ci/fly-runner/Dockerfile's BASE_IMAGE and build the worker.
+# This is never deployed: the app's machines are created by the manager, not by a release.
+app = "nucleus-fly-build"
+primary_region = "iad"
+
+[build]
+  dockerfile = "../../docker/Dockerfile.runner"

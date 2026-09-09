@@ -384,6 +384,11 @@ pub enum CertificateDelegationError {
     /// lattice has none: the request asked for the surface marker at `Never`
     /// (#2485). The dimension can be narrowed, never shed.
     ToolSurfaceDropped,
+    /// The parent certificate carries a granted effect set and the child's
+    /// effective lattice has none: the request asked for the effect marker at
+    /// `Never` (ADR 0004). Like the tool surface, the dimension can be
+    /// narrowed, never shed.
+    EffectSurfaceDropped,
     /// The requested compartment is above the parent's, or the child sheds
     /// the compartment dimension (#2484). Compartments only go down a chain.
     #[cfg(not(kani))]
@@ -405,6 +410,10 @@ impl fmt::Display for CertificateDelegationError {
             Self::ToolSurfaceDropped => write!(
                 f,
                 "Requested lattice sheds the parent's tool surface (marker at Never)"
+            ),
+            Self::EffectSurfaceDropped => write!(
+                f,
+                "Requested lattice sheds the parent's granted effects (marker at Never)"
             ),
             #[cfg(not(kani))]
             Self::Compartment(e) => write!(f, "compartment: {e}"),
@@ -949,6 +958,12 @@ impl LatticeCertificate {
         // so the chain meet below cannot exceed it.
         #[cfg(not(kani))]
         {
+            // The granted effect set (ADR 0004): same rules as the tool
+            // surface, a silent request inherits, a named one narrows.
+            crate::effect_surface::inherit_effects(
+                &mut requested.capabilities,
+                &parent_permissions.capabilities,
+            );
             crate::cert_compartment::inherit_compartment(
                 &mut requested.capabilities,
                 &parent_permissions.capabilities,
@@ -968,18 +983,25 @@ impl LatticeCertificate {
         let (effective_permissions, justification) =
             meet_with_justification(parent_permissions, requested);
         #[cfg(not(kani))]
-        if !crate::tool_surface::surface_preserved(
-            &effective_permissions.capabilities,
-            &parent_permissions.capabilities,
-        ) {
-            return Err(CertificateDelegationError::ToolSurfaceDropped);
+        {
+            if !crate::tool_surface::surface_preserved(
+                &effective_permissions.capabilities,
+                &parent_permissions.capabilities,
+            ) {
+                return Err(CertificateDelegationError::ToolSurfaceDropped);
+            }
+            if !crate::effect_surface::effects_preserved(
+                &effective_permissions.capabilities,
+                &parent_permissions.capabilities,
+            ) {
+                return Err(CertificateDelegationError::EffectSurfaceDropped);
+            }
+            crate::cert_compartment::check_effective(
+                &effective_permissions.capabilities,
+                &parent_permissions.capabilities,
+            )
+            .map_err(CertificateDelegationError::Compartment)?;
         }
-        #[cfg(not(kani))]
-        crate::cert_compartment::check_effective(
-            &effective_permissions.capabilities,
-            &parent_permissions.capabilities,
-        )
-        .map_err(CertificateDelegationError::Compartment)?;
 
         // Get from_identity
         let from_identity = if self.blocks.is_empty() {

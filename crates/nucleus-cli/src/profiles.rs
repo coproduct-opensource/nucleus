@@ -4,12 +4,40 @@
 //! 1. **Canonical YAML profiles** from [`portcullis::profile::ProfileRegistry`]
 //!    (10 profiles with uninhabitable_state analysis, descriptions, budgets, and time limits)
 //! 2. **Short aliases** that map to canonical names (e.g., "review" → "code-review")
-//! 3. **Legacy profiles** built into [`PermissionLattice`] (for profiles not yet
+//! 3. **User profiles** under `~/.config/nucleus/profiles/*.yaml` — what
+//!    `nucleus observe --grant … --narrow NAME --save` and the post-run
+//!    "save a narrower profile?" prompt write (ADR 0004, milestone 3)
+//! 4. **Legacy profiles** built into [`PermissionLattice`] (for profiles not yet
 //!    migrated to YAML)
+//!
+//! A user profile may carry a canonical name only if it is **not wider**
+//! than the canonical one (`leq`): learning from a run narrows, and a file
+//! on disk cannot quietly widen what `--ceiling codegen` means. A wider
+//! shadow is ignored with a warning.
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use portcullis::PermissionLattice;
 use portcullis::profile::ProfileRegistry;
+
+use crate::config::nucleus_dir;
+
+/// What a profile name may look like.
+pub const PROFILE_NAME_HELP: &str = "a profile name is lowercase letters, digits and hyphens";
+
+/// `[a-z0-9-]+`, so a name is a file name and a CLI argument and nothing else.
+pub fn is_valid_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Where user profiles live.
+pub fn user_profiles_dir() -> Result<PathBuf> {
+    Ok(nucleus_dir()?.join("profiles"))
+}
 
 /// Resolve a profile name to a [`PermissionLattice`].
 ///
@@ -18,19 +46,49 @@ pub fn resolve(name: &str) -> Option<PermissionLattice> {
     let registry = ProfileRegistry::default();
 
     // 1. Try canonical YAML profiles (handles hyphen/underscore normalization)
-    if let Ok(lattice) = registry.resolve(name) {
-        return Some(lattice);
+    let canonical = registry.resolve(name).ok().or_else(|| {
+        // 2. Try short aliases → canonical names
+        resolve_alias(name).and_then(|c| registry.resolve(c).ok())
+    });
+
+    // 3. A user profile: on its own, or as a narrower shadow of a canonical one.
+    if let Some(user) = resolve_user(name) {
+        return match canonical {
+            Some(c) if !user.leq(&c) => {
+                eprintln!(
+                    "nucleus: ignoring user profile '{name}': it is wider than the canonical \
+                     profile of the same name (a user profile may only narrow it)"
+                );
+                Some(c)
+            }
+            _ => Some(user),
+        };
+    }
+    if canonical.is_some() {
+        return canonical;
     }
 
-    // 2. Try short aliases → canonical names
-    if let Some(canonical) = resolve_alias(name)
-        && let Ok(lattice) = registry.resolve(canonical)
-    {
-        return Some(lattice);
-    }
-
-    // 3. Legacy profiles not (yet) in the registry
+    // 4. Legacy profiles not (yet) in the registry
     resolve_legacy(name)
+}
+
+/// The user's profile directory, if it exists and parses. A directory that
+/// fails to parse is reported once and treated as empty: a broken file must
+/// not make `--profile codegen` fail.
+pub fn user_registry() -> Option<ProfileRegistry> {
+    let dir = user_profiles_dir().ok()?;
+    match ProfileRegistry::load_from_dir(&dir) {
+        Ok(r) if !r.is_empty() => Some(r),
+        Ok(_) => None,
+        Err(e) => {
+            eprintln!("nucleus: user profiles in {} ignored: {e}", dir.display());
+            None
+        }
+    }
+}
+
+fn resolve_user(name: &str) -> Option<PermissionLattice> {
+    user_registry()?.resolve(name).ok()
 }
 
 /// Map short aliases to canonical profile names.
@@ -67,7 +125,7 @@ fn resolve_legacy(name: &str) -> Option<PermissionLattice> {
 /// List available profiles to stdout.
 ///
 /// Canonical profiles are listed first with descriptions from their YAML specs,
-/// followed by legacy profiles.
+/// then the user's own, then legacy profiles.
 pub fn list() -> Result<()> {
     let registry = ProfileRegistry::default();
 
@@ -82,6 +140,23 @@ pub fn list() -> Result<()> {
         if let Some(spec) = registry.get(name) {
             let desc = spec.description.as_deref().unwrap_or("(no description)");
             println!("  {:<18} {}", name, desc);
+        }
+    }
+
+    if let Some(user) = user_registry() {
+        println!();
+        println!(
+            "Your profiles ({}):",
+            user_profiles_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        );
+        println!();
+        for name in user.names() {
+            if let Some(spec) = user.get(name) {
+                let desc = spec.description.as_deref().unwrap_or("(no description)");
+                println!("  {:<18} {}", name, desc);
+            }
         }
     }
 
@@ -241,5 +316,14 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn profile_names_are_file_and_flag_safe() {
+        assert!(is_valid_profile_name("ci-tests"));
+        assert!(is_valid_profile_name("x1"));
+        assert!(!is_valid_profile_name(""));
+        assert!(!is_valid_profile_name("CI Tests"));
+        assert!(!is_valid_profile_name("../codegen"));
     }
 }

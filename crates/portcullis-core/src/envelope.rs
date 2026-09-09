@@ -1281,6 +1281,7 @@ mod kani_witness_requirement_proofs {
     /// must NOT be verified-ready. Equivalently: the only derivation class
     /// that can pass `is_verified_ready()` without a witness is Deterministic.
     #[kani::proof]
+    #[kani::unwind(16)]
     #[kani::solver(cadical)]
     fn proof_verified_write_requires_witness() {
         let d = any_derivation();
@@ -1301,6 +1302,7 @@ mod kani_witness_requirement_proofs {
     /// always false when `witness_bundle_id` is None. This is a stronger
     /// statement than DPI-3a for the AI-tainted subset.
     #[kani::proof]
+    #[kani::unwind(16)]
     #[kani::solver(cadical)]
     fn proof_ai_derived_never_verified_ready_without_witness() {
         let v: u8 = kani::any();
@@ -1325,6 +1327,7 @@ mod kani_witness_requirement_proofs {
     /// class must be Deterministic. This ties the storage lane gate to the
     /// envelope verification gate.
     #[kani::proof]
+    #[kani::unwind(16)]
     #[kani::solver(cadical)]
     fn proof_verified_lane_implies_witness_or_deterministic() {
         let d = any_derivation();

@@ -217,3 +217,55 @@ Until that lands, the honest claim is narrower than the one this file opened wit
 > Five harnesses verify, and they prove lattice arithmetic over bitmasks. Nothing that
 > touches the kernel's actual policy types has been verified, and the bridge between the
 > two representations is unverified too.
+
+## Named scheduling inventory
+
+`cargo xtask kani-coverage` matches Rust proof attributes to the package and
+harness selectors in Kani action jobs, including the explicit nightly matrix.
+A package-wide lane covers its `src` harnesses and explicit `#[path]` modules; unlinked proof files do
+not get coverage merely because the package is named. This static scheduling
+check does not establish compiler reachability, successful execution, or proof
+success. Those require the per-harness Kani logs. Disabled lanes do not count.
+
+Missing lanes must be recorded below as explicit debt, not verified coverage. A newly
+uncovered harness fails the gate unless it gets a lane or a named reason here;
+stale exceptions and exceptions for harnesses that now have lanes also fail.
+
+<!-- KANI-UNSCHEDULED:BEGIN -->
+| Harness | Why it is not scheduled |
+| --- | --- |
+<!-- KANI-UNSCHEDULED:END -->
+
+The previously unscheduled 25 portcullis-core harnesses now have individual
+nightly/manual shards, with five finite-domain lattice harnesses also selected
+on PRs and pushes. The welfare proof is already linked into the econ crate
+through `#[path]`; it now has a nightly/manual lane. Each new lane has a
+per-harness timeout and an 8 GiB virtual-memory cap. Scheduling these lanes
+is not evidence of a successful run; their logs establish that separately.
+
+Local Kani 0.67.0 validation on macOS verified the five PR-lane lattice
+harnesses and `welfare_sum_bounded`. The full core run hit its shorter local
+120-second budget on delegation harnesses (`proof_narrow_idempotent`,
+`proof_delegation_chain_monotone`, and `proof_narrow_monotone`); these results
+are unverified, not passes. The completed core run reported 18 verified and
+5 timed-out harnesses out of 23 selected; the other timeouts were
+`proof_ifc_leq_consistent_with_join` and `proof_empty_capabilities_rejected`.
+The three remaining source harnesses are behind the `envelope` feature;
+the full nightly lane enables that feature explicitly. The Linux nightly shards use a 600-second budget
+and still require execution evidence before #2581 can be considered resolved.
+
+With `envelope` enabled, all three envelope harnesses verified locally with
+unwind bound 16 and unwinding assertions enabled. The explicit per-harness
+bound prevents unbounded expansion of recursive error cleanup.
+
+A follow-up local run verified `proof_empty_capabilities_rejected` with
+unwind bound 16 and unwinding assertions enabled; that bound is now attached
+to the harness. The three delegation harnesses and
+`proof_ifc_leq_consistent_with_join` still timed out at 120 seconds with that
+bound and remain unverified.
+
+The lattice-order harness also now verifies locally (0.17 seconds): its
+join-equality premise and forward checks omitted the derivation dimension,
+even though `IFCLabel::leq` includes it. Both directions now cover derivation
+without restricting the symbolic inputs. Only the three delegation timeouts
+remain from the local core run.
