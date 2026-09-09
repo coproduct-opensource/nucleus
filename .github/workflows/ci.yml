@@ -345,7 +345,7 @@ jobs:
   # change); ready_for_review is a trigger above so the run starts on ready.
   workspace-tests:
     name: Workspace build + tests (one pod)
-    runs-on: ${{ github.event_name == 'merge_group' && vars.CI_FLY_MERGE_BUILD_RUNNER || vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     needs: changed-crates
     if: ${{ (needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '') && github.event.pull_request.draft != true }}
@@ -699,7 +699,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ${{ github.event_name == 'merge_group' && vars.CI_FLY_MERGE_BUILD_RUNNER || vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     if: ${{ github.event.pull_request.draft != true }}
     steps:

@@ -5,7 +5,16 @@ primary_region = "iad"
 [env]
   GITHUB_REPO = "coproduct-opensource/nucleus"
   RUNNER_APP = "nucleus-fly-build"
-  RUNNER_LABEL = "nucleus-fly-build"
+  FLY_REGION = "iad"
+  POLL_SECONDS = "20"
+  IDLE_MINUTES = "30"
+  LOOKBACK_RUNS = "30"
+  # The pools. `build` takes every job on the CI_BUILD_RUNNER label (cargo test, clippy, hack,
+  # llvm-cov, dylint: the six-to-twelve-minute jobs that hold a hosted slot for the whole
+  # time); `gate` is the seconds-long jobs on CI_RUNNER, a second lever, opt-in. Volumes are
+  # per build Machine and set with `fly secrets set POOLS=...` when the ids are known; this
+  # tracked default has none, so a fresh deployment works without them (cold caches).
+  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":4,"standby":2,"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":2,"memory_mb":4096},"size":12,"standby":4}]'
 [[vm]]
   cpu_kind = "shared"
   cpus = 1

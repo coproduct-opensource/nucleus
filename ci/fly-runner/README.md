@@ -1,112 +1,113 @@
-# Fly merge build lane
+# The Fly runner pool
 
-Prepared 2026-09-08. Deployment and measured image size are pending infrastructure approval.
+Measured on 2026-09-09, before this lane: every job on every workflow ran on GitHub-hosted
+`ubuntu-latest` (the `CI_RUNNER` variables were unset), and the account's hosted concurrency
+was the whole bottleneck. One green merge-group CI run (#7167) was 33 jobs with 44 minutes of
+work and 401 minutes of queue wait; 27 of the 33 jobs run in 90 seconds or less and waited 10
+to 18 minutes each for a slot. Open pull requests sat "queued" for an hour before their first
+job started; 6-second gate jobs waited 44 to 60 minutes. The merge queue moved one entry every
+30 to 180 minutes, entirely because its runs waited behind everyone else's.
 
-GitHub still owns nucleus's merge queue and all required checks. Only the workspace-test and
-Clippy jobs in `ci.yml`, on `merge_group`, opt into `CI_FLY_MERGE_BUILD_RUNNER`. An unset
-variable keeps their current routing. PR and push workloads keep their existing runners.
+The fix is capacity that does not count against hosted concurrency: self-hosted runners on
+Fly Machines, warm, bounded, one job per boot, taking every job on a label for every event.
 
-## Image assessment
+## How it works
 
-The existing `docker/Dockerfile.runner` is documented as 11.4 GB in the ARC configuration.
-It already preinstalls toolchains, uses sccache with incremental compilation disabled, uses
-lld and reduced debug information, and keeps mutable toolchains private to each runner.
-Its size comes partly from carrying the Rust, Lean, Aeneas, MSRV and cross-compilation lanes
-in one image. It is tuned for warm job throughput, not image size or pull latency.
+`manager.py` (one shared-CPU Machine, no public service) holds the administrative credentials
+and runs a reconcile loop every `POLL_SECONDS`:
 
-The separate `.gatehouse/Dockerfile.gate` is an offline executor environment, not an Actions
-runner. It vendors ~1.7 GB of sources, but `COPY crates` invalidates the vendor stage on source
-changes. Its `/warm` source copies are in separate layers from the command that deletes them,
-so those source bytes remain in the distributed image. Its claim that a vendor directory
-cannot contain multiple versions is incorrect: Cargo supports this and `cargo vendor --sync`
-can unify workspace and SDK stores. These are opportunities for a separate hermetic-image
-change; changing that image requires updating gate environment digests and receipts.
+1. **Demand**: queued jobs per label across the most recent `LOOKBACK_RUNS` runs of every
+   workflow and event, with conditional requests (an unchanged answer is a 304 that costs no
+   rate limit).
+2. **Warm starts**: each pool is a fixed set of Machines that cycle stopped → started →
+   stopped. A stopped Machine keeps its root filesystem on its host, so starting it takes
+   about a second and pulls nothing. Before each start the manager writes that boot's one-job
+   JIT runner configuration into the Machine (`/run/runner-jit`); the runner exits after the
+   job and the Machine stops. A Machine that boots without a configuration is a warm-up: it
+   exits at once, image now cached on the host.
+3. **Bounds**: `size` Machines per pool at most, `standby` of them kept stopped-and-warm even
+   with no demand; the rest are destroyed after `IDLE_MINUTES` stopped and re-created when
+   demand returns. Nothing autoscales past `size`.
+4. **Hygiene**: JIT runners are removed by GitHub after their job; a runner whose Machine
+   never ran the job (offline, not busy) is removed by the manager.
 
-This Fly lane has one pinned Rust toolchain, wasm target, Clippy, rustfmt, prebuilt nextest,
-sccache and just, and native build dependencies. It does not carry unrelated proof toolchains
-or nucleus source. Build context is restricted to this directory's explicit allowlist.
-Do not report a size or speed improvement until the image is built and cold/warm timings
-are collected on Fly.
+Workers receive exactly one JIT configuration and never a GitHub or Fly token. A build pool
+Machine owns one volume at `/data` for its sccache store and cargo registry cache (never a
+checkout, toolchain or executable); a gate pool Machine has no volume.
 
-Primary references checked:
+## Pools (manager.toml `POOLS`)
 
-- [Docker cache optimization](https://docs.docker.com/build/cache/optimize/): stable dependency
-  layers, small contexts, cache mounts, external caches.
-- [Cargo vendor](https://doc.rust-lang.org/stable/cargo/commands/cargo-vendor.html): `--sync`
-  and versioned directories for multiple dependency graphs.
-- [sccache Rust constraints](https://github.com/mozilla/sccache/blob/main/docs/Rust.md): disable
-  incremental compilation; cache compatibility includes compiler and compilation inputs.
-- [GitHub self-hosted runners](https://docs.github.com/en/actions/reference/runners/self-hosted-runners):
-  ephemeral/JIT jobs; ARC or the Scale Set Client for larger fleets.
-- [Fly CPU](https://fly.io/docs/machines/cpu-performance/) and
-  [volume limits](https://fly.io/docs/volumes/overview/): sustained compilation needs adequate
-  CPU and disk bandwidth, not just nominal vCPU count.
+| pool | label | Machine | jobs |
+|---|---|---|---|
+| build | `nucleus-fly-build` | performance-8x, 32 GB, one 40 GB volume each; size 4, standby 2 | everything on `CI_BUILD_RUNNER`: workspace tests, clippy, live-path gates, hack, llvm-cov, dylint, the A2A example (27 `runs-on` sites) |
+| gate | `nucleus-fly-gate` | shared-cpu-2x, 4 GB, no volume; size 12, standby 4 | everything on `CI_RUNNER` (52 sites), opt-in |
 
-## Deployment shape
-
-Two apps in Fly organization `personal`, region `iad`:
-
-- `nucleus-fly-build`: at most two job Machines, each 4 performance CPUs / 16 GiB, with one
-  exclusive 80 GB cache/work volume per slot. Each Machine is created for one JIT runner,
-  exits after one job, has a 60-minute lifetime limit, and is destroyed by the manager.
-- `nucleus-fly-runner-manager`: one 256 MiB shared-CPU Machine, no public service. Polls the
-  two relevant workflow types every 30 seconds. Holds GitHub runner-administration and
-  Fly worker-app credentials; neither credential is sent to workers. Workers receive only
-  a one-job JIT configuration. Use a repository-scoped GitHub credential and an app-scoped
-  Fly deploy token for the worker app.
-
-The volume preserves a 12 GB sccache and Cargo archive cache. Workspaces are deleted at boot.
-Toolchains, registry source extractions, Git checkouts and Cargo executables are not shared.
-This pool is for trusted merge-group revisions, not arbitrary PR runs. The manager accepts
-manual smoke runs as well. Job hooks report cache hits and resource usage to GitHub logs;
-manager lifecycle events go to Fly logs. Worker diagnostic log retention beyond those job
-logs remains an operational follow-up before expanding this lane.
-
-Storage: 160 GB provisioned × $0.15/GB-month = $24/month, even with no jobs. Worker CPU/RAM
-is billed only while running; manager, remote image builds, snapshots and transfer add cost.
-See [Fly pricing](https://fly.io/docs/about/pricing/). The proposed maximum is two workers,
-not an unlimited autoscaler.
-
-## Provision and validate
-
-Run from this directory after approval:
+Routing is the two repository variables the workflows already read:
 
 ```sh
-fly apps create nucleus-fly-build --org personal
-fly apps create nucleus-fly-runner-manager --org personal
-fly deploy --config fly.toml --build-only --push --remote-only --yes
-fly volumes create runner_cache_a -a nucleus-fly-build --region iad --size 80 --vm-cpu-kind performance --vm-cpus 4 --vm-memory 16384
-fly volumes create runner_cache_b -a nucleus-fly-build --region iad --size 80 --vm-cpu-kind performance --vm-cpus 4 --vm-memory 16384
+gh variable set CI_BUILD_RUNNER --repo coproduct-opensource/nucleus --body nucleus-fly-build
+# second lever, after the build pool has run a day of jobs cleanly:
+gh variable set CI_RUNNER --repo coproduct-opensource/nucleus --body nucleus-fly-gate
 ```
 
-Set manager secrets via stdin (`fly secrets import`), never command-line literals or a tracked
-file: `GITHUB_TOKEN`, `FLY_API_TOKEN`, `RUNNER_IMAGE` (the built image's `@sha256:` reference),
-and `RUNNER_VOLUMES` (JSON array of the two `{id, region}` objects). Use one manager Machine:
+The build pool alone removes the jobs that hold a hosted slot for 6 to 12 minutes; the short
+jobs left on hosted runners then flow. The gate pool takes the rest. Jobs that hard-code
+`ubuntu-latest` (44 sites) or `ubuntu-24.04` (13) stay hosted; those are the ones that need
+Docker, CodeQL or a hosted-only tool. The image here is a Rust build image (pinned
+toolchain, wasm target, clippy, rustfmt, nextest, sccache, just, node via `setup-node`,
+python3); a job on `CI_RUNNER` that needs elan, aeneas or kani installs it in-job today on
+hosted runners and keeps doing so here.
+
+## Provision
+
+```sh
+cd ci/fly-runner
+fly apps create nucleus-fly-build --org personal
+fly apps create nucleus-fly-runner-manager --org personal
+fly deploy --config fly.toml --build-only --push --remote-only --yes      # prints the image digest
+for i in 0 1 2 3; do
+  fly volumes create runner_cache_$i -a nucleus-fly-build --region iad --size 40 \
+    --vm-cpu-kind performance --vm-cpus 8 --vm-memory 32768
+done
+```
+
+Manager secrets, via stdin (`fly secrets import -a nucleus-fly-runner-manager`), never on a
+command line or in a tracked file:
+
+- `GITHUB_TOKEN`: a fine-grained token on this repository with `administration: write`
+  (runner registration) and `actions: read` (queue polling), nothing else.
+- `FLY_API_TOKEN`: an app-scoped deploy token for `nucleus-fly-build` only.
+- `RUNNER_IMAGE`: the built image by digest, `registry.fly.io/nucleus-fly-build@sha256:…`.
+- `POOLS`: the tracked default from `manager.toml` with the four volume ids added to the
+  build pool as `"volumes": ["vol_…", …]` (one per Machine, in index order).
 
 ```sh
 fly deploy --config manager.toml --remote-only --ha=false --yes
 ```
 
-After this PR lands, dispatch `runner-smoke.yml` with input `runner=nucleus-fly-build`.
-Inspect both its cold and warm build, cache hits, CPU/memory peaks, disk use, and runner
-cleanup. Then enable only the reviewed merge-group lane:
+Then: dispatch `runner-smoke.yml` with `runner=nucleus-fly-build`, read its cold and warm
+timings and the sccache line the job hook prints, and set `CI_BUILD_RUNNER`. The manager's
+log (`fly logs -a nucleus-fly-runner-manager`) shows every start, warm-up and retirement.
 
-```sh
-gh variable set CI_FLY_MERGE_BUILD_RUNNER --repo coproduct-opensource/nucleus --body nucleus-fly-build
-```
+## Cost and capacity
 
-Before the smoke-workflow input is on main, its existing fixed `nucleus-k3s` label can be
-used for the manual smoke by temporarily setting the manager's `RUNNER_LABEL` to that label.
-Restore `nucleus-fly-build` before enabling merge routing. No CI_RUNNER or CI_BUILD_RUNNER
-change is needed.
+Stopped Machines cost their root filesystem only. Running: performance-8x is billed per second
+while a build runs (a 5-minute clippy or a 10-minute test job is cents); shared-cpu-2x gate
+Machines are a fraction of a cent per job. Volumes: 4 × 40 GB × $0.15 = $24/month standing.
+Compare: the same jobs on hosted runners cost nothing in dollars and everything in hours.
+
+The merge queue's own throughput is bounded by `ci/merge-queue.toml` (`max_entries_to_build
+= 1`, so one merge-group run at a time, ALLGREEN): once a run is 10 minutes instead of 60 to
+180, that is 6 merges an hour. Raising `max_entries_to_build` is a separate, theorem-checked
+change (the capacity hypotheses in `ci/lean/CiSpec/Capacity.lean` and `live-parity`).
 
 ## Rollback
 
-Delete `CI_FLY_MERGE_BUILD_RUNNER`. Newly created merge-group jobs use the existing hosted
-fallback. Already queued jobs retain their labels; re-create their queue run if necessary.
-Stop the manager to stop new worker creation; let active jobs finish. Remove idle worker
-Machines and cache volumes if abandoning the pool (stopped volumes continue billing).
-No branch protections, required contexts, or queue-owner settings change.
+Unset `CI_BUILD_RUNNER` (and `CI_RUNNER`): new jobs use hosted runners; jobs already queued
+on a pool label keep it until their run is re-created. `fly machine stop` the manager to stop
+new starts; running jobs finish on their own. Destroy the worker Machines and volumes only when
+abandoning the pool (stopped Machines and volumes keep billing storage). No branch protection,
+required context or queue setting is touched by any of this.
 
 ## Local validation
 

@@ -7,7 +7,7 @@
 # already gone. Exit 0 always: instrumentation never fails a job.
 set -u
 echo "::group::sccache (this job)"
-SCCACHE_DIR=/data/cache/sccache sccache --show-stats 2>/dev/null \
+sccache --show-stats 2>/dev/null \
   | grep -E "Compile requests|Cache hits|Cache misses|Non-cacheable|Average" || echo "sccache: no server (job ran no rustc)"
 echo "::endgroup::"
 echo "::group::pod resources"

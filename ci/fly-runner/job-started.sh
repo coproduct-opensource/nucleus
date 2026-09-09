@@ -10,7 +10,7 @@ set -u
 echo "::group::runner pod"
 echo "pod=$(hostname) nproc=$(nproc) mem=$(awk '/MemTotal/ {printf "%.1fGi", $2/1048576}' /proc/meminfo)"
 echo "cgroup cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
-echo "sccache store: $(du -sh /data/cache/sccache 2>/dev/null | cut -f1 || echo n/a) at $(date -u +%FT%TZ)"
+echo "sccache store: $(du -sh ${SCCACHE_DIR:-/data/cache/sccache} 2>/dev/null | cut -f1 || echo n/a) at $(date -u +%FT%TZ)"
 echo "::endgroup::"
-SCCACHE_DIR=/data/cache/sccache sccache --zero-stats >/dev/null 2>&1 || true
+SCCACHE_DIR=${SCCACHE_DIR:-/data/cache/sccache} sccache --zero-stats >/dev/null 2>&1 || true
 exit 0
