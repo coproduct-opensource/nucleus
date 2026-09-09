@@ -633,6 +633,36 @@ fn enforce_pci_off(args: &str) -> String {
 
 #[cfg(target_os = "linux")]
 impl FirecrackerConfig {
+    /// What a snapshot of this machine would have to name, read off the config that booted it.
+    ///
+    /// Here rather than in `main.rs` for two reasons: the fields are private to this module, and
+    /// `main.rs` sits on its line ceiling — so the assembly belongs on the side of the seam that
+    /// can afford it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn snapshot_inputs(
+        &self,
+        vmm_version: nucleus_spec::vmm_version::VmmVersion,
+    ) -> crate::snapshot_store::SnapshotInputs {
+        crate::snapshot_store::SnapshotInputs {
+            boot_args: self.boot_source.boot_args.clone().unwrap_or_default(),
+            // Rendered here rather than by the caller: `main.rs` should hand over the version it
+            // observed, not a formatting of it.
+            vmm_version: vmm_version.to_string(),
+            // The API takes these as unsigned; they are `i64` here only because that is what the
+            // config file wants. A negative vcpu count never reaches this point — `from_spec`
+            // clamps — so the saturating cast cannot silently wrap a real value.
+            vcpu_count: self.machine_config.vcpu_count.max(0) as u32,
+            mem_size_mib: self.machine_config.mem_size_mib.max(0) as u32,
+            smt: self.machine_config.smt,
+            // A scratch drive is the writable, non-root one. `is_read_only` is the property that
+            // matters, not the drive's name, because a name is a convention and this is not.
+            writable_scratch: self
+                .drives
+                .iter()
+                .any(|d| !d.is_root_device && !d.is_read_only),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_spec(
         spec: &PodSpec,

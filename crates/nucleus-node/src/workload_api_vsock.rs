@@ -67,6 +67,14 @@ pub struct WorkloadApiVsockBridge {
     /// The pod ID this bridge serves (used for unique identity per pod).
     #[allow(dead_code)]
     pod_id: uuid::Uuid,
+    /// The material this bridge serves, kept so the HOST can read what it has served.
+    ///
+    /// Specifically `at_snapshot_barrier` and `personalized`: both are recorded here as a side
+    /// effect of answering the guest, and `snapshot::clone_safety` needs both to say whether this
+    /// microVM may be a base. Without this field the flags exist only inside the accept loop's
+    /// closure — set correctly, readable by nobody, which is how a safety gate ends up with no
+    /// production caller.
+    material: std::sync::Arc<PodMaterial>,
 }
 
 /// The pod-scoped DLC-D admission provisioning served over `FETCH_DLC_ADMISSION`
@@ -269,6 +277,9 @@ impl WorkloadApiVsockBridge {
         // fields are read-only anyway — the one-shot flags inside are already
         // their own `Arc<AtomicBool>`s, so sharing the bundle shares them.
         let material = std::sync::Arc::new(material);
+        // Kept out of the accept loop's capture: the loop OWNS its clone, and the bridge needs
+        // one that outlives a shutdown of the loop.
+        let material_for_bridge = std::sync::Arc::clone(&material);
         // Cloned before the accept loop takes ownership.
         let identity_manager_for_spiffe = identity_manager.clone();
         // Firecracker naming convention: {uds_path}_{port}
@@ -386,6 +397,7 @@ impl WorkloadApiVsockBridge {
             socket_path,
             pod_id,
             spiffe,
+            material: material_for_bridge,
         })
     }
 
@@ -474,6 +486,16 @@ impl WorkloadApiVsockBridge {
     #[allow(dead_code)]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    /// What this bridge has served, as the host recorded it.
+    ///
+    /// The two facts a snapshot decision needs — did the guest reach its barrier, and has anything
+    /// per-pod been handed over since — are answered from the HOST's own record of what it sent,
+    /// never from a guest declaration. The guest is the thing being contained.
+    #[allow(dead_code)]
+    pub fn material(&self) -> &std::sync::Arc<PodMaterial> {
+        &self.material
     }
 
     /// Shuts down the bridge.

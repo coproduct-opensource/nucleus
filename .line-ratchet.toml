@@ -59,7 +59,15 @@ path = "crates/nucleus-node/src/main.rs"
 # image_identity. This is the growth the ratchet WANTS — main.rs grew by two
 # lines because ~400 went into new modules that are testable on their own — but
 # a module declaration cannot be extracted, so it has to be paid for here.
-ceiling = 4100
+# Bumped 4100 -> 4101 the same day: the snapshot store gets a production caller.
+# Five lines were needed and four were bought back by putting the work where it
+# belongs — `mod snapshot_store;`, one field on `FirecrackerPod`, one line
+# assembling it (the assembly itself is `FirecrackerConfig::snapshot_inputs`, in
+# firecracker_config.rs, because the fields it reads are private there anyway),
+# and one `.route(...)`. The handler is ~120 lines and lives in pod_api.rs, which
+# exists for exactly this. A route line and a struct field cannot be extracted;
+# the router and the struct are both here.
+ceiling = 4101
 target = 2000
 step = 1
 

@@ -104,6 +104,13 @@ pub enum Operation {
     StreamLogs,
     /// Get execution receipt for a pod.
     GetReceipt,
+    /// Take a base snapshot of a running pod.
+    ///
+    /// Deliberately NOT part of the pod-management group. Snapshotting writes to the node's
+    /// shared snapshot store, and a base is offered to every later pod with the same program —
+    /// so a pod able to snapshot would be a pod able to author what its neighbours boot from.
+    /// That is an operator's authority, not a workload's.
+    SnapshotPod,
     /// Any pod management operation (used for matching).
     PodManagement,
 }
@@ -238,6 +245,7 @@ impl AuthorizationPolicy {
                     | Operation::StreamLogs
                     | Operation::ListPods
                     | Operation::GetReceipt
+                    | Operation::SnapshotPod
                     | Operation::PodManagement => {
                         tracing::debug!(
                             spiffe_id = %spiffe_id,
@@ -269,6 +277,9 @@ impl AuthorizationPolicy {
                         );
                         return Ok(());
                     }
+                    // Falls through to the refusal below rather than returning: see the variant's
+                    // doc comment. A workload does not get to author what its neighbours boot.
+                    Operation::SnapshotPod => {}
                 }
             }
         }
@@ -361,7 +372,7 @@ pub fn get_auth_context<T>(request: &tonic::Request<T>) -> Option<&AuthContext> 
 /// `authenticated_routes` in `main.rs` without a matching entry here is
 /// refused for SPIFFE callers rather than silently authorized.
 ///
-/// This crate's HTTP API has exactly four protected routes; matched here by
+/// This crate's HTTP API has exactly five protected routes; matched here by
 /// fixed segment shape rather than axum's own routing algebra, which is
 /// adequate at this size and not meant to generalize further. Kept in sync
 /// with `main.rs`'s `authenticated_routes` table by hand — the two tables
@@ -374,6 +385,9 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
         (&axum::http::Method::GET, ["v1", "pods"]) => Some(Operation::ListPods),
         (&axum::http::Method::GET, ["v1", "pods", _id, "logs"]) => Some(Operation::StreamLogs),
         (&axum::http::Method::POST, ["v1", "pods", _id, "cancel"]) => Some(Operation::CancelPod),
+        (&axum::http::Method::POST, ["v1", "pods", _id, "snapshot"]) => {
+            Some(Operation::SnapshotPod)
+        }
         _ => None,
     }
 }
@@ -599,6 +613,42 @@ mod tests {
 
     // ── HTTP SPIFFE branch (Move A step 4 / Move B) ────────────────────────
 
+    /// A workload may not author what its neighbours boot from.
+    ///
+    /// Every other pod-management operation is granted to a pod identity, so this asymmetry is
+    /// the whole content of the test: snapshotting writes a base into the node's shared store,
+    /// and a base is handed to every later pod with the same program. A pod that could publish
+    /// one could choose what its co-tenants restore — which is an operator's authority, and is
+    /// exactly the escalation `Operation::SnapshotPod` exists as a separate variant to prevent.
+    #[test]
+    fn a_pod_may_manage_pods_but_may_not_publish_a_base() {
+        let policy = AuthorizationPolicy::new("nucleus.local");
+        let pod = AuthContext::from_spiffe("spiffe://nucleus.local/ns/pods/sa/abc-123".to_string());
+
+        for allowed in [
+            Operation::CreatePod,
+            Operation::ListPods,
+            Operation::GetPod,
+            Operation::CancelPod,
+            Operation::StreamLogs,
+        ] {
+            assert!(
+                policy.authorize(&pod, allowed).is_ok(),
+                "{allowed:?} is ordinary pod management and stays granted"
+            );
+        }
+        assert!(
+            policy.authorize(&pod, Operation::SnapshotPod).is_err(),
+            "a pod must not be able to publish a base other pods will boot from"
+        );
+
+        // An orchestrator asking for a base is the case this route exists for.
+        let cicd = AuthContext::from_spiffe(
+            "spiffe://nucleus.local/ns/github/sa/myorg/myrepo".to_string(),
+        );
+        assert!(policy.authorize(&cicd, Operation::SnapshotPod).is_ok());
+    }
+
     /// Exhaustive against `main.rs`'s `authenticated_routes` table: every
     /// route that table declares must map here, and nothing else should.
     #[test]
@@ -620,6 +670,10 @@ mod tests {
         assert_eq!(
             operation_for_route(&Method::POST, "/v1/pods/abc-123/cancel"),
             Some(Operation::CancelPod)
+        );
+        assert_eq!(
+            operation_for_route(&Method::POST, "/v1/pods/abc-123/snapshot"),
+            Some(Operation::SnapshotPod)
         );
 
         // Wrong method on a real route.

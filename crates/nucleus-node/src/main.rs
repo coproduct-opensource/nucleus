@@ -72,6 +72,7 @@ mod posture;
 mod session_mint;
 mod signed_proxy;
 mod snapshot;
+mod snapshot_store;
 mod snapshot_vmm;
 mod trust_gate;
 mod vsock_bridge;
@@ -501,6 +502,8 @@ struct FirecrackerPod {
     /// can remove it — a jail left behind leaks disk and, because writable drives
     /// are hard-linked in, keeps a reference to the caller's image alive.
     jail: Mutex<Option<firecracker_config::JailLayout>>,
+    /// What a base snapshot of this pod would have to name — see `snapshot_store::SnapshotInputs`.
+    snapshot: Option<snapshot_store::SnapshotInputs>,
 }
 
 /// Container-based pod execution via Docker API (Colima, Docker Desktop, Podman).
@@ -828,6 +831,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods", post(create_pod).get(pod_api::list_pods))
         .route("/v1/pods/{id}/logs", get(pod_api::pod_logs))
         .route("/v1/pods/{id}/cancel", post(pod_api::cancel_pod))
+        .route("/v1/pods/{id}/snapshot", post(pod_api::snapshot_pod))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -2584,7 +2588,7 @@ async fn spawn_firecracker_pod(
         // here exactly as it is for a config file, and the ordering win the API was expected to
         // buy is simply not available.
         if state.firecracker_api_boot {
-            let sock = firecracker_api::api_socket_path(jail_layout.as_ref(), &pod_dir);
+            let sock = firecracker_api::api_socket_path(jail_layout.as_ref(), pod_dir);
             let booted = match firecracker_api::configure(&sock, &config).await {
                 Ok(()) => firecracker_api::start(&sock).await,
                 Err(e) => Err(e),
@@ -3091,6 +3095,7 @@ async fn spawn_firecracker_pod(
             identity_manager,
             workload_api_bridge: Mutex::new(workload_api_bridge),
             broker: Mutex::new(broker),
+            snapshot: verdict.found().map(|v| config.snapshot_inputs(v)),
         };
 
         info!("spawned firecracker pod {}", id);

@@ -279,6 +279,166 @@ pub(crate) async fn grpc_scoped_pod(
         .map_err(|_| tonic::Status::not_found("pod not found"))
 }
 
+/// Take a base snapshot of a running pod.
+///
+/// # Why this is an explicit request and not automatic
+///
+/// Create costs ~480 ms because it writes the whole guest memory to disk, against ~10 ms to
+/// restore. Snapshotting every pod at its barrier would pay that on every launch to build bases
+/// that mostly go unused. So the decision belongs to whoever knows this program is worth basing —
+/// an orchestrator asks, and the node answers with a verdict rather than a courtesy.
+///
+/// # What it refuses, and why the refusal is the interesting part
+///
+/// The safety verdict is computed from the HOST's record of what it served this guest, never from
+/// anything the guest says: `at_snapshot_barrier` and `personalized` are set as a side effect of
+/// answering vsock commands. A pod that has already been handed its broker secret is refused,
+/// because that secret is served exactly once and a clone would share it — the failure this
+/// barrier exists to prevent, and one that is otherwise completely silent.
+pub(crate) async fn snapshot_pod(
+    State(state): State<NodeState>,
+    Extension(caller): Extension<Option<Uuid>>,
+    AxumPath(id): AxumPath<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let pod = get_pod_for_caller(&state, id, caller).await?;
+    snapshot_running_pod(&state, &pod).await
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn snapshot_running_pod(
+    _state: &NodeState,
+    _pod: &Arc<PodHandle>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    Err(ApiError::Driver(
+        "snapshots require the Firecracker driver, which is Linux-only".to_string(),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+async fn snapshot_running_pod(
+    state: &NodeState,
+    pod: &Arc<PodHandle>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use crate::snapshot_store::{HostIdentity, Lookup, PublishError, SnapshotStore};
+
+    let crate::DriverState::Firecracker(fc) = &pod.driver_state else {
+        return Err(ApiError::Driver(
+            "only a Firecracker pod can be snapshotted".to_string(),
+        ));
+    };
+    // Absent only when the VMM's `--version` was unreadable at launch. That is already refused
+    // upstream, so reaching here means something changed underneath — which is exactly when
+    // naming a snapshot after an assumed version would be worst.
+    let Some(inputs) = fc.snapshot.as_ref() else {
+        return Err(ApiError::Driver(
+            "this pod's VMM version was never established, so a base cannot be named".to_string(),
+        ));
+    };
+
+    // The two host-recorded facts. A pod whose bridge is gone cannot be shown to be at its
+    // barrier, and "cannot be shown" must read as "not", or the gate is decorative.
+    let (at_barrier, personalized) = {
+        let bridge = fc.workload_api_bridge.lock().await;
+        bridge.as_ref().map_or((false, false), |b| {
+            let m = b.material();
+            (
+                m.at_snapshot_barrier
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                m.personalized.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        })
+    };
+    let safety = crate::snapshot::clone_safety(
+        &inputs.boot_args,
+        at_barrier,
+        personalized,
+        inputs.writable_scratch,
+    );
+
+    let program = nucleus_spec::identity::program_digest(&pod.spec)
+        .map_err(|e| ApiError::Driver(format!("this pod has no program identity: {e}")))?;
+    let derivation = inputs.derivation(program);
+    let name = derivation.name();
+
+    let store = SnapshotStore::new(state.state_dir.join("snapshots"), HostIdentity::detect());
+    match store.lookup(&derivation) {
+        // Idempotent: asking twice for a base that exists is not an error, and re-taking it would
+        // spend 480 ms to produce a byte-different snapshot of the same program.
+        Lookup::Present(m) => {
+            return Ok(Json(serde_json::json!({
+                "status": "already-present", "derivation": name,
+                "created_unix": m.created_unix, "mem_bytes": m.mem_bytes
+            })));
+        }
+        Lookup::ForeignHost {
+            taken_on,
+            running_on,
+        } => {
+            // Both machines, deliberately. The whole reason this is a refusal rather than a miss
+            // is so somebody can read it and see WHICH two hosts disagree.
+            return Err(ApiError::Driver(format!(
+                "a base for this derivation exists but was taken on {}/{}, and this node is \
+                 {}/{} — restoring across hosts is refused",
+                taken_on.arch, taken_on.cpu_model, running_on.arch, running_on.cpu_model
+            )));
+        }
+        Lookup::Damaged(why) => {
+            return Err(ApiError::Driver(format!(
+                "the existing base for this derivation is unreadable ({why}); remove it first"
+            )));
+        }
+        Lookup::Absent => {}
+    }
+
+    let pod_dir = pod
+        .log_path
+        .parent()
+        .ok_or_else(|| ApiError::Driver("this pod has no directory".to_string()))?;
+    let sock = {
+        let jail = fc.jail.lock().await;
+        crate::firecracker_api::api_socket_path(jail.as_ref(), pod_dir)
+    };
+
+    // Reclaim what previous attempts stranded before adding another memory image to the disk.
+    // A failure here is logged, not fatal: not reclaiming space is a worse reason to refuse a
+    // snapshot than running out of it would be to fail one.
+    match store.sweep_staging() {
+        Ok(swept) if !swept.is_empty() => {
+            tracing::info!(count = swept.len(), "reclaimed stranded snapshot staging")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "could not sweep snapshot staging"),
+    }
+
+    let incoming = store
+        .begin()
+        .map_err(|e| ApiError::Driver(format!("could not stage a snapshot: {e}")))?;
+    let created = crate::snapshot_vmm::create(&sock, &safety, &incoming.artifacts).await;
+
+    // Resume BEFORE publishing, and regardless of whether the snapshot succeeded. `create` leaves
+    // the microVM Paused, so any early return between here and there strands a running pod frozen
+    // — a snapshot request must not be able to kill the workload it snapshotted.
+    //
+    // Resuming the origin is safe by the barrier's own argument: nothing per-pod has been served
+    // yet, so the origin and any future clone are not yet distinguishable in a way that matters.
+    let resumed = crate::snapshot_vmm::resume(&sock).await;
+    created.map_err(ApiError::Driver)?;
+    resumed
+        .map_err(|e| ApiError::Driver(format!("snapshot taken, but the pod stayed paused: {e}")))?;
+
+    match store.publish(incoming, &derivation) {
+        Ok(_) => Ok(Json(serde_json::json!({
+            "status": "published", "derivation": name
+        }))),
+        // Another launch published the same base while this one was writing. The base the caller
+        // wanted exists, which is the outcome they asked for.
+        Err(PublishError::AlreadyPresent) => Ok(Json(serde_json::json!({
+            "status": "already-present", "derivation": name
+        }))),
+        Err(e) => Err(ApiError::Driver(format!("could not publish the base: {e}"))),
+    }
+}
+
 #[cfg(test)]
 mod ownership_tests {
     use super::{caller_may_manage, resolve_parent_pod_id};

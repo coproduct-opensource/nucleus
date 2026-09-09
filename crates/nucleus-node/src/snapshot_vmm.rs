@@ -86,7 +86,18 @@ pub(crate) async fn create(
 /// Deliberately does NOT resume: whatever is per-pod about this clone — its tap device, its
 /// vsock path — has to be patched between load and resume, and a function that did both would
 /// leave no seam to do it in.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+///
+/// # No production caller yet, and that is stated rather than hidden
+///
+/// `create` is reached from `POST /v1/pods/{id}/snapshot`; this is not reached from anywhere but
+/// the round-trip test, because the launch path still cold-boots and never asks the snapshot
+/// store for a base. The `allow` is here to keep that gap NAMED — this file's siblings have twice
+/// been things that were built, tested, documented and called by nothing, and the difference
+/// between that and this is whether the gap is written down. Restore-instead-of-boot needs a
+/// guest that reconnects its vsock after restore, which is a rootfs release and a
+/// `GUEST_RELEASE_FLOOR` bump; until then the honest state is "half a pair, and here is which
+/// half".
+#[allow(dead_code)]
 pub(crate) async fn load(sock: &Path, artifacts: &SnapshotArtifacts) -> Result<(), String> {
     firecracker_api::send(
         sock,

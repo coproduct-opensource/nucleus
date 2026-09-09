@@ -78,7 +78,7 @@ pub(crate) async fn send(sock: &Path, req: &ApiRequest) -> Result<(), String> {
         .await
         .map_err(|e| format!("firecracker API handshake failed: {e}"))?;
     // The connection future drives the socket; it ends when the response is done.
-    let pump = tokio::spawn(async move { connection.await });
+    let pump = tokio::spawn(connection);
 
     let request = Request::builder()
         .method(req.method)
@@ -275,12 +275,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn which_firecracker() -> Result<std::path::PathBuf, ()> {
         std::env::var_os("PATH")
-            .map(|p| {
+            .and_then(|p| {
                 std::env::split_paths(&p)
                     .map(|d| d.join("firecracker"))
                     .find(|c| c.is_file())
             })
-            .flatten()
             .ok_or(())
     }
 
