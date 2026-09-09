@@ -47,6 +47,13 @@ MODE=${2:?root list or --self-test}
 cd "$PROJECT"
 PROJECT_ABS=$(pwd)
 
+# Source lint runs even when Lake restores cached elaboration output.
+if [ "$MODE" = "--self-test" ]; then
+    python3 "$SCRIPT_DIR/check-lean-external-state.py" --self-test
+else
+    python3 "$SCRIPT_DIR/check-lean-external-state.py" . "$MODE"
+fi
+
 ALLOWED='["propext","Classical.choice","Quot.sound"]'
 EXC_FILE=.axiom-audit-exceptions
 RATCHET_FILE=.axiom-ratchet
