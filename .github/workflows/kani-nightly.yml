@@ -280,6 +280,7 @@ jobs:
   # harnesses actually verified, so the nightly summary reports what was proved
   # rather than what was attempted.
   kani-constitutional-full-summary:
+    timeout-minutes: 5
     name: Kani (constitutional kernel full)
     runs-on: ubuntu-24.04
     needs: kani-constitutional-full
