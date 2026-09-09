@@ -5,6 +5,7 @@
 //! issued behind — so every failure is recorded and the pass continues.
 
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 use crate::api::{Error, Forge, Substrate};
 use crate::{Action, Demand, PoolSpec, Snapshot, launch_config, plan, tally};
@@ -39,10 +40,14 @@ pub struct Manager<F: Forge, S: Substrate> {
     pub idle_secs: u64,
     /// Registrations this process issued, and when. Bounds how "offline" is read: within the
     /// grace period it means booting, after it means the machine never took the job.
-    issued: BTreeMap<u64, u64>,
+    ///
+    /// Behind a lock because launches run concurrently: they are independent, each costs a
+    /// registration plus three substrate calls plus the settle wait, and run one after another a
+    /// burst of twenty spends a minute of queue time on nothing but its own serialization.
+    issued: Mutex<BTreeMap<u64, u64>>,
 }
 
-impl<F: Forge, S: Substrate> Manager<F, S> {
+impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
     pub fn new(
         forge: F,
         substrate: S,
@@ -60,7 +65,7 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
             region,
             lookback,
             idle_secs,
-            issued: BTreeMap::new(),
+            issued: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -79,7 +84,13 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
         Ok(tally(jobs.iter(), &self.labels()))
     }
 
-    pub fn tick(&mut self, now_secs: u64) -> Result<Report, Error> {
+    fn ledger_lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, u64>> {
+        // A poisoned ledger would stop every later pass; the map holds no invariant worth
+        // failing for, so a panicking launch thread does not take the pool down with it.
+        self.issued.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn tick(&self, now_secs: u64) -> Result<Report, Error> {
         let demand = self.demand()?;
         let machines = self
             .substrate
@@ -91,7 +102,7 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
             machines,
             runners: self.forge.runners()?,
             demand,
-            issued: self.issued.clone(),
+            issued: self.ledger_lock().clone(),
             now_secs,
             idle_secs: self.idle_secs,
         };
@@ -105,23 +116,51 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
                 .collect(),
             ..Report::default()
         };
-        for action in actions {
-            if let Err(failure) = self.act(&action, &snapshot, now_secs, &mut report) {
-                report.failures.push(failure);
+        // Launches are independent of each other and of everything else in the plan: the planner
+        // has already guaranteed one action per machine. Run them at once.
+        let (launches, rest): (Vec<Action>, Vec<Action>) = actions
+            .into_iter()
+            .partition(|a| matches!(a, Action::Launch { .. }));
+        let outcomes: Vec<Result<(), String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = launches
+                .iter()
+                .map(|action| {
+                    let snapshot = &snapshot;
+                    scope.spawn(move || self.act(action, snapshot, now_secs))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err("a launch panicked".to_string()))
+                })
+                .collect()
+        });
+        for outcome in outcomes {
+            match outcome {
+                Ok(()) => report.launched += 1,
+                Err(failure) => report.failures.push(failure),
             }
         }
-        self.issued
+        for action in rest {
+            match self.act(&action, &snapshot, now_secs) {
+                Ok(()) => match action {
+                    Action::Create { .. } => report.created += 1,
+                    Action::Warm { .. } => report.warmed += 1,
+                    Action::Retire { .. } => report.retired += 1,
+                    Action::RemoveRunner { .. } => report.runners_removed += 1,
+                    Action::Launch { .. } => unreachable!("launches were partitioned out"),
+                },
+                Err(failure) => report.failures.push(failure),
+            }
+        }
+        self.ledger_lock()
             .retain(|_, at| now_secs.saturating_sub(*at) < LEDGER_SECS);
         Ok(report)
     }
 
-    fn act(
-        &mut self,
-        action: &Action,
-        snapshot: &Snapshot,
-        now_secs: u64,
-        report: &mut Report,
-    ) -> Result<(), String> {
+    fn act(&self, action: &Action, snapshot: &Snapshot, now_secs: u64) -> Result<(), String> {
         match action {
             Action::Launch { pool, id, name } => {
                 let machine = snapshot
@@ -136,7 +175,7 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
                     .map_err(|e| format!("{pool}: register {runner_name}: {e}"))?;
                 // The ledger entry goes in BEFORE the machine calls: if the process dies between
                 // them, the next pass must still see this registration as one it issued.
-                self.issued.insert(registration.id, now_secs);
+                self.ledger_lock().insert(registration.id, now_secs);
                 let config = launch_config(&machine.config, &registration.encoded, registration.id);
                 let started = self
                     .substrate
@@ -149,10 +188,9 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
                     // The machine will not take the job, so the registration must not outlive
                     // the attempt: an idle registered runner would be counted as covering demand.
                     let _ = self.forge.remove_runner(registration.id);
-                    self.issued.remove(&registration.id);
+                    self.ledger_lock().remove(&registration.id);
                     return Err(format!("{pool}: start {name}: {e}"));
                 }
-                report.launched += 1;
                 println!("{pool}: started {name} as runner {}", registration.id);
                 Ok(())
             }
@@ -170,7 +208,6 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
                     .map_err(|e| format!("{pool}: create {name}: {e}"))?;
                 // Not started here: a start issued in the same pass as the create races the
                 // machine's placement and is answered 412. The next pass boots it.
-                report.created += 1;
                 println!("{pool}: created {name} ({})", machine.id);
                 Ok(())
             }
@@ -180,7 +217,6 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
                 self.substrate
                     .start(id)
                     .map_err(|e| format!("{pool}: warm {name}: {e}"))?;
-                report.warmed += 1;
                 println!("{pool}: warming {name}");
                 Ok(())
             }
@@ -188,7 +224,6 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
                 self.substrate
                     .destroy(id)
                     .map_err(|e| format!("{pool}: retire {name}: {e}"))?;
-                report.retired += 1;
                 println!("{pool}: retired idle {name}");
                 Ok(())
             }
@@ -196,8 +231,7 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
                 self.forge
                     .remove_runner(*id)
                     .map_err(|e| format!("remove orphaned runner {name}: {e}"))?;
-                self.issued.remove(id);
-                report.runners_removed += 1;
+                self.ledger_lock().remove(id);
                 println!("removed orphaned runner {name}");
                 Ok(())
             }
@@ -206,7 +240,7 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
 
     /// Registrations this process has issued and not yet retired. Read by the smoke path and by
     /// the tests that pin the grace period.
-    pub fn ledger(&self) -> &BTreeMap<u64, u64> {
-        &self.issued
+    pub fn ledger(&self) -> BTreeMap<u64, u64> {
+        self.ledger_lock().clone()
     }
 }

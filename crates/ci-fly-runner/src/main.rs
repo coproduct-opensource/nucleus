@@ -57,7 +57,7 @@ fn run() -> Result<(), String> {
     let idle_secs = number("IDLE_MINUTES", 30)? * 60;
     let lookback = usize::try_from(number("LOOKBACK_RUNS", 30)?).unwrap_or(30);
 
-    let mut manager = Manager::new(
+    let manager = Manager::new(
         ForgeApi::new(Ureq::default(), FORGE_API, &var("GITHUB_TOKEN")?, &repo),
         MachinesApi::new(Ureq::default(), MACHINES_API, &var("FLY_API_TOKEN")?, &app),
         pools,
