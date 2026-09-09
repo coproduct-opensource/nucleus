@@ -2130,6 +2130,8 @@ async fn main() -> Result<(), ApiError> {
     let exit_exposure = state.exposure_guard.clone();
     let exit_monitor = state.trace_monitor.clone();
     let exit_art12 = state.art12_log.clone();
+    let exit_kernel = state.kernel.clone();
+    let exit_grant = spec.metadata.task_grant_id.clone();
 
     let app = app
         .with_state(state.clone())
@@ -2170,12 +2172,14 @@ async fn main() -> Result<(), ApiError> {
         let _workload = start_and_drain_workload(&spec, bound.proxy(), &args.auth_secret)?;
         st.report();
         bound.serve(app).await?;
-        write_exit_report(
+        exit_report::write_exit_report(
             &exit_audit,
             &exit_work_dir,
             &exit_exposure,
             &exit_monitor,
             exit_art12.as_ref(),
+            &exit_kernel,
+            exit_grant.clone(),
         )
         .await;
         return Ok(());
@@ -2232,12 +2236,14 @@ async fn main() -> Result<(), ApiError> {
     #[cfg(feature = "otel")]
     telemetry::shutdown_otel();
 
-    write_exit_report(
+    exit_report::write_exit_report(
         &exit_audit,
         &exit_work_dir,
         &exit_exposure,
         &exit_monitor,
         exit_art12.as_ref(),
+        &exit_kernel,
+        exit_grant,
     )
     .await;
 
@@ -2269,57 +2275,6 @@ fn fail_closed_panic_response(err: Box<dyn std::any::Any + Send + 'static>) -> R
         "denied: internal enforcement error (fail-closed)",
     )
         .into_response()
-}
-
-/// Write the exit report on shutdown (including verified exposure data).
-async fn write_exit_report(
-    audit: &AuditLog,
-    work_dir_path: &Path,
-    exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
-    monitor: &portcullis::trace_monitor::TraceMonitor,
-    art12_log: Option<&Arc<crate::art12::Art12Log>>,
-) {
-    let workspace_hash = match exit_report::hash_workspace(work_dir_path).await {
-        Ok(h) => h,
-        Err(e) => {
-            warn!("failed to hash workspace for exit report: {e}");
-            return;
-        }
-    };
-
-    let (tail_hash, count) = audit.tail_hash_and_count();
-    let mut report =
-        exit_report::build_exit_report(workspace_hash, tail_hash, count, None, monitor);
-    if !report.monitor_violations.is_empty() || report.monitor_violations_dropped > 0 {
-        warn!(
-            violations = ?report.monitor_violations,
-            dropped = report.monitor_violations_dropped,
-            "exit report: decision-stream properties were violated during this session"
-        );
-    }
-
-    exit_report::apply_exposure(&mut report, exposure_guard);
-    exit_report::apply_art12(&mut report, art12_log);
-
-    let report_path = work_dir_path.join(".nucleus-exit-report.json");
-    match serde_json::to_string_pretty(&report) {
-        Ok(json) => {
-            if let Err(e) = tokio::fs::write(&report_path, json).await {
-                warn!(
-                    "failed to write exit report to {}: {e}",
-                    report_path.display()
-                );
-            } else {
-                info!(
-                    path = %report_path.display(),
-                    entries = count,
-                    event = "exit_report_written",
-                    "exit report written"
-                );
-            }
-        }
-        Err(e) => warn!("failed to serialize exit report: {e}"),
-    }
 }
 
 /// Builds mTLS configuration from CLI arguments.

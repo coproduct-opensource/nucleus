@@ -181,6 +181,11 @@ pub struct RunArgs {
     #[arg(long = "grant-signer", value_name = "HEX")]
     pub grant_signers: Vec<String>,
 
+    /// The task grant this run executes under (set by --goal / --grant, not a
+    /// flag): carried in the pod spec so the exit report names it.
+    #[arg(skip)]
+    pub task_grant_id: Option<String>,
+
     /// Working directory (default: current directory)
     #[arg(short = 'd', long, default_value = ".")]
     pub dir: String,
@@ -711,7 +716,7 @@ fn build_local_pod_spec(
         })
     };
 
-    Ok(SpecPodSpec::new(PodSpecInner {
+    let mut spec = SpecPodSpec::new(PodSpecInner {
         work_dir: work_dir.to_path_buf(),
         timeout_seconds: args.timeout,
         policy: PolicySpec::Inline {
@@ -728,7 +733,9 @@ fn build_local_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials,
-    }))
+    });
+    spec.metadata.task_grant_id = args.task_grant_id.clone();
+    Ok(spec)
 }
 
 async fn run_enforced(
@@ -822,7 +829,7 @@ fn build_pod_spec(
     kernel_path: &str,
     rootfs_path: &str,
 ) -> Result<SpecPodSpec> {
-    Ok(SpecPodSpec::new(PodSpecInner {
+    let mut spec = SpecPodSpec::new(PodSpecInner {
         work_dir: work_dir.to_path_buf(),
         timeout_seconds: args.timeout,
         policy: PolicySpec::Inline {
@@ -848,7 +855,9 @@ fn build_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials: None,
-    }))
+    });
+    spec.metadata.task_grant_id = args.task_grant_id.clone();
+    Ok(spec)
 }
 
 fn write_pod_spec(spec_path: &Path, spec: &SpecPodSpec) -> Result<()> {
