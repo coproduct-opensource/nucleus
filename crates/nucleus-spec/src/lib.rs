@@ -490,6 +490,32 @@ pub struct ImageSpec {
     /// Expected digest of the scratch image, if the spec pins one.
     #[serde(default)]
     pub scratch_digest: Option<ArtifactDigest>,
+    /// An additional READ-ONLY filesystem image handed to the guest.
+    ///
+    /// A microVM has no host-directory mount and there never will be one: Firecracker rejected
+    /// virtio-fs on attack-surface grounds, and a p9 implementation before it. So the only way to
+    /// put a corpus of bytes in front of a workload — a source tree, a dataset, a model, a
+    /// reference corpus — is a block device, which is what this is.
+    ///
+    /// Read-only is the whole point and not a convenience:
+    /// * the guest cannot write through to it, so one image safely backs many pods;
+    /// * it is therefore not per-pod writable state, so it does not make the pod unsnapshottable
+    ///   the way a scratch disk does (see `snapshot::clone_safety`);
+    /// * and being immutable, it has a digest, which is what lets it enter the pod's program
+    ///   identity rather than being invisible input.
+    #[serde(default)]
+    pub data_path: Option<PathBuf>,
+    /// Expected digest of the read-only data image, if the spec pins one.
+    ///
+    /// Load-bearing beyond integrity. Two pods differing only in the CONTENT of this image
+    /// compute different things, so the digest belongs in the program identity — and through it
+    /// in a snapshot's derivation, because Firecracker offers no `drive_overrides` on
+    /// `/snapshot/load` (unlike `network_overrides`). A restored VM reopens its drives at the
+    /// paths baked into the snapshot, so a base is only valid for a pod whose data image holds
+    /// the same bytes. Without this field in the identity, a base could be restored against a
+    /// different corpus and the guest would carry the old one's page cache.
+    #[serde(default)]
+    pub data_digest: Option<ArtifactDigest>,
 }
 
 /// Vsock configuration for VM communication.

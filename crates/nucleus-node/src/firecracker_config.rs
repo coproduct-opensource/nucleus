@@ -116,6 +116,10 @@ pub(crate) mod in_jail {
     pub const KERNEL: &str = "/kernel";
     pub const ROOTFS: &str = "/rootfs.ext4";
     pub const SCRATCH: &str = "/scratch.ext4";
+    /// The read-only data image. Fixed like the rest, and here the fixity is what makes a base
+    /// restorable: Firecracker has no `drive_overrides` on `/snapshot/load`, so a restored VM
+    /// reopens its drives at the paths inside the snapshot.
+    pub const DATA: &str = "/data.img";
     pub const VSOCK: &str = "/vsock.sock";
     pub const LOG: &str = "/firecracker.log";
     pub const CONFIG: &str = "/config.json";
@@ -222,6 +226,18 @@ pub(crate) fn jail_resources(image: &nucleus_spec::ImageSpec, spec: &PodSpec) ->
             in_jail: in_jail::SCRATCH,
             // `lower_drives` gives scratch `is_read_only: false` unconditionally.
             placement: Placement::HardLinkOnly,
+        });
+    }
+
+    if let Some(ref data) = image.data_path {
+        resources.push(JailResource {
+            host_source: data.clone(),
+            in_jail: in_jail::DATA,
+            // COPYABLE, unlike scratch, and the difference is exactly `is_read_only`. The reason
+            // scratch must be hard-linked is that a copy would silently discard the guest's
+            // writes; a read-only image has no writes to discard, so a cross-device copy is
+            // correct — merely slower, and the same trade the kernel and rootfs already make.
+            placement: Placement::CopyableIfCrossDevice,
         });
     }
 
@@ -967,6 +983,23 @@ fn lower_drives(image: &nucleus_spec::ImageSpec, jailed: bool) -> Vec<DriveConfi
         });
     }
 
+    if let Some(ref data) = image.data_path {
+        drives.push(DriveConfig {
+            drive_id: "data".to_string(),
+            path_on_host: if jailed {
+                in_jail::DATA.to_string()
+            } else {
+                data.display().to_string()
+            },
+            is_root_device: false,
+            // The property the whole design rests on, and it is unconditional: there is no spec
+            // field that can make this writable. A guest that could write here would corrupt an
+            // image other pods are reading, and would make the pod unsnapshottable into the
+            // bargain — `snapshot_inputs` counts any writable non-root drive as scratch.
+            is_read_only: true,
+        });
+    }
+
     drives
 }
 
@@ -1166,6 +1199,86 @@ mod tests {
             .expect("base PodSpec must deserialize")
     }
 
+    /// A read-only data image lowers to a non-root, read-only drive at the fixed in-jail name.
+    ///
+    /// Three properties, each load-bearing for a different reason:
+    /// * `is_read_only` — a guest that could write here would corrupt an image other pods read;
+    /// * `is_root_device: false` — it is a corpus beside the system, not the system;
+    /// * the fixed in-jail name — Firecracker has no `drive_overrides` on `/snapshot/load`, so a
+    ///   restored VM reopens drives at the paths inside the snapshot. Identical inside each
+    ///   chroot, distinct outside, exactly as the vsock path must be.
+    #[test]
+    fn a_data_image_lowers_to_a_read_only_non_root_drive() {
+        let mut img = image(true, false);
+        img.data_path = Some(PathBuf::from("/var/lib/nucleus/corpus.img"));
+        let drives = lower_drives(&img, true);
+        let data = drives
+            .iter()
+            .find(|d| d.drive_id == "data")
+            .expect("the data image becomes a drive");
+        assert!(data.is_read_only, "a shared corpus is never writable");
+        assert!(!data.is_root_device);
+        assert_eq!(data.path_on_host, in_jail::DATA);
+
+        // Unjailed it keeps the host path, like every other artifact on that path.
+        let unjailed = lower_drives(&img, false);
+        let data = unjailed.iter().find(|d| d.drive_id == "data").unwrap();
+        assert_eq!(data.path_on_host, "/var/lib/nucleus/corpus.img");
+
+        // And no data image means no drive at all — absence is a no-op, so every spec written
+        // before this field is unaffected.
+        assert!(
+            lower_drives(&image(true, false), true)
+                .iter()
+                .all(|d| d.drive_id != "data")
+        );
+    }
+
+    /// A data image does NOT make a pod unsnapshottable; a scratch disk does.
+    ///
+    /// This is the property that lets a gate pod still be a base. `snapshot_inputs` counts any
+    /// writable non-root drive as scratch, and refuses to snapshot such a pod — clones would
+    /// either share one writable file or inherit stale cached filesystem state. A read-only
+    /// corpus has neither problem, and if this test ever fails the whole design collapses:
+    /// delivering a corpus would cost the ability to reuse the pod that reads it.
+    ///
+    /// Linux-gated because `snapshot_inputs` is: asserting on `lower_drives`'s output instead
+    /// would restate the predicate rather than exercise it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_read_only_data_image_does_not_count_as_writable_scratch() {
+        let mut with_data = image(true, false);
+        with_data.data_path = Some(PathBuf::from("/corpus.img"));
+        let cfg = |img: &ImageSpec| FirecrackerConfig {
+            boot_source: BootSource {
+                kernel_image_path: String::new(),
+                boot_args: None,
+            },
+            drives: lower_drives(img, true),
+            machine_config: MachineConfig {
+                vcpu_count: 1,
+                mem_size_mib: 256,
+                smt: false,
+            },
+            network_interfaces: Vec::new(),
+            vsock: None,
+            logger: None,
+        };
+        assert!(
+            !cfg(&with_data)
+                .snapshot_inputs(nucleus_spec::vmm_version::PINNED)
+                .writable_scratch,
+            "a read-only corpus must not read as writable scratch, or attaching one would make \
+             the pod unsnapshottable"
+        );
+        assert!(
+            cfg(&image(true, true))
+                .snapshot_inputs(nucleus_spec::vmm_version::PINNED)
+                .writable_scratch,
+            "...while a real scratch disk still does"
+        );
+    }
+
     fn image(read_only: bool, scratch: bool) -> ImageSpec {
         ImageSpec {
             kernel_path: PathBuf::from("/var/lib/nucleus/vmlinux"),
@@ -1176,6 +1289,8 @@ mod tests {
             kernel_digest: None,
             rootfs_digest: None,
             scratch_digest: None,
+            data_path: None,
+            data_digest: None,
         }
     }
 
@@ -1851,6 +1966,8 @@ mod tests {
             kernel_digest: None,
             rootfs_digest: None,
             scratch_digest: None,
+            data_path: None,
+            data_digest: None,
         };
         let mut spec = base_spec();
         spec.spec.vsock = Some(VsockSpec {

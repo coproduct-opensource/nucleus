@@ -63,6 +63,8 @@ struct ImageIdentity<'a> {
     kernel: &'a str,
     rootfs: &'a str,
     scratch: Option<&'a str>,
+    /// The read-only data image, by content. See `ImageSpec::data_digest`.
+    data: Option<&'a str>,
     /// In, because it changes what the guest does. The node guarantees per-pod material does not
     /// appear here — that migration is what made a shared boot line possible at all.
     boot_args: Option<&'a String>,
@@ -87,16 +89,40 @@ struct Program<'a> {
 }
 
 fn image_identity(image: &ImageSpec) -> Result<ImageIdentity<'_>, IdentityError> {
-    let (Some(kernel), Some(rootfs)) = (&image.kernel_digest, &image.rootfs_digest) else {
+    // EXHAUSTIVE, for the same reason `program_digest` is. The destructure below covers
+    // `PodSpecInner`, which stops a new POD field being silently included — but until now nothing
+    // guarded `ImageSpec`, so a new IMAGE field would have been silently EXCLUDED. That is the
+    // worse direction: a pod whose data image changed would have kept its identity, and a cache
+    // would have served the old answer for new inputs.
+    let ImageSpec {
+        // OUT — locations. `/images/a/vmlinux` and `/images/b/vmlinux` may hold identical bytes or
+        // wildly different ones, and the path cannot say which. The digests below are the identity.
+        kernel_path: _,
+        rootfs_path: _,
+        scratch_path: _,
+        data_path: _,
+        // IN — the bytes themselves.
+        kernel_digest,
+        rootfs_digest,
+        scratch_digest,
+        data_digest,
+        boot_args,
+        read_only,
+    } = image;
+
+    let (Some(kernel), Some(rootfs)) = (kernel_digest, rootfs_digest) else {
         return Err(IdentityError::UnpinnedImage);
     };
     // A scratch disk is per-pod writable space; its digest is pinned only if the spec chose to.
     Ok(ImageIdentity {
         kernel: kernel.as_str(),
         rootfs: rootfs.as_str(),
-        scratch: image.scratch_digest.as_ref().map(|d| d.as_str()),
-        boot_args: image.boot_args.as_ref(),
-        read_only: image.read_only,
+        scratch: scratch_digest.as_ref().map(|d| d.as_str()),
+        // IN, and it decides the answer: a workload reading a different corpus computes something
+        // different. This is also what keeps a snapshot honest — see `ImageSpec::data_digest`.
+        data: data_digest.as_ref().map(|d| d.as_str()),
+        boot_args: boot_args.as_ref(),
+        read_only: *read_only,
     })
 }
 
@@ -288,6 +314,49 @@ mod tests {
                 "{what} decides what the pod computes, so it must change its identity"
             );
         }
+    }
+
+    /// A read-only data image is part of what a pod computes.
+    ///
+    /// The whole reason it can be pinned: a workload reading a different corpus computes something
+    /// different, so two pods differing only in that corpus must not share a program identity — or
+    /// a cache would answer for the wrong inputs, and a snapshot base would be restored against a
+    /// corpus it was not frozen with. Firecracker offers no `drive_overrides` on snapshot load, so
+    /// nothing downstream could catch it.
+    #[test]
+    fn a_different_data_image_is_a_different_program() {
+        let bare = pinned("");
+        let with_data = spec_from(&format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+                 "kernel_path":"/k","rootfs_path":"/r","kernel_digest":"{D1}",
+                 "rootfs_digest":"{D2}","data_path":"/d.img","data_digest":"{D1}"}}}}}}"#
+        ));
+        let other_data = spec_from(&format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+                 "kernel_path":"/k","rootfs_path":"/r","kernel_digest":"{D1}",
+                 "rootfs_digest":"{D2}","data_path":"/d.img","data_digest":"{D2}"}}}}}}"#
+        ));
+        assert_ne!(
+            program_digest(&bare).unwrap(),
+            program_digest(&with_data).unwrap(),
+            "attaching a corpus changes what the pod computes"
+        );
+        assert_ne!(
+            program_digest(&with_data).unwrap(),
+            program_digest(&other_data).unwrap(),
+            "a DIFFERENT corpus at the same path is a different program"
+        );
+        // ...and where the image sits on the host is not part of it, same as every other artifact.
+        let elsewhere = spec_from(&format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+                 "kernel_path":"/k","rootfs_path":"/r","kernel_digest":"{D1}",
+                 "rootfs_digest":"{D2}","data_path":"/mnt/elsewhere.img","data_digest":"{D1}"}}}}}}"#
+        ));
+        assert_eq!(
+            program_digest(&with_data).unwrap(),
+            program_digest(&elsewhere).unwrap(),
+            "a path is a location; the digest is the identity"
+        );
     }
 
     /// An image without digests has no identity to give, and says so.

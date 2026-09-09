@@ -542,6 +542,8 @@ fn posture_spec(label: Option<&str>, rootfs: Option<&std::path::Path>) -> PodSpe
             kernel_digest: None,
             rootfs_digest: None,
             scratch_digest: None,
+            data_path: None,
+            data_digest: None,
         }),
         vsock: None,
         seccomp: None,

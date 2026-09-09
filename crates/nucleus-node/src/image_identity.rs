@@ -64,6 +64,16 @@ fn pins<'a>(image: &'a ImageSpec, jail: Option<&JailLayout>) -> Vec<Pinned<'a>> 
             expected: d,
         });
     }
+    // The data image matters most of the three to check AFTER placement: it is the one artifact a
+    // pod may share with other pods, and its digest is in the program identity, so bytes that do
+    // not match the pin would give this pod another pod's identity.
+    if let (Some(d), Some(data)) = (&image.data_digest, &image.data_path) {
+        out.push(Pinned {
+            what: "data",
+            path: at(in_jail::DATA, data),
+            expected: d,
+        });
+    }
     out
 }
 
@@ -105,6 +115,8 @@ mod tests {
             kernel_digest: kd.map(|d| ArtifactDigest::parse(d).expect("test digest parses")),
             rootfs_digest: None,
             scratch_digest: None,
+            data_path: None,
+            data_digest: None,
         }
     }
 

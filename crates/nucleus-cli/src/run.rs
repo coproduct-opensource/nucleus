@@ -821,6 +821,8 @@ fn build_pod_spec(
             kernel_digest: None,
             rootfs_digest: None,
             scratch_digest: None,
+            data_path: None,
+            data_digest: None,
         }),
         credentialed_egress: Vec::new(),
         workload: None,
