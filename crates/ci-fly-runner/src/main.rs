@@ -21,6 +21,7 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
+use ci_fly_runner::DEFAULT_WARMING_LIMIT;
 use ci_fly_runner::api::{ForgeApi, MachinesApi, Ureq};
 use ci_fly_runner::parse_pools;
 use ci_fly_runner::reconcile::{DEFAULT_LAUNCH_CONCURRENCY, Manager, Settings};
@@ -61,6 +62,12 @@ fn run() -> Result<(), String> {
         DEFAULT_LAUNCH_CONCURRENCY as u64,
     )?)
     .unwrap_or(DEFAULT_LAUNCH_CONCURRENCY);
+    // How many machines may pull an image at once. Every boot pulls the whole rootfs over one
+    // shared uplink, so an unbounded roll of the fleet is a bandwidth stampede: 21 machines sat in
+    // `starting` for six minutes with zero unpack failures the day the image grew to 2.5 GB.
+    let warming_limit = usize::try_from(number("WARMING_LIMIT", DEFAULT_WARMING_LIMIT as u64)?)
+        .unwrap_or(DEFAULT_WARMING_LIMIT)
+        .max(1);
 
     // The organization's machine cap, if it is declared. Every machine in the pool counts against
     // it, and so does the replacement each launch's config rewrite needs — so a deployment is
@@ -95,6 +102,7 @@ fn run() -> Result<(), String> {
             lookback,
             idle_secs,
             launch_concurrency,
+            warming_limit,
             machine_budget,
             machines_elsewhere: elsewhere,
         },
