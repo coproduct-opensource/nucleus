@@ -25,7 +25,22 @@ check_response_timeout_minutes = 360
 # fifty required contexts already saturate the pool. Four-way speculation produced one merge in
 # six hours with nothing red. The bite records the measurement.
 max_entries_to_build = 1
-max_entries_to_merge = 1
+# Batch size. This is the other lever, and unlike `max_entries_to_build` it does
+# not divide the pool: `c` groups building at once each get a share `p / c`
+# (T12), but `n` entries merging as ONE group is one merged commit and therefore
+# one run of the same fifty-odd contexts, whatever `n` is. Pool demand is flat in
+# `n`; throughput is linear in it. That is exactly the asymmetry the concurrency
+# trace above missed — the 2026-09-09 experiment moved the lever that costs
+# capacity instead of the one that does not.
+#
+# 8 because the queue holds six to eight entries when it backs up, and a group
+# that large still fits the pool it already fits at n = 1. The cost is failure
+# isolation: a red batch is bisected, so one bad entry spends a cycle it would
+# not have spent alone. `min_entries_to_merge = 1` with a zero wait keeps that
+# from becoming a latency floor — a lone entry still goes straight through, and
+# batching only happens when entries have queued up behind a build anyway, which
+# is precisely when it pays.
+max_entries_to_merge = 8
 min_entries_to_merge = 1
 min_entries_to_merge_wait_minutes = 0
 grouping_strategy = "ALLGREEN"
