@@ -1,0 +1,13 @@
+# The worker image: ci/fly-runner/Dockerfile over the base built by base.toml. Its own config
+# for the same reason base.toml has one — the repository root's fly.toml would otherwise win.
+#
+#   fly deploy . --config ci/fly-runner/worker.toml --build-arg BASE_IMAGE=<base digest> \
+#     --image-label worker-<n> --build-only --push --remote-only --yes
+#
+# The digest it prints is the manager's RUNNER_IMAGE secret. Never deployed as a release: the
+# app's machines are created by the manager.
+app = "nucleus-fly-build"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"

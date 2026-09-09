@@ -1146,6 +1146,7 @@ mod tests {
             art12_chain_head: "head".to_string(),
             art12_records: 5,
             art12_dropped: 0,
+            authority: None,
         }
     }
 

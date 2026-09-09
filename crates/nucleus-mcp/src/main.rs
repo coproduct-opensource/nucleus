@@ -656,6 +656,9 @@ impl TraceWriter {
     /// Write a summary line and flush on session end.
     fn finish(&self, kernel: &Kernel) {
         if let Some(ref f) = self.file {
+            // ρ and the decision counts (ADR 0004): what this session was
+            // granted against what it used, from the same trace.
+            let authority = portcullis::summarise_authority(kernel.effective(), kernel.trace());
             let summary = json!({
                 "type": "session_summary",
                 "session_id": kernel.session_id().to_string(),
@@ -663,6 +666,7 @@ impl TraceWriter {
                 "consumed_usd": kernel.consumed_usd().to_string(),
                 "remaining_usd": kernel.remaining_usd().to_string(),
                 "initial_hash": kernel.initial_hash(),
+                "authority": authority,
             });
             if let Ok(line) = serde_json::to_string(&summary) {
                 let mut writer = f.borrow_mut();
@@ -2132,6 +2136,11 @@ mod tests {
         assert_eq!(summary["type"], "session_summary");
         assert_eq!(summary["decisions"], 1);
         assert_eq!(summary["consumed_usd"], "0.05");
+        // ρ and the decision counts ride in the same line (ADR 0004).
+        assert_eq!(summary["authority"]["allowed"], 1);
+        assert_eq!(summary["authority"]["denied"], 0);
+        assert_eq!(summary["authority"]["used_dimensions"][0], "read_files");
+        assert!(summary["authority"]["overhead"].as_f64().unwrap() >= 1.0);
     }
 
     #[test]

@@ -29,6 +29,7 @@ mod doctor;
 mod envelope;
 mod envelope_verify;
 mod goal;
+mod grant;
 mod guard;
 mod identity;
 mod keychain;
@@ -131,6 +132,9 @@ enum Commands {
     /// Manage attenuation tokens for delegation
     Token(token::TokenArgs),
 
+    /// Seal a goal into a signed, reusable grant, or show one
+    Grant(grant::GrantArgs),
+
     /// JWT-SVID inspection + OP token-exchange affordances (#48)
     Identity(identity::IdentityArgs),
 
@@ -209,6 +213,7 @@ async fn main() -> Result<()> {
         Commands::Observe(args) => observe::execute(args),
         Commands::Replay(args) => replay::execute(args),
         Commands::Token(args) => token::execute(args),
+        Commands::Grant(args) => grant::execute(args),
         Commands::Trust(args) => trust::execute(args),
         Commands::Identity(args) => identity::execute(args),
         Commands::Node(args) => node::execute(args).await,

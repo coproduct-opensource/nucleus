@@ -1,0 +1,19 @@
+[package]
+name = "ci-fly-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "A warm, bounded pool of microVMs that run this repository's CI jobs: what to start, create and retire is a pure plan over a snapshot; the API calls are the only effects"
+# Dev/CI tooling — never published.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ureq = { workspace = true, features = ["json"] }

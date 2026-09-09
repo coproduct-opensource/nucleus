@@ -67,6 +67,8 @@ case "$MODE" in
         exit 1
     fi
     echo "ok: $total Kani harnesses, census exact"
+    # A census alone cannot detect a harness that no CI job selects (#2580).
+    cargo run -q -p xtask -- kani-coverage
     ;;
   *) echo "usage: $0 --count|--strict|--report"; exit 2 ;;
 esac

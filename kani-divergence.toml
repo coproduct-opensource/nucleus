@@ -145,9 +145,9 @@ why = "`leq` skips the extension pointwise-<= branch under Kani. Every harness a
 file = "crates/portcullis/src/certificate.rs"
 attr = "#[cfg(not(kani))]"
 guards = "{"
-count = 2
+count = 3
 class = "semantic-divergence"
-why = "The permission digest omits the extension bytes under Kani. A digest proved stable/injective under Kani is proved so for extension-FREE permissions; two production permissions differing only in extensions hash differently (BTreeMap iteration is key-ordered, so this remains deterministic), which Kani never exercises. Any future harness over `permission_digest` is a `_core_dims` proof until this site is removed."
+why = "Three blocks. (1) The permission digest omits the extension bytes under Kani: a digest proved stable/injective under Kani is proved so for extension-FREE permissions; two production permissions differing only in extensions hash differently (BTreeMap iteration is key-ordered, so this remains deterministic), which Kani never exercises. Any future harness over `permission_digest` is a `_core_dims` proof until this site is removed. (2) Before the delegation meet: a silent child inherits the parent's granted effects and compartment, and the compartment ceiling is applied to the request. (3) After the meet: the refusals of a child that sheds the tool-surface marker (`ToolSurfaceDropped`), the effect marker (`EffectSurfaceDropped`), or exceeds the parent's compartment. None of (2)/(3) is reachable under Kani (no extensions exist); each is pinned by production tests (`shedding_the_marker_is_detectable`, `a_delegated_certificate_narrows_the_tool_surface`, the `effect_surface_hops` tests, the compartment tests)."
 
 [[site]]
 file = "crates/portcullis/src/dropout.rs"
@@ -349,6 +349,13 @@ class = "extensions-omitted-op"
 why = "The tool-surface module reads and narrows `CapabilityLattice::extensions` (the `mcp-tool/` keys); same root cause as the compartment module."
 
 [[site]]
+file = "crates/portcullis/src/lib.rs"
+attr = "#[cfg(not(kani))]"
+guards = "pub mod effect_surface;"
+class = "extensions-omitted-op"
+why = "The effect-surface module reads and narrows `CapabilityLattice::extensions` (the `effect/` keys a sealed task grant carries); same root cause as the tool-surface module."
+
+[[site]]
 file = "crates/portcullis/src/certificate.rs"
 attr = "#[cfg(not(kani))]"
 guards = "Compartment(crate::cert_compartment::CompartmentHopError),"
@@ -375,17 +382,3 @@ attr = "#[cfg(not(kani))]"
 guards = "crate::tool_surface::inherit_surface("
 class = "extensions-omitted-op"
 why = "A silent child inherits the parent's tool surface before the meet. Under Kani there is no surface to inherit; the meet the harnesses check is over the core dimensions only."
-
-[[site]]
-file = "crates/portcullis/src/certificate.rs"
-attr = "#[cfg(not(kani))]"
-guards = "if !crate::tool_surface::surface_preserved("
-class = "extensions-omitted-op"
-why = "The refusal of a child that sheds the tool-surface marker (`ToolSurfaceDropped`). Not reachable under Kani (no marker exists); the refusal is pinned by the production tests `shedding_the_marker_is_detectable` and `a_delegated_certificate_narrows_the_tool_surface`."
-
-[[site]]
-file = "crates/portcullis/src/certificate.rs"
-attr = "#[cfg(not(kani))]"
-guards = "crate::cert_compartment::check_effective("
-class = "extensions-omitted-op"
-why = "The refusal of an effective lattice above the parent's compartment. Same domain as the site above: unreachable for extension-free permissions; pinned by the compartment tests in production builds."
