@@ -150,35 +150,29 @@ jobs:
           done
           echo "generated-certchain/ canonicalized from the fresh extraction; theorem builds against it."
 
-      - name: Install elan (Lean toolchain)
-        if: runner.environment == 'github-hosted'
-        run: |
-          # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
-          # script is handed to an interpreter (Scorecard Pinned-Dependencies).
-          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
-          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  /tmp/elan.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/elan.tar.gz -C /tmp elan-init
-          /tmp/elan-init -y --no-modify-path
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      - name: "Lean toolchain + Mathlib cache (hosted: elan + cache action)"
-        if: ${{ runner.environment == 'github-hosted' }}
-        uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
+      - name: Build Lean project with cached artifacts
+        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
+        env:
+          LEAN_NUM_THREADS: "4"
         with:
-          lean-project-dir: crates/portcullis-core/lean
-          build-target: PortcullisCoreCertChain
-          cache-key-prefix: lean-certchain
-      - name: "Mathlib cache (self-hosted: baked elan, persistent ~/.cache/mathlib)"
-        if: ${{ runner.environment != 'github-hosted' }}
-        working-directory: crates/portcullis-core/lean
-        run: lake exe cache get || true
+          lake-package-directory: crates/portcullis-core/lean
+          auto-config: "false"
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "true"
+          use-github-cache: "${{ runner.environment == 'github-hosted' }}"
+          build-args: >-
+            PortcullisCoreCertChain
+            CertChainMonotoneExtracted
 
-      - name: lake build (extracted core + theorem)
+      - name: Replay build messages for axiom-profile checks (extracted core + theorem)
         working-directory: crates/portcullis-core/lean
         shell: bash
         run: |
           lake build PortcullisCoreCertChain
           lake build CertChainMonotoneExtracted 2>&1 | tee /tmp/lake-certchain.log
+
 
       - name: Assert clean axiom set (no sorryAx / opaque axioms)
         shell: bash

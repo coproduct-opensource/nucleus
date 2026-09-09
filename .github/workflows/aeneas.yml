@@ -234,54 +234,32 @@ jobs:
           fi
 
       # --- Verify proofs type-check ---
-      - name: Install elan (Lean toolchain)
-        if: runner.environment == 'github-hosted'
-        run: |
-          # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
-          # script is handed to an interpreter (Scorecard Pinned-Dependencies).
-          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
-          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  /tmp/elan.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/elan.tar.gz -C /tmp elan-init
-          /tmp/elan-init -y --no-modify-path
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      # Cache-poisoning ignored: formal-proof build only, no published artifacts.
-      - name: Cache Lake / Mathlib build artifacts
-        if: ${{ runner.environment == 'github-hosted' }}
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5 # zizmor: ignore[cache-poisoning]
+      - name: Build Lean project with cached artifacts
+        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
+        env:
+          LEAN_NUM_THREADS: "4"
         with:
-          path: |
-            crates/portcullis-core/lean/.lake
-            ~/.elan
-            ~/.cache/mathlib
-          # Include lake-manifest.json so dep commit bumps invalidate the cache.
-          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
-          restore-keys: |
-            lean-aeneas-${{ runner.os }}-
-
-      # Fetch prebuilt Mathlib .olean artifacts from Azure. Without this step
-      # a cold cache triggers a ~1 hour full Mathlib compile; with it, the
-      # Mathlib layer downloads in ~5 minutes.
-      - name: Fetch Mathlib cache (prebuilt oleans)
-        working-directory: crates/portcullis-core/lean
-        run: lake exe cache get || true
-
-      - name: lake build (type-check proofs)
-        working-directory: crates/portcullis-core/lean
-        run: |
-          lake build PortcullisCoreBridge
-          lake build ExposureProofs
-          lake build DecidePureProofs
-          lake build DeclassifyProofs
-          lake build FlowProofs
-          lake build FlowGraphProofs
-          lake build CompartmentProofs
-          lake build DelegationProofs
-          lake build DerivationProofs
-          lake build UnwindingNoninterference
-          lake build UnwindingIFC
-          lake build SessionCeilingProofs
-          lake build ReceiptChainProofs
+          lake-package-directory: crates/portcullis-core/lean
+          auto-config: "false"
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "true"
+          use-github-cache: "${{ runner.environment == 'github-hosted' }}"
+          build-args: >-
+            PortcullisCoreBridge
+            ExposureProofs
+            DecidePureProofs
+            DeclassifyProofs
+            FlowProofs
+            FlowGraphProofs
+            CompartmentProofs
+            DelegationProofs
+            DerivationProofs
+            UnwindingNoninterference
+            UnwindingIFC
+            SessionCeilingProofs
+            ReceiptChainProofs
 
       - name: Reject sorry (proof holes)
         working-directory: crates/portcullis-core/lean

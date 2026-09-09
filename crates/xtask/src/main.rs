@@ -35,6 +35,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Emit explicit Lean-action targets for the library coverage gate.
+    LeanActionBuilds,
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
@@ -176,12 +178,14 @@ enum CiSpecCmd {
 mod ci_otel;
 mod ci_spec;
 mod ci_timings;
+mod lean_action_builds;
 mod rerun_plan;
 mod scoreboard;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::LeanActionBuilds => lean_action_builds::run(),
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {
             base,

@@ -72,34 +72,19 @@ jobs:
             echo "as a required status check."
           fi
 
-      - name: Install elan (Lean toolchain)
-        # Hosted only: the self-hosted runner image bakes elan and the pinned toolchain.
-        if: runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true')
-        run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
-            | sh -s -- -y --no-modify-path
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      - name: Cache Lake build artifacts
-        # Hosted only: uploads from the self-hosted pool pin a runner for the
-        # save step; its caches live on persistent mounts instead.
-        if: ${{ runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true') }}
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        with:
-          path: |
-            crates/nucleus-ifc-kernel/lean/.lake
-            ~/.elan
-          key: lean-ifc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/nucleus-ifc-kernel/lean/lean-toolchain', 'crates/nucleus-ifc-kernel/lean/lakefile.lean', 'crates/nucleus-ifc-kernel/lean/lake-manifest.json') }}
-          restore-keys: |
-            lean-ifc-${{ runner.os }}-${{ runner.arch }}-
-
-      # A BARE `lake build` in the package directory: this is exactly what the
-      # lean_lib coverage gate (scripts/check-lean-libs-built.sh) now requires
-      # before it counts a package's @[default_target] libs as built.
-      - name: lake build Ifc (DerivationClass lattice + no-silent-cleansing)
+      - name: Build Lean project with cached artifacts
         if: steps.scope.outputs.relevant == 'true'
-        working-directory: crates/nucleus-ifc-kernel/lean
-        run: LEAN_NUM_THREADS=4 lake build
+        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
+        env:
+          LEAN_NUM_THREADS: "4"
+        with:
+          lake-package-directory: crates/nucleus-ifc-kernel/lean
+          auto-config: "false"
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "false"
+          use-github-cache: "${{ runner.environment == 'github-hosted' }}"
 
       - name: Per-theorem axiom audit (every declaration under Ifc)
         if: steps.scope.outputs.relevant == 'true'

@@ -225,30 +225,25 @@ jobs:
           echo "CANONICAL-FUNS-END"
 
       # --- Build the theorem + capture the REAL axiom set ---
-      - name: Install elan (Lean toolchain)
-        if: steps.scope.outputs.relevant == 'true' && runner.environment == 'github-hosted'
-        run: |
-          # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
-          # script is handed to an interpreter (Scorecard Pinned-Dependencies).
-          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
-          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  /tmp/elan.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/elan.tar.gz -C /tmp elan-init
-          /tmp/elan-init -y --no-modify-path
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      - name: "Lean toolchain + Mathlib cache (hosted: elan + cache action)"
-        if: steps.scope.outputs.relevant == 'true' && runner.environment == 'github-hosted'
-        uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
+      - name: Build Lean project with cached artifacts
+        if: steps.scope.outputs.relevant == 'true'
+        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
+        env:
+          LEAN_NUM_THREADS: "4"
         with:
-          lean-project-dir: crates/nucleus-github-oidc/lean
-          build-target: NucleusGithubOidc
-          cache-key-prefix: lean-oidc
-      - name: "Mathlib cache (self-hosted: baked elan, persistent ~/.cache/mathlib)"
-        if: steps.scope.outputs.relevant == 'true' && runner.environment != 'github-hosted'
-        working-directory: crates/nucleus-github-oidc/lean
-        run: lake exe cache get || true
+          lake-package-directory: crates/nucleus-github-oidc/lean
+          auto-config: "false"
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "true"
+          use-github-cache: "${{ runner.environment == 'github-hosted' }}"
+          build-args: >-
+            NucleusGithubOidc
+            OidcSpiffeProofs
+            JwtSvidClaimsProofs
 
-      - name: lake build (extracted core + theorems)
+      - name: Replay build messages for axiom-profile checks (extracted core + theorems)
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-github-oidc/lean
         # `shell: bash` is LOAD-BEARING. GitHub's default `run` shell is
@@ -262,6 +257,7 @@ jobs:
         run: |
           lake build NucleusGithubOidc
           lake build OidcSpiffeProofs JwtSvidClaimsProofs 2>&1 | tee /tmp/lake-oidc.log
+
 
       - name: Assert clean axiom set (no sorryAx / opaque axioms)
         if: steps.scope.outputs.relevant == 'true'

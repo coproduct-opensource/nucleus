@@ -17,6 +17,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 # Constitutional gate: run ck-kernel admission on PolicyManifest amendments.
 ck-kernel = { path = "../ck-kernel" }
 ck-types = { path = "../ck-types" }
