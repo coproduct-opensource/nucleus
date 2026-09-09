@@ -35,6 +35,17 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // 422 on a machines route is one thing in practice and it is not obvious from the
+            // number: the organization is at its machine cap, so the replacement an update needs
+            // cannot be created. The body would say so, but a body may carry a credential and is
+            // never printed — so the hint is derived from the status and the path instead.
+            Error::Status { method, path, code } if *code == 422 && path.contains("/machines") => {
+                write!(
+                    f,
+                    "{method} {path}: HTTP 422 (usually: the organization is at its machine limit, \
+                     so the replacement this update needs cannot be created)"
+                )
+            }
             Error::Status { method, path, code } => write!(f, "{method} {path}: HTTP {code}"),
             Error::Unreachable { path, cause } => write!(f, "{path}: unreachable: {cause}"),
             Error::Malformed { path, field } => write!(f, "{path}: no {field} in the answer"),

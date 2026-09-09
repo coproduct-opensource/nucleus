@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use ci_fly_runner::api::{ForgeApi, MachinesApi, Ureq};
 use ci_fly_runner::parse_pools;
-use ci_fly_runner::reconcile::Manager;
+use ci_fly_runner::reconcile::{DEFAULT_LAUNCH_CONCURRENCY, Manager};
 
 const FORGE_API: &str = "https://api.github.com";
 const MACHINES_API: &str = "https://api.machines.dev/v1";
@@ -56,6 +56,32 @@ fn run() -> Result<(), String> {
     let poll = number("POLL_SECONDS", 20)?;
     let idle_secs = number("IDLE_MINUTES", 30)? * 60;
     let lookback = usize::try_from(number("LOOKBACK_RUNS", 30)?).unwrap_or(30);
+    let launch_concurrency = usize::try_from(number(
+        "LAUNCH_CONCURRENCY",
+        DEFAULT_LAUNCH_CONCURRENCY as u64,
+    )?)
+    .unwrap_or(DEFAULT_LAUNCH_CONCURRENCY);
+
+    // The organization's machine cap, if it is declared. Every machine in the pool counts against
+    // it, and so does the replacement each launch's config rewrite needs — so a deployment is
+    // only startable when the pools plus the launches in flight plus everything else the
+    // organization runs fits. Refusing at startup beats discovering it as a 422 on every start
+    // with the queue full and every machine warm.
+    if let Ok(budget) = std::env::var("MACHINE_BUDGET") {
+        let budget: usize = budget
+            .parse()
+            .map_err(|_| format!("MACHINE_BUDGET must be a number, not {budget:?}"))?;
+        let elsewhere: usize = number("MACHINES_ELSEWHERE", 0)?.try_into().unwrap_or(0);
+        let pooled: usize = pools.iter().map(|p| p.size).sum();
+        let wanted = pooled + launch_concurrency + elsewhere + 1; // +1: this manager
+        if wanted > budget {
+            return Err(format!(
+                "this deployment wants {wanted} machines ({pooled} pooled + {launch_concurrency} \
+                 in-flight launches + {elsewhere} elsewhere + 1 manager) against a budget of \
+                 {budget}: at the cap every launch is refused and the pool deadlocks warm"
+            ));
+        }
+    }
 
     let manager = Manager::new(
         ForgeApi::new(Ureq::default(), FORGE_API, &var("GITHUB_TOKEN")?, &repo),
@@ -65,6 +91,7 @@ fn run() -> Result<(), String> {
         region,
         lookback,
         idle_secs,
+        launch_concurrency,
     );
 
     let once = std::env::args().any(|a| a == "--once");

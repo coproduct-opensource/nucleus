@@ -257,6 +257,7 @@ fn queued_jobs_with_a_pool_label_count_whatever_the_event_and_only_once() {
         "iad".into(),
         30,
         1800,
+        6,
     );
     let demand = manager.demand().unwrap();
     // 10 and 13 queued; 11 is running, 12 is another label, and 10 seen twice is one job.
@@ -479,6 +480,7 @@ fn manager(
         "iad".into(),
         30,
         1800,
+        6,
     )
 }
 
@@ -718,6 +720,7 @@ fn a_pass_that_cannot_read_the_world_changes_nothing() {
         "iad".into(),
         30,
         1800,
+        6,
     );
     assert!(m.tick(NOW).is_err());
     assert!(m.substrate.created.lock().unwrap().is_empty());

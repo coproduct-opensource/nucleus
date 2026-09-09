@@ -18,6 +18,17 @@ const LEDGER_SECS: u64 = 3600;
 /// alternative to waiting is a 412 and a job that is never taken.
 const WAIT_SECS: u64 = 60;
 
+/// How many launches may be in flight at once.
+///
+/// This is not a politeness limit. Writing a boot's registration into a machine is an UPDATE, and
+/// the substrate satisfies an update by replacing the machine — which needs a free slot under the
+/// organization's machine cap. A pool sized close to that cap therefore cannot start anything:
+/// every update answers 422 "reached its machine limit", so no job is taken, so no machine ever
+/// stops, so nothing frees a slot. The pool deadlocks with every machine warm and the queue full,
+/// and the only clue is a status code. Launches are bounded so a pass can never ask for more
+/// headroom than the deployment was sized to leave.
+pub const DEFAULT_LAUNCH_CONCURRENCY: usize = 6;
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
     pub demand: Vec<(String, usize)>,
@@ -38,6 +49,8 @@ pub struct Manager<F: Forge, S: Substrate> {
     pub region: String,
     pub lookback: usize,
     pub idle_secs: u64,
+    /// Launches in flight at once; see [`DEFAULT_LAUNCH_CONCURRENCY`].
+    pub launch_concurrency: usize,
     /// Registrations this process issued, and when. Bounds how "offline" is read: within the
     /// grace period it means booting, after it means the machine never took the job.
     ///
@@ -56,6 +69,7 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
         region: String,
         lookback: usize,
         idle_secs: u64,
+        launch_concurrency: usize,
     ) -> Self {
         Self {
             forge,
@@ -65,6 +79,7 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
             region,
             lookback,
             idle_secs,
+            launch_concurrency: launch_concurrency.max(1),
             issued: Mutex::new(BTreeMap::new()),
         }
     }
@@ -121,22 +136,25 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
         let (launches, rest): (Vec<Action>, Vec<Action>) = actions
             .into_iter()
             .partition(|a| matches!(a, Action::Launch { .. }));
-        let outcomes: Vec<Result<(), String>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = launches
-                .iter()
-                .map(|action| {
-                    let snapshot = &snapshot;
-                    scope.spawn(move || self.act(action, snapshot, now_secs))
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Err("a launch panicked".to_string()))
-                })
-                .collect()
-        });
+        let mut outcomes: Vec<Result<(), String>> = Vec::with_capacity(launches.len());
+        for batch in launches.chunks(self.launch_concurrency) {
+            outcomes.extend(std::thread::scope(|scope| {
+                let handles: Vec<_> = batch
+                    .iter()
+                    .map(|action| {
+                        let snapshot = &snapshot;
+                        scope.spawn(move || self.act(action, snapshot, now_secs))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join()
+                            .unwrap_or_else(|_| Err("a launch panicked".to_string()))
+                    })
+                    .collect::<Vec<_>>()
+            }));
+        }
         for outcome in outcomes {
             match outcome {
                 Ok(()) => report.launched += 1,
