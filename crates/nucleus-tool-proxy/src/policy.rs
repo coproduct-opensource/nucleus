@@ -195,6 +195,22 @@ impl PolicyEngine {
         }
     }
 
+    /// Whether a SPIFFE identity may GRANT approvals over the mTLS tier.
+    ///
+    /// The roster is the `approver_pattern`s of the configured escalation
+    /// policies — the only place an operator names who may approve. Any
+    /// workload in the trust domain can reach the proxy's mTLS port, so
+    /// without this gate every pod could approve its own risky operations
+    /// (`/v1/approve` used to accept the mTLS tier unconditionally, ahead of
+    /// the pinned-key tier). No escalation policies ⇒ nobody is an approver
+    /// over mTLS ⇒ approvals must come signed by a pinned key. Fail-closed.
+    pub fn is_approver(&self, spiffe_id: &str) -> bool {
+        self.escalation_policies
+            .policies
+            .iter()
+            .any(|p| p.matches_approver(spiffe_id))
+    }
+
     /// Create a policy engine with zero-prompt mode disabled.
     /// This means all operations still require explicit approval.
     pub fn disabled() -> Self {
@@ -336,6 +352,31 @@ pub enum PolicyError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mTLS approver roster is the escalation policies' approver
+    /// patterns and nothing else: an empty policy set admits no one, and a
+    /// requestor pattern does not make its subject an approver.
+    #[test]
+    fn mtls_approver_roster_is_the_escalation_approver_patterns() {
+        let none: PolicyConfig = serde_yaml::from_str("policies: []").unwrap();
+        let none = PolicyEngine::from_config(&none);
+        assert!(!none.is_approver("spiffe://nucleus.local/human/alice"));
+
+        let config: PolicyConfig = serde_yaml::from_str(
+            r#"
+policies: []
+escalation_policies:
+  - requestor_pattern: "spiffe://nucleus.local/pod/*"
+    approver_pattern: "spiffe://nucleus.local/human/*"
+    max_grant: "permissive"
+"#,
+        )
+        .unwrap();
+        let engine = PolicyEngine::from_config(&config);
+        assert!(engine.is_approver("spiffe://nucleus.local/human/alice"));
+        assert!(!engine.is_approver("spiffe://nucleus.local/pod/abc"));
+        assert!(!engine.is_approver("spiffe://other.example/human/alice"));
+    }
 
     #[test]
     fn test_parse_policy_yaml() {

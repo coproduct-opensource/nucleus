@@ -64,6 +64,16 @@ pub enum ActorIdentity {
     },
     /// Stdio guest process inside the pod (MCP transport).
     StdioGuest,
+    /// Authenticated by an Ed25519 signature that verified against a pinned
+    /// public key — the approval tier. No SPIFFE identity is bound, but the
+    /// key IS the principal: a verdict recorded under it can be reconstructed
+    /// after the fact to "approved by the holder of this key", which is what
+    /// an approval record must say. The fingerprint is the hex of the 32-byte
+    /// verifying key (public, never secret material).
+    SignedBy {
+        /// Hex-encoded Ed25519 verifying key that verified the request.
+        key_fingerprint: String,
+    },
     /// Identity could not be determined.
     Unknown,
 }

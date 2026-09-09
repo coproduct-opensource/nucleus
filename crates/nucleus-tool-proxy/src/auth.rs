@@ -100,6 +100,12 @@ pub struct AuthContext {
     pub auth_method: AuthMethod,
     /// How identity was bound to permissions (SPIFFE identity fusion).
     pub identity_binding: IdentityBinding,
+    /// On the Ed25519 approval tier: the hex of the pinned verifying key the
+    /// signature verified against. This is WHO approved — a roster is not a
+    /// quorum, so which member spoke is the only attribution there is, and a
+    /// record that omits it says "someone with a key". Public material; the
+    /// key can verify and do nothing else.
+    pub approver_key: Option<String>,
 }
 
 /// The method used to authenticate the request.
@@ -217,6 +223,7 @@ pub fn verify_http(
         spiffe_id: None,
         auth_method: AuthMethod::Hmac,
         identity_binding: IdentityBinding::PolicyOnly,
+        approver_key: None,
     })
 }
 
@@ -299,6 +306,7 @@ pub fn verify_http_with_drand(
                     spiffe_id: None,
                     auth_method: AuthMethod::HmacDrand,
                     identity_binding: IdentityBinding::PolicyOnly,
+                    approver_key: None,
                 });
             }
             None => {
@@ -336,6 +344,7 @@ pub fn verify_http_with_drand(
         spiffe_id: None,
         auth_method: AuthMethod::Hmac,
         identity_binding: IdentityBinding::PolicyOnly,
+        approver_key: None,
     })
 }
 
@@ -440,7 +449,7 @@ pub fn verify_http_with_ed25519_drand(
                     });
                 }
                 let message = signed_message(format!("{round}.{ts}.{actor_value}."), body);
-                verify_ed25519_any(&verifier.keys, &message, sig)?;
+                let key = verify_ed25519_any(&verifier.keys, &message, sig)?;
                 return Ok(AuthContext {
                     actor,
                     timestamp,
@@ -448,6 +457,7 @@ pub fn verify_http_with_ed25519_drand(
                     spiffe_id: None,
                     auth_method: AuthMethod::Ed25519Drand,
                     identity_binding: IdentityBinding::PolicyOnly,
+                    approver_key: Some(hex::encode(key.to_bytes())),
                 });
             }
             None => match drand_config.fail_mode {
@@ -463,7 +473,7 @@ pub fn verify_http_with_ed25519_drand(
     }
 
     let message = signed_message(format!("{ts}.{actor_value}."), body);
-    verify_ed25519_any(&verifier.keys, &message, sig)?;
+    let key = verify_ed25519_any(&verifier.keys, &message, sig)?;
     Ok(AuthContext {
         actor,
         timestamp,
@@ -471,6 +481,7 @@ pub fn verify_http_with_ed25519_drand(
         spiffe_id: None,
         auth_method: AuthMethod::Ed25519Drand,
         identity_binding: IdentityBinding::PolicyOnly,
+        approver_key: Some(hex::encode(key.to_bytes())),
     })
 }
 
@@ -485,23 +496,20 @@ fn signed_message(prefix: String, body: &[u8]) -> Vec<u8> {
 
 /// `verify_strict` against every configured key. Multiple approver keys are a
 /// roster, not a quorum: any single configured approver may approve, exactly
-/// as any holder of the old shared secret could.
-fn verify_ed25519_any(
-    keys: &[ed25519_dalek::VerifyingKey],
+/// as any holder of the old shared secret could. Returns WHICH key verified,
+/// because that is the only attribution a roster offers and the approval
+/// record must carry it.
+fn verify_ed25519_any<'k>(
+    keys: &'k [ed25519_dalek::VerifyingKey],
     message: &[u8],
     signature_hex: &str,
-) -> Result<(), AuthError> {
+) -> Result<&'k ed25519_dalek::VerifyingKey, AuthError> {
     let bytes = hex::decode(signature_hex).map_err(|_| AuthError::InvalidSignature)?;
     let arr = <[u8; 64]>::try_from(bytes.as_slice()).map_err(|_| AuthError::InvalidSignature)?;
     let signature = ed25519_dalek::Signature::from_bytes(&arr);
-    if keys
-        .iter()
-        .any(|key| key.verify_strict(message, &signature).is_ok())
-    {
-        Ok(())
-    } else {
-        Err(AuthError::InvalidSignature)
-    }
+    keys.iter()
+        .find(|key| key.verify_strict(message, &signature).is_ok())
+        .ok_or(AuthError::InvalidSignature)
 }
 
 /// Authenticate a request purely from the transport it arrived on.
@@ -535,6 +543,7 @@ pub fn verify_host_vsock() -> AuthContext {
         spiffe_id: None,
         auth_method: AuthMethod::HostVsock,
         identity_binding: IdentityBinding::PolicyOnly,
+        approver_key: None,
     }
 }
 
@@ -571,6 +580,7 @@ pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
         spiffe_id: Some(spiffe_id.to_string()),
         auth_method: AuthMethod::SpiffeMtls,
         identity_binding: IdentityBinding::PolicyOnly,
+        approver_key: None,
     }
 }
 
@@ -1145,6 +1155,34 @@ mod ed25519_approval_tests {
         assert_eq!(ctx.auth_method, AuthMethod::Ed25519Drand);
         assert_eq!(ctx.drand_round, Some(round));
         assert_eq!(ctx.actor, Some("approver".to_string()));
+        // The context names the key that verified — the approver's identity on
+        // this tier, which the approval record carries.
+        assert_eq!(
+            ctx.approver_key,
+            Some(hex::encode(key.verifying_key().to_bytes()))
+        );
+    }
+
+    /// With two keys on the roster, the record names the one that actually
+    /// signed — not the first configured, not "a member".
+    #[test]
+    fn the_roster_member_that_signed_is_the_one_named() {
+        let first = signing_key(1);
+        let second = signing_key(2);
+        let round = drand::current_expected_round();
+        let body = b"body";
+        let headers = signed_headers(&second, Some(round), now(), body);
+        let ctx =
+            verify_http_with_ed25519_drand(&headers, body, &verifier_for(&[&first, &second], true))
+                .unwrap();
+        assert_eq!(
+            ctx.approver_key,
+            Some(hex::encode(second.verifying_key().to_bytes()))
+        );
+        assert_ne!(
+            ctx.approver_key,
+            Some(hex::encode(first.verifying_key().to_bytes()))
+        );
     }
 
     /// **The forgery this tier exists to prevent.** A signature from a key the

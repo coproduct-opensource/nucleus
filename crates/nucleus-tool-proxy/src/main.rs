@@ -612,17 +612,47 @@ fn require_node_identity(args: &Args, flag_hint: &str) -> node_identity::NodeIde
 }
 
 pub(crate) fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity {
-    if let Some(ctx) = auth {
-        if let Some(ref spiffe_id) = ctx.spiffe_id {
-            ActorIdentity::Authenticated {
-                spiffe_id: spiffe_id.clone(),
+    match auth {
+        Some(ctx) => {
+            if let Some(ref spiffe_id) = ctx.spiffe_id {
+                ActorIdentity::Authenticated {
+                    spiffe_id: spiffe_id.clone(),
+                }
+            } else if let Some(ref key) = ctx.approver_key {
+                // The Ed25519 approval tier: the verifying key is the
+                // principal. Derived from the key that VERIFIED, never from a
+                // header the caller wrote.
+                ActorIdentity::SignedBy {
+                    key_fingerprint: key.clone(),
+                }
+            } else {
+                ActorIdentity::Unknown
             }
-        } else {
-            ActorIdentity::Unknown
         }
-    } else {
-        ActorIdentity::Unknown
+        None => ActorIdentity::Unknown,
     }
+}
+
+/// The most uses one `/v1/approve` grant may carry. A grant is consumed one
+/// use per mediated action; an unbounded count (`usize::MAX` was reachable
+/// from a bundle with no `max_uses`) is a standing waiver, not an approval.
+pub(crate) const MAX_APPROVAL_COUNT: usize = 16;
+
+/// Bound a requested grant count: zero is not a grant, and more than
+/// [`MAX_APPROVAL_COUNT`] is refused rather than clamped, so a caller learns
+/// the ceiling instead of silently getting less than it asked for.
+pub(crate) fn bounded_approval_count(count: usize) -> Result<usize, ApiError> {
+    if count == 0 {
+        return Err(ApiError::Spec(
+            "approval count must be at least 1".to_string(),
+        ));
+    }
+    if count > MAX_APPROVAL_COUNT {
+        return Err(ApiError::Spec(format!(
+            "approval count {count} exceeds the ceiling of {MAX_APPROVAL_COUNT} uses per grant"
+        )));
+    }
+    Ok(count)
 }
 
 #[derive(Default)]
@@ -713,6 +743,23 @@ impl ApprovalRegistry {
         });
         entry.count += count;
         entry.expires_at_unix = merge_expiry(entry.expires_at_unix, expires_at_unix);
+    }
+
+    /// Whether an unexpired grant with uses left exists — WITHOUT spending
+    /// one. The handlers peek here and let the runtime's approver (the
+    /// `CallbackApprover` built over this registry at startup) do the single
+    /// consume inside `request_approval`; peeking-then-consuming used to be
+    /// consuming-then-consuming, so every grant cost two uses (#2406).
+    fn has(&self, operation: &str) -> bool {
+        let mut guard = self.approvals.lock().unwrap();
+        match guard.get(operation) {
+            Some(entry) if is_expired(entry.expires_at_unix) => {
+                guard.remove(operation);
+                false
+            }
+            Some(entry) => entry.count > 0,
+            None => false,
+        }
     }
 
     fn consume(&self, operation: &str) -> bool {
@@ -841,8 +888,13 @@ fn verify_and_load_approval_bundle(
             )
         })?;
 
-    // Populate the ApprovalRegistry with the approved operations
-    let count = claims.max_uses.map(|n| n as usize).unwrap_or(usize::MAX);
+    // Populate the ApprovalRegistry with the approved operations. A bundle
+    // without `max_uses` used to mean usize::MAX uses — a standing waiver for
+    // the TTL. It now means the same ceiling every grant has.
+    let count = claims
+        .max_uses
+        .map(|n| (n as usize).min(MAX_APPROVAL_COUNT))
+        .unwrap_or(MAX_APPROVAL_COUNT);
     let expiry = Some(claims.exp as u64);
     for op in &claims.approved_operations {
         approvals.approve(op, count, expiry);
@@ -1142,6 +1194,10 @@ enum ApiError {
     Body(String),
     #[error("rate limited: too many approval requests")]
     RateLimited,
+    /// An mTLS-authenticated identity tried to grant an approval without being
+    /// on the approver roster (the escalation policies' `approver_pattern`s).
+    #[error("not an approver: {0}")]
+    NotAnApprover(String),
     #[error("web fetch error: {0}")]
     WebFetch(String),
     #[error("url not in dns_allow list: {0}")]
@@ -1277,6 +1333,7 @@ impl IntoResponse for ApiError {
             ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None, None),
             ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None, None),
             ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None, None),
+            ApiError::NotAnApprover(_) => (StatusCode::FORBIDDEN, "not_an_approver", None, None),
             ApiError::WebFetch(_) => (StatusCode::BAD_GATEWAY, "web_fetch_error", None, None),
             ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None, None),
             ApiError::AttestationFailed(_) => {
@@ -2808,7 +2865,7 @@ async fn http_kernel_decide(
     // The kernel-decision record names the same actor the handler's own
     // records do; it used to hardcode `Unknown` while the sibling record in
     // the same handler carried the SPIFFE ID.
-    mediation::decide_and_record(
+    let decided = mediation::decide_and_record(
         state.verdict_sink.as_ref(),
         &mut kernel,
         &graph,
@@ -2816,7 +2873,38 @@ async fn http_kernel_decide(
         subject,
         actor_from_auth(auth_ctx),
         "http",
-    )
+    );
+    match decided {
+        // #2406: the kernel's `RequiresApproval` used to be final on this
+        // path — `/v1/approve` wrote into `ApprovalRegistry`, and nothing
+        // between here and the sandbox ever read it, so an operator's grant
+        // returned 200 and changed nothing. The registry is consulted HERE,
+        // at the decision, under the same key the refusal handed the caller
+        // (`"{operation:?} {subject}"`, which `/v1/approve` was fed verbatim).
+        // One grant, one use, one approved token; a second identical request
+        // needs a second grant.
+        Err(ApiError::Nucleus(NucleusError::ApprovalRequired { operation: key }))
+            if state.approvals.consume(&key) =>
+        {
+            let token =
+                kernel.issue_approved_token(operation, &format!("approved via /v1/approve: {key}"));
+            if let Err(e) = state.verdict_sink.record(VerdictContext {
+                operation,
+                subject: subject.to_string(),
+                outcome: VerdictOutcome::Allow,
+                actor: actor_from_auth(auth_ctx),
+                policy_rule: None,
+                extensions: BTreeMap::from([
+                    ("transport".to_string(), "http".to_string()),
+                    ("approval".to_string(), "consumed:/v1/approve".to_string()),
+                ]),
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
+            Ok(token)
+        }
+        other => other,
+    }
 }
 
 /// Content-address the *actual ingested bytes* of an agent input (InputsAuthorized
@@ -2903,7 +2991,7 @@ async fn read_file(
             Err(NucleusError::ApprovalRequired { operation: op }) => {
                 // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
                 if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
-                    || state.approvals.consume(&op)
+                    || state.approvals.has(&op)
                 {
                     let approval = state.runtime.sandbox().request_approval(op.clone())?;
                     let approved_dt = {
@@ -3095,12 +3183,13 @@ async fn write_file(
             // all. That is #2406, and it is why adding the log here proved the
             // point by staying silent.
             //
-            // Note also the grant is consumed TWICE per attempt when this arm IS
-            // reached: once here, and again inside `request_approval`, whose
-            // approver is `move |req| approvals.consume(req.operation())`.
+            // The grant is PEEKED here (`has`) and consumed exactly once inside
+            // `request_approval`, whose approver is
+            // `move |req| approvals.consume(req.operation())`. It used to be
+            // consumed in both places, so one grant paid for zero writes.
             let policy_ok =
                 check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path));
-            let pre_granted = !policy_ok && state.approvals.consume(&op);
+            let pre_granted = !policy_ok && state.approvals.has(&op);
             if policy_ok || pre_granted {
                 let approval = match state.runtime.sandbox().request_approval(op.clone()) {
                     Ok(a) => a,
@@ -3392,7 +3481,7 @@ async fn run_command(
                 &state,
                 auth_ctx.as_ref(),
                 &format!("execute {}", display_command),
-            ) || state.approvals.consume(&op)
+            ) || state.approvals.has(&op)
             {
                 let approval = executor.request_approval(&op)?;
                 let approved_dt = {
@@ -4335,14 +4424,45 @@ async fn web_search(
 async fn approve_operation(
     State(state): State<AppState>,
     _headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<ApproveRequest>,
 ) -> Result<Json<ApproveResponse>, ApiError> {
     let sink = &state.verdict_sink;
+    let auth_ctx = auth.map(|e| e.0);
 
     // Rate limit approval requests to prevent DoS
     if !state.approval_rate_limiter.try_acquire() {
         return Err(ApiError::RateLimited);
     }
+
+    // The mTLS tier is selected ahead of the pinned-key tier for every path,
+    // this one included — so any workload in the trust domain that reached
+    // the mTLS port could grant approvals, roster or no roster. Over mTLS an
+    // approver must be on the roster the operator wrote (the escalation
+    // policies' `approver_pattern`s); everything else on this path is refused,
+    // never downgraded to the signature tier.
+    if let Some(ctx) = auth_ctx.as_ref()
+        && ctx.auth_method == auth::AuthMethod::SpiffeMtls
+    {
+        let id = ctx.spiffe_id.as_deref().unwrap_or("<no spiffe id>");
+        if !state.policy_engine.is_approver(id) {
+            if let Err(e) = sink.record(VerdictContext {
+                operation: Operation::ManagePods, // meta-operation: approval grant
+                subject: req.operation.clone(),
+                outcome: VerdictOutcome::Deny {
+                    reason: "approval over mTLS by an identity not on the approver roster"
+                        .to_string(),
+                },
+                actor: actor_from_auth(auth_ctx.as_ref()),
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
+            return Err(ApiError::NotAnApprover(id.to_string()));
+        }
+    }
+    let count = bounded_approval_count(req.count)?;
 
     let now = now_unix();
     let expires_at = resolve_approval_expiry(req.expires_at_unix, now)?;
@@ -4354,16 +4474,25 @@ async fn approve_operation(
     if !state.approval_nonces.check_and_insert(nonce, expiry, now) {
         return Err(ApiError::Spec("approval nonce replayed".to_string()));
     }
-    state
-        .approvals
-        .approve(&req.operation, req.count, expires_at);
+    state.approvals.approve(&req.operation, count, expires_at);
+    // The record names WHO approved: the SPIFFE identity on the mTLS tier,
+    // the verifying key on the Ed25519 tier — derived from what verified,
+    // never from a header. It used to say `Unknown` on every tier.
+    let actor = actor_from_auth(auth_ctx.as_ref());
+    let mut extensions = BTreeMap::from([
+        ("approval_count".to_string(), count.to_string()),
+        ("nonce".to_string(), nonce.to_string()),
+    ]);
+    if let Some(kid) = auth_ctx.as_ref().and_then(|c| c.approver_key.clone()) {
+        extensions.insert("approver_kid".to_string(), kid);
+    }
     if let Err(e) = sink.record(VerdictContext {
         operation: Operation::ManagePods, // meta-operation: approval grant
         subject: req.operation,
         outcome: VerdictOutcome::Allow,
-        actor: ActorIdentity::Unknown,
+        actor,
         policy_rule: None,
-        extensions: BTreeMap::new(),
+        extensions,
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }

@@ -494,6 +494,13 @@ impl Art12Sink {
                     kind: "authenticated".to_string(),
                     spiffe_id: Some(spiffe_id.clone()),
                 },
+                // The approval tier: no SPIFFE identity, but the verifying key
+                // is the principal, so the record names it — an Article 12
+                // record of an approval that said only "unknown" named nobody.
+                ActorIdentity::SignedBy { key_fingerprint } => Actor {
+                    kind: format!("signed_by:ed25519:{key_fingerprint}"),
+                    spiffe_id: None,
+                },
                 ActorIdentity::StdioGuest => Actor {
                     kind: "stdio_guest".to_string(),
                     spiffe_id: None,

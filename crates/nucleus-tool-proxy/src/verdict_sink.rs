@@ -243,6 +243,7 @@ impl ToolProxyVerdictSink {
     fn actor_str(actor: &ActorIdentity) -> &str {
         match actor {
             ActorIdentity::Authenticated { spiffe_id } => spiffe_id.as_str(),
+            ActorIdentity::SignedBy { key_fingerprint } => key_fingerprint.as_str(),
             ActorIdentity::StdioGuest => "stdio-guest",
             ActorIdentity::Unknown => "unknown",
         }

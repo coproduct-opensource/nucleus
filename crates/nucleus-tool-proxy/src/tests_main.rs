@@ -69,6 +69,35 @@ fn test_approval_registry_consume() {
     assert!(!registry.consume("read /etc/passwd"));
 }
 
+/// A handler peeks (`has`) and the runtime's approver consumes — so one grant
+/// is one use. Before this split both sides consumed, and a single grant paid
+/// for the peek and then failed the consume (#2406's second face).
+#[test]
+fn a_peek_does_not_spend_a_grant_and_a_consume_spends_exactly_one() {
+    let registry = ApprovalRegistry::default();
+    assert!(!registry.has("write x"));
+    registry.approve("write x", 1, None);
+    assert!(registry.has("write x"));
+    assert!(registry.has("write x"), "peeking twice spends nothing");
+    assert!(registry.consume("write x"));
+    assert!(!registry.has("write x"), "the one use is gone");
+    assert!(!registry.consume("write x"));
+}
+
+/// A grant carries a bounded number of uses: zero is not a grant, and the
+/// ceiling is refused rather than silently clamped.
+#[test]
+fn approval_counts_are_bounded() {
+    assert!(bounded_approval_count(0).is_err());
+    assert_eq!(bounded_approval_count(1).unwrap(), 1);
+    assert_eq!(
+        bounded_approval_count(MAX_APPROVAL_COUNT).unwrap(),
+        MAX_APPROVAL_COUNT
+    );
+    assert!(bounded_approval_count(MAX_APPROVAL_COUNT + 1).is_err());
+    assert!(bounded_approval_count(usize::MAX).is_err());
+}
+
 #[test]
 fn test_run_request_array_form() {
     let json = r#"{"args": ["ls", "-la", "/tmp"]}"#;
