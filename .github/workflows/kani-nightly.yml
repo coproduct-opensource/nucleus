@@ -91,6 +91,7 @@ jobs:
             --harness proof_exposureset_uninhabitable_iff_count_three
             --harness proof_operation_exposure_completeness
             --harness proof_clinejection_blocked
+            --harness proof_ifc_flow_gate_rejects_iff_forbidden
       - name: Proof count regression gate
         run: |
           # One census, counted by scripts/check-kani-proof-count.sh (#2561): the

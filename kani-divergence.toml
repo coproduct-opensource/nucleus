@@ -24,7 +24,7 @@
 # harness over CapabilityLattice or ExposureSet is a `*_core_dims` proof.
 
 
-total = 72
+total = 73
 
 [[site]]
 file = "crates/ck-kernel/src/kani.rs"
@@ -382,3 +382,10 @@ attr = "#[cfg(not(kani))]"
 guards = "crate::tool_surface::inherit_surface("
 class = "extensions-omitted-op"
 why = "A silent child inherits the parent's tool surface before the meet. Under Kani there is no surface to inherit; the meet the harnesses check is over the core dimensions only."
+
+[[site]]
+file = "crates/portcullis/src/kernel/ifc.rs"
+attr = "#[cfg(kani)]"
+guards = "mod flow_gate_proofs {"
+class = "harness-only"
+why = "Proof harnesses for the live flow-gate decision (#2591). Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
