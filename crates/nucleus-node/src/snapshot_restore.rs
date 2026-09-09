@@ -333,7 +333,7 @@ mod tests {
         let inc = store.begin().unwrap();
         std::fs::write(&inc.artifacts.vmstate, b"vmstate").unwrap();
         std::fs::write(&inc.artifacts.mem, vec![7u8; 8192]).unwrap();
-        let published = store.publish(inc, &d).unwrap();
+        let published = store.publish(inc, &d, Vec::new()).unwrap();
 
         let jail = JailLayout {
             jail_root: tmp.path().join("jail/root"),
@@ -489,7 +489,7 @@ mod tests {
             cpu_template: None,
             barrier_protocol: BARRIER_PROTOCOL,
         };
-        let published = store.publish(staged, &d).expect("publish");
+        let published = store.publish(staged, &d, Vec::new()).expect("publish");
 
         // ── restore from it, through the launch path's own function ─────────────────────
         // Host paths rather than in-jail names because this VMM is not chrooted; `place_base`

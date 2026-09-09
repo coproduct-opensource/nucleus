@@ -61,6 +61,9 @@ Read each row as: *a `source` **is** a `target`*, via the named function.
 | `base_for` | a launch **is** entitled to a base, or is not | `crates/nucleus-node/src/snapshot_restore.rs:base_for` |
 | `network_overrides` | a configuration **is** the tap retargeting a restore needs | `crates/nucleus-node/src/snapshot_restore.rs:network_overrides` |
 | `verify` | a placed image **is** the image that was pinned | `crates/nucleus-node/src/image_identity.rs:verify` |
+| `sharing_requirements` | a host **is** what it must provide before a base taken on it may be reused | `crates/nucleus-node/src/host_requirements.rs:sharing_requirements` |
+| `sysfs_satisfied` | a sysfs reading **is** a hardening property held, or not | `crates/nucleus-node/src/host_requirements.rs:sysfs_satisfied` |
+| `build` | an exited pod **is** an execution receipt | `crates/nucleus-node/src/pod_receipt.rs:build` |
 
 ---
 
@@ -174,6 +177,31 @@ too: per ADR 0001 §3 a non-owner is answered exactly as a non-existent resource
 - `a_base_from_another_host_is_refused_not_silently_missed`
 - `a_foreign_host_refusal_names_both_machines`
 - `a_partial_base_is_damaged_rather_than_absent`
+
+### L11 — A hardening property that cannot be read is not held
+
+`sysfs_satisfied(None, _) = false`. Deliberately the opposite polarity to `Probe::Capability`,
+where an unreadable `/proc` means "do not invent a failure" — right for a capability gating a
+launch, wrong for a hardening property, because "could not tell" and "it is off" are the same
+answer to an attacker. This is `confinement.rs`'s rule applied to the host: *a control that is
+green because nothing could make it red* is the defect, not the check.
+
+Measured on the KVM host 2026-09-09: SMT `notimplemented` (Apple Silicon has no siblings), KSM
+`0`, THP `always [madvise] never` — all three hold, which is the security section's stage 0 exit
+criterion met by measurement rather than assumption.
+
+- `a_hardening_property_that_cannot_be_read_is_not_satisfied` — falsified by making `None` satisfy
+- `hardening_requirements_do_not_gate_an_ordinary_launch` — they are a different question at a
+  different moment, and folding them into the launch gate would refuse every unhardened developer
+  machine for a property no launch needs
+
+### L12 — A base carries what the host was not providing when it was taken
+
+`Manifest.unmet_hardening` is recorded at publish and never recomputed. The host may be hardened
+tomorrow, and the base would then look safer than it was. Recorded rather than enforced, because
+nothing shares memory across pods yet and refusing an unhardened host would block the only thing
+that works for a risk that does not exist — but a later sharing decision reads evidence instead of
+assuming, which is the same discipline `clone_safety` applies to the guest.
 
 ---
 

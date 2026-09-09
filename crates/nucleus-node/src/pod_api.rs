@@ -426,9 +426,30 @@ async fn snapshot_running_pod(
     resumed
         .map_err(|e| ApiError::Driver(format!("snapshot taken, but the pod stayed paused: {e}")))?;
 
-    match store.publish(incoming, &derivation) {
+    // What the host was NOT providing when this base was taken. Recorded on the artifact rather
+    // than checked here: nothing shares memory across pods yet, so refusing an unhardened host
+    // would block the only thing that works for a risk that does not exist. But it is a fact about
+    // THIS base and cannot be recovered later — harden the host tomorrow and the base would look
+    // safer than it was.
+    let unmet_hardening: Vec<String> = crate::host_requirements::unmet(
+        &crate::host_requirements::sharing_requirements(),
+        crate::host_requirements::observe,
+    )
+    .iter()
+    .map(|r| r.what.to_string())
+    .collect();
+    if !unmet_hardening.is_empty() {
+        tracing::info!(
+            unmet = ?unmet_hardening,
+            "taking a base on a host that is not hardened for cross-pod sharing; recorded on the \
+             base so a later sharing decision reads evidence rather than assuming"
+        );
+    }
+
+    match store.publish(incoming, &derivation, unmet_hardening.clone()) {
         Ok(_) => Ok(Json(serde_json::json!({
-            "status": "published", "derivation": name
+            "status": "published", "derivation": name,
+            "unmet_hardening": unmet_hardening
         }))),
         // Another launch published the same base while this one was writing. The base the caller
         // wanted exists, which is the outcome they asked for.

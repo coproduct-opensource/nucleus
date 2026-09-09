@@ -194,6 +194,20 @@ pub(crate) struct Manifest {
     pub host: HostIdentity,
     pub created_unix: u64,
     pub mem_bytes: u64,
+    /// Host hardening properties that were NOT satisfied when this base was taken.
+    ///
+    /// Recorded, not enforced. Nothing shares memory across pods yet, so refusing to take a base
+    /// on an unhardened host would block the only thing that works today for a risk that does not
+    /// exist yet. But the properties are a fact ABOUT THIS ARTIFACT and cannot be recovered later
+    /// — the host may be hardened tomorrow, and the base would then look safer than it was.
+    ///
+    /// So it travels with the base. A future sharing decision reads evidence rather than assuming,
+    /// which is the `confinement.rs` discipline applied to the thing being shared: an empty list
+    /// is a measurement, and a base taken before this field existed has no measurement at all,
+    /// which `serde(default)` makes visibly different from a clean one only if you know to look —
+    /// hence it is written on every publish from here on.
+    #[serde(default)]
+    pub unmet_hardening: Vec<String>,
 }
 
 /// The answer to "is there a base for this derivation", which has more than one no.
@@ -323,6 +337,7 @@ impl SnapshotStore {
         &self,
         incoming: Incoming,
         derivation: &Derivation,
+        unmet_hardening: Vec<String>,
     ) -> Result<PathBuf, PublishError> {
         let mem_bytes = std::fs::metadata(&incoming.artifacts.mem)
             .map_err(PublishError::Io)?
@@ -342,6 +357,7 @@ impl SnapshotStore {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
             mem_bytes,
+            unmet_hardening,
         };
         let body = serde_json::to_vec_pretty(&manifest).map_err(|e| PublishError::Io(e.into()))?;
         std::fs::write(incoming.dir.join("manifest.json"), &body).map_err(PublishError::Io)?;
@@ -388,6 +404,12 @@ impl SnapshotStore {
         // The staging directory no longer exists; suppress the Drop that would try to remove it.
         std::mem::forget(incoming);
         Ok(target)
+    }
+
+    /// `publish` with no hardening findings, for tests that are not about the host.
+    #[cfg(test)]
+    fn publish_test(&self, incoming: Incoming, d: &Derivation) -> Result<PathBuf, PublishError> {
+        self.publish(incoming, d, Vec::new())
     }
 
     /// Remove staging directories a previous process left behind.
@@ -528,7 +550,9 @@ mod tests {
             "an empty store has nothing"
         );
 
-        let dir = store.publish(stage(&store, "vmstate-bytes"), &d).unwrap();
+        let dir = store
+            .publish_test(stage(&store, "vmstate-bytes"), &d)
+            .unwrap();
 
         let Lookup::Present(m) = store.lookup(&d) else {
             panic!("a published base must be found");
@@ -553,8 +577,8 @@ mod tests {
         let store = SnapshotStore::new(tmp.path().to_path_buf(), host());
         let d = derivation();
 
-        let first = store.publish(stage(&store, "first"), &d).unwrap();
-        let again = store.publish(stage(&store, "second"), &d);
+        let first = store.publish_test(stage(&store, "first"), &d).unwrap();
+        let again = store.publish_test(stage(&store, "second"), &d);
         assert!(
             matches!(again, Err(PublishError::AlreadyPresent)),
             "the second publish must be refused, got {again:?}"
@@ -581,7 +605,7 @@ mod tests {
         };
         let d = derivation();
         SnapshotStore::new(tmp.path().to_path_buf(), elsewhere.clone())
-            .publish(
+            .publish_test(
                 stage(
                     &SnapshotStore::new(tmp.path().to_path_buf(), elsewhere),
                     "x",
@@ -630,7 +654,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = SnapshotStore::new(tmp.path().to_path_buf(), host());
         let d = derivation();
-        store.publish(stage(&store, "keep"), &d).unwrap();
+        store.publish_test(stage(&store, "keep"), &d).unwrap();
         // A staged directory that outlived its process, i.e. what a crash leaves.
         let orphan = store.begin().unwrap();
         let orphan_dir = orphan.dir.clone();
@@ -652,7 +676,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = SnapshotStore::new(tmp.path().to_path_buf(), host());
         let d = derivation();
-        let published = store.publish(stage(&store, "x"), &d).unwrap();
+        let published = store.publish_test(stage(&store, "x"), &d).unwrap();
         std::fs::remove_file(published.join("mem")).unwrap();
         assert!(
             matches!(store.lookup(&d), Lookup::Damaged(_)),
