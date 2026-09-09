@@ -53,6 +53,8 @@ pub struct Settings {
     pub idle_secs: u64,
     /// Launches in flight at once; see [`DEFAULT_LAUNCH_CONCURRENCY`].
     pub launch_concurrency: usize,
+    /// Machines pulling an image at once; see [`crate::DEFAULT_WARMING_LIMIT`].
+    pub warming_limit: usize,
     /// The organization's machine cap, and how many machines are held outside this pool. When
     /// both are known the pass checks the machines it can SEE against them, rather than trusting
     /// the pools' declared sizes: a pool holds machines above its size whenever a size is
@@ -70,6 +72,7 @@ impl Default for Settings {
             lookback: 25,
             idle_secs: 1800,
             launch_concurrency: DEFAULT_LAUNCH_CONCURRENCY,
+            warming_limit: crate::DEFAULT_WARMING_LIMIT,
             machine_budget: None,
             machines_elsewhere: 0,
         }
@@ -195,6 +198,7 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
             issued: self.ledger_lock().clone(),
             now_secs,
             idle_secs: self.settings.idle_secs,
+            warming_limit: self.settings.warming_limit.max(1),
             shrink_by: *self.shrink_lock(),
         };
         let actions = plan(&self.pools, &snapshot);
