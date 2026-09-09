@@ -412,6 +412,44 @@ milestone (the lattice, the host list and the command prefixes); attributing
 receipts to effects and enforcing per effect at the credential boundary are the
 milestones after this one.
 
+### Learning from a run: the grant is the ceiling, the trace is the proposal
+
+Every `--goal` and `--grant` run leaves a kernel trace
+(`~/.config/nucleus/traces/<grant id>.jsonl` unless `--kernel-trace` names one)
+and ends with what the run actually used of what it was granted:
+
+```
+authority: used 3 of 7 effects · ρ = 2.00 (3 of 6 granted dimensions used) · 41 allowed · 1 denied
+  used:    read and search workspace files (12) · run the test suite (2) · read CI logs and workflow runs (1)
+  unused:  edit workspace files · commit changes locally · build the project · read git history and status
+  denied:  git_push origin main (1)
+
+Save a profile with the unused authority removed? name (empty to skip): ci-tests
+profile 'ci-tests' installed at ~/.config/nucleus/profiles/ci-tests.yaml (4 effects and 3 dimensions removed)
+```
+
+ρ is the **authority overhead**, granted ÷ used, over the 13 core dimensions;
+ρ → 1 is the goal, and it is the number a plugin's effect vocabulary is judged
+by. The same report without a terminal, or after the fact:
+
+```
+nucleus observe --grant ci.grant --input trace.jsonl            # the report
+nucleus observe --grant ci.grant --input trace.jsonl --narrow ci-tests --save
+```
+
+Narrowing is bounded on both sides by the grant: an unused dimension goes to
+`never`, a used one keeps the level the grant gave it (even when no effect
+explains it, since the run needed it), and paths, commands, budget and time are
+untouched. The result is `≤` the grant by construction, so the threshold problem
+of observed-usage tools (encode noise as permission, or refuse the next
+legitimate run) cannot widen anything: at worst the next run is denied
+something and says so.
+
+Profiles in `~/.config/nucleus/profiles/*.yaml` resolve like canonical ones,
+for `--profile` and for `--ceiling`. A user profile may carry a canonical name
+only if it is not wider than the canonical one; a wider shadow is ignored with a
+warning, so a file on disk cannot quietly change what `--ceiling codegen` means.
+
 ## Semantic effects
 
 An effect is the unit of authority a person reads. Each lowers to core dimensions,
