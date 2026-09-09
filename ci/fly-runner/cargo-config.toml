@@ -1,0 +1,5 @@
+[target.x86_64-unknown-linux-gnu]
+linker = "cc-lld"
+
+[profile.dev.package."*"]
+debug = false

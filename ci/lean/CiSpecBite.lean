@@ -122,12 +122,52 @@ theorem budget_360_fits :
     groupJobs.sum + 3 * 45 ≤ 4 * 360 ∧ makespan (greedy 4 groupJobs) ≤ 360 := by
   decide
 
+/-- **Bite of T12 (the pool this queue actually has).** Forty-seven machines and
+    ONE group building at a time: the group gets the whole pool and fits the
+    360-minute budget with room to spare — 2301 against 16920.
+
+    It also fits the OLD 60-minute budget at this share, and that is worth saying: the 2026-09-04 ejections were a four-runner problem,
+    not a budget-shape problem. `budget_60_did_not_fit` above is the bite for
+    the pool that actually existed then; at 23 machines a share the same work
+    would have been fine. The repair was capacity as much as it was the timeout.
+
+    Why one and not four: T12 says the share is `p / c`, and only the HEAD group
+    can merge. Raising `c` shrinks the head's share, so speculation pays only
+    when the pool has capacity above ONE group's demand. Measured on 2026-09-09
+    it does not — a single group saturates the pool — and four-way speculation
+    produced one merge in four hours with nothing red. The arithmetic that the
+    shares fit is true for any `c`; which `c` is fastest is not a theorem, it is
+    a measurement, and this is where the measurement is recorded. -/
+theorem one_group_of_fortyseven_fits_360 :
+    (47 / 1) * 1 ≤ 47 ∧ groupJobs.sum + 46 * 45 ≤ 47 * 360 := by
+  decide
+
 /-- **Bite of T7 (competing runs).** Pull-request runs already occupying
     the pool are non-zero initial loads: with 50 minutes on each runner the
     same group finishes 50 minutes later. "Cancel every competing run" is
     what returns the initial loads to zero. -/
 theorem competing_runs_delay_the_group :
     makespan (greedy 4 groupJobs) + 50 ≤ makespan (greedyFrom [50, 50, 50, 50] groupJobs) := by
+  decide
+
+/-- **Bite of T9 (the machine budget).** The pool as it actually ran on
+    2026-09-09: 27 machines of the organization's 99 against a cap of 100, with
+    a pass wanting six launches in flight. It does not fit, which is why every
+    start answered 422 and the pool deadlocked warm with 44 jobs queued. The
+    repair — reclaiming 26 machines from suspended apps, so 46 sit elsewhere —
+    fits at 38 pooled machines and ten launches in flight, with room to spare. -/
+theorem machine_budget_100_did_not_fit :
+    (Slots.mk 100 72 27 6).fits = false ∧
+    (Slots.mk 100 46 38 10).fits = true := by
+  decide
+
+/-- **Bite of T10 (the deadlock is not merely "full").** At the cap the pass
+    fails for a pool that is not even large: the same 100-machine budget with
+    99 machines held elsewhere refuses a pool of one with a single launch. The
+    shortfall, not the pool's size, is what has to be given back. -/
+theorem at_the_cap_even_one_launch_is_refused :
+    (Slots.mk 100 99 1 1).fits = false ∧
+    (Slots.mk 100 96 1 1).fits = true := by
   decide
 
 end CiSpecBite
