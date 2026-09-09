@@ -336,7 +336,7 @@ jobs:
         if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
         id: counts
         run: |
-          CONFORMANCE=$(grep -c 'proptest!' crates/portcullis/tests/verus_conformance.rs)
+          CONFORMANCE=$(grep -c 'proptest!' crates/portcullis/tests/lattice_conformance.rs)
           echo "conformance=$CONFORMANCE" >> "$GITHUB_OUTPUT"
           echo "Conformance test suites: $CONFORMANCE"
       - name: Ratchet summary
