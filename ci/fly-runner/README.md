@@ -39,7 +39,7 @@ registration the same pass just created (a registration is `offline` until its g
 
    A pool also cannot grow past the ORG's machine cap. On 2026-09-09 that cap was the binding
    constraint at 78 of ~100 machines, 21 of them held by thirteen SUSPENDED apps that had been
-   keeping their slots; reclaiming those is what made room for the gate pool to go 24 → 40.
+   keeping their slots; reclaiming those is what made room for the gate pool to go 24 → 40 and the build pool 8 → 16.
 
 3. **Bounds**: `size` Machines per pool at most, `standby` of them kept stopped-and-warm even
    with no demand; the rest are destroyed after `IDLE_MINUTES` stopped and re-created when
@@ -57,7 +57,7 @@ checkout, toolchain or executable); a gate pool Machine has no volume.
 
 | pool | label | Machine | jobs |
 |---|---|---|---|
-| build | `nucleus-fly-build` | performance-8x, 32 GB, one 40 GB volume each; size 8, standby 8 | everything on `CI_BUILD_RUNNER`: workspace tests, clippy, live-path gates, hack, llvm-cov, dylint, the A2A example (27 `runs-on` sites) |
+| build | `nucleus-fly-build` | performance-8x, 32 GB, one volume each (8 × 40 GB + 8 × 20 GB); size 16, standby 16 | everything on `CI_BUILD_RUNNER`: workspace tests, clippy, live-path gates, hack, llvm-cov, dylint, the A2A example (27 `runs-on` sites) |
 | gate | `nucleus-fly-gate` | shared-cpu-8x, 16 GB, no volume; size 40, standby 40 | everything on `CI_RUNNER` (52 sites), opt-in |
 
 Routing is the two repository variables the workflows already read:
@@ -112,7 +112,7 @@ log (`fly logs -a nucleus-fly-runner-manager`) shows every start, warm-up and re
 
 Stopped Machines cost their root filesystem only. Running: performance-8x is billed per second
 while a build runs (a 5-minute clippy or a 10-minute test job is cents); shared-cpu-2x gate
-Machines are a fraction of a cent per job. Volumes: 8 × 40 GB × $0.15 = $48/month standing — the only part of this that costs money while idle, and the reason the BUILD pool is capped at 8 while the gate pool is not.
+Machines are a fraction of a cent per job. Volumes: 8 × 40 GB + 8 × 20 GB × $0.15 = $72/month standing — the only part of this that costs money while idle, and the reason the BUILD pool has a hard ceiling while the gate pool does not. The newer eight are 20 GB because peak measured use across the fleet was 14 GB of 40; the older eight are the original size and are worth re-cutting at 20 GB the next time one needs replacing.
 Compare: the same jobs on hosted runners cost nothing in dollars and everything in hours.
 
 The merge queue's own throughput is bounded by `ci/merge-queue.toml` (`max_entries_to_build
