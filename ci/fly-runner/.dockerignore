@@ -1,8 +1,0 @@
-*
-!Dockerfile
-!tools.json
-!install-tools.sh
-!cargo-config.toml
-!entrypoint.sh
-!job-started.sh
-!job-completed.sh

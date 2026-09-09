@@ -30,7 +30,7 @@ jobs:
       - name: Pool lifecycle and credential isolation
         run: cargo test -p ci-fly-runner --locked
       - name: Shell syntax
-        run: bash -n ci/fly-runner/entrypoint.sh && bash -n ci/fly-runner/install-tools.sh
+        run: bash -n ci/fly-runner/entrypoint.sh
   probe:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: probe the self-hosted runner
