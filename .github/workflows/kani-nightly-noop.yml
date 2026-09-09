@@ -21,6 +21,9 @@ on:
       - "crates/portcullis/src/**"
       - "crates/ck-*/src/**"
       - "crates/nucleus-ifc-kernel/src/**"
+      - "crates/portcullis-core/**"
+      - "crates/nucleus-econ-kernels/**"
+      - "scripts/kani-bounded.sh"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
 
@@ -55,3 +58,11 @@ jobs:
     steps:
       - name: No-op (paths not touched)
         run: echo "no relevant paths changed — gate vacuously green"
+
+  kani-core-fast:
+    name: Kani (portcullis-core fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op (paths not touched)
+        run: echo "no relevant paths changed"

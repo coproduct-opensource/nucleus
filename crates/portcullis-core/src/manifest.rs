@@ -446,6 +446,7 @@ mod kani_proofs {
 
     /// **M1 — Empty capabilities always rejected.**
     #[kani::proof]
+    #[kani::unwind(16)]
     fn proof_empty_capabilities_rejected() {
         let manifest = ToolManifest {
             name: ToolName::new("test"),

@@ -167,6 +167,14 @@ pub fn program_digest(spec: &PodSpec) -> Result<String, IdentityError> {
         // program inputs, some are annotations. Including everything biases toward MORE distinct
         // programs, i.e. toward cache misses — wrong in the safe direction.
         labels,
+        // OUT — the same argument that took `credentials` out. A task grant is a per-run
+        // authority binding carried for the exit report's authority summary, not a description
+        // of what the pod runs; two pods differing only in which grant authorized them are the
+        // same program. The bounds a grant enforces reach identity through the fields that
+        // actually carry them — `policy`, `network` and `credentialed_egress` — which are all
+        // IN above, so excluding the id loses no enforceable distinction. Including it would
+        // give every re-issued grant a fresh identity, exactly the churn `credentials` avoids.
+        task_grant_id: _,
     } = &spec.metadata;
 
     let program = Program {

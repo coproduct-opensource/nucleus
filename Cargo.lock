@@ -2054,6 +2054,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ci-fly-runner"
+version = "1.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "ci-spec"
 version = "1.0.0"
 dependencies = [
@@ -13717,6 +13727,9 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "syn 2.0.117",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]

@@ -11,6 +11,12 @@
   directive assumed: with build concurrency 1 and the whole pool to itself, a
   group whose work fits the pool finishes inside the budget.
 
+  2026-09-09: build concurrency is 4, because the pool is now 38 warm machines
+  and at concurrency 1 most of them idled while a group took 40 to 70 minutes.
+  T7's hypothesis is then read against a group's SHARE of the pool rather than
+  the pool (T12), which is sound exactly while each group's work fits its share
+  — and the bite carries the numbers for the pool this queue actually has.
+
   # The model
 
   A pool of `q + 1` runners carries a *load* each (busy minutes already
@@ -113,6 +119,15 @@ theorem T7_no_timeout_ejection {q T L : Nat} {ds l' : List Nat}
   have : (q + 1) * x ≤ (q + 1) * T := by omega
   exact Nat.le_of_mul_le_mul_left this (Nat.succ_pos q)
 
+/-- **T12 (build concurrency divides the pool).** `c` groups building at once
+    take a share each, and the shares fit: `(p / c) * c ≤ p`. So T7 applies to a
+    group against `p / c` runners rather than `p`, and raising build concurrency
+    is sound exactly while each group's work still fits its own share. The other
+    groups are not "competing load" in the sense of `T7_with_competing_load`;
+    they are a smaller pool, which is a weaker and truer statement. -/
+theorem T12_shares_fit_the_pool (p c : Nat) : (p / c) * c ≤ p :=
+  Nat.div_mul_le_self p c
+
 /-- **T7 (with competitors).** The same bound with an initial load `C` on the
     pool: `(q+1) * x ≤ C + Σ ds + q * L`. The directive's "cancel every
     competing run" is the act of making `C = 0`. -/
@@ -149,5 +164,74 @@ def greedy (p : Nat) (ds : List Nat) : List Nat := greedyFrom (List.replicate p 
 
 /-- When the last runner finishes. -/
 def makespan (l : List Nat) : Nat := l.foldl Nat.max 0
+
+-- ── Machine slots: the other capacity the queue depends on ───────────────
+/-
+  2026-09-09. The Fly Machine pool that replaced the hosted runners deadlocked
+  with every machine warm and 44 jobs queued, and every start answered HTTP 422.
+  Writing a boot's runner registration into a machine is an UPDATE, and the
+  substrate satisfies an update by REPLACING the machine — which needs a free
+  slot under the organization's machine cap. The pool held 27 of the
+  organization's 99 machines against a cap of 100, so every update was refused,
+  so no job was taken, so no machine ever stopped, so nothing freed a slot.
+
+  This is a capacity budget of exactly T7's shape over a different resource:
+  machines rather than minutes. What it adds to "count the machines" is the
+  `inflight` term — the replacements the launches in a pass need AT THE SAME
+  TIME — and that term is the whole content, because it is what makes a pool
+  sized to the cap unable to start anything at all rather than merely full.
+
+  These are decided over a declaration, not measured: nothing here knows how
+  many machines the organization really has. The measurement is the substrate's
+  own refusal (`Error::is_at_capacity` in crates/ci-fly-runner), which refutes
+  the declaration and makes the pool give a machine back — the A-8 move, not
+  this one.
+-/
+
+/-- The organization's machine ledger during one pass. -/
+structure Slots where
+  /-- The organization's machine cap. -/
+  budget : Nat
+  /-- Machines held by everything that is not this pool. -/
+  elsewhere : Nat
+  /-- Machines this pool holds. -/
+  pooled : Nat
+  /-- Launches in flight; each needs a replacement slot while it is in flight. -/
+  inflight : Nat
+deriving DecidableEq, Repr
+
+/-- Machines needed at the PEAK of a pass: everything already running, a
+    replacement for each launch in flight, and the manager itself. -/
+def Slots.peak (s : Slots) : Nat := s.elsewhere + s.pooled + s.inflight + 1
+
+/-- Whether a pass can be carried out at all. -/
+def Slots.fits (s : Slots) : Bool := s.peak ≤ s.budget
+
+/-- **T9 (a deployment that fits leaves room to launch).** Every launch in the
+    pass has a slot for the replacement its update needs. -/
+theorem T9_fits_leaves_room (s : Slots) (h : s.fits = true) :
+    s.elsewhere + s.pooled + s.inflight + 1 ≤ s.budget := by
+  simp [Slots.fits, Slots.peak] at h
+  omega
+
+/-- **T10 (at the cap, nothing starts).** A pool whose machines and neighbours
+    already fill the budget cannot carry out a pass with any launch in it — and
+    since a launch is the only thing that puts a job on a machine, and only a
+    finished job stops one, nothing frees the slot either. This is the deadlock,
+    and it is reachable from a configuration that merely looks full. -/
+theorem T10_at_cap_cannot_launch (s : Slots)
+    (hcap : s.budget ≤ s.elsewhere + s.pooled + 1) (hlaunch : 0 < s.inflight) :
+    s.fits = false := by
+  simp [Slots.fits, Slots.peak]
+  omega
+
+/-- **T11 (giving machines back restores it).** Shrinking the pool by at least
+    the shortfall makes the pass fit again. This is what the manager does when
+    the substrate refuses: one machine at a time until a pass fits. -/
+theorem T11_shrink_restores_fit (s : Slots) (k : Nat)
+    (hk : s.peak ≤ s.budget + k) (hle : k ≤ s.pooled) :
+    ({ s with pooled := s.pooled - k } : Slots).fits = true := by
+  simp [Slots.fits, Slots.peak] at *
+  omega
 
 end CiSpec
