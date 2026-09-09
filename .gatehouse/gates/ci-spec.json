@@ -33,7 +33,9 @@
       "scripts/check-ci-spec.sh"
     ],
     "fs_write": [
-      "target/**"
+      "target/**",
+      "sdks/verifier-js/pkg/**",
+      "sdks/verifier-js/target/**"
     ],
     "exec": "scoped",
     "wall_ms": 900000,

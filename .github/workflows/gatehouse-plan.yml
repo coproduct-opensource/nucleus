@@ -36,7 +36,7 @@ jobs:
     env:
       # The gatehouse commit whose `gate` checks the plan (its embedded prelude must match the
       # import hash in .gatehouse/pipeline.writ).
-      GATEHOUSE_REF: cf8462d6c2999e31aefcc02db774923f940c2a17
+      GATEHOUSE_REF: 4d42510657690b90cf796d57ce277e665fca0989
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
