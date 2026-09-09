@@ -98,6 +98,9 @@ pub mod cedar_bridge;
 // VerifiedPermissions, …) and non-crypto logic are ring-free; only the
 // sign/verify/mint/delegate fns inside are `#[cfg(feature = "crypto")]`-gated
 // (ring can't compile to WASM). The kernel needs the types, not the signing.
+/// The two run metrics ADR 0004 names, ρ and C(T), from the kernel's
+/// effective lattice and decision trace. Feature-free.
+pub mod authority_metrics;
 #[cfg(not(kani))]
 pub mod cert_compartment;
 pub mod certificate;
@@ -108,6 +111,9 @@ pub mod constraint;
 // Uses `CapabilityLattice::extensions`, which is compiled out under Kani.
 #[cfg(not(kani))]
 pub mod tool_surface;
+// The granted effect set on a certificate (ADR 0004): same map, its own keys.
+#[cfg(not(kani))]
+pub mod effect_surface;
 pub mod trace_monitor;
 pub mod uninhabitable_state;
 
@@ -143,6 +149,13 @@ pub mod egress;
 pub mod egress_extract;
 pub mod egress_policy;
 pub mod escalation;
+/// Every denial as a structured escalation proposal: what was attempted,
+/// why it was refused, the least authority that would allow it, the risk
+/// delta, and how to grant it within the ceiling.
+///
+/// Requires the `spec` feature.
+#[cfg(all(feature = "spec", not(kani)))]
+pub mod escalation_proposal;
 pub mod exposure_core;
 pub mod flow_graph;
 pub mod frame;
@@ -151,6 +164,12 @@ pub mod galois;
 /// (hard gate / soft gate / none), for EU AI Act Article 12 decision records.
 pub mod gate_class;
 pub mod graded;
+/// Attribute a run's observations to the grant's effects, compute the
+/// authority overhead ρ, and narrow the grant to what was used.
+///
+/// Requires the `spec` feature.
+#[cfg(all(feature = "spec", not(kani)))]
+pub mod grant_usage;
 pub mod guard;
 pub mod heyting;
 /// Verified hook adapter — pure decision pipeline for agent tool-call hooks.
@@ -188,6 +207,12 @@ pub mod receipt_sign;
 /// (feature `dlc`); consulted by the kernel, composable as a `PolicyCheck`.
 #[cfg(feature = "dlc")]
 pub mod says_admission;
+/// A task grant sealed into a signed certificate: the `effect/` keys, the
+/// binding keys, and the verification a `nucleus run --grant` reuse needs.
+///
+/// Requires the `spec` feature; sealing and verifying need `crypto` too.
+#[cfg(all(feature = "spec", not(kani)))]
+pub mod sealed_grant;
 /// The task grant a goal compiles to, and its progressive-disclosure
 /// rendering (Goal / Can / Cannot / Limits / Risk).
 ///
@@ -244,6 +269,11 @@ pub use effect_catalog::{
     EffectCatalog, EffectCatalogError, EffectId, EffectRisk, EffectSpec, HttpMatch,
     LoweredAuthority,
 };
+#[cfg(all(feature = "spec", not(kani)))]
+pub use escalation_proposal::{
+    denials_in_trace, propose as propose_escalation, render_proposal, Attempt, Blocked,
+    EscalationProposal, Minimum, RiskDelta, Scope, TraceDenial,
+};
 pub use exposure_core::{apply_record, classify_operation, project_exposure, should_deny};
 pub use frame::{
     verify_nucleus_laws, BoundedLattice, CompleteLattice, ComposedNucleus, DistributiveLattice,
@@ -255,6 +285,11 @@ pub use galois::{
     TrustDomainBridge,
 };
 pub use graded::{Graded, GradedPermissionCheck, GradedPipeline, RiskCost, RiskGrade};
+#[cfg(all(feature = "spec", not(kani)))]
+pub use grant_usage::{
+    attribute as attribute_usage, narrow as narrow_grant, profile_from_lattice, render_usage,
+    Narrowed, OperationCount, UsageReport, ALL_OPERATIONS,
+};
 #[allow(deprecated)]
 pub use guard::{
     operation_exposure, CheckProof, CompositeGuard, ExecuteError, ExposureLabel, ExposureSet,
@@ -275,6 +310,8 @@ pub use permissive::{
 };
 pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
 pub use region::CodeRegion;
+#[cfg(all(feature = "spec", not(kani)))]
+pub use sealed_grant::{SealedGrantError, SealedTaskGrant, VerifiedGrant, GRANT_BINDING_MARKER};
 #[cfg(feature = "spec")]
 pub use task_grant::{
     render as render_grant, render_capabilities, ClippedEffect, CompilerProvenance, Disclosure,
@@ -305,6 +342,9 @@ pub use audit::{
     AuditEntry, AuditLog, ChainVerificationError, IdentityAuditSummary, PermissionEvent,
     RetentionPolicy,
 };
+#[cfg(feature = "serde")]
+pub use authority_metrics::decisions_in_trace;
+pub use authority_metrics::{summarise_authority, AuthoritySummary};
 pub use certificate::{
     canonical_permissions_hash, CertificateDelegationError, CertificateError,
     CertificateMintChildError, LatticeCertificate, SinkScope, VerifiedPermissions,

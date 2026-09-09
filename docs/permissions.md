@@ -360,7 +360,8 @@ How it is derived, and why it cannot be wider than you allow:
    grant is never wider than the ceiling. An effect the ceiling does not admit is
    listed under *Cannot* with the reason, never silently dropped or granted.
 4. Without a TTY the run refuses unless you pass `--yes`; `--dry-run` only shows the
-   grant; `--save-grant PATH` writes it as JSON; `--explain technical` adds the grid;
+   grant; `--save-grant PATH` seals the accepted grant for reuse (below);
+   `--explain technical` adds the grid;
    `--effects github/read-issue,web/search` adds effects the goal did not imply.
 
 A goal nothing recognises is an error naming the remedy. It never falls back to a
@@ -369,6 +370,145 @@ permissive profile.
 An orchestrator may supply its own proposer with `--proposer PROGRAM` (JSON on
 stdin, `{"effects": [...]}` on stdout). Its answer is validated against the catalog
 and clamped under the ceiling like everything else, so it can only narrow.
+
+### Reusing a grant: zero prompts for a task you already approved
+
+The confirmation is the approval, so it should be given once. `--save-grant PATH`
+seals the grant you accept into a signed file, and `--grant PATH` runs it again
+without asking:
+
+```
+$ nucleus run --goal "run the tests" --save-grant tests.grant     # confirm once: [R]un · [s]eal only
+$ nucleus run --grant tests.grant                                 # no prompt
+grant 6f1c… verified: sealed by nucleus://grant-approver/laptop/ada (3b9e0a1c…), 3 effects, 1h58m left, no confirmation needed
+Goal:    run the tests
+Can:     read and search workspace files · read git history and status · run the test suite
+…
+```
+
+`nucleus grant seal --goal "…" -o FILE` seals without running (for a grant a CI job
+will use), and `nucleus grant show FILE` verifies and renders one.
+
+What a sealed grant is: the five lines you read, and beside them a root
+certificate whose permissions are the grant's lattice **plus one `effect/<plugin>/<id>`
+key per granted effect** plus keys binding the grant id, the goal digest and the
+repository digest — signed with the Ed25519 grant key nucleus creates at
+`~/.config/nucleus/keys/grant-signer.pem` on first use. `--grant` refuses, before
+anything runs, when:
+
+- the signer is not this host's key (or a `--grant-signer HEX` you trust — this is
+  how a CI job holds only the public half of a key a person sealed with);
+- the certificate does not verify (signature, expiry, proof of possession);
+- the readable grant no longer re-lowers to the signed permissions — editing the
+  goal, the effects, the lattice, the limits or the expiry in the file is detected;
+- the repository's context digest (ecosystem, CI system, remotes, MCP configs) is
+  not the one the grant was compiled against: `re-run with --goal to approve it again`.
+
+A certificate delegated from a sealed grant can drop effects but never add one:
+the `effect/` keys follow the tool-surface rule (`min(absent, Always) = Never`), a
+silent child inherits the parent's set, and a child that sheds the dimension is
+refused. What the `effect/` keys enforce at run time is unchanged in this
+milestone (the lattice, the host list and the command prefixes); attributing
+receipts to effects and enforcing per effect at the credential boundary are the
+milestones after this one.
+
+### Two numbers every run reports: ρ and C(T)
+
+The exit report (`.nucleus-exit-report.json`, written by the tool proxy), the MCP
+server's `session_summary` trace line, and the line a `--goal` / `--grant` run
+ends with all carry the same `authority` summary, computed from the kernel's
+effective lattice and its decision trace:
+
+```
+authority: 3 of 6 granted dimensions used · ρ = 2.00 · C(T) = 1 (1 confirmation, 0 approvals during the run) · 41 allowed · 1 denied
+```
+
+- **ρ (authority overhead)** = granted dimensions ÷ used dimensions. ρ → 1 is
+  the goal; it is undefined, not infinite, when nothing was used.
+- **C(T) (delegation clicks)** = confirmations before the run (1 for a new goal,
+  0 for a sealed grant) + approvals the kernel asked for during it. Every click
+  beyond one is either ceremony or a boundary the task needed moved, and the
+  proposals below say which.
+
+A pod spec may name the grant it runs under (`metadata.task_grant_id`); `--goal`
+and `--grant` runs set it, and the exit report carries it back.
+
+### When something is denied: every denial is a proposal
+
+A denial answers four questions, not one: what the agent tried, why exactly it
+was refused, the least authority that would have allowed it, and what that
+authority would change. Each `--goal` / `--grant` run prints one proposal per
+distinct denial after the usage lines; `nucleus grant propose --grant FILE
+--input trace.jsonl` prints them for any trace (`--json` for the structured
+form):
+
+```
+denied:  git_commit `-m fix` — the grant holds git_commit at never
+minimum: git/commit (commit changes locally) · git_commit: never → low_risk
+risk:    medium → medium
+grant:   nucleus grant widen --grant tests.grant --effects git/commit   (one confirmation, same ceiling)
+         or for this run only: an approver may escalate it for 118m (needs a node with an escalation policy; not in --local)
+
+denied:  git_push `origin main` — the grant holds git_push at never
+minimum: git/push-branch (push a branch to the remote) · git_push: never → low_risk · hosts github.com
+risk:    medium → uninhabitable: adds an exfiltration vector; all three legs present, the kernel will ask before each git_push
+outside: git/push-branch is outside ceiling safe-pr-fixer — a wider ceiling is a separate decision (--ceiling …)
+```
+
+The proposal is bounded by the same ceiling as the grant. Three outcomes:
+
+- **grantable**: an effect vouches for the attempt and the ceiling admits it.
+  `nucleus grant widen` recompiles the goal with that effect added and re-seals
+  after the same single confirmation a new goal would ask for (`C(T) = 1`).
+  What the ceiling still clips is named and left out, never granted.
+- **outside the ceiling**: nothing is offered. Widening the ceiling is a
+  separate decision, and the line says so.
+- **repair, not authority**: information-flow denials, blocked secret paths,
+  expired or exhausted grants, and layers below the grant (isolation,
+  enterprise policy, delegation, Cedar) get a repair line instead of a grant
+  command, because more authority would not help and might make the flow worse.
+
+The risk line is the uninhabitable-state analysis before and after: which
+exposure leg the minimum adds, and whether the kernel will start asking for
+approval because all three legs would then be present.
+
+### Learning from a run: the grant is the ceiling, the trace is the proposal
+
+Every `--goal` and `--grant` run leaves a kernel trace
+(`~/.config/nucleus/traces/<grant id>.jsonl` unless `--kernel-trace` names one)
+and ends with what the run actually used of what it was granted:
+
+```
+authority: used 3 of 7 effects · ρ = 2.00 (3 of 6 granted dimensions used) · 41 allowed · 1 denied
+  used:    read and search workspace files (12) · run the test suite (2) · read CI logs and workflow runs (1)
+  unused:  edit workspace files · commit changes locally · build the project · read git history and status
+  denied:  git_push origin main (1)
+
+Save a profile with the unused authority removed? name (empty to skip): ci-tests
+profile 'ci-tests' installed at ~/.config/nucleus/profiles/ci-tests.yaml (4 effects and 3 dimensions removed)
+```
+
+ρ is the **authority overhead**, granted ÷ used, over the 13 core dimensions;
+ρ → 1 is the goal, and it is the number a plugin's effect vocabulary is judged
+by. The same report without a terminal, or after the fact:
+
+```
+nucleus observe --grant ci.grant --input trace.jsonl            # the report
+nucleus observe --grant ci.grant --input trace.jsonl --narrow ci-tests --save
+```
+
+Narrowing is bounded on both sides by the grant: an unused dimension goes to
+`never`, a used one keeps the level the grant gave it (even when no effect
+explains it, since the run needed it), and paths, commands, budget and time are
+untouched. The result is `≤` the grant by construction, so the threshold problem
+of observed-usage tools (encode noise as permission, or refuse the next
+legitimate run) cannot widen anything: at worst the next run is denied
+something and says so.
+
+Profiles in `~/.config/nucleus/profiles/*.yaml` resolve like canonical ones,
+for `--profile` and for `--ceiling`. A user profile may carry a canonical name
+only if it is not wider than the canonical one; a wider shadow is ignored with a
+warning, so a file on disk cannot quietly change what `--ceiling codegen` means.
 
 ## Semantic effects
 

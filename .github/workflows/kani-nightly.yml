@@ -78,6 +78,7 @@ jobs:
           args: >-
             -p portcullis
             --solver cadical
+            --harness proof_request_ceiling_leq_verified
             --harness proof_capability_distributive
             --harness proof_exposureset_monoid_identity
             --harness proof_exposureset_uninhabitable_iff_count_three
@@ -280,6 +281,7 @@ jobs:
   # harnesses actually verified, so the nightly summary reports what was proved
   # rather than what was attempted.
   kani-constitutional-full-summary:
+    timeout-minutes: 5
     name: Kani (constitutional kernel full)
     runs-on: ubuntu-24.04
     needs: kani-constitutional-full

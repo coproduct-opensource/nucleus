@@ -2130,6 +2130,8 @@ async fn main() -> Result<(), ApiError> {
     let exit_exposure = state.exposure_guard.clone();
     let exit_monitor = state.trace_monitor.clone();
     let exit_art12 = state.art12_log.clone();
+    let exit_kernel = state.kernel.clone();
+    let exit_grant = spec.metadata.task_grant_id.clone();
 
     let app = app
         .with_state(state.clone())
@@ -2170,12 +2172,14 @@ async fn main() -> Result<(), ApiError> {
         let _workload = start_and_drain_workload(&spec, bound.proxy(), &args.auth_secret)?;
         st.report();
         bound.serve(app).await?;
-        write_exit_report(
+        exit_report::write_exit_report(
             &exit_audit,
             &exit_work_dir,
             &exit_exposure,
             &exit_monitor,
             exit_art12.as_ref(),
+            &exit_kernel,
+            exit_grant.clone(),
         )
         .await;
         return Ok(());
@@ -2232,12 +2236,14 @@ async fn main() -> Result<(), ApiError> {
     #[cfg(feature = "otel")]
     telemetry::shutdown_otel();
 
-    write_exit_report(
+    exit_report::write_exit_report(
         &exit_audit,
         &exit_work_dir,
         &exit_exposure,
         &exit_monitor,
         exit_art12.as_ref(),
+        &exit_kernel,
+        exit_grant,
     )
     .await;
 
@@ -2269,57 +2275,6 @@ fn fail_closed_panic_response(err: Box<dyn std::any::Any + Send + 'static>) -> R
         "denied: internal enforcement error (fail-closed)",
     )
         .into_response()
-}
-
-/// Write the exit report on shutdown (including verified exposure data).
-async fn write_exit_report(
-    audit: &AuditLog,
-    work_dir_path: &Path,
-    exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
-    monitor: &portcullis::trace_monitor::TraceMonitor,
-    art12_log: Option<&Arc<crate::art12::Art12Log>>,
-) {
-    let workspace_hash = match exit_report::hash_workspace(work_dir_path).await {
-        Ok(h) => h,
-        Err(e) => {
-            warn!("failed to hash workspace for exit report: {e}");
-            return;
-        }
-    };
-
-    let (tail_hash, count) = audit.tail_hash_and_count();
-    let mut report =
-        exit_report::build_exit_report(workspace_hash, tail_hash, count, None, monitor);
-    if !report.monitor_violations.is_empty() || report.monitor_violations_dropped > 0 {
-        warn!(
-            violations = ?report.monitor_violations,
-            dropped = report.monitor_violations_dropped,
-            "exit report: decision-stream properties were violated during this session"
-        );
-    }
-
-    exit_report::apply_exposure(&mut report, exposure_guard);
-    exit_report::apply_art12(&mut report, art12_log);
-
-    let report_path = work_dir_path.join(".nucleus-exit-report.json");
-    match serde_json::to_string_pretty(&report) {
-        Ok(json) => {
-            if let Err(e) = tokio::fs::write(&report_path, json).await {
-                warn!(
-                    "failed to write exit report to {}: {e}",
-                    report_path.display()
-                );
-            } else {
-                info!(
-                    path = %report_path.display(),
-                    entries = count,
-                    event = "exit_report_written",
-                    "exit report written"
-                );
-            }
-        }
-        Err(e) => warn!("failed to serialize exit report: {e}"),
-    }
 }
 
 /// Builds mTLS configuration from CLI arguments.
@@ -2589,36 +2544,22 @@ async fn auth_middleware(
         (evaluate_permission_bid(&parts.headers, &state), None)
     };
 
-    // If the bid was fully denied (no dimensions granted), return 402 with pricing
+    // Refuse the endpoint when its dimension is denied, including partial grants.
     if let Some(ref grant) = permission_grant
-        && !grant.denied.is_empty()
-        && grant.granted.is_empty()
+        && run_gate::grant_denies_endpoint(grant, parts.uri.path())
     {
-        let total_price: f64 = grant.denied.iter().map(|d| d.price).sum();
-        let denied_dims = grant
-            .denied
-            .iter()
-            .map(|d| nucleus_spec::DeniedDimensionInfo {
-                dimension: d.dimension.label().to_string(),
-                price_usd: d.price,
-            })
-            .collect();
-        let reason = grant
-            .denied
-            .iter()
-            .map(|d| format!("{} λ={:.2}", d.dimension.label(), d.price))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let payment_info = nucleus_spec::PaymentRequiredInfo {
-            amount_usd: total_price,
-            reason,
-            kind: nucleus_spec::PaymentRequiredKind::PermissionDenied {
-                denied_dimensions: denied_dims,
-            },
-            recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
-            resource: Some(parts.uri.path().to_string()),
-        };
-        return Err(ApiError::PermissionDenied(payment_info));
+        return Err(ApiError::PermissionDenied(run_gate::payment_required(
+            grant,
+            parts.uri.path(),
+        )));
+    }
+
+    // Core endpoints without sealed effect preflight (glob/grep/pods) check the same ceiling.
+    if let Some(ref certified) = certified_perms
+        && let Some(why) =
+            run_gate::certificate_denies_endpoint(&state, certified, parts.uri.path())
+    {
+        return Err(ApiError::KernelDenied(why));
     }
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
@@ -2860,6 +2801,7 @@ async fn read_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<ReadRequest>,
 ) -> Result<Json<ReadResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -2900,7 +2842,7 @@ async fn read_file(
         () => {{
             use nucleus_ifc_kernel::discharge::PreflightResult;
             let verified_scope = state.session_task_token.verified_scope();
-            let ceiling = run_gate::levels_for(&state, Operation::ReadFiles);
+            let ceiling = state.ceiling(Operation::ReadFiles, certified.as_ref());
             let flow = state.flow_graph.lock().await;
             let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
             drop(flow);
@@ -3015,6 +2957,7 @@ async fn write_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<WriteRequest>,
 ) -> Result<Json<WriteResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -3062,7 +3005,7 @@ async fn write_file(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let fs_ceiling = run_gate::levels_for(&state, Operation::WriteFiles);
+        let fs_ceiling = state.ceiling(Operation::WriteFiles, certified.as_ref());
         let flow = state.flow_graph.lock().await;
         let result = run_gate::preflight_fs(
             Operation::WriteFiles,
@@ -3148,7 +3091,7 @@ async fn write_file(
                 let retry_bundle = {
                     use nucleus_ifc_kernel::discharge::PreflightResult;
                     let verified_scope = state.session_task_token.verified_scope();
-                    let fs_ceiling = run_gate::levels_for(&state, Operation::WriteFiles);
+                    let fs_ceiling = state.ceiling(Operation::WriteFiles, certified.as_ref());
                     let flow = state.flow_graph.lock().await;
                     let r = run_gate::preflight_fs(
                         Operation::WriteFiles,
@@ -3252,6 +3195,7 @@ async fn run_command(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<RunRequest>,
 ) -> Result<Json<RunResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -3333,7 +3277,7 @@ async fn run_command(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let run_bash_ceiling = run_gate::levels_for(&state, Operation::RunBash);
+        let run_bash_ceiling = state.ceiling(Operation::RunBash, certified.as_ref());
         let flow = state.flow_graph.lock().await;
         let result =
             run_gate::preflight_runbash(verified_scope, run_bash_ceiling, &display_command, &flow);
@@ -3415,7 +3359,7 @@ async fn run_command(
                     portcullis_effects::authority::Authority::new({
                         use nucleus_ifc_kernel::discharge::PreflightResult;
                         let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling = run_gate::levels_for(&state, Operation::RunBash);
+                        let ceiling = state.ceiling(Operation::RunBash, certified.as_ref());
                         let flow = state.flow_graph.lock().await;
                         let r = run_gate::preflight_runbash(
                             verified_scope,
@@ -3496,6 +3440,7 @@ async fn web_fetch(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<WebFetchRequest>,
 ) -> Result<Json<WebFetchResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -3614,7 +3559,7 @@ async fn web_fetch(
         let result = run_gate::preflight_web(
             operation,
             verified_scope,
-            run_gate::levels_for(&state, operation),
+            state.ceiling(operation, certified.as_ref()),
             &url_str,
             &flow,
         );
@@ -4108,6 +4053,7 @@ async fn web_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<WebSearchRequest>,
 ) -> Result<Json<WebSearchResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -4220,7 +4166,7 @@ async fn web_search(
         let result = run_gate::preflight_web(
             operation,
             verified_scope,
-            run_gate::levels_for(&state, operation),
+            state.ceiling(operation, certified.as_ref()),
             &req.query,
             &flow,
         );

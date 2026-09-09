@@ -389,7 +389,7 @@ impl NucleusMcpServer {
         // never cleared the obligations `FileEffect::read` enforces.
         let read_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::ReadFiles);
+            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::ReadFiles, None);
             let flow = self.flow_graph.lock().await;
             let result =
                 crate::run_gate::preflight_read_fs(verified_scope, fs_ceiling, &params.path, &flow);
@@ -494,7 +494,7 @@ impl NucleusMcpServer {
         // handler returns its error and NEVER writes (cap-std is never reached).
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::WriteFiles);
+            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::WriteFiles, None);
             let flow = self.flow_graph.lock().await;
             let result = preflight_fs(
                 Operation::WriteFiles,
@@ -613,7 +613,8 @@ impl NucleusMcpServer {
         // authorization proof.
         let (discharge_note, discharge_bundle) = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let run_bash_ceiling = crate::run_gate::levels_for(&self.state, Operation::RunBash);
+            let run_bash_ceiling =
+                crate::run_gate::levels_for(&self.state, Operation::RunBash, None);
             let flow = self.flow_graph.lock().await;
             let result = preflight_runbash(verified_scope, run_bash_ceiling, &subject, &flow);
             drop(flow);
@@ -964,7 +965,8 @@ impl NucleusMcpServer {
                     // loop would be the replay the by-value cutover removed.
                     let search_authority = {
                         let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling = crate::run_gate::levels_for(&state, Operation::GrepSearch);
+                        let ceiling =
+                            crate::run_gate::levels_for(&state, Operation::GrepSearch, None);
                         // `blocking_lock` rather than `.await`: this loop runs
                         // inside `block_in_place`, which exists precisely to allow
                         // blocking calls off the async executor.
@@ -1207,7 +1209,7 @@ impl NucleusMcpServer {
         // handler returns its error and NEVER fetches (no wire egress).
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let web_ceiling = crate::run_gate::levels_for(&self.state, Operation::WebFetch);
+            let web_ceiling = crate::run_gate::levels_for(&self.state, Operation::WebFetch, None);
             let flow = self.flow_graph.lock().await;
             let result = preflight_web(
                 Operation::WebFetch,
