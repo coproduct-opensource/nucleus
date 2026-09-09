@@ -11,6 +11,12 @@
   directive assumed: with build concurrency 1 and the whole pool to itself, a
   group whose work fits the pool finishes inside the budget.
 
+  2026-09-09: build concurrency is 4, because the pool is now 38 warm machines
+  and at concurrency 1 most of them idled while a group took 40 to 70 minutes.
+  T7's hypothesis is then read against a group's SHARE of the pool rather than
+  the pool (T12), which is sound exactly while each group's work fits its share
+  — and the bite carries the numbers for the pool this queue actually has.
+
   # The model
 
   A pool of `q + 1` runners carries a *load* each (busy minutes already
@@ -112,6 +118,15 @@ theorem T7_no_timeout_ejection {q T L : Nat} {ds l' : List Nat}
   rw [sched_sum h, sum_replicate_zero] at hb
   have : (q + 1) * x ≤ (q + 1) * T := by omega
   exact Nat.le_of_mul_le_mul_left this (Nat.succ_pos q)
+
+/-- **T12 (build concurrency divides the pool).** `c` groups building at once
+    take a share each, and the shares fit: `(p / c) * c ≤ p`. So T7 applies to a
+    group against `p / c` runners rather than `p`, and raising build concurrency
+    is sound exactly while each group's work still fits its own share. The other
+    groups are not "competing load" in the sense of `T7_with_competing_load`;
+    they are a smaller pool, which is a weaker and truer statement. -/
+theorem T12_shares_fit_the_pool (p c : Nat) : (p / c) * c ≤ p :=
+  Nat.div_mul_le_self p c
 
 /-- **T7 (with competitors).** The same bound with an initial load `C` on the
     pool: `(q+1) * x ≤ C + Σ ds + q * L`. The directive's "cancel every

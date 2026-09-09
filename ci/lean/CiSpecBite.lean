@@ -122,6 +122,18 @@ theorem budget_360_fits :
     groupJobs.sum + 3 * 45 ≤ 4 * 360 ∧ makespan (greedy 4 groupJobs) ≤ 360 := by
   decide
 
+/-- **Bite of T12 (the pool this queue actually has).** Thirty-eight machines
+    with four groups building at once give each group nine of its own. The group
+    of 2026-09-04 fits that share inside the 360-minute budget with room to
+    spare, where the same share against the old 60-minute budget did not fit —
+    so raising build concurrency to 4 is safe under the repaired timeout and
+    would not have been under the old one. -/
+theorem four_groups_of_nine_fit_360 :
+    (38 / 4) * 4 ≤ 38 ∧
+    groupJobs.sum + 8 * 45 ≤ 9 * 360 ∧
+    ¬ (groupJobs.sum + 8 * 45 ≤ 9 * 60) := by
+  decide
+
 /-- **Bite of T7 (competing runs).** Pull-request runs already occupying
     the pool are non-zero initial loads: with 50 minutes on each runner the
     same group finishes 50 minutes later. "Cancel every competing run" is
