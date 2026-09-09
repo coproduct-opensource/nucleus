@@ -607,6 +607,7 @@ impl FirecrackerConfig {
         // without it. See `enforce_pci_off`.
         boot_args = boot_args.map(|args| enforce_pci_off(&args));
 
+        // OS assumption: KB-VSOCK-PEER-CID; docs/assumptions/kernel-behaviour.md.
         // `nucleus.auth_secret` is NO LONGER EMITTED.
         //
         // The kernel command line is world-readable inside the guest
@@ -891,6 +892,8 @@ fn seccomp_args(spec: &PodSpec, jailed: bool) -> Vec<std::ffi::OsString> {
     }
 }
 
+/// OS assumption: KB-PROCFS-STATUS (docs/assumptions/kernel-behaviour.md).
+///
 /// Verify that seccomp is active on a Firecracker process by reading /proc/{pid}/status.
 /// Returns Ok(()) if seccomp mode is 2 (SECCOMP_MODE_FILTER).
 #[cfg(target_os = "linux")]

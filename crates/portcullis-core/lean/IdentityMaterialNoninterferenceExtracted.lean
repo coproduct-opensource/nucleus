@@ -73,6 +73,12 @@
 
   # What is NOT claimed
 
+  OS-boundary assumptions KB-VSOCK-PEER-CID, KB-GUEST-PID-SHARED,
+  KB-PROCFS-STATUS and KB-LINUX-CHILD-ISOLATION are not proved here.
+  Their scope and relying call sites are recorded in
+  docs/assumptions/kernel-behaviour.md. They are not Lean axioms or
+  proven-tier axiom-audit exceptions.
+
   The filesystem channel (`/etc/nucleus/identity/*`, mode-0600 uid-0 — covered
   by uid distinctness and `reject_credential_readable_workload`), the
   `/proc/cmdline` channel (covered by `snapshot_safety` and the cmdline
