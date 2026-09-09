@@ -8,15 +8,21 @@ primary_region = "iad"
   GITHUB_REPO = "coproduct-opensource/nucleus"
   RUNNER_APP = "nucleus-fly-build"
   FLY_REGION = "iad"
-  POLL_SECONDS = "20"
+  # 30s, not 20: a pass costs 2 + LOOKBACK_RUNS + 1 calls, and 30 runs every 20s is 5940/hour
+  # against a 5000/hour limit. Conditional requests only pay for themselves while nothing
+  # changes, which under a backlog is never.
+  POLL_SECONDS = "30"
   IDLE_MINUTES = "30"
-  LOOKBACK_RUNS = "30"
+  LOOKBACK_RUNS = "25"
   # The pools. `build` takes every job on the CI_BUILD_RUNNER label (cargo test, clippy, hack,
   # llvm-cov, dylint: the six-to-twelve-minute jobs that hold a hosted slot for the whole
-  # time); `gate` is the seconds-long jobs on CI_RUNNER, a second lever, opt-in. Volumes are
+  # time); `gate` is the other 52 sites on CI_RUNNER — mostly seconds-long script gates, but the
+  # Lean builds (ci-spec-lean, ck-policy-lean, econ-lean, ifc-lean, rubric-lean), `ci/test`,
+  # `doctests`, `owasp-gauntlet` and `gates-can-fail` are on that label too, which is why it is
+  # shared-cpu-8x with 16 GB and not the 2x/4 GB a pure script pool would want. Volumes are
   # per build Machine and set with `fly secrets set POOLS=...` when the ids are known; this
   # tracked default has none, so a fresh deployment works without them (cold caches).
-  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":4,"standby":2,"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":2,"memory_mb":4096},"size":12,"standby":4}]'
+  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":4,"standby":2,"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":8,"memory_mb":16384},"size":12,"standby":4}]'
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
