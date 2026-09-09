@@ -113,6 +113,29 @@ RUN set -eux; \
     /tmp/elan-init -y --no-modify-path --default-toolchain "${LEAN_TOOLCHAIN}"; \
     rm -f /tmp/elan-init; lean --version; lake --version
 
+# Charon + Aeneas, the Rust → Lean extraction lanes. Same reason as elan above: the aeneas
+# workflows install them only when `runner.environment == 'github-hosted'`, so on a self-hosted
+# runner they assume the image has them, and without them the lanes fail on a REQUIRED check.
+#
+# TRIMMED against docker/Dockerfile.runner, deliberately. That image installs Charon's nightly
+# with miri and seven cross targets because it also serves other lanes; here only the host target
+# is needed to run the extraction, and the seven targets plus miri are most of what makes the k3s
+# image too large for Fly's 8 GB root filesystem. Anything the tarball's rust-toolchain names and
+# this does not provide, rustup fetches at job time — these lanes have network.
+ARG AENEAS_RELEASE=nightly-2026.06.10
+ARG CHARON_NIGHTLY=nightly-2026-06-01
+USER root
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    curl -fsSL "https://github.com/AeneasVerif/aeneas/releases/download/${AENEAS_RELEASE}/aeneas-linux-${arch}.tar.gz" -o /tmp/aeneas.tar.gz; \
+    mkdir -p /opt/aeneas && tar xzf /tmp/aeneas.tar.gz -C /opt/aeneas; rm -f /tmp/aeneas.tar.gz; \
+    chown -R runner:runner /opt/aeneas; /opt/aeneas/aeneas -version; /opt/aeneas/charon version
+USER runner
+RUN set -eux; \
+    rustup toolchain install ${CHARON_NIGHTLY} --profile minimal \
+      -c rustc-dev -c llvm-tools-preview -c rust-src; \
+    rustup target add x86_64-unknown-linux-musl --toolchain stable 2>/dev/null || true
+
 # Paths are relative to the build context, which is the repository root.
 COPY ci/fly-runner/cargo-config.toml /home/runner/.cargo/config.toml
 USER root
