@@ -842,6 +842,9 @@ mod tests {
         ] {
             // Deterministic, non-repeating: a buffer bug that dropped or reordered a chunk
             // could hide behind uniform bytes.
+            // `i % 251` is 0..=250, so the cast is lossless by construction; 251 is prime, which
+            // is what makes the pattern non-repeating across the buffer boundary above.
+            #[allow(clippy::cast_possible_truncation)]
             let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
             let mut f = NamedTempFile::new().unwrap();
             f.write_all(&bytes).unwrap();

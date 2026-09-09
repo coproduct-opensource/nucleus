@@ -703,10 +703,13 @@ impl FirecrackerConfig {
             // observed, not a formatting of it.
             vmm_version: vmm_version.to_string(),
             // The API takes these as unsigned; they are `i64` here only because that is what the
-            // config file wants. A negative vcpu count never reaches this point — `from_spec`
-            // clamps — so the saturating cast cannot silently wrap a real value.
-            vcpu_count: self.machine_config.vcpu_count.max(0) as u32,
-            mem_size_mib: self.machine_config.mem_size_mib.max(0) as u32,
+            // config file wants. `max(0)` covers the low end and `try_from` the high end: `as`
+            // truncates rather than saturates, so a value above `u32::MAX` would arrive as a
+            // small plausible one — an absurd memory size silently becoming a bootable one is
+            // the failure this path least wants to hand a VMM.
+            vcpu_count: u32::try_from(self.machine_config.vcpu_count.max(0)).unwrap_or(u32::MAX),
+            mem_size_mib: u32::try_from(self.machine_config.mem_size_mib.max(0))
+                .unwrap_or(u32::MAX),
             smt: self.machine_config.smt,
             // A scratch drive is the writable, non-root one. `is_read_only` is the property that
             // matters, not the drive's name, because a name is a convention and this is not.

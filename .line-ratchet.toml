@@ -103,3 +103,25 @@ path = "crates/nucleus-audit/src/main.rs"
 ceiling = 2627
 target = 2500
 step = 0
+
+[[files]]
+path = "crates/nucleus-node/src/firecracker_config.rs"
+# Added 2026-09-09 with the content-addressed pod identity work, which took this
+# file 2220 -> 2629 and past the 2500 default sweep ceiling. Seeded at the
+# measured value rather than a round number, the same rule the entries above
+# follow: banked headroom gets spent without justification later.
+#
+# The overage is tests. `#[cfg(test)]` opens at line 1188, so the production half
+# is ~1187 lines and comfortably under the default; the other ~1442 are unit
+# tests. They cannot move to `tests/`, which only sees the public API — what they
+# cover (`from_spec`, `snapshot_inputs`, the drive and boot-arg lowering) is
+# `pub(crate)`, and testing a config lowering through a public seam would mean
+# widening the seam to suit the test.
+#
+# `step = 0` deliberately: the production half is not being actively shrunk, and
+# a non-zero step here would ratchet against test coverage, which is the one
+# thing this file should not be pressured to drop. Raise it if the production
+# half starts growing on its own.
+ceiling = 2629
+target = 2500
+step = 0
