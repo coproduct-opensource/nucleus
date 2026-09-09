@@ -248,15 +248,15 @@ jobs:
         if: steps.scope.outputs.relevant == 'true'
         # Replaces the three hand-written PrintAxioms files (#2567), whose theorem
         # list was maintained by hand — a theorem nobody added was never audited.
-        # The roots are read from THIS workflow's own `lake build` list, so the
+        # The roots are read from THIS workflow's explicit Lean-action build inputs, so the
         # audited set and the built set cannot drift. One environment per root,
         # so the pairwise-incompatible Aeneas extractions (PortcullisCoreIFC /
         # CapQuantale / Channel) never share an import. Policy, fixtures and the
         # per-theorem native_decide exceptions: scripts/lean-axiom-audit.sh and
         # crates/portcullis-core/lean/.axiom-audit-exceptions.
         run: |
-          roots=$(sed -n '/lake build \\/,/^$/p' .github/workflows/portcullis-core-proven-lean.yml \
-            | grep -oE '^\s+[A-Za-z0-9]+ \\' | tr -d ' \\' | paste -sd, -)
+          builds=$(cargo run -q -p xtask -- lean-action-builds --workflow .github/workflows/portcullis-core-proven-lean.yml)
+          roots=$(printf '%s\n' "$builds" | awk '$1 == "named" {print $2}' | paste -sd, -)
           n=$(echo "$roots" | tr ',' '\n' | wc -l | tr -d ' ')
           [ "$n" -ge 40 ] || { echo "::error::only $n roots parsed from the build list — the audit would be partial"; exit 1; }
           echo "auditing $n roots"

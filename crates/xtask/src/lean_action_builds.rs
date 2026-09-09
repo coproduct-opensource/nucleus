@@ -63,9 +63,17 @@ fn builds(workflow: &Value) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
-pub fn run() -> Result<()> {
+pub fn run(workflow: Option<&std::path::Path>) -> Result<()> {
+    if let Some(path) = workflow {
+        if !path.is_file() {
+            bail!("workflow does not exist: {}", path.display());
+        }
+    }
     for entry in std::fs::read_dir(".github/workflows")? {
         let path = entry?.path();
+        if workflow.is_some_and(|requested| requested != path) {
+            continue;
+        }
         if !path.extension().is_some_and(|s| s == "yml" || s == "yaml") {
             continue;
         }

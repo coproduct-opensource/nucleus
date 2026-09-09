@@ -36,7 +36,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Emit explicit Lean-action targets for the library coverage gate.
-    LeanActionBuilds,
+    LeanActionBuilds {
+        /// Limit output to one workflow, for its per-theorem audit.
+        #[arg(long)]
+        workflow: Option<std::path::PathBuf>,
+    },
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
@@ -185,7 +189,7 @@ mod scoreboard;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
-        Command::LeanActionBuilds => lean_action_builds::run(),
+        Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {
             base,
