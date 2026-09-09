@@ -47,7 +47,8 @@ impl GateLevels {
 }
 
 /// [`GateLevels`] for `op` on this pod: the certificate's level as the
-/// ceiling, the resolved policy's as the request. They agree for an honest
+/// ceiling, additionally met with request-effective and verified certificate
+/// capabilities when supplied. The resolved policy is the request. They agree for an honest
 /// pod (boot refuses a spec that disagrees with its certificate), so a
 /// disagreement here is a widened policy — denied by the obligation.
 ///
@@ -55,13 +56,28 @@ impl GateLevels {
 /// with no budget gate is an unconditional deny (#1362), so a real estimate
 /// is a kernel change. Budget is conserved at spawn (the node's ledger) and
 /// per command (`AtomicBudget`), not through this obligation.
-pub(crate) fn levels_for(state: &crate::AppState, op: Operation) -> GateLevels {
+pub(crate) fn levels_for(
+    state: &crate::AppState,
+    op: Operation,
+    certified: Option<&crate::pod_cert::CertifiedPermissions>,
+) -> GateLevels {
     let requested = state.runtime.policy().capabilities.level_for(op);
-    let ceiling = state
+    let policy = &state.runtime.policy().capabilities;
+    let boot = state
         .pod_cert
         .as_ref()
-        .map(|c| c.effective.capabilities.level_for(op))
-        .unwrap_or(requested);
+        .map(|c| &c.effective.capabilities)
+        .unwrap_or(policy);
+    let ceiling = certified.map_or_else(
+        || boot.level_for(op),
+        |c| {
+            boot.request_ceiling(
+                op,
+                &c.effective.capabilities,
+                &c.verified.effective().capabilities,
+            )
+        },
+    );
     GateLevels { ceiling, requested }
 }
 
@@ -576,5 +592,75 @@ mod tests {
             discharge_witness(&bundle).contains("in_scope_with_task"),
             "bundle must carry the InScopeWithTask witness"
         );
+    }
+}
+
+/// Operation of each HTTP effect endpoint. Approval is a market meta-dimension,
+/// not a core Operation; its denial is handled by `grant_denies_endpoint`.
+pub(crate) fn endpoint_operation(path: &str) -> Option<Operation> {
+    match path {
+        "/v1/read" => Some(Operation::ReadFiles),
+        "/v1/write" => Some(Operation::WriteFiles),
+        "/v1/run" => Some(Operation::RunBash),
+        "/v1/glob" => Some(Operation::GlobSearch),
+        "/v1/grep" => Some(Operation::GrepSearch),
+        "/v1/web_fetch" => Some(Operation::WebFetch),
+        "/v1/web_search" => Some(Operation::WebSearch),
+        "/v1/pod/create" | "/v1/pod/list" | "/v1/pod/status" | "/v1/pod/logs"
+        | "/v1/pod/cancel" => Some(Operation::ManagePods),
+        p if p.starts_with("/v1/egress/") => Some(Operation::WebFetch),
+        _ => None,
+    }
+}
+
+pub(crate) fn grant_denies_endpoint(
+    grant: &nucleus_permission_market::PermissionGrant,
+    path: &str,
+) -> bool {
+    use nucleus_permission_market::PermissionDimension;
+    let dimension = if path.starts_with("/v1/egress/") {
+        Some(PermissionDimension::NetworkEgress)
+    } else {
+        PermissionDimension::from_endpoint(path)
+    };
+    !grant.denied.is_empty()
+        && (grant.granted.is_empty()
+            || dimension
+                .is_some_and(|dimension| grant.denied.iter().any(|d| d.dimension == dimension)))
+}
+
+#[cfg(test)]
+mod certificate_endpoint_tests {
+    use super::*;
+    use nucleus_permission_market::{DeniedDimension, PermissionDimension as D, PermissionGrant};
+
+    #[test]
+    fn partial_denial_refuses_only_the_affected_endpoints() {
+        let grant = PermissionGrant {
+            granted: vec![D::Filesystem],
+            denied: vec![DeniedDimension {
+                dimension: D::NetworkEgress,
+                price: 1.0,
+            }],
+            total_cost: 0.0,
+            expires_at: None,
+        };
+        for path in ["/v1/web_fetch", "/v1/web_search", "/v1/egress/api/resource"] {
+            assert!(grant_denies_endpoint(&grant, path), "{path}");
+        }
+        for path in ["/v1/read", "/v1/write", "/v1/glob", "/v1/grep"] {
+            assert!(!grant_denies_endpoint(&grant, path), "{path}");
+            assert!(endpoint_operation(path).is_some());
+        }
+        let reverse = PermissionGrant {
+            granted: vec![D::NetworkEgress],
+            denied: vec![DeniedDimension {
+                dimension: D::Filesystem,
+                price: 2.0,
+            }],
+            ..grant
+        };
+        assert!(grant_denies_endpoint(&reverse, "/v1/read"));
+        assert!(!grant_denies_endpoint(&reverse, "/v1/web_fetch"));
     }
 }

@@ -2589,10 +2589,9 @@ async fn auth_middleware(
         (evaluate_permission_bid(&parts.headers, &state), None)
     };
 
-    // If the bid was fully denied (no dimensions granted), return 402 with pricing
+    // Refuse the endpoint when its dimension is denied, including partial grants.
     if let Some(ref grant) = permission_grant
-        && !grant.denied.is_empty()
-        && grant.granted.is_empty()
+        && run_gate::grant_denies_endpoint(grant, parts.uri.path())
     {
         let total_price: f64 = grant.denied.iter().map(|d| d.price).sum();
         let denied_dims = grant
@@ -2619,6 +2618,18 @@ async fn auth_middleware(
             resource: Some(parts.uri.path().to_string()),
         };
         return Err(ApiError::PermissionDenied(payment_info));
+    }
+
+    // Also cover core endpoints without sealed effect preflight (glob/grep/pods).
+    if let Some(ref certified) = certified_perms
+        && let Some(op) = run_gate::endpoint_operation(parts.uri.path())
+    {
+        let levels = run_gate::levels_for(&state, op, Some(certified));
+        if levels.ceiling == CapabilityLevel::Never || levels.requested > levels.ceiling {
+            return Err(ApiError::KernelDenied(format!(
+                "request certificate ceiling denies {op:?}"
+            )));
+        }
     }
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
@@ -2860,6 +2871,7 @@ async fn read_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<ReadRequest>,
 ) -> Result<Json<ReadResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -2900,7 +2912,11 @@ async fn read_file(
         () => {{
             use nucleus_ifc_kernel::discharge::PreflightResult;
             let verified_scope = state.session_task_token.verified_scope();
-            let ceiling = run_gate::levels_for(&state, Operation::ReadFiles);
+            let ceiling = run_gate::levels_for(
+                &state,
+                Operation::ReadFiles,
+                certified.as_ref().map(|e| &e.0),
+            );
             let flow = state.flow_graph.lock().await;
             let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
             drop(flow);
@@ -3015,6 +3031,7 @@ async fn write_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<WriteRequest>,
 ) -> Result<Json<WriteResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -3062,7 +3079,11 @@ async fn write_file(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let fs_ceiling = run_gate::levels_for(&state, Operation::WriteFiles);
+        let fs_ceiling = run_gate::levels_for(
+            &state,
+            Operation::WriteFiles,
+            certified.as_ref().map(|e| &e.0),
+        );
         let flow = state.flow_graph.lock().await;
         let result = run_gate::preflight_fs(
             Operation::WriteFiles,
@@ -3148,7 +3169,11 @@ async fn write_file(
                 let retry_bundle = {
                     use nucleus_ifc_kernel::discharge::PreflightResult;
                     let verified_scope = state.session_task_token.verified_scope();
-                    let fs_ceiling = run_gate::levels_for(&state, Operation::WriteFiles);
+                    let fs_ceiling = run_gate::levels_for(
+                        &state,
+                        Operation::WriteFiles,
+                        certified.as_ref().map(|e| &e.0),
+                    );
                     let flow = state.flow_graph.lock().await;
                     let r = run_gate::preflight_fs(
                         Operation::WriteFiles,
@@ -3252,6 +3277,7 @@ async fn run_command(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<RunRequest>,
 ) -> Result<Json<RunResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -3333,7 +3359,8 @@ async fn run_command(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let run_bash_ceiling = run_gate::levels_for(&state, Operation::RunBash);
+        let run_bash_ceiling =
+            run_gate::levels_for(&state, Operation::RunBash, certified.as_ref().map(|e| &e.0));
         let flow = state.flow_graph.lock().await;
         let result =
             run_gate::preflight_runbash(verified_scope, run_bash_ceiling, &display_command, &flow);
@@ -3415,7 +3442,11 @@ async fn run_command(
                     portcullis_effects::authority::Authority::new({
                         use nucleus_ifc_kernel::discharge::PreflightResult;
                         let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling = run_gate::levels_for(&state, Operation::RunBash);
+                        let ceiling = run_gate::levels_for(
+                            &state,
+                            Operation::RunBash,
+                            certified.as_ref().map(|e| &e.0),
+                        );
                         let flow = state.flow_graph.lock().await;
                         let r = run_gate::preflight_runbash(
                             verified_scope,
@@ -3496,6 +3527,7 @@ async fn web_fetch(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<WebFetchRequest>,
 ) -> Result<Json<WebFetchResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -3614,7 +3646,7 @@ async fn web_fetch(
         let result = run_gate::preflight_web(
             operation,
             verified_scope,
-            run_gate::levels_for(&state, operation),
+            run_gate::levels_for(&state, operation, certified.as_ref().map(|e| &e.0)),
             &url_str,
             &flow,
         );
@@ -4108,6 +4140,7 @@ async fn web_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<WebSearchRequest>,
 ) -> Result<Json<WebSearchResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -4220,7 +4253,7 @@ async fn web_search(
         let result = run_gate::preflight_web(
             operation,
             verified_scope,
-            run_gate::levels_for(&state, operation),
+            run_gate::levels_for(&state, operation, certified.as_ref().map(|e| &e.0)),
             &req.query,
             &flow,
         );
