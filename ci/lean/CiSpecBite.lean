@@ -130,4 +130,24 @@ theorem competing_runs_delay_the_group :
     makespan (greedy 4 groupJobs) + 50 ≤ makespan (greedyFrom [50, 50, 50, 50] groupJobs) := by
   decide
 
+/-- **Bite of T9 (the machine budget).** The pool as it actually ran on
+    2026-09-09: 27 machines of the organization's 99 against a cap of 100, with
+    a pass wanting six launches in flight. It does not fit, which is why every
+    start answered 422 and the pool deadlocked warm with 44 jobs queued. The
+    repair — reclaiming 26 machines from suspended apps, so 46 sit elsewhere —
+    fits at 38 pooled machines and ten launches in flight, with room to spare. -/
+theorem machine_budget_100_did_not_fit :
+    (Slots.mk 100 72 27 6).fits = false ∧
+    (Slots.mk 100 46 38 10).fits = true := by
+  decide
+
+/-- **Bite of T10 (the deadlock is not merely "full").** At the cap the pass
+    fails for a pool that is not even large: the same 100-machine budget with
+    99 machines held elsewhere refuses a pool of one with a single launch. The
+    shortfall, not the pool's size, is what has to be given back. -/
+theorem at_the_cap_even_one_launch_is_refused :
+    (Slots.mk 100 99 1 1).fits = false ∧
+    (Slots.mk 100 96 1 1).fits = true := by
+  decide
+
 end CiSpecBite
