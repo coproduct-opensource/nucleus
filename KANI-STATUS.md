@@ -250,6 +250,6 @@ harnesses and `welfare_sum_bounded`. The full core run hit its shorter local
 are unverified, not passes. The completed core run reported 18 verified and
 5 timed-out harnesses out of 23 selected; the other timeouts were
 `proof_ifc_leq_consistent_with_join` and `proof_empty_capabilities_rejected`.
-The difference between scheduled source inventory and executable harnesses
-also needs investigation. The Linux nightly shards use a 600-second budget
+The three remaining source harnesses are behind the `envelope` feature;
+the full nightly lane enables that feature explicitly. The Linux nightly shards use a 600-second budget
 and still require execution evidence before #2581 can be considered resolved.

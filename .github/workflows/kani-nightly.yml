@@ -444,7 +444,7 @@ jobs:
           kani-version: "0.67.0"
           command: bash scripts/kani-bounded.sh
           args: >-
-            -p portcullis-core --solver cadical
+            -p portcullis-core --features envelope --solver cadical
             -Z unstable-options --harness-timeout 600s
             --harness ${{ matrix.harness }}
 
