@@ -12,6 +12,13 @@ primary_region = "iad"
   # against a 5000/hour limit. Conditional requests only pay for themselves while nothing
   # changes, which under a backlog is never.
   POLL_SECONDS = "30"
+  # Every machine is standby, so nothing is ever retired and this is inert. It is kept because
+  # a pool whose standby is lowered needs it again. Why standby = size: a stopped machine is
+  # billed for its root filesystem only, $0.15/GB-month — about $0.40 a month each for this
+  # image — while a machine that has to be created and warmed on demand costs a job two passes
+  # and an image pull. Warm capacity is the cheapest thing in this system; the volumes are what
+  # cost money ($48/month for the build pool's eight), which is why the build pool's size is
+  # pinned to its volume count until the compile cache is shared rather than per machine.
   IDLE_MINUTES = "30"
   LOOKBACK_RUNS = "25"
   # The pools. `build` takes every job on the CI_BUILD_RUNNER label (cargo test, clippy, hack,
@@ -22,7 +29,7 @@ primary_region = "iad"
   # shared-cpu-8x with 16 GB and not the 2x/4 GB a pure script pool would want. Volumes are
   # per build Machine and set with `fly secrets set POOLS=...` when the ids are known; this
   # tracked default has none, so a fresh deployment works without them (cold caches).
-  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":8,"standby":3,"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":8,"memory_mb":16384},"size":12,"standby":4}]'
+  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":8,"standby":8,"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":8,"memory_mb":16384},"size":16,"standby":16}]'
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
