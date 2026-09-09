@@ -1,0 +1,5 @@
+FROM python:3.13-slim-bookworm
+WORKDIR /app
+COPY manager.py .
+USER 65534
+CMD ["python3", "-u", "manager.py"]

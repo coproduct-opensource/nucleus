@@ -5,9 +5,15 @@ name: Self-hosted runner smoke
 # Runs when the runner setup itself changes, and on demand. Never required.
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label to validate
+        type: string
+        default: nucleus-k3s
   pull_request:
     paths:
       - "k8s/ci-runner/**"
+      - "ci/fly-runner/**"
       - "docker/Dockerfile.runner"
       - ".github/workflows/runner-smoke.yml"
 
@@ -15,9 +21,20 @@ permissions:
   contents: read
 
 jobs:
+  configuration:
+    name: Fly runner configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Pool lifecycle and credential isolation
+        run: python3 -m unittest discover -s ci/fly-runner -p 'test_*.py'
+      - name: Shell entrypoint syntax
+        run: bash -n ci/fly-runner/entrypoint.sh
   probe:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     name: probe the self-hosted runner
-    runs-on: nucleus-k3s
+    runs-on: ${{ inputs.runner || 'nucleus-k3s' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

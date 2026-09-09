@@ -1,0 +1,5 @@
+[
+  {"url":"https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz","sha256":"67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006","binary":"sccache"},
+  {"url":"https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz","sha256":"4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d","binary":"just"},
+  {"url":"https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.143/cargo-nextest-0.9.143-x86_64-unknown-linux-gnu.tar.gz","sha256":"66786b9abe23920d022a182d1416b1bbc8130dd4872a9553d76985a1708dcd1e","binary":"cargo-nextest"}
+]

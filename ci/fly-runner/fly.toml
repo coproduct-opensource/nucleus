@@ -1,0 +1,4 @@
+app = "nucleus-fly-build"
+primary_region = "iad"
+[build]
+  dockerfile = "Dockerfile"
