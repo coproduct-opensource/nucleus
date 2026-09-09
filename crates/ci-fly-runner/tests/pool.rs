@@ -193,8 +193,8 @@ fn pools_are_validated() {
             "standby above size",
         ),
         (
-            r#"[{"label":"p","guest":{"cpu_kind":"shared","cpus":2,"memory_mb":4},"size":2,"standby":1,"volumes":["a"]}]"#,
-            "one volume for two machines",
+            r#"[{"label":"p","guest":{"cpu_kind":"shared","cpus":2,"memory_mb":4},"size":1,"standby":1,"volumes":["a","b"]}]"#,
+            "more volumes than machines",
         ),
         (
             r#"[{"label":"p","guest":{"cpu_kind":"shared","cpus":2,"memory_mb":4},"size":2,"standby":1,"volumes":["a","a"]}]"#,
@@ -555,6 +555,29 @@ fn a_created_machine_is_created_unbooted_with_the_volume_of_its_index_and_booted
 
 /// A machine that has never booted covers no queued job, and a planner that reads it as live
 /// leaves it in `created` for good — which is what happened on the first live pass.
+/// A pool may hold fewer volumes than machines: the ones with a volume get a disk for the build
+/// directory, the rest run on the root filesystem. Requiring one volume each is what pinned the
+/// build pool to eight while gate machines idled.
+#[test]
+fn a_pool_may_have_fewer_volumes_than_machines_and_the_rest_mount_nothing() {
+    let pools = parse_pools(
+        r#"[{"label":"build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},
+             "size":4,"standby":4,"volumes":["vol_a","vol_b"]}]"#,
+    )
+    .unwrap();
+    let p = &pools[0];
+    assert_eq!(
+        p.base_config("i@sha256:a", 0)["mounts"][0]["volume"],
+        "vol_a"
+    );
+    assert_eq!(
+        p.base_config("i@sha256:a", 1)["mounts"][0]["volume"],
+        "vol_b"
+    );
+    assert!(p.base_config("i@sha256:a", 2).get("mounts").is_none());
+    assert!(p.base_config("i@sha256:a", 3).get("mounts").is_none());
+}
+
 #[test]
 fn a_never_booted_machine_is_startable_not_live() {
     let cold = pooled("build", 0, "created", 0);

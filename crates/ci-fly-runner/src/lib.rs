@@ -80,9 +80,12 @@ pub struct PoolSpec {
     /// How many stopped-and-warm machines to keep regardless of demand; the rest are destroyed
     /// after the idle period and re-created when demand returns.
     pub standby: usize,
-    /// Optional volume ids, one per machine index, mounted at `/data` (caches). Either none or
-    /// exactly `size` of them: a pool where only some machines have a cache is a pool whose job
-    /// timings depend on which machine took the job.
+    /// Volume ids, mounted at `/data`, assigned to machine indexes in order. FEWER than `size` is
+    /// allowed and is the normal state: on Fly a machine's root filesystem is its only disk and is
+    /// capped at 8 GB, so a volume is what gives a compile job room — but a volume is also the
+    /// only thing in this pool that costs money while idle ($0.15/GB-month), and pinning `size` to
+    /// the volume count is what left sixteen idle gate machines next to forty-seven queued build
+    /// jobs. Machines past the end of this list run on the root filesystem alone.
     #[serde(default)]
     pub volumes: Vec<String>,
     /// Extra environment for the worker (e.g. the build job count).
@@ -112,8 +115,13 @@ pub fn parse_pools(source: &str) -> Result<Vec<PoolSpec>, String> {
         if pool.standby > pool.size {
             return Err(format!("{}: standby must be within 0..size", pool.label));
         }
-        if !pool.volumes.is_empty() && pool.volumes.len() != pool.size {
-            return Err(format!("{}: one volume per machine, or none", pool.label));
+        if pool.volumes.len() > pool.size {
+            return Err(format!(
+                "{}: {} volumes for {} machines — the extra ones would never be mounted",
+                pool.label,
+                pool.volumes.len(),
+                pool.size
+            ));
         }
         let distinct: BTreeSet<&String> = pool.volumes.iter().collect();
         if distinct.len() != pool.volumes.len() {
