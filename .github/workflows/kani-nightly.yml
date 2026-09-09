@@ -78,6 +78,7 @@ jobs:
           args: >-
             -p portcullis
             --solver cadical
+            --harness proof_request_ceiling_leq_verified
             --harness proof_capability_distributive
             --harness proof_exposureset_monoid_identity
             --harness proof_exposureset_uninhabitable_iff_count_three
