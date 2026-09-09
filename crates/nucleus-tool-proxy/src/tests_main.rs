@@ -5,6 +5,7 @@ use super::*;
 use crate::mediation::kernel_denial_to_api_error;
 use nucleus::portcullis::FlowTracker;
 use nucleus::portcullis::kernel::DenyReason;
+use nucleus_identity::approval_bundle::compute_manifest_hash;
 
 #[test]
 fn test_rate_limiter_allows_burst() {
