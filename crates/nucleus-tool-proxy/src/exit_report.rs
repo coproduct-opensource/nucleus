@@ -5,10 +5,15 @@
 //! captures the audit chain tail, writing this as the final audit log entry.
 //! The host (nucleus-node) reads this to build an `ExecutionReceipt`.
 
+use nucleus::portcullis::kernel::Kernel;
 use nucleus_spec::{ExitReport, sha256_bytes_hex};
 use portcullis::trace_monitor::TraceMonitor;
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::sync::Arc;
+use tracing::{info, warn};
+
+use crate::AuditLog;
 
 /// Compute a deterministic SHA-256 hash of a directory's contents.
 ///
@@ -128,7 +133,27 @@ pub fn build_exit_report(
         art12_chain_head: String::new(),
         art12_records: 0,
         art12_dropped: 0,
+        // Populated by `apply_authority` from the kernel at shutdown.
+        authority: None,
     }
+}
+
+/// Fold what the kernel granted and what the session used into the report:
+/// ρ and the decision counts (ADR 0004). `task_grant_id` is the grant the
+/// pod's spec named, if any.
+pub fn apply_authority(report: &mut ExitReport, kernel: &Kernel, task_grant_id: Option<String>) {
+    let mut summary = portcullis::summarise_authority(kernel.effective(), kernel.trace());
+    summary.task_grant_id = task_grant_id;
+    info!(
+        granted = summary.granted_dimensions.len(),
+        used = summary.used_dimensions.len(),
+        overhead = ?summary.overhead,
+        allowed = summary.allowed,
+        denied = summary.denied,
+        approvals = summary.approvals_requested,
+        "exit report: authority summary captured"
+    );
+    report.authority = Some(summary);
 }
 
 /// Fold the Article 12 log's chain head into the report, for the host to sign.
@@ -192,10 +217,105 @@ pub fn apply_exposure(
     );
 }
 
+/// Write the exit report on shutdown (including verified exposure data and
+/// the authority summary). Lives here rather than in main.rs so the report's
+/// inputs are all in one place and main.rs stays under its line ratchet.
+pub async fn write_exit_report(
+    audit: &AuditLog,
+    work_dir_path: &Path,
+    exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
+    monitor: &portcullis::trace_monitor::TraceMonitor,
+    art12_log: Option<&Arc<crate::art12::Art12Log>>,
+    kernel: &Arc<tokio::sync::Mutex<Kernel>>,
+    task_grant_id: Option<String>,
+) {
+    let workspace_hash = match hash_workspace(work_dir_path).await {
+        Ok(h) => h,
+        Err(e) => {
+            warn!("failed to hash workspace for exit report: {e}");
+            return;
+        }
+    };
+
+    let (tail_hash, count) = audit.tail_hash_and_count();
+    let mut report = build_exit_report(workspace_hash, tail_hash, count, None, monitor);
+    if !report.monitor_violations.is_empty() || report.monitor_violations_dropped > 0 {
+        warn!(
+            violations = ?report.monitor_violations,
+            dropped = report.monitor_violations_dropped,
+            "exit report: decision-stream properties were violated during this session"
+        );
+    }
+
+    apply_exposure(&mut report, exposure_guard);
+    apply_art12(&mut report, art12_log);
+    {
+        let kernel = kernel.lock().await;
+        apply_authority(&mut report, &kernel, task_grant_id);
+    }
+
+    let report_path = work_dir_path.join(".nucleus-exit-report.json");
+    match serde_json::to_string_pretty(&report) {
+        Ok(json) => {
+            if let Err(e) = tokio::fs::write(&report_path, json).await {
+                warn!(
+                    "failed to write exit report to {}: {e}",
+                    report_path.display()
+                );
+            } else {
+                info!(
+                    path = %report_path.display(),
+                    entries = count,
+                    event = "exit_report_written",
+                    "exit report written"
+                );
+            }
+        }
+        Err(e) => warn!("failed to serialize exit report: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// The report says what the kernel granted and what the session used,
+    /// and names the grant the spec named.
+    #[test]
+    #[allow(deprecated)] // `decide` is the shortest way to a real trace
+    fn the_authority_summary_comes_from_the_kernel_and_names_the_grant() {
+        use portcullis::{Operation, PermissionLattice};
+        let mut kernel = Kernel::new(PermissionLattice::restrictive());
+        kernel.decide(Operation::ReadFiles, "src/main.rs");
+        kernel.decide(Operation::GitPush, "origin main");
+        let mut report = ExitReport {
+            workspace_hash: "w".into(),
+            audit_tail_hash: "t".into(),
+            audit_entry_count: 2,
+            timestamp_unix: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cost_usd: 0.0,
+            observed_exposure_labels: Vec::new(),
+            observed_risk_tier: String::new(),
+            uninhabitable_reached: false,
+            monitor_violations: Vec::new(),
+            monitor_violations_dropped: 0,
+            art12_chain_head: String::new(),
+            art12_records: 0,
+            art12_dropped: 0,
+            authority: None,
+        };
+        apply_authority(&mut report, &kernel, Some("grant-1".into()));
+        let a = report.authority.expect("summary");
+        assert_eq!(a.task_grant_id.as_deref(), Some("grant-1"));
+        assert_eq!(a.allowed, 1);
+        assert_eq!(a.denied, 1);
+        assert_eq!(a.used_dimensions, vec!["read_files"]);
+        assert!(a.overhead.is_some());
+    }
 
     #[tokio::test]
     async fn test_hash_workspace_empty() {
