@@ -1094,6 +1094,24 @@ pub fn build_mcp_allowed_tools(policy: &PermissionLattice) -> Vec<String> {
     if policy.capabilities.web_search >= CapabilityLevel::LowRisk {
         tools.push("mcp__nucleus__web_search".to_string());
     }
+    // Sub-pod management. `nucleus-mcp` advertises these five tools whenever
+    // the policy's `manage_pods` is at least LowRisk (`build_tool_defs`), but
+    // until this arm the runner never granted them, so an orchestrator profile
+    // could see `create_pod` and never call it — a subagent tree was
+    // unreachable over the default path. The proxy still decides every call
+    // (`ManagePods` mediation + the delegation ceiling); this list only says
+    // which tools the agent may *ask* for.
+    if policy.capabilities.manage_pods >= CapabilityLevel::LowRisk {
+        for t in [
+            "create_pod",
+            "list_pods",
+            "pod_status",
+            "pod_logs",
+            "cancel_pod",
+        ] {
+            tools.push(format!("{NUCLEUS_MCP_TOOL_PREFIX}{t}"));
+        }
+    }
     tools
 }
 

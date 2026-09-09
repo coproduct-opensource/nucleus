@@ -1,0 +1,24 @@
+[package]
+name = "nucleus-api-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Wire types for the nucleus tool-proxy HTTP API, shared by the server and every client face"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/nucleus-api-types"
+readme = "README.md"
+keywords = ["ai", "security", "api", "agents"]
+categories = ["api-bindings", "development-tools"]
+
+[dependencies]
+serde = { workspace = true }
+shell-words = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+portcullis-effects = { path = "../portcullis-effects" }
+portcullis = { path = "../portcullis", default-features = false }
+
+[lints]
+workspace = true

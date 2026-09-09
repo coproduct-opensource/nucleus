@@ -532,6 +532,25 @@ impl<'a> Executor<'a> {
         approval: Option<&ApprovalToken>,
         authority: Authority,
     ) -> Result<Output> {
+        let (program, program_args, work_dir) =
+            self.admit_argv(args, directory, approval, self.max_duration_for_run())?;
+        self.spawn_checked(program, program_args, &work_dir, stdin_data, authority)
+            .map_err(Into::into)
+    }
+
+    /// Every check an argv must clear before ANY spawn path may use it — the
+    /// one admission both the synchronous [`Self::run_args`] family and the
+    /// timeout-bearing [`Self::run_args_with_timeout`] go through, so a
+    /// timeout cannot buy a laxer check. Returns the split the spawn needs and
+    /// the resolved, sandbox-confined working directory. `max_duration` is
+    /// what the budget is reserved against.
+    fn admit_argv<'v>(
+        &self,
+        args: &'v [String],
+        directory: Option<&str>,
+        approval: Option<&ApprovalToken>,
+        max_duration: Option<Duration>,
+    ) -> Result<(&'v str, &'v [String], std::path::PathBuf)> {
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
@@ -557,7 +576,7 @@ impl<'a> Executor<'a> {
         }
 
         // Enforce budget before spawning any process
-        self.reserve_budget(self.max_duration_for_run())?;
+        self.reserve_budget(max_duration)?;
 
         // Build the command
         let (program, program_args) = args.split_first().unwrap();
@@ -591,8 +610,49 @@ impl<'a> Executor<'a> {
             self.sandbox.root_path().to_path_buf()
         };
 
-        self.spawn_checked(program, program_args, &work_dir, stdin_data, authority)
-            .map_err(Into::into)
+        Ok((program.as_str(), program_args, work_dir))
+    }
+
+    /// Execute a pre-parsed command array with a timeout — the argv analogue
+    /// of [`Self::run_with_timeout`], and the path `/v1/run`'s
+    /// `timeout_seconds` takes (that field was accepted and ignored until this
+    /// existed). Same admission as [`Self::run_args`] via [`Self::admit_argv`];
+    /// the spawn is the sealed async home, which kills the child on timeout
+    /// and surfaces it as [`NucleusError::TimeViolation`]. `timeout` is
+    /// clamped to the pod's remaining time guard, so a request cannot outlive
+    /// the session, and the budget is reserved against the clamped value.
+    #[cfg(feature = "async")]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_args_with_timeout(
+        &self,
+        args: &[String],
+        stdin: Option<&str>,
+        directory: Option<&str>,
+        timeout: Duration,
+        approval: Option<&ApprovalToken>,
+        decision: &DecisionToken,
+        authority: Authority,
+    ) -> Result<Output> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::RunBash,
+            "DecisionToken operation mismatch"
+        );
+        let timeout = match self.max_duration_for_run() {
+            Some(remaining) => timeout.min(remaining),
+            None => timeout,
+        };
+        let (program, program_args, work_dir) =
+            self.admit_argv(args, directory, approval, Some(timeout))?;
+        self.spawn_with_timeout(
+            program,
+            program_args,
+            &work_dir,
+            stdin.map(str::as_bytes),
+            timeout,
+            authority,
+        )
+        .await
     }
 
     /// Execute a command with an approval token for approval-gated operations.
@@ -706,8 +766,15 @@ impl<'a> Executor<'a> {
         // Build and execute with timeout
         let (program, program_args) = args.split_first().unwrap();
 
-        self.spawn_with_timeout(program, program_args, timeout, authority)
-            .await
+        self.spawn_with_timeout(
+            program,
+            program_args,
+            self.sandbox.root_path(),
+            None,
+            timeout,
+            authority,
+        )
+        .await
     }
 
     /// Execute a command with a timeout and an approval token.
@@ -760,8 +827,15 @@ impl<'a> Executor<'a> {
         // Build and execute with timeout
         let (program, program_args) = args.split_first().unwrap();
 
-        self.spawn_with_timeout(program, program_args, timeout, authority)
-            .await
+        self.spawn_with_timeout(
+            program,
+            program_args,
+            self.sandbox.root_path(),
+            None,
+            timeout,
+            authority,
+        )
+        .await
     }
 
     /// The single async spawn choke point, shared by `run_with_timeout` and
@@ -788,6 +862,8 @@ impl<'a> Executor<'a> {
         &self,
         program: &str,
         program_args: &[String],
+        cwd: &std::path::Path,
+        stdin: Option<&[u8]>,
         timeout: Duration,
         authority: Authority,
     ) -> Result<Output> {
@@ -799,15 +875,16 @@ impl<'a> Executor<'a> {
                 &HostSandbox::harden_tokio as &(dyn Fn(&mut tokio::process::Command) + Send + Sync),
             );
 
-        // The previous inline spawn used `Stdio::null()` for stdin (no input), so
-        // pass `None`. `Some(timeout)` asks the sealed home to wrap the wait in
-        // `tokio::time::timeout`.
+        // The string-command callers pass the sandbox root and no stdin (the
+        // previous inline spawn used `Stdio::null()`); the argv caller passes
+        // its admitted working directory and optional stdin. `Some(timeout)`
+        // asks the sealed home to wrap the wait in `tokio::time::timeout`.
         self.effects
             .run_argv_async(
                 program,
                 program_args,
-                self.sandbox.root_path(),
-                None,
+                cwd,
+                stdin,
                 &self.allowed_env,
                 harden,
                 Some(timeout),

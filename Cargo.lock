@@ -6544,6 +6544,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-api-types"
+version = "1.0.0"
+dependencies = [
+ "portcullis",
+ "portcullis-effects",
+ "serde",
+ "serde_json",
+ "shell-words",
+]
+
+[[package]]
 name = "nucleus-audit"
 version = "1.0.0"
 dependencies = [
@@ -7015,6 +7026,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "nucleus-api-types",
  "nucleus-client",
  "nucleus-spec",
  "portcullis",
@@ -7434,6 +7446,7 @@ dependencies = [
  "hmac 0.13.0",
  "libc",
  "nucleus",
+ "nucleus-api-types",
  "nucleus-client",
  "nucleus-cred-protocol",
  "nucleus-identity",

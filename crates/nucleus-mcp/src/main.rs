@@ -90,18 +90,13 @@ struct WriteResponse {
     ok: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct RunRequest {
-    command: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RunResponse {
-    status: i32,
-    success: bool,
-    stdout: String,
-    stderr: String,
-}
+// `/v1/run` request and response are the SHARED wire types
+// (`nucleus-api-types`), compiled by this face and by the proxy — so the two
+// sides cannot drift the way they did when this file posted `{command}` and
+// the proxy read `{args}` (every exec over this path failed at
+// deserialisation). The tool schema below advertises both spellings; the
+// shared type resolves them to argv before anything is posted.
+use nucleus_api_types::{RunRequest, RunResponse};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct WebFetchRequest {
@@ -873,11 +868,23 @@ fn build_tool_defs(policy: Option<&PermissionLattice>) -> Vec<ToolDefinition> {
     if allow_run {
         tools.push(ToolDefinition {
             name: "run".to_string(),
-            description: "Run a command within the sandbox".to_string(),
+            description: "Run a program within the sandbox. `args` is argv (no shell runs); `command` is a legacy alias split with shell-words rules into the same argv. Give one or the other.".to_string(),
             input_schema: json!({
                 "type": "object",
-                "properties": { "command": { "type": "string" } },
-                "required": ["command"]
+                "properties": {
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Program and arguments, one element each, e.g. [\"ls\", \"-la\"]"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Legacy alias: a single string split like a shell would, then executed as argv — pipes and redirects are literal arguments, not operators"
+                    },
+                    "stdin": { "type": "string", "description": "Optional input for the process's stdin" },
+                    "directory": { "type": "string", "description": "Optional working directory, relative to the sandbox root" },
+                    "timeout_seconds": { "type": "integer", "description": "Optional timeout; clamped by the proxy" }
+                }
             }),
         });
     }
@@ -1174,12 +1181,7 @@ fn call_tool_inner(
                 client,
                 approval_prompt,
                 || client.post_json("/v1/run", &req),
-                || {
-                    let req = RunRequest {
-                        command: req.command.clone(),
-                    };
-                    client.post_json("/v1/run", &req)
-                },
+                || client.post_json("/v1/run", &req.clone()),
             )?;
             Ok(format!(
                 "status: {}\nsuccess: {}\nstdout:\n{}\nstderr:\n{}",
@@ -1574,6 +1576,45 @@ mod tests {
         assert!(names.contains(&"pod_status"));
         assert!(names.contains(&"pod_logs"));
         assert!(names.contains(&"cancel_pod"));
+    }
+
+    /// The wire contract with the proxy. The `run` tool's advertised schema
+    /// admits both spellings, both resolve to the SAME shared request type the
+    /// proxy deserialises (`nucleus_api_types::RunRequest`), and what goes on
+    /// the wire is the canonical argv form. This is the test that would have
+    /// caught the founding defect (this face posting `{command}` to a proxy
+    /// that read `{args}`): the schema's property set is pinned to the shared
+    /// type's fields, so a field added on one side without the other is red.
+    #[test]
+    fn run_tool_schema_and_proxy_wire_type_agree() {
+        let tools = build_tool_defs(Some(&PermissionLattice::permissive()));
+        let run = tools
+            .iter()
+            .find(|t| t.name == "run")
+            .expect("run tool advertised under a permissive policy");
+        let advertised: std::collections::BTreeSet<&str> = run.input_schema["properties"]
+            .as_object()
+            .expect("object schema")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let shared: std::collections::BTreeSet<&str> =
+            ["args", "command", "stdin", "directory", "timeout_seconds"]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            advertised, shared,
+            "tool schema drifted from nucleus_api_types::RunRequest"
+        );
+
+        let via_alias: RunRequest = serde_json::from_value(json!({"command": "echo hi"})).unwrap();
+        let via_args: RunRequest = serde_json::from_value(json!({"args": ["echo", "hi"]})).unwrap();
+        assert_eq!(via_alias, via_args);
+        assert_eq!(
+            serde_json::to_value(&via_alias).unwrap(),
+            json!({"args": ["echo", "hi"]}),
+            "the wire carries argv only"
+        );
     }
 
     #[test]

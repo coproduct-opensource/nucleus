@@ -888,34 +888,12 @@ struct WriteResponse {
     ok: bool,
 }
 
-/// Run command request using secure array-based format.
-///
-/// The array form prevents shell injection by executing commands directly
-/// without shell interpretation. Each array element is passed as a separate
-/// argument to the process.
-#[derive(Debug, Deserialize)]
-struct RunRequest {
-    /// Command as array, e.g. ["ls", "-la", "/tmp"]
-    args: Vec<String>,
-    /// Optional input to pass to command stdin
-    #[serde(default)]
-    stdin: Option<String>,
-    /// Optional working directory (relative to sandbox)
-    #[serde(default)]
-    directory: Option<String>,
-    /// Optional timeout in seconds (clamped to policy limit)
-    #[serde(default)]
-    #[allow(dead_code)] // Reserved for future timeout implementation
-    timeout_seconds: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct RunResponse {
-    status: i32,
-    success: bool,
-    stdout: String,
-    stderr: String,
-}
+// `/v1/run` request/response are the SHARED wire types (`nucleus-api-types`):
+// the same struct the MCP face posts, so the two cannot drift again. Argv is
+// canonical; the legacy `command` string is split into argv by the type
+// itself and never reaches a shell. `timeout_seconds` is honoured below via
+// the sealed async spawn (it was `#[allow(dead_code)]` here for a year).
+use nucleus_api_types::{RunRequest, RunResponse};
 
 #[derive(Debug, Deserialize)]
 struct ApproveRequest {
@@ -3378,13 +3356,35 @@ async fn run_command(
     // handler's `discharge_bundle` verdict extension).
     let discharge_note = run_gate::discharge_witness(&discharge_bundle);
 
-    let output = match executor.run_args(
-        &req.args,
-        stdin,
-        directory,
-        &decision_token,
-        portcullis_effects::authority::Authority::new(discharge_bundle),
-    ) {
+    // `timeout_seconds` (clamped by the shared type, then by the pod's time
+    // guard inside the executor) selects the sealed async spawn, which kills
+    // the child on expiry; without it the synchronous path runs as before.
+    let timeout = req
+        .clamped_timeout_secs()
+        .map(std::time::Duration::from_secs);
+    let first_attempt = match timeout {
+        Some(t) => {
+            executor
+                .run_args_with_timeout(
+                    &req.args,
+                    stdin,
+                    directory,
+                    t,
+                    None,
+                    &decision_token,
+                    portcullis_effects::authority::Authority::new(discharge_bundle),
+                )
+                .await
+        }
+        None => executor.run_args(
+            &req.args,
+            stdin,
+            directory,
+            &decision_token,
+            portcullis_effects::authority::Authority::new(discharge_bundle),
+        ),
+    };
+    let output = match first_attempt {
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
@@ -3402,38 +3402,54 @@ async fn run_command(
                         &format!("approved: execute {}", display_command),
                     )
                 };
-                executor.run_args_with_approval(
-                    &req.args,
-                    stdin,
-                    directory,
-                    &approved_dt,
-                    &approval,
-                    // A fresh discharge for the retry. The first attempt spent
-                    // the authority minted above — one discharge authorizes one
-                    // attempt, and the approved retry is a distinct action that
-                    // must clear the obligations on its own.
-                    portcullis_effects::authority::Authority::new({
-                        use nucleus_ifc_kernel::discharge::PreflightResult;
-                        let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling = run_gate::levels_for(&state, Operation::RunBash);
-                        let flow = state.flow_graph.lock().await;
-                        let r = run_gate::preflight_runbash(
-                            verified_scope,
-                            ceiling,
-                            &display_command,
-                            &flow,
-                        );
-                        drop(flow);
-                        match r {
-                            PreflightResult::Allowed(b) => b,
-                            _ => {
-                                return Err(ApiError::Body(
-                                    "approved retry failed re-discharge".to_string(),
-                                ));
-                            }
+                // A fresh discharge for the retry. The first attempt spent
+                // the authority minted above — one discharge authorizes one
+                // attempt, and the approved retry is a distinct action that
+                // must clear the obligations on its own.
+                let retry_authority = portcullis_effects::authority::Authority::new({
+                    use nucleus_ifc_kernel::discharge::PreflightResult;
+                    let verified_scope = state.session_task_token.verified_scope();
+                    let ceiling = run_gate::levels_for(&state, Operation::RunBash);
+                    let flow = state.flow_graph.lock().await;
+                    let r = run_gate::preflight_runbash(
+                        verified_scope,
+                        ceiling,
+                        &display_command,
+                        &flow,
+                    );
+                    drop(flow);
+                    match r {
+                        PreflightResult::Allowed(b) => b,
+                        _ => {
+                            return Err(ApiError::Body(
+                                "approved retry failed re-discharge".to_string(),
+                            ));
                         }
-                    }),
-                )?
+                    }
+                });
+                match timeout {
+                    Some(t) => {
+                        executor
+                            .run_args_with_timeout(
+                                &req.args,
+                                stdin,
+                                directory,
+                                t,
+                                Some(&approval),
+                                &approved_dt,
+                                retry_authority,
+                            )
+                            .await?
+                    }
+                    None => executor.run_args_with_approval(
+                        &req.args,
+                        stdin,
+                        directory,
+                        &approved_dt,
+                        &approval,
+                        retry_authority,
+                    )?,
+                }
             } else {
                 if let Err(e) = sink.record(VerdictContext {
                     operation,

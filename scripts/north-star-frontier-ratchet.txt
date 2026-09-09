@@ -20,6 +20,17 @@
 #   are earned one falsifier at a time, not asserted. Each NOT-YET row names
 #   the roadmap item that earns it (reviews/north-star-frontier/SYNTHESIS.md
 #   §4).
+# 2026-09-09: lowered 13 -> 12. F3 ("as much useful real-world work" — the
+#   default exec tool round-trips over the wire) NOT-YET -> TESTED. The MCP
+#   face posted {command} to a proxy that read {args}, so every exec over the
+#   default path failed at deserialisation. Both sides now compile against
+#   nucleus_api_types::RunRequest; run_tool_schema_and_proxy_wire_type_agree
+#   pins the advertised schema's property set to the shared type's fields, and
+#   the_alias_is_argv_equivalent_and_cannot_smuggle_an_interpreter pins that
+#   the legacy spelling yields the argv `args` would and is refused by every
+#   shipped command lattice for interpreter forms. TESTED, not DECIDED: it is
+#   a unit test under the `Tests` context, not a live pod round-trip (that is
+#   F4's delegation matrix).
 CLAUSES=16
-NOT_YET=13
+NOT_YET=12
 DORMANT_GATES=0

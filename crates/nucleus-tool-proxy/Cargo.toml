@@ -62,7 +62,10 @@ url = "2.5"
 uuid = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 
-nucleus = { path = "../nucleus" }
+# `async` for `Executor::run_args_with_timeout` — the sealed tokio spawn that
+# honours `RunRequest::timeout_seconds` (dead on the wire until it did).
+nucleus = { path = "../nucleus", features = ["async"] }
+nucleus-api-types = { path = "../nucleus-api-types" }
 nucleus-spec = { path = "../nucleus-spec" }
 # tpm-devid: compile the TPM residency verifier into the relying-party binary so
 # the assurance floor (--min-assurance) enforces on the live path (North Star C9).
