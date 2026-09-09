@@ -104,3 +104,4 @@ trust-registry.yml::enrollment-gate::Determine the single claimed domain | UNCOV
 trust-registry.yml::enrollment-gate::Request OIDC proof-of-control token | UNCOVERED: no falsifier yet
 uniform-primitive-lean.yml::uniform-primitive-lean::Reject sorry / admit (the spine must stay sorry-free) | UNCOVERED: no falsifier yet
 uniform-primitive-lean.yml::uniform-primitive-lean::Axiom ratchet (layer-bridge count = distance-to-done; may only drop) | UNCOVERED: no falsifier yet
+portcullis-core-proven-lean.yml::portcullis-core-proven-lean::Reject compiler overrides (with planted-override falsifiers) | falsified by check_compiler_overrides.py --self-test in the same step: implemented_by, extern, csimp each rejected
