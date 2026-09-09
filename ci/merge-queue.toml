@@ -14,28 +14,17 @@
 
 ruleset_id = 22351600
 check_response_timeout_minutes = 360
-# Build concurrency. It was 1 for as long as the pool was four or five shared
-# runners: a second group in flight took runners the first one needed, and the
-# first was ejected by the timeout rather than by any red check.
+# Build concurrency. It was 1 for as long as the pool was four or five shared runners: a second
+# group in flight took runners the first one needed, and the first was ejected by the timeout
+# rather than by any red check. That is the trace T7's bite carries.
 #
-# 2026-09-09: the pool is 38 Fly Machines that are warm and idle between jobs,
-# and at concurrency 1 a merge group took 40 to 70 minutes with most of the pool
-# doing nothing — ten queued entries is most of a day. Four groups in flight give
-# each group nine machines of its own share (T12), and the group of 2026-09-04
-# fits its share inside the 360-minute budget with room to spare
-# (CiSpecBite.two_groups_of_twenty_three_fit_360).
-#
-# 2026-09-09, later the same day: lowered from 4 to 2 on measurement. Speculation only pays
-# when the pool has capacity ABOVE one group's demand, and it does not — a single group's jobs
-# already saturate the 47 machines. With c groups in flight the head group gets p/c of the pool
-# (T12), and only the HEAD can merge, so four-way speculation was making the one group that
-# matters four times slower to go green. Four hours produced one merge with nothing red.
-#
-# The cost of raising it: when an entry is ejected, every group after it is
-# rebuilt, so a red PR wastes up to three speculative groups instead of none.
-# That is the trade — cheap while entries are mostly green, and it is why this
-# is 4 and not 10.
-max_entries_to_build = 2
+# 2026-09-09: raised to 4 on the theory that 47 warm machines had capacity to spare, and put
+# back. T12 says a group's share is `p / c` and only the HEAD group can merge, so raising `c`
+# divides the pool among groups that cannot merge yet and slows the one that can. That pays only
+# when the pool has capacity above ONE group's demand — measured, it does not: a single group's
+# fifty required contexts already saturate the pool. Four-way speculation produced one merge in
+# six hours with nothing red. The bite records the measurement.
+max_entries_to_build = 1
 max_entries_to_merge = 1
 min_entries_to_merge = 1
 min_entries_to_merge_wait_minutes = 0
