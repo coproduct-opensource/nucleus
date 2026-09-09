@@ -22,14 +22,20 @@ check_response_timeout_minutes = 360
 # and at concurrency 1 a merge group took 40 to 70 minutes with most of the pool
 # doing nothing — ten queued entries is most of a day. Four groups in flight give
 # each group nine machines of its own share (T12), and the group of 2026-09-04
-# fits nine machines inside the 360-minute budget with room to spare
-# (CiSpecBite.four_groups_of_nine_fit_360).
+# fits its share inside the 360-minute budget with room to spare
+# (CiSpecBite.two_groups_of_twenty_three_fit_360).
+#
+# 2026-09-09, later the same day: lowered from 4 to 2 on measurement. Speculation only pays
+# when the pool has capacity ABOVE one group's demand, and it does not — a single group's jobs
+# already saturate the 47 machines. With c groups in flight the head group gets p/c of the pool
+# (T12), and only the HEAD can merge, so four-way speculation was making the one group that
+# matters four times slower to go green. Four hours produced one merge with nothing red.
 #
 # The cost of raising it: when an entry is ejected, every group after it is
 # rebuilt, so a red PR wastes up to three speculative groups instead of none.
 # That is the trade — cheap while entries are mostly green, and it is why this
 # is 4 and not 10.
-max_entries_to_build = 4
+max_entries_to_build = 2
 max_entries_to_merge = 1
 min_entries_to_merge = 1
 min_entries_to_merge_wait_minutes = 0

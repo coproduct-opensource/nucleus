@@ -122,16 +122,26 @@ theorem budget_360_fits :
     groupJobs.sum + 3 * 45 ≤ 4 * 360 ∧ makespan (greedy 4 groupJobs) ≤ 360 := by
   decide
 
-/-- **Bite of T12 (the pool this queue actually has).** Thirty-eight machines
-    with four groups building at once give each group nine of its own. The group
-    of 2026-09-04 fits that share inside the 360-minute budget with room to
-    spare, where the same share against the old 60-minute budget did not fit —
-    so raising build concurrency to 4 is safe under the repaired timeout and
-    would not have been under the old one. -/
-theorem four_groups_of_nine_fit_360 :
-    (38 / 4) * 4 ≤ 38 ∧
-    groupJobs.sum + 8 * 45 ≤ 9 * 360 ∧
-    ¬ (groupJobs.sum + 8 * 45 ≤ 9 * 60) := by
+/-- **Bite of T12 (the pool this queue actually has).** Forty-seven machines with
+    two groups building at once give each group twenty-three of its own. The
+    group of 2026-09-04 fits that share inside the 360-minute budget with room to
+    spare — 1221 against 8280.
+
+    It also fits the OLD 60-minute budget at this share (1221 against 1380), and
+    that is worth saying: the 2026-09-04 ejections were a four-runner problem,
+    not a budget-shape problem. `budget_60_did_not_fit` above is the bite for
+    the pool that actually existed then; at 23 machines a share the same work
+    would have been fine. The repair was capacity as much as it was the timeout.
+
+    Why two and not four: T12 says the share is `p / c`, and only the HEAD group
+    can merge. Raising `c` shrinks the head's share, so speculation pays only
+    when the pool has capacity above ONE group's demand. Measured on 2026-09-09
+    it does not — a single group saturates the pool — and four-way speculation
+    produced one merge in four hours with nothing red. The arithmetic that the
+    shares fit is true for any `c`; which `c` is fastest is not a theorem, it is
+    a measurement, and this is where the measurement is recorded. -/
+theorem two_groups_of_twenty_three_fit_360 :
+    (47 / 2) * 2 ≤ 47 ∧ groupJobs.sum + 22 * 45 ≤ 23 * 360 := by
   decide
 
 /-- **Bite of T7 (competing runs).** Pull-request runs already occupying
