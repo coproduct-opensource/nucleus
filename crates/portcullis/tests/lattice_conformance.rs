@@ -1,22 +1,22 @@
-//! Verus Model ↔ Production Conformance Tests
+//! Lattice model ↔ production conformance tests.
 //!
-//! This test suite bridges the gap between the formally verified Verus model
-//! (portcullis-verified) and the production Rust code (portcullis).
+//! **These are property tests, not proofs, and the distinction is the whole point of this
+//! file's history.** It was `verus_conformance.rs`, and its header claimed a transitivity
+//! argument — Verus proves the model, these tests match production to the model, therefore
+//! production satisfies the laws. Verus was removed from the workspace; there is no
+//! `crates/portcullis-verified` and no `verus.yml`. The first premise of that argument stopped
+//! existing and the conclusion stayed written down, which is the shape #2560 exists to delete.
 //!
-//! The Verus proofs verify algebraic properties of a *spec model* — ghost
-//! functions that Z3 checks but never execute. These conformance tests ensure
-//! the model faithfully represents the production implementation by asserting
-//! identical behavior on random inputs via proptest.
+//! What this suite actually establishes: the production `CapabilityLattice` / `ExposureSet` /
+//! `PermissionLattice` operations satisfy their algebraic laws on proptest-generated inputs.
+//! That is real evidence and it is bounded evidence — a sampled check over a large space, which
+//! finds counterexamples and never establishes their absence.
 //!
-//! # What This Proves
-//!
-//! If these tests pass AND the Verus proofs pass, then:
-//! 1. The model satisfies the algebraic laws (Verus proves this)
-//! 2. The production code matches the model (these tests assert this)
-//! 3. Therefore: the production code satisfies the algebraic laws (transitivity)
-//!
-//! This is the same refinement strategy used by seL4: prove the model correct,
-//! then show the implementation matches the model.
+//! The laws themselves are carried by the Lean 4 proven tier
+//! (`.github/workflows/portcullis-core-proven-lean.yml`) and by the Kani harnesses
+//! (`kani-nightly.yml`). Those are the proofs. This file is the cross-check that the code the
+//! proofs are ABOUT behaves like the code that ships — the seL4 refinement shape, with a
+//! machine-checked model on one side and sampling on the other.
 
 use portcullis::guard::GradedGuard;
 use portcullis::{
@@ -28,7 +28,7 @@ use proptest::prelude::*;
 /// Create a PermissionLattice with EMPTY obligations (not the default safety set).
 ///
 /// The production `Default::default()` pre-populates obligations for WriteFiles,
-/// EditFiles, WebSearch, etc. as baseline safety. The Verus model only models
+/// EditFiles, WebSearch, etc. as baseline safety. The model only carries
 /// uninhabitable_state-derived obligations. This helper starts clean so conformance tests
 /// verify the uninhabitable_state model in isolation.
 #[allow(clippy::field_reassign_with_default)]
@@ -41,52 +41,54 @@ fn perms_with_empty_obligations(caps: CapabilityLattice) -> PermissionLattice {
 }
 
 // ============================================================================
-// Verus Model Re-implementation (reference implementation in regular Rust)
+// Reference implementation, in plain Rust
 //
-// These functions mirror the Verus spec functions exactly.
-// Any divergence between these and the Verus specs is a bug in *this file*,
-// not in the Verus proofs or production code.
+// A SECOND implementation of the same predicates, written independently of the production
+// ones. The conformance properties below assert the two agree, so a disagreement is a real
+// finding in one of them — that is the entire mechanism, and it does not depend on where these
+// definitions came from. (They were transcribed from the Verus spec functions when Verus was
+// still in the workspace; it is not, and nothing here is checked by an SMT solver.)
 // ============================================================================
 
-/// Mirror of Verus `has_private_access(c)`: f0 >= 1 || f4 >= 1 || f5 >= 1
+/// Reference implementation of `has_private_access(c)`: f0 >= 1 || f4 >= 1 || f5 >= 1
 fn model_has_private_access(caps: &CapabilityLattice) -> bool {
     caps.read_files >= CapabilityLevel::LowRisk
         || caps.glob_search >= CapabilityLevel::LowRisk
         || caps.grep_search >= CapabilityLevel::LowRisk
 }
 
-/// Mirror of Verus `has_untrusted_content(c)`: f6 >= 1 || f7 >= 1
+/// Reference implementation of `has_untrusted_content(c)`: f6 >= 1 || f7 >= 1
 fn model_has_untrusted_content(caps: &CapabilityLattice) -> bool {
     caps.web_search >= CapabilityLevel::LowRisk || caps.web_fetch >= CapabilityLevel::LowRisk
 }
 
-/// Mirror of Verus `has_exfiltration(c)`: f3 >= 1 || f9 >= 1 || f10 >= 1
+/// Reference implementation of `has_exfiltration(c)`: f3 >= 1 || f9 >= 1 || f10 >= 1
 fn model_has_exfiltration(caps: &CapabilityLattice) -> bool {
     caps.run_bash >= CapabilityLevel::LowRisk
         || caps.git_push >= CapabilityLevel::LowRisk
         || caps.create_pr >= CapabilityLevel::LowRisk
 }
 
-/// Mirror of Verus `uninhabitable_state_count(c)`: sum of 3 bools
+/// Reference implementation of `uninhabitable_state_count(c)`: sum of 3 bools
 fn model_uninhabitable_count(caps: &CapabilityLattice) -> u8 {
     model_has_private_access(caps) as u8
         + model_has_untrusted_content(caps) as u8
         + model_has_exfiltration(caps) as u8
 }
 
-/// Mirror of Verus `state_risk_level(c)`: equals uninhabitable_state_count
+/// Reference implementation of `state_risk_level(c)`: equals uninhabitable_state_count
 fn model_state_risk_level(caps: &CapabilityLattice) -> u8 {
     model_uninhabitable_count(caps)
 }
 
-/// Mirror of Verus `is_uninhabitable(c)`: all 3 present
+/// Reference implementation of `is_uninhabitable(c)`: all 3 present
 fn model_is_uninhabitable(caps: &CapabilityLattice) -> bool {
     model_has_private_access(caps)
         && model_has_untrusted_content(caps)
         && model_has_exfiltration(caps)
 }
 
-/// Mirror of Verus `uninhabitable_state_obligations(caps)`: if complete, gate exfil vectors
+/// Reference implementation of `uninhabitable_state_obligations(caps)`: if complete, gate exfil vectors
 fn model_uninhabitable_obligations(caps: &CapabilityLattice) -> (bool, bool, bool) {
     if model_is_uninhabitable(caps) {
         (
@@ -99,9 +101,9 @@ fn model_uninhabitable_obligations(caps: &CapabilityLattice) -> (bool, bool, boo
     }
 }
 
-/// Mirror of Verus `requires_approval(obs, op)`.
+/// Reference implementation of `requires_approval(obs, op)`.
 ///
-/// Verus model: (op == 3 && obs.run_bash) || (op == 9 && obs.git_push) || (op == 10 && obs.create_pr)
+/// Model: (op == 3 && obs.run_bash) || (op == 9 && obs.git_push) || (op == 10 && obs.create_pr)
 fn model_requires_approval(obligations: &Obligations, op: &Operation) -> bool {
     match op {
         Operation::RunBash => obligations.requires(Operation::RunBash),
@@ -111,7 +113,7 @@ fn model_requires_approval(obligations: &Obligations, op: &Operation) -> bool {
     }
 }
 
-/// Mirror of Verus `check_operation_allowed(obs, risk, op)`:
+/// Reference implementation of `check_operation_allowed(obs, risk, op)`:
 /// !(requires_approval(obs, op) && risk == 3)
 fn model_check_operation_allowed(
     obligations: &Obligations,
@@ -121,7 +123,7 @@ fn model_check_operation_allowed(
     !(model_requires_approval(obligations, op) && risk == StateRisk::Uninhabitable)
 }
 
-/// Mirror of Verus `budget_allows(consumed, max, amount)`:
+/// Reference implementation of `budget_allows(consumed, max, amount)`:
 /// consumed + amount <= max
 fn model_budget_allows(consumed: u64, max_budget: u64, amount: u64) -> bool {
     consumed
@@ -211,10 +213,11 @@ fn arb_operation() -> impl Strategy<Value = Operation> {
 proptest! {
     /// CONFORMANCE: model state_risk_level matches production state_risk().
     ///
-    /// This is the most critical conformance test. The Verus proofs verify
-    /// properties of `state_risk_level(c)` (the model). This test asserts
-    /// that the production `IncompatibilityConstraint::state_risk()` returns
-    /// the same value. If they diverge, the proofs don't apply to production.
+    /// The most load-bearing test here: the proofs in the Lean proven tier and the Kani
+    /// harnesses are about `state_risk_level(c)`, the MODEL. This asserts the production
+    /// `IncompatibilityConstraint::state_risk()` returns the same value, which is the step
+    /// that carries anything proved about the model over to the code that ships. If the two
+    /// diverge, the proofs are about something else.
     #[test]
     fn conformance_state_risk(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
@@ -291,7 +294,7 @@ proptest! {
 
     /// CONFORMANCE: model uninhabitable_state_count is bounded [0, 3].
     ///
-    /// Mirrors Verus proof_uninhabitable_count_bounded.
+    /// The sampled counterpart of the model's count bound.
     #[test]
     fn conformance_uninhabitable_count_bounded(caps in arb_capability_lattice()) {
         let count = model_uninhabitable_count(&caps);
@@ -300,7 +303,7 @@ proptest! {
 
     /// CONFORMANCE: model risk_level = 3 iff uninhabitable_state complete.
     ///
-    /// Mirrors Verus proof_uninhabitable_complete_iff_count_three.
+    /// The sampled counterpart of the model's complete-iff-three law.
     #[test]
     fn conformance_complete_iff_three(caps in arb_capability_lattice()) {
         let complete = model_is_uninhabitable(&caps);
@@ -320,7 +323,7 @@ proptest! {
 proptest! {
     /// CONFORMANCE: model obligations match production obligations_for().
     ///
-    /// The Verus model `uninhabitable_state_obligations(caps)` produces an Obs struct
+    /// The model's `uninhabitable_state_obligations(caps)` produces an Obs struct
     /// with 3 bools. The production `IncompatibilityConstraint::obligations_for()`
     /// produces an `Obligations` with a `BTreeSet<Operation>`. This test bridges
     /// the type gap: same semantics, different representations.
@@ -349,7 +352,7 @@ proptest! {
 
     /// CONFORMANCE: obligations only target exfil ops (never read/search/etc).
     ///
-    /// Mirrors Verus proof_uninhabitable_obligations_only_exfil.
+    /// The sampled counterpart of `proof_uninhabitable_obligations_only_exfil`..
     #[test]
     fn conformance_obligations_only_exfil(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
@@ -369,7 +372,7 @@ proptest! {
 
     /// CONFORMANCE: no uninhabitable_state → empty obligations.
     ///
-    /// Mirrors Verus proof_no_uninhabitable_no_obligations.
+    /// The sampled counterpart of `proof_no_uninhabitable_no_obligations`..
     #[test]
     fn conformance_no_uninhabitable_no_obligations(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
@@ -391,7 +394,7 @@ proptest! {
 proptest! {
     /// CONFORMANCE: normalize preserves capabilities.
     ///
-    /// Mirrors Verus proof_normalize_preserves_capabilities: ν(p).caps == p.caps
+    /// The sampled counterpart of `proof_normalize_preserves_capabilities`.: ν(p).caps == p.caps
     #[test]
     fn conformance_normalize_preserves_capabilities(caps in arb_capability_lattice()) {
         let perms = perms_with_empty_obligations(caps.clone());
@@ -405,7 +408,7 @@ proptest! {
 
     /// CONFORMANCE: normalize only adds obligations (never removes).
     ///
-    /// Mirrors Verus proof_normalize_only_adds_obligations: ν(p).obs ⊇ p.obs
+    /// The sampled counterpart of `proof_normalize_only_adds_obligations`.: ν(p).obs ⊇ p.obs
     #[test]
     fn conformance_normalize_only_adds_obligations(
         caps in arb_capability_lattice(),
@@ -446,7 +449,7 @@ proptest! {
     /// CONFORMANCE: normalize is idempotent.
     ///
     /// Mirrors Verus proof of nucleus idempotency: ν(ν(p)) == ν(p).
-    /// We compare the fields that the Verus model tracks (caps + obligations).
+    /// Compared over the fields the model tracks (caps + obligations).
     #[test]
     fn conformance_normalize_idempotent(caps in arb_capability_lattice()) {
         let perms = perms_with_empty_obligations(caps);
@@ -472,12 +475,12 @@ proptest! {
 proptest! {
     /// CONFORMANCE: check_operation matches model for exfil ops.
     ///
-    /// Mirrors Verus check_operation_allowed(obs, risk, op).
+    /// The sampled counterpart of `check_operation_allowed(obs, risk, op)`.
     /// The production GradedGuard::check_operation() should produce the same
     /// allow/deny decision as the model.
     #[test]
     fn conformance_check_operation_exfil(caps in arb_capability_lattice(), op in arb_exfil_operation()) {
-        // Normalize first (as the Verus end-to-end proof does)
+        // Normalize first, as the end-to-end proof does
         let perms = perms_with_empty_obligations(caps.clone()).normalize();
 
         let guard = GradedGuard::new(perms.clone());
@@ -522,11 +525,11 @@ proptest! {
 
     /// CONFORMANCE: end-to-end uninhabitable_state safety.
     ///
-    /// Mirrors Verus proof_end_to_end_uninhabitable_safe:
     /// For any uninhabitable_state + active exfil op → denied after normalize.
     ///
-    /// This is THE critical test — it asserts in production what Verus proves
-    /// about the model. If this fails, the formal proof doesn't protect us.
+    /// The end-to-end one: it asserts in PRODUCTION the property the model is proved to have.
+    /// A failure here does not mean the proof is wrong — it means the proof is about a model
+    /// production no longer matches, which protects nobody either way.
     #[test]
     fn conformance_end_to_end_uninhabitable_safe(
         caps in arb_capability_lattice(),
@@ -570,7 +573,7 @@ proptest! {
 proptest! {
     /// CONFORMANCE: risk is monotone under ≤ (more caps → more risk).
     ///
-    /// Mirrors Verus proof_state_risk_monotone: a ≤ b ⟹ risk(a) ≤ risk(b)
+    /// The sampled counterpart of `proof_state_risk_monotone`.: a ≤ b ⟹ risk(a) ≤ risk(b)
     #[test]
     fn conformance_risk_monotone(
         a in arb_capability_lattice(),
@@ -594,7 +597,7 @@ proptest! {
 
     /// CONFORMANCE: meet decreases risk.
     ///
-    /// Mirrors Verus proof_uninhabitable_meet_risk_decreases.
+    /// The sampled counterpart of `proof_uninhabitable_meet_risk_decreases`..
     #[test]
     fn conformance_meet_decreases_risk(
         a in arb_capability_lattice(),
@@ -615,7 +618,7 @@ proptest! {
 
     /// CONFORMANCE: join increases risk.
     ///
-    /// Mirrors Verus proof_uninhabitable_join_risk_increases.
+    /// The sampled counterpart of `proof_uninhabitable_join_risk_increases`..
     #[test]
     fn conformance_join_increases_risk(
         a in arb_capability_lattice(),
@@ -654,7 +657,7 @@ proptest! {
 
     /// CONFORMANCE: zero budget denies all nonzero charges.
     ///
-    /// Mirrors Verus proof_budget_zero_denies_nonzero.
+    /// The sampled counterpart of `proof_budget_zero_denies_nonzero`..
     #[test]
     fn conformance_budget_zero_denies(amount in 1u64..1_000_000) {
         prop_assert!(!model_budget_allows(0, 0, amount));
@@ -662,7 +665,7 @@ proptest! {
 
     /// CONFORMANCE: budget monotone in consumption.
     ///
-    /// Mirrors Verus proof_budget_monotone_consumption.
+    /// The sampled counterpart of `proof_budget_monotone_consumption`..
     #[test]
     fn conformance_budget_monotone_consumption(
         c1 in 0u64..500_000,
@@ -688,7 +691,7 @@ proptest! {
 proptest! {
     /// CONFORMANCE: CapabilityLattice meet is commutative.
     ///
-    /// Mirrors Verus proof_lattice_meet_commutative.
+    /// The sampled counterpart of `proof_lattice_meet_commutative`..
     #[test]
     fn conformance_caps_meet_commutative(
         a in arb_capability_lattice(),
@@ -699,7 +702,7 @@ proptest! {
 
     /// CONFORMANCE: CapabilityLattice meet is associative.
     ///
-    /// Mirrors Verus proof_lattice_meet_associative.
+    /// The sampled counterpart of `proof_lattice_meet_associative`..
     #[test]
     fn conformance_caps_meet_associative(
         a in arb_capability_lattice(),
@@ -711,7 +714,7 @@ proptest! {
 
     /// CONFORMANCE: CapabilityLattice meet is idempotent.
     ///
-    /// Mirrors Verus proof_lattice_meet_idempotent.
+    /// The sampled counterpart of `proof_lattice_meet_idempotent`..
     #[test]
     fn conformance_caps_meet_idempotent(a in arb_capability_lattice()) {
         prop_assert_eq!(a.meet(&a), a);
@@ -728,7 +731,7 @@ proptest! {
 
     /// CONFORMANCE: CapabilityLattice meet distributes over join.
     ///
-    /// Mirrors Verus proof_lattice_distributive.
+    /// The sampled counterpart of `proof_lattice_distributive`..
     #[test]
     fn conformance_caps_distributive(
         a in arb_capability_lattice(),
@@ -751,7 +754,7 @@ proptest! {
 proptest! {
     /// CONFORMANCE: perm_leq is transitive in production code.
     ///
-    /// Mirrors Verus proof_perm_leq_transitive.
+    /// The sampled counterpart of `proof_perm_leq_transitive`..
     /// If meet(root, a) = mid and meet(mid, b) = leaf,
     /// then leaf.leq(root) must hold.
     #[test]
@@ -774,7 +777,7 @@ proptest! {
 
     /// CONFORMANCE: meet witness correctness — meet(parent, requested) ≤ parent AND ≤ requested.
     ///
-    /// Mirrors Verus proof_meet_witness_correct.
+    /// The sampled counterpart of `proof_meet_witness_correct`..
     #[test]
     fn conformance_meet_witness_correct(
         parent_caps in arb_capability_lattice(),
@@ -792,7 +795,7 @@ proptest! {
 
     /// CONFORMANCE: delegation preserves uninhabitable_state constraint.
     ///
-    /// Mirrors Verus proof_chain_delegation_preserves_uninhabitable.
+    /// The sampled counterpart of `proof_chain_delegation_preserves_uninhabitable`..
     /// If parent has uninhabitable_constraint = true, the meet result does too.
     #[test]
     fn conformance_delegation_preserves_uninhabitable(
@@ -813,7 +816,7 @@ proptest! {
 
     /// CONFORMANCE: 4-hop chain maintains transitivity.
     ///
-    /// Mirrors Verus proof_chain_transitivity_four.
+    /// The sampled counterpart of `proof_chain_transitivity_four`..
     #[test]
     fn conformance_four_hop_chain_transitive(
         root_caps in arb_capability_lattice(),
@@ -845,7 +848,7 @@ proptest! {
 proptest! {
     /// CONFORMANCE: normalize is idempotent on any permission (full check).
     ///
-    /// Mirrors Verus proof_normalized_perm_is_fixed_point.
+    /// The sampled counterpart of `proof_normalized_perm_is_fixed_point`..
     #[test]
     fn conformance_normalize_idempotent_full(caps in arb_capability_lattice()) {
         let perms = perms_with_empty_obligations(caps);
@@ -868,7 +871,7 @@ proptest! {
 
     /// CONFORMANCE: Delegation from normalized root preserves normalization.
     ///
-    /// Mirrors Verus proof_delegation_preserves_fixed_point.
+    /// The sampled counterpart of `proof_delegation_preserves_fixed_point`..
     #[test]
     fn conformance_delegation_preserves_fixed_point(
         root_caps in arb_capability_lattice(),
@@ -895,7 +898,7 @@ proptest! {
 
     /// CONFORMANCE: 2-hop chain maintains normalization invariant.
     ///
-    /// Mirrors Verus proof_chain_two_hop_fixed_point.
+    /// The sampled counterpart of `proof_chain_two_hop_fixed_point`..
     #[test]
     fn conformance_chain_extension_invariant(
         root_caps in arb_capability_lattice(),
@@ -920,7 +923,7 @@ proptest! {
 
     /// CONFORMANCE: THE CRITICAL TEST — verified chain denies exfiltration.
     ///
-    /// Mirrors Verus proof_verified_chain_denies_exfil.
+    /// The sampled counterpart of `proof_verified_chain_denies_exfil`..
     #[test]
     fn conformance_verified_chain_denies_exfil(
         root_caps in arb_capability_lattice(),
@@ -956,7 +959,7 @@ proptest! {
 
     /// CONFORMANCE: No weakening produces zero cost.
     ///
-    /// Mirrors Verus proof_no_weakening_zero_cost.
+    /// The sampled counterpart of `proof_no_weakening_zero_cost`..
     #[test]
     fn conformance_no_weakening_zero_cost(level in arb_capability_level()) {
         use portcullis::weakening::WeakeningCostConfig;
@@ -967,7 +970,7 @@ proptest! {
 
     /// CONFORMANCE: Trust ceiling is deflationary.
     ///
-    /// Mirrors Verus proof_trust_ceiling_deflationary.
+    /// The sampled counterpart of `proof_trust_ceiling_deflationary`..
     #[test]
     fn conformance_trust_ceiling_deflationary(
         caps in arb_capability_lattice(),
@@ -982,7 +985,7 @@ proptest! {
 
     /// CONFORMANCE: Trust ceiling is monotone.
     ///
-    /// Mirrors Verus proof_trust_ceiling_monotone.
+    /// The sampled counterpart of `proof_trust_ceiling_monotone`..
     #[test]
     fn conformance_trust_ceiling_monotone(
         a in arb_capability_lattice(),
@@ -1001,7 +1004,7 @@ proptest! {
 }
 
 /// CONFORMANCE: Each production preset is a \u{03bd}-fixed point.
-/// Mirrors Verus proof_preset_*_is_fixed_point for all 7 presets.
+/// The sampled counterpart of `proof_preset_`.*_is_fixed_point for all 7 presets.
 #[test]
 fn conformance_preset_permissive_is_fixed_point() {
     let p = PermissionLattice::permissive();
@@ -1055,7 +1058,7 @@ fn conformance_preset_edit_only_is_fixed_point() {
 
 /// CONFORMANCE: Untrusted profile prevents uninhabitable_state.
 ///
-/// Mirrors Verus proof_untrusted_profile_no_uninhabitable.
+/// The sampled counterpart of `proof_untrusted_profile_no_uninhabitable`..
 #[test]
 fn conformance_untrusted_profile_prevents_uninhabitable() {
     let ceiling = CapabilityLattice {
@@ -1122,7 +1125,7 @@ fn arb_exposure_set() -> impl Strategy<Value = ExposureSet> {
 proptest! {
     /// CONFORMANCE H1+H2: ExposureSet identity — empty.union(s) == s == s.union(empty).
     ///
-    /// Mirrors Verus proof_exposureset_identity_left + proof_exposureset_identity_right.
+    /// The sampled counterpart of `proof_exposureset_identity_left`. + proof_exposureset_identity_right.
     #[test]
     fn conformance_exposureset_identity(s in arb_exposure_set()) {
         let empty = ExposureSet::empty();
@@ -1132,7 +1135,7 @@ proptest! {
 
     /// CONFORMANCE H3: ExposureSet union is commutative.
     ///
-    /// Mirrors Verus proof_exposureset_union_commutative.
+    /// The sampled counterpart of `proof_exposureset_union_commutative`..
     #[test]
     fn conformance_exposureset_commutative(a in arb_exposure_set(), b in arb_exposure_set()) {
         prop_assert_eq!(a.union(&b), b.union(&a));
@@ -1140,7 +1143,7 @@ proptest! {
 
     /// CONFORMANCE H4: ExposureSet union is associative.
     ///
-    /// Mirrors Verus proof_exposureset_union_associative.
+    /// The sampled counterpart of `proof_exposureset_union_associative`..
     #[test]
     fn conformance_exposureset_associative(
         a in arb_exposure_set(),
@@ -1155,7 +1158,7 @@ proptest! {
 
     /// CONFORMANCE H5: ExposureSet union is idempotent.
     ///
-    /// Mirrors Verus proof_exposureset_union_idempotent.
+    /// The sampled counterpart of `proof_exposureset_union_idempotent`..
     #[test]
     fn conformance_exposureset_idempotent(s in arb_exposure_set()) {
         prop_assert_eq!(s.union(&s), s);
@@ -1163,7 +1166,7 @@ proptest! {
 
     /// CONFORMANCE I2:  UninhabitableState complete iff all three legs present.
     ///
-    /// Mirrors Verus proof_uninhabitable_iff_all_three.
+    /// The sampled counterpart of `proof_uninhabitable_iff_all_three`..
     #[test]
     fn conformance_exposureset_uninhabitable_iff_all_three(s in arb_exposure_set()) {
         let all_present = s.contains(ExposureLabel::PrivateData)
@@ -1178,7 +1181,7 @@ proptest! {
 
     /// CONFORMANCE I4: Count bounded [0, 3] and count == 3 iff uninhabitable_state.
     ///
-    /// Mirrors Verus proof_exposureset_count_bounds.
+    /// The sampled counterpart of `proof_exposureset_count_bounds`..
     #[test]
     fn conformance_exposureset_count_bounds(s in arb_exposure_set()) {
         prop_assert!(s.count() <= 3, "count {} > 3", s.count());
@@ -1190,7 +1193,7 @@ proptest! {
 
     /// CONFORMANCE J3: Recording a label only increases exposure (monotone accumulation).
     ///
-    /// Mirrors Verus proof_exposure_accumulation_monotone.
+    /// The sampled counterpart of `proof_exposure_accumulation_monotone`..
     #[test]
     fn conformance_exposure_accumulation_monotone(
         before in arb_exposure_set(),
@@ -1208,7 +1211,7 @@ proptest! {
 
     /// CONFORMANCE J4: Local-sink operations are exfil legs (most-paranoid #4).
     ///
-    /// Mirrors Verus proof_local_sinks_are_exfil. (Formerly asserted these were
+    /// The sampled counterpart of `proof_local_sinks_are_exfil`.. (Formerly asserted these were
     /// neutral; they now contribute the ExfilVector leg.)
     #[test]
     fn conformance_local_sinks_are_exfil(op in prop_oneof![
@@ -1225,7 +1228,7 @@ proptest! {
 
     /// CONFORMANCE I1: Every operation maps to a valid exposure label or None.
     ///
-    /// Mirrors Verus proof_operation_exposure_total.
+    /// The sampled counterpart of `proof_operation_exposure_total`..
     #[test]
     fn conformance_operation_exposure_total(op in arb_operation()) {
         let label = operation_exposure(op);
@@ -1240,7 +1243,7 @@ proptest! {
 
     /// CONFORMANCE I3: Risk (count) is monotone — subset exposure ≤ superset exposure.
     ///
-    /// Mirrors Verus proof_exposure_risk_monotone.
+    /// The sampled counterpart of `proof_exposure_risk_monotone`..
     #[test]
     fn conformance_exposure_risk_monotone(a in arb_exposure_set(), b in arb_exposure_set()) {
         let merged = a.union(&b);
@@ -1257,7 +1260,7 @@ proptest! {
 
     /// CONFORMANCE K1: ExposureSet uninhabitable_state agrees with CapLattice uninhabitable_state.
     ///
-    /// Mirrors Verus proof_exposure_risk_bridge.
+    /// The sampled counterpart of `proof_exposure_risk_bridge`..
     /// When a ExposureSet is built from the same capability lattice components,
     /// both agree on uninhabitable_state completeness.
     #[test]
@@ -1319,7 +1322,7 @@ fn trace_exposure(events: &[(Operation, bool)]) -> ExposureSet {
 proptest! {
     /// CONFORMANCE M1: Trace exposure monotonicity — each event only grows exposure.
     ///
-    /// Mirrors Verus proof_trace_exposure_monotone.
+    /// The sampled counterpart of `proof_trace_exposure_monotone`..
     #[test]
     fn conformance_trace_exposure_monotone(
         ops in proptest::collection::vec(
@@ -1343,7 +1346,7 @@ proptest! {
 
     /// CONFORMANCE M4: Phantom exposure freedom — failed events contribute nothing.
     ///
-    /// Mirrors Verus proof_phantom_exposure_freedom.
+    /// The sampled counterpart of `proof_phantom_exposure_freedom`..
     #[test]
     fn conformance_phantom_exposure_freedom(
         before in arb_exposure_set(),
@@ -1355,7 +1358,7 @@ proptest! {
 
     /// CONFORMANCE M5: Local-sink ops add the ExfilVector leg (most-paranoid #4).
     ///
-    /// Mirrors Verus proof_local_sink_adds_exfil. (Formerly asserted these ops
+    /// The sampled counterpart of `proof_local_sink_adds_exfil`.. (Formerly asserted these ops
     /// preserved exposure; they now contribute ExfilVector on success.)
     #[test]
     fn conformance_local_sink_adds_exfil(
@@ -1375,7 +1378,7 @@ proptest! {
 
     /// CONFORMANCE M6:  UninhabitableState irreversibility — once latched, always latched.
     ///
-    /// Mirrors Verus proof_uninhabitable_irreversible.
+    /// The sampled counterpart of `proof_uninhabitable_irreversible`..
     #[test]
     fn conformance_uninhabitable_irreversible(
         ops in proptest::collection::vec(
@@ -1401,7 +1404,7 @@ proptest! {
 
     /// CONFORMANCE M3: Free monoid homomorphism — trace_exposure(s1++s2) == union(tt(s1), tt(s2)).
     ///
-    /// Mirrors Verus proof_trace_composition.
+    /// The sampled counterpart of `proof_trace_composition`..
     #[test]
     fn conformance_trace_composition(
         s1 in proptest::collection::vec(
@@ -1427,7 +1430,7 @@ proptest! {
 
     /// CONFORMANCE M8: Three-step minimum — fewer than 3 non-neutral successes can't trigger uninhabitable_state.
     ///
-    /// Mirrors Verus proof_uninhabitable_minimum_three_steps.
+    /// The sampled counterpart of `proof_uninhabitable_minimum_three_steps`..
     #[test]
     fn conformance_uninhabitable_minimum(
         ops in proptest::collection::vec(
@@ -1528,7 +1531,7 @@ proptest! {
 
     /// CONFORMANCE B3: uninhabitable_state-complete exposure always denies approval-requiring ops.
     ///
-    /// Mirrors Verus proof_exec_session_safety_refinement.
+    /// The sampled counterpart of `proof_exec_session_safety_refinement`..
     #[test]
     fn conformance_exec_session_safety(
         op in prop_oneof![
@@ -1552,7 +1555,7 @@ proptest! {
 
     /// CONFORMANCE B4: Session fold exposure is monotone.
     ///
-    /// Mirrors Verus proof_session_fold_monotone.
+    /// The sampled counterpart of `proof_session_fold_monotone`..
     #[test]
     fn conformance_session_fold_monotone(
         ops in proptest::collection::vec(
@@ -1578,7 +1581,7 @@ proptest! {
 
     /// CONFORMANCE B5: Session fold safety — uninhabitable_state latch across guard-aware fold.
     ///
-    /// Mirrors Verus proof_session_fold_safety.
+    /// The sampled counterpart of `proof_session_fold_safety`..
     #[test]
     fn conformance_session_fold_safety(
         ops in proptest::collection::vec(
@@ -3129,7 +3132,7 @@ mod capability_coverage {
         Operation::ManagePods, // 11
     ];
 
-    /// All-Never lattice (Verus `lattice_bot()`).
+    /// All-Never lattice (`lattice_bot()`).
     fn all_never() -> CapabilityLattice {
         CapabilityLattice {
             read_files: CapabilityLevel::Never,
@@ -3149,7 +3152,7 @@ mod capability_coverage {
         }
     }
 
-    /// All-Always lattice (Verus `lattice_top()`).
+    /// All-Always lattice (`lattice_top()`).
     fn all_always() -> CapabilityLattice {
         CapabilityLattice {
             read_files: CapabilityLevel::Always,
@@ -3649,7 +3652,7 @@ mod budget_monotonicity {
 // ============================================================================
 
 /// Compute chain ceiling by folding meet over a chain of PermissionLattice values.
-/// This mirrors the Verus `chain_ceiling(chain, n)` spec function.
+/// This mirrors the `chain_ceiling(chain, n)` spec function.
 fn production_chain_ceiling(chain: &[PermissionLattice]) -> PermissionLattice {
     assert!(!chain.is_empty());
     let mut result = chain[0].clone();
@@ -3660,7 +3663,7 @@ fn production_chain_ceiling(chain: &[PermissionLattice]) -> PermissionLattice {
 }
 
 /// Create a PermissionLattice from caps with uninhabitable_constraint = true.
-/// This matches the Verus `valid_perm(p)` requirement.
+/// This matches the `valid_perm(p)` requirement.
 fn perm_from_caps_enforcing(caps: CapabilityLattice) -> PermissionLattice {
     let mut p = perms_with_empty_obligations(caps);
     // Apply nucleus normalization: add uninhabitable_state obligations if needed
