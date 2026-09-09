@@ -1,0 +1,111 @@
+# The environment nucleus's gatehouse gates run in.
+#
+# A gate declares `net: none` and the pod sets `readOnlyRootFilesystem: true`. Those two are not
+# hints: cargo cannot fetch a crate, and nothing may write outside the workspace emptyDir. So the
+# dependency store is not an optimisation here — it is the only way a hermetic gate can build at
+# all, and it belongs in the ENVIRONMENT, which is what `Env.image` already is. Two runs with the
+# same `gate_def` really did have the same inputs, because the image digest is part of it.
+#
+# Keyed by the two lockfiles it vendors. A dependency change is an input change: it produces a new
+# image, a new `env` digest in .gatehouse/pipeline.writ, a new gate_def, and no receipt reuse. That
+# is correct, not inconvenient.
+#
+# Build (from the repository root):
+#   docker build -f .gatehouse/Dockerfile.gate -t <registry>/nucleus-gate:<lock-digest> .
+# The resulting IMAGE DIGEST — not the tag — is what `env` in .gatehouse/pipeline.writ names.
+#
+# Measured on the materialised gate scope, offline, with this store read-only:
+#   cargo vendor            10s, 1.3 GB (workspace) + 392 MB (sdks/verifier-js)
+#   wasm-pack --release     16s
+#   cargo clippy            65s cold, 4s warm      → the whole clippy gate: exit 0
+# against a 40-minute timeout that never once completed.
+
+FROM rust:1.96.1-slim-bookworm@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3 AS vendor
+WORKDIR /src
+# Only what determines the dependency graph. Copying the whole tree here would rebuild the store
+# on every source change, which is the opposite of the point.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+COPY sdks/verifier-js ./sdks/verifier-js
+# `cargo vendor` needs the manifests to resolve, not the sources; the sources are replaced below.
+RUN set -eux; \
+    mkdir -p /opt/gatehouse/cargo; \
+    cargo vendor /opt/gatehouse/vendor > /tmp/ws.toml; \
+    cd sdks/verifier-js && cargo vendor /opt/gatehouse/vendor-js > /tmp/js.toml
+
+FROM rust:1.96.1-slim-bookworm@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3
+# The gate compiles; it does not install. Everything a gate needs is baked, because with
+# `net: none` nothing can be fetched at run time.
+# The wasm-bindgen CLI version is not a choice: wasm-pack demands the one the lock pins, exactly,
+# and with `net: none` it cannot go and get it. So it is READ FROM THE LOCK rather than written
+# here, which is what "keyed by the lockfile" has to mean if it is to stay true.
+COPY sdks/verifier-js/Cargo.lock /tmp/js.lock
+# Native libraries the `-sys` crates link against. GitHub's ubuntu-latest happens to carry these,
+# which is why nucleus's CI never had to name them; an image that declares its environment does.
+# Each was added because a build failed without it, not in anticipation.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        pkg-config libssl-dev cmake clang libclang-dev perl; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    rustup component add rustfmt clippy; \
+    rustup target add wasm32-unknown-unknown; \
+    wb="$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/,""); print $3; exit}' /tmp/js.lock)"; \
+    test -n "$wb"; \
+    echo "wasm-bindgen-cli pinned by the lock: $wb"; \
+    cargo install wasm-pack --locked --version 0.13.1; \
+    cargo install wasm-bindgen-cli --locked --version "$wb"; \
+    rm -f /tmp/js.lock; \
+    rm -rf "$CARGO_HOME"/registry "$CARGO_HOME"/git
+
+COPY --from=vendor /opt/gatehouse/vendor      /opt/gatehouse/vendor
+COPY --from=vendor /opt/gatehouse/vendor-js   /opt/gatehouse/vendor-js
+COPY --from=vendor /tmp/ws.toml               /opt/gatehouse/ws.toml
+COPY --from=vendor /tmp/js.toml               /opt/gatehouse/js.toml
+
+# TWO stores, not one. `sdks/verifier-js` is excluded from the workspace and carries its own
+# Cargo.lock, so it resolves different versions -- chrono 0.4.44 against the workspace's 0.4.45,
+# for one. A vendor directory is a source that holds ONE version per crate, so a single store
+# cannot serve both, and pointing the sdk build at the workspace's store fails to resolve rather
+# than silently building the wrong thing. The gate selects the right one with CARGO_HOME.
+#
+# The source replacement, pointed at the baked store. `CARGO_HOME` is read-only at run time and
+# that is fine: with every source vendored and `--offline` on the command line, cargo reads the
+# store and writes only into CARGO_TARGET_DIR, which lives in the workspace emptyDir.
+RUN set -eux; \
+    mkdir -p /opt/gatehouse/cargo; \
+    sed 's#^directory = .*#directory = "/opt/gatehouse/vendor"#' /opt/gatehouse/ws.toml \
+      > /opt/gatehouse/cargo/config.toml; \
+    mkdir -p /opt/gatehouse/cargo-js; \
+    sed 's#^directory = .*#directory = "/opt/gatehouse/vendor-js"#' /opt/gatehouse/js.toml \
+      > /opt/gatehouse/cargo-js/config.toml; \
+    chmod -R a+rX /opt/gatehouse /usr/local/cargo /usr/local/rustup
+
+# wasm-pack fetches binaryen (`wasm-opt`) the first time it builds for release. The image build
+# is the only place with a network, so it happens HERE and the cache is baked: at run time
+# XDG_CACHE_HOME points at it and nothing is downloaded. Building the sdk once also proves, at
+# image-build time, that the store this image carries can actually build the thing.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml /warm/
+COPY crates /warm/crates
+COPY sdks/verifier-js /warm/sdks/verifier-js
+RUN set -eux; \
+    export XDG_CACHE_HOME=/opt/gatehouse/cache CARGO_HOME=/opt/gatehouse/cargo-js; \
+    cd /warm && wasm-pack build sdks/verifier-js --target web --release; \
+    test -f /warm/sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm; \
+    rm -rf /warm; \
+    chmod -R a+rX /opt/gatehouse/cache
+
+# uid 1001 matches the pod's runAsUser; /work is the emptyDir the scope is materialised into.
+RUN useradd --uid 1001 --no-create-home --shell /usr/sbin/nologin gate
+# HOME and the cache live in the workspace emptyDir because it is the only writable place: the
+# root filesystem is read-only and the gate user has no home. wasm-pack creates a cache directory
+# whether or not it needs to download anything, and without this that is `Read-only file system`.
+ENV CARGO_HOME=/opt/gatehouse/cargo \
+    CARGO_NET_OFFLINE=true \
+    CARGO_TARGET_DIR=/work/target \
+    HOME=/work \
+    XDG_CACHE_HOME=/opt/gatehouse/cache
+USER 1001
+WORKDIR /work
