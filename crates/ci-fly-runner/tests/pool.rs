@@ -136,6 +136,7 @@ fn pool(label: &str, size: usize, standby: usize) -> PoolSpec {
         standby,
         volumes: vec![],
         env: BTreeMap::new(),
+        requires_volume: false,
     }
 }
 
@@ -587,6 +588,28 @@ fn a_pool_may_have_fewer_volumes_than_machines_and_the_rest_mount_nothing() {
     );
     assert!(p.base_config("i@sha256:a", 2).get("mounts").is_none());
     assert!(p.base_config("i@sha256:a", 3).get("mounts").is_none());
+}
+
+/// A pool that compiles must not hold a machine without a volume: the root filesystem is about
+/// 8 GB TOTAL on this substrate, `cargo test --all-features` fills it, and the failure is a
+/// linker bus error and `ENOSPC` on four required checks — which ejects the merge-queue entry.
+#[test]
+fn a_pool_that_requires_volumes_may_not_outnumber_them() {
+    let bad = r#"[{"label":"build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},
+                   "size":12,"standby":12,"volumes":["a","b"],"requires_volume":true}]"#;
+    assert!(
+        parse_pools(bad).is_err(),
+        "accepted a compiling pool with 2 volumes for 12 machines"
+    );
+
+    let ok = r#"[{"label":"build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},
+                  "size":2,"standby":2,"volumes":["a","b"],"requires_volume":true}]"#;
+    assert!(parse_pools(ok).is_ok());
+
+    // A pool that does not compile may still run on the root filesystem alone.
+    let gate = r#"[{"label":"gate","guest":{"cpu_kind":"shared","cpus":8,"memory_mb":16384},
+                    "size":24,"standby":24}]"#;
+    assert!(parse_pools(gate).is_ok());
 }
 
 #[test]

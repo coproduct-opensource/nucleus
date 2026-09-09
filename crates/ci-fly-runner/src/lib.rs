@@ -91,6 +91,17 @@ pub struct PoolSpec {
     /// Extra environment for the worker (e.g. the build job count).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Whether every machine in this pool needs a volume, which caps `size` at the volume count.
+    ///
+    /// A machine without one has the root filesystem and nothing else, and on this substrate that
+    /// is about 8 GB TOTAL including the image. That is fine for a pool of script gates and fatal
+    /// for one that compiles: `cargo test --all-features` over this workspace filled it and the
+    /// linker died with `ld terminated with signal 7 [Bus error]`, then the runner could not even
+    /// make a temp directory — `ENOSPC: no space left on device`. Four required checks failed
+    /// that way and their merge-queue entries were ejected, which looked from the outside like
+    /// entries leaving the queue while clean.
+    #[serde(default)]
+    pub requires_volume: bool,
 }
 
 /// Parse and validate the pool set. Every rejection here is a configuration mistake that would
@@ -114,6 +125,15 @@ pub fn parse_pools(source: &str) -> Result<Vec<PoolSpec>, String> {
         }
         if pool.standby > pool.size {
             return Err(format!("{}: standby must be within 0..size", pool.label));
+        }
+        if pool.requires_volume && pool.volumes.len() < pool.size {
+            return Err(format!(
+                "{}: requires_volume, but {} volumes for {} machines — the machines past the end \
+                 of the list would compile onto the root filesystem and run out of disk",
+                pool.label,
+                pool.volumes.len(),
+                pool.size
+            ));
         }
         if pool.volumes.len() > pool.size {
             return Err(format!(
@@ -547,6 +567,7 @@ mod tests {
             standby: 0,
             volumes: vec![],
             env: BTreeMap::new(),
+            requires_volume: false,
         };
         let config = launch_config(&pool.base_config("img@sha256:aa", 0), "JIT-BLOB", 7);
         let rendered = serde_json::to_string(&config).unwrap();
@@ -571,6 +592,7 @@ mod tests {
             standby: 1,
             volumes: vec!["vol_a".into(), "vol_b".into()],
             env: BTreeMap::from([("CARGO_BUILD_JOBS".into(), "8".into())]),
+            requires_volume: true,
         };
         assert_eq!(
             pool.base_config("i@sha256:a", 1)["mounts"][0]["volume"],
