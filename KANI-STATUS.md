@@ -247,5 +247,9 @@ Local Kani 0.67.0 validation on macOS verified the five PR-lane lattice
 harnesses and `welfare_sum_bounded`. The full core run hit its shorter local
 120-second budget on delegation harnesses (`proof_narrow_idempotent`,
 `proof_delegation_chain_monotone`, and `proof_narrow_monotone`); these results
-are unverified, not passes. The Linux nightly shards use a 600-second budget
+are unverified, not passes. The completed core run reported 18 verified and
+5 timed-out harnesses out of 23 selected; the other timeouts were
+`proof_ifc_leq_consistent_with_join` and `proof_empty_capabilities_rejected`.
+The difference between scheduled source inventory and executable harnesses
+also needs investigation. The Linux nightly shards use a 600-second budget
 and still require execution evidence before #2581 can be considered resolved.
