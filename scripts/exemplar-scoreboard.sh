@@ -52,6 +52,10 @@ nt() {
 # readable ProofStatus split is the honest signal).
 extracted=$(grep -rhoE 'ExtractedKernelChecked' "${RS[@]}" crates 2>/dev/null | wc -l | tr -d ' ')
 handmodel=$(grep -rhoE 'HandModelKernelChecked' "${RS[@]}" crates 2>/dev/null | wc -l | tr -d ' ')
+# `extracted_proofs` counts a ProofStatus marker, not the extracted-Lean surface
+# itself (a review found 13 *Extracted.lean files behind a count of 6). The
+# surface is counted directly, grow-only.
+extracted_lean_files=$(find crates -path '*/.lake' -prune -o -name '*Extracted.lean' -print 2>/dev/null | wc -l | tr -d ' ')
 sorry_admit=$(grep -rhcE '^[[:space:]]*(sorry|admit)' "${LN[@]}" crates 2>/dev/null | awk '{s+=$1} END{print s+0}')
 lean_theorems=$(grep -rhcE '^[[:space:]]*(theorem|lemma) ' "${LN[@]}" crates 2>/dev/null | awk '{s+=$1} END{print s+0}')
 # vacuity: True-typed theorems + axiom:True (worse). Paired guard = lean_theorems.
@@ -88,6 +92,22 @@ done
 disallow_sites=$(( bypass_sites - mediation_drift ))
 effect_stubs=$(grep -rhcE 'NotImplemented|NotWired' "${RS[@]}" crates/portcullis-effects crates/portcullis-core 2>/dev/null | awk '{s+=$1} END{print s+0}')
 
+# ── The frontier ─────────────────────────────────────────────────────────────
+# Utility under authorization: the share of the replay corpus each canonical
+# profile's OWN lattice lets through, beside the guards (corpus size, refusals
+# at exfil sinks) that may not fall. This is the one number in the scoreboard
+# that is higher-is-better on CAPABILITY rather than containment — the fifth
+# North Star clause. Computed by `nucleus-flow-replay --frontier-corpus`
+# (the workflow builds it before this script runs; locally, cargo is used if
+# present). Embedded verbatim; the ratchet flattens it like any other object.
+FRONTIER="${FRONTIER_JSON:-frontier.json}"
+if [ ! -s "$FRONTIER" ] && command -v cargo >/dev/null 2>&1; then
+  cargo run -q -p nucleus-flow-replay -- \
+    --frontier-corpus crates/nucleus-flow-replay/corpus/corpus.jsonl \
+    --out "$FRONTIER" >/dev/null 2>&1 || echo "  (frontier: nucleus-flow-replay failed; section omitted — the ratchet will red on the vanished pins)" >&2
+fi
+if [ -s "$FRONTIER" ]; then frontier_json="$(cat "$FRONTIER")"; else frontier_json='{}'; fi
+
 # ── Hygiene ──────────────────────────────────────────────────────────────────
 # Count only TRACKED .verus paths (untracked local toolchain cruft — e.g. a
 # downloaded verus binary — isn't a repo gap and CI never sees it).
@@ -101,6 +121,7 @@ cat > "$OUT" <<JSON
 {
   "formal_verification": {
     "extracted_proofs": $extracted, "handmodel_proofs": $handmodel,
+    "extracted_lean_files": $extracted_lean_files,
     "extraction_ratio_pct": $(( (extracted+handmodel)>0 ? extracted*100/(extracted+handmodel) : 0 )),
     "sorry_admit": $sorry_admit, "vacuous_lean": $vacuous_lean,
     "lean_theorems_GUARD": $lean_theorems, "clean_axiom_footprint": "$clean_axioms"
@@ -115,7 +136,8 @@ cat > "$OUT" <<JSON
     "mediation_drift": $mediation_drift, "bypass_sites": $bypass_sites,
     "disallow_sites": $disallow_sites, "effect_stubs": $effect_stubs
   },
-  "hygiene": { "stale_verus_dirs": $stale_verus }
+  "hygiene": { "stale_verus_dirs": $stale_verus },
+  "frontier": $frontier_json
 }
 JSON
 
@@ -124,4 +146,5 @@ echo "  FV : extraction ${extracted}/$((extracted+handmodel)) | sorry/admit $sor
 echo "  RUST: permissive .verify $permissive_verify (of $verify_calls) | unsafe $unsafe_blocks | lints.workspace $crates_lints_ws/$crates_total"
 echo "  SANDBOX: mediation-drift $mediation_drift (bypass $bypass_sites / disallow $disallow_sites) | effect-stubs $effect_stubs"
 echo "  HYGIENE: stale .verus dirs $stale_verus"
+echo "  FRONTIER: $(printf '%s' "$frontier_json" | grep -oE '"[a-z-]+": \{' | grep -vc '"profiles"' | tr -d ' ') profile(s) over $(printf '%s' "$frontier_json" | grep -oE '"corpus_steps_GUARD": [0-9]+' | grep -oE '[0-9]+' || echo 0) corpus steps"
 echo "  -> $OUT"

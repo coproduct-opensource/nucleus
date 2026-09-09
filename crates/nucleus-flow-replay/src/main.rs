@@ -7,6 +7,16 @@
 //! Reads JSONL steps, emits one outcome per step plus a summary on stderr.
 //! Needs no network, no model, and no API budget — the whole point is that the
 //! kernel's behaviour is measurable without any of them.
+//!
+//! ```text
+//! nucleus-flow-replay --frontier-corpus corpus.jsonl [--profiles a,b] --out frontier.json
+//! ```
+//!
+//! The frontier mode replays a corpus (one episode per line) under each named
+//! canonical profile's REAL lattice and writes `frontier.json`: the share of
+//! the corpus each authorization lets through, beside the guards that stop
+//! that share from being gamed. `scripts/exemplar-scoreboard.sh` embeds it and
+//! `cargo xtask scoreboard-ratchet` pins it in both directions.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -21,8 +31,21 @@ use clap::Parser;
 )]
 struct Args {
     /// JSONL trace file; `-` reads stdin.
-    #[arg(long)]
-    trace: String,
+    #[arg(
+        long,
+        conflicts_with = "frontier_corpus",
+        required_unless_present = "frontier_corpus"
+    )]
+    trace: Option<String>,
+
+    /// Frontier mode: a corpus (one `{"trace": n, "steps": [...]}` episode per
+    /// line) replayed under each canonical profile's lattice.
+    #[arg(long, value_name = "CORPUS")]
+    frontier_corpus: Option<PathBuf>,
+
+    /// Frontier mode: comma-separated canonical profile names (default: all).
+    #[arg(long, value_delimiter = ',')]
+    profiles: Vec<String>,
 
     /// Write per-step outcomes here as JSONL (default: stdout).
     #[arg(long)]
@@ -36,11 +59,15 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let src = if args.trace == "-" {
+    if let Some(corpus_path) = &args.frontier_corpus {
+        return frontier_main(corpus_path, &args.profiles, args.out.as_deref());
+    }
+    let trace = args.trace.as_deref().unwrap_or("-");
+
+    let src = if trace == "-" {
         std::io::read_to_string(std::io::stdin()).context("reading trace from stdin")?
     } else {
-        std::fs::read_to_string(&args.trace)
-            .with_context(|| format!("reading trace {}", args.trace))?
+        std::fs::read_to_string(trace).with_context(|| format!("reading trace {trace}"))?
     };
 
     let steps = nucleus_flow_replay::parse_trace(&src)?;
@@ -72,5 +99,59 @@ fn main() -> anyhow::Result<()> {
         summary.requires_approval,
         summary.ceiling_attributable,
     );
+    Ok(())
+}
+
+/// Frontier mode. Every canonical profile resolves through the same
+/// `ProfileRegistry` the CLI uses, so the lattice replayed is the one a pod
+/// launched with that profile would enforce.
+fn frontier_main(
+    corpus_path: &std::path::Path,
+    profiles: &[String],
+    out: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    let src = std::fs::read_to_string(corpus_path)
+        .with_context(|| format!("reading corpus {}", corpus_path.display()))?;
+    let corpus = nucleus_flow_replay::parse_corpus(&src)?;
+    anyhow::ensure!(!corpus.is_empty(), "corpus is empty — nothing to replay");
+
+    let registry =
+        portcullis::profile::ProfileRegistry::canonical().context("loading canonical profiles")?;
+    let names: Vec<String> = if profiles.is_empty() {
+        registry.names().into_iter().map(str::to_string).collect()
+    } else {
+        profiles.to_vec()
+    };
+    let mut lattices = Vec::with_capacity(names.len());
+    for name in &names {
+        let lattice = registry
+            .resolve(name)
+            .map_err(|e| anyhow::anyhow!("profile {name:?}: {e}"))?;
+        lattices.push((name.clone(), lattice));
+    }
+
+    let report = nucleus_flow_replay::frontier(&corpus, &lattices);
+    let json = serde_json::to_string_pretty(&report)?;
+    match out {
+        Some(p) => std::fs::write(p, format!("{json}\n"))
+            .with_context(|| format!("writing {}", p.display()))?,
+        None => println!("{json}"),
+    }
+    eprintln!(
+        "frontier: {} episodes / {} steps under {} profile(s)",
+        report.corpus_traces,
+        report.corpus_steps,
+        report.profiles.len()
+    );
+    for (name, f) in &report.profiles {
+        eprintln!(
+            "  {name:<16} allowed {:>4}‰  denied {:>3} (exfil {:>3}, local {:>3})  approval {:>3}",
+            f.allowed_share_permille,
+            f.denied,
+            f.denied_at_exfil_vector,
+            f.denied_at_local_reversible,
+            f.requires_approval
+        );
+    }
     Ok(())
 }

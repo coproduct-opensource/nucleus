@@ -14,12 +14,14 @@ name: exemplar-scoreboard
 # (real-vs-decorative, overclaim) are caught by the periodic adversarial workflow,
 # which also RECALIBRATES these metrics — grep measures, the panel re-tunes the ruler.
 
+# Unfiltered and reported in the merge queue: this is a REQUIRED context
+# (ci/required-checks.txt). A paths filter would need a -noop twin; the run
+# is a grep pass plus one small crate, so it runs everywhere instead.
 on:
   push:
     branches: [main]
-    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-scoreboard.sh', 'scripts/exemplar-baseline.json']
   pull_request:
-    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-scoreboard.sh', 'scripts/exemplar-baseline.json']
+  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -37,18 +39,38 @@ jobs:
   scoreboard:
     name: exemplar metrics ratchet
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
+
+      # The frontier: every canonical profile's real lattice replayed over the
+      # in-tree corpus through the kernel's live decision path. Built first so
+      # the scoreboard embeds it; its share is HIGHER-is-better and its guards
+      # (corpus size, exfil refusals) may not fall.
+      - name: Compute the frontier (utility under authorization)
+        # stderr dropped: a debug build prints the kernel's per-decision
+        # obligation diagnostic for every replayed step (thousands of lines).
+        run: cargo run -q -p nucleus-flow-replay -- --frontier-corpus crates/nucleus-flow-replay/corpus/corpus.jsonl --out frontier.json 2>/dev/null
 
       - name: Compute scoreboard
         run: bash scripts/exemplar-scoreboard.sh scoreboard.json
 
       # The ratchet was the last `python3` heredoc on the gate path; it is now
       # `cargo xtask scoreboard-ratchet` (crates/xtask/src/scoreboard.rs), with
-      # the same LOWER/HIGHER/_GUARD rules, unit-tested, and a non-vacuity
-      # floor (fewer than three shared metrics is a red, not a pass).
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache: ${{ runner.environment == 'github-hosted' }}
+      # the same LOWER/HIGHER/_GUARD rules, unit-tested, a non-vacuity floor
+      # (fewer than three shared metrics is a red, not a pass), a red on any
+      # pinned metric that vanished, and SAME-CHANGE pinning: an improvement
+      # not re-pinned in scripts/exemplar-baseline.json in the same change is
+      # a red, not a notice — slack is what made the ratchet advisory.
       - name: Ratchet against baseline (with anti-Goodhart guards)
         run: cargo run -q -p xtask -- scoreboard-ratchet --current scoreboard.json --baseline scripts/exemplar-baseline.json
+      - name: Publish the scoreboard and frontier
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: exemplar-scoreboard
+          path: |
+            scoreboard.json
+            frontier.json

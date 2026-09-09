@@ -47,6 +47,21 @@
 #   and a per-PR Kani harness proving the component boundary over the whole
 #   bounded input space (kani-spawn-boundary.yml). TESTED, not PROVED: the
 #   Lean side still models the path dimension by the abstract meet.
+# 2026-09-09: lowered 11 -> 9. F14 NOT-YET -> RATCHETED and F15 NOT-YET ->
+#   DECIDED. Every ratchet in the tree was monotone in containment or proof
+#   hygiene; nothing measured utility under authorization, and the one
+#   instrument that could (nucleus-flow-replay) replayed under
+#   PermissionLattice::permissive() by design. replay_with(lattice) and the
+#   --frontier-corpus mode now replay the in-tree corpus under each canonical
+#   profile's real lattice; frontier.json rides in the exemplar scoreboard
+#   with allowed_share_permille as HIGHER and corpus_steps_GUARD /
+#   denied_at_exfil_vector_GUARD as may-not-fall guards. The scoreboard is
+#   declared required (ci/required-checks.txt 50 -> 51), unfiltered, and
+#   merge-queue reported; the xtask ratchet reds on an unpinned improvement
+#   and on a vanished metric, so the baseline was re-pinned to today's exact
+#   values in the same change (the 12-sorry / 575-theorem slack is gone).
+#   RATCHETED, not PROVED: the number is evidence over a 155-episode corpus
+#   with no model in the loop; F1's model matrix is the next leg.
 CLAUSES=16
-NOT_YET=11
+NOT_YET=9
 DORMANT_GATES=0

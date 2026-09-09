@@ -68,3 +68,8 @@ ci/lean/.lake/
 
 # The Vault CTF build output (trunk); docs.yml rebuilds it and `fly deploy` expects a local build
 crates/ctf-engine/dist/
+
+# Written by scripts/exemplar-scoreboard.sh / the exemplar-scoreboard workflow; the committed
+# copy drifted from what the script computes, so it is a CI artifact now, not a tracked file.
+scoreboard.json
+frontier.json

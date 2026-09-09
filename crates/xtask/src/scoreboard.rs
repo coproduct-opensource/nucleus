@@ -7,8 +7,13 @@
 //! cut `permissive_verify` by deleting the verifier (`verify_calls_GUARD`
 //! would drop), nor `vacuous_lean` by deleting theorems.
 //!
-//! Exit 0 no regression, 1 a regression or a dropped guard. Improvements are
-//! `::notice::`d — the baseline is lowered by a human, never here.
+//! Exit 0 no regression, 1 a regression, a dropped guard, a metric that
+//! vanished from the current scoreboard, or an UNPINNED improvement. The
+//! baseline is edited by a human, never here — and it is edited in the SAME
+//! change that moves the number (the North Star ledger's convention): a
+//! `::notice::` improvement used to be advisory, so baselines were lowered
+//! months after the fact and the slack in between (sorry 26 vs pin 38,
+//! theorems 1466 vs guard 891) made the ratchet advisory too.
 
 use std::collections::BTreeMap;
 
@@ -24,11 +29,18 @@ const LOWER: [&str; 7] = [
     "unsafe_blocks",
     "stale_verus_dirs",
 ];
-const HIGHER: [&str; 4] = [
+const HIGHER: [&str; 6] = [
     "extracted_proofs",
+    "extracted_lean_files",
     "crates_lints_workspace",
     "extraction_ratio_pct",
     "lints_adoption_pct",
+    // The frontier: the share of the replay corpus a canonical profile's own
+    // lattice lets through (`frontier.<profile>.allowed_share_permille`). It
+    // rides beside `corpus_steps_GUARD` and each profile's
+    // `denied_at_exfil_vector_GUARD`, which may not fall — so it cannot be
+    // raised by shrinking the corpus or by opening an exfiltration sink.
+    "allowed_share_permille",
 ];
 
 /// Flatten nested objects to dotted keys; numbers only (booleans excluded).
@@ -57,6 +69,19 @@ pub fn ratchet(current: &Value, baseline: &Value) -> (Vec<String>, Vec<String>) 
     flatten(baseline, "", &mut b);
     let mut fail = Vec::new();
     let mut improved = Vec::new();
+    // A metric the baseline pins but the current scoreboard no longer
+    // reports is not "no regression": it is the ratchet comparing nothing
+    // for that key. Deleting the measurement must be as visible as failing it.
+    for k in b.keys() {
+        if !c.contains_key(k) {
+            let name = k.rsplit('.').next().unwrap_or(k);
+            if LOWER.contains(&name) || HIGHER.contains(&name) || name.ends_with("_GUARD") {
+                fail.push(format!(
+                    "{k} vanished from the current scoreboard (pinned in the baseline)"
+                ));
+            }
+        }
+    }
     for (k, cv) in &c {
         let name = k.rsplit('.').next().unwrap_or(k);
         let Some(bv) = b.get(k) else { continue };
@@ -103,16 +128,26 @@ pub fn scoreboard_ratchet(current: &str, baseline: &str) -> Result<()> {
         std::process::exit(1);
     }
     let (fail, improved) = ratchet(&cur, &base);
-    for i in &improved {
-        println!("::notice::improved {i} — lower {baseline} to ratchet it in");
-    }
     if !fail.is_empty() {
         for f in &fail {
             println!("::error::{f}");
         }
         std::process::exit(1);
     }
-    println!("exemplar scoreboard: no regressions vs baseline ({compared} metrics compared)");
+    // Same-change pinning. An improvement that is not pinned in this change
+    // is slack the next regression can spend; it is an error, with the fix
+    // named, not a notice.
+    if !improved.is_empty() {
+        for i in &improved {
+            println!(
+                "::error::improved {i} but {baseline} was not moved in the same change — re-pin it so the gain is a ratchet, not slack"
+            );
+        }
+        std::process::exit(1);
+    }
+    println!(
+        "exemplar scoreboard: no regressions vs baseline ({compared} metrics compared, every pin exact)"
+    );
     Ok(())
 }
 
@@ -149,6 +184,41 @@ mod tests {
         );
         assert_eq!(f.len(), 1);
         assert!(f[0].contains("GUARD"));
+    }
+
+    /// Deleting a pinned measurement is as loud as failing it.
+    #[test]
+    fn a_pinned_metric_that_vanishes_is_a_failure() {
+        let base = json!({"frontier": {"codegen": {"allowed_share_permille": 400, "denied_at_exfil_vector_GUARD": 3}}, "corpus_steps_GUARD": 155});
+        let (f, _) = ratchet(&json!({"frontier": {}}), &base);
+        assert_eq!(f.len(), 3, "{f:?}");
+        assert!(f.iter().all(|m| m.contains("vanished")));
+    }
+
+    /// The frontier's two directions: the share may not fall (HIGHER), and
+    /// its guards may not fall either, so it cannot be bought.
+    #[test]
+    fn the_frontier_share_and_its_guards_ratchet_in_opposite_directions() {
+        let base = json!({"frontier": {"codegen": {"allowed_share_permille": 400, "denied_at_exfil_vector_GUARD": 3}}, "corpus_steps_GUARD": 155});
+        // Share up, guards flat: an improvement, not a failure.
+        let (f, i) = ratchet(
+            &json!({"frontier": {"codegen": {"allowed_share_permille": 450, "denied_at_exfil_vector_GUARD": 3}}, "corpus_steps_GUARD": 155}),
+            &base,
+        );
+        assert!(f.is_empty(), "{f:?}");
+        assert_eq!(i.len(), 1);
+        // Share up BY shrinking the corpus or opening the exfil sink: refused.
+        let (f, _) = ratchet(
+            &json!({"frontier": {"codegen": {"allowed_share_permille": 900, "denied_at_exfil_vector_GUARD": 0}}, "corpus_steps_GUARD": 20}),
+            &base,
+        );
+        assert_eq!(f.len(), 2, "{f:?}");
+        // Share down: a regression.
+        let (f, _) = ratchet(
+            &json!({"frontier": {"codegen": {"allowed_share_permille": 300, "denied_at_exfil_vector_GUARD": 3}}, "corpus_steps_GUARD": 155}),
+            &base,
+        );
+        assert_eq!(f.len(), 1, "{f:?}");
     }
 
     #[test]

@@ -136,9 +136,24 @@ pub struct ReplaySummary {
     pub denied_at_hard_to_revoke: usize,
     /// Refusals at sinks that are neither — local, reversible mutations.
     pub denied_at_local_reversible: usize,
+
+    // ── The frontier number ────────────────────────────────────────────────
+    /// `allowed / steps`, in permille (an integer so it ratchets exactly).
+    /// Under a profile's real lattice ([`replay_with`]) this is the share of
+    /// the corpus the principal's authorization let through — the
+    /// utility-under-authorization quantity the North Star's fifth clause is
+    /// about. Meaningless alone: it is published beside the GUARDS
+    /// (`corpus_steps`, `denied_at_exfil_vector`) that may not fall, so it
+    /// cannot be raised by shrinking the corpus or opening an exfil sink.
+    pub allowed_share_permille: u32,
 }
 
 impl ReplaySummary {
+    fn finish(&mut self) {
+        self.allowed_share_permille =
+            (self.allowed * 1000).checked_div(self.steps).unwrap_or(0) as u32;
+    }
+
     fn record(&mut self, o: &StepOutcome) {
         self.steps += 1;
         match o.verdict.as_str() {
@@ -173,14 +188,28 @@ fn content_hash(bytes: &[u8]) -> portcullis_core::ContentHash {
     portcullis_core::ContentHash::from_bytes(digest)
 }
 
-/// Replay one episode against a fresh kernel and flow tracker.
+/// Replay one episode against a fresh kernel and flow tracker under the
+/// **permissive** lattice.
 ///
-/// The lattice is `permissive()` on purpose: this measures the **information-flow**
-/// gate, so capability denials would be noise. A capability-restricted lattice
-/// would conflate "the IFC gate refused" with "this pod was never allowed to do
-/// that at all", and the whole point is to attribute refusals to a specific gate.
+/// Permissive on purpose: this measures the **information-flow** gate, so
+/// capability denials would be noise. A capability-restricted lattice would
+/// conflate "the IFC gate refused" with "this pod was never allowed to do that
+/// at all", and the whole point here is to attribute refusals to a specific
+/// gate. The other question — how much of the corpus a *principal's* lattice
+/// lets through — is [`replay_with`].
 pub fn replay(steps: &[TraceStep]) -> (Vec<StepOutcome>, ReplaySummary) {
-    let mut kernel = Kernel::new(PermissionLattice::permissive());
+    replay_with(steps, PermissionLattice::permissive())
+}
+
+/// Replay one episode under a specific lattice — a canonical profile's, say —
+/// so the summary answers the clause-5 question: of the work in this corpus,
+/// how much does THIS authorization let through, and what does it refuse at
+/// which sinks? Same kernel path as [`replay`]; only the lattice differs.
+pub fn replay_with(
+    steps: &[TraceStep],
+    lattice: PermissionLattice,
+) -> (Vec<StepOutcome>, ReplaySummary) {
+    let mut kernel = Kernel::new(lattice);
     let mut flow = FlowTracker::new();
     let mut outcomes = Vec::with_capacity(steps.len());
     let mut summary = ReplaySummary::default();
@@ -238,7 +267,69 @@ pub fn replay(steps: &[TraceStep]) -> (Vec<StepOutcome>, ReplaySummary) {
         }
     }
 
+    summary.finish();
     (outcomes, summary)
+}
+
+/// One profile's frontier over a corpus: the [`ReplaySummary`] fields that
+/// ratchet, aggregated across every episode. `_GUARD` suffixes are read by
+/// `cargo xtask scoreboard-ratchet`: those numbers may not fall, so
+/// `allowed_share_permille` cannot be raised by shrinking the corpus or by
+/// opening an exfiltration sink.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ProfileFrontier {
+    pub steps: usize,
+    pub allowed: usize,
+    pub denied: usize,
+    pub requires_approval: usize,
+    pub ceiling_attributable: usize,
+    #[serde(rename = "denied_at_exfil_vector_GUARD")]
+    pub denied_at_exfil_vector: usize,
+    pub denied_at_hard_to_revoke: usize,
+    pub denied_at_local_reversible: usize,
+    pub allowed_share_permille: u32,
+    pub deny_codes: std::collections::BTreeMap<String, usize>,
+}
+
+/// The frontier report: every named lattice replayed over the same corpus.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct FrontierReport {
+    /// Episodes in the corpus.
+    pub corpus_traces: usize,
+    /// Steps in the corpus — a GUARD, so the corpus may not shrink.
+    #[serde(rename = "corpus_steps_GUARD")]
+    pub corpus_steps: usize,
+    /// Per-profile frontiers, keyed by profile name.
+    pub profiles: std::collections::BTreeMap<String, ProfileFrontier>,
+}
+
+/// Replay a corpus under each named lattice and aggregate.
+pub fn frontier(corpus: &[Trace], lattices: &[(String, PermissionLattice)]) -> FrontierReport {
+    let mut report = FrontierReport {
+        corpus_traces: corpus.len(),
+        corpus_steps: corpus.iter().map(|t| t.steps.len()).sum(),
+        profiles: Default::default(),
+    };
+    for (name, lattice) in lattices {
+        let mut f = ProfileFrontier::default();
+        for t in corpus {
+            let (_, s) = replay_with(&t.steps, lattice.clone());
+            f.steps += s.steps;
+            f.allowed += s.allowed;
+            f.denied += s.denied;
+            f.requires_approval += s.requires_approval;
+            f.ceiling_attributable += s.ceiling_attributable;
+            f.denied_at_exfil_vector += s.denied_at_exfil_vector;
+            f.denied_at_hard_to_revoke += s.denied_at_hard_to_revoke;
+            f.denied_at_local_reversible += s.denied_at_local_reversible;
+            for (code, n) in s.deny_codes {
+                *f.deny_codes.entry(code).or_insert(0) += n;
+            }
+        }
+        f.allowed_share_permille = (f.allowed * 1000).checked_div(f.steps).unwrap_or(0) as u32;
+        report.profiles.insert(name.clone(), f);
+    }
+    report
 }
 
 /// A named episode: one independent session, replayed against a fresh kernel.
@@ -288,6 +379,55 @@ mod tests {
             ingest,
             content: Some(format!("payload-{i}")),
         }
+    }
+
+    /// The frontier is two-directional by construction: a restrictive lattice
+    /// admits no more of the corpus than the permissive one, and the guards
+    /// that stop the number from being gamed are populated from the same
+    /// replay, not typed in.
+    #[test]
+    fn a_profile_frontier_is_bounded_by_the_permissive_one_and_carries_its_guards() {
+        let corpus = vec![
+            Trace {
+                trace: 0,
+                steps: vec![
+                    step(0, Operation::ReadFiles, Some(NodeKind::FileRead)),
+                    step(1, Operation::WriteFiles, None),
+                ],
+            },
+            Trace {
+                trace: 1,
+                steps: vec![
+                    step(0, Operation::WebFetch, Some(NodeKind::WebContent)),
+                    step(1, Operation::GitPush, None),
+                ],
+            },
+        ];
+        let report = frontier(
+            &corpus,
+            &[
+                ("permissive".into(), PermissionLattice::permissive()),
+                ("restrictive".into(), PermissionLattice::restrictive()),
+            ],
+        );
+        assert_eq!(report.corpus_traces, 2);
+        assert_eq!(report.corpus_steps, 4);
+        let p = &report.profiles["permissive"];
+        let r = &report.profiles["restrictive"];
+        assert_eq!(p.steps, 4);
+        assert!(
+            r.allowed <= p.allowed,
+            "restrictive {r:?} admits more than permissive {p:?}"
+        );
+        assert!(r.allowed_share_permille <= p.allowed_share_permille);
+        assert_eq!(
+            p.allowed_share_permille,
+            (p.allowed * 1000 / p.steps) as u32
+        );
+        // The tainted push is refused at an exfil sink under BOTH lattices — the
+        // guard is non-zero, so it can bite.
+        assert!(p.denied_at_exfil_vector >= 1, "{p:?}");
+        assert!(r.denied_at_exfil_vector >= 1, "{r:?}");
     }
 
     /// A clean session lets an outbound action through — otherwise every later

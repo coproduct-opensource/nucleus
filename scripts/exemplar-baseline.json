@@ -1,19 +1,168 @@
 {
   "formal_verification": {
-    "extracted_proofs": 4, "handmodel_proofs": 3,
-    "extraction_ratio_pct": 66,
-    "sorry_admit": 38, "vacuous_lean": 3,
-    "lean_theorems_GUARD": 891, "clean_axiom_footprint": "n/a"
+    "extracted_proofs": 6, "handmodel_proofs": 1,
+    "extracted_lean_files": 13,
+    "extraction_ratio_pct": 85,
+    "sorry_admit": 26, "vacuous_lean": 3,
+    "lean_theorems_GUARD": 1466, "clean_axiom_footprint": "n/a"
   },
   "rust_craft": {
     "permissive_verify": 13, "verify_calls_GUARD": 44,
     "unsafe_blocks": 6,
-    "crates_total": 67, "crates_lints_workspace": 41,
-    "lints_adoption_pct": 61
+    "crates_total": 85, "crates_lints_workspace": 54,
+    "lints_adoption_pct": 63
   },
   "sandboxing": {
     "mediation_drift": 0, "bypass_sites": 2,
     "disallow_sites": 2, "effect_stubs": 9
   },
-  "hygiene": { "stale_verus_dirs": 0 }
+  "hygiene": { "stale_verus_dirs": 0 },
+  "frontier": {
+  "corpus_traces": 155,
+  "corpus_steps_GUARD": 430,
+  "profiles": {
+    "code-review": {
+      "steps": 430,
+      "allowed": 172,
+      "denied": 258,
+      "requires_approval": 0,
+      "ceiling_attributable": 0,
+      "denied_at_exfil_vector_GUARD": 86,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 172,
+      "allowed_share_permille": 400,
+      "deny_codes": {
+        "action_term_rejected": 258
+      }
+    },
+    "codegen": {
+      "steps": 430,
+      "allowed": 344,
+      "denied": 86,
+      "requires_approval": 0,
+      "ceiling_attributable": 0,
+      "denied_at_exfil_vector_GUARD": 86,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 0,
+      "allowed_share_permille": 800,
+      "deny_codes": {
+        "action_term_rejected": 86
+      }
+    },
+    "doc-editor": {
+      "steps": 430,
+      "allowed": 344,
+      "denied": 86,
+      "requires_approval": 0,
+      "ceiling_attributable": 0,
+      "denied_at_exfil_vector_GUARD": 86,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 0,
+      "allowed_share_permille": 800,
+      "deny_codes": {
+        "action_term_rejected": 86
+      }
+    },
+    "local-dev": {
+      "steps": 430,
+      "allowed": 344,
+      "denied": 86,
+      "requires_approval": 0,
+      "ceiling_attributable": 0,
+      "denied_at_exfil_vector_GUARD": 86,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 0,
+      "allowed_share_permille": 800,
+      "deny_codes": {
+        "action_term_rejected": 86
+      }
+    },
+    "read-only": {
+      "steps": 430,
+      "allowed": 172,
+      "denied": 258,
+      "requires_approval": 0,
+      "ceiling_attributable": 0,
+      "denied_at_exfil_vector_GUARD": 86,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 172,
+      "allowed_share_permille": 400,
+      "deny_codes": {
+        "action_term_rejected": 258
+      }
+    },
+    "release": {
+      "steps": 430,
+      "allowed": 400,
+      "denied": 30,
+      "requires_approval": 0,
+      "ceiling_attributable": 30,
+      "denied_at_exfil_vector_GUARD": 0,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 30,
+      "allowed_share_permille": 930,
+      "deny_codes": {
+        "ifc_unsafe": 30
+      }
+    },
+    "research-web": {
+      "steps": 430,
+      "allowed": 258,
+      "denied": 172,
+      "requires_approval": 0,
+      "ceiling_attributable": 30,
+      "denied_at_exfil_vector_GUARD": 0,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 172,
+      "allowed_share_permille": 600,
+      "deny_codes": {
+        "action_term_rejected": 142,
+        "ifc_unsafe": 30
+      }
+    },
+    "safe-pr-fixer": {
+      "steps": 430,
+      "allowed": 400,
+      "denied": 30,
+      "requires_approval": 0,
+      "ceiling_attributable": 30,
+      "denied_at_exfil_vector_GUARD": 0,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 30,
+      "allowed_share_permille": 930,
+      "deny_codes": {
+        "ifc_unsafe": 30
+      }
+    },
+    "test-runner": {
+      "steps": 430,
+      "allowed": 172,
+      "denied": 258,
+      "requires_approval": 0,
+      "ceiling_attributable": 0,
+      "denied_at_exfil_vector_GUARD": 86,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 172,
+      "allowed_share_permille": 400,
+      "deny_codes": {
+        "action_term_rejected": 258
+      }
+    },
+    "triage-bot": {
+      "steps": 430,
+      "allowed": 258,
+      "denied": 172,
+      "requires_approval": 0,
+      "ceiling_attributable": 30,
+      "denied_at_exfil_vector_GUARD": 0,
+      "denied_at_hard_to_revoke": 0,
+      "denied_at_local_reversible": 172,
+      "allowed_share_permille": 600,
+      "deny_codes": {
+        "action_term_rejected": 142,
+        "ifc_unsafe": 30
+      }
+    }
+  }
+}
 }

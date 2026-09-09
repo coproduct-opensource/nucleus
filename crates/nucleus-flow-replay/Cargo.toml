@@ -8,7 +8,7 @@ description = "Replay recorded tool-call traces through the real kernel decision
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
-portcullis = { path = "../portcullis", features = ["serde"] }
+portcullis = { path = "../portcullis", features = ["serde", "spec"] }
 portcullis-core = { path = "../portcullis-core", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

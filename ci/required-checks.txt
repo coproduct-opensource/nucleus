@@ -12,7 +12,15 @@
 # `cargo xtask ci-spec live-parity` compares this file with the live branch
 # protection; a mismatch is a red on the schedule, never a silent re-sync.
 #
-# PINNED = 50
+# PINNED = 51
+#   2026-09-09: 50 -> 51. "exemplar metrics ratchet" becomes required. It was
+#   advisory (not required, paths-filtered, no merge_group trigger), so the
+#   scoreboard could regress on main without a red; its baselines were
+#   lowered by hand months after the improvements, so the slack in between
+#   made the ratchet advisory too. Now: unfiltered, merge-queue reported,
+#   same-change pinning enforced by `cargo xtask scoreboard-ratchet`, and the
+#   frontier (utility under authorization) rides in it with guards. Branch
+#   protection must add the context; `ci-spec live-parity` reds until it does.
 
 # --- ci.yml -------------------------------------------------------------
 Detect changed crates
@@ -59,6 +67,7 @@ zizmor (high+ gate)
 Manifest Guards
 Scan PodSpecs
 Analyze
+exemplar metrics ratchet
 
 # --- twin-paired (real + -noop) ----------------------------------------
 lake build CiSpec (pipeline + merge-queue theorems)
