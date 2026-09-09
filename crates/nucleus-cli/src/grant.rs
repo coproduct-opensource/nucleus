@@ -282,23 +282,10 @@ pub fn verify_sealed(
         .map_err(|e| anyhow!("grant {} refused: {e}", sealed.grant.id))
 }
 
-/// The one line printed before a verified grant runs.
-pub fn verified_line(v: &VerifiedGrant) -> String {
-    let g = v.grant();
-    let remaining = g.not_after - Utc::now();
-    let mins = remaining.num_minutes().max(0);
-    format!(
-        "grant {} verified: sealed by {} (cert {}…), {} effects, {} left, no confirmation needed",
-        g.id,
-        v.approver(),
-        &v.fingerprint_hex()[..16],
-        g.can.len(),
-        if mins >= 60 {
-            format!("{}h{:02}m", mins / 60, mins % 60)
-        } else {
-            format!("{mins}m")
-        }
-    )
+/// Confirmation printed only after verification succeeds. Keep signer and
+/// certificate material out of terminal output; the grant is rendered separately.
+pub fn verified_line(_verified: &VerifiedGrant) -> &'static str {
+    "grant verified: trusted signature, no confirmation needed"
 }
 
 fn show(args: ShowArgs) -> Result<()> {
