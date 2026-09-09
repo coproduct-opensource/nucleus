@@ -75,7 +75,16 @@ path = "crates/nucleus-node/src/main.rs"
 # conversion plus two route lines. Set to the measured value rather than left
 # slack: banked headroom is spent without justification later, which is the whole
 # failure mode the ceiling is here to prevent.
-ceiling = 3992
+# Bumped 3992 -> 3996 2026-09-09, merging main into this branch. The four lines
+# are main's production-confinement hardening, not this branch's growth: `mod
+# production_confinement;`, one doc comment that became two lines, and the
+# two-line `admit_seccomp` guard. The mod declaration cannot be extracted — the
+# module is declared here — and the guard has to sit on the pod-creation path in
+# THIS file, because that is where a spec is admitted and where rejecting one
+# still has the request to reject. Reseeded at the measured value again rather
+# than restoring the old 4045 that main carries: this branch earned 3992 by
+# moving 155 lines out, and taking main's slack back would spend that.
+ceiling = 3996
 target = 2000
 step = 1
 
