@@ -769,8 +769,8 @@ fn a_substrate_at_capacity_makes_the_pool_give_a_machine_back() {
 fn a_pass_over_the_machine_budget_gives_machines_back_before_asking_for_any() {
     let over = FakeSubstrate {
         machines: Mutex::new(
-            (0..6)
-                .map(|i| pooled("build", i, "stopped", 30 + i as i64))
+            (0..6i64)
+                .map(|i| pooled("build", usize::try_from(i).unwrap(), "stopped", 30 + i))
                 .collect::<Vec<_>>(),
         ),
         ..FakeSubstrate::default()
