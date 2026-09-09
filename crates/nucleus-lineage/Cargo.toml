@@ -2,7 +2,8 @@
 name = "nucleus-lineage"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# Kani 0.67 bundles rustc 1.93; this crate is in the welfare-proof dependency closure.
+rust-version = "1.93"
 license.workspace = true
 description = "Per-call SPIFFE-derived data lineage for nucleus tool calls"
 repository = "https://github.com/coproduct-opensource/nucleus"
