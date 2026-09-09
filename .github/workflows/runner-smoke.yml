@@ -28,9 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Pool lifecycle and credential isolation
-        run: python3 -m unittest discover -s ci/fly-runner -p 'test_*.py'
-      - name: Shell entrypoint syntax
-        run: bash -n ci/fly-runner/entrypoint.sh
+        run: cargo test -p ci-fly-runner --locked
+      - name: Shell syntax
+        run: bash -n ci/fly-runner/entrypoint.sh && bash -n ci/fly-runner/install-tools.sh
   probe:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: probe the self-hosted runner

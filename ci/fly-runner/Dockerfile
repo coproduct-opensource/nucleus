@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl jq procps time \
  && rm -rf /var/lib/apt/lists/*
 COPY tools.json /tmp/tools.json
-COPY install-tools.py /tmp/install-tools.py
-RUN python3 /tmp/install-tools.py && rm /tmp/tools.json /tmp/install-tools.py \
+COPY --chmod=755 install-tools.sh /tmp/install-tools.sh
+RUN /tmp/install-tools.sh /tmp/tools.json && rm /tmp/tools.json /tmp/install-tools.sh \
  && printf '#!/bin/sh\nexec cc -fuse-ld=lld "$@"\n' > /usr/local/bin/cc-lld \
  && chmod 0755 /usr/local/bin/cc-lld
 USER runner

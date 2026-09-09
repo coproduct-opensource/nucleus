@@ -1,10 +1,8 @@
 *
 !Dockerfile
-!Dockerfile.manager
 !tools.json
-!install-tools.py
+!install-tools.sh
 !cargo-config.toml
 !entrypoint.sh
 !job-started.sh
 !job-completed.sh
-!manager.py

@@ -13,8 +13,12 @@ Fly Machines, warm, bounded, one job per boot, taking every job on a label for e
 
 ## How it works
 
-`manager.py` (one shared-CPU Machine, no public service) holds the administrative credentials
-and runs a reconcile loop every `POLL_SECONDS`:
+The manager (`crates/ci-fly-runner`, one shared-CPU Machine, no public service) holds the
+administrative credentials and runs a pass every `POLL_SECONDS`. A pass reads the world once,
+plans over that snapshot, and applies the plan — the planner is pure and the API calls are the
+only effects, because the two ways a loop like this loses a job are both orderings a planner
+cannot express: retiring a machine the same pass just handed a job to, and reaping a runner
+registration the same pass just created (a registration is `offline` until its guest boots).
 
 1. **Demand**: queued jobs per label across the most recent `LOOKBACK_RUNS` runs of every
    workflow and event, with conditional requests (an unchanged answer is a 304 that costs no
@@ -28,8 +32,10 @@ and runs a reconcile loop every `POLL_SECONDS`:
 3. **Bounds**: `size` Machines per pool at most, `standby` of them kept stopped-and-warm even
    with no demand; the rest are destroyed after `IDLE_MINUTES` stopped and re-created when
    demand returns. Nothing autoscales past `size`.
-4. **Hygiene**: JIT runners are removed by GitHub after their job; a runner whose Machine
-   never ran the job (offline, not busy) is removed by the manager.
+4. **Hygiene**: JIT runners are removed by GitHub after their job. A registration is read as
+   orphaned only when it is offline, unclaimed by any Machine that is up, and older than the
+   grace period in the manager's own issuance ledger — never merely "offline and not busy",
+   which is what every registration looks like for the seconds after it is issued.
 
 Workers receive exactly one JIT configuration and never a GitHub or Fly token. A build pool
 Machine owns one volume at `/data` for its sccache store and cargo registry cache (never a
@@ -82,7 +88,8 @@ command line or in a tracked file:
   build pool as `"volumes": ["vol_…", …]` (one per Machine, in index order).
 
 ```sh
-fly deploy --config manager.toml --remote-only --ha=false --yes
+# from the repository root: the manager is a workspace member, so its build context is the tree
+fly deploy . --config ci/fly-runner/manager.toml --remote-only --ha=false --yes
 ```
 
 Then: dispatch `runner-smoke.yml` with `runner=nucleus-fly-build`, read its cold and warm
@@ -112,7 +119,14 @@ required context or queue setting is touched by any of this.
 ## Local validation
 
 ```sh
-python3 -m unittest discover -s ci/fly-runner -p 'test_*.py'
+cargo test -p ci-fly-runner --locked      # 20 tests: planning, applying, the client, the two races
 bash -n ci/fly-runner/entrypoint.sh
-cargo test -p ci-spec --locked
+bash -n ci/fly-runner/install-tools.sh
+cargo test -p ci-spec --locked            # the runs-on routing this lane depends on
 ```
+
+The two ordering tests (`a_machine_launched_this_pass_is_never_also_retired`,
+`a_registration_whose_machine_is_coming_up_is_not_an_orphan`) are red against the mutate-as-you-go
+shape and green against the planner; the other eighteen do not move between the two. Both failures
+they pin are silent — a job that is never taken and a machine destroyed mid-start look like a slow
+queue, not like a bug.

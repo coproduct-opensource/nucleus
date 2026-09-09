@@ -1,5 +1,7 @@
 app = "nucleus-fly-runner-manager"
 primary_region = "iad"
+# Deployed from the repository root, so the build context holds the workspace the manager is a
+# member of: `fly deploy . --config ci/fly-runner/manager.toml --remote-only --ha=false --yes`.
 [build]
   dockerfile = "Dockerfile.manager"
 [env]
