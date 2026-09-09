@@ -173,9 +173,17 @@ jobs:
           done
           echo "generated-certchain/ canonicalized from the fresh extraction; theorem builds against it."
 
-      - name: Install elan (Lean toolchain)
-        if: runner.environment == 'github-hosted'
+      - name: Install elan (Lean toolchain) unless the runner already has it
+        # See the same step in aeneas-ifc-scoped.yml: runs on every runner and
+        # no-ops where lake is baked in, because the self-hosted pool is not
+        # uniformly carrying elan any more.
+        shell: bash
         run: |
+          if command -v lake >/dev/null 2>&1; then
+            echo "lake already present: $(command -v lake)"
+            exit 0
+          fi
+          echo "lake not on PATH; installing elan"
           # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
           # script is handed to an interpreter (Scorecard Pinned-Dependencies).
           curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
