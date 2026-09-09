@@ -153,4 +153,4 @@ jobs:
           toolchain: "1.93"
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: Check the Kani-verified crates on Kani's toolchain
-        run: cargo +1.93 check -p ck-kernel -p portcullis -p portcullis-core --locked
+        run: cargo +1.93 check -p ck-kernel -p portcullis -p portcullis-core -p nucleus-econ-kernels --locked

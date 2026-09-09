@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+# The manager: one small machine that holds the administrative credentials and decides which
+# worker machines start. Built from the REPOSITORY ROOT, because the manager is a member of this
+# workspace and is built, linted and tested by the same gates as everything else:
+#
+#   fly deploy . --config ci/fly-runner/manager.toml --remote-only --ha=false --yes
+#
+# The toolchain matches rust-toolchain.toml, so the image never downloads a second one.
+FROM rust:1.96.1-slim-bookworm@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3 AS builder
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked -p ci-fly-runner
+
+# Nothing but the binary and a C runtime: the manager holds two administrative credentials, so
+# the smallest possible surface around them is the point. TLS roots are compiled into the binary
+# (rustls + webpki-roots), so there is no certificate store to keep current either.
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+COPY --from=builder /src/target/release/ci-fly-runner /usr/local/bin/ci-fly-runner
+ENTRYPOINT ["/usr/local/bin/ci-fly-runner"]

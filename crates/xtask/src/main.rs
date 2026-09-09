@@ -37,6 +37,8 @@ struct Cli {
 enum Command {
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
+    /// Every source Kani harness must have a CI lane or a named documented exception.
+    KaniCoverage,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
     /// catch feature-unification-masked breakages — crates that compile in a
     /// full `--workspace` build but fail standalone (and on `cargo publish`)
@@ -176,6 +178,7 @@ enum CiSpecCmd {
 mod ci_otel;
 mod ci_spec;
 mod ci_timings;
+mod kani_coverage;
 mod rerun_plan;
 mod scoreboard;
 
@@ -190,6 +193,7 @@ fn main() -> Result<()> {
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
+        Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
             CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),

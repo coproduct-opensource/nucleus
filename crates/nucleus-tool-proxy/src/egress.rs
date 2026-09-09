@@ -242,6 +242,7 @@ pub(crate) fn reject_egress_without_a_broker(
 pub(crate) async fn credentialed_egress(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     axum::extract::Path((name, path)): axum::extract::Path<(String, String)>,
+    certified: Option<axum::Extension<crate::pod_cert::CertifiedPermissions>>,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response, crate::ApiError> {
     use crate::ApiError;
@@ -297,7 +298,11 @@ pub(crate) async fn credentialed_egress(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let level = crate::run_gate::levels_for(&state, Operation::WebFetch);
+        let level = crate::run_gate::levels_for(
+            &state,
+            Operation::WebFetch,
+            certified.as_ref().map(|e| &e.0),
+        );
         let flow = state.flow_graph.lock().await;
         let result =
             crate::run_gate::preflight_web(Operation::WebFetch, verified_scope, level, &url, &flow);
