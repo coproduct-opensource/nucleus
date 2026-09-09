@@ -144,13 +144,37 @@ jobs:
 
       - name: Add Aeneas to PATH
         if: steps.scope.outputs.relevant == 'true'
-        # Self-hosted: the runner image bakes the same release at /opt/aeneas.
+        # Self-hosted: use the baked copy when the image has one, and otherwise
+        # install to the machine's persistent volume.
         run: |
-          if [ -x /opt/aeneas/aeneas ] && [ "${{ runner.environment }}" != "github-hosted" ]; then
+          set -euo pipefail
+          if [ "${{ runner.environment }}" = "github-hosted" ]; then
+            echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+          elif [ -x /opt/aeneas/aeneas ]; then
             echo "/opt/aeneas" >> "$GITHUB_PATH"
           else
-            echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+            # Not baked, and on the Fly pool it cannot be: Charon + Aeneas do not
+            # fit under Fly's 8 GB uncompressed rootfs cap, which is why the
+            # image that tried took the pool down (#2719, #2721). The machine's
+            # 40 GB volume has room, so this downloads once per MACHINE rather
+            # than once per job, and falls back to scratch where there is no
+            # volume so the lane never depends on one existing.
+            dir="${AENEAS_CACHE:-/data/cache/aeneas}/$AENEAS_RELEASE"
+            mkdir -p "$dir" 2>/dev/null || dir="${RUNNER_TEMP:-/tmp}/aeneas/$AENEAS_RELEASE"
+            mkdir -p "$dir"
+            if [ ! -x "$dir/aeneas" ]; then
+              tmp="$(mktemp -d)"
+              gh release download "$AENEAS_RELEASE" \
+                --repo AeneasVerif/aeneas \
+                --pattern "aeneas-linux-$(uname -m).tar.gz" \
+                --dir "$tmp"
+              tar xzf "$tmp/aeneas-linux-$(uname -m).tar.gz" -C "$dir"
+              rm -rf "$tmp"
+            fi
+            echo "$dir" >> "$GITHUB_PATH"
           fi
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Verify tools
         if: steps.scope.outputs.relevant == 'true'

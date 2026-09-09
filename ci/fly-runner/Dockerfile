@@ -120,4 +120,22 @@ RUN printf '#!/bin/sh\nexec cc -fuse-ld=lld "$@"\n' > /usr/local/bin/cc-lld && c
  && chown runner:runner /home/runner/.cargo/config.toml && cc-lld --version | head -1
 COPY --chmod=755 ci/fly-runner/entrypoint.sh /usr/local/bin/fly-runner
 COPY --chmod=755 ci/fly-runner/job-started.sh ci/fly-runner/job-completed.sh /usr/local/bin/
+
+# A Fly Machine rootfs is capped at 8 GB UNCOMPRESSED, and exceeding it is not a build error: the
+# push succeeds, and every machine that pulls the image logs "Not enough space to unpack image"
+# and sits in `starting` forever. The fleet then looks like a slow boot, not a failure — 24
+# machines wedged for 46 minutes the day this image grew past the cap. Registry size is no guide:
+# the image that broke it was 2.54 GB compressed and the one that boots is 1.78 GB.
+#
+# So measure the thing the cap is actually on, here, where it can still refuse. The budget leaves
+# room for the layers below this one and for the job's own scratch space.
+ARG ROOTFS_BUDGET_MB=7000
+RUN set -eux; \
+    used="$(du -sxm --exclude=/proc --exclude=/sys --exclude=/dev / | cut -f1)"; \
+    echo "rootfs: ${used} MB used of a ${ROOTFS_BUDGET_MB} MB budget (Fly caps the machine at 8192)"; \
+    if [ "$used" -gt "$ROOTFS_BUDGET_MB" ]; then \
+        echo "REFUSING: this image does not fit a Fly Machine. Trim it or move the weight to a volume." >&2; \
+        exit 1; \
+    fi
+
 ENTRYPOINT ["/usr/local/bin/fly-runner"]

@@ -41,6 +41,15 @@ pub const MANAGED_BY: &str = "nucleus-fly-runner";
 /// that does not find one is a warm-up: it exits at once, image now cached on that host.
 pub const JIT_PATH: &str = "/run/runner-jit";
 
+/// How many machines may be pulling their image at once, across all pools.
+///
+/// A machine's first boot downloads the whole worker image. Warming the fleet at once is a
+/// bandwidth stampede against one host's uplink: rolling 21 machines onto a 2.5 GB image left
+/// them all in `starting` for over ten minutes with two usable runners, while the merge queue
+/// waited. Nothing failed — no unpack error, no refusal — the pool was simply unavailable for as
+/// long as the pulls took. Launches were already bounded; the first boot was not.
+pub const DEFAULT_WARMING_LIMIT: usize = 4;
+
 /// How long a registration this manager issued is left alone before it can be read as orphaned.
 /// A JIT runner is `offline` from the moment it is registered until its guest boots and connects,
 /// which is seconds — and the reap runs in the same pass that issued it.
@@ -330,6 +339,8 @@ pub struct Snapshot {
     pub now_secs: u64,
     /// How long a stopped machine above `standby` lives before it is retired.
     pub idle_secs: u64,
+    /// How many machines may be pulling an image at once; see [`DEFAULT_WARMING_LIMIT`].
+    pub warming_limit: usize,
     /// How many machines the pool must give back RIGHT NOW because the substrate refused one for
     /// capacity. Retiring these ignores the idle period: the pool is deadlocked until a slot is
     /// free, and waiting thirty minutes to free it is waiting thirty minutes to run anything.
@@ -374,6 +385,14 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
     let mut actions = Vec::new();
     let mut claimed: BTreeSet<&str> = BTreeSet::new();
     let mut shrink_remaining = snapshot.shrink_by;
+    // Machines already pulling an image, across every pool: a boot in flight counts against the
+    // same uplink as one this pass would start. A `created` machine is NOT pulling — it has been
+    // allocated and nothing has run — so only `starting` counts.
+    let mut warming = snapshot
+        .machines
+        .iter()
+        .filter(|m| m.state == "starting")
+        .count();
 
     for pool in pools {
         let mine: Vec<&Machine> = snapshot
@@ -414,13 +433,19 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
 
         // Every machine that has never booted and did not just take a job is booted once with no
         // registration: until it has, it is a machine whose first job waits for an image pull.
+        // Bounded, because that boot downloads the whole image and doing it fleet-wide at once
+        // starves the pulls of bandwidth and leaves the pool unavailable while they finish.
         for machine in &cold {
+            if warming >= snapshot.warming_limit {
+                break;
+            }
             if !claimed.contains(machine.id.as_str()) {
                 actions.push(Action::Warm {
                     pool: pool.label.clone(),
                     id: machine.id.clone(),
                     name: machine.name.clone(),
                 });
+                warming += 1;
             }
         }
 

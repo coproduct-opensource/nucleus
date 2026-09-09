@@ -221,6 +221,10 @@ pub struct Model {
     pub allowlist: Allowlist,
     /// Repo-relative paths of every `scripts/check-*.sh` and `ci/*.sh` on disk.
     pub gate_scripts: Vec<String>,
+    /// The pinned population of image-dependent jobs (I10), from
+    /// `ci/image-dependent-jobs.txt`. Empty when the file is absent, which makes every such job
+    /// read as new — the right answer for a repository that has not pinned it.
+    pub image_dependent_pinned: std::collections::BTreeSet<String>,
 }
 
 impl Model {

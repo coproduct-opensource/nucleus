@@ -212,6 +212,7 @@ pub fn check(m: &model::Model) -> Report {
     findings.extend(invariants::gates::check(m));
     findings.extend(invariants::timeouts::check(m));
     findings.extend(invariants::wired::check(m));
+    findings.extend(invariants::self_hosted_tools::check(m));
 
     // Severity scoping. A gate inside a job that produces NO required context
     // cannot make a merge vacuous; its High/Medium findings are reported (so

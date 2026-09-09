@@ -184,6 +184,7 @@ fn snapshot(machines: Vec<Machine>, runners: Vec<Runner>, demand: &[(&str, usize
                 .collect::<BTreeMap<_, _>>(),
         ),
         issued: BTreeMap::new(),
+        warming_limit: 4,
         shrink_by: 0,
         now_secs: NOW,
         idle_secs: 1800,
@@ -832,4 +833,43 @@ fn a_pass_that_cannot_read_the_world_changes_nothing() {
     assert!(m.tick(NOW).is_err());
     assert!(m.substrate.created.lock().unwrap().is_empty());
     assert!(m.substrate.destroyed.lock().unwrap().is_empty());
+}
+
+/// Every boot pulls the whole rootfs over one shared uplink. Rolling the fleet onto a 2.5 GB image
+/// put 21 machines in `starting` at once with zero unpack failures — six minutes of stampede, not
+/// a fault. A pass may only put so many machines on the wire, and machines already pulling count.
+#[test]
+fn only_so_many_machines_may_pull_an_image_at_once() {
+    let cold: Vec<_> = (0..10).map(|i| pooled("gate", i, "created", 0)).collect();
+
+    let warming = plan(
+        &[pool("gate", 10, 10)],
+        &Snapshot {
+            warming_limit: 3,
+            ..snapshot(cold.clone(), vec![], &[("gate", 0)])
+        },
+    );
+    assert_eq!(
+        warming.len(),
+        3,
+        "ten cold machines, a limit of three: {warming:#?}"
+    );
+    assert!(warming.iter().all(|a| matches!(a, Action::Warm { .. })));
+
+    // Two are already on the wire, so this pass may only put one more there.
+    let mut mixed = cold.clone();
+    mixed[0] = pooled("gate", 0, "starting", 0);
+    mixed[1] = pooled("gate", 1, "starting", 0);
+    let alongside = plan(
+        &[pool("gate", 10, 10)],
+        &Snapshot {
+            warming_limit: 3,
+            ..snapshot(mixed, vec![], &[("gate", 0)])
+        },
+    );
+    assert_eq!(
+        alongside.len(),
+        1,
+        "two already pulling against a limit of three: {alongside:#?}"
+    );
 }
