@@ -67,11 +67,13 @@ fn run() -> Result<(), String> {
     // only startable when the pools plus the launches in flight plus everything else the
     // organization runs fits. Refusing at startup beats discovering it as a 422 on every start
     // with the queue full and every machine warm.
+    let mut machine_budget = None;
+    let elsewhere: usize = number("MACHINES_ELSEWHERE", 0)?.try_into().unwrap_or(0);
     if let Ok(budget) = std::env::var("MACHINE_BUDGET") {
         let budget: usize = budget
             .parse()
             .map_err(|_| format!("MACHINE_BUDGET must be a number, not {budget:?}"))?;
-        let elsewhere: usize = number("MACHINES_ELSEWHERE", 0)?.try_into().unwrap_or(0);
+        machine_budget = Some(budget);
         let pooled: usize = pools.iter().map(|p| p.size).sum();
         let wanted = pooled + launch_concurrency + elsewhere + 1; // +1: this manager
         if wanted > budget {
@@ -93,6 +95,8 @@ fn run() -> Result<(), String> {
             lookback,
             idle_secs,
             launch_concurrency,
+            machine_budget,
+            machines_elsewhere: elsewhere,
         },
     );
 

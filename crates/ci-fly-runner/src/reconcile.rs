@@ -53,6 +53,13 @@ pub struct Settings {
     pub idle_secs: u64,
     /// Launches in flight at once; see [`DEFAULT_LAUNCH_CONCURRENCY`].
     pub launch_concurrency: usize,
+    /// The organization's machine cap, and how many machines are held outside this pool. When
+    /// both are known the pass checks the machines it can SEE against them, rather than trusting
+    /// the pools' declared sizes: a pool holds machines above its size whenever a size is
+    /// lowered (they are retired on the idle period, not at once), and those stragglers are what
+    /// took the organization over its cap and deadlocked every launch at 422.
+    pub machine_budget: Option<usize>,
+    pub machines_elsewhere: usize,
 }
 
 impl Default for Settings {
@@ -63,6 +70,8 @@ impl Default for Settings {
             lookback: 25,
             idle_secs: 1800,
             launch_concurrency: DEFAULT_LAUNCH_CONCURRENCY,
+            machine_budget: None,
+            machines_elsewhere: 0,
         }
     }
 }
@@ -149,12 +158,36 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
 
     pub fn tick(&self, now_secs: u64) -> Result<Report, Error> {
         let demand = self.demand()?;
-        let machines = self
+        let machines: Vec<crate::Machine> = self
             .substrate
             .machines()?
             .into_iter()
             .filter(crate::Machine::is_managed)
             .collect();
+        // Measured, not declared, and BEFORE the snapshot this pass plans over: what the
+        // substrate actually holds for this pool, against the cap. A pool holds machines above a
+        // declared size whenever a size is lowered (they retire on the idle period, not at once),
+        // and those stragglers are what took the organization over its cap and answered every
+        // launch 422. A pass that would not fit gives the excess back before it asks for
+        // anything — the same repair a refusal triggers, without needing the refusal.
+        if let Some(budget) = self.settings.machine_budget {
+            let held = machines.len();
+            let wanted =
+                held + self.settings.launch_concurrency + self.settings.machines_elsewhere + 1;
+            if wanted > budget {
+                let over = wanted - budget;
+                let mut owed = self.shrink_lock();
+                if *owed < over {
+                    *owed = over;
+                    println!(
+                        "over the machine budget: {held} held + {} in flight + {} elsewhere + 1 \
+                         manager = {wanted} against {budget}; giving {over} back",
+                        self.settings.launch_concurrency, self.settings.machines_elsewhere
+                    );
+                }
+            }
+        }
+
         let snapshot = Snapshot {
             machines,
             runners: self.forge.runners()?,

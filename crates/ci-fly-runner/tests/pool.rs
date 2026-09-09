@@ -738,6 +738,42 @@ fn a_substrate_at_capacity_makes_the_pool_give_a_machine_back() {
     assert_eq!(m.shrink_owed(), 0);
 }
 
+/// The pool holds machines above a pool's declared size whenever a size is lowered — they are
+/// retired on the idle period, not at once — so checking the DECLARED size at startup does not
+/// keep the organization under its machine cap. A pass counts what it can actually see, and
+/// gives the excess back before it asks for anything.
+#[test]
+fn a_pass_over_the_machine_budget_gives_machines_back_before_asking_for_any() {
+    let over = FakeSubstrate {
+        machines: Mutex::new(
+            (0..6)
+                .map(|i| pooled("build", i, "stopped", 30 + i as i64))
+                .collect::<Vec<_>>(),
+        ),
+        ..FakeSubstrate::default()
+    };
+    let m = Manager::new(
+        one_queued("build"),
+        over,
+        vec![pool("build", 8, 8)],
+        Settings {
+            image: "i@sha256:a".into(),
+            launch_concurrency: 2,
+            // 6 held + 2 in flight + 3 elsewhere + 1 manager = 12, against 10.
+            machine_budget: Some(10),
+            machines_elsewhere: 3,
+            ..Settings::default()
+        },
+    );
+    let report = m.tick(NOW).unwrap();
+    assert_eq!(
+        report.retired, 2,
+        "did not give the excess back: {report:?}"
+    );
+    assert_eq!(report.created, 0, "created while over the budget");
+    assert_eq!(m.shrink_owed(), 0);
+}
+
 #[test]
 fn a_pass_that_cannot_read_the_world_changes_nothing() {
     struct Broken;
