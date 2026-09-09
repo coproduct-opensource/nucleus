@@ -1,0 +1,32 @@
+# I10 — jobs that route to a self-hosted runner AND install a tool only when hosted.
+#
+# Each line is a CONTRACT WITH THE RUNNER IMAGE: the job's `if: runner.environment ==
+# 'github-hosted'` step is skipped on the self-hosted fleet, so the image must already provide
+# what that step would have installed. Nothing in this repository can look inside the image, so
+# this file does not prove the contract holds — it makes the assumption visible, and makes adding
+# a new one a decision somebody takes rather than a thing that happens.
+#
+# Adding a line means: you checked ci/fly-runner/Dockerfile (the Fly pool) and
+# docker/Dockerfile.runner (the k3s set) and they provide the tool.
+#
+# Founding defects, 2026-09-09 — the same class three times in six hours, each repaired alone:
+#   lake: command not found          the worker image had no elan
+#   ENOSPC / ld signal 7             build machines had no volume, an 8 GB rootfs filled
+#   Scoped Aeneas, charon drift      the image had no aeneas/charon
+# gatehouse states this as A-10 and now enforces it at admission; nucleus is not a tenant yet.
+aeneas-certchain/aeneas-certchain
+aeneas-decide-pure/aeneas-decide-pure
+aeneas-ifc-scoped/aeneas-ifc-scoped
+aeneas-oidc-spiffe/aeneas-oidc-spiffe
+aeneas/aeneas-translate
+ci-spec-lean/ci-spec-lean
+ci/musl-check
+ci/workspace-tests
+ck-policy-aeneas/ck-policy-aeneas
+ck-policy-lean/ck-policy-lean
+deny/deny
+econ-lean/econ-lean
+ifc-lean/ifc-lean
+portcullis-core-proven-lean/portcullis-core-proven-lean
+research-lean-build/research-lean-build
+rubric-lean/rubric-lean
