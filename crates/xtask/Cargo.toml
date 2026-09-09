@@ -26,5 +26,4 @@ ci-spec = { path = "../ci-spec" }
 
 # Parse the actual Rust attributes and workflow arguments for Kani coverage.
 syn = { version = "2", features = ["full", "visit"] }
-serde_yaml = { workspace = true }
 toml = { workspace = true }
