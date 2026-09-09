@@ -75,6 +75,11 @@ pub struct Manager<F: Forge, S: Substrate> {
     /// Registrations this process issued, and when. Bounds how "offline" is read: within the
     /// grace period it means booting, after it means the machine never took the job.
     ///
+    /// How many machines the substrate has refused to let this pool have. Raised when a call is
+    /// answered "at capacity" — the live path refuting the declared budget — and spent by the
+    /// retirements the next pass plans. Without it the pool sits deadlocked: every update needs a
+    /// free slot, no job is taken, no machine stops, nothing frees one.
+    shrink: Mutex<usize>,
     /// Behind a lock because launches run concurrently: they are independent, each costs a
     /// registration plus three substrate calls plus the settle wait, and run one after another a
     /// burst of twenty spends a minute of queue time on nothing but its own serialization.
@@ -92,6 +97,7 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
             substrate,
             pools,
             settings,
+            shrink: Mutex::new(0),
             issued: Mutex::new(BTreeMap::new()),
         }
     }
@@ -109,6 +115,30 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
             jobs.extend(self.forge.jobs(run.id)?);
         }
         Ok(tally(jobs.iter(), &self.labels()))
+    }
+
+    fn shrink_lock(&self) -> std::sync::MutexGuard<'_, usize> {
+        self.shrink.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What the substrate has refused. Read by the tests that pin the self-heal.
+    pub fn shrink_owed(&self) -> usize {
+        *self.shrink_lock()
+    }
+
+    /// One machine at a time. A pass can see many refusals — every launch in it asks for the same
+    /// slot — and counting them all would shrink the pool by the size of the burst for a shortage
+    /// of one. The debt is therefore at most one outstanding: the pool gives a machine back,
+    /// tries again next pass, and converges on the size the substrate will actually allow.
+    fn note_capacity_refusal(&self, what: &str) {
+        let mut owed = self.shrink_lock();
+        if *owed == 0 {
+            *owed = 1;
+            println!(
+                "the declared machine budget is wrong: the substrate refused {what} at capacity; \
+                 giving one machine back so there is a free slot to start jobs with"
+            );
+        }
     }
 
     fn ledger_lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, u64>> {
@@ -132,6 +162,7 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
             issued: self.ledger_lock().clone(),
             now_secs,
             idle_secs: self.settings.idle_secs,
+            shrink_by: *self.shrink_lock(),
         };
         let actions = plan(&self.pools, &snapshot);
         let mut report = Report {
@@ -178,7 +209,12 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
                 Ok(()) => match action {
                     Action::Create { .. } => report.created += 1,
                     Action::Warm { .. } => report.warmed += 1,
-                    Action::Retire { .. } => report.retired += 1,
+                    Action::Retire { .. } => {
+                        report.retired += 1;
+                        // A machine given back is a slot the substrate no longer owes us.
+                        let mut owed = self.shrink_lock();
+                        *owed = owed.saturating_sub(1);
+                    }
                     Action::RemoveRunner { .. } => report.runners_removed += 1,
                     Action::Launch { .. } => unreachable!("launches were partitioned out"),
                 },
@@ -214,6 +250,11 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
                     // back to stopped, and a start before then is answered 412.
                     .and_then(|()| self.substrate.wait_for(id, "stopped", WAIT_SECS))
                     .and_then(|()| self.substrate.start(id));
+                if let Err(ref e) = started
+                    && e.is_at_capacity()
+                {
+                    self.note_capacity_refusal(name);
+                }
                 if let Err(e) = started {
                     // The machine will not take the job, so the registration must not outlive
                     // the attempt: an idle registered runner would be counted as covering demand.
@@ -235,7 +276,12 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
                 let machine = self
                     .substrate
                     .create(&name, &self.settings.region, &config)
-                    .map_err(|e| format!("{pool}: create {name}: {e}"))?;
+                    .map_err(|e| {
+                        if e.is_at_capacity() {
+                            self.note_capacity_refusal(&name);
+                        }
+                        format!("{pool}: create {name}: {e}")
+                    })?;
                 // Not started here: a start issued in the same pass as the create races the
                 // machine's placement and is answered 412. The next pass boots it.
                 println!("{pool}: created {name} ({})", machine.id);

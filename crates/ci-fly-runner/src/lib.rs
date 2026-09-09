@@ -310,6 +310,10 @@ pub struct Snapshot {
     pub now_secs: u64,
     /// How long a stopped machine above `standby` lives before it is retired.
     pub idle_secs: u64,
+    /// How many machines the pool must give back RIGHT NOW because the substrate refused one for
+    /// capacity. Retiring these ignores the idle period: the pool is deadlocked until a slot is
+    /// free, and waiting thirty minutes to free it is waiting thirty minutes to run anything.
+    pub shrink_by: usize,
 }
 
 // ── The plan ────────────────────────────────────────────────────────────────────────────────
@@ -349,6 +353,7 @@ pub enum Action {
 pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
     let mut actions = Vec::new();
     let mut claimed: BTreeSet<&str> = BTreeSet::new();
+    let mut shrink_remaining = snapshot.shrink_by;
 
     for pool in pools {
         let mine: Vec<&Machine> = snapshot
@@ -401,8 +406,11 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
 
         let existing: BTreeSet<&str> = mine.iter().map(|m| m.name.as_str()).collect();
         let mut planned: BTreeSet<usize> = BTreeSet::new();
+        // Creating while the substrate is refusing for capacity would take back the slot the
+        // retirement below is giving up, and the pool would stay deadlocked.
+        let may_create = snapshot.shrink_by == 0;
         for index in 0..pool.size {
-            if needed == 0 {
+            if needed == 0 || !may_create {
                 break;
             }
             if !existing.contains(pool.machine_name(index).as_str()) {
@@ -418,15 +426,34 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
             }
         }
 
-        // Retire the surplus, from the machines still warm after this pass's launches.
+        // Retire, from the machines still warm after this pass's launches, longest-idle first.
         let mut by_age: Vec<&&Machine> = warm
             .iter()
             .filter(|m| !claimed.contains(m.id.as_str()))
             .copied()
             .collect();
         by_age.sort_by_key(|m| std::cmp::Reverse(m.stopped_secs(snapshot.now_secs)));
-        let surplus = by_age.len().saturating_sub(pool.standby);
-        for machine in by_age.into_iter().take(surplus) {
+
+        // First, whatever the substrate says the pool cannot have. This ignores `standby` and the
+        // idle period on purpose: a pool at the organization's machine cap cannot start ANY job,
+        // because writing a boot's registration is an update and an update needs a free slot. It
+        // gives one back so the next pass can run.
+        let mut given_back = 0;
+        while given_back < shrink_remaining && given_back < by_age.len() {
+            let machine = by_age[given_back];
+            actions.push(Action::Retire {
+                pool: pool.label.clone(),
+                id: machine.id.clone(),
+                name: machine.name.clone(),
+            });
+            given_back += 1;
+        }
+        shrink_remaining -= given_back;
+
+        // Then the ordinary surplus above `standby`, once it has been idle long enough.
+        let rest = &by_age[given_back..];
+        let surplus = rest.len().saturating_sub(pool.standby);
+        for machine in rest.iter().take(surplus) {
             if machine.stopped_secs(snapshot.now_secs) > snapshot.idle_secs {
                 actions.push(Action::Retire {
                     pool: pool.label.clone(),
@@ -439,7 +466,7 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
         // Keep `standby` machines warm even with no demand, so the first job of the day is warm.
         let mut warm_or_busy = mine.len() + planned.len();
         for index in 0..pool.size {
-            if warm_or_busy >= pool.standby {
+            if warm_or_busy >= pool.standby || !may_create {
                 break;
             }
             if !existing.contains(pool.machine_name(index).as_str()) && !planned.contains(&index) {

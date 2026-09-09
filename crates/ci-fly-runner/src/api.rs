@@ -53,6 +53,17 @@ impl std::fmt::Display for Error {
     }
 }
 
+impl Error {
+    /// The substrate refused because the organization is at its machine cap. This is the live
+    /// path REFUTING the declared budget: a deployment that passed its startup check is asking
+    /// for a machine the substrate will not give it, so the declaration is wrong, whatever it
+    /// says. Recognised by status and path — the body would say so plainly but may carry a
+    /// credential and is never read.
+    pub fn is_at_capacity(&self) -> bool {
+        matches!(self, Error::Status { code: 422, path, .. } if path.contains("/machines"))
+    }
+}
+
 impl std::error::Error for Error {}
 
 /// A path with its query string removed: a query can name a run or a runner, and those end up in

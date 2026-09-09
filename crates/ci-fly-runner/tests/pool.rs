@@ -63,6 +63,9 @@ struct FakeSubstrate {
     waited: Mutex<Vec<(String, String)>>,
     destroyed: Mutex<Vec<String>>,
     start_fails: bool,
+    /// The substrate answers every config rewrite "at capacity", as Fly does when the
+    /// organization is at its machine cap.
+    at_capacity: bool,
     /// How long the substrate takes to settle after a configuration rewrite.
     settle: std::time::Duration,
 }
@@ -81,6 +84,13 @@ impl Substrate for FakeSubstrate {
         Ok(machine)
     }
     fn update(&self, id: &str, config: &Value) -> Result<(), Error> {
+        if self.at_capacity {
+            return Err(Error::Status {
+                method: "POST",
+                path: "/apps/a/machines/x".into(),
+                code: 422,
+            });
+        }
         self.updated
             .lock()
             .unwrap()
@@ -173,6 +183,7 @@ fn snapshot(machines: Vec<Machine>, runners: Vec<Runner>, demand: &[(&str, usize
                 .collect::<BTreeMap<_, _>>(),
         ),
         issued: BTreeMap::new(),
+        shrink_by: 0,
         now_secs: NOW,
         idle_secs: 1800,
     }
@@ -685,6 +696,46 @@ fn launches_in_one_pass_do_not_wait_for_each_other() {
         elapsed < std::time::Duration::from_millis(1200),
         "eight launches took {elapsed:?}: they are serialized"
     );
+}
+
+/// The deadlock this exists to break. A pool sized to the organization's machine cap cannot start
+/// anything: writing a boot's registration is an update, an update needs a free slot, so every
+/// launch is refused — and because no job is taken, no machine ever stops, so nothing frees a
+/// slot. The refusal is the live path refuting the declared budget, so the pool gives a machine
+/// back at once, ignoring `standby` and the idle period, and stops creating until it has.
+#[test]
+fn a_substrate_at_capacity_makes_the_pool_give_a_machine_back() {
+    let full = FakeSubstrate {
+        machines: Mutex::new(vec![
+            pooled("build", 0, "stopped", 30),
+            pooled("build", 1, "stopped", 60),
+        ]),
+        at_capacity: true,
+        ..FakeSubstrate::default()
+    };
+    let m = manager(one_queued("build"), full, vec![pool("build", 4, 2)]);
+
+    // Pass one: the launch is refused, and the manager records what the substrate would not give.
+    let report = m.tick(NOW).unwrap();
+    assert_eq!(report.launched, 0);
+    assert_eq!(
+        m.shrink_owed(),
+        1,
+        "the refusal was not recognised as capacity"
+    );
+    assert!(m.substrate.destroyed.lock().unwrap().is_empty());
+
+    // Pass two: a machine is given back even though both are inside `standby` and neither has
+    // been idle anywhere near the retirement period — and nothing is created to take the slot.
+    let report = m.tick(NOW + 30).unwrap();
+    assert_eq!(report.retired, 1, "no machine was given back: {report:?}");
+    assert_eq!(report.created, 0, "created a machine while at capacity");
+    assert_eq!(
+        *m.substrate.destroyed.lock().unwrap(),
+        vec!["id-build-1".to_string()],
+        "the longest-idle machine is the one given back"
+    );
+    assert_eq!(m.shrink_owed(), 0);
 }
 
 #[test]
