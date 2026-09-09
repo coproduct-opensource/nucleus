@@ -67,7 +67,15 @@ path = "crates/nucleus-node/src/main.rs"
 # and one `.route(...)`. The handler is ~120 lines and lives in pod_api.rs, which
 # exists for exactly this. A route line and a struct field cannot be extracted;
 # the router and the struct are both here.
-ceiling = 4101
+# LOWERED 4101 -> 3992 the same day, which is the first time this entry has moved
+# in the direction the ratchet exists for. `GetReceipt` assembled its receipt
+# inline in the gRPC handler — 155 lines — so gRPC was the only way to get one
+# and the SDKs' `GET /v1/pods/{id}/receipt` 404'd. That assembly moved to
+# pod_receipt.rs, where both transports call it, and main.rs kept only the proto
+# conversion plus two route lines. Set to the measured value rather than left
+# slack: banked headroom is spent without justification later, which is the whole
+# failure mode the ceiling is here to prevent.
+ceiling = 3992
 target = 2000
 step = 1
 

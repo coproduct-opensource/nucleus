@@ -439,6 +439,33 @@ async fn snapshot_running_pod(
     }
 }
 
+/// Serve a pod's execution receipt.
+///
+/// The route the SDKs have been calling all along. `Operation::GetReceipt` has existed in the
+/// authorization enum since receipts did, and the gRPC surface has served them — but over HTTP
+/// this was a 404, so `sdk/python/nucleus_sdk/client.py`'s `get_receipt` could never have worked.
+///
+/// Read-only, unlike its gRPC twin, which also fires an outward report to the trust API. That
+/// asymmetry is deliberate and `pod_receipt`'s module docs carry the argument: a GET should not
+/// have an external side effect, and the existing one is contained rather than propagated.
+pub(crate) async fn get_receipt(
+    State(state): State<NodeState>,
+    Extension(caller): Extension<Option<Uuid>>,
+    AxumPath(id): AxumPath<Uuid>,
+) -> Result<Json<crate::pod_receipt::Receipt>, ApiError> {
+    use crate::pod_receipt::ReceiptError;
+    let pod = get_pod_for_caller(&state, id, caller).await?;
+    match crate::pod_receipt::build(&pod).await {
+        Ok(built) => Ok(Json(built.receipt)),
+        // A pod that has not finished has no receipt YET, which is not the same as not having one
+        // — and neither is the same as not existing. `NoExitReport` maps to NotFound because the
+        // artifact genuinely is not there; the others say what they are.
+        Err(e @ ReceiptError::NotExited) => Err(ApiError::Driver(e.to_string())),
+        Err(ReceiptError::NoExitReport(_)) => Err(ApiError::NotFound),
+        Err(e @ ReceiptError::Malformed(_)) => Err(ApiError::Driver(e.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod ownership_tests {
     use super::{caller_may_manage, resolve_parent_pod_id};

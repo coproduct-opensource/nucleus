@@ -45,6 +45,7 @@ mod oidc;
 mod pod_api;
 mod pod_authority;
 mod pod_caller_identity;
+mod pod_receipt;
 mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthError, AuthorizationError};
@@ -833,6 +834,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/logs", get(pod_api::pod_logs))
         .route("/v1/pods/{id}/cancel", post(pod_api::cancel_pod))
         .route("/v1/pods/{id}/snapshot", post(pod_api::snapshot_pod))
+        .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -3613,145 +3615,34 @@ impl NodeService for GrpcService {
         let (md, _, req) = request.into_parts();
         let pod_id_str = req.pod_id;
         let handle = pod_api::grpc_scoped_pod(&self.state, &md, &pod_id_str).await?;
-        let id = handle.id;
 
-        // Pod must be exited to have a receipt
-        let state = handle.status().await;
-        if !matches!(state, PodState::Exited { .. }) {
-            return Err(Status::failed_precondition(
-                "pod has not exited yet; receipt not available",
-            ));
-        }
-
-        // Read the exit report from the pod's workspace
-        let report_path = handle.spec.spec.work_dir.join(".nucleus-exit-report.json");
-        let report_json = tokio::fs::read_to_string(&report_path).await.map_err(|e| {
-            Status::not_found(format!(
-                "exit report not found at {}: {e}",
-                report_path.display()
-            ))
+        let built = pod_receipt::build(&handle).await.map_err(|e| match e {
+            pod_receipt::ReceiptError::NotExited => Status::failed_precondition(e.to_string()),
+            pod_receipt::ReceiptError::NoExitReport(_) => Status::not_found(e.to_string()),
+            pod_receipt::ReceiptError::Malformed(_) => Status::internal(e.to_string()),
         })?;
-
-        let report: nucleus_spec::ExitReport = serde_json::from_str(&report_json)
-            .map_err(|e| Status::internal(format!("failed to parse exit report: {e}")))?;
-
-        // Compute manifest hash from the pod's spec
-        let spec_yaml = serde_yaml::to_string(&handle.spec).unwrap_or_default();
-        let manifest_hash =
-            nucleus_identity::approval_bundle::compute_manifest_hash(spec_yaml.as_bytes());
-
-        let v1_content_hash =
-            trust_gate::compute_v1_content_hash(&id.to_string(), &manifest_hash, &report);
-
-        // Extract trust metadata from pod labels (set during create_pod_internal)
-        let trust_bracket = handle
-            .spec
-            .metadata
-            .labels
-            .get("trust.coproduct.one/bracket")
-            .cloned();
-        let trust_profile = handle
-            .spec
-            .metadata
-            .labels
-            .get("trust.coproduct.one/profile")
-            .cloned();
-        let agent_identity = handle
-            .spec
-            .metadata
-            .labels
-            .get("trust.coproduct.one/agent-id")
-            .or_else(|| handle.spec.metadata.labels.get("spiffe.io/identity"))
-            .cloned()
-            .or_else(|| handle.spec.metadata.name.clone())
-            .unwrap_or_else(|| id.to_string());
-
-        let sandbox_tier = trust_profile.clone().unwrap_or_default();
-        let spiffe_id = handle
-            .spec
-            .metadata
-            .labels
-            .get("spiffe.io/identity")
-            .cloned()
-            .unwrap_or_default();
-
-        // Report receipt to trust API (non-blocking)
-        let exit_code = match state {
-            PodState::Exited { code, .. } => code.unwrap_or(-1),
-            _ => -1,
-        };
-        let receipt_report = trust_gate::ReceiptReport {
-            agent_id: agent_identity.clone(),
-            session_id: id.to_string(),
-            success: exit_code == 0,
-            cost_usd: report.cost_usd,
-            tool_call_count: report.audit_entry_count,
-            workspace_hash: report.workspace_hash.clone(),
-            audit_tail_hash: report.audit_tail_hash.clone(),
-            trust_bracket: trust_bracket.clone(),
-            trust_profile: trust_profile.clone(),
-            attested_execution: trust_bracket.is_some(),
-            // Verified exposure from the tool proxy's GradedExposureGuard.
-            // Written to .nucleus-exit-report.json by the tool proxy at shutdown.
-            observed_exposure_labels: report.observed_exposure_labels.clone(),
-            observed_risk_tier: if report.observed_risk_tier.is_empty() {
-                "unknown".to_string()
-            } else {
-                report.observed_risk_tier.clone()
-            },
-            uninhabitable_reached: report.uninhabitable_reached,
-            // Runtime-verification findings from the tool proxy's TraceMonitor,
-            // written to .nucleus-exit-report.json at shutdown alongside exposure.
-            monitor_violations: report.monitor_violations.clone(),
-            monitor_violations_dropped: report.monitor_violations_dropped,
-            // Signed with the executor key, which the pod never sees. Taken at
-            // pod exit — after the pod has stopped — so the head it binds is one
-            // the pod can no longer move.
-            art12_attestation: trust_gate::attest_art12(
-                &report,
-                // What the HOST received, not what the pod reported.
-                art12_collector::observed_chain(&self.state.state_dir, &id.to_string()).as_ref(),
-                &id.to_string(),
-                &self.state.trust_gate.executor_id,
-                &self.state.trust_gate.executor_signing_key,
-            ),
-            // Cryptographic session identity — required for the SandboxAttested
-            // upgrade path in the trust-service session-complete handler.
-            sandbox_identity: if spiffe_id.is_empty() {
-                agent_identity.clone()
-            } else {
-                spiffe_id.clone()
-            },
-            v1_content_hash: v1_content_hash.clone(),
-        };
-        let trust_config = self.state.trust_gate.clone();
-        let http_client = self.state.http_client.clone();
-        tokio::spawn(async move {
-            // In secure mode, pre-register the v1_content_hash so the handler
-            // can validate it when observed_exposure_labels are present.
-            // Without this, session-complete returns 422 and the
-            // NameHeuristic → SandboxAttested upgrade is silently dropped.
-            trust_gate::register_receipt_hash(&trust_config, &receipt_report, &http_client).await;
-            trust_gate::report_receipt(&trust_config, &receipt_report, &http_client).await;
-        });
+        // The outward-facing report stays on this transport only; see `pod_receipt`'s module docs
+        // for why the HTTP route deliberately does not inherit it.
+        pod_receipt::report_to_trust_gate(&self.state, &built);
+        let r = built.receipt;
 
         Ok(GrpcResponse::new(proto::GetReceiptResponse {
             receipt: Some(proto::ExecutionReceipt {
-                pod_id: id.to_string(),
-                workspace_hash: report.workspace_hash,
-                audit_tail_hash: report.audit_tail_hash,
-                audit_entry_count: report.audit_entry_count,
-                timestamp_unix: report.timestamp_unix,
-                manifest_hash,
-                sandbox_tier,
-                spiffe_id,
-                version: 1,
-                v1_content_hash,
+                pod_id: r.pod_id,
+                workspace_hash: r.workspace_hash,
+                audit_tail_hash: r.audit_tail_hash,
+                audit_entry_count: r.audit_entry_count,
+                timestamp_unix: r.timestamp_unix,
+                manifest_hash: r.manifest_hash,
+                sandbox_tier: r.sandbox_tier,
+                spiffe_id: r.spiffe_id,
+                version: r.version,
+                v1_content_hash: r.v1_content_hash,
                 extensions: std::collections::HashMap::new(),
-                input_tokens: report.input_tokens,
-                output_tokens: report.output_tokens,
-                cache_read_tokens: report.cache_read_tokens,
-                cost_usd: report.cost_usd,
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
+                cache_read_tokens: r.cache_read_tokens,
+                cost_usd: r.cost_usd,
             }),
         }))
     }

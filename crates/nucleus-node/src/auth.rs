@@ -372,7 +372,7 @@ pub fn get_auth_context<T>(request: &tonic::Request<T>) -> Option<&AuthContext> 
 /// `authenticated_routes` in `main.rs` without a matching entry here is
 /// refused for SPIFFE callers rather than silently authorized.
 ///
-/// This crate's HTTP API has exactly five protected routes; matched here by
+/// This crate's HTTP API has exactly six protected routes; matched here by
 /// fixed segment shape rather than axum's own routing algebra, which is
 /// adequate at this size and not meant to generalize further. Kept in sync
 /// with `main.rs`'s `authenticated_routes` table by hand — the two tables
@@ -388,6 +388,7 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
         (&axum::http::Method::POST, ["v1", "pods", _id, "snapshot"]) => {
             Some(Operation::SnapshotPod)
         }
+        (&axum::http::Method::GET, ["v1", "pods", _id, "receipt"]) => Some(Operation::GetReceipt),
         _ => None,
     }
 }
@@ -680,9 +681,16 @@ mod tests {
         assert_eq!(operation_for_route(&Method::DELETE, "/v1/pods"), None);
         // A route this middleware doesn't protect (see `public_routes`).
         assert_eq!(operation_for_route(&Method::GET, "/v1/health"), None);
-        // Unmapped nested path.
+        // The receipt route. This assertion used to say `None`, and it was RIGHT: the route did
+        // not exist, so the SDK's `GET /v1/pods/{id}/receipt` 404'd while `Operation::GetReceipt`
+        // sat in the enum unused. The test faithfully recorded the gap instead of closing it.
         assert_eq!(
             operation_for_route(&Method::GET, "/v1/pods/abc-123/receipt"),
+            Some(Operation::GetReceipt)
+        );
+        // Unmapped nested path.
+        assert_eq!(
+            operation_for_route(&Method::GET, "/v1/pods/abc-123/nonesuch"),
             None
         );
     }
