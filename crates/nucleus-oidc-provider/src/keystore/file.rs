@@ -34,6 +34,17 @@ use zeroize::Zeroize;
 use super::memory::DEFAULT_GRACE_WINDOW;
 use super::{JwtKeyStore, KeyStoreError, RotateOutcome, SignedBytes, VerifyKey, rfc7638_kid};
 
+/// scrypt work factor (`N = 2^18`) the keystore file is written with. age's
+/// own "roughly one second on a modern machine" figure, pinned so the file
+/// is the same on every host and does not encode the writer's CPU speed.
+const SCRYPT_LOG_N: u8 = 18;
+
+/// Largest scrypt work factor an existing keystore file is allowed to ask
+/// for. Files written before the pin carried whatever age calibrated on the
+/// writing host (typically 2^18–2^21); 2^22 accepts all of those while still
+/// refusing a file crafted to burn unbounded memory and time.
+const SCRYPT_MAX_LOG_N: u8 = 22;
+
 /// File-backed, encrypted-at-rest key store.
 /// (#55 LOW-3) Hard cap on the verify-set's grace-window entries. With
 /// rotation cadence < grace window the `previous` map grows linearly
@@ -155,8 +166,15 @@ impl FileKeyStore {
             fs::read(path).map_err(|e| KeyStoreError::Backend(format!("read {path:?}: {e}")))?;
         let decryptor = age::Decryptor::new(encrypted.as_slice())
             .map_err(|e| KeyStoreError::Backend(format!("age decryptor: {e}")))?;
-        let identity =
+        let mut identity =
             age::scrypt::Identity::new(age::secrecy::SecretString::from(passphrase.to_string()));
+        // Fixed ceiling instead of age's default (`target + 4`, where `target`
+        // is re-measured against this host's CPU at every open): a file
+        // written by a faster or less-throttled CPU than the one opening it
+        // would otherwise be refused as "excessive work" even with the right
+        // passphrase. The ceiling still bounds the memory and time an
+        // operator-supplied file can demand (2^22: ~4 GiB, seconds).
+        identity.set_max_work_factor(SCRYPT_MAX_LOG_N);
         let mut reader = decryptor
             .decrypt(std::iter::once(&identity as &dyn age::Identity))
             .map_err(|e| KeyStoreError::Backend(format!("age decrypt: {e}")))?;
@@ -240,8 +258,13 @@ impl FileKeyStore {
         let plaintext = serde_json::to_vec(&persisted)
             .map_err(|e| KeyStoreError::Backend(format!("json encode: {e}")))?;
 
-        let recipient =
+        let mut recipient =
             age::scrypt::Recipient::new(age::secrecy::SecretString::from(passphrase.to_string()));
+        // Pinned, not calibrated: `Recipient::new` times scrypt on this host
+        // and picks whatever reaches ~1 s, so the same passphrase yields a
+        // different work factor on every machine (and on the same machine
+        // under CPU throttling), which is what made reopen fail in CI.
+        recipient.set_work_factor(SCRYPT_LOG_N);
         let encryptor =
             age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
                 .map_err(|e| KeyStoreError::Backend(format!("age encryptor: {e}")))?;

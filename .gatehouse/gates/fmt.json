@@ -1,6 +1,6 @@
 {
   "scope": {
-    "include": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/**", "tests/**", "benchmarks/**"],
+    "include": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/**", "tests/**", "benchmarks/**", "scripts/**", "sdks/verifier-js/**"],
     "exclude": [],
     "external": [],
     "git_history": false
@@ -13,8 +13,8 @@
   },
   "cap": {
     "net": "none",
-    "fs_read": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/**", "tests/**", "benchmarks/**"],
-    "fs_write": ["target/**"],
+    "fs_read": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/**", "tests/**", "benchmarks/**", "scripts/**", "sdks/verifier-js/**"],
+    "fs_write": ["target/**", "sdks/verifier-js/pkg/**", "sdks/verifier-js/target/**"],
     "exec": "scoped",
     "wall_ms": 300000,
     "cpu_ms": 300000,

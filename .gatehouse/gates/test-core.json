@@ -6,7 +6,9 @@
       "rust-toolchain.toml",
       "crates/**",
       "tests/**",
-      "benchmarks/**"
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/**"
     ],
     "exclude": [],
     "external": [],
@@ -28,10 +30,14 @@
       "rust-toolchain.toml",
       "crates/**",
       "tests/**",
-      "benchmarks/**"
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/**"
     ],
     "fs_write": [
-      "target/**"
+      "target/**",
+      "sdks/verifier-js/pkg/**",
+      "sdks/verifier-js/target/**"
     ],
     "exec": "scoped",
     "wall_ms": 3600000,
@@ -40,12 +46,9 @@
     "secrets": []
   },
   "cmd": [
-    "cargo",
-    "test",
-    "--all-features",
-    "--lib",
-    "--bins",
-    "--tests"
+    "sh",
+    "-c",
+    "mkdir -p /work/.cache && cp -a /opt/gatehouse/cache/. /work/.cache/ && CARGO_HOME=/opt/gatehouse/cargo-js XDG_CACHE_HOME=/work/.cache wasm-pack build sdks/verifier-js --target web --release && cargo test --offline --all-features --locked --lib --bins --tests"
   ],
   "cwd": "",
   "timeout_s": 3600,

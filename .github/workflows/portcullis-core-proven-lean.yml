@@ -146,6 +146,7 @@ jobs:
             DerivationProofs \
             SessionCeilingProofs \
             GuestDeviceSurfaceProofs \
+            GovernanceCompletenessSpike \
             GkatSyntaxProofs \
             GkatGuardedStringProofs \
             GkatInexpressibleProofs \
