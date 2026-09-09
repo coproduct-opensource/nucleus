@@ -402,7 +402,7 @@ mod kani_ifc_label_proofs {
     /// **L11 — Lattice order is consistent with join.**
     ///
     /// Verifies the core lattice identity: a ≤ b ⟺ a ⊔ b = b,
-    /// restricted to the non-freshness dimensions (conf, integ, auth, prov).
+    /// restricted to the non-freshness dimensions (conf, integ, auth, prov, derivation).
     #[kani::proof]
     #[kani::solver(cadical)]
     fn proof_ifc_leq_consistent_with_join() {
@@ -434,6 +434,7 @@ mod kani_ifc_label_proofs {
             assert_eq!(join_ab.integrity, b.integrity);
             assert_eq!(join_ab.authority, b.authority);
             assert_eq!(join_ab.provenance.bits(), b.provenance.bits());
+            assert_eq!(join_ab.derivation, b.derivation);
         }
 
         // a ⊔ b = b → a ≤ b
@@ -441,6 +442,7 @@ mod kani_ifc_label_proofs {
             && join_ab.integrity == b.integrity
             && join_ab.authority == b.authority
             && join_ab.provenance.bits() == b.provenance.bits()
+            && join_ab.derivation == b.derivation
         {
             assert!(a.leq(b));
         }

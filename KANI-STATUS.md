@@ -257,3 +257,15 @@ and still require execution evidence before #2581 can be considered resolved.
 With `envelope` enabled, all three envelope harnesses verified locally with
 unwind bound 16 and unwinding assertions enabled. The explicit per-harness
 bound prevents unbounded expansion of recursive error cleanup.
+
+A follow-up local run verified `proof_empty_capabilities_rejected` with
+unwind bound 16 and unwinding assertions enabled; that bound is now attached
+to the harness. The three delegation harnesses and
+`proof_ifc_leq_consistent_with_join` still timed out at 120 seconds with that
+bound and remain unverified.
+
+The lattice-order harness also now verifies locally (0.17 seconds): its
+join-equality premise and forward checks omitted the derivation dimension,
+even though `IFCLabel::leq` includes it. Both directions now cover derivation
+without restricting the symbolic inputs. Only the three delegation timeouts
+remain from the local core run.
