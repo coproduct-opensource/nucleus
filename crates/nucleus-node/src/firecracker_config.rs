@@ -419,7 +419,12 @@ pub(crate) struct JailerPlan<'a> {
     /// Which cgroup hierarchy the host uses. See `detect_cgroup_version`.
     pub cgroup_version: u8,
     /// Config path as seen from INSIDE the jail.
-    pub config_file_in_jail: &'a str,
+    /// The in-jail config file to boot from, or `None` to leave the VMM idle in its API loop.
+    ///
+    /// `Some` is the historical path: Firecracker parses the file and boots immediately, which is
+    /// why it can never be snapshotted — there is no moment at which to ask it to pause. `None`
+    /// means the caller will build the machine over the API socket instead.
+    pub config_file_in_jail: Option<&'a str>,
 }
 
 /// Which cgroup hierarchy this host presents: `2` for the unified v2 tree, else `1`.
@@ -445,6 +450,80 @@ pub(crate) fn detect_cgroup_version() -> u8 {
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// One call on Firecracker's HTTP API: what to send, where, and with what body.
+///
+/// Held as data rather than issued directly so the LOWERING is separable from the transport.
+/// The mapping from a [`FirecrackerConfig`] to a request sequence is the part that can be wrong
+/// in ways nothing notices until a guest misbehaves; the part that opens a Unix socket is not.
+/// Keeping them apart means the first can be tested on a machine with no KVM, which is the same
+/// discipline this module already applies to `lower_drives` and `seccomp_args`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApiRequest {
+    /// `PUT` for configuration, `PATCH` for state transitions.
+    pub method: &'static str,
+    /// The API path, e.g. `/boot-source` or `/drives/rootfs`.
+    pub path: String,
+    /// The JSON body.
+    pub body: String,
+}
+
+/// Lower a boot configuration into the ordered API calls that build the same VM.
+///
+/// This is the API-socket twin of writing the config file. Firecracker accepts either; the file
+/// form boots the machine the moment it is parsed, which is exactly why it cannot be snapshotted
+/// — `/snapshot/create` needs a VMM that is configured, running, and then PAUSED, and a
+/// `--config-file` launch gives no window in which to ask.
+///
+/// **`InstanceStart` is deliberately not here.** The caller issues it, because the gap between
+/// "configured" and "running" is where the seccomp filter is verified: today
+/// `verify_seccomp_active_within` races a guest that is already booting, and in API mode the VMM
+/// sits idle in its API loop with its filter installed, so the check can happen BEFORE the vCPUs
+/// run. Returning the boot action here would hand that window back.
+///
+/// Order is a property, not an accident, and is asserted in the tests: the logger goes first so
+/// that a fault configuring anything after it is written down, and everything the machine is
+/// made of precedes the action that would run it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn config_to_requests(cfg: &FirecrackerConfig) -> Vec<ApiRequest> {
+    // Every sub-struct here is the API's own body shape — that correspondence is why this
+    // function is a re-serialization rather than a translation.
+    fn put(path: impl Into<String>, body: &impl Serialize) -> ApiRequest {
+        ApiRequest {
+            method: "PUT",
+            path: path.into(),
+            body: serde_json::to_string(body).expect("config sub-structs serialize"),
+        }
+    }
+
+    let mut out = Vec::new();
+    if let Some(logger) = &cfg.logger {
+        out.push(put("/logger", logger));
+    }
+    out.push(put("/boot-source", &cfg.boot_source));
+    for drive in &cfg.drives {
+        out.push(put(format!("/drives/{}", drive.drive_id), drive));
+    }
+    out.push(put("/machine-config", &cfg.machine_config));
+    for nic in &cfg.network_interfaces {
+        out.push(put(format!("/network-interfaces/{}", nic.iface_id), nic));
+    }
+    if let Some(vsock) = &cfg.vsock {
+        out.push(put("/vsock", vsock));
+    }
+    out
+}
+
+/// The action that starts the vCPUs, issued only after the sandbox has been verified.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn instance_start_request() -> ApiRequest {
+    ApiRequest {
+        method: "PUT",
+        path: "/actions".into(),
+        body: r#"{"action_type":"InstanceStart"}"#.into(),
+    }
+}
+
 pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
     let JailerPlan {
         firecracker_path,
@@ -506,8 +585,12 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
 
     // Everything after the separator is Firecracker's own argv.
     args.push("--".to_string());
-    args.push("--config-file".to_string());
-    args.push(config_file_in_jail.to_string());
+    // Nothing after the separator in API mode: an argv that names a config file is an argv that
+    // boots, and the point of API mode is to be configured while still stopped.
+    if let Some(cfg) = config_file_in_jail {
+        args.push("--config-file".to_string());
+        args.push(cfg.to_string());
+    }
     args
 }
 
@@ -1022,7 +1105,142 @@ mod tests {
             boot_args: None,
             read_only,
             scratch_path: scratch.then(|| PathBuf::from("/var/lib/nucleus/scratch.ext4")),
+            kernel_digest: None,
+            rootfs_digest: None,
+            scratch_digest: None,
         }
+    }
+
+    /// A config with every optional section present, built directly rather than through
+    /// `from_spec` — which is Linux-only, and the point of a pure lowering is that it can be
+    /// checked on a machine with no KVM.
+    fn full_config() -> FirecrackerConfig {
+        FirecrackerConfig {
+            boot_source: BootSource {
+                kernel_image_path: "/kernel".into(),
+                boot_args: Some("console=ttyS0 reboot=k panic=1 pci=off".into()),
+            },
+            drives: vec![
+                DriveConfig {
+                    drive_id: "rootfs".into(),
+                    path_on_host: "/rootfs.ext4".into(),
+                    is_root_device: true,
+                    is_read_only: true,
+                },
+                DriveConfig {
+                    drive_id: "scratch".into(),
+                    path_on_host: "/scratch.ext4".into(),
+                    is_root_device: false,
+                    is_read_only: false,
+                },
+            ],
+            machine_config: MachineConfig {
+                vcpu_count: 2,
+                mem_size_mib: 512,
+                smt: false,
+            },
+            network_interfaces: vec![NetworkInterface {
+                iface_id: "eth0".into(),
+                host_dev_name: "tap0".into(),
+                guest_mac: "AA:BB:CC:DD:EE:FF".into(),
+            }],
+            vsock: Some(VsockConfig {
+                guest_cid: 3,
+                uds_path: "/vsock.sock".into(),
+            }),
+            logger: Some(LoggerConfig {
+                log_path: "/firecracker.log".into(),
+                level: "Info".into(),
+                show_level: false,
+                show_log_origin: false,
+            }),
+        }
+    }
+
+    /// The lowering emits the machine before anything that could run it, and never the boot.
+    ///
+    /// Order is the property that matters. The logger is first so a failure configuring
+    /// anything after it is written down rather than lost; `InstanceStart` is absent because the
+    /// caller issues it after verifying the seccomp filter — which is the whole reason for
+    /// driving the API instead of handing Firecracker a config file that boots on parse.
+    #[test]
+    fn the_lowering_configures_the_machine_and_never_starts_it() {
+        let reqs = config_to_requests(&full_config());
+        let paths: Vec<&str> = reqs.iter().map(|r| r.path.as_str()).collect();
+
+        assert_eq!(
+            paths,
+            vec![
+                "/logger",
+                "/boot-source",
+                "/drives/rootfs",
+                "/drives/scratch",
+                "/machine-config",
+                "/network-interfaces/eth0",
+                "/vsock",
+            ]
+        );
+        assert!(
+            reqs.iter().all(|r| r.method == "PUT"),
+            "configuration is all PUT; state transitions are the caller's PATCH"
+        );
+        assert!(
+            !reqs.iter().any(|r| r.path == "/actions"),
+            "the lowering must not start the vCPUs: that window is where seccomp is verified"
+        );
+        assert_eq!(instance_start_request().path, "/actions");
+    }
+
+    /// The bodies are the shapes a real Firecracker accepted.
+    ///
+    /// Verified against firecracker v1.16.1 on KVM (`vmm_version::PINNED`): each of these paths
+    /// and body shapes returned 204, then `/snapshot/create` and `/snapshot/load` round-tripped.
+    /// Pinning them here means a serde rename or a field drop is caught on any machine, instead
+    /// of at the next real boot.
+    #[test]
+    fn each_body_is_the_shape_firecracker_accepts() {
+        let reqs = config_to_requests(&full_config());
+        let body = |p: &str| {
+            reqs.iter()
+                .find(|r| r.path == p)
+                .unwrap_or_else(|| panic!("no request for {p}"))
+                .body
+                .clone()
+        };
+        let json = |p: &str| -> serde_json::Value { serde_json::from_str(&body(p)).unwrap() };
+
+        assert_eq!(json("/boot-source")["kernel_image_path"], "/kernel");
+        assert!(json("/boot-source")["boot_args"].is_string());
+        let root = json("/drives/rootfs");
+        assert_eq!(root["drive_id"], "rootfs");
+        assert_eq!(root["is_root_device"], true);
+        assert_eq!(root["path_on_host"], "/rootfs.ext4");
+        assert_eq!(json("/machine-config")["vcpu_count"], 2);
+        assert_eq!(json("/machine-config")["mem_size_mib"], 512);
+        assert_eq!(json("/network-interfaces/eth0")["host_dev_name"], "tap0");
+        assert_eq!(json("/vsock")["guest_cid"], 3);
+    }
+
+    /// An absent section emits no call at all — not an empty one.
+    #[test]
+    fn optional_sections_are_omitted_rather_than_sent_empty() {
+        let mut cfg = full_config();
+        cfg.logger = None;
+        cfg.vsock = None;
+        cfg.network_interfaces.clear();
+        let paths: Vec<String> = config_to_requests(&cfg)
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/boot-source",
+                "/drives/rootfs",
+                "/drives/scratch",
+                "/machine-config"
+            ]
+        );
     }
 
     /// Build a cmdline for a pod that either will or will not receive an SVID.
@@ -1562,6 +1780,9 @@ mod tests {
             boot_args: None,
             read_only: false,
             scratch_path: Some(src.join("scratch.ext4")),
+            kernel_digest: None,
+            rootfs_digest: None,
+            scratch_digest: None,
         };
         let mut spec = base_spec();
         spec.spec.vsock = Some(VsockSpec {
@@ -1860,7 +2081,7 @@ mod tests {
             netns: None,
             cgroup: Some(&spec),
             cgroup_version: 2,
-            config_file_in_jail: "/config.json",
+            config_file_in_jail: Some("/config.json"),
         });
         let vpos = args.iter().position(|a| a == "--cgroup-version").expect(
             "a cgroup request must declare the hierarchy version; the \
@@ -1891,7 +2112,7 @@ mod tests {
             netns: None,
             cgroup: None,
             cgroup_version: 2,
-            config_file_in_jail: "/config.json",
+            config_file_in_jail: Some("/config.json"),
         });
         assert!(!args.iter().any(|a| a == "--cgroup-version"));
     }
@@ -1908,7 +2129,7 @@ mod tests {
             netns: Some("/var/run/netns/ns-pod-1"),
             cgroup: Some(&cg),
             cgroup_version: 2,
-            config_file_in_jail: "/config.json",
+            config_file_in_jail: Some("/config.json"),
         });
 
         // Every declared limit reaches the jailer as a --cgroup pair.
@@ -1944,7 +2165,7 @@ mod tests {
             netns: Some("/var/run/netns/ns-pod-1"),
             cgroup: None,
             cgroup_version: 2,
-            config_file_in_jail: "/config.json",
+            config_file_in_jail: Some("/config.json"),
         });
         let pair = |flag: &str| -> Option<String> {
             args.iter()
@@ -1977,7 +2198,7 @@ mod tests {
             netns: None,
             cgroup: Some(&sample_cgroup()),
             cgroup_version: 2,
-            config_file_in_jail: "/config.json",
+            config_file_in_jail: Some("/config.json"),
         });
         let sep = args
             .iter()
@@ -2161,7 +2382,7 @@ mod tests {
                     netns,
                     cgroup,
                     cgroup_version: 2,
-                    config_file_in_jail: in_jail::CONFIG,
+                    config_file_in_jail: Some(in_jail::CONFIG),
                 });
                 assert!(
                     !args.iter().any(|a| a.contains("enable-pci")),

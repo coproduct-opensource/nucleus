@@ -31,11 +31,13 @@ use uuid::Uuid;
 
 mod art12_collector;
 mod auth;
+mod firecracker_api;
 mod firecracker_config;
 mod grpc_tls;
 mod guest_diagnosis;
 mod http_serve;
 mod identity;
+mod image_identity;
 mod lockdown;
 mod mediation;
 mod mediation_receipt_collector;
@@ -70,6 +72,7 @@ mod posture;
 mod session_mint;
 mod signed_proxy;
 mod snapshot;
+mod snapshot_vmm;
 mod trust_gate;
 mod vsock_bridge;
 
@@ -115,6 +118,13 @@ struct Args {
     /// Path to firecracker binary (firecracker driver).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_PATH", default_value = "firecracker")]
     firecracker_path: PathBuf,
+    /// Build the microVM over Firecracker's API socket instead of a config file.
+    ///
+    /// Off by default: this is the path a snapshot needs (a config file boots on parse, leaving
+    /// no moment to pause), and it is opt-in until it has run on real hardware as long as the
+    /// config-file path has.
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_API_BOOT", default_value_t = false)]
+    firecracker_api_boot: bool,
     /// Run Firecracker inside a new network namespace (Linux only).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_NETNS", default_value_t = true)]
     firecracker_netns: bool,
@@ -327,6 +337,8 @@ struct NodeState {
     firecracker_path: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_pool: Option<Arc<Semaphore>>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    firecracker_api_boot: bool,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_netns: bool,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -742,6 +754,7 @@ async fn main() -> Result<(), ApiError> {
         tool_proxy_path: args.tool_proxy_path.clone(),
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
+        firecracker_api_boot: args.firecracker_api_boot,
         firecracker_netns: args.firecracker_netns,
         firecracker_netns_drift_check: args.firecracker_netns_drift_check,
         firecracker_netns_drift_interval: Duration::from_secs(
@@ -2438,6 +2451,20 @@ async fn spawn_firecracker_pod(
             }
         }
 
+        // Hold the artifacts to what the spec pinned, AFTER placement: in the jail these are the
+        // hard-linked inodes that will boot, so there is no window between measuring and using.
+        if let Err(err) = image_identity::verify(image, jail_layout.as_ref()).await {
+            cleanup_net_resources(
+                &state.network_allocator,
+                &mut net_plan,
+                &mut netns_name,
+                &mut dns_proxy,
+                jail_layout.as_ref(),
+            )
+            .await;
+            return Err(ApiError::Driver(err));
+        }
+
         let log_stdout = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -2474,7 +2501,8 @@ async fn spawn_firecracker_pod(
                 netns: netns_path.as_deref(),
                 cgroup: spec.spec.cgroup.as_ref(),
                 cgroup_version: firecracker_config::detect_cgroup_version(),
-                config_file_in_jail: firecracker_config::in_jail::CONFIG,
+                config_file_in_jail: (!state.firecracker_api_boot)
+                    .then_some(firecracker_config::in_jail::CONFIG),
             };
             let mut cmd = Command::new(&state.jailer_path);
             // `jailer_args` already terminates with `--` and Firecracker's own
@@ -2491,7 +2519,9 @@ async fn spawn_firecracker_pod(
             let mut cmd = Command::new("ip");
             cmd.args(["netns", "exec", name, "--"]);
             cmd.arg(&state.firecracker_path);
-            cmd.arg("--config-file").arg(&config_path);
+            if !state.firecracker_api_boot {
+                cmd.arg("--config-file").arg(&config_path);
+            }
             // Per-pod, for the same reason as the plain branch below. A netns
             // isolates the network, not the filesystem, so the default API
             // socket path is still shared with every other pod on the host.
@@ -2500,7 +2530,9 @@ async fn spawn_firecracker_pod(
             cmd
         } else {
             let mut cmd = Command::new(&state.firecracker_path);
-            cmd.arg("--config-file").arg(&config_path);
+            if !state.firecracker_api_boot {
+                cmd.arg("--config-file").arg(&config_path);
+            }
             // WITHOUT THIS, ONE POD AT A TIME. Firecracker defaults its API
             // socket to the global `/run/firecracker.socket`, so a second
             // concurrent launch fails to bind it and exits immediately.
@@ -2540,6 +2572,36 @@ async fn spawn_firecracker_pod(
             }
         };
         let pid = child.id();
+
+        // API mode builds the machine before anything reads the sandbox, because Firecracker
+        // installs its seccomp filter when the vCPUs start, NOT at exec.
+        //
+        // MEASURED, and it contradicts the obvious design. The appeal of the API socket was
+        // supposed to be verify-then-boot: a VMM idling in its API loop with its filter already
+        // on, checked while still stopped. It does not work — a Firecracker left idle for five
+        // seconds after exec still reports `seccomp mode 0`, and the launch aborts fail-closed
+        // on a sandbox that was about to be correct. So the check stays downstream of the boot
+        // here exactly as it is for a config file, and the ordering win the API was expected to
+        // buy is simply not available.
+        if state.firecracker_api_boot {
+            let sock = firecracker_api::api_socket_path(jail_layout.as_ref(), &pod_dir);
+            let booted = match firecracker_api::configure(&sock, &config).await {
+                Ok(()) => firecracker_api::start(&sock).await,
+                Err(e) => Err(e),
+            };
+            if let Err(reason) = booted {
+                let _ = child.kill().await;
+                cleanup_net_resources(
+                    &state.network_allocator,
+                    &mut net_plan,
+                    &mut netns_name,
+                    &mut dns_proxy,
+                    jail_layout.as_ref(),
+                )
+                .await;
+                return Err(ApiError::Driver(format!("api boot failed: {reason}")));
+            }
+        }
 
         // Verify seccomp is active on the Firecracker process (unless explicitly disabled).
         // Seccomp mode 2 = SECCOMP_MODE_FILTER (BPF filter active).
@@ -2870,6 +2932,10 @@ async fn spawn_firecracker_pod(
                     // needs both to reach the broker and neither is useful alone.
                     broker_port: state.broker_vsock_port,
                     broker_secret_served: std::sync::Arc::default(),
+                    // Set the first time this pod is handed anything that names it; a snapshot
+                    // of a VM past that point would give every clone this pod's identity.
+                    personalized: std::sync::Arc::default(),
+                    at_snapshot_barrier: std::sync::Arc::default(),
                     // The S3 audit-sink credentials, served once over this
                     // socket instead of riding the world-readable kernel
                     // command line (the C1 exposure).

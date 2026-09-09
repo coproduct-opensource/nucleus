@@ -195,6 +195,24 @@ pub struct PodMaterial {
     /// The mediator SPIFFE id carried in emitted receipts. `None` disables the
     /// signer even if a key is present.
     pub mediation_spiffe_id: Option<String>,
+    /// Whether the guest has announced it is at its snapshot barrier — booted, and having asked
+    /// for nothing that would make it one pod.
+    ///
+    /// Paired with `personalized`, these answer the two halves a snapshot base needs: far enough
+    /// along to be useful, not far enough along to be somebody. Neither alone is sufficient, and
+    /// the host cannot infer the first on its own.
+    pub at_snapshot_barrier: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether this VM has been made one particular pod.
+    ///
+    /// Set the first time a command that serves per-pod material is answered — see
+    /// [`crate::workload_api_protocol::WorkloadApiCommand::personalizes_the_vm`]. Shared across
+    /// connections, like the one-shot flags, because personalisation is a property of the VM and
+    /// not of a socket.
+    ///
+    /// It exists so a snapshot can be REFUSED without asking the guest anything. The guest is
+    /// the thing being contained; a barrier it declares is a claim, whereas this is the host's
+    /// own record of what it handed over.
+    pub personalized: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Whether the mediation key has been served — one flag across connections,
     /// for the same reason as `broker_secret_served`.
     pub mediation_key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -669,7 +687,18 @@ async fn handle_connection(
         // ALL interpretation of guest-supplied bytes happens in the pure,
         // fuzz- and property-tested `parse_command`. The host never branches on
         // raw guest input directly.
-        let response = match parse_command(&frame) {
+        let parsed = parse_command(&frame);
+        // Record personalisation BEFORE answering: if serving it panics or the connection dies
+        // mid-reply, the guest may still have received enough to be this pod, and a snapshot
+        // must not be able to slip through that window.
+        if let Ok(cmd) = &parsed
+            && cmd.personalizes_the_vm()
+        {
+            material
+                .personalized
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let response = match parsed {
             Ok(WorkloadApiCommand::FetchSvid) => {
                 debug!("workload API FETCH_SVID for pod {}", pod_id);
                 handle_fetch_svid(&manager, pod_id).await
@@ -730,6 +759,16 @@ async fn handle_connection(
                     material.mediation_spiffe_id.as_deref(),
                     &material.mediation_key_served,
                 )
+            }
+            Ok(WorkloadApiCommand::SnapshotReady) => {
+                debug!("workload API SNAPSHOT_READY for pod {}", pod_id);
+                // Recorded, not acted on. Taking the snapshot here would make every boot wait on
+                // a decision only the operator has, so the guest is told to carry on and the
+                // host keeps the fact for whoever asks to snapshot later.
+                material
+                    .at_snapshot_barrier
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                r#"{"status":"ok"}"#.to_string()
             }
             Ok(WorkloadApiCommand::PodList) => {
                 debug!("workload API POD_LIST for pod {}", pod_id);

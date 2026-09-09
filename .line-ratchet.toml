@@ -39,7 +39,27 @@ path = "crates/nucleus-node/src/main.rs"
 # the file-discovery change to this ratchet landing the same day). A new
 # `ApiError::Authorization` variant and its one match arm cannot move out
 # of this file; `ApiError` lives here.
-ceiling = 4045
+# Bumped 4045 -> 4080 2026-09-09: API-mode boot. The lowering and the whole
+# transport live in firecracker_config.rs and the new firecracker_api.rs (not
+# ratchet-tracked yet, and deliberately where the testable parts went); what is
+# left here is irreducibly a branch in THIS function — the three spawn arms each
+# decide whether `--config-file` is in the argv, and the configure/start pair has
+# to sit between the spawn and the seccomp check because it needs `child`,
+# `pod_dir`, `jail_layout` and the same cleanup path as every other failure. The
+# comment carrying the measurement that Firecracker installs its seccomp filter
+# at InstanceStart rather than at exec is the largest single piece, and it is
+# there because the obvious ordering is wrong and cost a debugging cycle.
+# Bumped 4080 -> 4095 the same day: image digest verification. The measuring and
+# comparing are in image_identity.rs; what is here is the call plus the same
+# net-resource cleanup every other failure in this function does, and it has to
+# be HERE — between `prepare_jail` and the spawn — because verifying after
+# placement is what removes the measure-then-swap window, and the cleanup needs
+# `net_plan`, `netns_name` and `dns_proxy` by mutable reference.
+# Bumped 4095 -> 4100 the same day: two `mod` declarations, for snapshot_vmm and
+# image_identity. This is the growth the ratchet WANTS — main.rs grew by two
+# lines because ~400 went into new modules that are testable on their own — but
+# a module declaration cannot be extracted, so it has to be paid for here.
+ceiling = 4100
 target = 2000
 step = 1
 

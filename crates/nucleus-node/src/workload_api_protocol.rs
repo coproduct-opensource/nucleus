@@ -198,6 +198,58 @@ pub enum WorkloadApiCommand {
     /// The Firecracker guest has no HTTP path to the node, so this vsock channel
     /// is how a real pod's receipts reach the host as they are produced.
     ShipReceipt,
+    /// The guest is up and has asked for nothing that would make it one particular pod.
+    ///
+    /// This is the point a snapshot base has to be taken at, and the guest is the only party
+    /// that can name it: the host can see WHAT it has served (`PodMaterial::personalized`) but
+    /// not whether the guest has finished booting and is about to start asking. Timing it from
+    /// the host — "snapshot once the socket accepts" — is a guess, and a guess that is wrong in
+    /// the unsafe direction produces a base carrying somebody's credentials.
+    ///
+    /// OPTIONAL, deliberately. A guest built before this command exists simply never sends it,
+    /// stays exactly as it was, and is refused as a snapshot base — which is the right answer
+    /// for an image that cannot say where its barrier is. That is why adding it needs no
+    /// `GUEST_RELEASE_FLOOR` bump: nothing that works today stops working.
+    SnapshotReady,
+}
+
+impl WorkloadApiCommand {
+    /// Does answering this make the VM one particular pod?
+    ///
+    /// This is the question a snapshot has to ask, and the reason it cannot be asked of the
+    /// kernel command line alone. `snapshot_safety` scans boot args — but a pod is personalised
+    /// long after boot, over vsock: it fetches an SVID, a task token, a caller token, a pod
+    /// certificate, a broker capability, a mediation signing key. Snapshot a VM after any of
+    /// that and every clone inherits one pod's identity, while a boot-args scan says
+    /// `SafeToClone` and means it.
+    ///
+    /// The match is EXHAUSTIVE on purpose: a new command must be classified here or the build
+    /// stops. The failure it prevents is silent — an unclassified command defaulting to "does
+    /// not personalise" would hand a shared secret to every clone and report nothing.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn personalizes_the_vm(&self) -> bool {
+        match self {
+            // Per-pod material. Each of these names or empowers THIS pod specifically.
+            Self::FetchSvid
+            | Self::FetchTaskToken
+            | Self::FetchDlcAdmission
+            | Self::FetchPodCertificate
+            | Self::FetchPodCallerToken
+            | Self::FetchBrokerSecret
+            | Self::FetchAuditCredentials
+            | Self::FetchMediationKey => true,
+            // Not per-pod: the trust bundle is the same for everyone, a ping says nothing, a
+            // pod listing is a read-only view of the node, and shipping a receipt moves data
+            // guest -> host rather than the reverse.
+            Self::FetchBundle
+            | Self::Ping
+            | Self::PodList
+            | Self::ShipReceipt
+            // Announcing the barrier is the opposite of being personalised: it is the guest
+            // saying it has asked for nothing yet.
+            | Self::SnapshotReady => false,
+        }
+    }
 }
 
 impl WorkloadApiCommand {
@@ -221,6 +273,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
             WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
             WorkloadApiCommand::PodList => "POD_LIST",
+            WorkloadApiCommand::SnapshotReady => "SNAPSHOT_READY",
             WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
         }
     }
@@ -293,6 +346,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_MEDIATION_KEY" => Ok(WorkloadApiCommand::FetchMediationKey),
         "POD_LIST" => Ok(WorkloadApiCommand::PodList),
         "SHIP_RECEIPT" => Ok(WorkloadApiCommand::ShipReceipt),
+        "SNAPSHOT_READY" => Ok(WorkloadApiCommand::SnapshotReady),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
 }
@@ -475,6 +529,7 @@ mod tests {
                 WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
                 WorkloadApiCommand::PodList => "POD_LIST",
                 WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
+                WorkloadApiCommand::SnapshotReady => "SNAPSHOT_READY",
             }
         }
         for cmd in [
@@ -485,6 +540,7 @@ mod tests {
             WorkloadApiCommand::FetchAuditCredentials,
             WorkloadApiCommand::PodList,
             WorkloadApiCommand::Ping,
+            WorkloadApiCommand::SnapshotReady,
         ] {
             assert_eq!(assert_known(cmd), cmd.as_wire());
         }
@@ -509,6 +565,7 @@ mod tests {
             WorkloadApiCommand::FetchMediationKey,
             WorkloadApiCommand::PodList,
             WorkloadApiCommand::ShipReceipt,
+            WorkloadApiCommand::SnapshotReady,
         ];
         let accepted: std::collections::BTreeSet<String> =
             surface.iter().map(|c| c.as_wire().to_string()).collect();
@@ -525,6 +582,7 @@ mod tests {
             "FETCH_MEDIATION_KEY",
             "POD_LIST",
             "SHIP_RECEIPT",
+            "SNAPSHOT_READY",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -544,6 +602,40 @@ mod tests {
         // back to its command, so this pins what the host acts on, not just text.
         for cmd in surface {
             assert_eq!(parse_command(cmd.as_wire().as_bytes()), Ok(cmd));
+        }
+    }
+
+    /// Every command that hands over per-pod material is classified as personalising, and the
+    /// ones that do not, are not.
+    ///
+    /// Listed explicitly rather than derived, because a derivation would just restate the code
+    /// it is checking. The exhaustive `match` in `personalizes_the_vm` makes a NEW command a
+    /// compile error; this makes a MISCLASSIFIED one a test failure.
+    #[test]
+    fn per_pod_material_personalizes_the_vm_and_shared_material_does_not() {
+        use WorkloadApiCommand::*;
+
+        for cmd in [
+            FetchSvid,
+            FetchTaskToken,
+            FetchDlcAdmission,
+            FetchPodCertificate,
+            FetchPodCallerToken,
+            FetchBrokerSecret,
+            FetchAuditCredentials,
+            FetchMediationKey,
+        ] {
+            assert!(
+                cmd.personalizes_the_vm(),
+                "{cmd:?} hands the guest something that names or empowers THIS pod"
+            );
+        }
+
+        for cmd in [FetchBundle, Ping, PodList, ShipReceipt] {
+            assert!(
+                !cmd.personalizes_the_vm(),
+                "{cmd:?} is not per-pod, and treating it as such would refuse bases needlessly"
+            );
         }
     }
 }
