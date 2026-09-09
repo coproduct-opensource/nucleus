@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use ci_fly_runner::api::{Error, Forge, Registration, Run, Substrate};
-use ci_fly_runner::reconcile::Manager;
+use ci_fly_runner::reconcile::{Manager, Settings};
 use ci_fly_runner::{
     Action, Demand, Guest, Job, Machine, PoolSpec, Runner, Snapshot, parse_pools, plan,
 };
@@ -253,11 +253,10 @@ fn queued_jobs_with_a_pool_label_count_whatever_the_event_and_only_once() {
         forge,
         FakeSubstrate::default(),
         vec![pool("build", 2, 0), pool("gate", 2, 0)],
-        "img@sha256:aa".into(),
-        "iad".into(),
-        30,
-        1800,
-        6,
+        Settings {
+            image: "img@sha256:aa".into(),
+            ..Settings::default()
+        },
     );
     let demand = manager.demand().unwrap();
     // 10 and 13 queued; 11 is running, 12 is another label, and 10 seen twice is one job.
@@ -476,11 +475,10 @@ fn manager(
         forge,
         substrate,
         pools,
-        "registry.invalid/runner@sha256:aa".into(),
-        "iad".into(),
-        30,
-        1800,
-        6,
+        Settings {
+            image: "registry.invalid/runner@sha256:aa".into(),
+            ..Settings::default()
+        },
     )
 }
 
@@ -716,11 +714,10 @@ fn a_pass_that_cannot_read_the_world_changes_nothing() {
         Broken,
         FakeSubstrate::default(),
         vec![pool("build", 4, 1)],
-        "i@sha256:a".into(),
-        "iad".into(),
-        30,
-        1800,
-        6,
+        Settings {
+            image: "i@sha256:a".into(),
+            ..Settings::default()
+        },
     );
     assert!(m.tick(NOW).is_err());
     assert!(m.substrate.created.lock().unwrap().is_empty());

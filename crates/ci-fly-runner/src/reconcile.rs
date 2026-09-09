@@ -41,16 +41,37 @@ pub struct Report {
     pub failures: Vec<String>,
 }
 
+/// Everything about a deployment that is not the pools or the two APIs.
+#[derive(Debug, Clone)]
+pub struct Settings {
+    /// The worker image, pinned by digest.
+    pub image: String,
+    pub region: String,
+    /// How many recent runs a pass scans for queued jobs.
+    pub lookback: usize,
+    /// How long a stopped machine above `standby` lives before it is retired.
+    pub idle_secs: u64,
+    /// Launches in flight at once; see [`DEFAULT_LAUNCH_CONCURRENCY`].
+    pub launch_concurrency: usize,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            image: String::new(),
+            region: "iad".into(),
+            lookback: 25,
+            idle_secs: 1800,
+            launch_concurrency: DEFAULT_LAUNCH_CONCURRENCY,
+        }
+    }
+}
+
 pub struct Manager<F: Forge, S: Substrate> {
     pub forge: F,
     pub substrate: S,
     pub pools: Vec<PoolSpec>,
-    pub image: String,
-    pub region: String,
-    pub lookback: usize,
-    pub idle_secs: u64,
-    /// Launches in flight at once; see [`DEFAULT_LAUNCH_CONCURRENCY`].
-    pub launch_concurrency: usize,
+    pub settings: Settings,
     /// Registrations this process issued, and when. Bounds how "offline" is read: within the
     /// grace period it means booting, after it means the machine never took the job.
     ///
@@ -61,25 +82,16 @@ pub struct Manager<F: Forge, S: Substrate> {
 }
 
 impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
-    pub fn new(
-        forge: F,
-        substrate: S,
-        pools: Vec<PoolSpec>,
-        image: String,
-        region: String,
-        lookback: usize,
-        idle_secs: u64,
-        launch_concurrency: usize,
-    ) -> Self {
+    pub fn new(forge: F, substrate: S, pools: Vec<PoolSpec>, settings: Settings) -> Self {
+        let settings = Settings {
+            launch_concurrency: settings.launch_concurrency.max(1),
+            ..settings
+        };
         Self {
             forge,
             substrate,
             pools,
-            image,
-            region,
-            lookback,
-            idle_secs,
-            launch_concurrency: launch_concurrency.max(1),
+            settings,
             issued: Mutex::new(BTreeMap::new()),
         }
     }
@@ -93,7 +105,7 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
     /// the unchanged ones free.
     pub fn demand(&self) -> Result<Demand, Error> {
         let mut jobs = Vec::new();
-        for run in self.forge.active_runs(self.lookback)? {
+        for run in self.forge.active_runs(self.settings.lookback)? {
             jobs.extend(self.forge.jobs(run.id)?);
         }
         Ok(tally(jobs.iter(), &self.labels()))
@@ -119,7 +131,7 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
             demand,
             issued: self.ledger_lock().clone(),
             now_secs,
-            idle_secs: self.idle_secs,
+            idle_secs: self.settings.idle_secs,
         };
         let actions = plan(&self.pools, &snapshot);
         let mut report = Report {
@@ -137,7 +149,7 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
             .into_iter()
             .partition(|a| matches!(a, Action::Launch { .. }));
         let mut outcomes: Vec<Result<(), String>> = Vec::with_capacity(launches.len());
-        for batch in launches.chunks(self.launch_concurrency) {
+        for batch in launches.chunks(self.settings.launch_concurrency) {
             outcomes.extend(std::thread::scope(|scope| {
                 let handles: Vec<_> = batch
                     .iter()
@@ -219,10 +231,10 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
                     .find(|p| &p.label == pool)
                     .ok_or_else(|| format!("{pool}: no such pool"))?;
                 let name = spec.machine_name(*index);
-                let config = spec.base_config(&self.image, *index);
+                let config = spec.base_config(&self.settings.image, *index);
                 let machine = self
                     .substrate
-                    .create(&name, &self.region, &config)
+                    .create(&name, &self.settings.region, &config)
                     .map_err(|e| format!("{pool}: create {name}: {e}"))?;
                 // Not started here: a start issued in the same pass as the create races the
                 // machine's placement and is answered 412. The next pass boots it.

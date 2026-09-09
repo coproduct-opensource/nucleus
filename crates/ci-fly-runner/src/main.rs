@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use ci_fly_runner::api::{ForgeApi, MachinesApi, Ureq};
 use ci_fly_runner::parse_pools;
-use ci_fly_runner::reconcile::{DEFAULT_LAUNCH_CONCURRENCY, Manager};
+use ci_fly_runner::reconcile::{DEFAULT_LAUNCH_CONCURRENCY, Manager, Settings};
 
 const FORGE_API: &str = "https://api.github.com";
 const MACHINES_API: &str = "https://api.machines.dev/v1";
@@ -87,11 +87,13 @@ fn run() -> Result<(), String> {
         ForgeApi::new(Ureq::default(), FORGE_API, &var("GITHUB_TOKEN")?, &repo),
         MachinesApi::new(Ureq::default(), MACHINES_API, &var("FLY_API_TOKEN")?, &app),
         pools,
-        image,
-        region,
-        lookback,
-        idle_secs,
-        launch_concurrency,
+        Settings {
+            image,
+            region,
+            lookback,
+            idle_secs,
+            launch_concurrency,
+        },
     );
 
     let once = std::env::args().any(|a| a == "--once");
