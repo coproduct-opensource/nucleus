@@ -507,7 +507,7 @@ fn a_launch_writes_one_job_configuration_and_starts_the_machine() {
 }
 
 #[test]
-fn a_created_machine_is_created_stopped_and_warmed_with_the_volume_of_its_index() {
+fn a_created_machine_is_created_unbooted_with_the_volume_of_its_index_and_booted_later() {
     let mut spec = pool("build", 2, 0);
     spec.volumes = vec!["vol_a".into(), "vol_b".into()];
     let mut m = manager(one_queued("build"), FakeSubstrate::default(), vec![spec]);
@@ -518,13 +518,79 @@ fn a_created_machine_is_created_stopped_and_warmed_with_the_volume_of_its_index(
     assert_eq!(name, "build-0");
     assert_eq!(config["mounts"][0]["volume"], "vol_a");
     assert_eq!(config["image"], "registry.invalid/runner@sha256:aa");
-    // Warmed by a boot with no registration: the image lands on the host, nothing runs.
+    // Not started in the pass that created it: that start races the machine's placement, and the
+    // substrate answers 412 — which is exactly how six machines were left unbootable on the first
+    // live run. Nothing is registered for it either.
+    assert!(m.substrate.started.borrow().is_empty());
+    assert!(m.substrate.updated.borrow().is_empty());
+    assert!(m.forge.registered.borrow().is_empty());
+    drop(created);
+
+    // The next pass boots it. The job is still queued, so it boots WITH the registration — a
+    // cold boot that takes the job, pulling the image on the way — rather than warming first and
+    // making the job wait two passes. (Warming a cold machine there is no demand for is the
+    // other test.)
+    let report = m.tick(NOW + 20).unwrap();
+    assert_eq!(report.launched, 1);
     assert_eq!(
         *m.substrate.started.borrow(),
         vec!["id-build-0".to_string()]
     );
-    assert!(m.substrate.updated.borrow().is_empty());
-    assert!(m.forge.registered.borrow().is_empty());
+    assert_eq!(m.forge.registered.borrow().len(), 1);
+}
+
+/// A machine that has never booted covers no queued job, and a planner that reads it as live
+/// leaves it in `created` for good — which is what happened on the first live pass.
+#[test]
+fn a_never_booted_machine_is_startable_not_live() {
+    let cold = pooled("build", 0, "created", 0);
+    assert!(cold.is_cold() && !cold.is_live() && !cold.is_warm());
+
+    let actions = plan(
+        &[pool("build", 4, 0)],
+        &snapshot(vec![cold], vec![], &[("build", 1)]),
+    );
+    // It takes the job itself rather than being ignored while a second machine is created.
+    assert_eq!(
+        actions,
+        vec![Action::Launch {
+            pool: "build".into(),
+            id: "id-build-0".into(),
+            name: "build-0".into()
+        }]
+    );
+}
+
+#[test]
+fn a_warm_machine_is_preferred_over_a_cold_one_and_the_cold_one_is_booted_anyway() {
+    let actions = plan(
+        &[pool("build", 4, 0)],
+        &snapshot(
+            vec![
+                pooled("build", 0, "created", 0),
+                pooled("build", 1, "stopped", 60),
+            ],
+            vec![],
+            &[("build", 1)],
+        ),
+    );
+    assert_eq!(
+        actions,
+        vec![
+            // The warm one takes the job: a start is a second, a cold boot is an image pull.
+            Action::Launch {
+                pool: "build".into(),
+                id: "id-build-1".into(),
+                name: "build-1".into()
+            },
+            // And the cold one is booted once so it is warm for the next job.
+            Action::Warm {
+                pool: "build".into(),
+                id: "id-build-0".into(),
+                name: "build-0".into()
+            },
+        ]
+    );
 }
 
 #[test]

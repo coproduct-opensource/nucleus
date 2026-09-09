@@ -48,7 +48,15 @@ pub const ORPHAN_GRACE_SECS: u64 = 300;
 
 /// Machine states in which a machine is running, or about to run, its job: it covers a queued job
 /// and it is not a candidate to be started or retired.
-pub const LIVE_STATES: [&str; 5] = ["created", "starting", "started", "stopping", "replacing"];
+///
+/// `created` is deliberately NOT here. A machine created with `skip_launch` has never booted: it
+/// covers nothing, and a planner that reads it as live never touches it again — six machines sat
+/// in `created` forever the first time this ran against the real API.
+pub const LIVE_STATES: [&str; 4] = ["starting", "started", "stopping", "replacing"];
+
+/// A machine that has never booted. It is startable, like a stopped one, but its image is not on
+/// its host yet, so a job that takes it waits for the pull: warm machines are used first.
+pub const NEVER_BOOTED: &str = "created";
 
 // ── Configuration ───────────────────────────────────────────────────────────────────────────
 
@@ -198,8 +206,14 @@ impl Machine {
         LIVE_STATES.contains(&self.state.as_str())
     }
 
-    pub fn is_stopped(&self) -> bool {
+    /// Stopped after a boot: the image is on this host and a start is about a second.
+    pub fn is_warm(&self) -> bool {
         self.state == "stopped"
+    }
+
+    /// Created and never booted: startable, but the first boot pulls the image.
+    pub fn is_cold(&self) -> bool {
+        self.state == NEVER_BOOTED
     }
 
     /// Seconds since this machine stopped, from its most recent stop event; 0 when unknown, which
@@ -300,8 +314,17 @@ pub enum Action {
         id: String,
         name: String,
     },
-    /// Create a machine at this index, stopped, then warm it (one boot, no registration).
+    /// Create a machine at this index, stopped and unbooted. The boot is a separate action on a
+    /// later pass: starting a machine the same pass that created it races its placement, and the
+    /// substrate answers 412.
     Create { pool: String, index: usize },
+    /// Boot a never-booted machine with no registration, so its image lands on its host and every
+    /// later start is warm. It exits at once.
+    Warm {
+        pool: String,
+        id: String,
+        name: String,
+    },
     /// Destroy a stopped machine above `standby` that has been idle past the period.
     Retire {
         pool: String,
@@ -331,7 +354,8 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
             .filter(|r| r.belongs_to(&pool.label) && r.is_idle_online())
             .count();
         let live = mine.iter().filter(|m| m.is_live()).count();
-        let stopped: Vec<&&Machine> = mine.iter().filter(|m| m.is_stopped()).collect();
+        let warm: Vec<&&Machine> = mine.iter().filter(|m| m.is_warm()).collect();
+        let cold: Vec<&&Machine> = mine.iter().filter(|m| m.is_cold()).collect();
 
         // A queued job is already covered by a machine that is up, or by a registered runner
         // sitting idle: both will take it within seconds without anything started here.
@@ -341,8 +365,8 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
             .saturating_sub(idle_online)
             .saturating_sub(live);
 
-        // Warm machines first — a start is about a second; a create pulls the image.
-        for machine in &stopped {
+        // Warm machines first — a start is about a second; a cold one pulls the image first.
+        for machine in warm.iter().chain(cold.iter()) {
             if needed == 0 {
                 break;
             }
@@ -353,6 +377,18 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
                 name: machine.name.clone(),
             });
             needed -= 1;
+        }
+
+        // Every machine that has never booted and did not just take a job is booted once with no
+        // registration: until it has, it is a machine whose first job waits for an image pull.
+        for machine in &cold {
+            if !claimed.contains(machine.id.as_str()) {
+                actions.push(Action::Warm {
+                    pool: pool.label.clone(),
+                    id: machine.id.clone(),
+                    name: machine.name.clone(),
+                });
+            }
         }
 
         let existing: BTreeSet<&str> = mine.iter().map(|m| m.name.as_str()).collect();
@@ -375,12 +411,11 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
         }
 
         // Retire the surplus, from the machines still warm after this pass's launches.
-        let warm: Vec<&&Machine> = stopped
+        let mut by_age: Vec<&&Machine> = warm
             .iter()
             .filter(|m| !claimed.contains(m.id.as_str()))
             .copied()
             .collect();
-        let mut by_age = warm.clone();
         by_age.sort_by_key(|m| std::cmp::Reverse(m.stopped_secs(snapshot.now_secs)));
         let surplus = by_age.len().saturating_sub(pool.standby);
         for machine in by_age.into_iter().take(surplus) {

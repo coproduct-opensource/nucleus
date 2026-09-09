@@ -18,6 +18,7 @@ pub struct Report {
     pub demand: Vec<(String, usize)>,
     pub launched: usize,
     pub created: usize,
+    pub warmed: usize,
     pub retired: usize,
     pub runners_removed: usize,
     /// What did not happen, and why. Never a response body.
@@ -160,13 +161,20 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
                     .substrate
                     .create(&name, &self.region, &config)
                     .map_err(|e| format!("{pool}: create {name}: {e}"))?;
-                // One boot with no registration: the image lands on this host and the machine
-                // stops. Every later start is warm.
-                self.substrate
-                    .start(&machine.id)
-                    .map_err(|e| format!("{pool}: warm {name}: {e}"))?;
+                // Not started here: a start issued in the same pass as the create races the
+                // machine's placement and is answered 412. The next pass boots it.
                 report.created += 1;
-                println!("{pool}: created {name} ({}), warming", machine.id);
+                println!("{pool}: created {name} ({})", machine.id);
+                Ok(())
+            }
+            Action::Warm { pool, id, name } => {
+                // One boot with no registration: the image lands on this host and the machine
+                // exits at once. Every later start is warm.
+                self.substrate
+                    .start(id)
+                    .map_err(|e| format!("{pool}: warm {name}: {e}"))?;
+                report.warmed += 1;
+                println!("{pool}: warming {name}");
                 Ok(())
             }
             Action::Retire { pool, id, name } => {

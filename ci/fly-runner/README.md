@@ -23,8 +23,11 @@ registration the same pass just created (a registration is `offline` until its g
 1. **Demand**: queued jobs per label across the most recent `LOOKBACK_RUNS` runs of every
    workflow and event, with conditional requests (an unchanged answer is a 304 that costs no
    rate limit).
-2. **Warm starts**: each pool is a fixed set of Machines that cycle stopped → started →
-   stopped. A stopped Machine keeps its root filesystem on its host, so starting it takes
+2. **Warm starts**: each pool is a fixed set of Machines that cycle created → stopped →
+   started → stopped. A Machine is created in one pass and first booted in a later one — a
+   start issued in the pass that created it races Fly's placement and is answered 412 — and
+   that first boot is a warm-up unless a job is already waiting, in which case it takes the job
+   and pulls its image on the way. A stopped Machine keeps its root filesystem on its host, so starting it takes
    about a second and pulls nothing. Before each start the manager writes that boot's one-job
    JIT runner configuration into the Machine (`/run/runner-jit`); the runner exits after the
    job and the Machine stops. A Machine that boots without a configuration is a warm-up: it
@@ -119,7 +122,7 @@ required context or queue setting is touched by any of this.
 ## Local validation
 
 ```sh
-cargo test -p ci-fly-runner --locked      # 20 tests: planning, applying, the client, the two races
+cargo test -p ci-fly-runner --locked      # 22 tests: planning, applying, the client, the two races
 bash -n ci/fly-runner/entrypoint.sh
 bash -n ci/fly-runner/install-tools.sh
 cargo test -p ci-spec --locked            # the runs-on routing this lane depends on

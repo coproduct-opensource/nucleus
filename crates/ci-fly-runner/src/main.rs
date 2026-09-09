@@ -86,10 +86,11 @@ fn run() -> Result<(), String> {
                     .map(|(label, n)| format!("{label}={n}"))
                     .collect();
                 println!(
-                    "queued {} | started {} created {} retired {} runners removed {}",
+                    "queued {} | started {} created {} warmed {} retired {} runners removed {}",
                     demand.join(" "),
                     report.launched,
                     report.created,
+                    report.warmed,
                     report.retired,
                     report.runners_removed
                 );
