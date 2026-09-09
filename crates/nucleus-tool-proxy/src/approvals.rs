@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use nucleus_identity::approval_bundle::{ApprovalBundleVerifier, compute_manifest_hash};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{ApiError, now_unix};
 
@@ -107,7 +107,7 @@ impl ApprovalRateLimiter {
 }
 
 impl Default for ApprovalRateLimiter {
-    pub(crate) fn default() -> Self {
+    fn default() -> Self {
         // Allow 10 approvals per second with burst of 20
         Self::new(20, 10)
     }
@@ -303,31 +303,3 @@ pub(crate) fn verify_and_load_approval_bundle(
 
     Ok(())
 }
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct ReadRequest {
-    path: String,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct ReadResponse {
-    contents: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct WriteRequest {
-    path: String,
-    contents: String,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct WriteResponse {
-    ok: bool,
-}
-
-// `/v1/run` request/response are the SHARED wire types (`nucleus-api-types`):
-// the same struct the MCP face posts, so the two cannot drift again. Argv is
-// canonical; the legacy `command` string is split into argv by the type
-// itself and never reaches a shell. `timeout_seconds` is honoured below via
-// the sealed async spawn (it was `#[allow(dead_code)]` here for a year).
-use nucleus_api_types::{RunRequest, RunResponse};

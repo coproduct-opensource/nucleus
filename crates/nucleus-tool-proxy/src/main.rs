@@ -641,6 +641,34 @@ pub(crate) use approvals::{
 };
 
 #[derive(Debug, Deserialize)]
+struct ReadRequest {
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ReadResponse {
+    contents: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WriteRequest {
+    path: String,
+    contents: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WriteResponse {
+    ok: bool,
+}
+
+// `/v1/run` request/response are the SHARED wire types (`nucleus-api-types`):
+// the same struct the MCP face posts, so the two cannot drift again. Argv is
+// canonical; the legacy `command` string is split into argv by the type
+// itself and never reaches a shell. `timeout_seconds` is honoured below via
+// the sealed async spawn (it was `#[allow(dead_code)]` here for a year).
+use nucleus_api_types::{RunRequest, RunResponse};
+
+#[derive(Debug, Deserialize)]
 struct ApproveRequest {
     operation: String,
     #[serde(default = "default_approve_count")]
