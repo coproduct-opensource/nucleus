@@ -59,6 +59,7 @@ struct FakeSubstrate {
     created: RefCell<Vec<(String, Value)>>,
     updated: RefCell<Vec<(String, Value)>>,
     started: RefCell<Vec<String>>,
+    waited: RefCell<Vec<(String, String)>>,
     destroyed: RefCell<Vec<String>>,
     start_fails: bool,
 }
@@ -79,6 +80,12 @@ impl Substrate for FakeSubstrate {
         self.updated
             .borrow_mut()
             .push((id.to_string(), config.clone()));
+        Ok(())
+    }
+    fn wait_for(&self, id: &str, state: &str, _timeout_s: u64) -> Result<(), Error> {
+        self.waited
+            .borrow_mut()
+            .push((id.to_string(), state.to_string()));
         Ok(())
     }
     fn start(&self, id: &str) -> Result<(), Error> {

@@ -342,6 +342,10 @@ pub trait Substrate {
     /// Created stopped (`skip_launch`), so the caller decides when the first boot happens.
     fn create(&self, name: &str, region: &str, config: &Value) -> Result<Machine, Error>;
     fn update(&self, id: &str, config: &Value) -> Result<(), Error>;
+    /// Block until the machine reaches `state`. An update rewrites the machine — the events read
+    /// `launch pending`, `launch created`, `update stopped` — and a start issued before it has
+    /// settled is answered 412, which is how the first live jobs were lost.
+    fn wait_for(&self, id: &str, state: &str, timeout_s: u64) -> Result<(), Error>;
     fn start(&self, id: &str) -> Result<(), Error>;
     fn destroy(&self, id: &str) -> Result<(), Error>;
 }
@@ -391,6 +395,13 @@ impl<T: Transport> Substrate for MachinesApi<T> {
         self.client
             .send("POST", &path, Some(&json!({"config": config})), false)
             .map(|_| ())
+    }
+
+    fn wait_for(&self, id: &str, state: &str, timeout_s: u64) -> Result<(), Error> {
+        let path = self.path(&format!(
+            "machines/{id}/wait?state={state}&timeout={timeout_s}"
+        ));
+        self.client.send("GET", &path, None, false).map(|_| ())
     }
 
     fn start(&self, id: &str) -> Result<(), Error> {

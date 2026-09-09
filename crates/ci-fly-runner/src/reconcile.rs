@@ -13,6 +13,10 @@ use crate::{Action, Demand, PoolSpec, Snapshot, launch_config, plan, tally};
 /// orphan, short enough that the ledger is bounded by the pass rate, not by uptime.
 const LEDGER_SECS: u64 = 3600;
 
+/// How long to wait for a machine to settle after its configuration is rewritten. Generous: the
+/// alternative to waiting is a 412 and a job that is never taken.
+const WAIT_SECS: u64 = 60;
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
     pub demand: Vec<(String, usize)>,
@@ -137,6 +141,9 @@ impl<F: Forge, S: Substrate> Manager<F, S> {
                 let started = self
                     .substrate
                     .update(id, &config)
+                    // The update rewrites the machine; it is not startable until it has settled
+                    // back to stopped, and a start before then is answered 412.
+                    .and_then(|()| self.substrate.wait_for(id, "stopped", WAIT_SECS))
                     .and_then(|()| self.substrate.start(id));
                 if let Err(e) = started {
                     // The machine will not take the job, so the registration must not outlive
