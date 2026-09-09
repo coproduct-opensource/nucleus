@@ -266,13 +266,14 @@ impl SnapshotStore {
         Self { root, host }
     }
 
-    fn published(&self, name: &str) -> PathBuf {
+    /// Where a base with this name lives, published or not yet.
+    pub fn published_dir(&self, name: &str) -> PathBuf {
         self.root.join("by-derivation").join(name)
     }
 
     /// Is there a base for this derivation that this host may restore?
     pub fn lookup(&self, derivation: &Derivation) -> Lookup {
-        let dir = self.published(&derivation.name());
+        let dir = self.published_dir(&derivation.name());
         let raw = match std::fs::read_to_string(dir.join("manifest.json")) {
             Ok(raw) => raw,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Lookup::Absent,
@@ -349,11 +350,22 @@ impl SnapshotStore {
         // was renamed into place — so it looks complete, because that is the whole contract —
         // holding a memory image whose tail never reached the platter.
         for f in ["vmstate", "mem", "manifest.json"] {
-            fsync(&incoming.dir.join(f)).map_err(PublishError::Io)?;
+            let path = incoming.dir.join(f);
+            // World-readable, because restore hard-links these into a jail that runs as an
+            // unprivileged uid. Permission travels with the INODE, so this is what lets the jailed
+            // VMM open the link — and it is why placement does not chown, which would change the
+            // shared base's ownership for every later pod. Read is the whole requirement: a
+            // restored guest maps the memory file MAP_PRIVATE and never writes it, measured.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+            }
+            fsync(&path).map_err(PublishError::Io)?;
         }
         fsync(&incoming.dir).map_err(PublishError::Io)?;
 
-        let target = self.published(&derivation.name());
+        let target = self.published_dir(&derivation.name());
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(PublishError::Io)?;
         }

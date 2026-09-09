@@ -72,6 +72,7 @@ mod posture;
 mod session_mint;
 mod signed_proxy;
 mod snapshot;
+mod snapshot_restore;
 mod snapshot_store;
 mod snapshot_vmm;
 mod trust_gate;
@@ -2588,11 +2589,10 @@ async fn spawn_firecracker_pod(
         // here exactly as it is for a config file, and the ordering win the API was expected to
         // buy is simply not available.
         if state.firecracker_api_boot {
-            let sock = firecracker_api::api_socket_path(jail_layout.as_ref(), pod_dir);
-            let booted = match firecracker_api::configure(&sock, &config).await {
-                Ok(()) => firecracker_api::start(&sock).await,
-                Err(e) => Err(e),
-            };
+            let jail = jail_layout.as_ref();
+            let sock = firecracker_api::api_socket_path(jail, pod_dir);
+            let base = snapshot_restore::base_for(state, &config, spec, &verdict, jail);
+            let booted = snapshot_restore::bring_up(&sock, &config, base.as_ref(), jail).await;
             if let Err(reason) = booted {
                 let _ = child.kill().await;
                 cleanup_net_resources(

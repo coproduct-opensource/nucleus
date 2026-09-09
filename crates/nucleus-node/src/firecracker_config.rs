@@ -120,6 +120,10 @@ pub(crate) mod in_jail {
     pub const LOG: &str = "/firecracker.log";
     pub const CONFIG: &str = "/config.json";
     pub const SECCOMP: &str = "/seccomp.bpf";
+    /// A base snapshot placed for restore. Fixed names like the rest — and here the fixity is
+    /// load-bearing rather than tidy, because the vsock path inside a snapshot is fixed too.
+    pub const SNAPSHOT_VMSTATE: &str = "/snapshot.vmstate";
+    pub const SNAPSHOT_MEM: &str = "/snapshot.mem";
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -633,6 +637,40 @@ fn enforce_pci_off(args: &str) -> String {
 
 #[cfg(target_os = "linux")]
 impl FirecrackerConfig {
+    /// A device-less configuration, for tests exercising the parts of the restore path that read
+    /// a config rather than a machine. Deliberately minimal: anything a restore actually needs
+    /// comes out of the SNAPSHOT, which is the property under test.
+    #[cfg(test)]
+    pub(crate) fn without_devices() -> Self {
+        Self {
+            boot_source: BootSource {
+                kernel_image_path: String::new(),
+                boot_args: None,
+            },
+            drives: Vec::new(),
+            machine_config: MachineConfig {
+                vcpu_count: 1,
+                mem_size_mib: 256,
+                smt: false,
+            },
+            network_interfaces: Vec::new(),
+            vsock: None,
+            logger: None,
+        }
+    }
+
+    /// The `(iface_id, host_dev_name)` pairs this pod's network interfaces use.
+    ///
+    /// For `network_overrides` on snapshot restore: the base was frozen holding another pod's tap,
+    /// and this is the only thing `/snapshot/load` lets a caller change.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn interface_names(&self) -> Vec<(String, String)> {
+        self.network_interfaces
+            .iter()
+            .map(|n| (n.iface_id.clone(), n.host_dev_name.clone()))
+            .collect()
+    }
+
     /// What a snapshot of this machine would have to name, read off the config that booted it.
     ///
     /// Here rather than in `main.rs` for two reasons: the fields are private to this module, and
