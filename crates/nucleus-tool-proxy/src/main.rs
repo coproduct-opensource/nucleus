@@ -2593,43 +2593,18 @@ async fn auth_middleware(
     if let Some(ref grant) = permission_grant
         && run_gate::grant_denies_endpoint(grant, parts.uri.path())
     {
-        let total_price: f64 = grant.denied.iter().map(|d| d.price).sum();
-        let denied_dims = grant
-            .denied
-            .iter()
-            .map(|d| nucleus_spec::DeniedDimensionInfo {
-                dimension: d.dimension.label().to_string(),
-                price_usd: d.price,
-            })
-            .collect();
-        let reason = grant
-            .denied
-            .iter()
-            .map(|d| format!("{} λ={:.2}", d.dimension.label(), d.price))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let payment_info = nucleus_spec::PaymentRequiredInfo {
-            amount_usd: total_price,
-            reason,
-            kind: nucleus_spec::PaymentRequiredKind::PermissionDenied {
-                denied_dimensions: denied_dims,
-            },
-            recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
-            resource: Some(parts.uri.path().to_string()),
-        };
-        return Err(ApiError::PermissionDenied(payment_info));
+        return Err(ApiError::PermissionDenied(run_gate::payment_required(
+            grant,
+            parts.uri.path(),
+        )));
     }
 
-    // Also cover core endpoints without sealed effect preflight (glob/grep/pods).
+    // Core endpoints without sealed effect preflight (glob/grep/pods) check the same ceiling.
     if let Some(ref certified) = certified_perms
-        && let Some(op) = run_gate::endpoint_operation(parts.uri.path())
+        && let Some(why) =
+            run_gate::certificate_denies_endpoint(&state, certified, parts.uri.path())
     {
-        let levels = run_gate::levels_for(&state, op, Some(certified));
-        if levels.ceiling == CapabilityLevel::Never || levels.requested > levels.ceiling {
-            return Err(ApiError::KernelDenied(format!(
-                "request certificate ceiling denies {op:?}"
-            )));
-        }
+        return Err(ApiError::KernelDenied(why));
     }
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
@@ -2912,11 +2887,7 @@ async fn read_file(
         () => {{
             use nucleus_ifc_kernel::discharge::PreflightResult;
             let verified_scope = state.session_task_token.verified_scope();
-            let ceiling = run_gate::levels_for(
-                &state,
-                Operation::ReadFiles,
-                certified.as_ref().map(|e| &e.0),
-            );
+            let ceiling = state.ceiling(Operation::ReadFiles, certified.as_ref());
             let flow = state.flow_graph.lock().await;
             let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
             drop(flow);
@@ -3079,11 +3050,7 @@ async fn write_file(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let fs_ceiling = run_gate::levels_for(
-            &state,
-            Operation::WriteFiles,
-            certified.as_ref().map(|e| &e.0),
-        );
+        let fs_ceiling = state.ceiling(Operation::WriteFiles, certified.as_ref());
         let flow = state.flow_graph.lock().await;
         let result = run_gate::preflight_fs(
             Operation::WriteFiles,
@@ -3169,11 +3136,7 @@ async fn write_file(
                 let retry_bundle = {
                     use nucleus_ifc_kernel::discharge::PreflightResult;
                     let verified_scope = state.session_task_token.verified_scope();
-                    let fs_ceiling = run_gate::levels_for(
-                        &state,
-                        Operation::WriteFiles,
-                        certified.as_ref().map(|e| &e.0),
-                    );
+                    let fs_ceiling = state.ceiling(Operation::WriteFiles, certified.as_ref());
                     let flow = state.flow_graph.lock().await;
                     let r = run_gate::preflight_fs(
                         Operation::WriteFiles,
@@ -3359,8 +3322,7 @@ async fn run_command(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let run_bash_ceiling =
-            run_gate::levels_for(&state, Operation::RunBash, certified.as_ref().map(|e| &e.0));
+        let run_bash_ceiling = state.ceiling(Operation::RunBash, certified.as_ref());
         let flow = state.flow_graph.lock().await;
         let result =
             run_gate::preflight_runbash(verified_scope, run_bash_ceiling, &display_command, &flow);
@@ -3442,11 +3404,7 @@ async fn run_command(
                     portcullis_effects::authority::Authority::new({
                         use nucleus_ifc_kernel::discharge::PreflightResult;
                         let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling = run_gate::levels_for(
-                            &state,
-                            Operation::RunBash,
-                            certified.as_ref().map(|e| &e.0),
-                        );
+                        let ceiling = state.ceiling(Operation::RunBash, certified.as_ref());
                         let flow = state.flow_graph.lock().await;
                         let r = run_gate::preflight_runbash(
                             verified_scope,
@@ -3646,7 +3604,7 @@ async fn web_fetch(
         let result = run_gate::preflight_web(
             operation,
             verified_scope,
-            run_gate::levels_for(&state, operation, certified.as_ref().map(|e| &e.0)),
+            state.ceiling(operation, certified.as_ref()),
             &url_str,
             &flow,
         );
@@ -4253,7 +4211,7 @@ async fn web_search(
         let result = run_gate::preflight_web(
             operation,
             verified_scope,
-            run_gate::levels_for(&state, operation, certified.as_ref().map(|e| &e.0)),
+            state.ceiling(operation, certified.as_ref()),
             &req.query,
             &flow,
         );

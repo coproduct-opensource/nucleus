@@ -56,6 +56,38 @@ impl GateLevels {
 /// with no budget gate is an unconditional deny (#1362), so a real estimate
 /// is a kernel change. Budget is conserved at spawn (the node's ledger) and
 /// per command (`AtomicBudget`), not through this obligation.
+/// Whether a request certificate's ceiling denies what this endpoint does, and the reason to
+/// refuse with. Covers the core endpoints that have no sealed-effect preflight of their own
+/// (glob, grep, pods) — the preflighted ones check the same ceiling through their own gate.
+pub(crate) fn certificate_denies_endpoint(
+    state: &crate::AppState,
+    certified: &crate::pod_cert::CertifiedPermissions,
+    path: &str,
+) -> Option<String> {
+    let op = endpoint_operation(path)?;
+    let levels = levels_for(state, op, Some(certified));
+    (levels.ceiling == CapabilityLevel::Never || levels.requested > levels.ceiling)
+        .then(|| format!("request certificate ceiling denies {op:?}"))
+}
+
+impl crate::AppState {
+    /// The gate levels for `op` under the request certificate this handler was given.
+    ///
+    /// A method rather than a free function because every call site is inside a handler that
+    /// already holds the state and the extension, and spelling
+    /// `run_gate::levels_for(&state, op, certified.as_ref().map(|e| &e.0))` at handler
+    /// indentation is over rustfmt's width — so each one became five lines, and thirty-one of
+    /// those took `main.rs` over its line-ratchet ceiling. `state.ceiling(op, certified)` fits
+    /// on one line everywhere it is used.
+    pub(crate) fn ceiling(
+        &self,
+        op: Operation,
+        certified: Option<&axum::Extension<crate::pod_cert::CertifiedPermissions>>,
+    ) -> GateLevels {
+        levels_for(self, op, certified.map(|e| &e.0))
+    }
+}
+
 pub(crate) fn levels_for(
     state: &crate::AppState,
     op: Operation,
@@ -610,6 +642,37 @@ pub(crate) fn endpoint_operation(path: &str) -> Option<Operation> {
         | "/v1/pod/cancel" => Some(Operation::ManagePods),
         p if p.starts_with("/v1/egress/") => Some(Operation::WebFetch),
         _ => None,
+    }
+}
+
+/// The 402 body for a grant whose dimensions were denied: the total price, a human reason, and
+/// the denied dimensions, as the payment protocol expects them. A pure transformation of the
+/// grant — it belongs next to `grant_denies_endpoint`, which decides whether it is needed.
+pub(crate) fn payment_required(
+    grant: &nucleus_permission_market::PermissionGrant,
+    path: &str,
+) -> nucleus_spec::PaymentRequiredInfo {
+    let amount_usd: f64 = grant.denied.iter().map(|d| d.price).sum();
+    let denied_dimensions = grant
+        .denied
+        .iter()
+        .map(|d| nucleus_spec::DeniedDimensionInfo {
+            dimension: d.dimension.label().to_string(),
+            price_usd: d.price,
+        })
+        .collect();
+    let reason = grant
+        .denied
+        .iter()
+        .map(|d| format!("{} λ={:.2}", d.dimension.label(), d.price))
+        .collect::<Vec<_>>()
+        .join(", ");
+    nucleus_spec::PaymentRequiredInfo {
+        amount_usd,
+        reason,
+        kind: nucleus_spec::PaymentRequiredKind::PermissionDenied { denied_dimensions },
+        recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
+        resource: Some(path.to_string()),
     }
 }
 
