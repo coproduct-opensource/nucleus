@@ -45,4 +45,4 @@ pub mod session;
 
 pub use classify::{Classifier, ClassifierConfig, Rule, ToolRole};
 pub use report::{SessionReport, analyze_session};
-pub use session::{Finding, SessionMonitor, ToolEvent};
+pub use session::{Finding, MetadataRefusal, RefusalKind, SessionMonitor, ToolEvent};

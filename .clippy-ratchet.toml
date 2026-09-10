@@ -43,6 +43,29 @@ lints = [
 # left for `step` to grind down rather than reworked in a change about the wasm
 # embed. The number to remember is that 455 was never the workspace's real
 # count; it was the count of the crates that happened to build.
-ceiling = 462
+# Ground 462 -> 341 on 2026-09-10 by applying clippy's own machine-applicable
+# `cast_lossless` fixes across the workspace: `x as u64` becomes `u64::from(x)`,
+# which is the same value by definition of the lint. 43 files, 117 sites. The
+# workspace was at 458 against a ceiling of 462 -- four of headroom -- so any PR
+# adding a handful of casts red the gate, and two open PRs were failing on it for
+# that reason rather than for anything wrong with them.
+#
+# Four files clippy offered to fix were REVERTED and are not in this change:
+# nucleus-econ-kernels/src/extracted/{commons,pigou,settlement}_aeneas.rs and
+# nucleus-ifc-kernel/src/extracted/egress.rs. Those feed the charon+aeneas
+# extraction, so editing the Rust drifts the committed Lean, and a cast cleanup
+# is not the change that should carry an extraction regeneration.
+#
+# Only `cast_lossless` was touched -- the class where the fix is provably
+# value-preserving. The other four lints (truncation 352, wrap 68, precision 57,
+# sign_loss 55 raw sites) each need a decision per site about what the right
+# behaviour IS, and are left for `step` and for changes that can reason about them.
+# Pinned from CI's count, not the local one. First attempt set this to 341, which
+# was measured on macOS; CI (linux) counted 345 and red the gate on this very PR.
+# The seeding comment above already said why -- "clippy counts can differ by
+# platform and feature resolution, and CI (linux) is the authority" -- and it was
+# not followed. The four-site gap is platform/feature resolution, not a regression:
+# the same 117 cast_lossless fixes are in the tree either way.
+ceiling = 345
 target = 0
 step = 5

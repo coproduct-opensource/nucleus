@@ -23,9 +23,13 @@ name: Aeneas IFC (scoped extraction + noninterference)
 # extracted::egress ran clean — 4/4 functions translated, 0 opaque.
 #
 # The one real gotcha, which is what a stale build looks like: `charon cargo`
-# exits 0 and emits NOTHING when cargo has nothing to recompile. Run
-# `cargo clean -p nucleus-ifc-kernel` first. The .llbc lands at the REPO ROOT,
-# not in the crate directory.
+# exits 0 and emits NOTHING when cargo has nothing to recompile. The extraction
+# step below now runs `cargo clean -p nucleus-ifc-kernel` first, which is what
+# this comment used to only ADVISE — for a long time the sole thing making the
+# advice unnecessary was `rm -rf /data/work` in ci/fly-runner/entrypoint.sh
+# wiping the target dir every boot, i.e. a runner implementation detail in
+# another file that this gate's correctness quietly rested on. The .llbc lands
+# at the REPO ROOT, not in the crate directory.
 
 on:
   push:
@@ -215,6 +219,14 @@ jobs:
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-ifc-kernel
         run: |
+          # `charon cargo` exits 0 and emits NOTHING when cargo has nothing to
+          # recompile: on a warm target directory this extracts nothing, the
+          # regenerate-then-diff downstream finds no diff, and the gate goes
+          # GREEN having checked nothing. The only thing that forced a rebuild
+          # was `rm -rf /data/work` in ci/fly-runner/entrypoint.sh wiping the
+          # target dir every boot — a runner detail, in another file, that this
+          # gate's correctness depended on without saying so.
+          cargo clean -p nucleus-ifc-kernel
           STARTS=""
           IFS=',' read -ra ROOTS <<< "$EXTRACT_ROOTS"
           for r in "${ROOTS[@]}"; do

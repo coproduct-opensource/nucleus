@@ -243,7 +243,7 @@ fn wait_for_health_check(args: &StartArgs) -> Result<()> {
     println!("Waiting for nucleus-node to be ready...");
 
     let endpoint = "http://127.0.0.1:8080/health";
-    let timeout = Duration::from_secs(args.timeout as u64);
+    let timeout = Duration::from_secs(u64::from(args.timeout));
     let start = std::time::Instant::now();
     let poll_interval = Duration::from_millis(500);
 
