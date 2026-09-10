@@ -14,6 +14,17 @@ categories = ["web-programming::http-server"]
 name = "nucleus-verifier-service"
 path = "src/main.rs"
 
+[features]
+default = []
+# Embed the wasm-pack-built verifier SDK (sdks/verifier-js/pkg/) into the binary
+# with include_str!/include_bytes!. OFF by default: that directory is gitignored
+# and only `wasm-pack build sdks/verifier-js --target web --release` produces it,
+# so an unconditional embed made a clean checkout fail to compile this crate —
+# and one crate failing takes every other crate's test targets down with it
+# (#2730). CI and release builds turn it on, having built the SDK first; with it
+# off the two /static/wasm/* routes answer 503 and name the command.
+embedded-wasm = []
+
 [dependencies]
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-lineage = { path = "../nucleus-lineage" }

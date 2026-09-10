@@ -93,7 +93,7 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 - **ν laws proven in CI**
   - Pass: Lean/Kani proof jobs run in CI and block merges on failure.
   - Current: `DONE` (113 Kani harnesses + ~277 Lean 4 theorems; both gated on main — Kani via count-regression per-PR + full nightly, Lean via `sorry`-rejection on the Aeneas-bridged core).
-  - Evidence: `.github/workflows/kani-nightly.yml`, `.github/workflows/lean-build.yml`, `.github/workflows/aeneas-ifc-scoped.yml`, `crates/portcullis/src/kani.rs`, `crates/portcullis-core/lean/`
+  - Evidence: `.github/workflows/kani-nightly.yml`, `.github/workflows/portcullis-core-proven-lean.yml`, `.github/workflows/aeneas-ifc-scoped.yml`, `crates/portcullis/src/kani.rs`, `crates/portcullis-core/lean/`
 - **Fuzzing in CI**
   - Pass: cargo-fuzz targets run with time budget; known bypasses blocked.
   - Current: `DONE` (3 fuzz targets × 30s; Fuzz is a required merge check on main).

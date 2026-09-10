@@ -467,7 +467,7 @@ Proofs are first-class artifacts, not academic exercises:
   Heyting algebra, IFC semilattice, taint monotonicity, exposure monoid,
   delegation); the Aeneas pipeline mechanically translates the core capability
   types from Rust to Lean so proofs run over generated code. CI-gated via
-  `lean-build.yml` / `aeneas-ifc-scoped.yml`.
+  `portcullis-core-proven-lean.yml` / `aeneas-ifc-scoped.yml`.
 - **Differential testing** (planned) — Cedar pattern: millions of random inputs
   compared between Rust engine and Lean model.
 - **Public Verified Claims page** — each claim maps to a proof artifact and

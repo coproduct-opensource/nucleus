@@ -41,6 +41,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       - name: Detect changed crates
         id: detect
         # Pass event name / base ref via env (never interpolate ${{ }} into a
@@ -198,13 +199,19 @@ jobs:
         if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
         with:
           fetch-depth: 0
+          filter: blob:none
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Install cargo-mutants (baked into the self-hosted image when present)
+      # The self-hosted image bakes it (docker/Dockerfile.runner
+      # CARGO_MUTANTS_VERSION); this is the hosted-runner fallback, pinned to the
+      # same version so the two environments run the same tool. It was unpinned,
+      # which both floated the version and — because nothing baked it — spent
+      # ~0.9m of a 1.4m job installing on every run of the SCARCEST pool.
+      - name: Install cargo-mutants (baked into the self-hosted image)
         if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
-        run: command -v cargo-mutants >/dev/null || cargo install cargo-mutants --locked
+        run: command -v cargo-mutants >/dev/null || cargo install cargo-mutants --version 27.1.0 --locked
       # A full run of the six modules is ~30 min of a gate runner and ran on
       # every rebase of every PR. On pull_request and merge_group only the
       # mutants overlapping the change are tried (`--in-diff`, cargo-mutants'
@@ -336,7 +343,7 @@ jobs:
         if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
         id: counts
         run: |
-          CONFORMANCE=$(grep -c 'proptest!' crates/portcullis/tests/verus_conformance.rs)
+          CONFORMANCE=$(grep -c 'proptest!' crates/portcullis/tests/lattice_conformance.rs)
           echo "conformance=$CONFORMANCE" >> "$GITHUB_OUTPUT"
           echo "Conformance test suites: $CONFORMANCE"
       - name: Ratchet summary
