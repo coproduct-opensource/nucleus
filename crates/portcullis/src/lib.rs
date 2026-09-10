@@ -86,6 +86,10 @@
 #![deny(unsafe_code)]
 
 pub mod action_term;
+/// One measurement of the frontier ADR 0005 names: how much useful work got
+/// done, and what the authority to do it cost. The half a trace cannot give.
+#[cfg(feature = "serde")]
+pub mod agency_report;
 pub mod audit;
 #[cfg(feature = "serde")]
 pub mod audit_backend;
@@ -257,6 +261,9 @@ pub mod workspace;
 #[cfg(kani)]
 mod kani;
 
+#[cfg(all(feature = "spec", not(kani)))]
+#[cfg(feature = "serde")]
+pub use agency_report::{AgencyReport, AuthorityCost, Enforcement, TaskOutcome};
 pub use budget::BudgetLattice;
 pub use budget_ledger::{BudgetLedger, LedgerCore, LedgerError};
 pub use capability::{
@@ -285,7 +292,6 @@ pub use galois::{
     TrustDomainBridge,
 };
 pub use graded::{Graded, GradedPermissionCheck, GradedPipeline, RiskCost, RiskGrade};
-#[cfg(all(feature = "spec", not(kani)))]
 pub use grant_usage::{
     attribute as attribute_usage, narrow as narrow_grant, profile_from_lattice, render_usage,
     Narrowed, OperationCount, UsageReport, ALL_OPERATIONS,

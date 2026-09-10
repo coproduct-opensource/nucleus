@@ -15,6 +15,7 @@
 //!   harness exists to catch, so `failed` is a first-class column.
 //! * **Percentiles, not just a mean.** Under contention the tail is the story.
 
+mod agency;
 mod symmetry;
 
 use std::collections::BTreeMap;
@@ -36,6 +37,40 @@ enum Cli {
     Toolcall(ToolCall),
     /// How many cross-pod checks does isolation actually require at N pods?
     Symmetry(SymmetryArgs),
+    /// Measure one point on the safely-delegatable-agency frontier: how much
+    /// useful work a pod completes, and what the authority cost (ADR 0005).
+    Agency(AgencyArgs),
+}
+
+#[derive(Parser)]
+struct AgencyArgs {
+    /// Node base URL.
+    #[arg(long, default_value = "http://127.0.0.1:8080")]
+    url: String,
+    /// Hex-encoded auth secret for request signing.
+    #[arg(long, env = "NUCLEUS_AUTH_SECRET")]
+    auth_secret: String,
+    /// Actor name recorded on each signed request.
+    #[arg(long, default_value = "nucleus-agency")]
+    actor: String,
+    /// Pod spec used as the template.
+    #[arg(long)]
+    spec: String,
+    /// PKCS8 DER Ed25519 approver key. Without it the harness cannot act as
+    /// the person, so every approval-gated task is reported as refused rather
+    /// than skipped — a lower completion rate, honestly earned.
+    #[arg(long)]
+    approval_key: Option<String>,
+    /// Where to write the report.
+    #[arg(long)]
+    out: Option<String>,
+    /// What this measurement is, in a sentence.
+    #[arg(long, default_value = "codegen profile, Tier 2 microVM")]
+    label: String,
+    /// The commit being measured. A report that cannot be traced to a tree is
+    /// an anecdote.
+    #[arg(long)]
+    commit: Option<String>,
 }
 
 #[derive(Parser)]
@@ -107,7 +142,72 @@ fn main() -> Result<()> {
         Cli::Podburst(b) => podburst(b),
         Cli::Toolcall(t) => toolcall(t),
         Cli::Symmetry(s) => symmetry_report(s),
+        Cli::Agency(a) => agency_run(a),
     }
+}
+
+/// Boot a pod from `spec`, run both suites against it, and report.
+fn agency_run(a: AgencyArgs) -> Result<()> {
+    let secret = a.auth_secret.trim().as_bytes().to_vec();
+    let mut spec: serde_json::Value = {
+        let raw = std::fs::read_to_string(&a.spec)
+            .with_context(|| format!("reading spec {}", &a.spec))?;
+        serde_yaml::from_str(&raw).with_context(|| format!("parsing spec {}", &a.spec))?
+    };
+
+    // The lattice the report divides by is the one the POD resolved, read from
+    // the same spec the pod was created from rather than assumed. A ρ computed
+    // against a lattice the pod did not run under is a number about nothing.
+    let typed: nucleus_spec::PodSpec = serde_json::from_value(spec.clone())
+        .with_context(|| format!("{} is not a PodSpec", &a.spec))?;
+    let lattice = typed
+        .spec
+        .resolve_policy()
+        .with_context(|| "resolving the spec's policy")?;
+
+    let (issuer, creds) =
+        mint_admission(&["read_files", "write_files", "glob_search", "run_bash"])?;
+    set(&mut spec, "/metadata/name", serde_json::json!("agency"));
+    set(
+        &mut spec,
+        "/metadata/labels/dlc_trusted_keys",
+        serde_json::json!(issuer),
+    );
+    set(
+        &mut spec,
+        "/metadata/labels/dlc_issuer",
+        serde_json::json!(issuer),
+    );
+    set(
+        &mut spec,
+        "/metadata/labels/dlc_credentials",
+        serde_json::json!(creds),
+    );
+
+    let body = serde_json::to_string(&spec)?;
+    let (id, proxy) = create_pod_with_proxy(&a.url, &secret, &a.actor, &body)?;
+    println!("pod {id} up, proxy {proxy}");
+
+    let key = match a.approval_key.as_deref() {
+        Some(path) => Some(load_approval_key(path)?),
+        None => {
+            println!("(no --approval-key: approval-gated work will be reported as refused)");
+            None
+        }
+    };
+
+    let report = agency::measure(
+        &proxy,
+        key.as_ref(),
+        &a.actor,
+        &lattice,
+        &a.label,
+        portcullis::agency_report::Enforcement::MicroVm,
+        a.commit,
+    );
+
+    let _ = cancel_pod(&a.url, &secret, &a.actor, &id);
+    agency::write_report(&report?, a.out.as_deref())
 }
 
 fn podburst(b: Burst) -> Result<()> {
