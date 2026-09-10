@@ -34,9 +34,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      # The gatehouse commit whose `gate` checks the plan (its embedded prelude must match the
-      # import hash in .gatehouse/pipeline.writ).
-      GATEHOUSE_REF: 4d42510657690b90cf796d57ce277e665fca0989
+      # The gatehouse commit whose `gate` checks the plan. Two things must move WITH it,
+      # and `cargo xtask gatehouse-pin` now refuses the change if either does not:
+      #   * .gatehouse/pipeline.writ's import digest -- this ref's prelude/ci.writ hash;
+      #   * gatehouse-shadow.yml's GATEHOUSE_REF -- a shadow built from a different
+      #     gatehouse than the plan check compares two things that were never the same.
+      # Moved 4d42510 -> 7326bfa9 (a descendant) on 2026-09-10 to close a skew that had
+      # gone unnoticed because nothing compared the two workflows.
+      GATEHOUSE_REF: 7326bfa9ea3f490c20bb406941527ac0484410c5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

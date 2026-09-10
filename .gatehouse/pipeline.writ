@@ -6,7 +6,7 @@
 --   Cap  = (net, exec, wallMs, cpuMs, memMb, fsRead, fsWrite, secrets)   net tag 3 0 = None, exec tag 3 1 = Scoped
 --   Gate = (name, hash, scope, env, cap, cmd, timeoutMs, outputs)         hash is filled by the elaborator (zeroed when hashed)
 -- env = the rust:1.96.1-slim-bookworm image index digest (rust-toolchain.toml pins 1.96.1).
-import "sha256:3180b3306a5a4ecd77485a0ea2e086df2a3ab0cb7bef20973bec2197c7d2c031" as ci
+import "sha256:2476e955fd994059e1b4ecd9d6741faabd63cb56e6f80fa5003af9478dcae2e8" as ci
 let env : Digest = #d"e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3"
 let ceiling : ci.Cap = (tag 3 0, tag 3 1, 3600000, 3600000, 16384, [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**", #b"crates/portcullis-core/lean/**", #b"scripts/**", #b"sdks/verifier-js/**", #b".github/workflows/**", #b"ci/**", #b"crates/ci-spec/**", #b"scripts/check-ci-spec.sh"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**", #b"crates/portcullis-core/lean/.lake/**"] : Bytes, [] : Bytes)
 let rcap : ci.Cap = (tag 3 0, tag 3 1, 3600000, 3600000, 8192, [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**", #b"scripts/**", #b"sdks/verifier-js/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, [] : Bytes)

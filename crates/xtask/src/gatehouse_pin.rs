@@ -5,7 +5,10 @@
 //! * `.gatehouse/pipeline.writ` imports the `ci` prelude **by digest**
 //!   (`import "sha256:…" as ci`), which is what makes the plan hermetic;
 //! * `.github/workflows/gatehouse-plan.yml` pins `GATEHOUSE_REF` to the gatehouse
-//!   commit whose `gate` binary checks that plan.
+//!   commit whose `gate` binary checks that plan;
+//! * `.github/workflows/gatehouse-shadow.yml` pins its OWN `GATEHOUSE_REF`, and must
+//!   name the same commit — a shadow built from a different gatehouse than the plan
+//!   check is comparing two things that were never the same.
 //!
 //! The import digest must be the SHA-256 of `prelude/ci.writ` **at that ref**. The
 //! workflow already says so in a comment — "its embedded prelude must match the import
@@ -35,7 +38,15 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
 const PIPELINE: &str = ".gatehouse/pipeline.writ";
-const WORKFLOW: &str = ".github/workflows/gatehouse-plan.yml";
+/// Both workflows that build gatehouse pin the ref they build it at. The plan lane's
+/// pin is the one the import digest must agree with; the shadow lane's is checked for
+/// agreement with it, because a shadow running a DIFFERENT gatehouse than the plan
+/// check is comparing two things that were never the same.
+const WORKFLOWS: [&str; 2] = [
+    ".github/workflows/gatehouse-plan.yml",
+    ".github/workflows/gatehouse-shadow.yml",
+];
+const WORKFLOW: &str = WORKFLOWS[0];
 const PRELUDE: &str = "prelude/ci.writ";
 
 /// The `sha256:…` an `import` line names, as lowercase hex without the prefix.
@@ -99,6 +110,29 @@ pub fn check(root: &Path, gatehouse: Option<PathBuf>) -> Result<()> {
     let gh_ref = pinned_ref(&workflow)?;
     println!("{PIPELINE} imports sha256:{want}");
     println!("{WORKFLOW} pins    GATEHOUSE_REF {gh_ref}");
+
+    // The THIRD pin. gatehouse-shadow.yml builds gatehouse too, at its own
+    // GATEHOUSE_REF, and nothing said the two had to be the same commit. They were
+    // not: the plan lane ran 4d42510 while the shadow lane ran 7326bfa9, a descendant
+    // — so the shadow was comparing a gate built from one gatehouse against a plan
+    // checked by another, and calling agreement between them meaningful.
+    let shadow_path = root.join(WORKFLOWS[1]);
+    let shadow_ref = pinned_ref(
+        &fs::read_to_string(&shadow_path).with_context(|| format!("reading {}", WORKFLOWS[1]))?,
+    )?;
+    println!("{} pins  GATEHOUSE_REF {shadow_ref}", WORKFLOWS[1]);
+    if shadow_ref != gh_ref {
+        bail!(
+            "the two workflows build gatehouse at different commits.\n\
+             \x20 {WORKFLOW} pins   {gh_ref}\n\
+             \x20 {} pins {shadow_ref}\n\
+             The shadow gate exists to say whether gatehouse's verdict agrees with \
+             GitHub's. Run against a different gatehouse than the plan check, it answers \
+             a question nobody asked. If the skew is deliberate, say so here and in both \
+             workflows; otherwise move them together.",
+            WORKFLOWS[1]
+        );
+    }
 
     let Some(dir) = gatehouse else {
         println!(
