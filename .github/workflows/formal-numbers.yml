@@ -11,6 +11,9 @@ on:
     paths:
       - "FORMAL_METHODS.md"
       - "NORTH_STAR.md"
+      - "README.md"
+      - "docs/PROOFS.md"
+      - "docs/verified-claims.md"
       - "crates/portcullis-core/lean/CONJECTURES.md"
       - "crates/**/*.lean"
       - "crates/**/*.rs"
@@ -20,6 +23,9 @@ on:
     paths:
       - "FORMAL_METHODS.md"
       - "NORTH_STAR.md"
+      - "README.md"
+      - "docs/PROOFS.md"
+      - "docs/verified-claims.md"
       - "crates/portcullis-core/lean/CONJECTURES.md"
       - "crates/**/*.lean"
       - "crates/**/*.rs"

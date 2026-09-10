@@ -191,10 +191,11 @@ pub fn compile(input: CompileInput<'_>) -> Result<TaskGrant, CompileError> {
         .delegate_to(&lattice, "task grant")
         .map_err(|e| CompileError::NotWithinCeiling(e.to_string()))?;
 
-    let gap = input
-        .cost_config
-        .compute_gap(&PermissionLattice::restrictive(), &lattice);
-    let risk = summarise_risk(&lattice, gap);
+    let risk = summarise_risk(
+        &PermissionLattice::restrictive(),
+        &lattice,
+        input.cost_config,
+    );
 
     let created_at = Utc::now();
     let not_after = lattice.time.valid_until;

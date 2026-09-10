@@ -92,6 +92,10 @@ A downstream operator integrating with any external RP follows these steps. All 
    audience = "<RP's WIF audience URL>"
    allowed_grants = ["urn:ietf:params:oauth:grant-type:token-exchange"]
    max_token_lifetime_secs = 3600
+   # What the token may DO at that audience. A requested scope must be a
+   # subset; absent bounds nothing and refuses any request that asks for a
+   # scope. See docs/oidc-provider-runbook.md.
+   max_scope = ["read:bundles"]
    ```
    See `src/federation.rs` for schema + validation. Default-deny applies until the rule lands.
 

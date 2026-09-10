@@ -88,6 +88,18 @@ pub struct AppState {
     /// SPIRE trust-bundle source — validates subject_token signatures
     /// against per-trust-domain verifying keys (#45).
     pub bundle_provider: Arc<dyn SpireBundleProvider>,
+    /// The Ed25519 root public key that pod certificates must chain to,
+    /// 32 raw bytes (`NUCLEUS_OIDC_CERT_ROOT_PUBKEY`, hex).
+    ///
+    /// Required before a federation rule's `scope_requires` can be satisfied:
+    /// without a pinned root the OP cannot tell a real pod certificate from one
+    /// a caller minted for itself, so a rule that demands delegated authority
+    /// refuses rather than accepting an unpinned chain.
+    ///
+    /// `AttenuationToken::verify` checks the chain against the key the TOKEN
+    /// carries, which proves internal consistency and nothing else — anyone can
+    /// generate a root. This is the key that makes it mean something.
+    pub cert_root_pubkey: Option<Arc<Vec<u8>>>,
 }
 
 /// Build the OP router with the full hardened middleware stack.
@@ -208,6 +220,7 @@ mod tests {
             issuer_url: Arc::from("https://oidc.nucleus.example/"),
             issuer,
             jti_cache: Arc::new(JtiCache::new()),
+            cert_root_pubkey: None,
             federation: Arc::new(FederationRegistry::empty()),
             bundle_provider: Arc::new(crate::spire::StaticBundleProvider::new()),
         })

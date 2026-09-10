@@ -1789,6 +1789,16 @@ mod tests {
         .await
         .expect("run_argv_async");
 
+        // Same reason as `net_fetch_denied_when_policy_never`: the workspace
+        // reqwest is `rustls-no-provider`, so `Client::new()` panics unless a
+        // provider is installed first (idempotent — ignore the already-set Err).
+        // It has to be done HERE too, not only in that test: nextest runs each
+        // test in its own process, so an install over there does not carry.
+        // This passed until now only because a full-workspace build unified
+        // reqwest's `rustls` feature in from nucleus-control-plane-server; a
+        // run scoped to a crate set that excludes it has no provider at all.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         NetEffect::fetch(
             &fx,
             &reqwest::Client::new(),
