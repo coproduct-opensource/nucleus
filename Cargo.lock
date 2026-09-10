@@ -13719,6 +13719,7 @@ name = "xtask"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "ci-fly-runner",
  "ci-spec",
  "ck-kernel",
  "ck-types",

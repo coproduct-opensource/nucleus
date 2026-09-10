@@ -27,9 +27,17 @@ primary_region = "iad"
   # Lean builds (ci-spec-lean, ck-policy-lean, econ-lean, ifc-lean, rubric-lean), `ci/test`,
   # `doctests`, `owasp-gauntlet` and `gates-can-fail` are on that label too, which is why it is
   # shared-cpu-8x with 16 GB and not the 2x/4 GB a pure script pool would want. Volumes are
-  # per build Machine and set with `fly secrets set POOLS=...` when the ids are known; this
-  # tracked default has none, so a fresh deployment works without them (cold caches).
-  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":8,"standby":8,"requires_volume":true,"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":8,"memory_mb":16384},"size":16,"standby":16}]'
+  # per build Machine and set with `fly secrets set POOLS=...` when the ids are known.
+  # This tracked default has none, and therefore declares `requires_volume: false`:
+  # with `true` and no ids the manager REFUSES the config outright -- "requires_volume,
+  # but 0 volumes for 8 machines" -- so the default a fresh deployment falls back to was
+  # one that could not start. The comment here used to claim the opposite. Corrected
+  # 2026-09-10 and now gated by `cargo xtask fly-pools`, which runs the manager's own
+  # validator over this value. The DEPLOYED POOLS secret carries `requires_volume: true`
+  # alongside the real ids, which is where that safety property belongs: it caps `size`
+  # at the volume count, and a compile pool without a volume fills the 8 GB rootfs
+  # (`ld terminated with signal 7`, then ENOSPC, then four ejected required checks).
+  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":8,"standby":8,"requires_volume":false,"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":8,"memory_mb":16384},"size":16,"standby":16}]'
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
