@@ -497,7 +497,13 @@ TODO
 - Correct the doc to match the code, and add a test that every `SinkClass` is reachable from at least one `Operation` or is listed unreachable-with-a-reason — the `documented_inventory_equals_the_enum` shape (`crates/nucleus-ifc-kernel/src/egress_channel.rs:366`).
 
 Status
-- OPEN. Class (d).
+- CLOSED (2026-09-10). The doc now says what the code does, and a bidirectional gate keeps the unreachable list honest.
+- The four sinks are **not** made reachable, and that is the right answer rather than the lazy one: they are unreachable because the `Operation` vocabulary has no verb for them — nothing denotes reading a secret, invoking an MCP tool, sending mail, or filing a ticket. Inventing a mapping (which `Operation` is "send email"?) would be fabricating policy to satisfy a test. Unreachable is also the **tight** direction under the standing decision: nothing can discharge to them.
+- What was actually wrong was the invisibility, plus a doc asserting the opposite of the behaviour: *"returns `true` (permissive) for combinations not explicitly restricted, so adding new variants does not break existing callers by default."* The `match` is exhaustive over `Operation` and every arm is a `matches!` against a closed sink list, so an unlisted pairing has always returned `false`. Adding an `Operation` is a compile error; adding a `SinkClass` silently makes it undischargeable — and the doc promised the opposite, so nobody looked.
+- `SINKS_WITH_NO_OPERATION` records the four with their reasons, and `every_sink_is_reachable_or_documented` asserts each sink is **exactly one** of reachable / documented-unreachable. Both directions matter: a new undischargeable sink fails, and a sink that becomes reachable but stays on the list also fails, so the list cannot rot into a lie either way.
+- Non-vacuity: `the_documented_sinks_are_the_unreachable_ones` pins the count at 4, confirms none is admitted by any of the 13 operations, and asserts a control pairing (`GitPush`→`GitPush`) IS reachable — without which an empty `Operation::ALL` would satisfy the exclusive-or. Perturbations run: dropping `EmailSend` from the list reds with "reachable=false, documented_unreachable=false"; making it reachable via `Operation::GitPush` reds both tests; restoring greens 28/28.
+- The const is `#[cfg(test)]` rather than `#[allow(dead_code)]`, so it does not add to the population item 29 tracks.
+- Root cause is the Tier-3 `Effect` gap: `Operation` is a 13-verb *class* vocabulary with no target, so sinks that are targets-without-a-verb cannot be named. Recorded there, not worked around here.
 
 ## 24) `GitPush` has two different required integrity levels
 
