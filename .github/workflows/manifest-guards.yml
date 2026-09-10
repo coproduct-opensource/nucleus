@@ -101,6 +101,13 @@ jobs:
       # is excluded on purpose: those are upstream packages' own pins and differ legitimately.
       - name: One fact, one value (elan, aeneas/charon, lean-toolchain)
         run: cargo run -q -p xtask -- pin-parity
+      # The manager validates POOLS at startup and nothing validated the COMMITTED
+      # default, so it had drifted into a config the manager refuses: requires_volume
+      # with zero volumes for eight machines. That is the value a fresh deployment
+      # falls back to before `fly secrets set POOLS=...`, so it was a default that
+      # could not start. Runs the manager's own validator, not a copy of the rule.
+      - name: The committed runner-pool default is one the manager accepts
+        run: cargo run -q -p xtask -- fly-pools
 
       # `.gitignore` said `/target/` — anchored to the root, so every nested
       # target/ escaped it, and tools/nucleus-mediation-lint/target was

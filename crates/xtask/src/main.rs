@@ -67,6 +67,9 @@ enum Command {
     /// checksum, the aeneas/charon pins, the first-party lean-toolchain files. Decided
     /// from committed declarations alone — no source tree, no toolchain.
     PinParity,
+    /// The committed `POOLS` default in ci/fly-runner/manager.toml must be a
+    /// configuration the manager accepts, checked with the manager's own validator.
+    FlyPools,
     /// Every source Kani harness must have a CI lane or a named documented exception.
     KaniCoverage,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
@@ -209,6 +212,7 @@ mod ci_otel;
 mod ci_spec;
 mod ci_timings;
 mod gatehouse_pin;
+mod fly_pools;
 mod kani_coverage;
 mod line_ratchet;
 mod pin_parity;
@@ -234,6 +238,7 @@ fn main() -> Result<()> {
             self_pin::Outcome::Clean => Ok(()),
         },
         Command::PinParity => pin_parity::check(&std::env::current_dir()?),
+        Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
         Command::GatehousePin { gatehouse } => {
             gatehouse_pin::check(&std::env::current_dir()?, gatehouse)
