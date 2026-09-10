@@ -37,6 +37,15 @@ struct Cli {
 enum Command {
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
+    /// The two pins naming gatehouse must agree: `.gatehouse/pipeline.writ`'s import
+    /// digest must be the SHA-256 of `prelude/ci.writ` at `gatehouse-plan.yml`'s
+    /// `GATEHOUSE_REF`. Decided from declarations alone; reads no source tree.
+    GatehousePin {
+        /// A checkout of `coproduct-private/gatehouse`, which must be AT the pinned ref.
+        /// Without it only the two nucleus-side declarations can be read.
+        #[arg(long)]
+        gatehouse: Option<std::path::PathBuf>,
+    },
     /// Line-count ratchet, split by what decides the verdict.
     ///
     /// The declaration half is decided by `.line-ratchet.toml` alone and would give
@@ -52,6 +61,15 @@ enum Command {
         #[arg(long)]
         entries: bool,
     },
+    /// A SHA of this repo pinned by this repo must still match the working tree.
+    SelfPin,
+    /// One fact written in several files must have one value: the elan release and its
+    /// checksum, the aeneas/charon pins, the first-party lean-toolchain files. Decided
+    /// from committed declarations alone — no source tree, no toolchain.
+    PinParity,
+    /// The committed `POOLS` default in ci/fly-runner/manager.toml must be a
+    /// configuration the manager accepts, checked with the manager's own validator.
+    FlyPools,
     /// Every source Kani harness must have a CI lane or a named documented exception.
     KaniCoverage,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
@@ -208,10 +226,14 @@ mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
 mod ci_timings;
+mod fly_pools;
+mod gatehouse_pin;
 mod kani_coverage;
 mod line_ratchet;
+mod pin_parity;
 mod rerun_plan;
 mod scoreboard;
+mod self_pin;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
@@ -225,7 +247,18 @@ fn main() -> Result<()> {
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
         Command::CiEjections { limit, json } => ci_ejections::ci_ejections(limit, json),
+        Command::SelfPin => match self_pin::check(&std::env::current_dir()?)? {
+            // 2 is "could not look", which is never a pass. Mapped here rather than
+            // exited from inside the check, so a unit test calling it survives.
+            self_pin::Outcome::CouldNotLook => std::process::exit(2),
+            self_pin::Outcome::Clean => Ok(()),
+        },
+        Command::PinParity => pin_parity::check(&std::env::current_dir()?),
+        Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
+        Command::GatehousePin { gatehouse } => {
+            gatehouse_pin::check(&std::env::current_dir()?, gatehouse)
+        }
         Command::LineRatchet { strict, entries } => {
             if entries {
                 line_ratchet::entries_json()
@@ -365,6 +398,18 @@ fn collect_sh(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Strin
             if name.starts_with('.')
                 || matches!(name, "target" | "node_modules" | "dist" | "vendor")
             {
+                continue;
+            }
+            // Skip anything that is its own checkout. A git WORKTREE (`wt-2630/`,
+            // `wt-hoist/`, …) carries a `.git` FILE rather than a directory, so the
+            // dot-dir rule above does not see it and the walk descends into a second
+            // copy of the whole repository. That is not a cosmetic miscount: this
+            // command IS the port backlog, and it reported "164 total, 150 port
+            // candidates" against a real 90 and 83 — a tracker roughly 2x wrong, in
+            // the direction that makes the remaining work look hopeless. Testing for
+            // `.git` catches worktrees, submodules and stray clones by what they are
+            // rather than by a name pattern that the next worktree will not match.
+            if path.join(".git").exists() {
                 continue;
             }
             collect_sh(root, &path, out)?;
@@ -508,6 +553,31 @@ fn rerun_plan_cmd() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_inventory_does_not_descend_into_another_checkout() {
+        // A git worktree carries a `.git` FILE, so the dot-dir rule misses it and the
+        // walk finds a second copy of every script in the repo. This command is the port
+        // backlog, and it read 164/150 against a real 90/83 until that was fixed.
+        let tmp = std::env::temp_dir().join("xtask-collect-sh-test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let inner = tmp.join("wt-copy");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(tmp.join("mine.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(inner.join("theirs.sh"), "#!/bin/sh\n").unwrap();
+        // Make `inner` look like a worktree: a `.git` file, not a directory.
+        std::fs::write(inner.join(".git"), "gitdir: /elsewhere\n").unwrap();
+
+        let mut out = Vec::new();
+        super::collect_sh(&tmp, &tmp, &mut out).unwrap();
+        out.sort();
+        assert_eq!(
+            out,
+            vec!["mine.sh".to_string()],
+            "a worktree's scripts are not ours"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     use super::parse_member_names;
 
     #[test]
