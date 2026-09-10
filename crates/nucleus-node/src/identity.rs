@@ -274,10 +274,43 @@ impl IdentityManager {
     pub async fn self_issued_http_mtls_listener(
         &self,
         tcp_listener: tokio::net::TcpListener,
-    ) -> Result<nucleus_identity::mtls::MtlsListener, String> {
+    ) -> Result<
+        (
+            nucleus_identity::mtls::MtlsListener,
+            std::sync::Arc<nucleus_identity::tls::RotatingServerCert>,
+        ),
+        String,
+    > {
         let mtls_config = self.self_issued_http_mtls_config().await?;
-        nucleus_identity::mtls::MtlsListener::new(tcp_listener, &mtls_config)
+        nucleus_identity::mtls::MtlsListener::new_rotating(tcp_listener, &mtls_config)
             .map_err(|e| format!("failed to create HTTP mTLS listener: {e}"))
+    }
+
+    /// The TTL this manager mints certificates with.
+    ///
+    /// Read by the HTTPS listener's rotation task to decide how often to rotate:
+    /// the period has to be derived from the TTL, or a shorter
+    /// `--identity-cert-ttl-secs` silently outruns a hardcoded interval.
+    pub fn cert_ttl(&self) -> Duration {
+        self.cert_ttl
+    }
+
+    /// Re-mints the node's own certificate and installs it on a live listener.
+    ///
+    /// The node's HTTPS listener used to hold the certificate it was built with
+    /// for the life of the process, so the API became unreachable exactly
+    /// `--identity-cert-ttl-secs` after start while the unit still reported
+    /// healthy (#2722). `fetch_certificate` reads the same `SecretManager` cache
+    /// `start_refresh_loop` keeps fresh, so this returns a rotated certificate
+    /// without minting a second issuance path.
+    pub async fn rotate_http_server_certificate(
+        &self,
+        resolver: &nucleus_identity::tls::RotatingServerCert,
+    ) -> Result<(), String> {
+        let cert = self.node_certificate().await?;
+        resolver
+            .replace(&cert)
+            .map_err(|e| format!("failed to install rotated node certificate: {e}"))
     }
 
     /// Rebuild the VM registry from the pods already on disk.

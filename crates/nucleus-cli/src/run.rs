@@ -186,6 +186,14 @@ pub struct RunArgs {
     #[arg(skip)]
     pub task_grant_id: Option<String>,
 
+    /// The sealed grant's certificate (base64 attenuation token) and the key
+    /// that signed it, handed to the tool-proxy in local mode so the run is
+    /// enforced per effect (set by --goal / --grant, not flags).
+    #[arg(skip)]
+    pub pod_cert_b64: Option<String>,
+    #[arg(skip)]
+    pub cert_root_pubkey_hex: Option<String>,
+
     /// Working directory (default: current directory)
     #[arg(short = 'd', long, default_value = ".")]
     pub dir: String,
@@ -603,6 +611,7 @@ async fn run_local(
         .arg(&approval_secret)
         .arg("--audit-log")
         .arg(&audit_path)
+        .args(pod_cert_args(args))
         .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
         .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .kill_on_drop(true)
@@ -667,6 +676,21 @@ async fn run_local(
     let _ = proxy_child.kill().await;
 
     render_output(&output, duration, args.output.as_str())
+}
+
+/// `--pod-cert` / `--cert-root-pubkey` for the tool-proxy when this run is
+/// under a sealed grant: the certificate carries the grant's `effect/` keys,
+/// which the proxy enforces per method + host + path (ADR 0004).
+fn pod_cert_args(args: &RunArgs) -> Vec<String> {
+    match (&args.pod_cert_b64, &args.cert_root_pubkey_hex) {
+        (Some(cert), Some(key)) => vec![
+            "--pod-cert".into(),
+            cert.clone(),
+            "--cert-root-pubkey".into(),
+            key.clone(),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 /// Poll the announce_path file until the proxy writes its bound address.

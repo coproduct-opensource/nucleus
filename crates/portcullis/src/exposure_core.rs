@@ -210,46 +210,80 @@ pub fn ifc_egress_verdict<F: EgressAggregates + ?Sized>(
     kind: NodeKind,
     graded: bool,
 ) -> EgressVerdict {
+    ifc_egress_disposition(flow, op, kind, graded).render(op)
+}
+
+/// Allocation-free decision; diagnostics are rendered only after selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EgressDisposition {
+    Pass,
+    Poisoned,
+    Tainted,
+    TaintedApproval,
+    Confidentiality,
+}
+
+impl EgressDisposition {
+    pub(crate) fn render(self, op: Operation) -> EgressVerdict {
+        match self {
+            Self::Pass => EgressVerdict::Pass,
+            Self::Poisoned => EgressVerdict::Deny(
+                "session poisoned: an information-flow observation was dropped; \
+                 failing closed to prevent untracked taint"
+                    .to_string(),
+            ),
+            Self::Confidentiality => EgressVerdict::Deny(format!(
+                "session confidentiality ceiling exceeds what {op:?} may emit; \
+                 outbound operation blocked to prevent secret exfiltration"
+            )),
+            Self::Tainted | Self::TaintedApproval => {
+                let detail = format!(
+                    "session carries adversarial integrity (untrusted/web content was \
+                     observed); outbound operation {op:?} blocked to prevent exfiltration \
+                     of, or action on, injected content"
+                );
+                if self == Self::Tainted {
+                    EgressVerdict::Deny(detail)
+                } else {
+                    EgressVerdict::RequireApproval(format!(
+                        "{detail}; sink is pod-local and reversible, so this is \
+                         deferred for human approval rather than refused"
+                    ))
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn ifc_egress_disposition<F: EgressAggregates + ?Sized>(
+    flow: &F,
+    op: Operation,
+    kind: NodeKind,
+    graded: bool,
+) -> EgressDisposition {
     let is_outbound_action = kind == NodeKind::OutboundAction;
     let carries_data_out =
         is_outbound_action || crate::capability::default_sink_class(op).is_exfil_vector();
     if !carries_data_out {
-        return EgressVerdict::Pass;
+        return EgressDisposition::Pass;
     }
-
     if is_outbound_action && flow.effective_is_tainted(op) {
-        let detail = format!(
-            "session carries adversarial integrity (untrusted/web content was \
-             observed); outbound operation {op:?} blocked to prevent exfiltration \
-             of, or action on, injected content"
-        );
         if !graded {
-            return EgressVerdict::Deny(detail);
+            return EgressDisposition::Tainted;
         }
         match graded_taint_response(op) {
-            TaintResponse::Deny => return EgressVerdict::Deny(detail),
-            TaintResponse::RequireApproval => {
-                return EgressVerdict::RequireApproval(format!(
-                    "{detail}; sink is pod-local and reversible, so this is \
-                     deferred for human approval rather than refused"
-                ))
-            }
-            // Fall through to the confidentiality check — an Allow here means
-            // "integrity does not block this", never "nothing else might".
+            TaintResponse::Deny => return EgressDisposition::Tainted,
+            TaintResponse::RequireApproval => return EgressDisposition::TaintedApproval,
             TaintResponse::Allow => {}
         }
     }
-
     if flow
         .effective_exfiltration_check(op, sink_max_conf_for(op))
         .is_denied()
     {
-        return EgressVerdict::Deny(format!(
-            "session confidentiality ceiling exceeds what {op:?} may emit; \
-             outbound operation blocked to prevent secret exfiltration"
-        ));
+        return EgressDisposition::Confidentiality;
     }
-    EgressVerdict::Pass
+    EgressDisposition::Pass
 }
 
 /// Clock-free IFC egress denial check for the live kernel gate (most-paranoid

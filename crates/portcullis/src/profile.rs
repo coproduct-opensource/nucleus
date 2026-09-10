@@ -652,7 +652,16 @@ mod tests {
     #[test]
     fn test_canonical_profiles_parse() {
         let registry = ProfileRegistry::canonical().unwrap();
-        assert_eq!(registry.len(), 10);
+        // Derived, not hard-coded. This was `assert_eq!(registry.len(), 10)`,
+        // the third copy of a number that lives in `profiles/` — and adding a
+        // profile had to be discovered by breaking it. Comparing against the
+        // provider is not vacuous: `canonical()` registers BY NAME, so two
+        // profiles claiming one name would collapse and make this shorter.
+        assert_eq!(
+            registry.len(),
+            ProfileName::ALL.len(),
+            "every generated profile must register under its own name"
+        );
         let names = registry.names();
         assert!(names.contains(&"safe-pr-fixer"));
         assert!(names.contains(&"doc-editor"));
@@ -664,6 +673,7 @@ mod tests {
         assert!(names.contains(&"research-web"));
         assert!(names.contains(&"read-only"));
         assert!(names.contains(&"local-dev"));
+        assert!(names.contains(&"untrusted-model"));
     }
 
     #[test]
@@ -1093,6 +1103,63 @@ capabilities:
         assert!(result.is_err());
     }
 
+    /// #2738: the `untrusted-model` posture, for a model that is the adversary
+    /// rather than a confused deputy.
+    ///
+    /// Asserted at the level that actually holds it. Against a hostile principal
+    /// the session is never tainted — the operator's own prompt is Trusted — so a
+    /// flow-time denial never fires and the only real defence is that the
+    /// capability is absent. This test therefore checks CAPABILITIES, not
+    /// verdicts: `run_bash` and `spawn_agent` must be `Never`, which is what
+    /// keeps `/v1/run` denied at the run gate and keeps the exec surface (and
+    /// with it the command-text heuristic) out of the path entirely.
+    #[test]
+    fn untrusted_model_removes_the_exec_and_egress_surfaces() {
+        let registry = ProfileRegistry::canonical().unwrap();
+        let lattice = registry.resolve("untrusted-model").unwrap();
+        let caps = &lattice.capabilities;
+
+        // The two the issue names.
+        assert_eq!(caps.run_bash, CapabilityLevel::Never, "no exec surface");
+        assert_eq!(caps.spawn_agent, CapabilityLevel::Never, "no sub-agents");
+
+        // Every egress sink, so the posture cannot be half-applied: a model that
+        // cannot spawn a shell but can open a PR is not contained.
+        assert_eq!(caps.git_push, CapabilityLevel::Never);
+        assert_eq!(caps.create_pr, CapabilityLevel::Never);
+        assert_eq!(caps.git_commit, CapabilityLevel::Never);
+        assert_eq!(caps.web_fetch, CapabilityLevel::Never, "a URL is a channel");
+        assert_eq!(caps.web_search, CapabilityLevel::Never);
+        assert_eq!(caps.manage_pods, CapabilityLevel::Never);
+
+        // Non-vacuity: it is not simply `Never` everywhere, which would pass all
+        // of the above while being an unusable profile nobody adopts.
+        assert_ne!(caps.read_files, CapabilityLevel::Never);
+        assert_ne!(caps.write_files, CapabilityLevel::Never);
+        assert_ne!(caps.grep_search, CapabilityLevel::Never);
+    }
+
+    /// The contrast that makes the profile above worth having: `codegen`, the
+    /// profile most people reach for, DOES permit exec. If this ever became
+    /// `Never` the new profile would be redundant, and if `untrusted-model` ever
+    /// became `LowRisk` the two would be indistinguishable.
+    #[test]
+    fn codegen_permits_the_exec_untrusted_model_removes() {
+        let registry = ProfileRegistry::canonical().unwrap();
+        assert_eq!(
+            registry.resolve("codegen").unwrap().capabilities.run_bash,
+            CapabilityLevel::LowRisk
+        );
+        assert_eq!(
+            registry
+                .resolve("untrusted-model")
+                .unwrap()
+                .capabilities
+                .run_bash,
+            CapabilityLevel::Never
+        );
+    }
+
     #[test]
     fn test_merge_runtime_overrides_builtin() {
         let mut builtins = ProfileRegistry::canonical().unwrap();
@@ -1235,8 +1302,8 @@ mod builtin_profile_provider {
     #[test]
     fn the_provider_found_the_profiles() {
         assert!(
-            ProfileName::ALL.len() >= 10,
-            "expected the ten built-in profiles, generator produced {}",
+            ProfileName::ALL.len() >= 11,
+            "expected the built-in profiles, generator produced {}",
             ProfileName::ALL.len()
         );
     }

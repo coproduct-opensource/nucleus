@@ -90,11 +90,12 @@ with two invariants DX work may not violate:
   policy-trace` deepens it; `--save-grant` writes it.
 - The 13-dimension verified core does not change. Effects are catalog data now and
   `extensions` keys on the certificate later, following the `tool_surface` pattern.
-- Enforcement of a semantic effect is, in this milestone, the lattice it lowers to
-  plus the host list plus the command prefixes it vouches for. An agent that reaches
-  GitHub with `curl` rather than an MCP tool is bounded by host, not by method+path;
-  per-effect enforcement at the credential boundary is a later milestone and the
-  docs say so.
+- Enforcement of a semantic effect was, through milestone 5, the lattice it lowers
+  to plus the host list plus the command prefixes it vouches for. From milestone 6 a
+  pod whose certificate carries the effect dimension is also bounded per effect at
+  the egress boundary (method + host + path on `web_fetch` and credentialed egress)
+  and at the MCP boundary (tool names), so `github/read-ci-logs` cannot be spent on
+  opening a pull request. Shell commands remain bounded by the command lattice.
 - Two metrics become product surfaces: ρ (authority granted ÷ authority used, from
   receipts) and C(T) (authorization decisions per task).
 - A new CI gate, "The task compiler is offline by construction", is probed by the
@@ -109,4 +110,4 @@ with two invariants DX work may not violate:
 | 3 | Trace → effect attribution (`grant_usage`), ρ over dimensions and effects, post-run usage lines and "save a narrower profile", `nucleus observe --grant --narrow --save`, user profiles in `~/.config/nucleus/profiles` (never wider than a canonical name) | this PR |
 | 4 | `EscalationProposal` (`escalation_proposal`): attempt, reason, minimum effect and raised dimensions, risk delta, scopes (always / this run), outside-ceiling and repair outcomes; `denials_in_trace`; post-run proposals; `nucleus grant propose\|widen`. Carriage inside MCP / tool-proxy / hook / SDK denial payloads is the next step | this PR |
 | 5 | `AuthoritySummary` (`authority_metrics`, feature-free): ρ over dimensions, C(T) = confirmations + approvals, decision counts; in `ExitReport.authority`, the MCP `session_summary`, and the run's closing line; `PodSpec.metadata.task_grant_id` | this PR |
-| 6 | Per-effect enforcement at the credential boundary (method+path) | |
+| 6 | Per-effect enforcement from the certificate's `effect/` keys: `EffectCatalog::admits_http` / `admits_tool`; the tool-proxy refuses a `web_fetch` or credentialed-egress request no granted effect vouches for (method + host + path); mcp-guard blocks tools no granted effect names; `--goal` / `--grant` runs hand the sealed certificate to the proxy in local mode | this PR |

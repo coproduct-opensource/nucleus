@@ -119,10 +119,12 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         Decision::Accept | Decision::SaveOnly => {}
     }
 
-    // The acceptance is the approval: seal it if asked, before anything runs.
+    // The acceptance is the approval: seal it, before anything runs. The
+    // seal is what the tool-proxy enforces per effect (its certificate
+    // carries the `effect/` keys); `--save-grant` also keeps it for reuse.
+    let key = load_or_create_grant_key(args.grant_key.as_deref())?;
+    let sealed = SealedTaskGrant::seal(grant.clone(), crate::grant::approver_identity(), &key);
     if let Some(path) = &args.save_grant {
-        let key = load_or_create_grant_key(args.grant_key.as_deref())?;
-        let sealed = SealedTaskGrant::seal(grant.clone(), crate::grant::approver_identity(), &key);
         write_sealed(&sealed, path)?;
         if decision == Decision::SaveOnly {
             return Ok(());
@@ -131,6 +133,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
 
     let mut args = args;
     args.task_grant_id = Some(grant.id.to_string());
+    attach_seal(&mut args, &sealed)?;
     let trace = default_trace(&mut args, grant.id)?;
     run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await?;
     // One confirmation: the person decided, at the prompt or with --yes.
@@ -171,10 +174,24 @@ pub async fn execute_grant(args: RunArgs, global_config_path: &str) -> Result<()
     let grant = grant.clone();
     let mut args = args;
     args.task_grant_id = Some(grant.id.to_string());
+    attach_seal(&mut args, &sealed)?;
     let trace = default_trace(&mut args, grant.id)?;
     run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await?;
     // Zero confirmations: the decision was sealed earlier (C(T) = 0).
     learn_from_run(&args, &grant, &catalog, trace.as_deref(), 0)
+}
+
+/// Hand the sealed certificate to the run path so the tool-proxy enforces
+/// the grant's effects per method + host + path and per MCP tool.
+fn attach_seal(args: &mut RunArgs, sealed: &SealedTaskGrant) -> Result<()> {
+    args.pod_cert_b64 = Some(
+        sealed
+            .token
+            .to_base64()
+            .map_err(|e| anyhow!("encoding the grant certificate: {e}"))?,
+    );
+    args.cert_root_pubkey_hex = Some(sealed.signer_hex());
+    Ok(())
 }
 
 /// A goal or grant run always leaves a trace to learn from: unless

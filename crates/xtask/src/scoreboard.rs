@@ -15,14 +15,13 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-const LOWER: [&str; 7] = [
+const LOWER: [&str; 6] = [
     "permissive_verify",
     "vacuous_lean",
     "sorry_admit",
     "mediation_drift",
     "effect_stubs",
     "unsafe_blocks",
-    "stale_verus_dirs",
 ];
 const HIGHER: [&str; 4] = [
     "extracted_proofs",
