@@ -96,9 +96,11 @@ impl std::fmt::Display for DeclarationDefect {
 
 pub fn parse(text: &str) -> Result<RatchetConfig> {
     toml::from_str(text).with_context(|| {
-        format!("{RATCHET_FILE} did not parse. Both an unknown key and a missing field are \
+        format!(
+            "{RATCHET_FILE} did not parse. Both an unknown key and a missing field are \
                  errors here on purpose: a field nothing reads is a field that can silently \
-                 stop mattering, and a field that is absent is a default nobody chose.")
+                 stop mattering, and a field that is absent is a default nobody chose."
+        )
     })
 }
 
@@ -167,18 +169,30 @@ pub fn check_counts(root: &Path, cfg: &RatchetConfig, strict: bool) -> Result<us
         if !path.is_file() {
             // A declared file that does not exist is a declaration defect, but it is
             // only detectable with the tree, so it is reported from this half.
-            println!("VIOLATION: {} is declared in {RATCHET_FILE} but does not exist", e.path);
+            println!(
+                "VIOLATION: {} is declared in {RATCHET_FILE} but does not exist",
+                e.path
+            );
             violations += 1;
             continue;
         }
         let actual = count_lines(&path)?;
         if actual > e.ceiling {
-            println!("VIOLATION: {} has {actual} lines (ceiling: {})", e.path, e.ceiling);
+            println!(
+                "VIOLATION: {} has {actual} lines (ceiling: {})",
+                e.path, e.ceiling
+            );
             println!("  target:  {} lines", e.target);
-            println!("  remaining: {} lines to extract", actual.saturating_sub(e.target));
+            println!(
+                "  remaining: {} lines to extract",
+                actual.saturating_sub(e.target)
+            );
             violations += 1;
         } else if actual <= e.target {
-            println!("TARGET REACHED: {} is at or below {} lines!", e.path, e.target);
+            println!(
+                "TARGET REACHED: {} is at or below {} lines!",
+                e.path, e.target
+            );
         } else {
             println!("OK: {} at {actual} lines (ceiling {})", e.path, e.ceiling);
         }
@@ -208,7 +222,10 @@ pub fn check_counts(root: &Path, cfg: &RatchetConfig, strict: bool) -> Result<us
         }
     }
     if swept_violations == 0 {
-        println!("OK: {swept} files swept, all <= {} lines", cfg.ratchet.default_ceiling);
+        println!(
+            "OK: {swept} files swept, all <= {} lines",
+            cfg.ratchet.default_ceiling
+        );
     } else {
         println!(
             "{swept_violations} of {swept} swept files exceed the default ceiling ({})",
@@ -281,7 +298,11 @@ pub fn check(strict: bool) -> Result<()> {
     // proposal to the current ceiling for exactly this case, because the plain
     // max(actual, ceiling - step, target) would propose a RAISE from a job named
     // "ratchet down". Worth naming out loud so the clamp is not mistaken for dead code.
-    for e in cfg.files.iter().filter(|e| e.step > 0 && e.ceiling <= e.target) {
+    for e in cfg
+        .files
+        .iter()
+        .filter(|e| e.step > 0 && e.ceiling <= e.target)
+    {
         println!(
             "note: {} has already beaten its target ({} <= {}) and still steps by {}; \
              the ratchet-down job's clamp is what keeps that from raising the ceiling",
@@ -319,18 +340,23 @@ step = 1
         .expect("repo config present");
         let cfg = parse(&text).expect("the shipped config parses");
         assert!(!cfg.files.is_empty());
-        assert!(check_declaration(&cfg).is_empty(), "shipped config is well formed");
+        assert!(
+            check_declaration(&cfg).is_empty(),
+            "shipped config is well formed"
+        );
     }
 
     #[test]
     fn duplicate_path_is_a_declaration_defect() {
-        let text = format!(
-            "{GOOD}\n[[files]]\npath = \"a.rs\"\nceiling = 99\ntarget = 5\nstep = 1\n"
-        );
+        let text =
+            format!("{GOOD}\n[[files]]\npath = \"a.rs\"\nceiling = 99\ntarget = 5\nstep = 1\n");
         let cfg = parse(&text).unwrap();
         assert_eq!(
             check_declaration(&cfg),
-            vec![DeclarationDefect::DuplicatePath { path: "a.rs".into(), count: 2 }]
+            vec![DeclarationDefect::DuplicatePath {
+                path: "a.rs".into(),
+                count: 2
+            }]
         );
     }
 
@@ -338,13 +364,19 @@ step = 1
     fn an_unread_key_does_not_parse() {
         // The `[ratchet] ceiling` that once shadowed a file entry would land here.
         let text = format!("{GOOD}ceiling = 2479\n");
-        assert!(parse(&text).is_err(), "an unknown key must not be accepted silently");
+        assert!(
+            parse(&text).is_err(),
+            "an unknown key must not be accepted silently"
+        );
     }
 
     #[test]
     fn a_missing_field_does_not_parse() {
         let text = "[ratchet]\ndefault_ceiling = 1\n\n[[files]]\npath = \"a.rs\"\nceiling = 1\n";
-        assert!(parse(text).is_err(), "an incomplete entry must not be accepted");
+        assert!(
+            parse(text).is_err(),
+            "an incomplete entry must not be accepted"
+        );
     }
 
     #[test]
@@ -360,7 +392,11 @@ step = 1
         fs::create_dir_all(&dir).unwrap();
         let f = dir.join("no-trailing-newline.rs");
         fs::write(&f, b"one\ntwo").unwrap();
-        assert_eq!(count_lines(&f).unwrap(), 1, "wc -l counts newlines, not lines");
+        assert_eq!(
+            count_lines(&f).unwrap(),
+            1,
+            "wc -l counts newlines, not lines"
+        );
         fs::write(&f, b"one\ntwo\n").unwrap();
         assert_eq!(count_lines(&f).unwrap(), 2);
         fs::remove_dir_all(&dir).ok();
