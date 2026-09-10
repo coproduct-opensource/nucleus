@@ -277,7 +277,13 @@ jobs:
       - name: "Mathlib cache (self-hosted: baked elan, persistent ~/.cache/mathlib)"
         if: steps.scope.outputs.relevant == 'true' && runner.environment != 'github-hosted'
         working-directory: crates/nucleus-github-oidc/lean
-        run: lake exe cache get || true
+        run: |
+          # NOT `|| true`. A Mathlib cache miss and a cache FAILURE are different
+          # events, and swallowing the exit code made them indistinguishable: the
+          # build fell back to compiling Mathlib from source, silently, for minutes
+          # on the build pool. That is what #2685 found. `lake exe cache get`
+          # returns non-zero when it could not fetch, so let it.
+          lake exe cache get
 
       - name: lake build (extracted core + theorems)
         if: steps.scope.outputs.relevant == 'true'
