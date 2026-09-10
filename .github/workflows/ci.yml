@@ -32,6 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       - name: Determine changed crates
         id: detect
         # Pass event/base data via env (never interpolate ${{ }} directly into
@@ -359,6 +360,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           targets: wasm32-unknown-unknown
@@ -731,6 +733,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       # Scope: on pull_request, the crates the diff touches closed under
       # reverse dependencies (scripts/affected-crates.sh); anything else, or a
       # workspace-wide change, is the full run. Outputs: full=true|false and
@@ -798,6 +801,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       # Scope: on pull_request, the crates the diff touches closed under
       # reverse dependencies (scripts/affected-crates.sh); anything else, or a
       # workspace-wide change, is the full run. Outputs: full=true|false and
