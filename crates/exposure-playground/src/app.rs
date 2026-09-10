@@ -555,7 +555,7 @@ impl App {
 
     /// Verify the trace chain.
     pub fn verify_chain(&mut self) {
-        if self.trace_chain.verify() {
+        if self.trace_chain.is_structurally_valid() {
             self.chain_status = Some("Chain verified successfully".to_string());
         } else {
             self.chain_status = Some("Chain verification FAILED".to_string());

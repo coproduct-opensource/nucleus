@@ -403,6 +403,8 @@ impl ProfileSpec {
                     consumed_usd: rust_decimal::Decimal::ZERO,
                     max_input_tokens: spec.max_input_tokens,
                     max_output_tokens: spec.max_output_tokens,
+                    consumed_input_tokens: 0,
+                    consumed_output_tokens: 0,
                 }
             }
             None => BudgetLattice::default(),

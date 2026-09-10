@@ -54,8 +54,8 @@ pub use ct_merkle::{ConsistencyProof, InclusionProof, InclusionVerifError, RootH
 pub mod local_issuer;
 
 pub use checkpoint::{
-    Ed25519Witness, SignedTreeHead, TreeWitness, VerifyOnlyWitness, WitnessError,
-    canonical_sth_bytes,
+    Ed25519Witness, STH_DOMAIN, SignedTreeHead, TreeWitness, VerifyOnlyWitness, WitnessError,
+    canonical_sth_bytes, canonical_sth_bytes_legacy,
 };
 #[cfg(feature = "http")]
 pub use cosign::{C2spHttpWitnessClient, HttpWitnessClient};
