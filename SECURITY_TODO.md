@@ -456,10 +456,16 @@ Impact
 - An authority-raising transition with no unforgeable evidence behind it.
 
 TODO
-- Require a `DeclassificationToken`; fail closed when the governor key set is unprovisioned, matching `kernel/declassify_authority.rs`.
+- ~~Require a `DeclassificationToken`; fail closed when the governor key set is unprovisioned.~~ **Superseded — see the reclassification below.**
+- Delete the module in the deletion pass (PR D), and record it as a class-D row in the law-mechanism manifest.
 
 Status
-- OPEN.
+- **RECLASSIFIED (2026-09-10): not a live vulnerability, and the original TODO was wrong.** Filed as "an authority-raising transition with no unforgeable evidence", which is accurate about the code but wrong about the exposure.
+- `validate_distillation` has **zero production callers**. Across every tracked file in the repo, the only mentions of `validate_distillation`, `QuarantineConfig`, `DistillResult`, `DistillError`, `SchemaSpec` and `DpiPattern` are this file's own definitions and tests — plus this entry. The whole `portcullis_core::quarantine` module is unwired.
+- It is also a **weaker duplicate of a mechanism that already exists and is guarded**. `portcullis-core/src/labeled.rs` implements distillation through `DeclassifyReason::SchematicDistillation`, which refuses to promote to `Trusted` at all ("schematic distillation promotes to Untrusted, not Trusted; use HumanReview or DeterministicVerification"), pinned by `distillation_cannot_promote_to_trusted`. The `quarantine.rs` copy takes `config.output_integrity` on trust and applies it.
+- So the correct disposition is **delete, not harden**. Hardening would mean adding a signed-token path to 776 lines nobody calls, and maintaining a second distillation implementation alongside the guarded one. That is how the duplicate arose.
+- **Deliberately not deleted in this commit.** The plan sequences deletions into PR D precisely because deletions conflict with everything; a 776-line removal of a public module does not belong in the middle of a defect-fix stack. Tracked as a class-D row for that pass.
+- Severity restated: **dead-but-dangerous**, the same category as item 22 (`SpiffeTraceChain`). Not exploitable today; a hazard the moment anyone wires it, and shaped so that wiring it looks reasonable.
 
 ## 22) `SpiffeTraceChain::verify()` performs no cryptographic check
 
