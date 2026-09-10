@@ -92,6 +92,20 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// How often does a merge-queue entry EJECT, and on what? The number that
+    /// decides a batch size: batching multiplies the cost of a red, so a queue
+    /// that does not know its ejection rate can only guess at one. Counts only
+    /// DECIDED entries — an entry the queue still holds is in flight, not an
+    /// ejection, which is the distinction measuring it by hand got wrong.
+    CiEjections {
+        /// Workflow runs to scan, paginated. A merge group is ~31 runs, so
+        /// 100 is only ~3 entries; the default aims at a usable sample.
+        #[arg(long, default_value_t = 1000)]
+        limit: usize,
+        /// Dump one JSON object per entry instead of the report.
+        #[arg(long)]
+        json: bool,
+    },
     /// CI configuration is sound (CI-1): decide the invariants the merge queue
     /// relies on over a typed model of the workflows, the required-check
     /// ledger (ci/required-checks.txt) and the merge-queue pin
@@ -177,6 +191,7 @@ enum CiSpecCmd {
 
 mod ci_otel;
 mod ci_spec;
+mod ci_ejections;
 mod ci_timings;
 mod kani_coverage;
 mod rerun_plan;
@@ -193,6 +208,7 @@ fn main() -> Result<()> {
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
+        Command::CiEjections { limit, json } => ci_ejections::ci_ejections(limit, json),
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
