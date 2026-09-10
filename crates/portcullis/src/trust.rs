@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn reputation_score_no_cliffs() {
         // Verify there are no sudden jumps across a small delta
-        let scores: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
+        let scores: Vec<f64> = (0..100).map(|i| f64::from(i) / 100.0).collect();
         for window in scores.windows(2) {
             let a = TrustProfile::from_reputation_score(window[0]);
             let b = TrustProfile::from_reputation_score(window[1]);

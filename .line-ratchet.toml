@@ -1,9 +1,13 @@
 # Line-count ratchet — soft ceiling that decreases by 1 on every merge to main.
 
 [ratchet]
-ceiling = 2479
-target = 2500
-step = 1
+# `ceiling`, `target` and `step` used to sit here too, read by nothing. They were
+# the trap: the old checker took `grep '^ceiling' | head -1`, which found THIS
+# block rather than any [[files]] entry, and the numbers only ever looked right
+# because they happened to equal kernel.rs's own. Removed 2026-09-09 — the parser
+# in `crates/xtask/src/line_ratchet.rs` rejects unknown keys, so a field nothing
+# reads can no longer sit here waiting to be mistaken for one that matters.
+#
 # Ceiling applied to every crates/*/src/**/*.rs file with NO [[files]] entry
 # of its own — added 2026-09-03 so the gate covers the whole workspace
 # instead of the three files someone happened to list. Seeded at 2500

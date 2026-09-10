@@ -9,6 +9,7 @@
   - [Agent Sandbox](quickstart/agent-sandbox.md)
 - [Permissions Guide](permissions.md)
 - [Writing an Effect Pack](effect-authoring.md)
+- [Posture for an Adversarial Model](adversarial-model-posture.md)
 - [Integration Endpoints](integration-endpoints.md)
 - [Split-Trust Deployment](split-trust.md)
 - [Architecture](architecture/overview.md)

@@ -230,7 +230,7 @@ fn large_values_require_u128_intermediate() {
     let rs = [receipt("big", matched, total, false)];
     let s = summarize(&rs);
 
-    let expected: u32 = ((1000u128 * matched as u128) / total as u128) as u32;
+    let expected: u32 = ((1000u128 * u128::from(matched)) / u128::from(total)) as u32;
     // Sanity: this is ~499 (just under half).
     assert_eq!(expected, 499);
     assert_eq!(s.exact_matched, matched);

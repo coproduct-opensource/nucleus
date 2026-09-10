@@ -237,7 +237,7 @@ mod tests {
                 peer_pubkey_hex: format!("{i:02x}"),
                 sth_json: "{}".to_string(),
                 signature_b64: "".to_string(),
-                accepted_at_ms: i as i64,
+                accepted_at_ms: i64::from(i),
             });
         }
         assert_eq!(ring.len(), 2);

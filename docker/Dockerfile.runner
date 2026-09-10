@@ -99,6 +99,7 @@ ARG CARGO_HACK_VERSION=0.6.45
 ARG CARGO_NEXTEST_VERSION=0.9.143
 ARG CARGO_DENY_VERSION=0.20.2
 ARG CARGO_ZIGBUILD_VERSION=0.23.4
+ARG CARGO_MUTANTS_VERSION=27.1.0
 RUN set -eux; \
     cargo install cargo-dylint dylint-link --version ${CARGO_DYLINT_VERSION} --locked; \
     cargo +stable install cargo-audit --version ${CARGO_AUDIT_VERSION} --locked --no-default-features; \
@@ -107,9 +108,10 @@ RUN set -eux; \
     cargo install cargo-nextest --version ${CARGO_NEXTEST_VERSION} --locked; \
     cargo install cargo-deny --version ${CARGO_DENY_VERSION} --locked; \
     cargo install cargo-zigbuild --version ${CARGO_ZIGBUILD_VERSION} --locked; \
+    cargo install cargo-mutants --version ${CARGO_MUTANTS_VERSION} --locked; \
     rm -rf /home/runner/.cargo/registry /home/runner/.cargo/git /home/runner/.cargo/.package-cache; \
     mkdir -p /home/runner/.cargo/registry /home/runner/.cargo/git; \
-    cargo dylint --version; cargo audit --version; cargo llvm-cov --version; cargo hack --version; cargo nextest --version; cargo deny --version; cargo-zigbuild --version
+    cargo dylint --version; cargo audit --version; cargo llvm-cov --version; cargo hack --version; cargo nextest --version; cargo deny --version; cargo-zigbuild --version; cargo mutants --version
 
 
 # ── Pure-arm64 CI (2026-09-05): what used to keep lanes on hosted x86 ─────────
