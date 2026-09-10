@@ -282,18 +282,17 @@ pub fn parse(text: &str) -> Result<Manifest> {
 pub fn production_region(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut skipping = false;
-    let mut depth: i32 = 0;
+    let mut depth: usize = 0;
     let mut pending = false;
 
     for line in src.lines() {
-        let opens = line.matches('{').count() as i32;
-        let closes = line.matches('}').count() as i32;
+        let opens = line.matches('{').count();
+        let closes = line.matches('}').count();
 
         if skipping {
-            depth += opens - closes;
-            if depth <= 0 {
+            depth = depth.saturating_add(opens).saturating_sub(closes);
+            if depth == 0 {
                 skipping = false;
-                depth = 0;
             }
             continue;
         }
@@ -304,11 +303,10 @@ pub fn production_region(src: &str) -> String {
         if pending {
             if opens > 0 {
                 skipping = true;
-                depth = opens - closes;
+                depth = opens.saturating_sub(closes);
                 pending = false;
-                if depth <= 0 {
+                if depth == 0 {
                     skipping = false;
-                    depth = 0;
                 }
                 continue;
             }
