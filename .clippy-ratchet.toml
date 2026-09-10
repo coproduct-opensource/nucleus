@@ -60,6 +60,12 @@ lints = [
 # value-preserving. The other four lints (truncation 352, wrap 68, precision 57,
 # sign_loss 55 raw sites) each need a decision per site about what the right
 # behaviour IS, and are left for `step` and for changes that can reason about them.
-ceiling = 341
+# Pinned from CI's count, not the local one. First attempt set this to 341, which
+# was measured on macOS; CI (linux) counted 345 and red the gate on this very PR.
+# The seeding comment above already said why -- "clippy counts can differ by
+# platform and feature resolution, and CI (linux) is the authority" -- and it was
+# not followed. The four-site gap is platform/feature resolution, not a regression:
+# the same 117 cast_lossless fixes are in the tree either way.
+ceiling = 345
 target = 0
 step = 5
