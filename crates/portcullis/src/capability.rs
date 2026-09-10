@@ -269,7 +269,7 @@ impl IncompatibilityConstraint {
             || caps.create_pr >= CapabilityLevel::LowRisk
             || caps.run_bash >= CapabilityLevel::LowRisk;
 
-        let count = has_private_access as u8 + has_untrusted as u8 + has_exfil as u8;
+        let count = u8::from(has_private_access) + u8::from(has_untrusted) + u8::from(has_exfil);
         match count {
             0 => StateRisk::Safe,
             1 => StateRisk::Low,

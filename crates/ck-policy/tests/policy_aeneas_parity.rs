@@ -138,7 +138,7 @@ fn budget_arr(b: &BudgetBounds) -> [u64; 8] {
         b.max_network_calls,
         b.max_files_touched,
         b.max_dollar_spend_millicents,
-        b.max_patch_attempts as u64,
+        u64::from(b.max_patch_attempts),
     ]
 }
 
