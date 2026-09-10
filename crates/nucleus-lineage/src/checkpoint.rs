@@ -120,7 +120,22 @@ impl SignedTreeHead {
         let root = hex_decode_32(&self.root_hash_hex)
             .ok_or_else(|| WitnessError::Backend("malformed root_hash_hex".into()))?;
         let canonical = canonical_sth_bytes(self.tree_size, self.timestamp_ms, &root);
-        witness.verify_canonical(&canonical, &self.witness_sig)
+        match witness.verify_canonical(&canonical, &self.witness_sig) {
+            Ok(()) => Ok(()),
+            Err(current_err) => {
+                // Dual-accept window (SECURITY_TODO #30). `SignedTreeHead` has
+                // no version field, so a signature cannot say which preimage
+                // produced it — try the current form, then the pre-#30 one.
+                // The error returned on total failure is the CURRENT form's, so
+                // the message names the encoding a caller should be producing
+                // rather than the one being retired.
+                let legacy = canonical_sth_bytes_legacy(self.tree_size, self.timestamp_ms, &root);
+                match witness.verify_canonical(&legacy, &self.witness_sig) {
+                    Ok(()) => Ok(()),
+                    Err(_) => Err(current_err),
+                }
+            }
+        }
     }
 }
 
@@ -133,15 +148,70 @@ impl SignedTreeHead {
 /// 2. 8 bytes — `timestamp_ms` (big-endian u64)
 /// 3. 32 bytes — `root_hash` (raw Merkle Tree Hash bytes)
 ///
-/// Total: 48 bytes. No domain separator: the signature scope is "this is
-/// a nucleus-lineage STH" and is established out-of-band by the verifier
-/// knowing which kid maps to which log.
-pub fn canonical_sth_bytes(tree_size: u64, timestamp_ms: u64, root_hash: &[u8; 32]) -> [u8; 48] {
+/// Prefixed by [`STH_DOMAIN`], so 71 bytes total.
+///
+/// # The domain separator (SECURITY_TODO #30)
+///
+/// This used to be 48 bytes with no separator, and said so: *"the signature
+/// scope is 'this is a nucleus-lineage STH' and is established out-of-band by
+/// the verifier knowing which kid maps to which log."* That is not a property
+/// the bytes carry — it is a hope about how they are used.
+///
+/// Meanwhile `nucleus_verifier_service::signing::canonical_sth_bytes` — same
+/// name, different crate — emits `nucleus-verifier-sth/v1 ‖ be i64 ‖ be i64 ‖
+/// root`. Two functions with one name and two layouts, one of them unqualified:
+/// a witness key used for both logs produces signatures that are meaningful in
+/// a context the signer did not intend, which is the whole reason domain
+/// separation exists.
+///
+/// # Why not the C2SP checkpoint body
+///
+/// Because it would silently drop a signed field. `signed_note::
+/// checkpoint_signed_bytes` covers `origin`, `tree_size` and `root_hash` — and
+/// **not `timestamp_ms`**, which this preimage does cover and which
+/// `nucleus_envelope::verify` reads to reject stale anchors
+/// (`VerifyBundleError::StaleSth`). Signing the C2SP body here would let anyone
+/// holding a validly-signed STH rewrite `timestamp_ms` to now and turn
+/// `sth_max_age` into a no-op. C2SP stays what it already is: a second,
+/// separately-domain-separated protocol for federating with external witnesses
+/// ([`CosignatureKind::C2sp`]), not a replacement for this one.
+pub fn canonical_sth_bytes(tree_size: u64, timestamp_ms: u64, root_hash: &[u8; 32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(STH_DOMAIN.len() + 48);
+    out.extend_from_slice(STH_DOMAIN);
+    out.extend_from_slice(&canonical_sth_body(tree_size, timestamp_ms, root_hash));
+    out
+}
+
+/// Domain separator for a nucleus-lineage STH signature.
+///
+/// Trailing newline for the same reason `nucleus-verifier-sth/v1\n` has one:
+/// the tag can never be a prefix of a longer tag.
+pub const STH_DOMAIN: &[u8] = b"nucleus-lineage-sth/v1\n";
+
+/// The undomained 48-byte body: `tree_size ‖ timestamp_ms ‖ root_hash`.
+fn canonical_sth_body(tree_size: u64, timestamp_ms: u64, root_hash: &[u8; 32]) -> [u8; 48] {
     let mut out = [0u8; 48];
     out[..8].copy_from_slice(&tree_size.to_be_bytes());
     out[8..16].copy_from_slice(&timestamp_ms.to_be_bytes());
     out[16..].copy_from_slice(root_hash);
     out
+}
+
+/// The pre-#30 preimage: the 48-byte body with no domain separator.
+///
+/// **Verification only, and only during the dual-accept window.** Nothing signs
+/// this any more. `SignedTreeHead` has no version field, so a signature cannot
+/// announce which preimage produced it; the only migration available is to try
+/// the current form and fall back. Remove this — and the fallback in
+/// [`SignedTreeHead::verify`], [`crate::cosign`] and
+/// `nucleus_envelope::verify` — one release after the change that introduced
+/// it, at which point STHs signed under the old form stop verifying.
+pub fn canonical_sth_bytes_legacy(
+    tree_size: u64,
+    timestamp_ms: u64,
+    root_hash: &[u8; 32],
+) -> [u8; 48] {
+    canonical_sth_body(tree_size, timestamp_ms, root_hash)
 }
 
 /// A backend that can sign STHs.
@@ -352,12 +422,88 @@ mod tests {
     }
 
     #[test]
-    fn canonical_bytes_are_48_and_stable() {
+    fn canonical_bytes_are_domain_separated_and_stable() {
         let bytes = canonical_sth_bytes(5, 1_700_000_000_000, &[0xAB; 32]);
-        assert_eq!(bytes.len(), 48);
+        assert_eq!(bytes.len(), STH_DOMAIN.len() + 48);
+        assert!(
+            bytes.starts_with(STH_DOMAIN),
+            "the preimage must name its own protocol; that is the whole point of #30"
+        );
         // Determinism
         let bytes2 = canonical_sth_bytes(5, 1_700_000_000_000, &[0xAB; 32]);
         assert_eq!(bytes, bytes2);
+        // The legacy body is unchanged and still 48 bytes, so a dual-accept
+        // verifier reconstructs exactly what old signers signed.
+        let legacy = canonical_sth_bytes_legacy(5, 1_700_000_000_000, &[0xAB; 32]);
+        assert_eq!(legacy.len(), 48);
+        assert_eq!(&bytes[STH_DOMAIN.len()..], &legacy[..]);
+    }
+
+    /// SECURITY_TODO #30 — the defect, stated as a test.
+    ///
+    /// `nucleus_verifier_service::signing::canonical_sth_bytes` is a different
+    /// function with the same name that emits `nucleus-verifier-sth/v1 ‖ be i64
+    /// ‖ be i64 ‖ root` for a different log. Before the separator, this log's
+    /// preimage was the bare 48-byte body, so the two protocols' signed bytes
+    /// were only distinguishable by luck: a witness key used for both produced
+    /// signatures meaningful in a context the signer never intended.
+    ///
+    /// Now the two preimages cannot collide, because each names itself.
+    #[test]
+    fn the_preimage_cannot_be_confused_with_the_other_sth_protocol() {
+        const VERIFIER_DOMAIN: &[u8] = b"nucleus-verifier-sth/v1\n";
+        let ours = canonical_sth_bytes(5, 1000, &[1; 32]);
+
+        // The sibling protocol's shape, reconstructed here so the test does not
+        // depend on that crate.
+        let mut theirs = Vec::from(VERIFIER_DOMAIN);
+        theirs.extend_from_slice(&5i64.to_be_bytes());
+        theirs.extend_from_slice(&1000i64.to_be_bytes());
+        theirs.extend_from_slice(&[1u8; 32]);
+
+        assert_ne!(ours, theirs);
+        assert!(!ours.starts_with(VERIFIER_DOMAIN));
+        assert!(!theirs.starts_with(STH_DOMAIN));
+
+        // And the pre-#30 body is a prefix of NEITHER — the property that was
+        // missing. An untagged body can be read as the start of any framing
+        // that happens to begin with the same fields.
+        let legacy = canonical_sth_bytes_legacy(5, 1000, &[1; 32]);
+        assert!(!ours.starts_with(&legacy[..]));
+        assert!(!theirs.starts_with(&legacy[..]));
+    }
+
+    /// The dual-accept window: an STH signed under the pre-#30 preimage must
+    /// still verify, because `SignedTreeHead` has no version field and a
+    /// signature cannot say which encoding produced it.
+    #[test]
+    fn an_sth_signed_under_the_legacy_preimage_still_verifies() {
+        let w = fixed_witness();
+        let root = [0x33u8; 32];
+        let (tree_size, ts) = (9u64, 1_700_000_000_123u64);
+
+        // Sign the OLD bytes deliberately, as a pre-#30 signer would have.
+        let legacy = canonical_sth_bytes_legacy(tree_size, ts, &root);
+        let sig = w.sign_message(&legacy).to_vec();
+        let sth = SignedTreeHead {
+            tree_size,
+            timestamp_ms: ts,
+            root_hash_hex: hex::encode(root),
+            witness_kid: w.kid().to_string(),
+            witness_sig: sig,
+            cosignatures: Vec::new(),
+        };
+        sth.verify(&w)
+            .expect("a legacy-signed STH must verify during the dual-accept window");
+
+        // A signature over neither preimage is still refused, so the fallback
+        // has not turned verification into a no-op.
+        let mut forged = sth.clone();
+        forged.witness_sig = w.sign_message(b"not an STH preimage at all").to_vec();
+        assert!(
+            forged.verify(&w).is_err(),
+            "dual-accept must widen the accepted set by exactly one encoding"
+        );
     }
 
     #[test]

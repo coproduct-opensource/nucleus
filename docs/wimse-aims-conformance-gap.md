@@ -1,6 +1,48 @@
 # WIMSE / AIMS Conformance Gap Analysis (P0.3 / Task #30)
 
-**Date:** 2026-05-28
+**Date:** 2026-05-28 · **Reviewed 2026-09-10 — three rows below are STALE, see the note.**
+
+> **Stale rows (2026-09-10).** This table was written against
+> `nucleus-lineage`'s `LocalIssuer` and has not tracked
+> `nucleus-oidc-provider`, which is the production issuer. Verified against the
+> code today:
+>
+> | Row | Says | Actually |
+> |---|---|---|
+> | `typ` header | **VIOLATION** (GAP-3) | **Closed.** `at+jwt`, hard-coded in the JWS header build (`issuer.rs:350`) and CI-gated by `alg-pin-check.sh`. |
+> | `client_id` | **VIOLATION** (GAP-4) | **Closed.** `MintRequest::client_id`, required non-empty. |
+> | `scope` | **GAP** (GAP-5) | **Closed, and then bounded.** Present on `MintRequest`; as of #2755 a requested scope must be a subset of the federation rule's `max_scope`, refused rather than echoed. |
+> | `act` | **GAP** (GAP-6) | **Closed.** Set on every token-exchange mint per RFC 8693 §4.1, naming the upstream actor (`token.rs`). |
+>
+> `cnf` remains deliberately deferred — bearer-only in v1, pending WIMSE WPT
+> settling (the drafts expire between October 2026 and January 2027).
+>
+> The gap this table does NOT name, and which matters more than any row in it:
+> **a federated token carries the workload's identity, not its authority.**
+> SPIFFE and WIMSE answer *who this workload is*; the delegation ceiling — the
+> effects, the budget, the sink scope — stops at the boundary unless something
+> carries it. `max_scope` was the first thing that did, and it is an operator's
+> ceiling. `scope_requires` adds the principal's: a rule states which effects
+> back each RP scope, the workload presents its pod certificate as the RFC 8693
+> `actor_token`, and the scope is issued only if that certificate — verified
+> against a **pinned** root, never the one the token carries — grants those
+> effects. Both ceilings apply, and the delegation ceiling now survives the
+> boundary.
+>
+> The issued token carries `urn:nucleus:effects` — the effects the verified
+> certificate granted — so a relying party can re-check the attenuation from the
+> token alone rather than being handed the certificate as well. Namespaced per
+> RFC 7519 §4.3, so an RP that has never heard of nucleus ignores it. **Absent
+> means "not established", never "none":** an exchange with no certificate omits
+> the claim rather than asserting an empty grant, and an RP must not read the
+> first as the second.
+>
+> So a nucleus-issued federated credential now states three things a plain
+> JWT-SVID does not: who the workload is (`sub`), who is acting for whom
+> (`act`), and what its principal delegated (`urn:nucleus:effects`), bounded by
+> both the operator's rule and that delegation. What is still open is the
+> operational half — the issuer has to be hosted at a stable HTTPS URL before
+> any of it reaches a real relying party.
 **Subject:** `crates/nucleus-lineage/src/id.rs` (`CallSpiffeId`) + `crates/nucleus-lineage/src/local_issuer.rs` (JWT claims)
 **Goal:** Catalog where the current implementation deviates from `draft-klrc-aiagent-auth-01` (AIMS) and `draft-ietf-wimse-identifier-00` (WIMSE Workload Identifier), and produce PR-sized actions for #40 (WIMSE conformance on `CallSpiffeId`) and #34 (`JwtIssuer` claims).
 **Cited drafts** (verified May 2026):

@@ -100,6 +100,57 @@ impl BackendCapability {
             NetworkIsolation::Airgapped,
         ],
     };
+
+    /// OCI container runtime. Declared at the minimum the node's container path
+    /// can be shown to deliver — not at what a container could in principle do.
+    ///
+    /// Every level below is a citation, because over-declaring is the defect
+    /// this constant closes (SECURITY_TODO #17: `--driver container` was clamped
+    /// against [`BackendCapability::FIRECRACKER`] and labelled
+    /// `backend=firecracker`). Under-declaring costs a refusal that names the
+    /// dimension; over-declaring hands out a guarantee nothing delivers.
+    ///
+    /// - **process — `Namespaced`**: `spawn_container_pod`'s `HostConfig` sets
+    ///   no `pid_mode`, so the runtime default private PID/mount/IPC namespace
+    ///   applies. `MicroVM` is out of reach: there is no separate kernel.
+    /// - **file — `Unrestricted` only**: the `HostConfig` sets no
+    ///   `readonly_rootfs`, and `binds` mounts host directories `rw`. Nothing on
+    ///   this path attests a cap-std `Sandboxed` root or an immutable rootfs.
+    /// - **network — `Host` only**: `network_mode` comes from the
+    ///   caller-settable `nucleus.io/network` label, so the node cannot assert a
+    ///   namespace it does not control, and the driver refuses structured
+    ///   `network` policy outright — it cannot express an egress allowlist.
+    pub const CONTAINER: BackendCapability = BackendCapability {
+        name: "container",
+        process: &[ProcessIsolation::Shared, ProcessIsolation::Namespaced],
+        file: &[FileIsolation::Unrestricted],
+        network: &[NetworkIsolation::Host],
+    };
+
+    /// Process-only execution: no VM, and no isolation the node establishes
+    /// itself. The floor is the whole capability, which is the point — every
+    /// stronger request is [`EnforcementError::Unenforceable`] and is refused
+    /// rather than granted in name.
+    ///
+    /// `--driver local` is already refused in production builds
+    /// (`nucleus_node::production_confinement`); this constant makes the posture
+    /// it can back explicit rather than inherited from Firecracker's.
+    pub const LOCAL: BackendCapability = BackendCapability {
+        name: "local",
+        process: &[ProcessIsolation::Shared],
+        file: &[FileIsolation::Unrestricted],
+        network: &[NetworkIsolation::Host],
+    };
+
+    /// Every backend this node can select, so a property that must hold "on
+    /// every backend" cannot silently omit one. A new backend is a compile error
+    /// here before it is a gap in the exhaustive tests below.
+    pub const ALL: &'static [&'static BackendCapability] = &[
+        &BackendCapability::FIRECRACKER,
+        &BackendCapability::APPLE_VZ,
+        &BackendCapability::CONTAINER,
+        &BackendCapability::LOCAL,
+    ];
 }
 
 /// The outcome of mapping a requested posture onto a backend: what was asked
@@ -365,22 +416,62 @@ mod tests {
                         file: f,
                         network: n,
                     };
-                    for backend in [
-                        &BackendCapability::FIRECRACKER,
-                        &BackendCapability::APPLE_VZ,
-                    ] {
-                        let e = require_isolation(requested, backend).unwrap();
-                        assert!(
-                            e.enforced.at_least(&requested),
-                            "enforced {} weaker than requested {} on {}",
-                            e.enforced,
-                            requested,
-                            backend.name
-                        );
+                    // Every backend, not a hand-listed pair: a backend added to
+                    // `ALL` is covered here the day it is declared.
+                    for backend in BackendCapability::ALL {
+                        // The property is "never a downgrade", NOT "always
+                        // succeeds". A backend that cannot reach the request
+                        // must refuse it; only a returned posture is claimed.
+                        match require_isolation(requested, backend) {
+                            Ok(e) => assert!(
+                                e.enforced.at_least(&requested),
+                                "enforced {} weaker than requested {} on {}",
+                                e.enforced,
+                                requested,
+                                backend.name
+                            ),
+                            Err(EnforcementError::Unenforceable { .. }) => {}
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Non-vacuity for the two backends added in SECURITY_TODO #17.
+    ///
+    /// The generalized property above is satisfied trivially by a backend that
+    /// refuses everything, and by one that accepts everything. These assert the
+    /// two constants sit where they are claimed to: they admit the posture a pod
+    /// gets when it names no minimum, and they refuse the microVM posture they
+    /// cannot deliver. Without this, weakening `CONTAINER` to the empty
+    /// capability — or widening it back to Firecracker's — would stay green.
+    #[test]
+    fn container_and_local_admit_the_default_posture_and_refuse_what_they_cannot_back() {
+        // What a pod gets with `minimum_isolation: None` — the common case.
+        let default_posture = IsolationLattice::localhost();
+        for backend in [&BackendCapability::CONTAINER, &BackendCapability::LOCAL] {
+            let e = require_isolation(default_posture, backend)
+                .unwrap_or_else(|e| panic!("{} must admit the default posture: {e}", backend.name));
+            assert!(
+                e.is_faithful(),
+                "{} strengthened the default posture to {}",
+                backend.name,
+                e.enforced
+            );
+
+            // ...and neither can back a microVM.
+            let err = require_isolation(IsolationLattice::microvm(), backend)
+                .expect_err("a microVM posture is not deliverable without a separate kernel");
+            let EnforcementError::Unenforceable { backend: b, .. } = err;
+            assert_eq!(b, backend.name);
+        }
+
+        // The floor is genuinely a floor: `local` cannot even namespace.
+        assert!(
+            require_isolation(IsolationLattice::sandboxed(), &BackendCapability::LOCAL).is_err(),
+            "local declares process-only execution; a sandboxed posture must be refused"
+        );
     }
 
     // ── Fail-closed when even the strongest enforceable level is too weak ──

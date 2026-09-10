@@ -1294,9 +1294,53 @@ fn sink_min_integrity(sink: SinkClass) -> IntegLevel {
 /// indicates a caller bug (e.g., submitting `Operation::GitPush` with
 /// `SinkClass::WorkspaceWrite`).
 ///
-/// Returns `true` (permissive) for combinations not explicitly restricted,
-/// so adding new `Operation` or `SinkClass` variants does not break existing
-/// callers by default.
+/// **Restrictive, not permissive** (SECURITY_TODO #23). The doc here used to
+/// claim the opposite — *"returns `true` (permissive) for combinations not
+/// explicitly restricted, so adding new `Operation` or `SinkClass` variants does
+/// not break existing callers by default"* — and the code has never behaved that
+/// way. The `match` is exhaustive over `Operation` and every arm is a `matches!`
+/// against a closed list of sinks, so an unlisted pairing returns `false`.
+///
+/// Which direction the mismatch runs matters. Adding an `Operation` is a compile
+/// error (good). Adding a `SinkClass` silently makes it **undischargeable** —
+/// safe, but invisible, and the doc promised the opposite so nobody looked.
+///
+/// Four sinks are unreachable today for exactly that reason, and it is a gap in
+/// the `Operation` vocabulary rather than a policy decision: there is no verb for
+/// reading a secret, calling an MCP tool, sending email, or writing a ticket.
+/// They are enumerated in `SINKS_WITH_NO_OPERATION` below, and
+/// `every_sink_is_reachable_or_documented` fails if that list drifts from
+/// reality in either direction — so a sink becoming reachable, or a new sink
+/// quietly becoming unreachable, is a test failure rather than a silent one.
+/// Sinks that no `Operation` can currently be paired with, each with the reason.
+///
+/// This is a **gap in the `Operation` vocabulary**, not a policy judgement: the
+/// enum has thirteen verbs and none of them denotes reading a secret, invoking
+/// an MCP tool, sending mail, or filing a ticket. Until `Effect` carries a
+/// target (the Tier-3 collapse), an `ActionTerm` naming one of these cannot be
+/// constructed from any operation, so the pairing gate refuses it.
+///
+/// Being unreachable is the SAFE direction — nothing can discharge to them — so
+/// this is documented rather than "fixed" by inventing a mapping. What was not
+/// safe was that it was invisible, and that the doc on
+/// [`operation_allowed_for_sink`] asserted the opposite.
+#[cfg(test)] // the expectation table for `every_sink_is_reachable_or_documented`
+const SINKS_WITH_NO_OPERATION: [(SinkClass, &str); 4] = [
+    (
+        SinkClass::SecretRead,
+        "no Operation denotes reading a secret; env/secret access is untyped",
+    ),
+    (
+        SinkClass::MCPWrite,
+        "an MCP tool call is classified INTO an Operation, it is not one itself",
+    ),
+    (SinkClass::EmailSend, "no Operation denotes sending mail"),
+    (
+        SinkClass::TicketWrite,
+        "no Operation denotes filing a ticket",
+    ),
+];
+
 fn operation_allowed_for_sink(op: Operation, sink: SinkClass) -> bool {
     match op {
         Operation::WriteFiles => {
@@ -2333,6 +2377,59 @@ mod tests {
                 .unwrap()
                 .contains("WithinDelegationCeiling"),
             "ceiling (check 6) should fire before scope (check 7)"
+        );
+    }
+
+    // ── SECURITY_TODO #23: the unreachable-sink list cannot drift ───────────
+
+    /// Every `SinkClass` is either reachable from at least one `Operation`, or
+    /// is listed in `SINKS_WITH_NO_OPERATION` with a reason. The check runs in
+    /// BOTH directions, which is what makes it a gate rather than a comment:
+    ///
+    ///   * a sink that is unreachable and undocumented fails — this is what
+    ///     silently happened to four sinks, under a doc claiming the pairing
+    ///     gate was permissive by default;
+    ///   * a sink that is documented as unreachable but has become reachable
+    ///     also fails, so the list cannot rot into a lie the other way.
+    ///
+    /// Same shape as `documented_inventory_equals_the_enum` in
+    /// `egress_channel.rs`: the enum and the prose are pinned to each other.
+    #[test]
+    fn every_sink_is_reachable_or_documented() {
+        for sink in SinkClass::ALL {
+            let reachable = Operation::ALL
+                .iter()
+                .any(|&op| operation_allowed_for_sink(op, sink));
+            let documented = SINKS_WITH_NO_OPERATION.iter().any(|(s, _)| *s == sink);
+
+            assert!(
+                reachable != documented,
+                "{sink:?}: reachable={reachable}, documented_unreachable={documented} — \
+                 a sink must be exactly one of the two. If a new Operation made it \
+                 reachable, drop it from SINKS_WITH_NO_OPERATION; if a new sink is \
+                 undischargeable, add it there with the reason."
+            );
+        }
+    }
+
+    /// Non-vacuity for the above: the four are genuinely unreachable today, and
+    /// at least one sink is genuinely reachable. Without this, an empty
+    /// `Operation::ALL` or an all-inclusive list would still satisfy the
+    /// exclusive-or.
+    #[test]
+    fn the_documented_sinks_are_the_unreachable_ones() {
+        assert_eq!(SINKS_WITH_NO_OPERATION.len(), 4);
+        for (sink, reason) in SINKS_WITH_NO_OPERATION {
+            assert!(
+                !Operation::ALL
+                    .iter()
+                    .any(|&op| operation_allowed_for_sink(op, sink)),
+                "{sink:?} is documented unreachable ({reason}) but some Operation admits it"
+            );
+        }
+        assert!(
+            operation_allowed_for_sink(Operation::GitPush, SinkClass::GitPush),
+            "a control pairing must be reachable, or the gate proves nothing"
         );
     }
 }
