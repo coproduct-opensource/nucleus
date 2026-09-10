@@ -6,7 +6,8 @@ on:
   pull_request:
   merge_group:
   schedule:
-    - cron: "30 4 * * 1"
+    # Nightly. `Analyze (rust)` runs on this trigger only — see the job comment.
+    - cron: "30 4 * * *"
 
 concurrency:
   # Supersede a PR's older in-flight runs; NEVER cancel anything else.
@@ -21,7 +22,7 @@ permissions:
 
 jobs:
   # Workflow files: the supply-chain surface. The context name `Analyze` is required on main
-  # (ci/required-checks.txt); keep it stable.
+  # (ci/required-checks.txt); keep it stable. 48s, so it is free to keep on the queue path.
   analyze:
     name: Analyze
     runs-on: ubuntu-latest
@@ -37,10 +38,17 @@ jobs:
 
   # The runtime itself. Build-free extraction (no cargo build), so it costs extraction time
   # only; it is what makes CodeQL a SAST tool for this repo rather than a linter for its CI
-  # (Scorecard SAST). Not a required context: advisory until its runtime on this workspace
-  # is measured.
+  # (Scorecard SAST). Not a required context.
+  #
+  # NIGHTLY ONLY, and that is load-bearing. The merge queue ruleset uses grouping_strategy
+  # ALLGREEN, which waits for *every* check on the merge group -- not only the required ones.
+  # At ~30 min this job was therefore the merge cadence: the slowest required check is Code
+  # Coverage at ~7.4 min, but observed inter-merge gaps sat at ~30 min, matching this job.
+  # Advisory findings do not justify gating every merge on them, so it runs on the schedule
+  # instead, off the queue path entirely.
   analyze-rust:
     name: Analyze (rust)
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
