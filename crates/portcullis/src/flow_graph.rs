@@ -2009,3 +2009,7 @@ impl Default for FlowGraph {
 #[cfg(test)]
 #[path = "flow_graph_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "flow_graph_quarantine_tests.rs"]
+mod quarantine_tests;
