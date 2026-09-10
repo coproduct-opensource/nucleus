@@ -258,7 +258,7 @@ pub mod workspace;
 mod kani;
 
 pub use budget::BudgetLattice;
-pub use budget_ledger::{BudgetLedger, LedgerCore, LedgerError};
+pub use budget_ledger::{BudgetError, BudgetLedger, LedgerCore, LedgerError, MicroUsd, Unit};
 pub use capability::{
     default_sink_class, CapabilityLattice, CapabilityLevel, ExtensionOperation,
     IncompatibilityConstraint, Obligations, Operation, OperationParseError, SinkClass, StateRisk,
