@@ -181,6 +181,69 @@ scope being minted) costs nothing, because a request for no scope still
 succeeds under every rule. Set `max_scope` on every rule whose RP looks at
 scope at all.
 
+### `scope_requires` — what the PRINCIPAL delegated
+
+`max_scope` is the operator's ceiling: what this rule is willing to issue.
+`scope_requires` is the principal's: what the person who approved *this pod's*
+grant actually delegated. Both have to hold.
+
+```toml
+[[rule]]
+id = "agents-to-logs"
+subject_prefix = "spiffe://YOUR-TRUST-DOMAIN/ns/production/*"
+audience = "https://logs.YOUR-DOMAIN.example/v1"
+allowed_grants = ["urn:ietf:params:oauth:grant-type:token-exchange"]
+max_token_lifetime_secs = 900
+max_scope = ["logs:read", "logs:write"]
+
+[rule.scope_requires]
+"logs:read"  = ["aws/read-logs"]
+"logs:write" = ["aws/write-object"]
+```
+
+The map is a **translation**, and it has to be: a relying party's scopes are its
+own (`logs:read`), nucleus's effects are the units a person granted
+(`aws/read-logs`). The rule is the one place that knows both, which makes it the
+one place an operator can be asked to state the correspondence deliberately
+rather than have it guessed.
+
+A workload presents its pod certificate as the RFC 8693 `actor_token`:
+
+```
+actor_token=<base64 AttenuationToken>
+actor_token_type=urn:nucleus:params:oauth:token-type:pod-certificate
+```
+
+`actor_token` is the slot for "the party acting on the subject's behalf", and a
+pod certificate is exactly that: the signed, attenuating record of what a person
+delegated to this workload. It is not a JWT and does not need to be — RFC 8693
+lets a token type be any URI.
+
+The rule above then issues `logs:write` only to a pod whose certificate grants
+`aws/write-object`. **The operator's ceiling and the principal's grant both
+apply**, and the delegation ceiling survives the boundary — which is the thing
+SPIFFE alone does not give you. SPIFFE says *who this workload is*; the
+certificate says *what its principal allowed*.
+
+A scope with no `scope_requires` entry is bounded by `max_scope` alone, so the
+feature is opt-in per scope and adding it breaks nothing.
+
+#### `NUCLEUS_OIDC_CERT_ROOT_PUBKEY` is not optional if you use this
+
+Set it to the hex of the 32-byte Ed25519 root your pod certificates chain to.
+
+**Why it is load-bearing.** `AttenuationToken::verify` walks the chain against
+the root key *the token itself carries*, which proves the chain is internally
+consistent and nothing else — anyone can generate a root and mint themselves a
+certificate granting `aws/mutate-iam`. The pinned root is the only thing that
+makes a presented certificate mean anything, and it is compared in constant time
+before the chain is walked at all.
+
+An OP with no pinned root refuses every certificate, so a rule using
+`scope_requires` will deny rather than fall back to the operator ceiling. That
+is the intended failure direction: a misconfigured OP issues nothing rather than
+issuing something it cannot justify.
+
 Glob semantics: `*` suffix only (no regex, no anywhere-glob). Audience is exact match. See `crates/nucleus-oidc-provider/src/federation.rs` for the schema.
 
 ### 3b. Validate before deploy

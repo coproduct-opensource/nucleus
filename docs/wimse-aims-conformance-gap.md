@@ -21,9 +21,19 @@
 > **a federated token carries the workload's identity, not its authority.**
 > SPIFFE and WIMSE answer *who this workload is*; the delegation ceiling — the
 > effects, the budget, the sink scope — stops at the boundary unless something
-> carries it. `max_scope` is the first thing that does, and it is an operator's
-> ceiling rather than the pod certificate's. Deriving the scope from the
-> certificate's own effect dimension is the next step and is not done.
+> carries it. `max_scope` was the first thing that did, and it is an operator's
+> ceiling. `scope_requires` adds the principal's: a rule states which effects
+> back each RP scope, the workload presents its pod certificate as the RFC 8693
+> `actor_token`, and the scope is issued only if that certificate — verified
+> against a **pinned** root, never the one the token carries — grants those
+> effects. Both ceilings apply, and the delegation ceiling now survives the
+> boundary.
+>
+> Still open: the certificate travels as a separate `actor_token` rather than
+> being carried inside the issued token, so a relying party that wants to
+> re-check the attenuation itself has to be handed the certificate too. Emitting
+> the granted effects as a namespaced claim would close that, and would let an
+> RP enforce per-effect without understanding nucleus's wire format.
 **Subject:** `crates/nucleus-lineage/src/id.rs` (`CallSpiffeId`) + `crates/nucleus-lineage/src/local_issuer.rs` (JWT claims)
 **Goal:** Catalog where the current implementation deviates from `draft-klrc-aiagent-auth-01` (AIMS) and `draft-ietf-wimse-identifier-00` (WIMSE Workload Identifier), and produce PR-sized actions for #40 (WIMSE conformance on `CallSpiffeId`) and #34 (`JwtIssuer` claims).
 **Cited drafts** (verified May 2026):
