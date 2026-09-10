@@ -500,7 +500,13 @@ TODO
 - One decider. Delete one definition and have the other read from it — not a parity test between two copies.
 
 Status
-- OPEN. Class (d). Requires an owner call on which value is correct.
+- CLOSED (2026-09-10). **Owner decision: TIGHTEN.** Where the two tables disagreed, the stricter value wins.
+- The merge is not "pick the right file" — each copy was stricter on a DIFFERENT axis, so neither was authoritative. On integrity, `ifc_ops` was already ≥ `flow_algebra` on all 19 sinks; on authority, `flow_algebra` was stricter on exactly three (`GitPush`, `GitCommit`, `PRCommentWrite`: `Directive` vs `Suggestive`). The merged table is the pointwise max.
+- `SinkClass::{required_integrity, required_authority, max_confidentiality}` in `crates/nucleus-ifc-kernel/src/ifc_ops.rs` is now the single decider. `flow_algebra`'s three private duplicates are **deleted, not parity-tested** — a parity test between two copies still leaves two copies. `max_confidentiality` moved to join its siblings, because the split (one crate had it, the other did not) is how they drifted in the first place.
+- Behaviour change, stated plainly: `Suggestive`-authority data (an MCP tool description, say) can no longer reach a git-publish sink, and `Untrusted`-integrity data can no longer reach `GitPush` via the `flow_algebra` path. One test pinned the old looser authority value (`sink_class_authority_requirements`) and was updated to the tightened one.
+- Non-vacuity on BOTH axes: `the_merged_table_refuses_what_each_old_copy_admitted` asserts that `Suggestive`+`Trusted` and `Directive`+`Untrusted` are each refused at `GitPush`, and that `Directive`+`Trusted` still passes — so the test cannot be satisfied by simply making the sink unreachable. Perturbations run and recorded: restoring the `Suggestive` floor reds it with "the authority floor did not tighten"; restoring `flow_algebra`'s `Untrusted` integrity floor reds it with "the integrity floor did not tighten"; restoring both fixes greens it.
+- No proof artifact moved. `crates/nucleus-ifc-kernel/src/extracted/ifc_integrity.rs:197` pins `GitPush.required_integrity()`, and that value was already `Trusted` — the tightening touched only *authority*, which has no extracted mirror. The 70 extracted parity tests stay green.
+- Still open from this item's deficiency: `exposure_core::sink_max_conf_for` is keyed on `Operation`, not `SinkClass`, so it is a different domain and is not merged here. The ten exfil-classification tables that disagree four ways about `WriteFiles` are also untouched — both belong with the closure operator in item 29's follow-on, not here.
 
 ## 25) The vestigial `DecisionToken` parameter is checked only in debug builds
 

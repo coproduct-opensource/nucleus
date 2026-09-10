@@ -7,7 +7,7 @@
 //! `portcullis_core::{Operation, SinkClass, ...}` is unchanged for all consumers,
 //! and brought under the kernel-boundary ratchet.
 
-use crate::{AuthorityLevel, IntegLevel};
+use crate::{AuthorityLevel, ConfLevel, IntegLevel};
 
 /// Operations that can be gated by approval.
 ///
@@ -316,14 +316,22 @@ impl SinkClass {
         match self {
             // Read-only / append-only — no authority needed
             SinkClass::SecretRead | SinkClass::AuditLogAppend => AuthorityLevel::NoAuthority,
+            // Version-control publish — require Directive (SECURITY_TODO #24).
+            //
+            // These three sat at `Suggestive` here and at `Directive` in
+            // `flow_algebra::sink_required_authority`, with no parity check
+            // between the two tables. The owner's call was to TIGHTEN, so the
+            // stricter value wins: only data carrying full authority to instruct
+            // (a user prompt, system config) may reach a git-publish sink.
+            // Suggestive data — an MCP tool description, say — no longer can.
+            SinkClass::GitCommit | SinkClass::GitPush | SinkClass::PRCommentWrite => {
+                AuthorityLevel::Directive
+            }
             // Write/exec/publish — require Suggestive
             SinkClass::WorkspaceWrite
             | SinkClass::SystemWrite
             | SinkClass::BashExec
             | SinkClass::HTTPEgress
-            | SinkClass::GitCommit
-            | SinkClass::GitPush
-            | SinkClass::PRCommentWrite
             | SinkClass::EmailSend
             | SinkClass::MemoryPersist
             | SinkClass::AgentSpawn
@@ -369,6 +377,45 @@ impl SinkClass {
             SinkClass::MemoryPersist => IntegLevel::Untrusted,
             // Read-only / append-only — no integrity requirement
             SinkClass::SecretRead | SinkClass::AuditLogAppend => IntegLevel::Adversarial,
+        }
+    }
+
+    /// The maximum confidentiality this sink may emit.
+    ///
+    /// A CEILING, not a floor — so unlike [`Self::required_integrity`] and
+    /// [`Self::required_authority`], tightening this means moving it DOWN.
+    ///
+    /// True egress (the data crosses the trust boundary) caps at `Internal`, so
+    /// a `Secret`-confidentiality session cannot flow there. Local sinks keep
+    /// the data inside the sandbox and impose no restriction.
+    ///
+    /// Moved here from `portcullis_core::flow_algebra` (SECURITY_TODO #24) so
+    /// all three sink requirements have ONE decider. `flow_algebra` had this
+    /// table and `ifc_ops` did not, which is how the crates drifted: each
+    /// carried a partial copy and neither was authoritative.
+    pub fn max_confidentiality(self) -> ConfLevel {
+        match self {
+            // True egress: data crosses the boundary. Block Secret.
+            SinkClass::HTTPEgress
+            | SinkClass::GitPush
+            | SinkClass::PRCommentWrite
+            | SinkClass::EmailSend
+            | SinkClass::MCPWrite
+            | SinkClass::CloudMutation
+            | SinkClass::AgentSpawn
+            | SinkClass::SearchIndexWrite => ConfLevel::Internal,
+            // Local sinks: the data stays in the sandbox.
+            SinkClass::WorkspaceWrite
+            | SinkClass::SystemWrite
+            | SinkClass::BashExec
+            | SinkClass::GitCommit
+            | SinkClass::MemoryPersist
+            | SinkClass::ProposedTableWrite
+            | SinkClass::VerifiedTableWrite
+            | SinkClass::CacheWrite
+            | SinkClass::TicketWrite
+            | SinkClass::SecretRead
+            | SinkClass::AuditLogAppend => ConfLevel::Secret,
         }
     }
 

@@ -949,16 +949,40 @@ mod tests {
             SinkClass::AuditLogAppend.required_authority(),
             AuthorityLevel::NoAuthority
         );
-        // All write/exec sinks require Suggestive
+        // Version-control publish requires Directive (SECURITY_TODO #24): only
+        // data carrying full authority to instruct may reach a git-publish
+        // sink. This was Suggestive here and Directive in the duplicate table
+        // in `flow_algebra`; the tables are now one, at the stricter value.
+        for sink in [
+            SinkClass::GitCommit,
+            SinkClass::GitPush,
+            SinkClass::PRCommentWrite,
+        ] {
+            assert_eq!(
+                sink.required_authority(),
+                AuthorityLevel::Directive,
+                "a git-publish sink must require Directive authority, not {:?}",
+                sink.required_authority()
+            );
+        }
+        // Every other write/exec sink requires Suggestive.
         for sink in SinkClass::ALL {
-            if sink != SinkClass::SecretRead && sink != SinkClass::AuditLogAppend {
-                assert_eq!(
-                    sink.required_authority(),
-                    AuthorityLevel::Suggestive,
-                    "Expected Suggestive authority for {:?}",
-                    sink
-                );
+            if matches!(
+                sink,
+                SinkClass::SecretRead
+                    | SinkClass::AuditLogAppend
+                    | SinkClass::GitCommit
+                    | SinkClass::GitPush
+                    | SinkClass::PRCommentWrite
+            ) {
+                continue;
             }
+            assert_eq!(
+                sink.required_authority(),
+                AuthorityLevel::Suggestive,
+                "Expected Suggestive authority for {:?}",
+                sink
+            );
         }
     }
 
