@@ -6,9 +6,6 @@
 # Theorems that merely depend on one of these inherit the disclosure; a NEW
 # native_decide anywhere else must be added here, by name, with a reason.
 ChannelAdmission.admission_is_pinned_per_channel
-FlowGraphProofs.invariant_exploit_dag_blocked
-FlowGraphProofs.single_adversarial_taints_chain
-FlowGraphProofs.clean_chain_preserves_trust
 IdentityMaterialNoninterference.delivery_is_flows_to_against_the_ceiling
 
 # External-model axioms (`axiom <name>`): declarations Aeneas emits in a
