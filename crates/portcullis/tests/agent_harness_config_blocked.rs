@@ -34,6 +34,12 @@
 //! floor is reached through the resolver a pod spec actually hits, and that the
 //! block list and the audit list cannot drift apart.
 
+// `profile` is behind the `spec` feature. CI lints portcullis TWICE -- once
+// `--all-features`, once at its own defaults (#2746) -- precisely because
+// feature unification hides this: the registry tests below cannot compile
+// without `spec`, while the two that check the floor itself need nothing and
+// stay available at default features.
+#[cfg(feature = "spec")]
 use portcullis::profile::ProfileRegistry;
 use portcullis::{glob_match, AGENT_HARNESS_CONFIG};
 
@@ -60,6 +66,7 @@ fn blocks(patterns: &[String], path: &str) -> bool {
 /// A `write_files: never` profile blocking these too is free — the floor costs
 /// nothing where writes are already refused, and a profile's write posture can
 /// be raised later by an edit that would otherwise silently uncover them.
+#[cfg(feature = "spec")]
 #[test]
 fn every_profile_blocks_the_configuration_that_configures_the_agent() {
     let registry = ProfileRegistry::default();
@@ -132,6 +139,7 @@ fn the_floor_does_not_block_ordinary_source() {
 /// blocked `/etc/passwd`; `doc-editor` did not. That is not covered by the
 /// floor — it is credential material, left in the YAML — so it needs its own
 /// pin, or the next profile added by copy-paste reintroduces it.
+#[cfg(feature = "spec")]
 #[test]
 fn write_permitting_profiles_share_one_credential_baseline() {
     // The set every write-permitting profile carried, minus the one it had
