@@ -135,7 +135,20 @@ jobs:
       # --- Extract + Translate ---
       - name: Charon MIR extraction
         working-directory: crates/nucleus-ifc-kernel
-        run: charon cargo --preset aeneas
+        run: |
+          # `charon cargo` exits 0 and emits NOTHING when cargo has nothing to
+          # recompile, so on a warm target directory this step succeeds having
+          # extracted no LLBC — and the regenerate-then-diff downstream then
+          # finds no diff and the gate goes GREEN having checked nothing.
+          #
+          # Nothing here forced a rebuild. What did was `rm -rf /data/work` in
+          # ci/fly-runner/entrypoint.sh wiping the target dir every boot: a
+          # runner implementation detail, in another repo's file, that this
+          # gate's correctness silently depended on. ck-policy-aeneas.yml has
+          # always defended itself (`touch src/extracted.rs src/lib.rs`); these
+          # four did not.
+          cargo clean -p nucleus-ifc-kernel
+          charon cargo --preset aeneas
 
       - name: Aeneas Lean 4 translation
         run: |
