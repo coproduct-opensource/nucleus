@@ -2,6 +2,8 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
+#[cfg(not(feature = "embedded-wasm"))]
+use axum::http::StatusCode;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{Html, IntoResponse, Response};
 use nucleus_envelope::{Bundle, TrustAnchor, canonical_bundle_hash, verify_bundle};
@@ -39,10 +41,19 @@ const LANDING_CSS: &str = include_str!("../static/style.css");
 const QUICKSTART_HTML: &str = include_str!("../static/quickstart.html");
 const QUICKSTART_CSS: &str = include_str!("../static/quickstart.css");
 const QUICKSTART_JS: &str = include_str!("../static/quickstart.js");
-/// Vendored copy of the wasm-pack-generated SDK shim. Kept in
-/// `static/wasm/` so it's served from the same origin as the HTML
-/// without needing a separate CDN.
+/// The wasm-pack-generated SDK, embedded so it is served from the same origin as
+/// the HTML without needing a separate CDN.
+///
+/// Behind `embedded-wasm`, off by default, because `sdks/verifier-js/pkg/` is
+/// gitignored and produced only by `wasm-pack build sdks/verifier-js --target web
+/// --release`. Unconditional `include_*!` meant a clean checkout could not compile
+/// this crate, and because one crate failing takes the workspace's test targets
+/// with it, `cargo test --workspace` ran zero tests (#2730). With the feature off
+/// the two routes below answer 503 and say which command produces the artifact;
+/// with it on the behaviour is exactly as before.
+#[cfg(feature = "embedded-wasm")]
 const WASM_JS_SHIM: &str = include_str!("../../../sdks/verifier-js/pkg/nucleus_verifier_wasm.js");
+#[cfg(feature = "embedded-wasm")]
 const WASM_BINARY: &[u8] =
     include_bytes!("../../../sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm");
 
@@ -190,6 +201,9 @@ fn static_response(body: &'static str, content_type: &'static str) -> Response {
     (headers, body).into_response()
 }
 
+// Only the embedded wasm binary is served as raw bytes; without it this has no
+// caller and `-D warnings` would reject the dead function.
+#[cfg(feature = "embedded-wasm")]
 fn static_bytes_response(body: &'static [u8], content_type: &'static str) -> Response {
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
@@ -215,16 +229,54 @@ pub async fn quickstart_js() -> Response {
     static_response(QUICKSTART_JS, "application/javascript; charset=utf-8")
 }
 
+/// What the wasm routes answer when the SDK was not built into this binary.
+///
+/// 503 rather than 404: the route exists and the artifact is missing, which is a
+/// build-configuration fact the operator can act on — so the body names the
+/// command that produces it instead of leaving a bare status.
+#[cfg(not(feature = "embedded-wasm"))]
+fn wasm_unavailable() -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    // Never cached: the next build may well have the SDK in it.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        headers,
+        "the verifier wasm SDK is not embedded in this build\n\
+         build it with: wasm-pack build sdks/verifier-js --target web --release\n\
+         then rebuild this crate with --features embedded-wasm\n",
+    )
+        .into_response()
+}
+
 /// `GET /static/wasm/nucleus_verifier_wasm.js` — wasm-pack-generated
 /// JS shim.
 pub async fn wasm_js_shim() -> Response {
-    static_response(WASM_JS_SHIM, "application/javascript; charset=utf-8")
+    #[cfg(feature = "embedded-wasm")]
+    {
+        static_response(WASM_JS_SHIM, "application/javascript; charset=utf-8")
+    }
+    #[cfg(not(feature = "embedded-wasm"))]
+    {
+        wasm_unavailable()
+    }
 }
 
 /// `GET /static/wasm/nucleus_verifier_wasm_bg.wasm` — the compiled
 /// verifier module.
 pub async fn wasm_binary() -> Response {
-    static_bytes_response(WASM_BINARY, "application/wasm")
+    #[cfg(feature = "embedded-wasm")]
+    {
+        static_bytes_response(WASM_BINARY, "application/wasm")
+    }
+    #[cfg(not(feature = "embedded-wasm"))]
+    {
+        wasm_unavailable()
+    }
 }
 
 #[allow(dead_code)]
@@ -1296,6 +1348,35 @@ pub async fn credit_standing(
         required_bond_micro: file.required_bond(q.max_defection_gain_micro).0,
         max_defection_gain_micro: q.max_defection_gain_micro,
     }))
+}
+
+#[cfg(all(test, not(feature = "embedded-wasm")))]
+mod wasm_absent_tests {
+    //! #2730. Without `embedded-wasm` the crate must still build and serve — the
+    //! whole point of the feature is that a clean checkout compiles. These assert
+    //! the degradation is the documented one (503 naming the build command), not
+    //! a 404, a panic, or a silently empty 200 that a browser would cache.
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn the_wasm_routes_answer_503_and_name_the_command() {
+        for resp in [wasm_js_shim().await, wasm_binary().await] {
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            // Must not be cached: the next build may well embed the SDK.
+            assert_eq!(
+                resp.headers().get(header::CACHE_CONTROL).unwrap(),
+                "no-store"
+            );
+            let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(
+                body.contains("wasm-pack build sdks/verifier-js"),
+                "the body has to name the command that fixes it, got: {body}"
+            );
+            assert!(body.contains("--features embedded-wasm"), "got: {body}");
+        }
+    }
 }
 
 #[cfg(test)]

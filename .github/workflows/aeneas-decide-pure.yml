@@ -83,6 +83,7 @@ jobs:
         with:
           # Full history + persisted credentials so we can push the regen back.
           fetch-depth: 0
+          filter: blob:none
 
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon

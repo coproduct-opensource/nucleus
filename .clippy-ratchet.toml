@@ -27,6 +27,22 @@ lints = [
 # push to main snaps this down to the real count (457 measured here, three
 # identical consecutive runs), so an over-generous seed
 # self-corrects within one commit rather than hiding a regression forever.
-ceiling = 455
+# Raised 455 -> 462 2026-09-09, and this is COVERAGE going up, not debt.
+# `nucleus-verifier-service` unconditionally `include_*!`d a wasm-pack artifact
+# that only exists after `wasm-pack build`, so on a bare checkout it failed to
+# compile and the script's own "crates that did NOT compile, so were NOT
+# analysed" warning quietly dropped it from the count. Putting that embed behind
+# a feature (#2730) makes the crate compile by default, and the gate now sees
+# seven cast sites in it that were always there and never counted:
+#
+#   log.rs:232 (test)   merkle.rs:80        routes.rs:594
+#   witness.rs:166      witness.rs:240      integration.rs:176 (x2, test)
+#
+# None are new code and none look dangerous — merkle.rs:80 is u64 -> usize,
+# lossless on any 64-bit target, and three of the seven are in tests. They are
+# left for `step` to grind down rather than reworked in a change about the wasm
+# embed. The number to remember is that 455 was never the workspace's real
+# count; it was the count of the crates that happened to build.
+ceiling = 462
 target = 0
 step = 5

@@ -74,7 +74,6 @@ econ-lean.yml::econ-lean::Ban sorry / native_decide in econ Lean | UNCOVERED: no
 econ-lean.yml::econ-lean::Golden-vector sync (regenerate Golden.lean from JSON, assert no drift) | UNCOVERED: no falsifier yet
 kani-nightly.yml::kani-ifc::All six flow.rs harnesses are still declared | UNCOVERED: no falsifier yet
 kani-spawn-boundary.yml::kani-argv::The harness and both call sites are still there | UNCOVERED: no falsifier yet
-lean-build.yml::lean-build-core::Reject sorry (proof holes) | UNCOVERED: no falsifier yet
 line-ratchet.yml::ratchet-down::Ratchet down | UNCOVERED: no falsifier yet
 manifest-guards.yml::manifest-guards::Cargo metadata smoke (whole workspace parses, empty stderr) | UNCOVERED: no falsifier yet
 oidc-keyless-prototype.yml::keyless-oidc-e2e::Confirm the OIDC request env vars are present | UNCOVERED: no falsifier yet
