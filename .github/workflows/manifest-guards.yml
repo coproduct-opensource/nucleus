@@ -109,6 +109,20 @@ jobs:
       - name: The committed runner-pool default is one the manager accepts
         run: cargo run -q -p xtask -- fly-pools
 
+      # Seven scan-vs-allowlist gates lived in four shell scripts, each with its own copy
+      # of the same `#[cfg(test)]`-stripping awk program -- five copies, four of them
+      # differing byte-for-byte, one carrying a false negative its own comment names. This
+      # decides all seven in one place, and adds the two properties no copy could state:
+      # a pattern that matches NOTHING has stopped watching (and prints PASSED either way),
+      # and an allowlist may only shrink.
+      - name: The scan-vs-allowlist family, decided once
+        run: cargo run -q -p xtask -- allowlist-gates
+      # The port is only worth having if it decides the same thing the scripts do. Agreement
+      # on a green tree is weak evidence -- both could be blind -- so the four scripts are
+      # also driven RED together with the harness in scripts/check-gates-can-fail.sh.
+      - name: ...and agrees with the shell gates it replaces
+        run: cargo run -q -p xtask -- allowlist-gates --parity
+
       # `.gitignore` said `/target/` — anchored to the root, so every nested
       # target/ escaped it, and tools/nucleus-mediation-lint/target was
       # committed: 2664 files, 1269 MB, 98% of the HEAD tree. The same mistake

@@ -33,3 +33,4 @@ toml = { workspace = true }
 # `gatehouse-pin`: the import digest is a plain SHA-256 of prelude/ci.writ.
 sha2 = { workspace = true }
 hex = { workspace = true }
+regex = { workspace = true }
