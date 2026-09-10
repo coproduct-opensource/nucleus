@@ -212,7 +212,12 @@ fn main() -> Result<()> {
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
-        Command::SelfPin => self_pin::check(&std::env::current_dir()?),
+        Command::SelfPin => match self_pin::check(&std::env::current_dir()?)? {
+            // 2 is "could not look", which is never a pass. Mapped here rather than
+            // exited from inside the check, so a unit test calling it survives.
+            self_pin::Outcome::CouldNotLook => std::process::exit(2),
+            self_pin::Outcome::Clean => Ok(()),
+        },
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
         Command::LineRatchet { strict, entries } => {
             if entries {

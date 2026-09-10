@@ -31,6 +31,19 @@ use anyhow::{Context, Result, bail};
 
 const OWNER_REPO: &str = "coproduct-opensource/nucleus";
 
+/// What the check concluded. `CouldNotLook` is NOT a pass and NOT a violation: the third
+/// state `scripts/check-ci-spec.sh` insists on ("exit 0 clean, 1 a violation, 2 could not
+/// look — the third is never a pass"). It is returned rather than exited on, because
+/// `check` is called from a unit test and a library function that kills the process kills
+/// the test harness with it — which is exactly how this gate first broke CI.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Every self-pin matches the tree.
+    Clean,
+    /// A pinned commit is genuinely unavailable, even after a targeted fetch.
+    CouldNotLook,
+}
+
 /// One `uses: <owner>/<repo>/<subdir>@<sha>` naming this very repository.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SelfPin {
@@ -78,7 +91,7 @@ fn git(root: &Path, args: &[&str]) -> Result<std::process::Output> {
         .with_context(|| format!("git {}", args.join(" ")))
 }
 
-pub fn check(root: &Path) -> Result<()> {
+pub fn check(root: &Path) -> Result<Outcome> {
     let dir = root.join(".github/workflows");
     let mut workflows: Vec<(String, String)> = Vec::new();
     for e in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
@@ -134,7 +147,7 @@ pub fn check(root: &Path) -> Result<()> {
                  is not agreement.",
                 pin.workflow, pin.subdir, pin.sha, pin.sha
             );
-            std::process::exit(2);
+            return Ok(Outcome::CouldNotLook);
         }
         let out = git(
             root,
@@ -177,7 +190,7 @@ pub fn check(root: &Path) -> Result<()> {
     if drifted > 0 {
         bail!("{drifted} self-pinned action(s) differ from the working tree");
     }
-    Ok(())
+    Ok(Outcome::Clean)
 }
 
 #[cfg(test)]
@@ -185,9 +198,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_the_shipped_self_pin() {
+    fn the_shipped_self_pin_matches_or_says_it_cannot_look() {
+        // Must not assert Clean: on a shallow clone with no network the honest answer is
+        // CouldNotLook. What it must never do is report drift, and it must never kill the
+        // test binary -- an earlier version called `std::process::exit(2)` here, which
+        // took the whole xtask test harness down with it in CI.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        check(&root).expect("the self-pin must match HEAD");
+        match check(&root) {
+            Ok(Outcome::Clean | Outcome::CouldNotLook) => {}
+            Err(e) => panic!("the self-pin drifted from HEAD: {e}"),
+        }
     }
 
     #[test]
