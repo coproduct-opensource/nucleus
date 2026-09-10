@@ -1367,6 +1367,153 @@ mod tests {
         );
     }
 
+    // ── the TOCTOU re-check (found by cargo mutants) ────────────────────
+
+    /// Capabilities that ARE uninhabitable, normalised the way production
+    /// builds them — so `normalize` really does attach the approval
+    /// obligations, and this is not a hand-made lattice that could not occur.
+    fn toctou_perms() -> PermissionLattice {
+        use crate::CapabilityLevel;
+        let mut perms = PermissionLattice::default();
+        perms.capabilities.read_files = CapabilityLevel::Always;
+        perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
+        perms.capabilities.run_bash = CapabilityLevel::LowRisk;
+        perms.capabilities.spawn_agent = CapabilityLevel::Always;
+        perms.uninhabitable_constraint = true;
+        perms.normalize()
+    }
+
+    /// Grow the exposure to {PrivateData, UntrustedContent} from inside a
+    /// closure — the only place it can grow, because `execute_and_record` runs
+    /// the closure before it takes the record lock.
+    fn grow_two_legs(guard: &impl ToolCallGuard) {
+        for op in [Operation::ReadFiles, Operation::WebFetch] {
+            let p = guard
+                .check(&Act::untargeted(op))
+                .expect("each leg is allowed on its own");
+            guard
+                .execute_and_record(p, || Ok::<_, String>(()))
+                .expect("and records");
+        }
+    }
+
+    /// **The TOCTOU re-check denies on BOTH conditions, not either.**
+    ///
+    /// When the exposure grew between `check` and the record,
+    /// `execute_and_record` re-projects and denies only if the projection is
+    /// uninhabitable **and** the operation requires approval. That conjunction
+    /// is not incidental: `exposure_core::should_deny` is literally
+    /// `projected.is_uninhabitable() && requires_approval`, so the re-check
+    /// mirrors check-time policy. One that denied on *either* would refuse an
+    /// operation the check itself had just allowed.
+    ///
+    /// Nothing covered this branch — it is reachable only when a closure grows
+    /// the exposure — and `cargo mutants --in-diff` is what found it: `replace
+    /// && with ||` survived at both `execute_and_record` sites.
+    ///
+    /// The two sides are told apart by the operation. `obligations_for` attaches
+    /// approval to `GitPush`, `CreatePr` and `RunBash`, and
+    /// `PermissionLattice::default` pre-loads `WriteFiles`, `EditFiles`,
+    /// `WebSearch`, `WebFetch`, `GitCommit` and `CreatePr` — while
+    /// `classify_operation` makes `SpawnAgent` an `ExfilVector` that appears in
+    /// neither list. So a normalised, uninhabitable lattice still has an exfil
+    /// operation needing no approval, and the mutant is killable rather than
+    /// equivalent. Finding that took reading both sources of obligations: the
+    /// first two operations tried were in one list each.
+    #[test]
+    fn a_toctou_recheck_denies_on_both_conditions_not_either() {
+        let perms = toctou_perms();
+        assert!(
+            !perms.requires_approval(Operation::SpawnAgent),
+            "non-vacuity: this side of the conjunction must be false, or `&&` \
+             and `||` agree here and the test proves nothing"
+        );
+        assert!(
+            perms.requires_approval(Operation::RunBash),
+            "and normalize really did attach obligations — otherwise the \
+             lattice is not the uninhabitable one this is about"
+        );
+
+        let guard = GradedExposureGuard::new(perms, "[]");
+        let proof = guard
+            .check(&Act::untargeted(Operation::SpawnAgent))
+            .expect("a clean session allows it");
+
+        let out = guard.execute_and_record(proof, || {
+            grow_two_legs(&guard);
+            Ok::<_, String>(())
+        });
+
+        assert!(
+            out.is_ok(),
+            "the projection is uninhabitable but SpawnAgent needs no approval, \
+             so the re-check must allow — the answer `should_deny` gives at \
+             check time. Denying here would refuse what the guard just approved."
+        );
+        assert!(
+            guard.exposure().is_uninhabitable(),
+            "and the exposure IS recorded: allowing the act is not forgetting it"
+        );
+    }
+
+    /// The other direction, and the reason the test above is not just "always
+    /// allow": with an operation that DOES require approval, the same grown
+    /// exposure denies. Without this, a re-check that had been deleted outright
+    /// would pass the test above.
+    #[test]
+    fn a_toctou_recheck_does_deny_when_approval_is_required() {
+        let guard = GradedExposureGuard::new(toctou_perms(), "[]");
+        let proof = guard
+            .check(&Act::untargeted(Operation::RunBash))
+            .expect("a clean session allows it");
+
+        let out = guard.execute_and_record(proof, || {
+            grow_two_legs(&guard);
+            Ok::<_, String>(())
+        });
+
+        assert!(
+            matches!(out, Err(ExecuteError::TocTouDenied { .. })),
+            "RunBash carries the approval obligation, so the grown exposure \
+             must deny it: {out:?}",
+            out = out.as_ref().map(|_| ())
+        );
+    }
+
+    /// The deprecated guard carries its own copy of the re-check, and its own
+    /// mutant survived. One test would have killed one.
+    #[test]
+    #[allow(deprecated)]
+    fn the_deprecated_guard_recheck_also_denies_on_both() {
+        // Allowed: the projection is uninhabitable, SpawnAgent needs no approval.
+        let guard = RuntimeStateGuard::new(toctou_perms(), "[]");
+        let allowed = guard
+            .check(&Act::untargeted(Operation::SpawnAgent))
+            .expect("allowed when clean");
+        let out = guard.execute_and_record(allowed, || {
+            grow_two_legs(&guard);
+            Ok::<_, String>(())
+        });
+        assert!(out.is_ok(), "same conjunction, same answer");
+
+        // Denied: a FRESH guard, because once the session above went
+        // uninhabitable `check` itself refuses and the re-check is never
+        // reached — which is the guard working, not the test failing.
+        let guard = RuntimeStateGuard::new(toctou_perms(), "[]");
+        let needs_approval = guard
+            .check(&Act::untargeted(Operation::RunBash))
+            .expect("allowed when clean");
+        let denied = guard.execute_and_record(needs_approval, || {
+            grow_two_legs(&guard);
+            Ok::<_, String>(())
+        });
+        assert!(
+            matches!(denied, Err(ExecuteError::TocTouDenied { .. })),
+            "RunBash carries the approval obligation, so the grown exposure \
+             must deny it"
+        );
+    }
+
     /// Test helper: check and record an operation in one call.
     /// Panics if check or execute_and_record fails.
     fn check_and_record(guard: &impl ToolCallGuard, op: Operation) {
