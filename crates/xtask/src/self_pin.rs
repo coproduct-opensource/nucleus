@@ -107,17 +107,30 @@ pub fn check(root: &Path) -> Result<()> {
 
     let mut drifted = 0usize;
     for pin in &pins {
-        let present = git(
+        let mut present = git(
             root,
             &["cat-file", "-e", &format!("{}^{{commit}}", pin.sha)],
         )?
         .status
         .success();
         if !present {
+            // CI checks out shallow on purpose -- #2748 removed 3.3 GiB of dead history
+            // fetching -- so the pinned commit is normally absent. Deepening the whole
+            // clone to read one blob would hand that win straight back, so fetch exactly
+            // the one commit instead: depth 1 on a single sha is a few KB.
+            let _ = git(root, &["fetch", "--depth", "1", "origin", &pin.sha]);
+            present = git(
+                root,
+                &["cat-file", "-e", &format!("{}^{{commit}}", pin.sha)],
+            )?
+            .status
+            .success();
+        }
+        if !present {
             // Exit 2 semantics: could not look is never a pass.
             eprintln!(
                 "could not look: {} pins {} at {}, which is not in this clone.\n\
-                 Fetch it (`git fetch origin {}`) or deepen the checkout; a missing commit \
+                 A targeted `git fetch --depth 1 origin {}` did not produce it either; a missing commit \
                  is not agreement.",
                 pin.workflow, pin.subdir, pin.sha, pin.sha
             );
