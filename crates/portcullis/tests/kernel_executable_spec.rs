@@ -395,7 +395,7 @@ proptest! {
         let mut prev_remaining = kernel.remaining_usd();
 
         for charge_cents in charges {
-            let amount = Decimal::new(charge_cents as i64, 2);
+            let amount = Decimal::new(i64::from(charge_cents), 2);
             match kernel.charge(amount) {
                 Ok(remaining) => {
                     // Remaining must not increase

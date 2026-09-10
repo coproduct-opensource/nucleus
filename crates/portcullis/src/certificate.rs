@@ -621,7 +621,7 @@ pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
     hasher.update(perms.time.valid_until.timestamp().to_le_bytes());
 
     //  UninhabitableState constraint
-    hasher.update([perms.uninhabitable_constraint as u8]);
+    hasher.update([u8::from(perms.uninhabitable_constraint)]);
 
     hasher.finalize().to_vec()
 }
