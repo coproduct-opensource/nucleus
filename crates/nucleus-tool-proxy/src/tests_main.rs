@@ -458,7 +458,9 @@ mod ifc_http_enforcement {
             "http",
         );
         let seen = sink.records.lock().unwrap().clone();
-        (mapped, seen)
+        // The tests below are about the mapped error and what was recorded; the
+        // kernel's own reason travels alongside it for the escalation proposal.
+        (mapped.map_err(|d| d.error), seen)
     }
 
     // ── The kernel-decision recording chokepoint (EU AI Act Article 12) ─────────
@@ -1375,8 +1377,8 @@ mod phase2_flowgraph_switch {
             "http",
         );
         assert!(
-            matches!(r, Err(ApiError::IfcDenied(_))),
-            "a tainted graph must fail closed through decide_and_record; got {r:?}"
+            matches!(r.map_err(|d| d.error), Err(ApiError::IfcDenied(_))),
+            "a tainted graph must fail closed through decide_and_record"
         );
     }
 
@@ -1578,5 +1580,164 @@ mod deny_reason_parity {
                 "{reason:?} changed class, not just wording"
             );
         }
+    }
+}
+
+// ── A denial that explains itself ───────────────────────────────────────────
+//
+// The escalation proposal answers four questions — what was attempted, why it
+// was stopped, the least authority that would have allowed it, and what new
+// risk granting that would add. It has answered them since ADR 0004 milestone
+// 4, and only *after* a run had ended, at the CLI, rebuilt from a trace file.
+// The agent that was denied got a sentence and gave up; the person got the one
+// command that would have helped once it no longer mattered.
+//
+// `ApiError::Refused` carries it in band. The property that matters is that it
+// can only ever ADD an explanation.
+mod refusal_carries_its_proposal {
+    use super::*;
+    use portcullis::escalation_proposal::{Attempt, Blocked, EscalationProposal};
+    use portcullis::kernel::DenyReason;
+
+    fn a_proposal() -> EscalationProposal {
+        EscalationProposal {
+            version: EscalationProposal::VERSION,
+            grant_id: uuid::Uuid::nil(),
+            attempted: Attempt {
+                operation: Operation::WebFetch,
+                subject: "https://api.github.com/x".to_string(),
+            },
+            blocked: Blocked {
+                code: "kernel_denied".to_string(),
+                reason: DenyReason::EgressBlocked {
+                    host: "api.github.com".to_string(),
+                    policy_reason: "not in allowlist".to_string(),
+                },
+            },
+            plain: "web_fetch was denied".to_string(),
+            minimum: None,
+            risk: None,
+            scopes: Vec::new(),
+            outside_ceiling: None,
+            repair: None,
+        }
+    }
+
+    /// THE invariant. A proposal explains a refusal; it never changes one. The
+    /// status, the kind and the message are the wrapped error's, unchanged —
+    /// so no caller branching on `kind` sees different behaviour because an
+    /// explanation became available.
+    #[test]
+    fn wrapping_changes_nothing_about_the_refusal() {
+        let bare = kernel_denial_to_api_error(
+            Operation::WebFetch,
+            "https://api.github.com/x",
+            DenyReason::EgressBlocked {
+                host: "api.github.com".to_string(),
+                policy_reason: "not in allowlist".to_string(),
+            },
+        );
+        let bare_class = bare.classify();
+        let bare_msg = bare.to_string();
+
+        let wrapped = ApiError::Refused {
+            inner: Box::new(bare),
+            proposal: Box::new(a_proposal()),
+        };
+        let (status, kind, operation, _) = wrapped.classify();
+        assert_eq!(status, bare_class.0, "status must not move");
+        assert_eq!(kind, bare_class.1, "kind must not move");
+        assert_eq!(operation, bare_class.2, "operation must not move");
+        assert_eq!(
+            wrapped.to_string(),
+            bare_msg,
+            "the message a person reads must not move"
+        );
+    }
+
+    /// A refusal is still a refusal: nothing in this path yields a 2xx.
+    #[test]
+    fn a_wrapped_refusal_is_never_a_success() {
+        let wrapped = ApiError::Refused {
+            inner: Box::new(kernel_denial_to_api_error(
+                Operation::WebFetch,
+                "s",
+                DenyReason::InsufficientCapability,
+            )),
+            proposal: Box::new(a_proposal()),
+        };
+        assert!(
+            wrapped.classify().0.is_client_error() || wrapped.classify().0.is_server_error(),
+            "a proposal must never turn a refusal into a success"
+        );
+    }
+
+    /// The wire. Everything above is about the type; this is about the bytes a
+    /// denied agent actually receives, which is the only place the loop can
+    /// close in band.
+    #[tokio::test]
+    async fn the_refusal_body_carries_the_proposal() {
+        use http_body_util::BodyExt as _;
+
+        let with = ApiError::Refused {
+            inner: Box::new(kernel_denial_to_api_error(
+                Operation::WebFetch,
+                "https://api.github.com/x",
+                DenyReason::EgressBlocked {
+                    host: "api.github.com".to_string(),
+                    policy_reason: "not in allowlist".to_string(),
+                },
+            )),
+            proposal: Box::new(a_proposal()),
+        };
+        let resp = with.into_response();
+        assert!(resp.status().is_client_error() || resp.status().is_server_error());
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["kind"], "kernel_denied", "the code must not move");
+        let p = &body["proposal"];
+        assert_eq!(p["attempted"]["subject"], "https://api.github.com/x");
+        assert_eq!(p["blocked"]["code"], "kernel_denied");
+
+        // The same denial with no grant behind it: no key at all, not a null.
+        // A profile run is every run that has no `--pod-grant`, and a client
+        // that must distinguish "absent" from "present but empty" would be
+        // reading a distinction the proxy does not intend to make.
+        let bare = kernel_denial_to_api_error(
+            Operation::WebFetch,
+            "https://api.github.com/x",
+            DenyReason::EgressBlocked {
+                host: "api.github.com".to_string(),
+                policy_reason: "not in allowlist".to_string(),
+            },
+        );
+        let bytes = bare
+            .into_response()
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["kind"], "kernel_denied");
+        assert!(
+            body.get("proposal").is_none(),
+            "a proposal-less denial must not emit the key: {body}"
+        );
+    }
+
+    /// Non-vacuity: without the wrapper there is no proposal to find, so the
+    /// test above is not passing because proposals are inert.
+    #[test]
+    fn a_bare_refusal_carries_no_proposal() {
+        let bare = kernel_denial_to_api_error(
+            Operation::WebFetch,
+            "s",
+            DenyReason::InsufficientCapability,
+        );
+        assert!(
+            !matches!(bare, ApiError::Refused { .. }),
+            "a refusal built without a grant must stay bare"
+        );
     }
 }

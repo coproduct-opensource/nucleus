@@ -221,7 +221,7 @@ pub(crate) fn decide_and_record(
     subject: &str,
     actor: ActorIdentity,
     transport: &str,
-) -> Result<DecisionToken, ApiError> {
+) -> Result<DecisionToken, Box<Denied>> {
     // The live egress verdict is read from the single authoritative `FlowGraph`
     // (Phase 2 retirement: the retained `FlowTracker` oracle and its divergence
     // canary are gone — there is one graph now, so there is nothing left to
@@ -234,5 +234,39 @@ pub(crate) fn decide_and_record(
         sink, &decision, operation, subject, actor, transport,
     );
 
-    mapped
+    mapped.map_err(|error| {
+        Box::new(Denied {
+            // Handed back so the caller can build the escalation proposal for THIS
+            // refusal without re-deriving it from the mapped error, which is lossy:
+            // several reasons collapse onto one `ApiError`, and a proposal built
+            // from a guess would name the wrong minimum authority.
+            reason: match decision.verdict {
+                Verdict::Deny(reason) => Some(reason),
+                _ => None,
+            },
+            error,
+        })
+    })
+}
+
+/// A refusal, with the kernel's own reason for it.
+///
+/// `ApiError` is the wire shape and is deliberately lossy — several
+/// `DenyReason`s map onto one error so a caller sees a stable `kind`. The
+/// reason is kept alongside it, unmapped, for the one consumer that needs the
+/// original: the escalation proposal, which has to name the least authority
+/// that would have allowed *this* denial.
+#[derive(Debug)]
+pub(crate) struct Denied {
+    /// The refusal as the caller will see it.
+    pub error: ApiError,
+    /// What the kernel actually said. `None` for a refusal that did not come
+    /// from a `Verdict::Deny` — an approval deferral, say.
+    pub reason: Option<DenyReason>,
+}
+
+impl From<Denied> for ApiError {
+    fn from(d: Denied) -> Self {
+        d.error
+    }
 }
