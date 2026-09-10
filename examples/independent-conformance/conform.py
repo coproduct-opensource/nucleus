@@ -136,7 +136,22 @@ def evaluate(case: dict) -> bool | None:
 
 
 def main() -> int:
-    path = sys.argv[1] if len(sys.argv) > 1 else "vectors.json"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    path = args[0] if args else "vectors.json"
+
+    # Anti-vacuity floor. `evaluate` returns None for a case this implementation
+    # cannot re-derive, and those are counted as skipped rather than failed —
+    # correctly, since `disclosure_required` is an IFC decision these fields do
+    # not carry. But that means a corpus in which EVERY case skipped would report
+    # "agreement on every checked vector" over an empty set and exit 0. A CI job
+    # trusting that exit status would then certify conformance having compared
+    # nothing. `--min-checked N` makes the size of the evidence part of the
+    # verdict. Ratchet it UP as the corpus grows; never down to make a run pass.
+    min_checked = 1
+    for a in sys.argv[1:]:
+        if a.startswith("--min-checked="):
+            min_checked = int(a.split("=", 1)[1])
+
     with open(path) as fh:
         corpus = json.load(fh)
 
@@ -153,6 +168,13 @@ def main() -> int:
             wrong.append(f"  {case['name']}: expected {case['expect']}, this impl said {got}")
 
     print(f"independent implementation vs nucleus: {checked} vectors checked, {skipped} skipped")
+    if checked < min_checked:
+        print(
+            f"TOO FEW CHECKED: {checked} < {min_checked}. Agreement over a corpus this "
+            "small is not evidence — either the corpus lost cases, or `evaluate` "
+            "started returning None for cases it used to decide."
+        )
+        return 1
     if wrong:
         print("DISAGREEMENTS:")
         print("\n".join(wrong))

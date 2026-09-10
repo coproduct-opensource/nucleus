@@ -231,7 +231,7 @@ mod tests {
     fn lambda_monotonically_increases() {
         let mut prev = 0.0;
         for i in 0..=100 {
-            let util = i as f64 / 100.0;
+            let util = f64::from(i) / 100.0;
             let l = compute_lambda(util);
             assert!(
                 l >= prev,
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn lambda_finite_for_all_inputs() {
         for i in 0..=100 {
-            let util = i as f64 / 100.0;
+            let util = f64::from(i) / 100.0;
             assert!(compute_lambda(util).is_finite());
         }
     }

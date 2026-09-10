@@ -193,7 +193,7 @@ fn backoff_for_attempt(attempt: u32) -> Duration {
     // simultaneous retry waves across the wall clock.
     let jitter_ms = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
+        .map(|d| u64::from(d.subsec_nanos()))
         .unwrap_or(0)
         / 1_000_000)
         % 1_000;
