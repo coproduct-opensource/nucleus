@@ -52,6 +52,8 @@ enum Command {
         #[arg(long)]
         entries: bool,
     },
+    /// A SHA of this repo pinned by this repo must still match the working tree.
+    SelfPin,
     /// Every source Kani harness must have a CI lane or a named documented exception.
     KaniCoverage,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
@@ -197,6 +199,7 @@ mod kani_coverage;
 mod line_ratchet;
 mod rerun_plan;
 mod scoreboard;
+mod self_pin;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
@@ -209,6 +212,12 @@ fn main() -> Result<()> {
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
+        Command::SelfPin => match self_pin::check(&std::env::current_dir()?)? {
+            // 2 is "could not look", which is never a pass. Mapped here rather than
+            // exited from inside the check, so a unit test calling it survives.
+            self_pin::Outcome::CouldNotLook => std::process::exit(2),
+            self_pin::Outcome::Clean => Ok(()),
+        },
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
         Command::LineRatchet { strict, entries } => {
             if entries {
