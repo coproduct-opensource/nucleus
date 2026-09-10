@@ -341,7 +341,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 | **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
 | **Delegation chains** | Verified | Monotone attenuation with `meet_with_justification`, Lean proofs for delegation narrowing |
 | **Deep packet inspection (DPI)** | Verified | `DerivationClass`, `EffectKind`, `StorageLane`, `FieldEnvelope`, `WitnessBundle`. 3 Kani proofs + 16 Lean theorems |
-| **Constitutional kernel** | Tested | `ck-kernel` admission engine, `PolicyRuleSet`, 17 Kani proofs |
+| **Constitutional kernel** | Tested | `ck-kernel` admission engine, `PolicyRuleSet`, 17 Kani harnesses — **5 verified, 12 have never completed** (`KANI-STATUS.md`) |
 | **Unicode injection defense** | Tested | 8-category invisible character detection; warn/strip/deny policy |
 | **Execution receipts** | Tested | Cryptographic pod execution proof with token usage and cost tracking |
 | **Permission market** | Tested | Lagrangian pricing oracle for multi-dimensional capability constraints |
