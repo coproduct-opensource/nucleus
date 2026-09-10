@@ -1,12 +1,26 @@
 # Nucleus
 
-### Don't trust the agent. Verify it.
+### Expand what you can safely delegate.
 
-*Signed identity, declared guarantees, receipts anyone can check.*
+*Any agent should do as much useful work as you authorize — and be structurally incapable of exceeding it.*
 
 [![CI](https://github.com/coproduct-opensource/nucleus/actions/workflows/ci.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/ci.yml)
 [![Security Audit](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
+
+**Nucleus expands the frontier of safely delegatable machine agency: any agent should be able to do as much useful real-world work as its principal is willing to authorize, while being structurally incapable of exceeding that authorization.**
+
+The bound it holds, and the thing everything below is built to make checkable by someone who does not trust us:
+
+```
+    exercised authority  ≼  delegated authority
+```
+
+Why it is stated as an objective and not only as a constraint: [ADR 0005](docs/adr/0005-delegatable-agency.md), [NORTH_STAR.md](NORTH_STAR.md). How a stated goal becomes a minimum-authority grant: [ADR 0004](docs/adr/0004-delegation-compiler.md).
+
+### Don't trust the agent. Verify it.
+
+*Signed identity, declared guarantees, receipts anyone can check.*
 
 **Nucleus is a vendor-agnostic secure runtime for AI agents: it enforces what an agent may do, proves the enforcement boundary is sound, attests how every result was produced, and federates identity and trust — without a single long-lived secret.**
 
@@ -169,11 +183,11 @@ Every tool call flows through the permission kernel. `nucleus run` tracks data p
 | Tool | Real count | Scope | CI gate |
 |------|-----------|-------|---------|
 | **Lean 4 + Mathlib** (kernel-checked) | ~277 theorems in the security core (more, incl. research formalizations) | Capability Heyting algebra, IFC semilattice, taint monotonicity, exposure monoid, delegation, **integrity noninterference over Aeneas-extracted Rust** | `portcullis-core-proven-lean.yml` `lake build`s the whole proven tier and fails on any `sorry`/`admit` outside the research manifest (`crates/portcullis-core/lean/CONJECTURES.md`); `aeneas-ifc-scoped.yml` asserts a clean axiom set for the extracted integrity-noninterference theorem (`IntegrityNoninterferenceExtracted.lean`) |
-| **Kani** (bounded model checking) | 114 harnesses repo-wide (portcullis 64, portcullis-core 31, ck-kernel 17, +2) | DecisionToken linearity, lattice adjunction, flow-graph isolation, constitutional-kernel admission contract | `kani-nightly.yml` runs `cargo kani -p portcullis` (64) + `-p ck-kernel` (17) |
+| **Kani** (bounded model checking) | 120 harnesses repo-wide (portcullis 70, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1) — census by `scripts/formal-numbers.sh` | DecisionToken linearity, lattice adjunction, flow-graph isolation, constitutional-kernel admission contract | `kani-nightly.yml` runs `cargo kani -p portcullis` (70) + `-p ck-kernel` (17). **Of ck-kernel's 17, only 5 have ever completed** — every harness that constructs a `BTreeSet<String>` fails to terminate, including the refinement bridge that would carry the other 12 (`KANI-STATUS.md`) |
 | **Tests** | ~4,400 (`#[test]` / `#[tokio::test]`) + ~47 `proptest` suites | Workspace-wide | `ci.yml` |
 | **Code** | ~165K LOC Rust | — | — |
 
-**Honest scope.** The Lean *security* core (lattice, IFC, exposure, noninterference) is `sorry`-free. As of June 2026 the `portcullis-core-proven-lean.yml` gate `lake build`s the proven tier (24 libraries) and fails if any proof-hole `sorry`/`admit` appears in a file **not** listed as research-tier in `crates/portcullis-core/lean/CONJECTURES.md` — so a real proof can no longer silently regress; `aeneas-ifc-scoped.yml` additionally asserts a clean axiom set for the one extracted integrity-noninterference theorem. (Two previously-orphaned files — `CategoryProofs.lean`, `LabeledTypeProofs.lean` — were found to no longer compile under the pinned toolchain when the gate was introduced; they are quarantined as Tier 3 "STALE" in CONJECTURES.md, not cited as proven, pending repair.) The exploratory alignment-tax / cohomology / braid formalizations are research-tier, are **not** discharged (**40 open `sorry` proof holes across 11 files**; ~100 raw `sorry` occurrences tree-wide are mostly doc comments), and are clearly separated from the core and labeled `CONJECTURE` in-file. Some research files are `sorry`-free but rely on `native_decide`, which trusts the native compiler (`Lean.ofReduceBool`) and is **not** pure-kernel-checked — disclosed, not hidden. Aeneas mechanically translates the core capability *types* from Rust to Lean so proofs run over generated code; ExposureSet/IFC use hand-written Lean models with structural correspondence tests, and exact function-level Rust↔Lean correspondence (that the Rust `meet` equals the Lean `meet`) is **not yet** proven. Kani is bounded — complete over the finite lattice state space, an approximation for string/path checks.
+**Honest scope.** The Lean *security* core (lattice, IFC, exposure, noninterference) is `sorry`-free. As of June 2026 the `portcullis-core-proven-lean.yml` gate `lake build`s the proven tier (24 libraries) and fails if any proof-hole `sorry`/`admit` appears in a file **not** listed as research-tier in `crates/portcullis-core/lean/CONJECTURES.md` — so a real proof can no longer silently regress; `aeneas-ifc-scoped.yml` additionally asserts a clean axiom set for the one extracted integrity-noninterference theorem. (Two previously-orphaned files — `CategoryProofs.lean`, `LabeledTypeProofs.lean` — were found to no longer compile under the pinned toolchain when the gate was introduced; they are quarantined as Tier 3 "STALE" in CONJECTURES.md, not cited as proven, pending repair.) The exploratory alignment-tax / cohomology / braid formalizations are research-tier, are **not** discharged (**23 open `sorry` proof holes across 10 files**; ~100 raw `sorry` occurrences tree-wide are mostly doc comments), and are clearly separated from the core and labeled `CONJECTURE` in-file. Some research files are `sorry`-free but rely on `native_decide`, which trusts the native compiler (`Lean.ofReduceBool`) and is **not** pure-kernel-checked — disclosed, not hidden. Aeneas mechanically translates the core capability *types* from Rust to Lean so proofs run over generated code; ExposureSet/IFC use hand-written Lean models with structural correspondence tests, and exact function-level Rust↔Lean correspondence (that the Rust `meet` equals the Lean `meet`) is **not yet** proven. Kani is bounded — complete over the finite lattice state space, an approximation for string/path checks.
 
 **No Verus.** Earlier docs cited "297 Verus VCs." Verus has been **removed** from the workspace; its guarantees are folded into the Lean 4 + Kani stack. A `proptest`-based conformance suite (`verus_conformance.rs`) is the surviving artifact — property tests, not SMT proofs.
 
@@ -201,7 +215,7 @@ Nucleus is built on a vendor-agnostic algebraic core (`portcullis-core`, depende
 - **Policy enforced by the type system** — I/O goes through sealed effect traits (`FileEffect`, `ShellEffect`, `GitEffect`); the only constructor for a real handler is `production_effects(policy)`, so unpoliced file/shell/git I/O is unconstructible. (Web fetch/search and agent-spawn effects on the real handler return `NotImplemented` and delegate to other crates.)
 - **Governed memory** — a key-value store with per-entry IFC labels, authority classes, provenance flags, TTL, and `poisoned_entries()` detection for memory-poisoning attack classes.
 
-This cluster carries **over a thousand passing library unit tests** (`portcullis-core` ~1081, `portcullis-effects` 69, `nucleus-spec` 32, `nucleus-memory` 17, `nucleus-ifc` 14, `portcullis-profiles` 4 — roughly **~1217** in total) plus ~95 Kani harnesses.
+This cluster carries **over a thousand passing library unit tests** (`portcullis-core` ~1081, `portcullis-effects` 69, `nucleus-spec` 32, `nucleus-memory` 17, `nucleus-ifc` 14, `portcullis-profiles` 4 — roughly **~1217** in total) plus 96 Kani harnesses (portcullis 70 + portcullis-core 26).
 
 ---
 
@@ -224,7 +238,7 @@ Documented adversarial defenses pass with tests: patch laundering, witness repla
 | PR-gate integration | Enforce monotonicity on every PR touching the constitution | **Working** — in-repo `ck-admit.yml` runs `ck-kernel::admit` (Preflight) |
 | Runtime integration | Enforce an admitted policy on live execution | **Roadmap** — gate is CI-side only |
 
-> **Status:** ~75 passing unit/integration tests; 17 Kani harnesses. The kernel is now **invoked by an in-repo PR gate** (`cargo xtask policy-gate`, workflow `ck-admit.yml`): every PR touching `PolicyManifest.toml` or a `may_not_modify` protected file is run through `ck-kernel::admit`, and a non-monotone amendment fails the build — replacing reliance on the external/closed "Constitutional Gate" app. Signature verification now **defaults to fail-closed** outside test builds (an empty `Enforced` verifier rejects every witness until you install trusted keys via `.with_signature_verifier()`). Still roadmap: full *Admit* mode with real signed witnesses + committed trust roots (the CI gate currently runs *Preflight* — authoritative on monotonicity + `may_not_modify`, signatures skipped), and live-runtime (non-CI) enforcement of an admitted policy.
+> **Status:** ~75 passing unit/integration tests; 17 Kani harnesses, **5 of which have ever completed** — the 12 that construct a `BTreeSet<String>` do not terminate, and that set includes the refinement bridge that would let the 5 stand in for the production path (`KANI-STATUS.md`). The kernel is now **invoked by an in-repo PR gate** (`cargo xtask policy-gate`, workflow `ck-admit.yml`): every PR touching `PolicyManifest.toml` or a `may_not_modify` protected file is run through `ck-kernel::admit`, and a non-monotone amendment fails the build — replacing reliance on the external/closed "Constitutional Gate" app. Signature verification now **defaults to fail-closed** outside test builds (an empty `Enforced` verifier rejects every witness until you install trusted keys via `.with_signature_verifier()`). Still roadmap: full *Admit* mode with real signed witnesses + committed trust roots (the CI gate currently runs *Preflight* — authoritative on monotonicity + `may_not_modify`, signatures skipped), and live-runtime (non-CI) enforcement of an admitted policy.
 
 ### 2. Verifiable Identity & Trust Federation — keyless, vendor-neutral
 
@@ -347,7 +361,7 @@ The workspace contains **~47 crates** (42 workspace members + 5 excluded build t
 
 | Crate | Purpose | Status |
 |-------|---------|--------|
-| [**portcullis-core**](crates/portcullis-core/) | 13-dim Heyting capability lattice, 6-dim IFCLabel, FlowTracker, governed memory, Belnap bilattice, Aeneas→Lean pipeline | Working (~1081 tests + ~31 Kani harnesses; fn-level Lean bridge in progress) |
+| [**portcullis-core**](crates/portcullis-core/) | 13-dim Heyting capability lattice, 6-dim IFCLabel, FlowTracker, governed memory, Belnap bilattice, Aeneas→Lean pipeline | Working (~1081 tests + 26 Kani harnesses; fn-level Lean bridge in progress) |
 | [**portcullis**](crates/portcullis/) | Higher-level permission planes: attenuation tokens, egress policy, DPI, kernel | Working |
 | [**portcullis-effects**](crates/portcullis-effects/) | Sealed effect traits (`FileEffect`/`ShellEffect`/`GitEffect`/…) gated by `production_effects(policy)` | Alpha — file/shell/git do real I/O; web/spawn stubbed |
 | [**portcullis-profiles**](crates/portcullis-profiles/) | Work-type presets (CodeReview/BugFix/DocsEdit/Research), vendor-neutral | Working |
@@ -366,7 +380,7 @@ The workspace contains **~47 crates** (42 workspace members + 5 excluded build t
 |-------|---------|--------|
 | [**ck-types**](crates/ck-types/) | Manifest schema, BLAKE3 digests, Ed25519 witness bundles, subset/escalation order | Working (tested) |
 | [**ck-policy**](crates/ck-policy/) | Pure `check_monotonicity(parent, child)` with per-axis diff report | Working (tested) |
-| [**ck-kernel**](crates/ck-kernel/) | Admission engine + append-only lineage; 17 Kani harnesses | Working library — **not yet wired into the runtime** |
+| [**ck-kernel**](crates/ck-kernel/) | Admission engine + append-only lineage; 17 Kani harnesses, of which 5 have ever completed (`KANI-STATUS.md`) | Working library — **not yet wired into the runtime** |
 | [**nucleus-policy**](crates/nucleus-policy/) | Policy DSL for zero-permission-prompt agent authorization | Orphan — has a Cargo.toml but is **not** a workspace member; undescribed/unwired |
 
 </details>
@@ -448,7 +462,7 @@ Documented in [`SECURITY_TODO.md`](SECURITY_TODO.md) and [`docs/production-delta
 - **`bash -c` bypasses command-level checks.** Firecracker network policy is the real defense.
 - **`verify-receipts` checks the hash chain, not yet the Ed25519 signature.** Tool-proxy-log HMAC verification *is* real; C2PA verification is feature-gated.
 - **Issuance/signing of identities is demo-only.** `LocalIssuer` is `dev`-feature-gated; there is no SPIRE-backed JWT-SVID issuer in this repo.
-- **The research-tier Lean formalizations are not discharged.** 40 open `sorry` proof holes remain across 11 exploratory alignment-tax / cohomology / braid files (each labeled `CONJECTURE`; manifest at `crates/portcullis-core/lean/CONJECTURES.md`); only the security core is `sorry`-free and CI-gated against regression.
+- **The research-tier Lean formalizations are not discharged.** 23 open `sorry` proof holes remain across 10 exploratory alignment-tax / cohomology / braid files (each labeled `CONJECTURE`; manifest at `crates/portcullis-core/lean/CONJECTURES.md`); only the security core is `sorry`-free and CI-gated against regression.
 - **Some crate-level READMEs are stale** (`nucleus-lineage` under-claims; a few doc comments lag the code). The code/tests are the source of truth.
 
 ---

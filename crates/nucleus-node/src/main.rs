@@ -1189,7 +1189,7 @@ async fn create_pod_internal(
 
     // ── Backend clamp, then the trust gate. Since #2438 the gate only OBSERVES
     // reputation; what the pod MAY do comes from the certificate below. ──────
-    driver::clamp_isolation_to_backend(&mut spec);
+    driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
     if state.trust_gate.is_enabled() {
         trust_gate::observe(&state.trust_gate, &mut spec, &state.http_client).await;
     }

@@ -34,9 +34,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      # The gatehouse commit whose `gate` checks the plan (its embedded prelude must match the
-      # import hash in .gatehouse/pipeline.writ).
-      GATEHOUSE_REF: 4d42510657690b90cf796d57ce277e665fca0989
+      # The gatehouse commit whose `gate` checks the plan. Two things must move WITH it,
+      # and `cargo xtask gatehouse-pin` now refuses the change if either does not:
+      #   * .gatehouse/pipeline.writ's import digest -- this ref's prelude/ci.writ hash;
+      #   * gatehouse-shadow.yml's GATEHOUSE_REF -- a shadow built from a different
+      #     gatehouse than the plan check compares two things that were never the same.
+      # Moved 4d42510 -> 7326bfa9 (a descendant) on 2026-09-10 to close a skew that had
+      # gone unnoticed because nothing compared the two workflows.
+      GATEHOUSE_REF: 7326bfa9ea3f490c20bb406941527ac0484410c5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,6 +76,17 @@ jobs:
           # gate exists to notice. The GitHub-side commands carry their own denial where they
           # need it (the clippy gate passes `-D warnings` on its own command line).
           rustflags: ''
+      - name: The two pins agree (before spending three minutes on a build)
+        if: steps.tok.outputs.present == 'true'
+        # GATEHOUSE_REF and the plan's import digest are one fact written twice, and the
+        # env comment above has always SAID they must match. Saying it is not checking it:
+        # bumping either alone makes `gate plan check` fail with `no library for import`
+        # about three minutes into the cargo build below. This decides the same thing from
+        # the three declarations in milliseconds, and it also refuses a gatehouse checkout
+        # that is not AT the pinned ref -- reading the mismatch from the wrong side is how
+        # a working pin gets mistaken for a stale one (gatehouse FINDINGS.md F-21).
+        run: cargo run -q -p xtask -- gatehouse-pin --gatehouse gatehouse
+
       - name: gate plan check .gatehouse/pipeline.writ
         if: steps.tok.outputs.present == 'true'
         run: |

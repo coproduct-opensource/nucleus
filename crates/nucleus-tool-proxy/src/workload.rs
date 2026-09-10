@@ -339,6 +339,9 @@ impl WorkloadLaunch {
     }
 }
 
+/// OS assumptions: KB-GUEST-PID-SHARED and KB-LINUX-CHILD-ISOLATION;
+/// see docs/assumptions/kernel-behaviour.md.
+///
 /// Spawn an admitted plan. **The only `Command::new` in the crate** — the
 /// mediation gate's allowlist names this one line, so a second spawn anywhere in
 /// the tool-proxy fails the build.
