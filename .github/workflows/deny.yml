@@ -30,20 +30,27 @@ jobs:
     # Required contexts: without a timeout the job inherits GitHub's 360-minute
     # default, which is the whole merge-queue check budget (ci-spec I7).
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        checks:
-          - advisories
-          - bans
-          - licenses
-          - sources
+    # ONE job, four checks, one context. It was a four-way matrix sharded by
+    # check category — four jobs, four checkouts, four toolchain setups and four
+    # pool slots for what `cargo deny check advisories bans licenses sources`
+    # does in one invocation.
+    #
+    # Measured on merge-group run 60fa8483: the shards ran 1.2m, 1.2m, 1.2m and
+    # (sources) under a minute, of which ~0.9m each was the check itself and the
+    # rest checkout and setup. Sharding buys parallelism the pool queue then eats
+    # — and `ci/merge-queue.toml` records why that trade never pays here: a
+    # single group's required contexts already saturate the pool, so four slots
+    # for one gate is four slots another gate waits for.
+    #
+    # `cargo deny check` with several categories still reports every category's
+    # findings and still exits non-zero if any fails, so nothing about what is
+    # enforced changes — only how many jobs enforce it.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # `cargo deny` itself, not the docker action: the self-hosted scale set
       # runs jobs in a plain container (no docker), and the image bakes
       # cargo-deny (docker/Dockerfile.runner CARGO_DENY_VERSION). Hosted
-      # runners install the same pin. The matrix shards by check category.
+      # runners install the same pin.
       - name: Install cargo-deny (hosted only; baked into the runner image)
         if: ${{ runner.environment == 'github-hosted' }}
         run: cargo install cargo-deny --version 0.20.2 --locked
@@ -53,4 +60,4 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
-      - run: cargo deny check ${{ matrix.checks }}
+      - run: cargo deny check advisories bans licenses sources
