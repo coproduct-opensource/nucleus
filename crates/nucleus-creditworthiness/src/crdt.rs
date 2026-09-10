@@ -276,7 +276,7 @@ mod tests {
             let mut hash = [0u8; 32];
             hash[0..8].copy_from_slice(&weight.to_le_bytes());
             hash[8] = dim_sel as u8;
-            hash[9] = pol as u8;
+            hash[9] = u8::from(pol);
             CreditEvent {
                 dimension: CreditDimension::ALL[dim_sel],
                 polarity: if pol { Polarity::Credit } else { Polarity::Debit },
