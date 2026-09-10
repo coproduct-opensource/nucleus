@@ -96,6 +96,54 @@ All documentation should:
 - Show generic credential examples
 - Reference the orchestrator layer for vendor integration
 
+## Mandate: gates are Rust, not shell
+
+**New CI logic is Rust — a crate, or an `xtask` subcommand. No new shell scripts, and no
+new logic added to an existing one.**
+
+The reason is the failure record, not taste. Every trap this repository keeps rediscovering is a
+shell trap that a type would have refused:
+
+- `cmd | tail` reports **tail's** exit status, so a gate's own failure is invisible. Found in
+  `check-line-ratchet.sh`, and again in `llvm-cov ... | tee` where the `--fail-under-lines`
+  threshold *could never red the check*.
+- `|| true` on a precondition moves the error somewhere it cannot be understood — a swallowed
+  `git fetch` reported every dependent required check as SKIPPED, and GitHub counts a skipped
+  required check as **passed**.
+- `[ "$V" -lt N ]` with an empty `$V` errors, `if` reads that as false, and the gate **passes**.
+  `GI006` in `ci-spec` exists solely to find this shape.
+- A `grep` that finds nothing exits 2, which `if` also reads as false, so absence of evidence
+  becomes evidence of absence — `GI002`.
+
+Each is a category error that `Result`, a non-empty type, or an exhaustive `match` makes
+unrepresentable. `ci-spec`'s `GI*` lints are a static analyser for a language we chose not to
+leave; the cheaper fix is to leave it.
+
+**Rust also gets the thing shell cannot have: tests.** `cargo xtask ci-ejections` distinguishes
+`Merged | Ejected | InFlight` in an enum with three arms because measuring it by hand conflated
+two of them and moved a rate across the threshold that decides a batch size. That distinction is
+a type. In shell it was a bug.
+
+### The existing 90
+
+`git ls-files '*.sh'` is **90** files; **42** produce required gate contexts. This mandate is
+forward-looking and the backlog is a migration, not a cleanup:
+
+- **Never convert a required gate silently.** Its verdict is a required context. A conversion must
+  be proved verdict-identical on the real subject — red on the real defect, green when restored —
+  which is A-19's discipline and `UNCOVERED_CEILING = 0`.
+- Convert when a script is being changed anyway. A gate nobody is touching is not urgent; a gate
+  someone is editing is exactly when the shell tax gets paid again.
+- The runner hooks (`ci/fly-runner/job-{started,completed}.sh`) are `ACTIONS_RUNNER_HOOK_*` targets
+  and must be an executable on the machine, so those become a small binary baked into
+  `docker/Dockerfile.runner` rather than an `xtask` subcommand — `xtask` needs a built workspace and
+  these run before and after one.
+
+### What stays shell
+
+A single command with no branching, no arithmetic, and no exit-code inspection. The moment there
+is an `if`, a count, or a pipeline whose status matters, it is Rust.
+
 ## Startup Loops
 
 On init, read `LOOPS.md` (git-ignored, local only) and start any loops defined there.
