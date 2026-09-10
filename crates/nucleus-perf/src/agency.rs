@@ -50,6 +50,16 @@ pub(crate) struct Ctx<'a> {
     seq: Cell<u64>,
     /// Refusals that were deferrals to a person, not denials of authority.
     deferrals: Cell<usize>,
+    /// HMAC secret for request signing.
+    ///
+    /// A pod's proxy behind a node is reached on an already-authenticated
+    /// channel; a proxy this harness spawns itself is not, and refuses an
+    /// unsigned request with `missing auth header`. Worth noting how that
+    /// showed up: every task failed, and the report refused to be quoted
+    /// because a containment check "failed" too — the harness could not tell
+    /// an auth refusal from a policy one, which is exactly what
+    /// `AgencyReport::is_valid` exists to catch.
+    secret: Option<Vec<u8>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -62,7 +72,13 @@ impl<'a> Ctx<'a> {
             approvals: Cell::new(0),
             seq: Cell::new(0),
             deferrals: Cell::new(0),
+            secret: None,
         }
+    }
+
+    fn with_secret(mut self, secret: Option<Vec<u8>>) -> Self {
+        self.secret = secret;
+        self
     }
 
     fn nonce(&self) -> String {
@@ -83,7 +99,10 @@ impl<'a> Ctx<'a> {
         subject: &str,
         body: serde_json::Value,
     ) -> Result<(u16, String)> {
-        let (status, text, _ms) = tool_call(self.proxy, route, body)?;
+        let (status, text, _ms) = match &self.secret {
+            Some(secret) => crate::signed_tool_call(self.proxy, secret, self.actor, route, body)?,
+            None => tool_call(self.proxy, route, body)?,
+        };
         let ok = (200..300).contains(&status);
         let obs = if ok {
             Observation::new(operation, subject)
@@ -343,23 +362,40 @@ fn refuses_uncredentialed_egress(ctx: &Ctx<'_>) -> Result<Outcome> {
     Ok(Ok(()))
 }
 
-/// The gate that the work tasks above lean on. If an unapproved write
-/// succeeded, `write-and-read-back` would pass for the wrong reason and C(T)
-/// would read zero because nobody was ever asked.
-fn refuses_unapproved_write(ctx: &Ctx<'_>) -> Result<Outcome> {
-    let path = format!("agency-unapproved-{}.txt", ctx.nonce());
+/// A write to a path no policy admits must not land.
+///
+/// This replaced a check that asserted an unapproved write is DEFERRED, and the
+/// replacement is worth explaining because the old one failing is what exposed
+/// it. Under the `codegen` profile writes are `low_risk`, so they defer and the
+/// check passed. Under a compiled grant for the same work they are authorised
+/// outright — `nucleus run --goal` says so in as many words, "no approval
+/// prompts expected" — so the write landed and the check reported a breach.
+///
+/// It was the check that was wrong. It encoded a property of one profile rather
+/// than an invariant, and containment checks decide whether a whole reading may
+/// be quoted, so a check that depends on which grant is in force can void a
+/// perfectly good measurement. Worth noting the mechanism did exactly what it
+/// is for: the report refused to be quoted, and the thing it caught was a
+/// defect in the suite rather than in the runtime.
+///
+/// A blocked path is refused under every profile and every grant — `.env` is in
+/// the path lattice's sensitive set, which the grant's own `Limits` line names —
+/// so this holds regardless of how writes are graded.
+fn refuses_write_to_a_blocked_path(ctx: &Ctx<'_>) -> Result<Outcome> {
+    let path = ".env";
     let (status, body) = ctx.call(
         "write",
         Operation::WriteFiles,
-        &path,
-        serde_json::json!({"path": path, "contents": "should not land"}),
+        path,
+        serde_json::json!({"path": path, "contents": "SECRET=leaked"}),
     )?;
     if (200..300).contains(&status) {
-        return Ok(Err("an unapproved write SUCCEEDED".to_string()));
+        return Ok(Err(format!("a write to {path} SUCCEEDED")));
     }
-    if approval_required_operation(&body).is_none() {
+    if approval_required_operation(&body).is_some() {
         return Ok(Err(format!(
-            "refused, but not as an approval deferral: {}",
+            "{path} was deferred to a person rather than refused; a blocked path is not \
+             an approval question: {}",
             body.trim()
         )));
     }
@@ -378,9 +414,9 @@ const CONTAINMENT: &[Task] = &[
         run: refuses_uncredentialed_egress,
     },
     Task {
-        id: "refuses-unapproved-write",
-        goal: "a write nobody approved does not land",
-        run: refuses_unapproved_write,
+        id: "refuses-write-to-a-blocked-path",
+        goal: "a write to a path no policy admits does not land",
+        run: refuses_write_to_a_blocked_path,
     },
 ];
 
@@ -473,6 +509,81 @@ pub(crate) fn measure(
     })
 }
 
+/// Measure under a compiled grant: the same suites, attributed against the
+/// grant's own effects.
+///
+/// This is the only path where ρ_effect is a number. `attribute_usage` divides
+/// granted effects by exercised ones, and a profile has none — so the profile
+/// arm reports `None` and says why, while this arm reports the ratio the effect
+/// catalog is supposed to move.
+pub(crate) struct GrantRun<'a> {
+    /// Where the proxy is listening.
+    pub proxy: &'a str,
+    /// HMAC secret, when the proxy this harness spawned requires signing.
+    pub secret: Option<Vec<u8>>,
+    /// The approver key, when the harness may act as the person.
+    pub key: Option<&'a ed25519_dalek::SigningKey>,
+    /// Actor recorded on approvals.
+    pub actor: &'a str,
+    /// What the measurement is.
+    pub label: &'a str,
+    /// Which boundary the work crossed.
+    pub enforcement: Enforcement,
+    /// The commit measured.
+    pub commit: Option<String>,
+}
+
+pub(crate) fn measure_under_grant(
+    run: GrantRun<'_>,
+    grant: &portcullis::task_grant::TaskGrant,
+) -> Result<AgencyReport> {
+    let GrantRun {
+        proxy,
+        secret,
+        key,
+        actor,
+        label,
+        enforcement,
+        commit,
+    } = run;
+    let ctx = Ctx::new(proxy, key, actor).with_secret(secret);
+
+    println!("\nwork (the numerator)");
+    let tasks = run_tasks(&ctx, WORK)?;
+    println!("\ncontainment (what makes it quotable)");
+    let containment = run_tasks(&ctx, CONTAINMENT)?;
+
+    // C(T) = confirmations BEFORE the run plus approvals during it. A compiled
+    // grant costs exactly one confirmation — the person reading Can / Cannot /
+    // Limits / Risk once and accepting it — and that one is counted here rather
+    // than quietly dropped, because dropping it would make the grant arm look
+    // free next to the profile arm when it is not. It is cheaper, not free.
+    let clicks = 1 + ctx.approvals.get();
+    let deferrals = ctx.deferrals.get();
+    let observations = ctx.observations.into_inner();
+    let catalog = portcullis::effect_catalog::EffectCatalog::builtin()
+        .context("the built-in effect catalog must parse")?;
+    let usage = portcullis::attribute_usage(grant, &catalog, &observations);
+
+    Ok(AgencyReport {
+        schema_version: AgencyReport::SCHEMA_VERSION,
+        label: label.to_string(),
+        commit,
+        enforcement,
+        tasks,
+        containment,
+        cost: AuthorityCost {
+            overhead_dimensions: usage.authority_overhead(),
+            overhead_effects: usage.effect_overhead(),
+            clicks,
+            denials_within_grant: usage.denials_within_grant(),
+            denials_total: usage.denied,
+            deferrals,
+            residual_risk: grant.risk.after,
+        },
+    })
+}
+
 /// Attribute the harness's own observations against the pod's lattice.
 ///
 /// A grant with no effects: the pod ran under a profile, so there are no
@@ -530,6 +641,232 @@ fn profile_shaped_grant(
         created_at: chrono::Utc::now(),
         not_after: chrono::Utc::now(),
     }
+}
+
+/// Compile a goal into a grant, seal it, and stand up a local tool-proxy under
+/// it — Tier 1, no microVM, no node.
+///
+/// This is the arm that makes ρ_effect a number rather than a `None`. Under a
+/// *profile* there are no semantic effects to divide by; under a compiled grant
+/// there are, and the same grant's effects are sealed into the certificate the
+/// proxy verifies, so the run is bounded by the effects it is measured against
+/// rather than merely described by them.
+///
+/// The proxy is spawned exactly as `nucleus run --local` spawns it — same
+/// flags, same Tier-3 orchestrator token, same announce-file handshake — so
+/// this measures the shipped local path and not a parallel copy of it.
+pub(crate) struct LocalGrantRun {
+    /// Where the proxy is listening.
+    pub proxy_url: String,
+    /// The grant the run is bounded by, and attributed against.
+    pub grant: portcullis::task_grant::TaskGrant,
+    /// The per-run HMAC secret the proxy was spawned with.
+    pub auth_secret: Vec<u8>,
+    /// Kept alive for the duration: dropping it kills the proxy and removes
+    /// the temporary directory.
+    _proxy: ProxyChild,
+    _tmp: TempDir,
+}
+
+/// A spawned proxy that is killed when it goes out of scope.
+pub(crate) struct ProxyChild(std::process::Child);
+
+impl Drop for ProxyChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A temporary directory removed on drop.
+pub(crate) struct TempDir(std::path::PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Compile `goal` against `ceiling`, seal it, and spawn a proxy under it.
+pub(crate) fn spawn_local_under_grant(
+    goal: &str,
+    ceiling_profile: &str,
+    proxy_bin: &str,
+    work_dir: &std::path::Path,
+) -> Result<LocalGrantRun> {
+    use portcullis::sealed_grant::SealedTaskGrant;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    let catalog = portcullis::effect_catalog::EffectCatalog::builtin()
+        .context("the built-in effect catalog must parse")?;
+    let registry = portcullis::profile::ProfileRegistry::default();
+    let ceiling = registry
+        .resolve(ceiling_profile)
+        .with_context(|| format!("unknown ceiling profile '{ceiling_profile}'"))?;
+    let ctx = nucleus_task_compiler::probe(work_dir)
+        .with_context(|| format!("probing the repository at {}", work_dir.display()))?;
+    let proposer = nucleus_task_compiler::RuleProposer;
+    let cost = portcullis::WeakeningCostConfig::default();
+    let explicit = std::collections::BTreeSet::new();
+    let grant = nucleus_task_compiler::compile(nucleus_task_compiler::CompileInput {
+        goal,
+        ctx: &ctx,
+        catalog: &catalog,
+        ceiling_profile,
+        ceiling: &ceiling,
+        proposers: &[&proposer],
+        explicit: &explicit,
+        limits: Default::default(),
+        cost_config: &cost,
+    })
+    .with_context(|| format!("compiling the goal {goal:?}"))?;
+
+    // Seal it. The harness holds the approver key for the length of the run,
+    // which is the same standing `nucleus grant seal` gives a person's key.
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
+        .map_err(|_| anyhow::anyhow!("generating an approver key"))?;
+    let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
+        .map_err(|_| anyhow::anyhow!("loading the approver key"))?;
+    let root_pubkey = hex::encode(key.public_key().as_ref());
+    let sealed = SealedTaskGrant::seal(grant.clone(), "nucleus-perf".to_string(), &key);
+    let cert_b64 = sealed
+        .token
+        .to_base64()
+        .context("encoding the sealed certificate")?;
+
+    let run_id = format!("agency-{}", std::process::id());
+    let tmp = std::env::temp_dir().join(format!("nucleus-{run_id}"));
+    std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    let tmp_guard = TempDir(tmp.clone());
+
+    // The spec carries the SEALED permissions, so the on-disk policy and the
+    // certificate agree; the proxy warns when they do not and runs under the
+    // certificate either way.
+    let spec_path = tmp.join("pod.yaml");
+    let spec = serde_json::json!({
+        "apiVersion": "nucleus/v1",
+        "kind": "Pod",
+        "metadata": { "name": "agency-local" },
+        "spec": {
+            "work_dir": work_dir,
+            "timeout_seconds": 600,
+            "policy": { "type": "inline", "lattice": grant.sealed_permissions() },
+        }
+    });
+    std::fs::write(&spec_path, serde_yaml::to_string(&spec)?)
+        .with_context(|| format!("writing {}", spec_path.display()))?;
+
+    let auth_secret = hex::encode(rand_bytes32());
+    let approval_secret = hex::encode(rand_bytes32());
+    let spec_contents = std::fs::read_to_string(&spec_path)?;
+    let spec_hash = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(spec_contents.as_bytes()))
+    };
+    let sandbox_token =
+        nucleus_client::generate_sandbox_token(auth_secret.as_bytes(), &run_id, &spec_hash);
+
+    // The session capability token. Without one the proxy's discharge gate has
+    // `verified_scope == None`, and `InScopeWithTask` denies EVERY operation
+    // fail-closed — correct behaviour, and the reason a first local run scored
+    // 1/5 with "no verified scope present" on every task. The node mints this
+    // per pod; a local run has to mint its own, from the same input: the scope
+    // is the grant's granted operations, which is a subset of the grant by
+    // construction.
+    let task_key = ed25519_dalek::SigningKey::from_bytes(&rand_bytes32());
+    let mut nonce = [0u8; 16];
+    {
+        use ring::rand::SecureRandom as _;
+        ring::rand::SystemRandom::new()
+            .fill(&mut nonce)
+            .expect("system randomness");
+    }
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let scope =
+        nucleus_provenance_memory::TokenScope::new(grant.lattice.granted_operations(), Vec::new());
+    let task_token = nucleus_provenance_memory::SignedTaskRef::issue(
+        run_id.clone(),
+        scope,
+        nonce,
+        now_unix,
+        grant.limits.duration_secs.max(600),
+        &task_key,
+    );
+    let task_token_json =
+        serde_json::to_string(&task_token).context("serialising the session task token")?;
+
+    let announce = tmp.join("proxy.addr");
+    let child = std::process::Command::new(proxy_bin)
+        .arg("--spec")
+        .arg(&spec_path)
+        .arg("--listen")
+        .arg("127.0.0.1:0")
+        .arg("--announce-path")
+        .arg(&announce)
+        .arg("--auth-secret")
+        .arg(&auth_secret)
+        .arg("--approval-secret")
+        .arg(&approval_secret)
+        .arg("--pod-cert")
+        .arg(&cert_b64)
+        .arg("--cert-root-pubkey")
+        .arg(&root_pubkey)
+        // Keep the audit log inside the run's own directory. The default is
+        // `/var/log/nucleus`, which a non-root local run cannot create, and the
+        // proxy refuses to start without somewhere to record verdicts — as it
+        // should: a mediated run with no audit sink is the one shape this
+        // system must never quietly allow.
+        .arg("--audit-log")
+        .arg(tmp.join("audit.log"))
+        .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
+        .env("NUCLEUS_TASK_TOKEN", &task_token_json)
+        .env("NUCLEUS_TASK_TOKEN_NONCE", hex::encode(nonce))
+        .env(
+            "NUCLEUS_TASK_TOKEN_ISSUER",
+            hex::encode(task_key.verifying_key().to_bytes()),
+        )
+        .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawning {proxy_bin}"))?;
+    let proxy = ProxyChild(child);
+
+    // The announce file is the proxy's own readiness signal, so waiting on it
+    // cannot race the bind the way a fixed sleep does.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let addr = loop {
+        if let Ok(s) = std::fs::read_to_string(&announce) {
+            let s = s.trim().to_string();
+            if !s.is_empty() {
+                break s;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            bail!("the tool-proxy did not announce an address within 20s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+
+    Ok(LocalGrantRun {
+        proxy_url: format!("http://{addr}"),
+        grant,
+        auth_secret: auth_secret.clone().into_bytes(),
+        _proxy: proxy,
+        _tmp: tmp_guard,
+    })
+}
+
+fn rand_bytes32() -> [u8; 32] {
+    use ring::rand::SecureRandom as _;
+    let mut b = [0u8; 32];
+    ring::rand::SystemRandom::new()
+        .fill(&mut b)
+        .expect("system randomness");
+    b
 }
 
 /// The `agency` subcommand: boot nothing, measure a pod that is already up.

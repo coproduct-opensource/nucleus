@@ -29,3 +29,10 @@ hex = { workspace = true }
 nucleus-spec = { path = "../nucleus-spec" }
 chrono = { workspace = true }
 uuid = { workspace = true }
+# Local-mode arm: compile a goal into a grant and seal it, so the run is bounded
+# by the effects it is measured against.
+nucleus-task-compiler = { path = "../nucleus-task-compiler" }
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+ring = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }

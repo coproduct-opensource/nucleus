@@ -32,7 +32,7 @@ delegatable agency, and `AgencyReport::is_valid` refuses to call it one.
 ### 2026-09-09 — `codegen` profile, Tier 2 microVM
 
 **MEASURED.** aarch64 / KVM (Lima `nucleus-kvm`, 4 vCPU, 7.9 GiB), Firecracker,
-`codegen` profile, pod boot ~3.0 s. Artifact: [`agency.json`](../agency.json).
+`codegen` profile, pod boot ~3.0 s. Artifact: [`benchmarks/agency/tier2-codegen-profile.json`](../benchmarks/agency/tier2-codegen-profile.json).
 
 ```
 agency: 5/5 tasks completed (100%) under microvm enforcement
@@ -70,6 +70,78 @@ more restrictive.
 | denials inside the grant | 7 of 8 | Of these, **5 are deferrals** — the system asking a person, exactly as designed. Two are genuine refusals inside a granted dimension. |
 | residual risk | Medium | Two of three uninhabitable-state components present at autonomous levels. |
 
+### 2026-09-10 — compiled grant, Tier 1 local
+
+**MEASURED.** macOS arm64, no microVM; `nucleus-tool-proxy` spawned locally under
+a sealed grant compiled from a goal. Artifact:
+[`benchmarks/agency/tier1-compiled-grant.json`](../benchmarks/agency/tier1-compiled-grant.json).
+
+```
+agency: 5/5 tasks completed (100%) under local enforcement
+cost:   ρ_effect = 1.25 · ρ_dimension = 1.75 · C(T) = 1 ·
+        3 denial(s) inside the grant of 4 total, 0 of them deferrals · risk Medium
+valid:  3 containment check(s) held
+```
+
+Reproduce:
+
+```sh
+nucleus-perf agency --local --goal "fix the failing tests" --ceiling codegen \
+    --tool-proxy-path <nucleus-tool-proxy> --work-dir <dir> \
+    --commit "$(git rev-parse --short HEAD)" --out agency.json
+```
+
+**This is the arm where ρ_effect exists.** Under a profile there are no semantic
+effects to divide by, so the Tier 2 reading reports `null`. Here the goal is
+compiled to a grant, the grant's effects are sealed into the certificate the
+proxy verifies, and the run is therefore *bounded by* the effects it is
+*measured against* rather than merely described by them.
+
+**ρ_effect = 1.25** — the grant holds five effects (`fs/read-workspace`,
+`fs/edit-workspace`, `git/commit`, `git/read-history`, `shell/run-tests`) and the
+run exercised four. One effect went unused, and `nucleus observe --narrow` would
+propose dropping it. That is the loop ADR 0004 opens, closing for the first time
+on a measured number.
+
+**C(T) = 1, against 4 under the profile.** This is the sharpest difference
+between the two readings and it is the ADR 0004 claim, measured: one
+confirmation before the run — a person reading Can / Cannot / Limits / Risk once
+and accepting — and **zero** authorization decisions during it. Under the
+`codegen` profile the same five tasks cost four in-run approvals, because the
+profile rates writes, edits and shell `low_risk` and defers each one. The grant
+is not free; it is one decision instead of four, made before anything ran rather
+than four times while a person waited.
+
+### The two readings side by side
+
+| | Tier 2, profile | Tier 1, compiled grant |
+|---|---|---|
+| work completed | 5/5 | 5/5 |
+| ρ_effect | *undefined* | **1.25** |
+| ρ_dimension | 1.75 | 1.75 |
+| C(T) | 4 | **1** |
+| denials inside the grant | 7 (5 deferrals) | 3 (0 deferrals) |
+| enforcement | microVM | in-process |
+
+They are not the same experiment and the table is not a controlled comparison —
+different tiers, different hosts, different architectures. What it does show is
+the shape ADR 0004 predicted: the same work, at the same completion rate, for a
+quarter of the human decisions and with the precision figure finally defined.
+
+**A containment check had to be replaced to get this reading, and the mechanism
+caught it rather than the reading being quietly wrong.** `refuses-unapproved-write`
+asserted that an unapproved write is *deferred* — true under the `codegen`
+profile, false under a compiled grant for the same work, which authorises writes
+outright and says so (`no approval prompts expected`). So the write landed, the
+check reported a breach, and the report refused to be quoted. It was the check
+that was wrong: it encoded a property of one profile rather than an invariant.
+It is now `refuses-write-to-a-blocked-path`, which holds under every profile and
+every grant. Worth recording because containment checks decide whether a whole
+reading may be quoted, so a check that depends on which grant is in force can
+void a perfectly good measurement — and because the validity property did its
+job in the direction nobody designs for: catching a defect in the suite rather
+than in the runtime.
+
 ## What this reading does not establish
 
 - **It is not a model benchmark.** Nucleus does not own cognition (ADR 0005,
@@ -84,14 +156,17 @@ more restrictive.
   reading, and no unconstrained control arm to measure the enforcement cost
   against. `Enforcement::None` exists in the schema for that arm; nobody has run
   it.
-- **ρ_effect is the number that matters and it is missing.** The dimension
-  figure cannot fall below about 1.75 for this profile no matter how precise the
-  grant gets, because 13 buckets is all the resolution it has.
+- **ρ_effect was missing from the Tier 2 reading**, and the Tier 1 one supplies
+  it. The dimension figure cannot fall below about 1.75 for this profile no
+  matter how precise the grant gets, because 13 buckets is all the resolution it
+  has; the effect figure can, and at 1.25 it says one granted effect went unused.
+- **Neither reading exercises the cloud, cluster, database or chat packs.** Those
+  effects exist; no task here touches them.
 
-## Why the four new effect packs did not move this number
+## Why the four new effect packs did not move these numbers
 
-`aws`, `kubernetes`, `database` and `slack` landed after the reading above, and
-the reading is unchanged. That is not a disappointing result, it is the right
+`aws`, `kubernetes`, `database` and `slack` landed alongside these readings, and
+neither reading moved. That is not a disappointing result, it is the right
 one, and saying so is cheaper than staging a delta.
 
 The packs widen **what can be delegated**. The suite measures **what this pod
@@ -99,13 +174,12 @@ did**, and what it did was filesystem and shell work under a profile. Those are
 different quantities, and the honest way to see the packs in a number needs two
 things neither of which exists yet:
 
-1. **A `--goal` grant, so ρ_effect is defined at all.** Under a profile there
-   are no effects to divide by. This is the missing number, and it is the one a
-   better catalog is supposed to move — `nucleus run --goal "..." --save-grant`
-   already produces the grant; the harness needs to run under it.
+1. ~~A `--goal` grant, so ρ_effect is defined at all.~~ **Done** — the Tier 1
+   reading above. ρ_effect is 1.25 for a repository-shaped goal.
 2. **Tasks that touch those surfaces.** A cluster, a database and an object
-   store, or credible fakes of them. A task suite that pointed at real
-   infrastructure would measure that infrastructure as much as the runtime.
+   store, or credible fakes of them. This is the one that is left, and it is not
+   a small one: a task suite pointed at real infrastructure would measure that
+   infrastructure as much as the runtime.
 
 What the packs *did* change is visible without the harness, in what a person is
 shown. Before them, a goal about a cluster compiled to nothing and a goal about
