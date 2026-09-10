@@ -8,6 +8,33 @@
 //!
 //! Auth: stdio transport implies the client is the pod's guest process —
 //! already authenticated by sandbox proof. HMAC auth is skipped.
+//!
+//! # Why there is no per-request certificate attenuation here (#2784-adjacent, ADR 0006 C2.0)
+//!
+//! The HTTP path narrows every gate by the delegation certificate the request
+//! carried: `AppState::ceiling` folds `CertifiedPermissions` into a three-way
+//! meet (boot ∧ market-effective ∧ chain-verified). This path does not, and
+//! that is a property of the transport rather than an omission.
+//!
+//! A delegation certificate is only honoured on a tier that binds an identity
+//! for its leaf to be checked against. `pod_cert::delegation_authority` returns
+//! `Bound` for `AuthMethod::SpiffeMtls` and nothing else, and
+//! `evaluate_request_cert` refuses a certificate on any unbound tier — "no
+//! identity to bind it to" (#2427). stdio has no `AuthMethod` at all: its trust
+//! story is the sandbox proof established at boot, and every verdict here is
+//! recorded against the fixed `ActorIdentity::StdioGuest`.
+//!
+//! So threading a certificate through would not be wiring an argument that was
+//! forgotten; it would be honouring a certificate on an unbound tier, which is
+//! exactly what #2427 deleted. The ceiling this path uses is therefore the boot
+//! ceiling, obtained through [`stdio_ceiling`] so the decision is named in one
+//! place. `stdio_has_no_bound_tier_to_attenuate_against` pins the premise: the
+//! day stdio gains a bound tier, that test fails and this reasoning expires
+//! loudly rather than silently going stale.
+//!
+//! This says nothing about the gates that are *not* identity-dependent. The
+//! `validation::` module and `effect_gate::admit_http_recorded` are absent from
+//! this path and are plain wiring gaps, tracked separately.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -389,7 +416,7 @@ impl NucleusMcpServer {
         // never cleared the obligations `FileEffect::read` enforces.
         let read_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::ReadFiles, None);
+            let fs_ceiling = stdio_ceiling(&self.state, Operation::ReadFiles);
             let flow = self.flow_graph.lock().await;
             let result =
                 crate::run_gate::preflight_read_fs(verified_scope, fs_ceiling, &params.path, &flow);
@@ -494,7 +521,7 @@ impl NucleusMcpServer {
         // handler returns its error and NEVER writes (cap-std is never reached).
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::WriteFiles, None);
+            let fs_ceiling = stdio_ceiling(&self.state, Operation::WriteFiles);
             let flow = self.flow_graph.lock().await;
             let result = preflight_fs(
                 Operation::WriteFiles,
@@ -613,8 +640,7 @@ impl NucleusMcpServer {
         // authorization proof.
         let (discharge_note, discharge_bundle) = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let run_bash_ceiling =
-                crate::run_gate::levels_for(&self.state, Operation::RunBash, None);
+            let run_bash_ceiling = stdio_ceiling(&self.state, Operation::RunBash);
             let flow = self.flow_graph.lock().await;
             let result = preflight_runbash(verified_scope, run_bash_ceiling, &subject, &flow);
             drop(flow);
@@ -969,8 +995,7 @@ impl NucleusMcpServer {
                     // loop would be the replay the by-value cutover removed.
                     let search_authority = {
                         let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling =
-                            crate::run_gate::levels_for(&state, Operation::GrepSearch, None);
+                        let ceiling = stdio_ceiling(&state, Operation::GrepSearch);
                         // `blocking_lock` rather than `.await`: this loop runs
                         // inside `block_in_place`, which exists precisely to allow
                         // blocking calls off the async executor.
@@ -1222,7 +1247,7 @@ impl NucleusMcpServer {
         // handler returns its error and NEVER fetches (no wire egress).
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let web_ceiling = crate::run_gate::levels_for(&self.state, Operation::WebFetch, None);
+            let web_ceiling = stdio_ceiling(&self.state, Operation::WebFetch);
             let flow = self.flow_graph.lock().await;
             let result = preflight_web(
                 Operation::WebFetch,
@@ -1384,12 +1409,66 @@ use crate::run_gate::{discharge_witness, preflight_fs, preflight_runbash, prefli
 // Tests — enforcement boundary coverage (#1295)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The gate ceiling for `op` on the stdio transport.
+///
+/// The `None` is the decision, not an oversight: there is no per-request
+/// delegation certificate on this transport to attenuate against, and there
+/// cannot be one until stdio gains a tier that binds an identity. See the
+/// module header. Named so the argument carries its reason, rather than
+/// appearing five times as a literal someone might take for an omission.
+fn stdio_ceiling(state: &crate::AppState, op: Operation) -> crate::run_gate::GateLevels {
+    crate::run_gate::levels_for(state, op, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     // The `preflight_runbash` scope tests build `TokenScope`s directly; its home
     // crate import is test-only now that the mint helper moved to `run_gate`.
     use nucleus_provenance_memory::TokenScope;
+
+    // ── the premise behind `stdio_ceiling` ──────────────────────────────
+
+    /// The module header argues this transport *cannot* carry per-request
+    /// certificate attenuation, because a delegation certificate is only
+    /// honoured on a tier that binds an identity and stdio has no tier at all.
+    ///
+    /// That argument is only sound while `SpiffeMtls` is the sole bound tier.
+    /// If a future tier becomes `Bound` — a signed stdio handshake, a peer-cred
+    /// socket promoted to carry identity — then `stdio_ceiling`'s `None` stops
+    /// being a property of the transport and becomes a real gap. This fails on
+    /// that day, so the reasoning expires loudly instead of quietly going
+    /// stale, which is the failure mode `law-mechanisms-manifest.txt` exists
+    /// for: a stated reason nothing rechecks.
+    ///
+    /// Exhaustive over `AuthMethod` on purpose: a new variant that is `Bound`
+    /// must be considered here, and a new `Unbound` one costs a line.
+    #[test]
+    fn stdio_has_no_bound_tier_to_attenuate_against() {
+        use crate::auth::AuthMethod;
+        use crate::pod_cert::{DelegationAuthority, delegation_authority};
+
+        for method in [
+            AuthMethod::Hmac,
+            AuthMethod::HmacDrand,
+            AuthMethod::HostVsock,
+            AuthMethod::Ed25519Drand,
+        ] {
+            assert_eq!(
+                delegation_authority(&method),
+                DelegationAuthority::Unbound,
+                "{method:?} became a bound tier. If stdio can now reach it, \
+                 `stdio_ceiling`'s `None` is no longer a property of the \
+                 transport and the module header's reasoning must be revisited"
+            );
+        }
+
+        assert_eq!(
+            delegation_authority(&AuthMethod::SpiffeMtls),
+            DelegationAuthority::Bound,
+            "non-vacuity: if nothing is Bound, the loop above proves nothing"
+        );
+    }
 
     // ── the graph grep actually consults ────────────────────────────────
 
