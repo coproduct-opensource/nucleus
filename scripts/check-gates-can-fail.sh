@@ -149,6 +149,16 @@ probe() {
 
 append_line() { printf '%s\n' "$2" >> "$1"; }
 
+perturb_law_mechanism_wired() {
+    # A mechanism the manifest declares dead gains a production call site.
+    # `ProvenanceDAG` is a complete content-addressed Merkle DAG that nothing
+    # constructs; one production mention is the whole failure.
+    #
+    # Appending to a .rs file does not trigger a crate build here: the gate is
+    # `cargo run -p xtask`, which compiles xtask and then greps the tree.
+    append_line "$1" 'fn _gate_of_gates() { let _: Option<ProvenanceDAG> = None; }'
+}
+
 perturb_line_ratchet() {
     # The ratchet caps file length. Push a monitored file past its ceiling.
     for _ in $(seq 1 400); do echo "// gate-of-gates padding" >> "$1"; done
@@ -450,6 +460,8 @@ RUST
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
+probe check-law-mechanisms.sh "" crates/portcullis/src/lattice.rs \
+      "a declared-dead mechanism gains a production call site" perturb_law_mechanism_wired
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
       "a raw Command::new on the agent path"  perturb_mediation
 probe check-sealed-home.sh    "" crates/portcullis-effects/src/lib.rs \

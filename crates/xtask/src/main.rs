@@ -72,6 +72,15 @@ enum Command {
     FlyPools,
     /// Every source Kani harness must have a CI lane or a named documented exception.
     KaniCoverage,
+    /// A mechanism declared dead in `scripts/law-mechanisms-manifest.txt` must
+    /// still be dead: its anchor present in the file that declares it, and
+    /// absent from every other production region.
+    ///
+    /// Built from the 2026-09-09 audit finding that most of nucleus's
+    /// algebraic unifications are already written, several machine-proved, and
+    /// not wired to the enforcement path — the general case of the class C8
+    /// gates for the Aeneas predicates.
+    LawMechanisms,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
     /// catch feature-unification-masked breakages — crates that compile in a
     /// full `--workspace` build but fail standalone (and on `cargo publish`)
@@ -214,6 +223,7 @@ mod ci_timings;
 mod fly_pools;
 mod gatehouse_pin;
 mod kani_coverage;
+mod law_mechanisms;
 mod line_ratchet;
 mod pin_parity;
 mod rerun_plan;
@@ -240,6 +250,12 @@ fn main() -> Result<()> {
         Command::PinParity => pin_parity::check(&std::env::current_dir()?),
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
+        // Exit code mapped here rather than inside the check, so a unit test
+        // calling `run()` survives — the SelfPin arm's reasoning.
+        Command::LawMechanisms => match law_mechanisms::run()? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::GatehousePin { gatehouse } => {
             gatehouse_pin::check(&std::env::current_dir()?, gatehouse)
         }
