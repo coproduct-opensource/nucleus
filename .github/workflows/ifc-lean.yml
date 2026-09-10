@@ -76,8 +76,18 @@ jobs:
         # Hosted only: the self-hosted runner image bakes elan and the pinned toolchain.
         if: runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true')
         run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
-            | sh -s -- -y --no-modify-path
+          # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
+          # script is handed to an interpreter (Scorecard Pinned-Dependencies).
+          #
+          # This step used to `curl .../elan/master/elan-init.sh | sh`. Two problems, and the
+          # `master` is the worse one: it is a MUTABLE ref, so the bytes CI executed were
+          # whatever that branch held at the moment of the run, and the pipe left no point at
+          # which they could be checked. Every other Lean workflow already installs this way;
+          # this one was the last exception.
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  /tmp/elan.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/elan.tar.gz -C /tmp elan-init
+          /tmp/elan-init -y --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Cache Lake build artifacts

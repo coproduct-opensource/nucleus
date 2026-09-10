@@ -367,8 +367,15 @@ jobs:
       # wasm SDK with `include_str!`/`include_bytes!` on sdks/verifier-js/pkg/*,
       # which only `wasm-pack build` produces. Without it the workspace does not
       # compile and every step below reds for a reason that is not its own.
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      # Pinned prebuilt binary with a checksum, not `curl … init.sh | sh`: that
+      # piped an unpinned remote script straight into a shell on every run, so
+      # the bytes CI executed were whatever the installer held that day and
+      # there was no point at which they could be checked. 0.13.1 is the version
+      # docs.yml already pins. install-action is the same SHA-pinned action this
+      # workflow uses for cargo-nextest.
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+        with:
+          tool: wasm-pack@0.13.1
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
         run: wasm-pack build sdks/verifier-js --target web --release
       - name: "Scope the run (pull_request: affected crates; otherwise the workspace)"
@@ -709,8 +716,15 @@ jobs:
           components: clippy
           targets: wasm32-unknown-unknown
           cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      # Pinned prebuilt binary with a checksum, not `curl … init.sh | sh`: that
+      # piped an unpinned remote script straight into a shell on every run, so
+      # the bytes CI executed were whatever the installer held that day and
+      # there was no point at which they could be checked. 0.13.1 is the version
+      # docs.yml already pins. install-action is the same SHA-pinned action this
+      # workflow uses for cargo-nextest.
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+        with:
+          tool: wasm-pack@0.13.1
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
         run: wasm-pack build sdks/verifier-js --target web --release
       - name: cargo clippy
