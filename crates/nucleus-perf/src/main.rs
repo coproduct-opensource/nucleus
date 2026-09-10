@@ -843,6 +843,11 @@ fn mint_admission(ops: &[&str]) -> Result<(String, String)> {
 fn proxy_signed_headers(secret: &[u8], actor: &str, body: &[u8]) -> Vec<(String, String)> {
     use hmac::{Hmac, Mac, digest::KeyInit};
     use sha2::Sha256;
+    // Seconds since the epoch as u64, into the i64 the signing scheme uses. Lossless
+    // until year ~292 billion; the ratcheted cast lints cannot see that and the tree is
+    // at its ceiling with zero headroom, so the exemption is scoped and stated rather
+    // than the ceiling raised. Same treatment as ci_ejections.rs's rate calculation.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
