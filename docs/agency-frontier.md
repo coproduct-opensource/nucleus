@@ -78,8 +78,8 @@ more restrictive.
   axis, and the AgentDojo lane is where it belongs.
 - **Five tasks is a floor, not a frontier.** The suite covers filesystem and
   shell work under one profile. It says nothing about the AWS, Kubernetes,
-  database or messaging work a person might want to delegate — there are no
-  effects for those yet, which is the point of widening the basis.
+  database or messaging work a person might want to delegate — those effects
+  exist now, but no task here exercises them (see below).
 - **One profile, one architecture, one run.** No x86_64 reading, no Tier 1
   reading, and no unconstrained control arm to measure the enforcement cost
   against. `Enforcement::None` exists in the schema for that arm; nobody has run
@@ -87,6 +87,43 @@ more restrictive.
 - **ρ_effect is the number that matters and it is missing.** The dimension
   figure cannot fall below about 1.75 for this profile no matter how precise the
   grant gets, because 13 buckets is all the resolution it has.
+
+## Why the four new effect packs did not move this number
+
+`aws`, `kubernetes`, `database` and `slack` landed after the reading above, and
+the reading is unchanged. That is not a disappointing result, it is the right
+one, and saying so is cheaper than staging a delta.
+
+The packs widen **what can be delegated**. The suite measures **what this pod
+did**, and what it did was filesystem and shell work under a profile. Those are
+different quantities, and the honest way to see the packs in a number needs two
+things neither of which exists yet:
+
+1. **A `--goal` grant, so ρ_effect is defined at all.** Under a profile there
+   are no effects to divide by. This is the missing number, and it is the one a
+   better catalog is supposed to move — `nucleus run --goal "..." --save-grant`
+   already produces the grant; the harness needs to run under it.
+2. **Tasks that touch those surfaces.** A cluster, a database and an object
+   store, or credible fakes of them. A task suite that pointed at real
+   infrastructure would measure that infrastructure as much as the runtime.
+
+What the packs *did* change is visible without the harness, in what a person is
+shown. Before them, a goal about a cluster compiled to nothing and a goal about
+the cloud compiled to nothing. Now:
+
+```
+$ nucleus run --goal "check the cloudwatch logs for the lambda" \
+      --dry-run --ceiling research-web
+Can:     list cloud resources · read CloudWatch logs · read and search workspace files
+Limits:  $1.50 · 44m · *.s3.amazonaws.com, ec2.*.amazonaws.com, ecs.*.amazonaws.com,
+         lambda.*.amazonaws.com, logs.*.amazonaws.com, rds.*.amazonaws.com,
+         s3.amazonaws.com, sts.amazonaws.com only · no .aws, .env, .ssh, …
+```
+
+and under a ceiling that does not admit egress, the same goal renders those two
+effects in `Cannot` **with the reason** — `outside ceiling local-dev: web_fetch
+is never` — rather than failing to recognise the goal at all. A denial that names
+what it would take is the raw material of an escalation proposal; silence is not.
 
 ## History
 

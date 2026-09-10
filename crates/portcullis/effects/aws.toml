@@ -1,0 +1,148 @@
+# Built-in semantic effects: an AWS account.
+#
+# The unit a person grants is "read the object store", not "GET
+# s3.amazonaws.com" — and the difference matters most here, because AWS's own
+# vocabulary is not one a person can reason about under time pressure. An IAM
+# policy that reads `s3:GetObject` on `arn:aws:s3:::*` is a sentence about the
+# API; "read objects from the bucket" is a sentence about the work.
+#
+# ── What the `http` index can and cannot discriminate here ──────────────────
+#
+# An `http` shape earns its place only when it actually separates one effect
+# from another, and one thing still stops it across much of AWS: the
+# JSON-protocol services all POST to `/` and discriminate by an `X-Amz-Target`
+# header, which the index does not carry. So `read-logs` and `start-compute`
+# are pinned to their service HOSTS — `logs.*.amazonaws.com`,
+# `ec2.*.amazonaws.com` — and recognised beyond that by command prefix and MCP
+# tool name.
+#
+# What the host pins buy is the property the pack's conformance test checks: no
+# effect here claims `*.amazonaws.com`, so no grant of "list cloud resources"
+# can be spent on a POST to `iam.amazonaws.com`, which is the one call that
+# rewrites the boundary itself. An earlier draft of this pack did exactly that,
+# because the host grammar could not express a regional endpoint and every
+# effect had to claim the whole account. `read-inventory` is the one effect
+# that legitimately spans services, and it is read-graded and carries no `http`
+# shape, so its vouching is bounded by the service hosts it lists.
+#
+# Read a grant accordingly: it means "the calls this catalog can NAME are
+# narrowed to listing", not "this agent can only list". The narrowing that is
+# not a heuristic is the host list plus default-deny egress; this index is what
+# makes a denial say something a person can act on.
+#
+# Region is a wildcard label, not a dimension. A grant that named one region
+# would silently starve a workload whose bucket lives in another, and a goal
+# string carries no signal to pick from. A repository that knows its own answer
+# should narrow in `.nucleus/effects/`.
+
+[plugin]
+name = "aws"
+version = 1
+
+[[effect]]
+id = "read-inventory"
+title = "List cloud resources"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+# The services a "what is running?" question reaches, named one by one.
+# Deliberately NOT `*.amazonaws.com`: that would vouch for IAM.
+hosts = ["ec2.*.amazonaws.com", "s3.amazonaws.com", "*.s3.amazonaws.com", "lambda.*.amazonaws.com", "rds.*.amazonaws.com", "ecs.*.amazonaws.com", "sts.amazonaws.com"]
+[effect.matches]
+mcp_tools = ["aws_describe", "aws_list", "list_resources", "describe_instances"]
+commands = ["aws ec2 describe", "aws s3 ls", "aws s3api list", "aws iam list", "aws iam get", "aws sts get-caller-identity", "aws lambda list", "aws rds describe", "aws ecs describe", "aws ecs list"]
+
+[[effect]]
+id = "read-object"
+title = "Read objects from the object store"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["*.s3.amazonaws.com", "s3.amazonaws.com"]
+[effect.matches]
+mcp_tools = ["s3_get_object", "get_object", "s3_read"]
+commands = ["aws s3 cp s3://", "aws s3api get-object", "aws s3 sync s3://"]
+http = [{ method = "GET", host = "*.s3.amazonaws.com", path = "/*" }]
+
+[[effect]]
+id = "read-logs"
+title = "Read CloudWatch logs"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["logs.*.amazonaws.com"]
+[effect.matches]
+mcp_tools = ["cloudwatch_logs", "get_log_events", "filter_log_events"]
+commands = ["aws logs get-log-events", "aws logs filter-log-events", "aws logs describe", "aws logs tail"]
+
+[[effect]]
+id = "write-object"
+title = "Write objects to the object store"
+risk = "mutate_remote"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress", "cloud_mutation"]
+hosts = ["*.s3.amazonaws.com", "s3.amazonaws.com"]
+[effect.matches]
+mcp_tools = ["s3_put_object", "put_object", "s3_write"]
+commands = ["aws s3 cp ", "aws s3api put-object", "aws s3 mv"]
+http = [{ method = "PUT", host = "*.s3.amazonaws.com", path = "/*" }]
+
+[[effect]]
+id = "start-compute"
+title = "Start and stop compute"
+risk = "mutate_remote"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress", "cloud_mutation"]
+hosts = ["ec2.*.amazonaws.com", "ecs.*.amazonaws.com", "lambda.*.amazonaws.com"]
+[effect.matches]
+mcp_tools = ["ec2_start_instances", "ec2_stop_instances", "ecs_update_service"]
+commands = ["aws ec2 start-instances", "aws ec2 stop-instances", "aws ecs update-service", "aws lambda invoke"]
+
+# Graded `destructive` and expected to sit above every shipped ceiling.
+#
+# It is here rather than absent on purpose: an effect a person can SEE in the
+# `cannot` list of a grant, with a reason, is a better answer than a capability
+# with no name — which is what an agent holding raw AWS credentials has. A
+# proposal for this effect is a conversation; silence is not.
+[[effect]]
+id = "mutate-iam"
+title = "Change who can do what (IAM)"
+risk = "destructive"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress", "cloud_mutation"]
+hosts = ["iam.amazonaws.com"]
+[effect.matches]
+mcp_tools = ["iam_put_policy", "iam_attach_policy", "iam_create_user", "iam_create_role"]
+commands = ["aws iam put-", "aws iam attach-", "aws iam create-", "aws iam delete-", "aws iam update-"]
+http = [{ method = "POST", host = "iam.amazonaws.com", path = "/*" }]
+
+[[effect]]
+id = "delete-object"
+title = "Delete objects from the object store"
+risk = "destructive"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress", "cloud_mutation"]
+hosts = ["*.s3.amazonaws.com", "s3.amazonaws.com"]
+[effect.matches]
+mcp_tools = ["s3_delete_object", "delete_object"]
+commands = ["aws s3 rm", "aws s3api delete-"]
+http = [{ method = "DELETE", host = "*.s3.amazonaws.com", path = "/*" }]
+
+[[effect]]
+id = "delete-resources"
+title = "Delete compute and infrastructure"
+risk = "destructive"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress", "cloud_mutation"]
+hosts = ["ec2.*.amazonaws.com", "cloudformation.*.amazonaws.com", "rds.*.amazonaws.com"]
+[effect.matches]
+mcp_tools = ["ec2_terminate_instances", "delete_stack"]
+commands = ["aws ec2 terminate-instances", "aws cloudformation delete-stack", "aws rds delete-"]

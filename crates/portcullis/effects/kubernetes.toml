@@ -1,0 +1,78 @@
+# Built-in semantic effects: a Kubernetes cluster.
+#
+# `kubectl` collapses an enormous range of authority into one verb-plus-noun
+# grammar, and the gap between `kubectl get pods` and `kubectl delete namespace`
+# is not visible in the shape of the command. Splitting it into named effects is
+# what lets a person grant the first without the second, and lets a denial say
+# "roll out a workload" rather than "run_bash".
+#
+# `exec-into-pod` is graded `execute` rather than `read` deliberately: a shell
+# inside a pod is a shell, and every credential that pod holds is reachable from
+# it. It is the effect most likely to be requested for a debugging goal and the
+# one most worth making a person look at.
+#
+# WHAT THIS PACK DOES NOT DO. The API server host is site-specific — there is no
+# `*.kubernetes.io` the way there is an `api.github.com` — so the HTTP index
+# here is empty and the effects are recognised by command prefix and MCP tool
+# name. A repository that knows its own control-plane endpoint should add the
+# `http` shapes in `.nucleus/effects/`; until it does, the egress bound on these
+# effects comes from the pod's own allowlist, not from this file.
+
+[plugin]
+name = "kubernetes"
+version = 1
+
+[[effect]]
+id = "read-workloads"
+title = "See what is running"
+risk = "read"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec"]
+[effect.matches]
+mcp_tools = ["k8s_get", "k8s_list", "list_pods", "get_pods", "describe_pod"]
+commands = ["kubectl get", "kubectl describe", "kubectl top", "kubectl api-resources", "helm list", "helm status"]
+
+[[effect]]
+id = "read-logs"
+title = "Read pod logs"
+risk = "read"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec"]
+[effect.matches]
+mcp_tools = ["k8s_logs", "get_pod_logs", "pod_logs"]
+commands = ["kubectl logs", "kubectl events", "stern "]
+
+[[effect]]
+id = "apply-manifest"
+title = "Roll out a workload"
+risk = "mutate_remote"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec", "cloud_mutation"]
+[effect.matches]
+mcp_tools = ["k8s_apply", "apply_manifest", "k8s_patch", "k8s_scale"]
+commands = ["kubectl apply", "kubectl patch", "kubectl scale", "kubectl set image", "kubectl rollout", "helm upgrade", "helm install"]
+
+[[effect]]
+id = "exec-into-pod"
+title = "Get a shell inside a running pod"
+risk = "execute"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec", "cloud_mutation"]
+[effect.matches]
+mcp_tools = ["k8s_exec", "pod_exec", "exec_command"]
+commands = ["kubectl exec", "kubectl attach", "kubectl port-forward", "kubectl cp"]
+
+[[effect]]
+id = "delete-workloads"
+title = "Delete workloads"
+risk = "destructive"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec", "cloud_mutation"]
+[effect.matches]
+mcp_tools = ["k8s_delete", "delete_resource", "delete_namespace"]
+commands = ["kubectl delete", "kubectl drain", "helm uninstall", "helm delete"]
