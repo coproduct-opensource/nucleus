@@ -211,8 +211,8 @@ enum CiSpecCmd {
 mod ci_otel;
 mod ci_spec;
 mod ci_timings;
-mod gatehouse_pin;
 mod fly_pools;
+mod gatehouse_pin;
 mod kani_coverage;
 mod line_ratchet;
 mod pin_parity;
