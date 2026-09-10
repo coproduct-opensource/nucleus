@@ -63,6 +63,10 @@ enum Command {
     },
     /// A SHA of this repo pinned by this repo must still match the working tree.
     SelfPin,
+    /// One fact written in several files must have one value: the elan release and its
+    /// checksum, the aeneas/charon pins, the first-party lean-toolchain files. Decided
+    /// from committed declarations alone — no source tree, no toolchain.
+    PinParity,
     /// Every source Kani harness must have a CI lane or a named documented exception.
     KaniCoverage,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
@@ -207,6 +211,7 @@ mod ci_timings;
 mod gatehouse_pin;
 mod kani_coverage;
 mod line_ratchet;
+mod pin_parity;
 mod rerun_plan;
 mod scoreboard;
 mod self_pin;
@@ -228,6 +233,7 @@ fn main() -> Result<()> {
             self_pin::Outcome::CouldNotLook => std::process::exit(2),
             self_pin::Outcome::Clean => Ok(()),
         },
+        Command::PinParity => pin_parity::check(&std::env::current_dir()?),
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
         Command::GatehousePin { gatehouse } => {
             gatehouse_pin::check(&std::env::current_dir()?, gatehouse)
