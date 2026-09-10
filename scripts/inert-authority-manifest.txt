@@ -16,14 +16,20 @@
 #
 # The signature says a caller must hold an `Authority` to get here. The body
 # says the `Authority` decides nothing. The gap between those two true
-# statements is the finding: no witness in this tree carries the TARGET of the
-# act it authorises, so an `Authority` obtained for one command discharges the
-# gate for any other. The type proves that SOME check ran, not that THIS act
-# was checked.
+# statements is the finding: the witness carried no TARGET, so an `Authority`
+# obtained for one command discharged the gate for any other. The type proved
+# that SOME check ran, not that THIS act was checked.
 #
-# Closing that is the `Act` collapse (ADR 0006, C2.2/C2.4) -- signature churn
-# across three crates. This file exists so the number cannot grow while that
-# work lands, which is why C0 precedes the four collapses at all.
+# That example is now HISTORY, and deliberately kept: `RealEffects::run` spends
+# against the command it is about to spawn (C2.4), so the row that used to head
+# this file is class N. `DischargedBundle` carries the subject it was
+# discharged for, `Authority::spend_on` compares it, and the mint side takes
+# the target so there is something to compare against. What remains open is
+# named in the two D rows below, and neither is a spawn.
+#
+# The rest of the `Act` collapse (ADR 0006) is still signature churn across
+# three crates. This file exists so the number cannot grow while that work
+# lands, which is why C0 precedes the four collapses at all.
 #
 # WHAT COUNTS
 #
@@ -49,12 +55,18 @@
 #   CLASS | file | scope | count | note
 #
 # `scope` is the enclosing `impl` target (for `impl T for X`, that is `X`) or
-# `trait T`. Not the file: 30 of the 40 sites are in one file and they are not
-# alike -- DenyAllEffects refuses every call, RecordingEffects writes a log
-# line, and RealEffects::{run, commit, push} spawn processes. A file-level
-# allowance would launder the three that matter behind the twenty-two that do
-# not, which is exactly the shape of laundering .dead-code-ratchet.toml refuses
-# between crates.
+# `trait T`. Not the file: 31 of the 34 sites are in one file (3 + 12 + 7 + 6 +
+# 1 + 1 + 1, recomputed -- the earlier "30 of the 40" here did not add up
+# either, at 37) and they are not alike. DenyAllEffects refuses every call,
+# RecordingEffects writes a log line, and RealEffects::{run, commit, push} used
+# to spawn processes. A file-level allowance would have laundered the three
+# that mattered behind the twenty-eight that did not, which is exactly the
+# shape of laundering .dead-code-ratchet.toml refuses between crates.
+#
+# Those three are paid now, and the per-scope split is what made it possible to
+# say so exactly: the RealEffects row went 6 -> 3, a statement about which
+# mechanism changed. A file count going 37 -> 31 would have said nothing at
+# all.
 #
 #   N -- the scope performs no act, so no authority is being discarded.
 #   D -- debt: the act happens and the witness is dropped.
@@ -94,14 +106,14 @@ WITNESS = [
   "GuardedAction",
 ]
 
-D | crates/portcullis-effects/src/lib.rs | RealEffects | 6 | THE finding. run() spawns the parsed command, commit() runs `git add -u` and commits, push() runs `git push` -- each takes Authority BY VALUE and drops it, so the witness bounds nothing about which command, remote or branch. The other three are WebEffect::fetch/search and AgentSpawnEffect::spawn, whose bodies are Err(NotImplemented); the group is mixed and classed D because a group containing debt is debt. C2.2 makes the target part of the witness and splits this row.
+N | crates/portcullis-effects/src/lib.rs | RealEffects | 3 | WAS THE finding, at 6 and class D: run() spawned the parsed command, commit() ran `git add -u` and committed, push() ran `git push` -- each took Authority BY VALUE and dropped it, so the witness bounded nothing about which command, remote or branch. C2.4 paid it: all three now spend against the act they are about to perform (`Authority::spend_on`), and the mint side takes the target so the bundle can bind it. The three left are WebEffect::fetch/search and AgentSpawnEffect::spawn, whose bodies are Err(NotImplemented) -- nothing is performed, so there is no act for an authority to bound, and the group is no longer mixed.
 D | crates/nucleus-identity/src/ca/mod.rs | trait CaClient | 1 | sign_attested_csr's DEFAULT body is self.sign_csr(csr, private_key, identity, ttl) with `_attestation: &LaunchAttestation` unread, under a doc comment promising "The attestation is cryptographically bound to the certificate" and "Verifiers can require specific attestation hashes". SelfSignedCa overrides it (ca/self_signed.rs); SpireCaClient (ca/spire.rs) does not, so it inherits the version that binds nothing.
 D | crates/nucleus-ifc-kernel/src/ifc_api.rs | FlowTracker | 1 | reset_session_ceiling takes `_token: &SessionCleanseToken` by REFERENCE and never consumes it, then assigns the new ceiling. A cleanse token that survives its own use is not single-use; ADR 0006's C3.2 folds this into the one burn ledger.
 N | crates/portcullis-effects/src/lib.rs | DenyAllEffects | 12 | every method returns Err(PolicyDenied(..)) or Err(io::Error). Nothing is performed, so there is no act for an authority to bound. Dropping the witness here is correct, not deferred.
-N | crates/portcullis-effects/src/lib.rs | RecordingEffects | 10 | each method calls self.record(..) and returns; a test double that performs no effect. Same reasoning as DenyAllEffects.
+N | crates/portcullis-effects/src/lib.rs | RecordingEffects | 7 | each method calls self.record(..) and returns; a test double that performs no effect. Same reasoning as DenyAllEffects. Was 10: run/commit/push now spend, matching RealEffects, because PolicyEnforced stopped spending on their behalf -- a double that dropped the authority where the real one spends would diverge on exactly the property the receipt tests check, and did, for one commit.
 N | crates/portcullis-effects/src/lib.rs | AllowListEffects | 6 | a simulation double: read() returns a canned file_read_response, write()/append() only check_path, glob()/search() return empty. No real I/O. Worth reading anyway as a miniature of the whole finding -- it enforces its OWN allow-list and never consults the authority it was handed.
 N | crates/portcullis-effects/src/lib.rs | trait ShellEffect | 1 | run_argv's declaration, no body. The underscore is a naming choice in a signature; implementors bind it themselves and are counted at their own scope.
 N | crates/portcullis-effects/src/lib.rs | trait AsyncShellSpawnEffect | 1 | run_argv_async's declaration, no body. As above.
 N | crates/portcullis-effects/src/lib.rs | trait NetEffect | 1 | fetch's declaration, no body. As above.
 N | crates/nucleus-cli/src/grant.rs | <free> | 1 | verified_line(_verified: &VerifiedGrant) -> &'static str returns a constant string. A display helper takes the type to prove the caller verified something; there is nothing in the value to read.
-INERT_TOTAL=40
+INERT_TOTAL=34
