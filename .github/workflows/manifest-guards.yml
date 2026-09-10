@@ -153,3 +153,8 @@ jobs:
       # cancelled check-run turns the PR's rollup FAILURE with nothing broken.
       - name: twin workflows have distinct concurrency groups
         run: bash ci/twin-workflows-have-distinct-concurrency.sh
+
+      # zizmor audits workflow STRUCTURE at --min-severity high; it does not read
+      # shell content inside a `run:` block, which is where `curl … | sh` lives.
+      - name: no workflow pipes a downloaded script into an interpreter
+        run: bash ci/no-piped-installers.sh
