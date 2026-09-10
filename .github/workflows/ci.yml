@@ -369,8 +369,15 @@ jobs:
       # wasm SDK with `include_str!`/`include_bytes!` on sdks/verifier-js/pkg/*,
       # which only `wasm-pack build` produces. Without it the workspace does not
       # compile and every step below reds for a reason that is not its own.
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      # Pinned prebuilt binary with a checksum, not `curl … init.sh | sh`: that
+      # piped an unpinned remote script straight into a shell on every run, so
+      # the bytes CI executed were whatever the installer held that day and
+      # there was no point at which they could be checked. 0.13.1 is the version
+      # docs.yml already pins. install-action is the same SHA-pinned action this
+      # workflow uses for cargo-nextest.
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+        with:
+          tool: wasm-pack@0.13.1
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
         run: wasm-pack build sdks/verifier-js --target web --release
       - name: "Scope the run (pull_request: affected crates; otherwise the workspace)"
@@ -711,12 +718,37 @@ jobs:
           components: clippy
           targets: wasm32-unknown-unknown
           cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      # Pinned prebuilt binary with a checksum, not `curl … init.sh | sh`: that
+      # piped an unpinned remote script straight into a shell on every run, so
+      # the bytes CI executed were whatever the installer held that day and
+      # there was no point at which they could be checked. 0.13.1 is the version
+      # docs.yml already pins. install-action is the same SHA-pinned action this
+      # workflow uses for cargo-nextest.
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+        with:
+          tool: wasm-pack@0.13.1
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
         run: wasm-pack build sdks/verifier-js --target web --release
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      # …and once WITHOUT them, crate-scoped (#2746).
+      #
+      # `--all-features` and `--workspace` both hide this class. Under
+      # `--workspace`, feature unification means some other member turns on
+      # portcullis's `cel`/`testing`, so code gated on them compiles and the
+      # imports it needs are used. Alone, at its own defaults
+      # (`serde`/`crypto`/`cedar`), those blocks vanish and their imports become
+      # unused — four errors that CI could not see.
+      #
+      # It matters because crate-scoped is the command this repo asks people to
+      # run: a contributor doing `cargo clippy -p portcullis --all-targets` got
+      # four errors unrelated to their change, and learns to ignore clippy here.
+      #
+      # Scoped to portcullis rather than looped over every member: this is the
+      # crate where feature-gated test blocks are dense enough for the class to
+      # bite, and a per-crate loop would rebuild the world once per member.
+      - name: cargo clippy (portcullis, default features)
+        run: cargo clippy -p portcullis --all-targets -- -D warnings
 
   a2a-example:
     name: A2A example server (examples/a2a-server)

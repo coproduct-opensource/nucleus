@@ -2,7 +2,7 @@
 //!
 //! # Why this exists
 //!
-//! The ten YAML files in `profiles/` decide what an agent may do. They were
+//! The YAML files in `profiles/` decide what an agent may do. They were
 //! `include_str!`'d and parsed at process start, behind:
 //!
 //! ```ignore

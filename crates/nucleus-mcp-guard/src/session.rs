@@ -33,6 +33,58 @@ pub struct Finding {
     pub verdict: IfcVerdict,
 }
 
+/// Why a tool's metadata was refused.
+///
+/// Each variant is a distinct integrity failure, kept apart because they carry
+/// different weight to a reader: [`Self::SchemaMutated`] is the rug-pull the
+/// pinning exists to catch, while [`Self::Unadvertised`] can simply mean a
+/// client called ahead of its first listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalKind {
+    /// A pinned tool's descriptor changed after approval — the rug-pull.
+    SchemaMutated,
+    /// A tool appeared in `tools/list` that no pin vouches for.
+    NewToolAfterPinning,
+    /// No signed manifest vouches for the tool.
+    Unapproved,
+    /// The tool is outside the compartment the pod's grant allows.
+    WrongCompartment,
+    /// The server announced its list changed and nothing has been re-vetted.
+    StaleCatalogue,
+    /// A call named a tool no `tools/list` ever advertised.
+    Unadvertised,
+}
+
+impl RefusalKind {
+    /// The short label used in the rendered report.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SchemaMutated => "rug-pull",
+            Self::NewToolAfterPinning => "new tool after pinning",
+            Self::Unapproved => "unapproved",
+            Self::WrongCompartment => "wrong compartment",
+            Self::StaleCatalogue => "stale catalogue",
+            Self::Unadvertised => "unadvertised",
+        }
+    }
+}
+
+/// One refused piece of tool metadata.
+///
+/// Recorded so the finding survives past stderr: without this it reached the
+/// operator's terminal and nothing else — not the exit code, not `--json` — so
+/// a CI job wrapping a server that rug-pulled its schema went green (#2735).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetadataRefusal {
+    /// The tool the refusal is about.
+    pub tool: String,
+    /// Which integrity check failed.
+    pub kind: RefusalKind,
+    /// The operator-facing explanation, as printed to stderr.
+    pub reason: String,
+}
+
 /// Accumulates session taint and emits findings. Cheap to construct; one per
 /// agent session.
 #[derive(Debug, Default)]
@@ -41,6 +93,7 @@ pub struct SessionMonitor {
     seen: Vec<DeclaredInput>,
     events: Vec<ToolEvent>,
     findings: Vec<Finding>,
+    refusals: Vec<MetadataRefusal>,
 }
 
 impl SessionMonitor {
@@ -113,6 +166,28 @@ impl SessionMonitor {
         }
     }
 
+    /// Record a refusal of a tool's metadata: taint it exactly as
+    /// [`Self::observe_untrusted_metadata`] does, and *keep* the refusal so it
+    /// can reach the report, the exit code and `--json`.
+    ///
+    /// Prefer this over the bare taint call at every site that prints a refusal
+    /// to stderr. Tainting alone is not enough: taint only changes the verdict
+    /// if the session later reaches an egress sink, so a session that refused a
+    /// rug-pull and then simply stopped left no machine-readable trace at all.
+    pub fn observe_metadata_refusal(
+        &mut self,
+        tool: &str,
+        kind: RefusalKind,
+        reason: impl Into<String>,
+    ) {
+        self.observe_untrusted_metadata(tool);
+        self.refusals.push(MetadataRefusal {
+            tool: tool.to_string(),
+            kind,
+            reason: reason.into(),
+        });
+    }
+
     /// Convenience for offline replay: a full call+result interaction in order.
     pub fn observe_invocation(&mut self, tool: &str) -> Option<Finding> {
         let f = self.observe_call(tool);
@@ -135,10 +210,22 @@ impl SessionMonitor {
         &self.seen
     }
 
+    /// Every refused piece of tool metadata, in order.
+    pub fn refusals(&self) -> &[MetadataRefusal] {
+        &self.refusals
+    }
+
     /// `true` iff the agent reached at least one egress sink while holding the
     /// lethal trifecta.
     pub fn exfiltration_possible(&self) -> bool {
         !self.findings.is_empty()
+    }
+
+    /// `true` iff the server's tool metadata failed an integrity check at least
+    /// once. Independent of [`Self::exfiltration_possible`]: a session can refuse
+    /// a rug-pull without ever reaching a sink, and that is still not "OK".
+    pub fn metadata_refused(&self) -> bool {
+        !self.refusals.is_empty()
     }
 }
 
