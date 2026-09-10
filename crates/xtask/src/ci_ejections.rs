@@ -195,10 +195,9 @@ pub fn ci_ejections(limit: usize, json: bool) -> Result<()> {
 
         // Attribute a cause only for an ejection, and only to a REQUIRED context.
         let cause = if outcome == Outcome::Ejected {
-            let checks: CheckRunList =
-                serde_json::from_str(&gh_api(&format!(
-                    "repos/{REPO}/commits/{sha}/check-runs?per_page=100"
-                ))?)?;
+            let checks: CheckRunList = serde_json::from_str(&gh_api(&format!(
+                "repos/{REPO}/commits/{sha}/check-runs?per_page=100"
+            ))?)?;
             checks
                 .check_runs
                 .iter()
@@ -235,9 +234,18 @@ pub fn ci_ejections(limit: usize, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    let merged = entries.iter().filter(|e| e.outcome == Outcome::Merged).count();
-    let ejected = entries.iter().filter(|e| e.outcome == Outcome::Ejected).count();
-    let in_flight = entries.iter().filter(|e| e.outcome == Outcome::InFlight).count();
+    let merged = entries
+        .iter()
+        .filter(|e| e.outcome == Outcome::Merged)
+        .count();
+    let ejected = entries
+        .iter()
+        .filter(|e| e.outcome == Outcome::Ejected)
+        .count();
+    let in_flight = entries
+        .iter()
+        .filter(|e| e.outcome == Outcome::InFlight)
+        .count();
     let decided = merged + ejected;
 
     let first = entries.first().map_or("", |e| e.created_at.as_str());
@@ -282,9 +290,14 @@ pub fn ci_ejections(limit: usize, json: bool) -> Result<()> {
     };
     println!("batch-size guidance at this rate — {advice}");
     if decided < 30 {
+        // Same reason as the rate above: a count of queue entries, bounded by the queue
+        // and nowhere near 2^53. Bound to a local because an `allow` on a macro
+        // INVOCATION does not reach a cast inside the macro's arguments -- with the
+        // attribute on the `println!` the lint still fired.
+        #[allow(clippy::cast_precision_loss)]
+        let one_event_moves_by = 100.0 / decided as f64;
         println!(
-            "CAUTION: n={decided} decided entries is thin. One event moves this by {:.0} points.",
-            100.0 / decided as f64
+            "CAUTION: n={decided} decided entries is thin. One event moves this by {one_event_moves_by:.0} points."
         );
     }
     Ok(())

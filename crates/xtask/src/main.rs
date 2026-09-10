@@ -204,9 +204,9 @@ enum CiSpecCmd {
     },
 }
 
+mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
-mod ci_ejections;
 mod ci_timings;
 mod kani_coverage;
 mod line_ratchet;
