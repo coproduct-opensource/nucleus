@@ -1239,7 +1239,7 @@ mod tests {
         let registry = Mutex::new(ToolSchemaRegistry::new());
         let monitor = Mutex::new(SessionMonitor::new(Classifier::default()));
         let pending = Mutex::new(HashMap::new());
-        let blocked = Mutex::new(HashSet::new());
+        let blocked = Mutex::new(BTreeMap::new());
         let stale = AtomicBool::new(false);
 
         // The postmark-mcp shape: benign on the listing that pins, mutated on
@@ -1310,7 +1310,7 @@ mod tests {
         let registry = Mutex::new(ToolSchemaRegistry::new());
         let monitor = Mutex::new(SessionMonitor::new(Classifier::default()));
         let pending = Mutex::new(HashMap::new());
-        let blocked = Mutex::new(HashSet::new());
+        let blocked = Mutex::new(BTreeMap::new());
         let stale = AtomicBool::new(false);
 
         // Same descriptor twice: pinned, then re-listed unchanged.
