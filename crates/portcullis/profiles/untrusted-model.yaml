@@ -1,0 +1,88 @@
+# Untrusted Model — for a model that is itself the adversary.
+#
+# Every other profile here answers the CONFUSED DEPUTY question: the model is
+# working for you, and the danger is that attacker-controlled content reaches it
+# and turns a privileged action against you. That is what the information-flow
+# lattice is for, and against that adversary it is a structural guarantee: an
+# adversarially-tainted session cannot spawn a shell at all
+# (`bash_exec_floor_gates_the_spawn_not_the_reach`).
+#
+# This profile answers a different question, raised in #2738: what if the model
+# is not a deputy but a PRINCIPAL — abliterated, backdoored, or simply hostile —
+# and can read this source?
+#
+# Then flow control is the wrong tool, and saying so plainly matters more than
+# the profile itself. A hostile model's session is CLEAN by construction: the
+# operator's own prompt is Trusted/Directive, and nothing has tainted it. So the
+# lattice permits the spawn, and once a shell is running the lattice sees none of
+# its syscalls — one (RunBash, BashExec) authority buys arbitrary execution in
+# the guest, and `bash -c 'curl | sh'` never reaches `NetEffect::fetch`. The
+# perimeter for that surface is the pod's netns/iptables default-deny, whose
+# semantics are TRUSTED, not proven (docs/production-delta.md). That is a real
+# boundary and a much narrower claim than non-interference.
+#
+# So against a hostile principal the defence is not labelling. It is ARITY:
+# remove the capabilities rather than track the flows.
+#
+#  Uninhabitable state analysis — and why the usual form does not apply:
+#   - Private data:       read_files=low_risk (present)
+#   - Untrusted content:  absent by capability — no web_fetch, no web_search, and
+#                         no run_bash, so no command output to classify either
+#   - Exfiltration:       absent by capability — no git_push, no create_pr, no
+#                         web_fetch, no run_bash
+#   => Two of three components removed at the capability level rather than
+#      denied at flow time. The distinction is the whole point: a flow-time
+#      denial depends on the session being tainted, and this adversary's session
+#      never is.
+#
+#  What this does NOT claim. The model still chooses what to write through
+#  write_files/edit_files, and content written to disk is content. This bounds
+#  what the model can REACH, not what it can author within that reach — pair it
+#  with `paths.blocked` and with review of the diff, exactly as you would for an
+#  untrusted contributor.
+#
+#  Also out of the path by construction, not by configuration: with
+#  run_bash: never, `/v1/run` is denied at the run gate (Operation::RunBash is
+#  not in scope), so `should_observe_command_output` is never consulted for this
+#  pod. #2738 asked for NUCLEUS_PARANOID_TOOL_IO=1 to be defaulted here so no
+#  heuristic is in the path; with no exec surface there is no heuristic to
+#  default. Set it anyway if you compose this with a profile that permits exec —
+#  and see #2738 item 3 for making that per-profile rather than an env var.
+
+name: untrusted-model
+description: "Untrusted model — no exec, no sub-agents, no network; for a model treated as the adversary"
+
+capabilities:
+  read_files: low_risk
+  write_files: low_risk
+  edit_files: low_risk
+  run_bash: never
+  glob_search: always
+  grep_search: always
+  web_search: never
+  web_fetch: never
+  git_commit: never
+  git_push: never
+  create_pr: never
+  manage_pods: never
+  spawn_agent: never
+
+paths:
+  blocked:
+    - "**/.ssh/**"
+    - "**/.aws/**"
+    - "**/.env"
+    - "**/.env.*"
+    - "**/credentials*"
+    - "**/.git/config"
+    - "/etc/shadow"
+    - "/etc/passwd"
+    - "/proc/*/environ"
+
+budget:
+  max_cost_usd: "2.00"
+  max_input_tokens: 100000
+  max_output_tokens: 20000
+
+time:
+  duration_minutes: 60
