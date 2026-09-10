@@ -225,13 +225,13 @@ pub(crate) async fn create_sub_pod(
         .as_ref()
         .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
     let reserved_usd = child_budget_usd.to_f64().unwrap_or(f64::INFINITY);
-    state
+    let reservation = state
         .runtime
         .budget()
         .reserve(reserved_usd)
         .map_err(|e| ApiError::Spec(format!("budget conservation: {e}")))?;
     if let Err(reason) = state.kernel.lock().await.charge(child_budget_usd) {
-        state.runtime.budget().release(reserved_usd);
+        state.runtime.budget().release(reservation);
         return Err(ApiError::KernelDenied(format!("{reason:?}")));
     }
 
@@ -241,11 +241,18 @@ pub(crate) async fn create_sub_pod(
     let result = match node.create_pod(&spec_yaml).await {
         Ok(r) => r,
         Err(e) => {
-            state.runtime.budget().release(reserved_usd);
+            state.runtime.budget().release(reservation);
             state.kernel.lock().await.refund(child_budget_usd);
             return Err(ApiError::Spec(format!("node create_pod failed: {e}")));
         }
     };
+
+    // The child is real, so the reservation becomes spend and frees its slot.
+    // Reaching here without this line no longer merely leaks budget quietly --
+    // `Reservation` is `#[must_use]` and not `Drop`-releasing, so the compiler
+    // objects. That is what replaces the source-grep guard this test file used
+    // to keep over the two release paths below.
+    state.runtime.budget().commit(reservation);
 
     // 7. Record verdict
     if let Err(e) = sink.record(VerdictContext {
@@ -1085,8 +1092,12 @@ spec:
             "the reservation must be mirrored into the kernel"
         );
         assert!(
-            body.matches(".release(reserved_usd)").count() >= 2,
+            body.matches(".release(reservation)").count() >= 2,
             "both failure paths after the reservation must hand it back"
+        );
+        assert!(
+            body.contains(".commit(reservation)"),
+            "the success path must spend the reservation, not strand it in a slot"
         );
     }
 
