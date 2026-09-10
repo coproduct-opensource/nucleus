@@ -42,10 +42,14 @@
 # (scripts/check-gates-can-fail.sh discipline).
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT=${1:?project dir}
 MODE=${2:?root list or --self-test}
 cd "$PROJECT"
 PROJECT_ABS=$(pwd)
+
+# Native proofs must not run compiler-substituted owned definitions.
+python3 "$SCRIPT_DIR/../crates/portcullis-core/lean/check_compiler_overrides.py" .
 
 ALLOWED='["propext","Classical.choice","Quot.sound"]'
 EXC_FILE=.axiom-audit-exceptions
