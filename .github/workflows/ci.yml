@@ -270,7 +270,22 @@ jobs:
   # (crates/ci-spec/tests). Exit 2 ("could not look") is red, never green.
   ci-spec:
     name: CI configuration is sound (CI-1)
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    # The GATE pool, not the build pool. This job's verdict is a function of workflow
+    # YAML, ci/required-checks.txt and ci/merge-queue.toml -- `crates/ci-spec/src/lib.rs`
+    # says it outright: "It reads YAML; it does not run anything." What it spends is a
+    # cargo build of xtask, and that build was MEASURED at 449 MB of target directory
+    # against roughly 6 GB of headroom on the gate pool's 8 GB rootfs after the ~1.78 GB
+    # image -- an order of magnitude of margin, so `requires_volume`'s ENOSPC failure mode
+    # (`ld terminated with signal 7`, then four ejected required checks) is not in reach.
+    #
+    # What it buys: the build pool is eight volume-pinned machines, the only part of the
+    # fleet that costs money while idle and the only one that strands on a 412 when a zone
+    # fills. Holding one of those eight for ~65 seconds to decide a YAML question is the
+    # scarce resource paying for the cheap one. The gate pool floats to any zone with room.
+    #
+    # The trade, stated because it is real: shared-cpu-8x is slower than performance-8x, so
+    # the ~65 s may grow. Compare `cargo xtask ci-timings` for this label before and after.
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
