@@ -68,6 +68,7 @@ impl MeshHarness {
                 audience: RP_AUDIENCE.to_string(),
                 allowed_grants: vec![TOKEN_EXCHANGE_GRANT.to_string()],
                 max_token_lifetime_secs: 3600,
+                max_scope: None,
             }],
         };
 

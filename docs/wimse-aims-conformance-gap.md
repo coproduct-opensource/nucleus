@@ -1,6 +1,29 @@
 # WIMSE / AIMS Conformance Gap Analysis (P0.3 / Task #30)
 
-**Date:** 2026-05-28
+**Date:** 2026-05-28 · **Reviewed 2026-09-10 — three rows below are STALE, see the note.**
+
+> **Stale rows (2026-09-10).** This table was written against
+> `nucleus-lineage`'s `LocalIssuer` and has not tracked
+> `nucleus-oidc-provider`, which is the production issuer. Verified against the
+> code today:
+>
+> | Row | Says | Actually |
+> |---|---|---|
+> | `typ` header | **VIOLATION** (GAP-3) | **Closed.** `at+jwt`, hard-coded in the JWS header build (`issuer.rs:350`) and CI-gated by `alg-pin-check.sh`. |
+> | `client_id` | **VIOLATION** (GAP-4) | **Closed.** `MintRequest::client_id`, required non-empty. |
+> | `scope` | **GAP** (GAP-5) | **Closed, and then bounded.** Present on `MintRequest`; as of #2755 a requested scope must be a subset of the federation rule's `max_scope`, refused rather than echoed. |
+> | `act` | **GAP** (GAP-6) | **Closed.** Set on every token-exchange mint per RFC 8693 §4.1, naming the upstream actor (`token.rs`). |
+>
+> `cnf` remains deliberately deferred — bearer-only in v1, pending WIMSE WPT
+> settling (the drafts expire between October 2026 and January 2027).
+>
+> The gap this table does NOT name, and which matters more than any row in it:
+> **a federated token carries the workload's identity, not its authority.**
+> SPIFFE and WIMSE answer *who this workload is*; the delegation ceiling — the
+> effects, the budget, the sink scope — stops at the boundary unless something
+> carries it. `max_scope` is the first thing that does, and it is an operator's
+> ceiling rather than the pod certificate's. Deriving the scope from the
+> certificate's own effect dimension is the next step and is not done.
 **Subject:** `crates/nucleus-lineage/src/id.rs` (`CallSpiffeId`) + `crates/nucleus-lineage/src/local_issuer.rs` (JWT claims)
 **Goal:** Catalog where the current implementation deviates from `draft-klrc-aiagent-auth-01` (AIMS) and `draft-ietf-wimse-identifier-00` (WIMSE Workload Identifier), and produce PR-sized actions for #40 (WIMSE conformance on `CallSpiffeId`) and #34 (`JwtIssuer` claims).
 **Cited drafts** (verified May 2026):

@@ -143,7 +143,43 @@ subject_prefix = "spiffe://YOUR-TRUST-DOMAIN/ns/production/*"
 audience = "https://kms.YOUR-DOMAIN.example/v1/sign"
 allowed_grants = ["urn:ietf:params:oauth:grant-type:token-exchange"]
 max_token_lifetime_secs = 300
+max_scope = ["sign:release"]
 ```
+
+### `max_scope` — what the token may DO once it arrives
+
+The three fields above bound **who** may reach **which** audience and **for how
+long**. `max_scope` bounds **what the issued token may do when it gets there**,
+and it is the field to set deliberately.
+
+Before it existed, `scope` was echoed from the request verbatim: a workload
+asked for a scope and the OP minted it. Nothing downstream enforces on our
+`scope` today, which made it inert rather than dangerous — but it is precisely
+the claim a relying party keys on, and the moment one does, an unbounded scope
+is an unbounded credential.
+
+| `max_scope` | meaning |
+|---|---|
+| absent | the rule bounds no scope. A request that **asks** for one is refused; a request that asks for none is unaffected. |
+| `max_scope = []` | constrained to nothing: no scope may be requested. Distinct from absent. |
+| `max_scope = ["a", "b"]` | the requested scope must be a **subset**. A caller may ask for less; never for more. |
+
+Narrowing only, and **refused rather than trimmed**: a caller asking for
+`sign:release sign:anything` under the rule above gets an error, not a token
+that quietly does half of what they asked. A credential that silently means less
+than its holder believes is its own class of incident.
+
+The caller sees a bare `invalid_target`. Which scopes the rule admits is
+operator information — answering it would make the token endpoint a policy
+oracle a caller could enumerate — so **the refused scopes and the ceiling go to
+the log**, at `WARN`, with the rule id. That is where to look when a workload
+reports a denial you did not expect.
+
+Absent is the migration-safe default rather than the fail-closed one, and the
+distinction is worth understanding: fail-closed on the *hazard* (an unbounded
+scope being minted) costs nothing, because a request for no scope still
+succeeds under every rule. Set `max_scope` on every rule whose RP looks at
+scope at all.
 
 Glob semantics: `*` suffix only (no regex, no anywhere-glob). Audience is exact match. See `crates/nucleus-oidc-provider/src/federation.rs` for the schema.
 

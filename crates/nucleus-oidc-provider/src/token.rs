@@ -127,6 +127,75 @@ struct SubjectClaims {
     jti: Option<String>,
 }
 
+/// Bound a requested scope by the rule's ceiling.
+///
+/// Narrowing only, and refusing rather than silently trimming: a caller that
+/// asks for `read write` under a rule admitting only `read` gets an error,
+/// rather than a token that quietly does half of what they asked. A credential
+/// that silently means less than its holder believes is its own class of
+/// incident — the holder proceeds, the call fails somewhere downstream, and
+/// nothing points at the scope.
+///
+/// The refusal reaches the CALLER as a bare `invalid_target`, and the detail —
+/// which scopes were refused, and what the rule admits — goes to the log. That
+/// asymmetry is deliberate and matches what the OP already does for federation
+/// denials: answering "which scopes would you accept?" would make this endpoint
+/// a policy oracle a caller could enumerate. The operator has the log.
+///
+/// The three states of `ceiling` are [`FederationRule::max_scope`]'s:
+/// `None` bounds nothing and therefore admits nothing but an absent request;
+/// `Some([])` admits nothing at all; `Some(list)` admits any subset.
+///
+/// [`FederationRule::max_scope`]: crate::federation::FederationRule::max_scope
+fn clamp_scope(
+    requested: Option<&str>,
+    ceiling: Option<&[String]>,
+) -> Result<Option<String>, OidcApiError> {
+    // Scope is optional in RFC 8693; asking for none is always fine, whatever
+    // the rule says. This is what keeps the change from breaking every caller
+    // that never wanted one.
+    let Some(requested) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+
+    // Scope is a space-delimited list (RFC 6749 §3.3).
+    let asked: Vec<&str> = requested.split_whitespace().collect();
+
+    let Some(ceiling) = ceiling else {
+        tracing::warn!(
+            requested,
+            "token exchange requested a scope under a rule that bounds none — refusing; \
+             set `max_scope` on the federation rule to admit it"
+        );
+        return Err(OidcApiError::InvalidTarget(format!(
+            "federation rule bounds no scope, so none may be requested (asked for {requested:?});              set `max_scope` on the rule"
+        )));
+    };
+
+    let refused: Vec<&str> = asked
+        .iter()
+        .copied()
+        .filter(|a| !ceiling.iter().any(|c| c == a))
+        .collect();
+    if !refused.is_empty() {
+        tracing::warn!(
+            requested,
+            ?refused,
+            ?ceiling,
+            "token exchange requested a scope outside the federation rule's ceiling"
+        );
+        return Err(OidcApiError::InvalidTarget(format!(
+            "requested scope is outside the federation rule's ceiling: {refused:?} not in \
+             {ceiling:?}"
+        )));
+    }
+
+    // Echo what was asked for, not the ceiling: the token grants what the
+    // caller requested, bounded by the rule — never the rule's whole ceiling
+    // just because the caller asked for part of it.
+    Ok(Some(asked.join(" ")))
+}
+
 pub async fn handler(
     State(state): State<AppState>,
     Form(req): Form<TokenExchangeRequest>,
@@ -300,10 +369,11 @@ pub async fn handler(
     let decision = state
         .federation
         .evaluate(sub_spiffe.as_str(), &audience, TOKEN_EXCHANGE_GRANT);
-    let rule_max_lifetime = match decision {
+    let (rule_max_lifetime, rule_max_scope) = match decision {
         crate::federation::Decision::Allow {
             matched_rule_id,
             max_lifetime,
+            max_scope,
         } => {
             tracing::info!(
                 sub = %sub_spiffe,
@@ -311,7 +381,7 @@ pub async fn handler(
                 matched_rule = %matched_rule_id,
                 "federation: ALLOW"
             );
-            max_lifetime
+            (max_lifetime, max_scope)
         }
         crate::federation::Decision::Deny(reason) => {
             tracing::warn!(
@@ -325,6 +395,17 @@ pub async fn handler(
             )));
         }
     };
+
+    // 5b. Scope ceiling. The federation rule bounds WHICH audience this
+    //     subject may reach and FOR HOW LONG; this bounds WHAT the issued
+    //     token may do when it gets there.
+    //
+    //     Before this, `scope` was echoed from the request verbatim — a
+    //     workload asked and the OP minted. The delegation ceiling that the
+    //     kernel, the certificate and the effect gate all enforce inside the
+    //     boundary simply stopped at it, which is the one place a federated
+    //     credential most needs to carry it.
+    let granted_scope = clamp_scope(req.scope.as_deref(), rule_max_scope.as_deref())?;
 
     // 6. Mint response token. `act` claim attests the upstream actor
     //    per RFC 8693 §4.1.
@@ -340,7 +421,7 @@ pub async fn handler(
             subject: sub_spiffe,
             audience: audience.clone(),
             client_id,
-            scope: req.scope.clone(),
+            scope: granted_scope.clone(),
             act,
             kind: Some("token_exchange".to_string()),
         })
@@ -351,7 +432,7 @@ pub async fn handler(
         issued_token_type: TOKEN_TYPE_ACCESS_TOKEN,
         token_type: "Bearer",
         expires_in: mint_lifetime.as_secs(),
-        scope: req.scope,
+        scope: granted_scope,
     };
     Ok((StatusCode::OK, Json(body)).into_response())
 }
@@ -430,6 +511,11 @@ mod tests {
     }
 
     fn app() -> axum::Router {
+        app_with_scope(None)
+    }
+
+    /// The same fixture, with a scope ceiling on the rule.
+    fn app_with_scope(max_scope: Option<Vec<String>>) -> axum::Router {
         let store: Arc<dyn JwtKeyStore> = Arc::new(InMemoryKeyStore::new());
         let issuer = Arc::new(
             JwtIssuer::new(
@@ -446,6 +532,7 @@ mod tests {
                 audience: "https://rp-a.example/api".to_string(),
                 allowed_grants: vec![TOKEN_EXCHANGE_GRANT.to_string()],
                 max_token_lifetime_secs: 3600,
+                max_scope,
             }],
         };
         let federation = Arc::new(crate::federation::FederationRegistry::new(rules));
@@ -621,6 +708,7 @@ mod tests {
                 audience: "https://rp-a.example/api".to_string(),
                 allowed_grants: vec![TOKEN_EXCHANGE_GRANT.to_string()],
                 max_token_lifetime_secs: 3600,
+                max_scope: None,
             }],
         };
         let federation = Arc::new(crate::federation::FederationRegistry::new(rules));
@@ -878,19 +966,119 @@ mod tests {
         assert_eq!(v["error"], "invalid_grant");
     }
 
-    #[tokio::test]
-    async fn scope_round_trips_to_response() {
+    // ── The scope ceiling ───────────────────────────────────────────────────
+    //
+    // `scope` used to be echoed from the request verbatim: a workload asked,
+    // the OP minted. The federation rule bounded which audience a subject could
+    // reach and for how long, and nothing bounded what the token could DO when
+    // it got there — so the delegation ceiling the kernel, the certificate and
+    // the effect gate all enforce inside the boundary stopped at the one place
+    // a federated credential most needs to carry it.
+
+    async fn exchange_with_scope(
+        app: axum::Router,
+        scope: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
         let subject = make_subject_jwt("spiffe://prod.example.com/ns/x/sa/y", 300, None);
-        let body = form_body(&[
+        let mut fields = vec![
             ("grant_type", TOKEN_EXCHANGE_GRANT),
-            ("subject_token", &subject),
+            ("subject_token", subject.as_str()),
             ("subject_token_type", TOKEN_TYPE_JWT),
             ("audience", "https://rp-a.example/api"),
-            ("scope", "read:bundles write:bundles"),
-        ]);
-        let resp = post_token(app(), body).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let v = body_to_value(resp.into_body()).await;
+        ];
+        if let Some(s) = scope {
+            fields.push(("scope", s));
+        }
+        let resp = post_token(app, form_body(&fields)).await;
+        let status = resp.status();
+        (status, body_to_value(resp.into_body()).await)
+    }
+
+    fn ceiling(scopes: &[&str]) -> Option<Vec<String>> {
+        Some(scopes.iter().map(|s| (*s).to_string()).collect())
+    }
+
+    #[tokio::test]
+    async fn a_scope_within_the_ceiling_round_trips() {
+        let app = app_with_scope(ceiling(&["read:bundles", "write:bundles"]));
+        let (status, v) = exchange_with_scope(app, Some("read:bundles write:bundles")).await;
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(v["scope"], "read:bundles write:bundles");
+    }
+
+    /// Narrowing is fine, and the token grants what was ASKED for rather than
+    /// the rule's whole ceiling — a caller that wants read does not silently
+    /// receive write as well.
+    #[tokio::test]
+    async fn asking_for_less_than_the_ceiling_grants_less() {
+        let app = app_with_scope(ceiling(&["read:bundles", "write:bundles"]));
+        let (status, v) = exchange_with_scope(app, Some("read:bundles")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["scope"], "read:bundles");
+    }
+
+    /// THE defect. A scope outside the ceiling is refused, not trimmed: a
+    /// credential that silently means less than its holder believes is its own
+    /// class of incident.
+    #[tokio::test]
+    async fn a_scope_outside_the_ceiling_is_refused() {
+        let app = app_with_scope(ceiling(&["read:bundles"]));
+        let (status, v) = exchange_with_scope(app, Some("read:bundles write:bundles")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error"], "invalid_target");
+        // The body says only that it was denied. WHICH scopes a rule admits is
+        // operator information, and answering it here would make the token
+        // endpoint a policy oracle a caller could enumerate — the OP already
+        // makes that call for federation denials, and a scope denial is the
+        // same class. The refused scopes and the ceiling go to the log.
+        assert!(
+            !v.to_string().contains("write:bundles"),
+            "the response must not enumerate the ceiling: {v}"
+        );
+    }
+
+    /// A rule that bounds no scope admits no scope. Fail-closed on the hazard.
+    #[tokio::test]
+    async fn a_rule_that_bounds_no_scope_refuses_a_requested_one() {
+        let (status, v) = exchange_with_scope(app_with_scope(None), Some("read:bundles")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error"], "invalid_target");
+    }
+
+    /// `max_scope = []` is "constrained to nothing", and is distinct from an
+    /// absent ceiling the same way an empty effect surface is distinct from an
+    /// unmarked one.
+    #[tokio::test]
+    async fn an_empty_ceiling_admits_nothing() {
+        let (status, _) = exchange_with_scope(app_with_scope(ceiling(&[])), Some("read")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// What keeps this from breaking every existing caller: asking for no scope
+    /// is fine under any rule, including one that bounds none. Scope is
+    /// optional in RFC 8693, and the hazard is an unbounded scope being minted
+    /// — not the absence of one.
+    #[tokio::test]
+    async fn asking_for_no_scope_is_unaffected_by_the_ceiling() {
+        for rule in [None, ceiling(&[]), ceiling(&["read:bundles"])] {
+            let (status, v) = exchange_with_scope(app_with_scope(rule), None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(v.get("scope").is_none() || v["scope"].is_null(), "{v}");
+        }
+    }
+
+    /// Whitespace is not a way past the ceiling: an all-blank scope is an
+    /// absent one, and a padded token is the token.
+    #[tokio::test]
+    async fn whitespace_does_not_defeat_the_ceiling() {
+        let app = app_with_scope(ceiling(&["read:bundles"]));
+        let (status, v) = exchange_with_scope(app, Some("   ")).await;
+        assert_eq!(status, StatusCode::OK, "an all-blank scope is no scope");
+
+        let app = app_with_scope(ceiling(&["read:bundles"]));
+        let (status, v2) = exchange_with_scope(app, Some("  read:bundles  ")).await;
+        assert_eq!(status, StatusCode::OK, "{v2}");
+        assert_eq!(v2["scope"], "read:bundles");
+        let _ = v;
     }
 }
