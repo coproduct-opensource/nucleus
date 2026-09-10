@@ -218,10 +218,13 @@ files — see `crates/portcullis-core/lean/CONJECTURES.md`). The
 `portcullis-core-proven-lean.yml` CI gate `lake build`s the proven tier and
 fails if any proof hole appears outside that manifest.
 
-(†) `FlowGraphProofs.lean` uses `native_decide` in 3 of its 15 theorems, which
-trusts the **native compiler** (`Lean.ofReduceBool` axiom) — `sorry`-free but
-outside the pure Lean kernel. The CI gate discloses this via `#print axioms`
-rather than hiding it.
+(†) `FlowGraphProofs.lean` now uses kernel-checked `decide` for its three
+finite examples. Remaining native-evaluation exceptions are named per theorem
+in `crates/portcullis-core/lean/.axiom-audit-exceptions`; the generated axiom
+audit rejects native evaluation outside that list. Before auditing a project,
+CI also rejects `implemented_by`, `extern`, and `csimp` attributes in its owned
+Lean sources, including generated Aeneas code. Dependencies under `.lake` are
+outside this source lint, so native evaluation still trusts their compiled code.
 
 ## Claude Code Hook — What's Verified vs Not
 

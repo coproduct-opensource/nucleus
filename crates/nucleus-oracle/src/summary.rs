@@ -43,11 +43,11 @@ pub fn summarize(receipts: &[GradeReceipt]) -> PortfolioSummary {
     let mean_pass_permille: u32 = if exact_total == 0 {
         0
     } else {
-        let scaled = (exact_matched as u128) * 1000u128;
-        let permille = scaled / (exact_total as u128);
+        let scaled = u128::from(exact_matched) * 1000u128;
+        let permille = scaled / u128::from(exact_total);
         // permille is at most 1000 when matched <= total, but clamp defensively
         // so a malformed receipt (matched > total) can never overflow u32.
-        if permille > u32::MAX as u128 {
+        if permille > u128::from(u32::MAX) {
             u32::MAX
         } else {
             permille as u32
@@ -72,7 +72,7 @@ impl PortfolioSummary {
         let mean_pass_permille = if exact_total == 0 {
             0
         } else {
-            ((1000u128 * exact_matched as u128) / exact_total as u128) as u32
+            ((1000u128 * u128::from(exact_matched)) / u128::from(exact_total)) as u32
         };
         PortfolioSummary {
             submissions: self.submissions.saturating_add(other.submissions),

@@ -75,8 +75,8 @@ fn midpoint(lo: &Rational, hi: &Rational) -> Rational {
     let d = hi.den.get();
     let g = gcd_u64(b, d);
     // lo / gcd_factor terms — both fit in u64 since they divide b or d.
-    let lo_factor = (d / g) as i128;
-    let hi_factor = (b / g) as i128;
+    let lo_factor = i128::from(d / g);
+    let hi_factor = i128::from(b / g);
     // Numerator at the common LCM scale: lcm = b·d/g.
     let common_num = lo
         .num
@@ -84,7 +84,7 @@ fn midpoint(lo: &Rational, hi: &Rational) -> Rational {
         .saturating_add(hi.num.saturating_mul(hi_factor));
     // Midpoint denominator = 2 · lcm = 2 · b · d / g. The 2× factor is
     // the "÷2" of (a+c)/2 absorbed into the denominator.
-    let lcm_u128 = (b as u128 / g as u128).saturating_mul(d as u128);
+    let lcm_u128 = (u128::from(b) / u128::from(g)).saturating_mul(u128::from(d));
     let den_u128 = lcm_u128.saturating_mul(2);
     let den_u64 = u64::try_from(den_u128).expect("LCM*2 fits in u64 for bisection depth ≤63");
     let den = NonZeroU64::new(den_u64.max(1)).unwrap();
@@ -133,13 +133,14 @@ fn within_eps_of(lambda: &Rational, lambda_star: &Rational, eps: &Rational) -> b
     // Compute lambda_star ± eps as Rationals with denominator =
     // lambda_star.den · eps.den. For lambda_star = 3/1 and eps = 1/10^9
     // that's 1 · 10^9 = 10^9, well below u64::MAX.
-    let s_den = lambda_star.den.get() as i128;
-    let e_den = eps.den.get() as i128;
+    let s_den = i128::from(lambda_star.den.get());
+    let e_den = i128::from(eps.den.get());
     let common_num_scale = lambda_star.num.saturating_mul(e_den);
     let eps_num_scaled = eps.num.saturating_mul(s_den);
     let lower_num = common_num_scale - eps_num_scaled;
     let upper_num = common_num_scale + eps_num_scaled;
-    let combined_den_u128 = (lambda_star.den.get() as u128).saturating_mul(eps.den.get() as u128);
+    let combined_den_u128 =
+        u128::from(lambda_star.den.get()).saturating_mul(u128::from(eps.den.get()));
     let combined_den =
         NonZeroU64::new(u64::try_from(combined_den_u128).expect("ε denominator fits in u64"))
             .unwrap();

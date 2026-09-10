@@ -499,7 +499,7 @@ pub fn dropout_pipeline(
         stages_skipped,
         load_bearing_dimensions: load_bearing,
         trivial_dimensions: trivial,
-        evaluation_fraction: active_stages as f64 / total_stages as f64,
+        evaluation_fraction: f64::from(active_stages) / f64::from(total_stages),
     };
 
     (trace, report)

@@ -4,7 +4,7 @@
 //! ("your agent CAN exfiltrate") plus the exact tool chain that proves it;
 //! [`SessionReport::to_json`] gives the machine-readable form for CI / receipts.
 
-use crate::session::{Finding, SessionMonitor, ToolEvent};
+use crate::session::{Finding, MetadataRefusal, SessionMonitor, ToolEvent};
 use serde::{Deserialize, Serialize};
 
 /// A finished session's findings, serializable for CI artifacts and (later) for
@@ -19,6 +19,14 @@ pub struct SessionReport {
     pub events: Vec<ToolEvent>,
     /// The flagged egress points.
     pub findings: Vec<Finding>,
+    /// Tool metadata the guard refused: rug-pulls, unapproved or out-of-compartment
+    /// tools, calls outside the pinned catalogue.
+    ///
+    /// `#[serde(default)]` so a report written before this field existed still
+    /// deserializes — an absent field means "none recorded", not "none occurred",
+    /// which is the honest reading of an older artifact.
+    #[serde(default)]
+    pub metadata_refusals: Vec<MetadataRefusal>,
 }
 
 impl SessionReport {
@@ -33,7 +41,17 @@ impl SessionReport {
                 .collect(),
             events: m.events().to_vec(),
             findings: m.findings().to_vec(),
+            metadata_refusals: m.refusals().to_vec(),
         }
+    }
+
+    /// `true` iff the server's tool metadata failed an integrity check.
+    ///
+    /// Deliberately separate from [`Self::exfiltration_possible`]: they are
+    /// different questions, and collapsing them is what let a refused rug-pull
+    /// render as `OK` (#2735).
+    pub fn metadata_refused(&self) -> bool {
+        !self.metadata_refusals.is_empty()
     }
 
     /// Machine-readable JSON (pretty).
@@ -52,10 +70,27 @@ impl SessionReport {
             self.inputs_seen.join(", ")
         };
         s.push_str(&format!("Data classes in scope: {seen}\n"));
+        s.push_str(&format!("Egress points flagged: {}\n", self.findings.len()));
         s.push_str(&format!(
-            "Egress points flagged: {}\n\n",
-            self.findings.len()
+            "Metadata refusals:     {}\n\n",
+            self.metadata_refusals.len()
         ));
+
+        if self.metadata_refused() {
+            s.push_str("  /!\\  TOOL METADATA REFUSED\n");
+            s.push_str("       The server's tool definitions failed an integrity check. MCP has\n");
+            s.push_str("       no tool-definition integrity mechanism of its own, so a refusal\n");
+            s.push_str("       here is the only signal that the catalogue moved under you.\n\n");
+            for r in &self.metadata_refusals {
+                s.push_str(&format!(
+                    "    - `{}` [{}]\n      {}\n",
+                    r.tool,
+                    r.kind.label(),
+                    r.reason,
+                ));
+            }
+            s.push('\n');
+        }
 
         if self.exfiltration_possible {
             s.push_str("  /!\\  EXFILTRATION POSSIBLE\n");
@@ -76,6 +111,13 @@ impl SessionReport {
                     f.verdict.reason,
                 ));
             }
+        } else if self.metadata_refused() {
+            // Not "OK": no egress was reached, but the session is not clean, and
+            // saying so plainly is the point. A reader who skims to the verdict
+            // line used to see `OK` printed directly under a rug-pull warning.
+            s.push_str("  --   No lethal-trifecta egress detected — but see the refusals above.\n");
+            s.push_str("       Egress and metadata integrity are separate questions; this\n");
+            s.push_str("       session failed the second one.\n");
         } else {
             s.push_str("  OK   No lethal-trifecta egress detected in this session.\n");
             s.push_str("       (Observe-only: this reflects the tools actually exercised.)\n");
@@ -114,6 +156,24 @@ mod tests {
         let j = rep.to_json();
         let back: SessionReport = serde_json::from_str(&j).unwrap();
         assert!(back.exfiltration_possible);
+    }
+
+    /// A report written before `metadata_refusals` existed must still parse.
+    /// `#[serde(default)]` carries that; without it every archived artifact and
+    /// every receipt folded from one becomes unreadable at this version bump.
+    #[test]
+    fn a_report_from_before_the_field_existed_still_deserializes() {
+        let old = r#"{
+            "exfiltration_possible": false,
+            "inputs_seen": [],
+            "events": [],
+            "findings": []
+        }"#;
+        let rep: SessionReport = serde_json::from_str(old).expect("older artifact must parse");
+        assert!(rep.metadata_refusals.is_empty());
+        // Absent means "none recorded", and a report that recorded none renders
+        // as OK — the same as a fresh clean session.
+        assert!(!rep.metadata_refused());
     }
 
     #[test]
