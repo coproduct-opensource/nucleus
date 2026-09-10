@@ -856,9 +856,16 @@ fn a_budget_denial_keeps_its_own_reason() {
         },
     );
     let msg = err.to_string();
+    // Anchored on the MEANING, not the spelling. This used to assert the
+    // Debug name `BudgetExhausted`, which passed only because the variant was
+    // being `{:?}`-formatted onto the wire — the defect, not the property.
     assert!(
-        msg.contains("BudgetExhausted"),
+        msg.contains("budget is exhausted"),
         "the budget reason must survive: {msg}"
+    );
+    assert!(
+        msg.contains("$0.00"),
+        "the remaining budget must survive: {msg}"
     );
     assert!(
         !msg.contains("level is Never"),
@@ -904,7 +911,10 @@ fn an_unmapped_reason_keeps_its_text_instead_of_becoming_a_capability_claim() {
         },
     );
     let msg = err.to_string();
-    assert!(msg.contains("IsolationGated"), "reason must survive: {msg}");
+    assert!(
+        msg.contains("isolation makes web_fetch impossible"),
+        "reason must survive: {msg}"
+    );
     assert!(msg.contains("network"), "detail must survive: {msg}");
     assert!(
         !msg.contains("level is Never"),
@@ -1452,4 +1462,121 @@ fn a_denial_without_a_reason_still_says_something() {
         },
     );
     assert!(err.to_string().contains("path lattice"), "{err}");
+}
+
+// ── One refusal, one explanation ────────────────────────────────────────────
+//
+// `DenyReason` had no `Display`, so three surfaces rendered it three ways and
+// sixteen of nineteen variants reached this wire as Rust struct literals:
+//
+//     EgressBlocked { host: "api.github.com", policy_reason: "not in allowlist" }
+//
+// while a hand-written sentence for every one of them sat in the same workspace
+// crate, reachable only after a run had ended. Same shape as #2406 — several
+// producers, nothing comparing them.
+//
+// These compare the PRODUCERS. Asserting the literal string would pass just as
+// happily if the proxy and `describe` drifted together somewhere a caller could
+// not follow.
+mod deny_reason_parity {
+    use super::*;
+    use portcullis::kernel::DenyReason;
+
+    /// The variants that used to fall through the catch-all, including the
+    /// three whose Debug output was worst to read.
+    fn through_the_catch_all() -> Vec<DenyReason> {
+        vec![
+            DenyReason::EgressBlocked {
+                host: "api.github.com".into(),
+                policy_reason: "not in allowlist".into(),
+            },
+            DenyReason::SinkScopeDenied {
+                dimension: "hosts".into(),
+                detail: "api.example not in scope".into(),
+            },
+            DenyReason::IfcUnsafe {
+                detail: "adversarial ancestry".into(),
+            },
+            DenyReason::DlcAdmissionDenied {
+                detail: "no issuer-signed credential".into(),
+            },
+            DenyReason::TimeExpired {
+                expired_at: chrono::Utc::now(),
+            },
+            DenyReason::CedarDenied {
+                detail: "no permit".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn the_wire_carries_the_shared_sentence() {
+        let op = Operation::WebFetch;
+        for reason in through_the_catch_all() {
+            let msg = crate::mediation::kernel_denial_to_api_error(
+                op,
+                "https://api.github.com/repos/o/r/pulls",
+                reason.clone(),
+            )
+            .to_string();
+            let sentence = reason.describe(Some(op));
+            assert!(
+                msg.contains(&sentence),
+                "the proxy does not use the shared rendering.\n  wire: {msg}\n  shared: {sentence}"
+            );
+        }
+    }
+
+    /// THE regression this closes. A brace is the tell: every `Debug` rendering
+    /// of these variants has one, and no prose sentence does.
+    #[test]
+    fn no_refusal_reaches_a_caller_as_a_struct_literal() {
+        for reason in through_the_catch_all() {
+            let msg = crate::mediation::kernel_denial_to_api_error(
+                Operation::WebFetch,
+                "https://api.github.com/x",
+                reason.clone(),
+            )
+            .to_string();
+            assert!(
+                !msg.contains('{') && !msg.contains('}'),
+                "{reason:?} still reaches the wire as Debug: {msg}"
+            );
+        }
+    }
+
+    /// Non-vacuity: the two tests above would both pass against a constant
+    /// string. Distinct refusals must still read distinctly on the wire.
+    #[test]
+    fn distinct_refusals_still_read_differently_on_the_wire() {
+        let mut seen: Vec<String> = through_the_catch_all()
+            .into_iter()
+            .map(|r| {
+                crate::mediation::kernel_denial_to_api_error(Operation::WebFetch, "s", r)
+                    .to_string()
+            })
+            .collect();
+        seen.sort();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(before, seen.len(), "two refusals render identically");
+    }
+
+    /// The refusal CODE is not this module's to change. Callers branch on
+    /// `kind`; only the prose moved. A reword must never become a
+    /// re-classification.
+    #[test]
+    fn the_refusal_code_is_unchanged() {
+        for reason in through_the_catch_all() {
+            let err = crate::mediation::kernel_denial_to_api_error(
+                Operation::WebFetch,
+                "s",
+                reason.clone(),
+            );
+            assert!(
+                matches!(err, ApiError::KernelDenied(_)),
+                "{reason:?} changed class, not just wording"
+            );
+        }
+    }
 }

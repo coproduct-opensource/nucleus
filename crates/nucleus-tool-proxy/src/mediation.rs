@@ -6,6 +6,7 @@
 //! a new refusal reason must be given a surfacing here before it can compile,
 //! rather than silently becoming a generic capability error.
 
+use nucleus::portcullis::grant_usage::operation_name;
 use nucleus::portcullis::kernel::DenyReason;
 use nucleus::portcullis::{CapabilityLevel, Operation};
 
@@ -93,7 +94,19 @@ pub(crate) fn kernel_denial_to_api_error(
         | DenyReason::IfcUnsafe { .. }
         | DenyReason::CedarDenied { .. }
         | DenyReason::DlcAdmissionDenied { .. }) => {
-            ApiError::KernelDenied(format!("{other:?} (operation {operation:?} on {subject})"))
+            // `{other:?}` used to reach the wire here, so sixteen of nineteen
+            // refusals arrived as Rust struct literals —
+            // `EgressBlocked { host: "api.github.com", policy_reason: "not in
+            // allowlist" }` — while a hand-written sentence for every one of
+            // them already existed in the same workspace crate and was
+            // reachable only after the run had ended. One producer now
+            // (`DenyReason::describe`), and the operation is passed because
+            // this call site has it.
+            ApiError::KernelDenied(format!(
+                "{} (operation {} on {subject})",
+                other.describe(Some(operation)),
+                operation_name(operation)
+            ))
         }
     }
 }

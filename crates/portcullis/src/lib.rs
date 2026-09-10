@@ -108,6 +108,10 @@ pub mod certificate;
 mod certificate_convergence_test;
 mod command;
 pub mod constraint;
+/// One refusal, one explanation: the single rendering of [`kernel::DenyReason`]
+/// every surface uses, so a person is never shown Rust `Debug` syntax.
+#[cfg(all(feature = "spec", not(kani)))]
+pub mod deny_reason;
 // Uses `CapabilityLattice::extensions`, which is compiled out under Kani.
 #[cfg(not(kani))]
 pub mod tool_surface;
