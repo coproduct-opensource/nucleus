@@ -652,7 +652,16 @@ mod tests {
     #[test]
     fn test_canonical_profiles_parse() {
         let registry = ProfileRegistry::canonical().unwrap();
-        assert_eq!(registry.len(), 10);
+        // Derived, not hard-coded. This was `assert_eq!(registry.len(), 10)`,
+        // the third copy of a number that lives in `profiles/` — and adding a
+        // profile had to be discovered by breaking it. Comparing against the
+        // provider is not vacuous: `canonical()` registers BY NAME, so two
+        // profiles claiming one name would collapse and make this shorter.
+        assert_eq!(
+            registry.len(),
+            ProfileName::ALL.len(),
+            "every generated profile must register under its own name"
+        );
         let names = registry.names();
         assert!(names.contains(&"safe-pr-fixer"));
         assert!(names.contains(&"doc-editor"));
@@ -664,6 +673,7 @@ mod tests {
         assert!(names.contains(&"research-web"));
         assert!(names.contains(&"read-only"));
         assert!(names.contains(&"local-dev"));
+        assert!(names.contains(&"untrusted-model"));
     }
 
     #[test]
