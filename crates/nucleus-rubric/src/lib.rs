@@ -321,8 +321,8 @@ pub fn faithful_total(rubric: &Rubric, sc: &Scorecard) -> u128 {
         .rv_indices()
         .into_iter()
         .map(|i| {
-            let g = sc.grades.get(i).copied().unwrap_or(0) as u128;
-            rubric.weight_at(i) as u128 * g
+            let g = u128::from(sc.grades.get(i).copied().unwrap_or(0));
+            u128::from(rubric.weight_at(i)) * g
         })
         .sum()
 }
@@ -564,7 +564,7 @@ impl CounterfactualReceipt {
     /// `u64::MAX` (the `CreditEvent` weight domain); `u128` totals make that
     /// effectively unreachable for realistic grades/weights.
     pub fn mint_reward(&self) -> CreditEvent {
-        let weight = self.marginal.min(u64::MAX as u128) as u64;
+        let weight = self.marginal.min(u128::from(u64::MAX)) as u64;
         CreditEvent::honest_settlement(weight, self.receipt_hash())
     }
 }
@@ -576,7 +576,7 @@ impl CounterfactualReceipt {
 /// Saturates at `u32::MAX`.
 pub fn grade_from_eval(run: &nucleus_eval::EvalRun) -> u32 {
     let (passed, _total) = run.deterministic.recompute();
-    passed.min(u32::MAX as u64) as u32
+    passed.min(u64::from(u32::MAX)) as u32
 }
 
 #[cfg(test)]
@@ -917,11 +917,11 @@ mod tests {
 
         let ev = receipt.mint_reward();
         assert_eq!(ev.polarity, Polarity::Credit);
-        assert_eq!(ev.weight_micro as u128, receipt.marginal);
+        assert_eq!(u128::from(ev.weight_micro), receipt.marginal);
         assert_eq!(ev.receipt_hash, receipt.receipt_hash());
 
         let file = CreditFile::from_events(&[ev]);
-        assert_eq!(file.reputation_micro() as u128, receipt.marginal);
+        assert_eq!(u128::from(file.reputation_micro()), receipt.marginal);
     }
 
     // ── Edge cases ────────────────────────────────────────────────────────────

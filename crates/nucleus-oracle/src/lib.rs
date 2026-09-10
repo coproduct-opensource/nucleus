@@ -536,7 +536,7 @@ impl RubricInputs {
 
 /// Saturating `u64 → u32`.
 fn sat_u32(v: u64) -> u32 {
-    v.min(u32::MAX as u64) as u32
+    v.min(u64::from(u32::MAX)) as u32
 }
 
 /// Turn a [`GradeReceipt`] into rubric criteria + grades, applying THE

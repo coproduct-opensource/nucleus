@@ -200,7 +200,9 @@ fn ip_in_cidr(ip: IpAddr, network: IpAddr, prefix_len: u8) -> bool {
             }
             let ip_bits = u32::from(ip);
             let net_bits = u32::from(net);
-            let mask = u32::MAX.checked_shl(32 - prefix_len as u32).unwrap_or(0);
+            let mask = u32::MAX
+                .checked_shl(32 - u32::from(prefix_len))
+                .unwrap_or(0);
             (ip_bits & mask) == (net_bits & mask)
         }
         (IpAddr::V6(ip), IpAddr::V6(net)) => {
@@ -209,7 +211,9 @@ fn ip_in_cidr(ip: IpAddr, network: IpAddr, prefix_len: u8) -> bool {
             }
             let ip_bits = u128::from(ip);
             let net_bits = u128::from(net);
-            let mask = u128::MAX.checked_shl(128 - prefix_len as u32).unwrap_or(0);
+            let mask = u128::MAX
+                .checked_shl(128 - u32::from(prefix_len))
+                .unwrap_or(0);
             (ip_bits & mask) == (net_bits & mask)
         }
         // IPv4 vs IPv6 mismatch

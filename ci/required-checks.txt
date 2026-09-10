@@ -25,7 +25,22 @@
 # would VACATE the gate instead of blocking it. CI-I3-NEEDS. The pin grows,
 # which is the allowed direction; the cost is one gate-pool context to stop
 # holding a build-pool slot while deciding.
-# PINNED = 51
+# 2026-09-09, owner decision, 50 → 47: `deny (advisories)`, `deny (bans)`,
+# `deny (licenses)` and `deny (sources)` become the single context `deny`. The
+# four were a matrix sharding ONE command (`cargo deny check advisories bans
+# licenses sources`) across four jobs, each paying its own checkout, toolchain
+# setup and pool slot. Nothing about what is enforced changes — `cargo deny
+# check` with several categories reports each and still exits non-zero if any
+# fails — so this removes three CONTEXTS, not three checks. The reason it is
+# worth doing is in ci/merge-queue.toml: a single group's required contexts
+# already saturate the pool, so four slots for one gate is four slots another
+# gate waits for.
+#
+# 2026-09-10, merge of the two above: they compose rather than conflict. From 50,
+# main's deny fold removed three contexts (-> 47) and this branch's routing
+# decision adds one (-> 48). Neither number alone is right on the merge; 51 was
+# computed against a 50-context main that no longer exists.
+# PINNED = 48
 
 # --- ci.yml -------------------------------------------------------------
 Detect changed crates
@@ -62,10 +77,7 @@ Proof Count Ratchet
 
 # --- single-producer, unfiltered ----------------------------------------
 audit
-deny (advisories)
-deny (bans)
-deny (licenses)
-deny (sources)
+deny
 cargo hack --each-feature
 MSRV floor (workspace rust-version)
 zizmor (high+ gate)

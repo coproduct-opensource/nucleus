@@ -119,8 +119,8 @@ impl BundleHash {
         let mut s = String::with_capacity(BUNDLE_HASH_LEN * 2);
         for b in self.0 {
             // Two lowercase hex nibbles per byte.
-            s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-            s.push(char::from_digit((b & 0x0f) as u32, 16).unwrap());
+            s.push(char::from_digit(u32::from(b >> 4), 16).unwrap());
+            s.push(char::from_digit(u32::from(b & 0x0f), 16).unwrap());
         }
         s
     }

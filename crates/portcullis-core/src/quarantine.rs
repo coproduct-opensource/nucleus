@@ -331,7 +331,7 @@ fn shannon_entropy_bits(s: &str) -> u32 {
     let mut entropy: f64 = 0.0;
     for &c in &counts {
         if c > 0 {
-            let p = c as f64 / len;
+            let p = f64::from(c) / len;
             entropy -= p * p.log2();
         }
     }
