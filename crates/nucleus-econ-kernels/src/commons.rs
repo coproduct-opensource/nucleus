@@ -73,7 +73,8 @@ pub fn route_to_commons(
         .iter()
         .map(|s| CommonsAllocation {
             destination: s.destination.clone(),
-            amount_micro: ((pool_micro as u128 * s.bps as u128) / COMMONS_BPS_SCALE as u128) as u64,
+            amount_micro: ((u128::from(pool_micro) * u128::from(s.bps))
+                / u128::from(COMMONS_BPS_SCALE)) as u64,
         })
         .collect();
 

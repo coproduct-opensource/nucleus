@@ -27,6 +27,7 @@ use axum::Router;
 use axum::extract::connect_info::Connected;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::server::TlsStream;
 use tracing::{debug, error, info, warn};
@@ -50,8 +51,33 @@ impl MtlsConfig {
     }
 
     /// Builds a TLS acceptor from this configuration.
+    ///
+    /// The certificate is fixed for the life of the acceptor. Prefer
+    /// [`Self::build_rotating_acceptor`] for a listener that outlives its own
+    /// certificate's TTL.
     pub fn build_acceptor(&self) -> Result<tokio_rustls::TlsAcceptor, crate::Error> {
         TlsServerConfig::new(self.server_cert.clone(), self.trust_bundle.clone()).build_acceptor()
+    }
+
+    /// Builds an acceptor whose server certificate can be replaced later.
+    ///
+    /// Returns the acceptor and the handle that replaces what it serves. Callers
+    /// that keep a listener open longer than the certificate's TTL must use this
+    /// and rotate through the handle, or clients will eventually be offered an
+    /// expired certificate and fail the handshake (#2722).
+    pub fn build_rotating_acceptor(
+        &self,
+    ) -> Result<
+        (
+            tokio_rustls::TlsAcceptor,
+            Arc<crate::tls::RotatingServerCert>,
+        ),
+        crate::Error,
+    > {
+        let resolver = Arc::new(crate::tls::RotatingServerCert::new(&self.server_cert)?);
+        let config = TlsServerConfig::new(self.server_cert.clone(), self.trust_bundle.clone())
+            .build_with_resolver(resolver.clone())?;
+        Ok((tokio_rustls::TlsAcceptor::from(Arc::new(config)), resolver))
     }
 }
 
@@ -102,12 +128,34 @@ pub struct MtlsListener {
 
 impl MtlsListener {
     /// Creates a new mTLS listener.
+    ///
+    /// The certificate is fixed for the life of the listener; see
+    /// [`Self::new_rotating`] if it must outlive its own TTL.
     pub fn new(tcp_listener: TcpListener, config: &MtlsConfig) -> Result<Self, crate::Error> {
         let tls_acceptor = config.build_acceptor()?;
         Ok(Self {
             tcp_listener,
             tls_acceptor,
         })
+    }
+
+    /// Creates a listener whose server certificate can be rotated in place.
+    ///
+    /// Returns the listener and the handle that replaces the certificate it
+    /// serves. The next handshake after a `replace` presents the new one;
+    /// connections already established are untouched.
+    pub fn new_rotating(
+        tcp_listener: TcpListener,
+        config: &MtlsConfig,
+    ) -> Result<(Self, Arc<crate::tls::RotatingServerCert>), crate::Error> {
+        let (tls_acceptor, resolver) = config.build_rotating_acceptor()?;
+        Ok((
+            Self {
+                tcp_listener,
+                tls_acceptor,
+            },
+            resolver,
+        ))
     }
 
     /// Returns the local address this listener is bound to.
@@ -590,5 +638,106 @@ mod tests {
             !resp.contains("NONE"),
             "extraction returned None against a real, correctly-verified mTLS connection: {resp}"
         );
+    }
+
+    /// #2722: a listener must outlive the certificate it was built with.
+    ///
+    /// The node's HTTPS API became unreachable exactly one hour after start — its
+    /// certificate's TTL — because the listener held the one it was built with
+    /// forever. This walks a real handshake across the expiry boundary, and
+    /// asserts BOTH directions: that an un-rotated certificate genuinely stops
+    /// working (so the test cannot pass vacuously), and that rotating through the
+    /// resolver brings it back without rebuilding the listener or dropping it.
+    #[tokio::test]
+    async fn a_rotated_certificate_keeps_the_listener_reachable_past_expiry() {
+        use crate::{CaClient, CsrOptions, Identity, SelfSignedCa, TlsClientConfig};
+        use axum::serve::Listener;
+        use std::time::Duration;
+        use tokio::net::TcpListener;
+
+        let trust_domain = "rotate.nucleus.local";
+        let ca = SelfSignedCa::new(trust_domain).unwrap();
+        let trust_bundle = ca.trust_bundle().clone();
+
+        let server_identity = Identity::new(trust_domain, "servers", "rotating-server");
+        // Short-lived on purpose: this is the node's own default shape
+        // (`--identity-cert-ttl-secs`), just compressed so the test can cross it.
+        async fn mint(ca: &SelfSignedCa, id: &Identity, ttl: Duration) -> WorkloadCertificate {
+            let csr = CsrOptions::new(id.to_spiffe_uri()).generate().unwrap();
+            ca.sign_csr(csr.csr(), csr.private_key(), id, ttl)
+                .await
+                .unwrap()
+        }
+
+        let client_identity = Identity::new(trust_domain, "agents", "rotating-client");
+        let client_csr = CsrOptions::new(client_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let client_cert = ca
+            .sign_csr(
+                client_csr.csr(),
+                client_csr.private_key(),
+                &client_identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        let short = Duration::from_secs(3);
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let mtls_config = MtlsConfig::new(
+            mint(&ca, &server_identity, short).await,
+            trust_bundle.clone(),
+        );
+        let (mut listener, resolver) =
+            MtlsListener::new_rotating(tcp_listener, &mtls_config).unwrap();
+
+        // Accept in the background for as long as the test needs connections.
+        let accept_loop = tokio::spawn(async move {
+            loop {
+                let _ = listener.accept().await;
+            }
+        });
+
+        let handshake = |cert: WorkloadCertificate, bundle: TrustBundle| async move {
+            let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let connector = TlsClientConfig::new(cert, bundle)
+                .with_spiffe_trust_domain(trust_domain)
+                .build_connector()
+                .unwrap();
+            let name = rustls::pki_types::ServerName::try_from(trust_domain.to_string()).unwrap();
+            connector.connect(name, stream).await.map(|_| ())
+        };
+
+        assert!(
+            handshake(client_cert.clone(), trust_bundle.clone())
+                .await
+                .is_ok(),
+            "the freshly minted certificate should serve"
+        );
+
+        // Past notAfter. Real sleep, because rustls checks validity against the
+        // real clock during the handshake — a paused runtime would not expire it.
+        tokio::time::sleep(short + Duration::from_secs(1)).await;
+
+        let expired = handshake(client_cert.clone(), trust_bundle.clone()).await;
+        assert!(
+            expired.is_err(),
+            "the certificate was past notAfter and the handshake still succeeded — \
+             this test would pass vacuously, so the rotation below proves nothing"
+        );
+
+        // Exactly what the node's rotation task does.
+        resolver
+            .replace(&mint(&ca, &server_identity, Duration::from_secs(3600)).await)
+            .unwrap();
+
+        assert!(
+            handshake(client_cert, trust_bundle).await.is_ok(),
+            "after rotating, the SAME listener should serve the new certificate (#2722)"
+        );
+
+        accept_loop.abort();
     }
 }

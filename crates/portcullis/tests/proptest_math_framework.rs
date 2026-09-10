@@ -12,7 +12,7 @@ use portcullis::{
     graded::{Graded, RiskGrade},
     heyting::HeytingAlgebra,
     isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation},
-    CapabilityLattice, CapabilityLevel, Operation, PermissionLattice, StateRisk,
+    CapabilityLattice, CapabilityLevel, PermissionLattice, StateRisk,
 };
 use proptest::prelude::*;
 
@@ -409,6 +409,12 @@ proptest! {
 // ============================================
 // Constraint Nucleus Laws (CEL feature)
 // ============================================
+
+// Gated with the block it serves. At the crate's default features this section
+// is compiled out, and a top-level import of `Operation` would be unused —
+// which is what made `cargo clippy -p portcullis --all-targets` red (#2746).
+#[cfg(feature = "cel")]
+use portcullis::Operation;
 
 #[cfg(feature = "cel")]
 fn arb_operation() -> impl Strategy<Value = Operation> {

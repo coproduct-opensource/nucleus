@@ -344,7 +344,7 @@ impl ProgressLattice {
 
     /// Fraction of progress toward the terminal object (0.0 to 1.0).
     pub fn completion_fraction(&self) -> f64 {
-        self.height() as f64 / Self::top().height() as f64
+        f64::from(self.height()) / f64::from(Self::top().height())
     }
 }
 

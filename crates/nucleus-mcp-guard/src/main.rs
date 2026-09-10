@@ -2,7 +2,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use nucleus_mcp_guard::{Classifier, ClassifierConfig, SessionMonitor, analyze_session, proxy};
+use nucleus_mcp_guard::{
+    Classifier, ClassifierConfig, SessionMonitor, SessionReport, analyze_session, proxy,
+};
 use proxy::{GuardConfig, Mode};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -135,11 +137,37 @@ async fn main() -> Result<()> {
         println!("{rendered}");
     }
 
-    // Non-zero exit when exfiltration is possible, so CI / assessments can gate.
-    if report.exfiltration_possible {
-        std::process::exit(1);
+    // Non-zero exit so CI / assessments can gate — and two distinct codes,
+    // because the two findings are different questions and a caller may want
+    // to treat them differently (#2735):
+    //
+    //   1  exfiltration is possible: an egress sink was reached under the
+    //      lethal trifecta. Unchanged, so anything already gating on `!= 0`
+    //      or on `== 1` keeps its meaning.
+    //   2  the server misbehaved: its tool metadata failed an integrity check
+    //      (a rug-pull, an unapproved or out-of-compartment tool, a call
+    //      outside the pinned catalogue). This used to exit 0 while stderr
+    //      announced the rug-pull, so a pipeline wrapping a mutating server
+    //      went green.
+    //
+    // 1 outranks 2 when both hold: reaching a sink under the trifecta is the
+    // more serious of the two, and the refusals are in the report either way.
+    match exit_code(&report) {
+        0 => Ok(()),
+        code => std::process::exit(code),
     }
-    Ok(())
+}
+
+/// The process exit code for a finished report. Pure, so the mapping can be
+/// pinned by a test — `std::process::exit` cannot be.
+fn exit_code(report: &SessionReport) -> i32 {
+    if report.exfiltration_possible {
+        1
+    } else if report.metadata_refused() {
+        2
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -154,6 +182,51 @@ mod tests {
     // pins that `Mode::Observe` never blocks and `Mode::Enforce` does; what
     // is pinned here is everything upstream of that — that omitting every
     // flag parses to `observe: false`, and that `false` resolves to `Enforce`.
+
+    // ── #2735: the exit code must express BOTH findings ─────────────────
+    //
+    // `mcp-guard` detected a rug-pull, printed it to stderr, and exited 0.
+    // The README sells the exit code as a CI gate, so a pipeline wrapping a
+    // server that mutated its schema mid-session went green on the tool's own
+    // headline defense.
+
+    fn report_with(exfiltration_possible: bool, refusals: usize) -> SessionReport {
+        SessionReport {
+            exfiltration_possible,
+            inputs_seen: vec![],
+            events: vec![],
+            findings: vec![],
+            metadata_refusals: (0..refusals)
+                .map(|i| nucleus_mcp_guard::MetadataRefusal {
+                    tool: format!("tool{i}"),
+                    kind: nucleus_mcp_guard::RefusalKind::SchemaMutated,
+                    reason: "schema mutated".into(),
+                })
+                .collect(),
+        }
+    }
+
+    /// All four corners, so neither code can be a constant and neither finding
+    /// can shadow the other by accident.
+    #[test]
+    fn exit_code_distinguishes_the_two_findings() {
+        assert_eq!(exit_code(&report_with(false, 0)), 0, "clean session");
+        assert_eq!(
+            exit_code(&report_with(false, 1)),
+            2,
+            "a refusal alone must not exit 0 — this is the bug"
+        );
+        assert_eq!(
+            exit_code(&report_with(true, 0)),
+            1,
+            "the documented exfiltration code is unchanged"
+        );
+        assert_eq!(
+            exit_code(&report_with(true, 1)),
+            1,
+            "exfiltration outranks a refusal when both hold"
+        );
+    }
 
     /// Link 1: `mode_for_flag` itself. Also verifies `Mode::Observe` is
     /// reachable at all — a test that only checked the false case would pass

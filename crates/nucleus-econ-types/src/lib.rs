@@ -168,7 +168,7 @@ impl From<MicroUsd> for u64 {
 impl From<MicroUsd> for u128 {
     #[inline]
     fn from(m: MicroUsd) -> Self {
-        m.0 as u128
+        u128::from(m.0)
     }
 }
 
@@ -491,10 +491,10 @@ mod laws {
         #[test]
         fn saturating_from_u128_clamps(v in any::<u128>()) {
             let got = MicroUsd::saturating_from_u128(v);
-            if v > u64::MAX as u128 {
+            if v > u128::from(u64::MAX) {
                 prop_assert_eq!(got, MicroUsd::MAX);
             } else {
-                prop_assert_eq!(got.get() as u128, v);
+                prop_assert_eq!(u128::from(got.get()), v);
             }
         }
 

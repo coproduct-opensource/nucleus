@@ -239,7 +239,7 @@ impl PolicyContext {
         ctx.add_variable("has_approval", self.has_approval).ok();
 
         // Request rate
-        ctx.add_variable("request_rate", self.request_rate as i64)
+        ctx.add_variable("request_rate", i64::from(self.request_rate))
             .ok();
 
         // Isolation as a proper nested object

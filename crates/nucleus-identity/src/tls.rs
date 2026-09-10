@@ -116,6 +116,91 @@ impl TlsServerConfig {
         let config = self.build()?;
         Ok(TlsAcceptor::from(Arc::new(config)))
     }
+
+    /// Like [`Self::build`], but the server certificate is resolved per handshake
+    /// from `resolver` instead of being baked into the config.
+    ///
+    /// `build` uses `with_single_cert`, which copies the certificate into the
+    /// `ServerConfig` once. A long-lived listener built that way keeps presenting
+    /// that copy for the life of the process, so a certificate with a TTL shorter
+    /// than the process outlives its own validity and every client then fails the
+    /// handshake against an expired peer (#2722). Resolving per handshake means a
+    /// rotation is picked up by the very next connection, with no acceptor rebuild
+    /// and no disturbance to connections already established.
+    pub fn build_with_resolver(
+        self,
+        resolver: Arc<dyn rustls::server::ResolvesServerCert>,
+    ) -> Result<ServerConfig> {
+        let _ = default_provider().install_default();
+        let roots = root_store_from_trust_bundle(&self.trust_bundle)?;
+        let client_verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+            .build()
+            .map_err(|e| Error::Certificate(format!("failed to build client verifier: {}", e)))?;
+        Ok(ServerConfig::builder()
+            .with_client_cert_verifier(client_verifier)
+            .with_cert_resolver(resolver))
+    }
+}
+
+/// A server certificate that can be replaced while the listener is running.
+///
+/// Implements [`rustls::server::ResolvesServerCert`], so rustls asks it for the
+/// certificate on every handshake rather than holding one from startup. Swapping
+/// the stored key is therefore all a rotation needs — see
+/// [`TlsServerConfig::build_with_resolver`] for why that matters.
+///
+/// The lock is only ever held long enough to clone an `Arc`, never across a
+/// handshake or any await.
+#[derive(Debug)]
+pub struct RotatingServerCert {
+    current: std::sync::RwLock<Arc<rustls::sign::CertifiedKey>>,
+}
+
+impl RotatingServerCert {
+    /// Builds a resolver that starts out serving `cert`.
+    pub fn new(cert: &WorkloadCertificate) -> Result<Self> {
+        Ok(Self {
+            current: std::sync::RwLock::new(Self::certified_key(cert)?),
+        })
+    }
+
+    /// Serves `cert` from the next handshake onward.
+    ///
+    /// Existing connections keep the certificate they negotiated with, which is
+    /// what makes this safe to call under load: TLS binds the certificate at
+    /// handshake time, so replacing it cannot disturb a session in progress.
+    pub fn replace(&self, cert: &WorkloadCertificate) -> Result<()> {
+        let key = Self::certified_key(cert)?;
+        let mut slot = self
+            .current
+            .write()
+            .map_err(|_| Error::Certificate("rotating certificate lock poisoned".to_string()))?;
+        *slot = key;
+        Ok(())
+    }
+
+    fn certified_key(cert: &WorkloadCertificate) -> Result<Arc<rustls::sign::CertifiedKey>> {
+        let chain = parse_cert_chain(&cert.chain_pem())?;
+        let key = parse_private_key(cert.private_key_pem())?;
+        let signing_key = rustls::crypto::ring::sign::any_supported_type(&key)
+            .map_err(|e| Error::Certificate(format!("unsupported private key: {}", e)))?;
+        Ok(Arc::new(rustls::sign::CertifiedKey::new(
+            chain,
+            signing_key,
+        )))
+    }
+}
+
+impl rustls::server::ResolvesServerCert for RotatingServerCert {
+    fn resolve(
+        &self,
+        _client_hello: rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        // A poisoned lock here would mean a panic while rotating. Failing the
+        // handshake is the right direction: serving is not more important than
+        // serving something known-good.
+        Some(self.current.read().ok()?.clone())
+    }
 }
 
 /// Builder for TLS client configuration.
