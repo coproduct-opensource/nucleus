@@ -157,6 +157,12 @@ pub mod escalation;
 #[cfg(all(feature = "spec", not(kani)))]
 pub mod escalation_proposal;
 pub mod exposure_core;
+/// The task grant a goal compiles to, and its progressive-disclosure
+/// rendering (Goal / Can / Cannot / Limits / Risk).
+///
+/// Requires the `spec` feature.
+#[cfg(feature = "spec")]
+pub mod exposure_mechanism;
 pub mod flow_graph;
 pub mod frame;
 pub mod galois;
@@ -213,11 +219,6 @@ pub mod says_admission;
 /// Requires the `spec` feature; sealing and verifying need `crypto` too.
 #[cfg(all(feature = "spec", not(kani)))]
 pub mod sealed_grant;
-/// The task grant a goal compiles to, and its progressive-disclosure
-/// rendering (Goal / Can / Cannot / Limits / Risk).
-///
-/// Requires the `spec` feature.
-#[cfg(feature = "spec")]
 pub mod task_grant;
 #[cfg(feature = "crypto")]
 pub use receipt_sign::{receipt_hash, sign_receipt, verify_receipt};
