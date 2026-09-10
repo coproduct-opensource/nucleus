@@ -285,6 +285,9 @@ pub fn project(perms: &PermissionLattice, config: &DropoutConfig) -> PermissionL
             consumed_usd: Decimal::ZERO,
             max_input_tokens: u64::MAX,
             max_output_tokens: u64::MAX,
+            // ⊤ = least consumed, matching consumed_usd: ZERO above.
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         }
     };
 
