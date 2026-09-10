@@ -2118,6 +2118,15 @@ mod tests {
         use crate::receipt::EffectOutcome;
         use portcullis_core::{Operation as Op, SinkClass as Sink};
 
+        // The workspace reqwest uses `rustls-no-provider`, so `Client::new()`
+        // panics unless a provider is installed first. Every test that builds
+        // one must do this ITSELF: nextest runs each test in its own process,
+        // so the install in `net_fetch_denied_when_policy_never` is not in
+        // scope here, and this test passed under `cargo test` — which shares a
+        // process — while failing under the runner CI actually uses.
+        // Idempotent; the already-set Err is the expected second answer.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let fx = PolicyEnforced {
             inner: RecordingEffects::new(),
             receipts: Arc::new(crate::receipt::ReceiptLog::new()),

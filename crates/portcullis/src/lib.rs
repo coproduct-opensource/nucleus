@@ -266,8 +266,8 @@ pub use capability::{
 pub use command::{ArgPattern, CommandLattice, CommandPattern};
 #[cfg(feature = "spec")]
 pub use effect_catalog::{
-    EffectCatalog, EffectCatalogError, EffectId, EffectRisk, EffectSpec, HttpMatch,
-    LoweredAuthority,
+    EffectAdmission, EffectCatalog, EffectCatalogError, EffectId, EffectRisk, EffectSpec,
+    HttpMatch, LoweredAuthority,
 };
 #[cfg(all(feature = "spec", not(kani)))]
 pub use escalation_proposal::{

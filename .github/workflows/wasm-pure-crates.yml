@@ -60,6 +60,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       # `paths:` under `merge_group:` parses and is then IGNORED by GitHub, so
       # the scoping declared above holds on pull_request and is silently dropped
       # in the merge queue -- where speculative batches multiply it by the queue
