@@ -49,6 +49,13 @@ risc0-zkvm = { workspace = true, optional = true }
 [dev-dependencies]
 wat = "1"
 
+# `act`'s totality test probes the kernel's admissible `(Operation, SinkClass)`
+# relation through `discharge::test_helpers::try_bundle_for`, which is gated
+# behind the kernel's `test-helpers` feature. Declared here rather than by
+# turning on this crate's own passthrough feature, so the test runs under a
+# plain `cargo test -p portcullis-core` and the production graph stays
+# dependency-free for Aeneas.
+
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
 
@@ -61,3 +68,7 @@ path = "../ck-types"
 
 [dev-dependencies.ck-policy]
 path = "../ck-policy"
+
+[dev-dependencies.nucleus-ifc-kernel]
+path = "../nucleus-ifc-kernel"
+features = ["test-helpers"]
