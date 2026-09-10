@@ -364,6 +364,18 @@ fn collect_sh(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Strin
             {
                 continue;
             }
+            // Skip anything that is its own checkout. A git WORKTREE (`wt-2630/`,
+            // `wt-hoist/`, …) carries a `.git` FILE rather than a directory, so the
+            // dot-dir rule above does not see it and the walk descends into a second
+            // copy of the whole repository. That is not a cosmetic miscount: this
+            // command IS the port backlog, and it reported "164 total, 150 port
+            // candidates" against a real 90 and 83 — a tracker roughly 2x wrong, in
+            // the direction that makes the remaining work look hopeless. Testing for
+            // `.git` catches worktrees, submodules and stray clones by what they are
+            // rather than by a name pattern that the next worktree will not match.
+            if path.join(".git").exists() {
+                continue;
+            }
             collect_sh(root, &path, out)?;
         } else if name.ends_with(".sh")
             && let Ok(rel) = path.strip_prefix(root)
@@ -505,6 +517,31 @@ fn rerun_plan_cmd() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_inventory_does_not_descend_into_another_checkout() {
+        // A git worktree carries a `.git` FILE, so the dot-dir rule misses it and the
+        // walk finds a second copy of every script in the repo. This command is the port
+        // backlog, and it read 164/150 against a real 90/83 until that was fixed.
+        let tmp = std::env::temp_dir().join("xtask-collect-sh-test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let inner = tmp.join("wt-copy");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(tmp.join("mine.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(inner.join("theirs.sh"), "#!/bin/sh\n").unwrap();
+        // Make `inner` look like a worktree: a `.git` file, not a directory.
+        std::fs::write(inner.join(".git"), "gitdir: /elsewhere\n").unwrap();
+
+        let mut out = Vec::new();
+        super::collect_sh(&tmp, &tmp, &mut out).unwrap();
+        out.sort();
+        assert_eq!(
+            out,
+            vec!["mine.sh".to_string()],
+            "a worktree's scripts are not ours"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     use super::parse_member_names;
 
     #[test]
