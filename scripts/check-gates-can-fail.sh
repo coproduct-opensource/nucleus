@@ -159,6 +159,14 @@ perturb_law_mechanism_wired() {
     append_line "$1" 'fn _gate_of_gates() { let _: Option<ProvenanceDAG> = None; }'
 }
 
+perturb_dead_code_ratchet() {
+    # One more tolerated allowance than the crate's ceiling permits. The gate
+    # covers two properties, so it needs a perturbation for each — a probe on
+    # only the manifest half would leave the ratchet half unproven.
+    append_line "$1" '#[allow(dead_code)]'
+    append_line "$1" 'fn _gate_of_gates_unused() {}'
+}
+
 perturb_line_ratchet() {
     # The ratchet caps file length. Push a monitored file past its ceiling.
     for _ in $(seq 1 400); do echo "// gate-of-gates padding" >> "$1"; done
@@ -462,6 +470,8 @@ probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-law-mechanisms.sh "" crates/portcullis/src/lattice.rs \
       "a declared-dead mechanism gains a production call site" perturb_law_mechanism_wired
+probe check-law-mechanisms.sh "" crates/portcullis/src/budget.rs \
+      "one allowance past the crate's dead-code ceiling" perturb_dead_code_ratchet
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
       "a raw Command::new on the agent path"  perturb_mediation
 probe check-sealed-home.sh    "" crates/portcullis-effects/src/lib.rs \

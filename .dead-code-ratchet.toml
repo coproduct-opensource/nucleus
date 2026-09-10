@@ -1,0 +1,126 @@
+# `#[allow(dead_code)]` ratchet — the tolerated dead code, counted.
+#
+# Read by `cargo xtask law-mechanisms` (crates/xtask/src/law_mechanisms.rs),
+# alongside scripts/law-mechanisms-manifest.txt. Same command because it is the
+# same subject: the manifest names mechanisms that are dead ON PURPOSE and
+# tracked; this counts the ones that are dead and merely TOLERATED.
+#
+# WHY IT EXISTS
+#
+# `#[allow(dead_code)]` is how dead code survives `-D warnings`, and nothing in
+# the repo was counting it. The 2026-09-09 audit found ~14 machine-proved or
+# law-bearing mechanisms with no production call site; the attribute is the
+# mechanism by which the next one arrives quietly.
+#
+# THE RULES
+#
+#   * `total_ceiling` bounds the workspace.
+#   * every crate with an allowance needs a `[[crates]]` entry. A crate with
+#     none must STAY at none — otherwise debt moves between crates and the
+#     total hides it. That is why per-crate entries exist and a global number
+#     alone would not do; `debt_cannot_be_laundered_between_crates` pins it.
+#   * a crate that reaches zero loses its entry, so the list shrinks visibly
+#     rather than accumulating satisfied ceilings.
+#
+# Shrink-only. Raising a ceiling is a deliberate edit with a dated note here,
+# the convention `.clippy-ratchet.toml` and scripts/north-star-ledger-ratchet.txt
+# already use.
+#
+# SEEDED 2026-09-10, and the seeding is worth recording because it went wrong
+# first. The instruction was to re-measure with the gate rather than trust the
+# audit's hand-counted 130. The gate's first counter matched any line CONTAINING
+# `#[allow(` and `dead_code`, which scored the attribute where it appears inside
+# string literals — including this gate's own unit-test fixtures — and reported
+# 135. The counter now requires the attribute to START the line, and agrees
+# with the hand count at 130. Re-measuring was still right: it is what surfaced
+# the false-positive class. The first number it produced simply was not.
+#
+# An earlier hand-measurement had also walked the filesystem and swept
+# wt-2630/, an untracked worktree copy with a full crates/ tree, over-counting by
+# 64%. The domain is `git ls-files`, always.
+#
+# Counts every tracked crates/**/*.rs, TESTS INCLUDED — an allowance in a test
+# file is still an allowance, and exempting them would make the number look
+# better by moving debt rather than paying it.
+
+total_ceiling = 130
+
+[[crates]]
+name = "nucleus-node"
+ceiling = 41
+
+[[crates]]
+name = "nucleus-tool-proxy"
+ceiling = 30
+
+[[crates]]
+name = "portcullis"
+ceiling = 10
+
+[[crates]]
+name = "nucleus-audit"
+ceiling = 9
+
+[[crates]]
+name = "nucleus-cli"
+ceiling = 9
+
+[[crates]]
+name = "nucleus-guest-init"
+ceiling = 6
+
+[[crates]]
+name = "nucleus-identity"
+ceiling = 5
+
+[[crates]]
+name = "exposure-playground"
+ceiling = 3
+
+[[crates]]
+name = "nucleus-lineage"
+ceiling = 3
+
+[[crates]]
+name = "nucleus-mcp"
+ceiling = 3
+
+[[crates]]
+name = "nucleus"
+ceiling = 2
+
+[[crates]]
+name = "ctf-mcp"
+ceiling = 1
+
+[[crates]]
+name = "ctf-server"
+ceiling = 1
+
+[[crates]]
+name = "nucleus-client"
+ceiling = 1
+
+[[crates]]
+name = "nucleus-envelope"
+ceiling = 1
+
+[[crates]]
+name = "nucleus-machine"
+ceiling = 1
+
+[[crates]]
+name = "nucleus-oidc-provider"
+ceiling = 1
+
+[[crates]]
+name = "nucleus-provenance"
+ceiling = 1
+
+[[crates]]
+name = "nucleus-verifier-service"
+ceiling = 1
+
+[[crates]]
+name = "portcullis-core"
+ceiling = 1

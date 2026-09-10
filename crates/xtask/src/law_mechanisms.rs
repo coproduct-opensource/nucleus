@@ -60,10 +60,122 @@
 //! this gate did exactly that and over-counted `#[allow(dead_code)]` by 64%.
 
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const MANIFEST: &str = "scripts/law-mechanisms-manifest.txt";
+pub const DEAD_CODE_RATCHET: &str = ".dead-code-ratchet.toml";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The `#[allow(dead_code)]` ratchet
+//
+// The manifest above names mechanisms that are dead ON PURPOSE and tracked. This
+// counts the ones that are dead and merely TOLERATED — the attribute is how dead
+// code survives `-D warnings`, and nothing was counting it.
+//
+// It rides in this command rather than a sixth gate because it has the same
+// subject: a thing declared dead. One command, one shim, one workflow step, one
+// prepush entry — and two probes, because a gate covering two properties needs a
+// perturbation for each.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `.dead-code-ratchet.toml`. `deny_unknown_fields` on both structs for the
+/// reason `.line-ratchet.toml` records: a key nothing reads must not be able to
+/// sit there waiting to be mistaken for one that matters.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeadCodeRatchet {
+    /// Ceiling on the whole workspace.
+    pub total_ceiling: usize,
+    /// Per-crate ceilings. A crate with no entry must have ZERO — otherwise a
+    /// crate can grow while another shrinks and the total hides it.
+    #[serde(default)]
+    pub crates: Vec<CrateCeiling>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrateCeiling {
+    pub name: String,
+    pub ceiling: usize,
+}
+
+/// Count `#[allow(...dead_code...)]` occurrences per crate.
+///
+/// Counts EVERY tracked `crates/**/*.rs`, tests included: an allowance in a test
+/// file is still an allowance, and exempting them would make the number look
+/// better by moving debt rather than paying it.
+pub fn count_dead_code(files: &BTreeMap<String, String>) -> BTreeMap<String, usize> {
+    let mut per_crate: BTreeMap<String, usize> = BTreeMap::new();
+    for (path, src) in files {
+        let Some(krate) = path
+            .strip_prefix("crates/")
+            .and_then(|r| r.split('/').next())
+        else {
+            continue;
+        };
+        let n = src
+            .lines()
+            // Must START the line (after indentation). An attribute does; a
+            // mention inside a string literal does not — which is not
+            // hypothetical: this gate's own unit-test fixtures embed the
+            // attribute in string literals, and a `contains` counter scored
+            // them, inflating xtask from 5 to 9. A gate that counts its own
+            // fixtures is measuring the wrong thing.
+            .filter(|l| l.trim_start().starts_with("#[allow(") && l.contains("dead_code"))
+            .count();
+        if n > 0 {
+            *per_crate.entry(krate.to_string()).or_default() += n;
+        }
+    }
+    per_crate
+}
+
+/// Decide the ratchet. Returns the violation lines; empty means clean.
+pub fn decide_dead_code(
+    ratchet: &DeadCodeRatchet,
+    counts: &BTreeMap<String, usize>,
+) -> Vec<String> {
+    let mut bad = Vec::new();
+    let total: usize = counts.values().sum();
+    if total > ratchet.total_ceiling {
+        bad.push(format!(
+            "total {total} exceeds ceiling {}. This ratchet only shrinks: pay the debt, \
+             or lower nothing and explain in the file why the ceiling rose.",
+            ratchet.total_ceiling
+        ));
+    }
+    let declared: BTreeMap<&str, usize> = ratchet
+        .crates
+        .iter()
+        .map(|c| (c.name.as_str(), c.ceiling))
+        .collect();
+
+    for (krate, n) in counts {
+        match declared.get(krate.as_str()) {
+            Some(&ceiling) if *n > ceiling => {
+                bad.push(format!("{krate}: {n} exceeds its ceiling {ceiling}"))
+            }
+            None => bad.push(format!(
+                "{krate}: {n} allowance(s) but no [[crates]] entry. A crate with none must \
+                 stay at none — otherwise debt moves between crates and the total hides it."
+            )),
+            _ => {}
+        }
+    }
+    // A declared crate that has dropped to zero should lose its entry, so the
+    // list shrinks visibly rather than accumulating satisfied ceilings.
+    for c in &ratchet.crates {
+        if !counts.contains_key(&c.name) {
+            bad.push(format!(
+                "{}: declared with ceiling {} but has no allowances left — drop the entry",
+                c.name, c.ceiling
+            ));
+        }
+    }
+    bad
+}
 
 /// One manifest row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,8 +415,9 @@ pub fn decide(manifest: &Manifest, corpus: &BTreeMap<String, String>) -> Vec<Fin
     findings
 }
 
-/// Read the tracked production corpus. `git ls-files`, never a filesystem walk.
-fn corpus() -> Result<BTreeMap<String, String>> {
+/// Read tracked `crates/**/*.rs` matching `keep`. `git ls-files`, never a
+/// filesystem walk — see the module doc for why that distinction is load-bearing.
+fn tracked(keep: fn(&str) -> bool) -> Result<BTreeMap<String, String>> {
     let out = std::process::Command::new("git")
         .args(["ls-files", "-z", "crates"])
         .output()
@@ -314,7 +427,7 @@ fn corpus() -> Result<BTreeMap<String, String>> {
     }
     let mut corpus = BTreeMap::new();
     for path in String::from_utf8_lossy(&out.stdout).split('\0') {
-        if path.is_empty() || !is_production_path(path) {
+        if path.is_empty() || !keep(path) {
             continue;
         }
         if let Ok(src) = std::fs::read_to_string(path) {
@@ -322,19 +435,33 @@ fn corpus() -> Result<BTreeMap<String, String>> {
         }
     }
     if corpus.is_empty() {
-        bail!("no production Rust files found; the scan would be vacuous");
+        bail!("no tracked Rust files found; the scan would be vacuous");
     }
     Ok(corpus)
+}
+
+/// Every tracked Rust file under `crates/`, tests included.
+fn is_any_crate_rs(path: &str) -> bool {
+    path.starts_with("crates/") && path.ends_with(".rs")
 }
 
 /// Run the gate. Exit code is the caller's (`0` clean, `1` violation).
 pub fn run() -> Result<i32> {
     let text = std::fs::read_to_string(MANIFEST).with_context(|| format!("reading {MANIFEST}"))?;
     let manifest = parse(&text)?;
-    let corpus = corpus()?;
+    let corpus = tracked(is_production_path)?;
 
     let findings = decide(&manifest, &corpus);
-    if findings.is_empty() {
+
+    // Second property, same subject: the tolerated dead code, counted.
+    let ratchet_text = std::fs::read_to_string(DEAD_CODE_RATCHET)
+        .with_context(|| format!("reading {DEAD_CODE_RATCHET}"))?;
+    let ratchet: DeadCodeRatchet =
+        toml::from_str(&ratchet_text).with_context(|| format!("parsing {DEAD_CODE_RATCHET}"))?;
+    let counts = count_dead_code(&tracked(is_any_crate_rs)?);
+    let dead_code_violations = decide_dead_code(&ratchet, &counts);
+
+    if findings.is_empty() && dead_code_violations.is_empty() {
         println!(
             "OK: {} declared-dead mechanism(s) are still dead, across {} production files.",
             manifest.dead_count,
@@ -343,7 +470,25 @@ pub fn run() -> Result<i32> {
         println!(
             "     A row leaving this list means the mechanism was wired or deleted — both good."
         );
+        println!(
+            "OK: {} #[allow(dead_code)] allowance(s) across {} crate(s), all within ceiling.",
+            counts.values().sum::<usize>(),
+            counts.len()
+        );
         return Ok(0);
+    }
+
+    if !dead_code_violations.is_empty() {
+        println!(
+            "FAIL: {} dead-code ratchet violation(s).",
+            dead_code_violations.len()
+        );
+        for v in &dead_code_violations {
+            println!("  {v}");
+        }
+    }
+    if findings.is_empty() {
+        return Ok(1);
     }
 
     println!("FAIL: {} law-mechanism finding(s).", findings.len());
@@ -481,6 +626,108 @@ mod tests {
             ),
         ]);
         assert!(decide(&m, &c).is_empty());
+    }
+
+    // ── the #[allow(dead_code)] ratchet ─────────────────────────────────
+
+    fn ratchet(total: usize, crates: &[(&str, usize)]) -> DeadCodeRatchet {
+        DeadCodeRatchet {
+            total_ceiling: total,
+            crates: crates
+                .iter()
+                .map(|(n, c)| CrateCeiling {
+                    name: (*n).to_string(),
+                    ceiling: *c,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn counts_allowances_per_crate_including_tests() {
+        let files = corpus_of(&[
+            ("crates/a/src/lib.rs", "#[allow(dead_code)]\nfn x() {}"),
+            // A multi-lint allow still allows dead code, and still counts.
+            (
+                "crates/a/src/other.rs",
+                "#[allow(dead_code, unused)]\nfn y() {}",
+            ),
+            // Tests count: exempting them would make the number look better by
+            // moving debt rather than paying it.
+            ("crates/a/tests/it.rs", "#[allow(dead_code)]\nfn z() {}"),
+            ("crates/b/src/lib.rs", "fn clean() {}"),
+        ]);
+        let counts = count_dead_code(&files);
+        assert_eq!(counts.get("a"), Some(&3));
+        assert_eq!(
+            counts.get("b"),
+            None,
+            "a crate with none is absent, not zero"
+        );
+    }
+
+    #[test]
+    fn a_crate_over_its_ceiling_fails() {
+        let counts = [("a".to_string(), 4usize)].into_iter().collect();
+        let bad = decide_dead_code(&ratchet(10, &[("a", 3)]), &counts);
+        assert_eq!(bad.len(), 1);
+        assert!(bad[0].contains("exceeds its ceiling 3"), "{}", bad[0]);
+    }
+
+    /// The reason per-crate ceilings exist at all. Moving five allowances from
+    /// one crate to another leaves the total untouched, so a global-only
+    /// ceiling would call this clean.
+    #[test]
+    fn debt_cannot_be_laundered_between_crates() {
+        let declared = ratchet(10, &[("a", 10), ("b", 0)]);
+        let counts = [("a".to_string(), 5usize), ("b".to_string(), 5usize)]
+            .into_iter()
+            .collect();
+        let bad = decide_dead_code(&declared, &counts);
+        assert!(
+            !bad.is_empty(),
+            "the total is unchanged at 10; only the per-crate rule can see this"
+        );
+        assert!(bad.iter().any(|v| v.starts_with("b: 5")), "{bad:?}");
+    }
+
+    #[test]
+    fn a_crate_with_no_entry_may_not_acquire_allowances() {
+        let counts = [("newcomer".to_string(), 1usize)].into_iter().collect();
+        let bad = decide_dead_code(&ratchet(10, &[]), &counts);
+        assert_eq!(bad.len(), 1);
+        assert!(bad[0].contains("no [[crates]] entry"), "{}", bad[0]);
+    }
+
+    #[test]
+    fn a_crate_that_reached_zero_must_drop_its_entry() {
+        // Otherwise the list accumulates satisfied ceilings and stops shrinking
+        // visibly, which is how a ratchet quietly stops meaning anything.
+        let bad = decide_dead_code(&ratchet(10, &[("done", 3)]), &BTreeMap::new());
+        assert_eq!(bad.len(), 1);
+        assert!(bad[0].contains("drop the entry"), "{}", bad[0]);
+    }
+
+    #[test]
+    fn the_total_ceiling_binds_too() {
+        let counts = [("a".to_string(), 9usize)].into_iter().collect();
+        let bad = decide_dead_code(&ratchet(5, &[("a", 9)]), &counts);
+        assert!(
+            bad.iter().any(|v| v.contains("total 9 exceeds ceiling 5")),
+            "{bad:?}"
+        );
+    }
+
+    #[test]
+    fn the_shipped_ratchet_parses() {
+        // The parser rejects unknown keys, so this also pins that the shipped
+        // file has no field nothing reads — the trap .line-ratchet.toml records.
+        let text = std::fs::read_to_string("../../.dead-code-ratchet.toml")
+            .or_else(|_| std::fs::read_to_string(".dead-code-ratchet.toml"))
+            .expect("the shipped ratchet is readable from the crate or repo root");
+        let r: DeadCodeRatchet = toml::from_str(&text).expect("shipped ratchet parses");
+        assert!(r.total_ceiling > 0);
+        assert!(!r.crates.is_empty());
     }
 
     #[test]
