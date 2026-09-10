@@ -118,6 +118,14 @@ jobs:
       # `spiffe://` SAN, which the X.509-SVID standard requires be rejected.
       - name: One X.509-SVID validator
         run: bash ci/one-svid-validator.sh
+      # The independent implementation behind the open-commerce claim was never
+      # run by anything (#2736) — the only references to it in the repo were
+      # prose. It is the check that found the truncating-payout defect in #2359.
+      # Tree-only: python3 over a checked-in corpus, no cargo. The other half of
+      # #2736, that the corpus matches what the generator emits, is a Rust test
+      # next to the generator.
+      - name: Independent conformance implementation agrees
+        run: bash ci/independent-conformance.sh
       # `wait_for_proxy_health` moved modules and its boot.stage attribute stayed
       # behind, silently reattaching to `serve_grpc` — so the largest span in a
       # pod launch had no instrumentation and 92% of the boot trace was
