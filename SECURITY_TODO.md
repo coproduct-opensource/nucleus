@@ -540,7 +540,8 @@ TODO
 - Remove the parameter. A second, unchecked gate beside a working one is worse than none.
 
 Status
-- OPEN, low severity.
+- OPEN, low severity. **Deferred deliberately (2026-09-10), with the measurement.** 24 `Sandbox` methods take the parameter and each carries a `debug_assert_eq!`; `DecisionToken` appears ~120 times across the workspace (58 in `sandbox.rs`, 19 in `command.rs`, 15 in `portcullis/src/kernel.rs`). All three of `crates/nucleus/src/sandbox.rs` (#2754, #2752), `crates/nucleus/src/command.rs` (#2754) and `crates/nucleus-tool-proxy/src/main.rs` (four open PRs) are contended.
+- A ~120-site mechanical signature change across three contended files, to remove a redundant check whose absence is not exploitable — the owned `Authority` is the gate, and that cutover is complete and recorded as Done — is the wrong trade against a serial merge queue. It lands after the contended PRs drain, not before.
 
 ## 26) Container `work_dir` is bind-mounted read-write with no validation
 
