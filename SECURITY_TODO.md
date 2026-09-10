@@ -394,7 +394,12 @@ DoD (guarantees)
 - Quarantine past the cap; assert a later descendant of the first-quarantined node is still refused. Perturb by restoring the eviction → red.
 
 Status
-- OPEN. Class (a). The fix for this class already exists in the same file, applied to one of two sets.
+- CLOSED (2026-09-10). The eviction is removed and `MAX_QUARANTINED_NODES` deleted rather than `#[allow(dead_code)]`-ed (which would have added to the population item 29 tracks).
+- **The decisive evidence was in the same file.** `maybe_compact` explicitly PRESERVES quarantined nodes — `if self.denied.contains(&id) || self.quarantined.contains(&id) { continue; }`, commented *"they carry security-critical state"*. The same set cannot be must-preserve in one place and disposable in another. That settles it without needing to argue about memory.
+- The `denied` sibling can be capped **because eviction there tombstones the node** (#480), so an evicted entry becomes unreferenceable — fail-closed. Taint has no such move: it must persist in order to be inherited, so a cap on `quarantined` could only ever discard security state. The asymmetry is now written down at the constant.
+- Unbounded growth is not the hazard it appeared: `next_id` is monotonic and never reset, so a stale entry can never falsely taint a new node, and a `NodeId` is 8 bytes — the old ceiling was trading a forgotten taint for 32 KB.
+- Regression test `quarantine_is_not_evicted_past_the_old_ceiling` quarantines 5 001 nodes (under `MAX_GRAPH_NODES` = 10 000, so compaction is not what is being measured) and asserts both that the earliest node is still quarantined and that a descendant created afterwards still inherits it — the consequence that actually bites, since `is_quarantined` resolves descendants by walking ancestry against this set. Perturbation run and recorded: restoring the eviction reds it with "the earliest quarantined node was forgotten"; removing it again greens it.
+- Note for the record: there were already ten quarantine tests in `crates/portcullis/src/flow_graph_tests.rs`. None covered the eviction, which is how it survived.
 
 ## 19) The MCP server's enforcement kernel is permissive when no policy is supplied
 

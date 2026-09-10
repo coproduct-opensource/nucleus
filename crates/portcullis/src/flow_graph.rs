@@ -213,7 +213,9 @@ pub struct FlowDecision {
 }
 
 const MAX_DENIED_NODES: usize = 1024;
-const MAX_QUARANTINED_NODES: usize = 4096;
+// MAX_QUARANTINED_NODES is deliberately gone (SECURITY_TODO #18). `denied` can
+// be capped because eviction TOMBSTONES the node (#480) — fail-closed. Taint
+// cannot: it must persist to be inherited, so a cap could only discard it.
 
 /// Maximum number of slots in the nodes Vec before compaction.
 ///
@@ -308,7 +310,15 @@ pub struct FlowGraph {
     denied: BTreeSet<NodeId>,
     /// Node IDs of explicitly quarantined artifacts.
     /// Descendants inherit quarantine status via causal ancestry traversal.
-    /// Capped at [`MAX_QUARANTINED_NODES`] with oldest-first eviction.
+    ///
+    /// **Not capped, deliberately** (SECURITY_TODO #18). This set used to evict
+    /// oldest-first at a 4096 ceiling, which was wrong twice over: it discarded
+    /// security state that [`FlowGraph::maybe_compact`] goes out of its way to
+    /// PRESERVE ("they carry security-critical state"), and it did not even
+    /// bound the set, because two of the three insertion sites never ran the
+    /// cap. Growth is bounded in practice by the node population, and a
+    /// `NodeId` is 8 bytes; forgetting a taint to save 32 KB is not a trade
+    /// this type gets to make silently.
     quarantined: BTreeSet<NodeId>,
     /// Audit log of compacted nodes, preserving their labels.
     /// Prevents "compaction laundering" — the taint information survives
@@ -1733,14 +1743,23 @@ impl FlowGraph {
         if self.get(node_id).is_none() {
             return false;
         }
-        let inserted = self.quarantined.insert(node_id);
-        // GC: cap the quarantined set to prevent unbounded growth.
-        while self.quarantined.len() > MAX_QUARANTINED_NODES {
-            if let Some(&oldest) = self.quarantined.iter().next() {
-                self.quarantined.remove(&oldest);
-            }
-        }
-        inserted
+        // No cap. The eviction that used to live here (SECURITY_TODO #18) took
+        // the SMALLEST NodeId — the most ancestral, the one whose removal
+        // un-taints the most future descendants — with no tombstone and no
+        // audit record, ten lines above `release_quarantine`, which demands a
+        // principal and a reason for exactly this act.
+        //
+        // It was also ineffective: `quarantined` has three insertion sites
+        // (`observe`, `insert_action`, here) and only this one ran the cap, so
+        // the ceiling it claimed to enforce was never a bound.
+        //
+        // The sibling `denied` set caps with a TOMBSTONE (#480) — it removes
+        // the node so it cannot be referenced as a parent, which is fail-closed.
+        // There is no equivalent for quarantine: taint must persist to be
+        // inherited, so a bound here can only ever discard security state. If
+        // one is genuinely needed, the shape is `IdempotencyLedger`'s
+        // refuse-not-evict (`nucleus-node/src/broker_perform.rs`), not this.
+        self.quarantined.insert(node_id)
     }
 
     /// Release quarantine from a specific node with authorization.
