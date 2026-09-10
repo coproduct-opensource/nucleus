@@ -68,6 +68,8 @@ impl MeshHarness {
                 audience: RP_AUDIENCE.to_string(),
                 allowed_grants: vec![TOKEN_EXCHANGE_GRANT.to_string()],
                 max_token_lifetime_secs: 3600,
+                max_scope: None,
+                scope_requires: None,
             }],
         };
 
@@ -86,6 +88,7 @@ impl MeshHarness {
             issuer_url: Arc::from("https://oidc.nucleus.example/"),
             issuer,
             jti_cache: Arc::new(nucleus_oidc_core::JtiCache::new()),
+            cert_root_pubkey: None,
             federation: Arc::new(FederationRegistry::new(rules)),
             bundle_provider: Arc::new(bundle),
         });

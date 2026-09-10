@@ -24,6 +24,7 @@
 //!      the snapshot they cloned at request entry; reload swaps the
 //!      next snapshot without disrupting current evaluations.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -55,6 +56,56 @@ pub struct FederationRule {
     /// Upper bound on the issued token's lifetime. The token endpoint
     /// clamps to `min(this, OP-global-cap, subject_token_exp - now)`.
     pub max_token_lifetime_secs: u64,
+    /// Scopes this rule admits on the issued token.
+    ///
+    /// The rule already bounds WHICH audience a subject may reach and FOR HOW
+    /// LONG. This bounds WHAT the token may do when it gets there, which is the
+    /// dimension a federated credential was missing: `scope` used to be echoed
+    /// from the request verbatim, so a workload asked for a scope and the OP
+    /// minted it. Nothing downstream enforces on our `scope` today, which made
+    /// it inert rather than dangerous — but it is precisely the claim a relying
+    /// party would key on, and the moment one does, an unbounded scope is an
+    /// unbounded credential.
+    ///
+    /// Three states, spelled the way TOML spells them:
+    ///
+    /// - **absent** — the rule says nothing about scope. A request that asks
+    ///   for one is REFUSED rather than echoed; a request that asks for none is
+    ///   unaffected. Fail-closed on the hazard without breaking any caller that
+    ///   never wanted a scope.
+    /// - **`max_scope = []`** — constrained to nothing: no scope may be
+    ///   requested. Distinct from absent, the way an empty effect surface is
+    ///   distinct from an unmarked one.
+    /// - **`max_scope = ["a", "b"]`** — the requested scope must be a SUBSET.
+    ///   Narrowing only: a request may ask for less and never for more.
+    #[serde(default)]
+    pub max_scope: Option<Vec<String>>,
+    /// Which nucleus effects must back each RP scope this rule admits.
+    ///
+    /// `max_scope` is the OPERATOR's ceiling: what this rule is willing to
+    /// issue. This is the PRINCIPAL's: what the person who approved the pod's
+    /// grant actually delegated. A scope listed here is issued only if the
+    /// presented pod certificate grants every effect named against it.
+    ///
+    /// ```toml
+    /// [rule.scope_requires]
+    /// "logs:read"  = ["aws/read-logs"]
+    /// "logs:write" = ["aws/write-object"]
+    /// ```
+    ///
+    /// The map is a TRANSLATION, and it has to be, because the two vocabularies
+    /// are not the same and neither side gets to rename the other. A relying
+    /// party's scopes are its own (`logs:read`); nucleus's effects are the units
+    /// a person granted (`aws/read-logs`). The rule is the one place that knows
+    /// both, which is also the one place an operator can be asked to state the
+    /// correspondence deliberately rather than have it guessed.
+    ///
+    /// A scope with no entry here is bounded by `max_scope` alone — the rule
+    /// asserts nothing about what backs it. A scope WITH an entry and no
+    /// certificate presented is refused: the rule has said this scope requires
+    /// delegated authority, and none was shown.
+    #[serde(default)]
+    pub scope_requires: Option<BTreeMap<String, Vec<String>>>,
 }
 
 /// The on-disk + in-memory rules document. Wrapper so the TOML root
@@ -158,6 +209,11 @@ pub enum Decision {
     Allow {
         matched_rule_id: String,
         max_lifetime: Duration,
+        /// The rule's scope ceiling — see [`FederationRule::max_scope`].
+        max_scope: Option<Vec<String>>,
+        /// Effects that must back each scope — see
+        /// [`FederationRule::scope_requires`].
+        scope_requires: Option<BTreeMap<String, Vec<String>>>,
     },
     Deny(DenyReason),
 }
@@ -255,6 +311,8 @@ impl FederationRegistry {
                 return Decision::Allow {
                     matched_rule_id: rule.id.clone(),
                     max_lifetime: Duration::from_secs(rule.max_token_lifetime_secs),
+                    max_scope: rule.max_scope.clone(),
+                    scope_requires: rule.scope_requires.clone(),
                 };
             } else {
                 return Decision::Deny(DenyReason::GrantNotAllowed {
@@ -306,6 +364,8 @@ mod tests {
             audience: audience.to_string(),
             allowed_grants: allowed_grants.iter().map(|s| s.to_string()).collect(),
             max_token_lifetime_secs: max_lifetime_secs,
+            max_scope: None,
+            scope_requires: None,
         }
     }
 
@@ -336,6 +396,7 @@ mod tests {
             Decision::Allow {
                 matched_rule_id,
                 max_lifetime,
+                ..
             } => {
                 assert_eq!(matched_rule_id, "r1");
                 assert_eq!(max_lifetime, Duration::from_secs(3600));
