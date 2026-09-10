@@ -244,6 +244,29 @@ An OP with no pinned root refuses every certificate, so a rule using
 is the intended failure direction: a misconfigured OP issues nothing rather than
 issuing something it cannot justify.
 
+#### What the relying party receives
+
+When a certificate was verified, the issued token carries the granted effects:
+
+```json
+{
+  "sub": "spiffe://prod.example.com/ns/agents/sa/coder",
+  "aud": "https://logs.YOUR-DOMAIN.example/v1",
+  "scope": "logs:read",
+  "act": { "sub": "spiffe://prod.example.com/ns/agents/sa/coder" },
+  "urn:nucleus:effects": ["aws/read-inventory", "aws/read-logs"]
+}
+```
+
+An RP that understands nucleus can enforce per-effect from the token alone. One
+that does not ignores a namespaced private claim it has never heard of (RFC 7519
+§4.3), and the `scope` it does understand is already bounded by those effects.
+
+**`urn:nucleus:effects` absent means "not established", never "none".** An
+exchange with no certificate omits the claim rather than asserting an empty
+grant. An RP that read the first as the second would conclude a workload had
+been delegated nothing, when in fact nobody had said either way.
+
 Glob semantics: `*` suffix only (no regex, no anywhere-glob). Audience is exact match. See `crates/nucleus-oidc-provider/src/federation.rs` for the schema.
 
 ### 3b. Validate before deploy

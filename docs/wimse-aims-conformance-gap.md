@@ -29,11 +29,20 @@
 > effects. Both ceilings apply, and the delegation ceiling now survives the
 > boundary.
 >
-> Still open: the certificate travels as a separate `actor_token` rather than
-> being carried inside the issued token, so a relying party that wants to
-> re-check the attenuation itself has to be handed the certificate too. Emitting
-> the granted effects as a namespaced claim would close that, and would let an
-> RP enforce per-effect without understanding nucleus's wire format.
+> The issued token carries `urn:nucleus:effects` — the effects the verified
+> certificate granted — so a relying party can re-check the attenuation from the
+> token alone rather than being handed the certificate as well. Namespaced per
+> RFC 7519 §4.3, so an RP that has never heard of nucleus ignores it. **Absent
+> means "not established", never "none":** an exchange with no certificate omits
+> the claim rather than asserting an empty grant, and an RP must not read the
+> first as the second.
+>
+> So a nucleus-issued federated credential now states three things a plain
+> JWT-SVID does not: who the workload is (`sub`), who is acting for whom
+> (`act`), and what its principal delegated (`urn:nucleus:effects`), bounded by
+> both the operator's rule and that delegation. What is still open is the
+> operational half — the issuer has to be hosted at a stable HTTPS URL before
+> any of it reaches a real relying party.
 **Subject:** `crates/nucleus-lineage/src/id.rs` (`CallSpiffeId`) + `crates/nucleus-lineage/src/local_issuer.rs` (JWT claims)
 **Goal:** Catalog where the current implementation deviates from `draft-klrc-aiagent-auth-01` (AIMS) and `draft-ietf-wimse-identifier-00` (WIMSE Workload Identifier), and produce PR-sized actions for #40 (WIMSE conformance on `CallSpiffeId`) and #34 (`JwtIssuer` claims).
 **Cited drafts** (verified May 2026):

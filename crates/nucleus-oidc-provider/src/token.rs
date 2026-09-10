@@ -577,6 +577,13 @@ pub async fn handler(
             audience: audience.clone(),
             client_id,
             scope: granted_scope.clone(),
+            // The attenuation, carried. An RP that understands nucleus can
+            // enforce per-effect from the token alone rather than being handed
+            // the certificate as well; one that does not ignores a namespaced
+            // claim it has never heard of.
+            effects: cert_effects
+                .as_ref()
+                .map(|e| e.iter().cloned().collect::<Vec<_>>()),
             act,
             kind: Some("token_exchange".to_string()),
         })
@@ -1401,6 +1408,54 @@ mod tests {
         );
         let (status, _) = exchange_full(app, Some("logs:read"), Some(&cert)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Decode a JWT's payload without verifying — the signature is covered
+    /// elsewhere; here the question is only what claims ride on the wire.
+    fn payload_of(jwt: &str) -> serde_json::Value {
+        let part = jwt.split('.').nth(1).expect("a JWT has three parts");
+        let raw = URL_SAFE_NO_PAD
+            .decode(part.as_bytes())
+            .expect("b64 payload");
+        serde_json::from_slice(&raw).expect("json payload")
+    }
+
+    /// The attenuation rides ON the token, so a relying party can re-check it
+    /// without being handed the certificate as well. A namespaced private claim
+    /// (RFC 7519 §4.3) an RP that has never heard of nucleus simply ignores.
+    #[tokio::test]
+    async fn the_issued_token_carries_the_granted_effects() {
+        let (cert, root) = pod_certificate(&["aws/read-logs", "aws/read-inventory"]);
+        let app = app_requiring(
+            ceiling(&["logs:read"]),
+            &[("logs:read", &["aws/read-logs"])],
+            Some(root),
+        );
+        let (status, v) = exchange_full(app, Some("logs:read"), Some(&cert)).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let claims = payload_of(v["access_token"].as_str().expect("access_token"));
+        let effects = claims["urn:nucleus:effects"]
+            .as_array()
+            .unwrap_or_else(|| panic!("effects claim missing: {claims}"));
+        let mut got: Vec<&str> = effects.iter().filter_map(|e| e.as_str()).collect();
+        got.sort_unstable();
+        assert_eq!(got, vec!["aws/read-inventory", "aws/read-logs"]);
+    }
+
+    /// Absent means "not established", never "none". An exchange with no
+    /// certificate must omit the claim rather than assert an empty grant — an
+    /// RP reading the first as the second would conclude a workload had been
+    /// delegated nothing when in fact nobody had said.
+    #[tokio::test]
+    async fn no_certificate_means_no_effects_claim_not_an_empty_one() {
+        let (status, v) =
+            exchange_with_scope(app_with_scope(ceiling(&["plain"])), Some("plain")).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let claims = payload_of(v["access_token"].as_str().expect("access_token"));
+        assert!(
+            claims.get("urn:nucleus:effects").is_none(),
+            "the claim must be absent, not empty: {claims}"
+        );
     }
 
     /// A scope with no `scope_requires` entry is bounded by `max_scope` alone —

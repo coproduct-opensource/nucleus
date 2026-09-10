@@ -85,6 +85,7 @@ fn kat2_minted_access_token_carries_typ_at_jwt() {
             scope: None,
             act: None,
             kind: None,
+            effects: None,
         })
         .unwrap();
 
