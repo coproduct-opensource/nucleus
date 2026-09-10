@@ -508,7 +508,7 @@ fn decode_integer(data: &[u8], pos: &mut usize) -> Result<i64> {
     let mut value: i64 = 0;
     let is_negative = data[*pos] & 0x80 != 0;
     for i in 0..len {
-        value = (value << 8) | (data[*pos + i] as i64);
+        value = (value << 8) | i64::from(data[*pos + i]);
     }
     if is_negative {
         // Sign extend for negative numbers

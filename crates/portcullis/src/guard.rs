@@ -831,8 +831,9 @@ impl ExposureSet {
 
     /// Convert to the corresponding StateRisk level.
     pub fn to_risk(&self) -> StateRisk {
-        let count =
-            self.private_data as u8 + self.untrusted_content as u8 + self.exfil_vector as u8;
+        let count = u8::from(self.private_data)
+            + u8::from(self.untrusted_content)
+            + u8::from(self.exfil_vector);
         match count {
             0 => StateRisk::Safe,
             1 => StateRisk::Low,
@@ -852,7 +853,7 @@ impl ExposureSet {
 
     /// Number of active exposure legs.
     pub fn count(&self) -> u8 {
-        self.private_data as u8 + self.untrusted_content as u8 + self.exfil_vector as u8
+        u8::from(self.private_data) + u8::from(self.untrusted_content) + u8::from(self.exfil_vector)
     }
 
     /// Check if this exposure set is a superset of another.

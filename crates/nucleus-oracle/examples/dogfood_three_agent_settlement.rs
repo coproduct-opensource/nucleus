@@ -42,7 +42,7 @@ fn shapley(n: usize, value: impl Fn(u32) -> u64) -> Vec<u64> {
             }
             let size = s.count_ones() as usize;
             let weight = fact(size) * fact(n - size - 1);
-            let marginal = value(s | (1 << i)).saturating_sub(value(s)) as u128;
+            let marginal = u128::from(value(s | (1 << i)).saturating_sub(value(s)));
             *a += weight * marginal;
         }
     }

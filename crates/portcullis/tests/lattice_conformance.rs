@@ -71,9 +71,9 @@ fn model_has_exfiltration(caps: &CapabilityLattice) -> bool {
 
 /// Reference implementation of `uninhabitable_state_count(c)`: sum of 3 bools
 fn model_uninhabitable_count(caps: &CapabilityLattice) -> u8 {
-    model_has_private_access(caps) as u8
-        + model_has_untrusted_content(caps) as u8
-        + model_has_exfiltration(caps) as u8
+    u8::from(model_has_private_access(caps))
+        + u8::from(model_has_untrusted_content(caps))
+        + u8::from(model_has_exfiltration(caps))
 }
 
 /// Reference implementation of `state_risk_level(c)`: equals uninhabitable_state_count

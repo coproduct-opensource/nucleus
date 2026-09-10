@@ -61,9 +61,15 @@ fn empty_sequence_yields_zero_welfare() {
     let seq: Vec<(u64, u64, u64)> = Vec::new();
     let pigou_sum: u128 = seq
         .iter()
-        .map(|(b, r, e)| effective_minus_pigou_micro(*b, &one_dim_profile(*e), &rates(*r)) as u128)
+        .map(|(b, r, e)| {
+            u128::from(effective_minus_pigou_micro(
+                *b,
+                &one_dim_profile(*e),
+                &rates(*r),
+            ))
+        })
         .sum();
-    let raw_sum: u128 = seq.iter().map(|(b, _, _)| *b as u128).sum();
+    let raw_sum: u128 = seq.iter().map(|(b, _, _)| u128::from(*b)).sum();
     assert_eq!(pigou_sum, 0);
     assert_eq!(raw_sum, 0);
 }
@@ -78,9 +84,15 @@ fn zero_rate_sequence_preserves_raw_sum() {
     ];
     let pigou_sum: u128 = seq
         .iter()
-        .map(|(b, r, e)| effective_minus_pigou_micro(*b, &one_dim_profile(*e), &rates(*r)) as u128)
+        .map(|(b, r, e)| {
+            u128::from(effective_minus_pigou_micro(
+                *b,
+                &one_dim_profile(*e),
+                &rates(*r),
+            ))
+        })
         .sum();
-    let raw_sum: u128 = seq.iter().map(|(b, _, _)| *b as u128).sum();
+    let raw_sum: u128 = seq.iter().map(|(b, _, _)| u128::from(*b)).sum();
     assert_eq!(pigou_sum, raw_sum, "zero-rate must be sum-preserving");
 }
 
@@ -91,9 +103,15 @@ fn nonzero_rate_strictly_decreases_welfare() {
     let seq = [(1_000_000u64, 100u64, 2_000_000u64); 5];
     let pigou_sum: u128 = seq
         .iter()
-        .map(|(b, r, e)| effective_minus_pigou_micro(*b, &one_dim_profile(*e), &rates(*r)) as u128)
+        .map(|(b, r, e)| {
+            u128::from(effective_minus_pigou_micro(
+                *b,
+                &one_dim_profile(*e),
+                &rates(*r),
+            ))
+        })
         .sum();
-    let raw_sum: u128 = seq.iter().map(|(b, _, _)| *b as u128).sum();
+    let raw_sum: u128 = seq.iter().map(|(b, _, _)| u128::from(*b)).sum();
     assert!(
         pigou_sum < raw_sum,
         "positive rate × positive ext must reduce welfare: pigou={pigou_sum} raw={raw_sum}"
@@ -122,10 +140,10 @@ proptest! {
         let pigou_sum: u128 = seq
             .iter()
             .map(|(b, r, e)| {
-                effective_minus_pigou_micro(*b, &one_dim_profile(*e), &rates(*r)) as u128
+                u128::from(effective_minus_pigou_micro(*b, &one_dim_profile(*e), &rates(*r)))
             })
             .sum();
-        let raw_sum: u128 = seq.iter().map(|(b, _, _)| *b as u128).sum();
+        let raw_sum: u128 = seq.iter().map(|(b, _, _)| u128::from(*b)).sum();
         prop_assert!(
             pigou_sum <= raw_sum,
             "Lean F6.1 violated: pigou_sum={pigou_sum} raw_sum={raw_sum}",
@@ -150,14 +168,14 @@ proptest! {
         let low: u128 = seq
             .iter()
             .map(|(b, r, e)| {
-                effective_minus_pigou_micro(*b, &one_dim_profile(*e), &rates(*r)) as u128
+                u128::from(effective_minus_pigou_micro(*b, &one_dim_profile(*e), &rates(*r)))
             })
             .sum();
         let seq_high = [(bid, rate_high, ext); 4];
         let high: u128 = seq_high
             .iter()
             .map(|(b, r, e)| {
-                effective_minus_pigou_micro(*b, &one_dim_profile(*e), &rates(*r)) as u128
+                u128::from(effective_minus_pigou_micro(*b, &one_dim_profile(*e), &rates(*r)))
             })
             .sum();
         prop_assert!(

@@ -47,7 +47,7 @@ fn summary(
     let permille = if exact_total == 0 {
         0
     } else {
-        ((1000u128 * exact_matched as u128) / exact_total as u128) as u32
+        ((1000u128 * u128::from(exact_matched)) / u128::from(exact_total)) as u32
     };
     PortfolioSummary {
         submissions,
@@ -172,7 +172,7 @@ fn merge_large_permille_uses_u128_intermediate() {
     let half = u64::MAX / 2;
     let a = summary(0, 0, 0, half, u64::MAX);
     let m = a.merge(&PortfolioSummary::default());
-    let expected = ((1000u128 * half as u128) / u64::MAX as u128) as u32;
+    let expected = ((1000u128 * u128::from(half)) / u128::from(u64::MAX)) as u32;
     assert_eq!(m.mean_pass_permille, expected);
     assert_eq!(expected, 499);
 }
