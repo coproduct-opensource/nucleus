@@ -219,6 +219,11 @@ pub mod says_admission;
 /// Requires the `spec` feature; sealing and verifying need `crypto` too.
 #[cfg(all(feature = "spec", not(kani)))]
 pub mod sealed_grant;
+/// Requires the `spec` feature: it imports `effect_catalog`, which is itself
+/// `#[cfg(feature = "spec")]`. This gate was dropped when `exposure_mechanism`
+/// was added below, and `spec` is NOT a default feature, so the module then
+/// compiled by default with an unresolvable import.
+#[cfg(feature = "spec")]
 pub mod task_grant;
 #[cfg(feature = "crypto")]
 pub use receipt_sign::{receipt_hash, sign_receipt, verify_receipt};
