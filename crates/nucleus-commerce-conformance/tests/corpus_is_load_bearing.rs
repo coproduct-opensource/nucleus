@@ -172,8 +172,8 @@ fn a_payout_vector_exercises_integer_division_dust() {
 ///
 /// `examples/independent-conformance/vectors.json` is generated output —
 /// `cargo run --example vectors` — committed so a third-party implementation can
-/// read it without a Rust toolchain. Generated output under version control
-/// goes stale silently, and this one went stale invisibly twice over: nothing
+/// read it without a Rust toolchain. Generated output under version control goes
+/// stale silently, and this one went stale invisibly twice over: nothing
 /// regenerated it, and nothing compared it.
 ///
 /// A stale corpus is worse than no corpus. `conform.py` would keep passing while
@@ -184,30 +184,65 @@ fn a_payout_vector_exercises_integer_division_dust() {
 /// This lives here rather than in `ci/` on purpose: it guards the relationship
 /// between `export_vectors()` and one file, so it belongs next to
 /// `export_vectors()`, where a change to the generator sees it fail immediately.
+///
+/// # Why this compares parsed values and not bytes
+///
+/// Byte-identity is not well defined for this artifact. `export_vectors()`
+/// builds `serde_json::Value` maps via `json!`, and `Value`'s map type is chosen
+/// at compile time: `BTreeMap` (sorted keys) normally, `IndexMap` (insertion
+/// order) under `serde_json/preserve_order`. Cedar, via `nucleus-trust-registry`,
+/// unifies that feature ON in full-workspace builds and leaves it OFF in
+/// standalone ones — the same hazard `nucleus-receipt`'s `Cargo.toml` already
+/// documents for its signing bytes, where the answer was RFC 8785 canonical JSON.
+///
+/// So `cargo test -p nucleus-commerce-conformance` and CI's
+/// `cargo test --workspace --all-features` emit the same corpus with different
+/// key order, and a byte comparison fails in exactly one of them. The property
+/// worth gating is that the corpus is the SAME VECTORS, which is what map
+/// equality says — `conform.py` does `json.load` and never sees key order either.
 #[test]
 fn the_checked_in_vectors_are_what_the_generator_emits() {
-    // `examples/vectors.rs` is `println!("{}", export_vectors())`, so the file on
-    // disk is that string plus the newline `println!` adds.
-    let generated = nucleus_commerce_conformance::export_vectors();
-    let checked_in = include_str!("../../../examples/independent-conformance/vectors.json");
+    let generated: serde_json::Value =
+        serde_json::from_str(&nucleus_commerce_conformance::export_vectors())
+            .expect("the generator must emit JSON");
+    let checked_in: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../examples/independent-conformance/vectors.json"
+    ))
+    .expect("the checked-in corpus must be JSON");
 
-    assert_eq!(
-        generated.trim_end(),
-        checked_in.trim_end(),
-        "examples/independent-conformance/vectors.json is stale.\n\
-         Regenerate it:\n  \
-         cargo run -q -p nucleus-commerce-conformance --example vectors \
-         > examples/independent-conformance/vectors.json\n\
-         Do NOT hand-edit it, and do not delete this test to get green — a \
-         third-party implementation is checking itself against that file."
-    );
+    if generated != checked_in {
+        // A raw `assert_eq!` on two 21 KB documents is unreadable, so name what
+        // moved before dumping anything.
+        let names = |v: &serde_json::Value| -> Vec<String> {
+            v["cases"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|c| c["name"].as_str().unwrap_or("?").to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (g, c) = (names(&generated), names(&checked_in));
+        let only_generated: Vec<_> = g.iter().filter(|n| !c.contains(n)).collect();
+        let only_checked_in: Vec<_> = c.iter().filter(|n| !g.contains(n)).collect();
+        panic!(
+            "examples/independent-conformance/vectors.json is stale.\n\
+             cases only in the generator: {only_generated:?}\n\
+             cases only in the file:      {only_checked_in:?}\n\
+             (both empty means a case CHANGED rather than appeared or vanished)\n\
+             Regenerate it:\n  \
+             cargo run -q -p nucleus-commerce-conformance --example vectors \
+             > examples/independent-conformance/vectors.json\n\
+             Do NOT hand-edit it, and do not delete this test to get green — a \
+             third-party implementation is checking itself against that file."
+        );
+    }
 
-    // Non-vacuity: both sides must be a real corpus. A generator that returned
-    // "" against an empty file would satisfy the assert above while proving
-    // nothing, which is the failure shape this whole test exists to catch.
-    let parsed: serde_json::Value =
-        serde_json::from_str(checked_in).expect("the checked-in corpus must be JSON");
-    let cases = parsed["cases"]
+    // Non-vacuity: both sides must be a real corpus. An empty generator against
+    // an empty file would satisfy the equality above while proving nothing,
+    // which is the failure shape this whole test exists to catch.
+    let cases = checked_in["cases"]
         .as_array()
         .expect("the corpus must carry a `cases` array");
     assert!(
