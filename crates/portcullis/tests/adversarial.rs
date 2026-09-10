@@ -5,9 +5,14 @@
 
 #![allow(clippy::field_reassign_with_default)]
 
-use portcullis::{
-    BudgetLattice, CapabilityLevel, CommandLattice, Operation, PathLattice, PermissionLattice,
-};
+// `CapabilityLevel` and `Operation` are imported by the functions that use them,
+// not here. Every use sits inside a `#[cfg(feature = ...)]` block — `testing` for
+// the uninhabitable-state tests, `cel` for the obligation tests — and neither is
+// a default feature, so a top-level import is unused whenever `cargo clippy -p
+// portcullis --all-targets` runs at the crate's own defaults (#2746). A
+// `cfg(any(...))` on the import would work today and break again the moment a
+// third feature grows a use; a local import cannot drift from its use.
+use portcullis::{BudgetLattice, CommandLattice, PathLattice, PermissionLattice};
 use rust_decimal::Decimal;
 use std::path::Path;
 #[cfg(unix)]
@@ -61,6 +66,8 @@ fn uninhabitable_bypass_via_deserialization_rejected() {
 #[test]
 #[cfg(feature = "testing")]
 fn uninhabitable_cannot_be_disabled_through_meet() {
+    use portcullis::{CapabilityLevel, Operation};
+
     // Create permission set with uninhabitable_state constraint enabled
     let mut enabled = PermissionLattice::default();
     enabled.capabilities.read_files = CapabilityLevel::Always;
