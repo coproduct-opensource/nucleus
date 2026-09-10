@@ -18,6 +18,7 @@
   - [Acceptance Tests](architecture/acceptance-tests.md)
 - [Assurance](assurance/formal-methods.md)
   - [Verified Claims](verified-claims.md)
+  - [The Agency Frontier](agency-frontier.md)
   - [Hardening Checklist](assurance/hardening-checklist.md)
   - [CI Assurance](assurance/ci-assurance.md)
 - [RFCs]()

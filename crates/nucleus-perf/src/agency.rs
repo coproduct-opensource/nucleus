@@ -48,6 +48,8 @@ pub(crate) struct Ctx<'a> {
     approvals: Cell<u64>,
     /// A nonce source that is unique per process run.
     seq: Cell<u64>,
+    /// Refusals that were deferrals to a person, not denials of authority.
+    deferrals: Cell<usize>,
 }
 
 impl<'a> Ctx<'a> {
@@ -59,6 +61,7 @@ impl<'a> Ctx<'a> {
             observations: RefCell::new(Vec::new()),
             approvals: Cell::new(0),
             seq: Cell::new(0),
+            deferrals: Cell::new(0),
         }
     }
 
@@ -85,6 +88,13 @@ impl<'a> Ctx<'a> {
         let obs = if ok {
             Observation::new(operation, subject)
         } else {
+            // A `403 approval_required` is a refusal in the observation stream
+            // — nothing happened — but it is a DEFERRAL, not a denial of
+            // authority. Counted apart so the friction figure is not inflated
+            // by the system asking a person exactly as designed.
+            if crate::approval_required_operation(&text).is_some() {
+                self.deferrals.set(self.deferrals.get() + 1);
+            }
             Observation::failed(operation, subject)
         };
         self.observations.borrow_mut().push(obs);
@@ -434,6 +444,7 @@ pub(crate) fn measure(
     println!("\ncontainment (what makes it quotable)");
     let containment = run_tasks(&ctx, CONTAINMENT)?;
 
+    let deferrals = ctx.deferrals.get();
     let observations = ctx.observations.into_inner();
     let risk = risk_of(lattice);
     let usage = usage_from(lattice, risk.clone(), &observations)?;
@@ -456,6 +467,7 @@ pub(crate) fn measure(
             clicks: ctx.approvals.get(),
             denials_within_grant: usage.denials_within_grant(),
             denials_total: usage.denied,
+            deferrals,
             residual_risk: risk.after,
         },
     })

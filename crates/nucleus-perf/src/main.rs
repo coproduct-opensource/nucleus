@@ -166,7 +166,18 @@ fn agency_run(a: AgencyArgs) -> Result<()> {
         .with_context(|| "resolving the spec's policy")?;
 
     let (issuer, creds) =
-        mint_admission(&["read_files", "write_files", "glob_search", "run_bash"])?;
+        // Every operation the suite attempts. `edit_files` is here because
+        // writing over an existing file is an EDIT, not a write, and leaving it
+        // out made `edit-an-existing-file` fail with `DlcAdmissionDenied` — the
+        // harness's own gap reported as a runtime limitation, which is the
+        // failure mode a measurement tool can least afford.
+        mint_admission(&[
+            "read_files",
+            "write_files",
+            "edit_files",
+            "glob_search",
+            "run_bash",
+        ])?;
     set(&mut spec, "/metadata/name", serde_json::json!("agency"));
     set(
         &mut spec,

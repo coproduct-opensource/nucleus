@@ -109,6 +109,16 @@ pub struct AuthorityCost {
     /// Every denial, including those on dimensions nobody granted. The
     /// difference between the two is the boundary working as intended.
     pub denials_total: usize,
+    /// Of the denials, how many were **deferrals to a person** rather than
+    /// refusals — a `403 approval_required` that a grant then satisfied.
+    ///
+    /// Reported separately because a deferral is the system working exactly as
+    /// designed, and folding it into friction makes human-in-the-loop look like
+    /// a defect. `denials_within_grant - deferrals` is the number worth
+    /// driving down; the deferral count is worth driving down too, but by
+    /// lowering C(T), which is a different lever.
+    #[serde(default)]
+    pub deferrals: usize,
     /// The uninhabitable-state grade of the authority that was held.
     pub residual_risk: StateRisk,
 }
@@ -198,6 +208,7 @@ impl AgencyReport {
     pub fn cost_from_usage(
         usage: &UsageReport,
         clicks: u64,
+        deferrals: usize,
         residual_risk: StateRisk,
     ) -> AuthorityCost {
         AuthorityCost {
@@ -206,6 +217,7 @@ impl AgencyReport {
             clicks,
             denials_within_grant: usage.denials_within_grant(),
             denials_total: usage.denied,
+            deferrals,
             residual_risk,
         }
     }
@@ -228,13 +240,15 @@ impl AgencyReport {
         let mut out = format!(
             "agency: {}/{} tasks completed ({rate}) under {} enforcement\n\
              cost:   ρ_effect = {rho} · ρ_dimension = {rho_dim} · C(T) = {} · \
-             {} denial(s) inside the grant of {} total · risk {:?}\n",
+             {} denial(s) inside the grant of {} total, {} of them deferrals to a person \
+             · risk {:?}\n",
             self.completed(),
             self.total(),
             self.enforcement.as_str(),
             self.cost.clicks,
             self.cost.denials_within_grant,
             self.cost.denials_total,
+            self.cost.deferrals,
             self.cost.residual_risk,
         );
         for t in self.tasks.iter().filter(|t| !t.completed) {
@@ -287,6 +301,7 @@ mod tests {
                 clicks: 1,
                 denials_within_grant: 0,
                 denials_total: 2,
+                deferrals: 0,
                 residual_risk: StateRisk::Low,
             },
         }

@@ -14,6 +14,38 @@ const DEFAULT_TOKEN_TTL_SECS: u64 = 300;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// The one name an approval is asked for, granted under, and matched by.
+///
+/// `{Operation:?} {subject}`, and nothing else, anywhere. It has to be one
+/// name because a single human decision crosses several gates on its way
+/// through — the kernel's reference monitor refuses first, the caller posts
+/// that name to `/v1/approve`, and then the sandbox or the command executor
+/// asks in turn. Each gate was internally consistent and they did not agree
+/// with each other:
+///
+/// | gate | what it used to ask for |
+/// |---|---|
+/// | kernel reference monitor | `WriteFiles notes.txt` |
+/// | file sandbox | `write notes.txt` (the *method*, not the operation) |
+/// | command executor | `echo hello` (the raw command, no operation at all) |
+///
+/// So a person approved the name they were shown, the next gate asked for a
+/// different one, and the retry was refused as unapproved. Three vocabularies,
+/// three chances to disagree; #2406 was two of them.
+///
+/// `Operation` is already the vocabulary of the lattice, the certificate, the
+/// receipts and the audit trail — so it is the vocabulary an approval is named
+/// in too. What a gate *does* (open a file, spawn a process) belongs in its
+/// error text, never in the identity of the decision.
+///
+/// The rule is only worth anything if it is applied everywhere, so gates call
+/// this function rather than formatting their own; `both_gates_name_an_approval_the_same_way`
+/// compares the producers against each other.
+#[must_use]
+pub fn approval_key(operation: portcullis::Operation, subject: &str) -> String {
+    format!("{operation:?} {subject}")
+}
+
 /// A request for human approval for a specific operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
