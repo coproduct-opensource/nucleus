@@ -13727,13 +13727,16 @@ name = "xtask"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "ci-fly-runner",
  "ci-spec",
  "ck-kernel",
  "ck-types",
  "clap",
+ "hex",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.11.0",
  "syn 2.0.117",
  "toml 1.1.5+spec-1.1.0",
 ]

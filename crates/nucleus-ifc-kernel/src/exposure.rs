@@ -88,7 +88,7 @@ impl ExposureSet {
 
     /// Number of active exposure legs (0..=3).
     pub fn count(&self) -> u8 {
-        self.private_data as u8 + self.untrusted_content as u8 + self.exfil_vector as u8
+        u8::from(self.private_data) + u8::from(self.untrusted_content) + u8::from(self.exfil_vector)
     }
 }
 
