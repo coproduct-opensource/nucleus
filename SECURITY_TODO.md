@@ -334,3 +334,255 @@ TODO
 
 Status
 - CLOSED (2026-09-04). Every Ed25519 re-verify in the workspace is `verify_strict`; `ring` remains for signing only. The only production `ring::signature::ED25519` references left are inside test modules, which the gate strips.
+
+---
+
+# Architectural audit, 2026-09-09 (items 17–30)
+
+A 20-question audit of whether nucleus's operational concepts are instances of shared
+algebraic objects. The headline was not the algebra: **most of the unifications are
+already built and machine-proven, and are not wired to the enforcement path.** Items
+17–30 are the concrete defects that fell out. Each was checked against this file,
+`docs/production-delta.md`, `docs/north-star.md`, `docs/PROOFS.md`,
+`docs/architecture/mediated-set.md` and `docs/architecture/threat-model.md` before
+being filed; where a prior entry covers adjacent ground it is named.
+
+Four recurring classes, filed here so the class outlives the instances:
+**(a)** silent eviction without a tombstone; **(b)** `&self` on an operation whose name
+says it consumes; **(c)** proven-but-unwired; **(d)** two tables that must agree, and drift.
+
+## 17) The isolation backend is chosen by an environment variable, not by the driver
+
+Deficiency
+- `isolation_backend()` selects the `BackendCapability` from `NUCLEUS_ISOLATION_BACKEND`, defaulting to `FIRECRACKER` — which declares the **full** lattice. A node run with `--driver container` or `--driver local` therefore clamps every pod against Firecracker's capabilities and writes `isolation.coproduct.one/backend=firecracker` into the spec labels, so `EnforcedIsolation::is_faithful()` returns true and the certificate the node mints carries that posture.
+- Root cause is a missing arm, not a wrong design: the env var was introduced for the Apple-VZ case (its own doc comment says so) and `Container` was never given one. `DriverKind::Container` is **not** feature-gated (`crates/nucleus-node/Cargo.toml`, `default = []`; only `Local` sits behind `local-driver`), so this is reachable in a default production build.
+Refs: `crates/nucleus-node/src/driver.rs:62`, `crates/nucleus-node/src/driver.rs:96`, `crates/portcullis/src/enforcement.rs:41`
+
+Impact
+- This is precisely the failure `crates/portcullis/src/enforcement.rs:17-20` was written to prevent — *"it never gets a token that claims `Filtered` while the platform silently allows the whole internet through NAT"* — reintroduced one call frame above it.
+
+TODO
+- Take the resolved `&DriverKind`; add `BackendCapability::CONTAINER` and `::LOCAL`, declared at the **minimum** and raised per dimension only with a citation to the code that enforces it.
+- `require_isolation`'s `Unenforceable` arm is already written and already property-tested, and is currently unreachable. It is what turns a silent gap into a refusal.
+
+DoD (guarantees)
+- With the env var unset and `--driver container`, a pod requesting `Airgapped` is refused, and the refusal names the dimension. Perturb by restoring the env-var lookup → red.
+- Blast radius measured first: every stock profile sets `minimum_isolation: None` (`crates/portcullis/src/profile.rs:440`), so few pods should be affected. Confirm by counting.
+
+Status
+- OPEN. Class (d).
+
+## 18) Quarantine eviction discards taint without a tombstone, and bounds nothing
+
+Deficiency
+- `FlowGraph::quarantine` caps the set at `MAX_QUARANTINED_NODES` and, on overflow, removes the **smallest** `NodeId` — the most ancestral — with no tombstone and no audit record. Ten lines below, `release_quarantine` requires a principal and a reason and appends to `quarantine_releases`. The sibling `denied` set received exactly this fix under **#480**, which tombstones the evicted node so `get()` returns `None`.
+- Two compounding facts: there are **three** insertion sites (`:644`, `:1015`, `:1736`) and the cap is applied at only one, so `MAX_QUARANTINED_NODES` does not actually bound the set; and after an ancestor is evicted, *future* nodes descended from it are not marked at insert time and `is_quarantined`'s ancestry walk no longer finds it, so they escape taint. Already-materialised descendants keep their own entries.
+Refs: `crates/portcullis/src/flow_graph.rs:1736-1743` (the defect), `:1019-1028` (the #480 fix on the sibling set), `:1789` (`is_quarantined`), `:216` (`MAX_QUARANTINED_NODES`)
+
+Impact
+- An adversary who can drive enough quarantine events can cause subsequent descendants of a chosen tainted node to be admitted.
+
+TODO
+- Remove the eviction: it bounds nothing while silently discarding taint. If a bound is genuinely wanted, adopt the refuse-not-evict discipline of `IdempotencyLedger` (`crates/nucleus-node/src/broker_perform.rs:311`) at all three sites — a full quarantine set stops accepting work rather than forgetting it.
+
+DoD (guarantees)
+- Quarantine past the cap; assert a later descendant of the first-quarantined node is still refused. Perturb by restoring the eviction → red.
+
+Status
+- OPEN. Class (a). The fix for this class already exists in the same file, applied to one of two sets.
+
+## 19) The MCP server's enforcement kernel is permissive when no policy is supplied
+
+Deficiency
+- Run without `--spec`, `nucleus-mcp` builds its kernel as `policy.clone().unwrap_or_else(PermissionLattice::permissive)`. This is not merely permissive tool *advertisement* — it is the enforcement lattice.
+- `build_tool_defs` compounds it: six `unwrap_or(true)` (read / write / run / web_fetch / glob / grep) beside two `unwrap_or(false)` (web_search / manage_pods) — two contradictory absence semantics in one 30-line function — and `allow_run` folds in `git_commit`, `git_push` and `create_pr`. A test, `test_build_tool_defs_permissive`, pins the fail-open.
+Refs: `crates/nucleus-mcp/src/main.rs:700` (primary), `:817-850`, `:1475` (the test that pins it)
+
+Impact
+- Absence of configuration grants shell, write and push rather than denying them.
+
+TODO
+- Refuse to start without a policy, or default to `restrictive()`. Fix both sites. Delete the test that pins the fail-open.
+
+DoD (guarantees)
+- Starting without `--spec` either refuses or yields a kernel that denies `run_bash`. Perturb by restoring `unwrap_or_else(permissive)` → red.
+
+Status
+- OPEN. Class: fail-open absence. Adjacent to item 5 (ν not applied to constructed permissions) but a distinct site.
+
+## 20) `record_tokens` records nothing
+
+Deficiency
+- `BudgetLattice::record_tokens(&self, input, output)` is `input <= self.max_input_tokens && output <= self.max_output_tokens` — a pure ceiling comparison on an operation whose name says it consumes. Token budgets are therefore never consumed, within a session or across children.
+- This is the same defect `LedgerCore` was built to close for USD, two struct fields above the budget the ledger guards. Its own non-vacuity test (`crates/portcullis/src/budget_ledger.rs:369`) mocks `delegate_to` for exactly this shape.
+Refs: `crates/portcullis/src/budget.rs:191`; sole callers `crates/portcullis/tests/owasp_llm_gauntlet.rs:1436,1440,1444`
+
+Impact
+- N children of a parent with a 100k-token budget may each spend 100k.
+
+TODO
+- Split the pure lattice value from a ledger that consumes; `record_tokens` takes `&mut self`, accumulates, and refuses on exhaustion. The sole callers sit in the **required** `OWASP LLM Security Gauntlet` context and must be updated in the same commit.
+
+DoD (guarantees)
+- Two children of a 100k-token parent cannot each spend 100k.
+
+Status
+- OPEN. Class (b). Twelve further axes are declared affine but are physically linear — see item 30.
+
+## 21) A distillation may raise integrity with no signature, token, or expiry
+
+Deficiency
+- `validate_distillation` raises integrity `Adversarial → Untrusted` and lowers confidentiality, gated only on token count, schema, and a regex/entropy filter. Every other declassification in the tree requires a signed, expiring, replay-bound `DeclassificationToken` (`crates/portcullis-core/src/declassify.rs`), verified against trusted governor keys and fail-closed when none are configured.
+Refs: `crates/portcullis-core/src/quarantine.rs:420-478`
+
+Impact
+- An authority-raising transition with no unforgeable evidence behind it.
+
+TODO
+- Require a `DeclassificationToken`; fail closed when the governor key set is unprovisioned, matching `kernel/declassify_authority.rs`.
+
+Status
+- OPEN.
+
+## 22) `SpiffeTraceChain::verify()` performs no cryptographic check
+
+Deficiency
+- `verify()` checks lattice monotonicity and expiry only — no signature, no hash link, no parent binding. `attestation` is stored and only ever tested for non-emptiness. Its own doc says the attestation should cover `{parent_spiffe_id}|{child_spiffe_id}|{drand_round}|{permissions_hash}`; `canonical_attestation_message` instead emits `{spiffe_id}|{drand_round}|{permissions.description}` — no parent, and it signs a free-text metadata field. That function has zero callers.
+- The live path builds the chain **entirely from client-supplied JSON** (`deserialize_trace_chain`) and hands it to the escalation pipeline.
+Refs: `crates/portcullis/src/escalation.rs:255-271`, `:163-171`, `:91`; `crates/nucleus-tool-proxy/src/main.rs:4320-4377`
+
+Impact
+- Worse than dead: the object is chain-shaped, so a reader assumes it is authenticated. `EscalationGrant`, the value the pipeline mints, has no consumer either — see item 29.
+
+TODO
+- Delete both ends. If the surface is wanted later, it must be built with the binding its own doc describes.
+
+DoD (guarantees)
+- Extend `scripts/check-failclosed-verifiers.sh` (existing required context *Fail-closed verifier gate*) to cover `escalation.rs` — this is precisely that gate's subject: a verifier returning `Ok` without checking.
+
+Status
+- OPEN.
+
+## 23) Four `SinkClass` variants are structurally unreachable, and the doc says the opposite
+
+Deficiency
+- `operation_allowed_for_sink` is exhaustive per `Operation` with `matches!` arms; the union of those arms covers 15 of 19 `SinkClass` variants. `SecretRead`, `MCPWrite`, `EmailSend` and `TicketWrite` cannot be discharged for any operation, regardless of policy — yet the enterprise policy, manifest admission and the Lean flow proofs all reason about them.
+- Its doc comment states it *"returns `true` (permissive) for combinations not explicitly restricted, so adding new `Operation` or `SinkClass` variants does not break existing callers"*. The code does the opposite: a new `SinkClass` silently becomes unreachable.
+Refs: `crates/nucleus-ifc-kernel/src/discharge.rs:1300-1331`
+
+TODO
+- Correct the doc to match the code, and add a test that every `SinkClass` is reachable from at least one `Operation` or is listed unreachable-with-a-reason — the `documented_inventory_equals_the_enum` shape (`crates/nucleus-ifc-kernel/src/egress_channel.rs:366`).
+
+Status
+- OPEN. Class (d).
+
+## 24) `GitPush` has two different required integrity levels
+
+Deficiency
+- `SinkClass::required_integrity` says `GitPush` requires `IntegLevel::Trusted`; `sink_required_integrity` says `IntegLevel::Untrusted`. `required_authority` and `sink_required_authority` disagree the same way (`Suggestive` vs `Directive`), and `sink_max_confidentiality` / `sink_max_conf_for` cap different sink sets, neither a subset of the other.
+- These are hand-maintained tables for the same 19 sink classes with no parity check. Ten further tables classify operations into exfil/private/untrusted legs and disagree four ways about whether `WriteFiles` is an exfiltration vector.
+Refs: `crates/nucleus-ifc-kernel/src/ifc_ops.rs:346`, `:325`; `crates/portcullis-core/src/flow_algebra.rs:172`, `:182`, `:200`; `crates/portcullis/src/exposure_core.rs:155`
+
+Impact
+- Which table is consulted decides whether a tainted session may push. Reconciling them is a semantic decision, not a refactor: one direction loosens a live gate, the other tightens it.
+
+TODO
+- One decider. Delete one definition and have the other read from it — not a parity test between two copies.
+
+Status
+- OPEN. Class (d). Requires an owner call on which value is correct.
+
+## 25) The vestigial `DecisionToken` parameter is checked only in debug builds
+
+Deficiency
+- `Sandbox` methods take both an owned `Authority` and a `&DecisionToken`, and assert their agreement with `debug_assert_eq!`, which is absent in release.
+
+Impact
+- **LOW, and lower than it first appears.** The real gate is the `Authority`-by-value cutover, which is complete and recorded as Done: all 22 `DecisionToken`-taking `Sandbox` methods require an owned `Authority` and spend it against the operation they declare (`docs/architecture/mediated-set.md:16`, `docs/production-delta.md:48`). The `&DecisionToken` is a leftover from before that cutover. This item is cleanup, not a security hole — filed so the severity is on the record rather than inferred from the `debug_assert`.
+Refs: `crates/nucleus/src/sandbox.rs:330`, `:347` and siblings
+
+TODO
+- Remove the parameter. A second, unchecked gate beside a working one is worse than none.
+
+Status
+- OPEN, low severity.
+
+## 26) Container `work_dir` is bind-mounted read-write with no validation
+
+Deficiency
+- `spawn_container_pod` bind-mounts `spec.spec.work_dir` to `/workspace:rw`, excluding only `""` and `/`. `work_dir` is a free `PathBuf` defaulting to `"."`, is not validated at admission, and is not clamped by `create_sub_pod`. `/etc`, `/root`, `/home` and any ancestor of the pod directory are all accepted.
+Refs: `crates/nucleus-node/src/main.rs:1896-1899`, `crates/nucleus-spec/src/lib.rs:90`
+
+Impact
+- On the container driver, an arbitrary host directory chosen by the pod author is readable and writable from inside the sandbox.
+
+TODO
+- A newtype that refuses the root, `$HOME`, and any ancestor of the pod dir; validate at admission against the pod's `PathLattice`. Extend `scripts/check-sealed-home.sh` (existing required context) rather than adding one.
+
+Status
+- OPEN. Distinct from item 7 (string-based path sandboxing *within* `PathLattice`) and from the unicode/symlink row in `docs/production-delta.md:42`, which concern traversal inside a sandbox root rather than the choice of root.
+
+## 27) The default container pod runs with no reference monitor
+
+Deficiency
+- `spawn_container_pod` reads `nucleus.io/proxy-mode` and treats absence as `false`, running the image entrypoint directly. In that mode the tool-proxy binary never starts, so the kernel, IFC monitor, audit trail and every startup refusal it performs are absent — while `spec.spec.credentials.env` is still injected.
+- The label is read in exactly one place and **set nowhere in the repo** — no test, template or doc sets it to `"true"` — so the mediated container path has never been exercised.
+- `create_sub_pod` clamps `policy`, strips `workload` and clamps `credentialed_egress`, but passes `metadata.labels` through untouched, so an agent holding `ManagePods` can set `proxy-mode`, `nucleus.io/container-image`, `nucleus.io/network: host` and `enable_pod_mgmt` on a child.
+Refs: `crates/nucleus-node/src/main.rs:1805-1818`, `:1903-1907`, `:1629-1635`; `crates/nucleus-tool-proxy/src/pod_mgmt.rs:135-215`
+
+Impact
+- Two defects: an unmediated default, and an agent-reachable channel to select it for a child.
+
+TODO
+- **Do not simply flip the default** — that activates a path with no coverage. Make the weakness an explicit operator choice: refuse to launch a container pod unless the operator opts in, reusing the `check_enforcement_is_honest` refusal shape. Separately, boot-test proxy mode and flip the default once it has coverage.
+- Allowlist the label keys a child may set; drop the rest, logged, as `strip_requested_workload` already does.
+
+Status
+- OPEN. Adjacent to, but not covered by, the container-driver credential exposure already recorded in `docs/production-delta.md:15`.
+
+## 28) No production kernel knows its own isolation
+
+Deficiency
+- `Kernel::with_isolation` and `from_certificate_with_isolation` have **zero production callers** — the only two call sites are inside the `#[cfg(test)]` module of `crates/nucleus/src/command.rs`. Every production kernel is constructed via `Kernel::new` / `from_certificate`, which hardcode `IsolationLattice::localhost()`.
+- Consequently the isolation-minimum gate and the defence-in-depth airgap gate have never fired in production: the first is skipped because every stock profile leaves `minimum_isolation: None`, and the second compares against `Host` forever.
+Refs: `crates/portcullis/src/kernel.rs:588-590`, `:1011`, `:1135`, `:1207`; live construction sites `crates/nucleus-tool-proxy/src/main.rs:1877-1878`, `crates/nucleus-tool-proxy/src/mcp.rs:166`, `crates/nucleus-mcp/src/main.rs:701`
+
+TODO
+- Propagate `EnforcedIsolation` into the guest and construct the kernel with it; remove the implicit `localhost()` so omission is unrepresentable.
+- Ship behind one release of shadow logging — two gates that have never denied anything start denying. Precedent: `gatehouse-shadow.yml`.
+
+Status
+- OPEN. Class (c).
+
+## 29) Machine-proven mechanisms with no production call site
+
+Deficiency
+- Verified zero production call sites: `ProductLattice<A,B>`; `MeetCap`/`Attenuation` (Lean-proven, and its only lattice instance `DelegationConstraints` is documented as dead); `ConstraintNucleus`; `Kernel::with_isolation` (item 28); `PathLattice::with_work_dir`; `ProvenanceDAG`; `EscalationGrant`; `Kernel::set_policy_rules`; `TimeLattice::extend`; the whole `portcullis-profiles` crate (0 dependents); `crates/nucleus-policy` (contains only `Cargo.toml`, and is not a workspace member). `nucleus-receipt`'s `Session.parent_chain` is `vec![]` at every construction site including its own doc example.
+- `dropout.rs` and `permissive.rs` are unwired **and** fail-open if wired: `PermissiveExecutor::execute` runs the closure at the ceiling and reports the gap afterwards; `project()` fills dropped dimensions with ⊤.
+- Sharpest instance: `crates/portcullis/tests/{attack_landscape,owasp_llm_gauntlet,adversarial}.rs` each construct a `PathLattice::with_work_dir(...)` and prove path-traversal containment. All 11 callers are tests. The adversarial suite proves a property of a configuration production never builds.
+Refs: as listed; `crates/portcullis-core/src/delegation.rs:263-266` for the self-documented dead type
+
+Impact
+- The class is already recognised here: `docs/north-star.md` demoted clause C9 because "the attested-cert producer is dead-code with its result discarded", and `scripts/check-extracted-callsites.sh` (C8) gates it for Aeneas predicates — *"a predicate proven about a function nobody calls is a proof about dead code."* What is missing is the general case.
+
+TODO
+- Case-by-case wire-or-delete, default delete. Generalise the C8 manifest to name the **law** as well as the predicate, and add a class for "declared mechanism with no live call site" on a shrink-only pin. Companion: a `#[allow(dead_code)]` ratchet — 130 occurrences over 792 tracked `.rs` files (41 `nucleus-node`, 28 `nucleus-tool-proxy`, 10 `portcullis`).
+- Every such gate must derive its file domain from `git ls-files`, not a filesystem walk: the repo root contains `wt-2630/`, an untracked worktree copy with a full `crates/` tree, and a naive walk counts it. A first pass at this measurement did exactly that and over-reported by 64%.
+
+Status
+- OPEN. Class (c).
+
+## 30) One canonical name, two signing preimages; and the conservation gap
+
+Deficiency
+- Two functions named `canonical_sth_bytes`: `crates/nucleus-verifier-service/src/signing.rs:140` emits 72 bytes prefixed with `nucleus-verifier-sth/v1`; `crates/nucleus-lineage/src/checkpoint.rs:139` emits 48 bytes with **no domain separator**, and its doc comment rationalises the omission. Both are live. A witness key used for both logs is a cross-protocol signature-confusion hazard.
+- Wider: ~40 canonicalization functions in 7 mutually incompatible encoding families, and 5 byte layouts for "signed tree head".
+- Conservation: 20 linear resource quantities, of which 1 (`LedgerCore`) has a machine-checked conservation proof; 12 further axes are declared affine but are physically linear (2 token budgets — item 20; 8 `ck-types::BudgetBounds` fields; `max_parallel_tasks`; `BudgetLattice::charge`, which keeps a second unreconciled account of the same dollars).
+Refs: `crates/nucleus-lineage/src/checkpoint.rs:139`, `crates/nucleus-lineage/src/cosign.rs:161`, `crates/nucleus-verifier-service/src/signing.rs:140`, `crates/ck-types/src/manifest.rs:223-232`
+
+TODO
+- Do not invent a third scheme. `cosign.rs:194` can already sign `signed_note::checkpoint_signed_bytes`, which is domain-separated by its `origin` string; make that the default and dual-accept on verify for one release. `Checkpoint` has no version field, so the migration must be dual-accept rather than versioned.
+- Conservation generalisation (`LedgerCore<Unit>`) is deferred to the Tier-3 ADR; item 20 is the one instance fixed now.
+
+Status
+- OPEN.
