@@ -309,7 +309,7 @@ pub use lattice::{
     DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,
 };
 pub use modal::{CapabilityModal, EscalationPath, EscalationStep, ModalContext, ModalPermissions};
-pub use path::{PathDenial, PathLattice};
+pub use path::{PathDenial, PathLattice, AGENT_HARNESS_CONFIG};
 pub use permissive::{
     ExecutionDenied, PermissiveExecution, PermissiveExecutionResult, PermissiveExecutor,
     PermissiveExecutorBuilder,
