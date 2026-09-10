@@ -1,12 +1,29 @@
 name: CI metrics (OpenTelemetry)
 
 # Every 15 minutes: push the GitHub side of CI throughput — per-job queue
-# wait and duration, completions by conclusion, merge-queue depth — to the
-# OpenTelemetry collector on the self-hosted cluster (k8s/ci-metrics), where
-# the actions-runner-controller listeners' runner-side metrics already land.
-# `cargo xtask ci-otel` (crates/xtask/src/ci_otel.rs) does the pull and the
-# OTLP/HTTP export. Runs only on the self-hosted pool: the collector's
-# in-cluster address is not reachable from a hosted runner.
+# wait and duration, completions by conclusion, merge-queue depth — to an
+# OpenTelemetry collector over OTLP/HTTP. `cargo xtask ci-otel`
+# (crates/xtask/src/ci_otel.rs) does the pull and the export.
+#
+# The collector this pointed at — `otel-collector.ci-metrics.svc.cluster.local`
+# on the pci-k3s cluster (k8s/ci-metrics) — stopped at the Fly cutover on
+# 2026-09-09T06:42Z and was then deleted. Every run since failed on
+# `curl: (6) Could not resolve host`, six of them, while the PULL half worked
+# perfectly each time (the last one collected 147 job series and read a
+# merge-queue depth of 9 before the export failed). So the endpoint is no
+# longer written here: it is the repository variable CI_OTEL_ENDPOINT, and
+# with it unset the job says so and passes rather than reddening every two
+# hours for an address that no longer resolves.
+#
+# The old in-cluster address is why this used to demand the self-hosted pool.
+# A variable can name a reachable endpoint from anywhere, so reachability is
+# the operator's business now and the runner-environment check is gone.
+#
+# To send these to gatehouse, note that gatehouse-controld has no OTLP ingest
+# today: `GET /v1/{tenant}/metrics` SERVES Prometheus text it computes from its
+# own store (log size, queue length, paused, refutations, the 7-day roll-up hit
+# ratio) and accepts no pushes. Pointing this at gatehouse means adding an
+# ingest route there first, then setting CI_OTEL_ENDPOINT to its base URL.
 
 on:
   schedule:
@@ -32,13 +49,17 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Only meaningful on the self-hosted pool
+      - name: Is a collector named?
         id: where
         env:
-          RUNNER_ENV: ${{ runner.environment }}
+          ENDPOINT: ${{ vars.CI_OTEL_ENDPOINT }}
         run: |
-          if [ "$RUNNER_ENV" = "self-hosted" ]; then echo "run=true" >> "$GITHUB_OUTPUT";
-          else echo "run=false" >> "$GITHUB_OUTPUT"; echo "hosted runner: the in-cluster collector is unreachable — nothing to do"; fi
+          if [ -n "$ENDPOINT" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CI_OTEL_ENDPOINT is not set: there is no collector to export to (see the header of this workflow)"
+          fi
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         if: ${{ steps.where.outputs.run == 'true' }}
         with:
@@ -48,5 +69,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SINCE: ${{ inputs.since || '15' }}
-          OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.ci-metrics.svc.cluster.local:4318
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.CI_OTEL_ENDPOINT }}
         run: cargo xtask ci-otel --since "$SINCE"
