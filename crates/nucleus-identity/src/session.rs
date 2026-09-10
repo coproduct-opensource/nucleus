@@ -245,7 +245,7 @@ impl SessionId {
             bytes[11] = ((millis >> 32) & 0xff) as u8;
             bytes[12] = ((millis >> 40) & 0xff) as u8;
             // XOR with process ID for additional entropy
-            let pid = std::process::id() as u64;
+            let pid = u64::from(std::process::id());
             bytes[13] = (pid & 0xff) as u8;
             bytes[14] = ((pid >> 8) & 0xff) as u8;
             bytes[15] = ((pid >> 16) & 0xff) as u8;
@@ -300,12 +300,12 @@ impl SessionId {
             return None;
         }
 
-        let millis = ((self.0[0] as u64) << 40)
-            | ((self.0[1] as u64) << 32)
-            | ((self.0[2] as u64) << 24)
-            | ((self.0[3] as u64) << 16)
-            | ((self.0[4] as u64) << 8)
-            | (self.0[5] as u64);
+        let millis = (u64::from(self.0[0]) << 40)
+            | (u64::from(self.0[1]) << 32)
+            | (u64::from(self.0[2]) << 24)
+            | (u64::from(self.0[3]) << 16)
+            | (u64::from(self.0[4]) << 8)
+            | u64::from(self.0[5]);
 
         Some(millis)
     }

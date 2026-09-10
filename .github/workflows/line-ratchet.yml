@@ -21,7 +21,10 @@ jobs:
   check:
     name: Check line ceiling
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    # 15, matching every other job that runs `cargo run -p xtask` (ci-assurance,
+    # ck-admit): the gate is milliseconds of work behind a cargo build of the
+    # xtask tree, and 5 was sized for a shell script that needed no toolchain.
+    timeout-minutes: 15
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,16 +66,22 @@ jobs:
           # class, same fix, as clippy-ratchet.yml's ratchet-down job (#2417):
           # a control that only watches the first of several entries is not
           # watching the others at all.
-          ENTRIES=$(awk '
-              /^\[\[files\]\]/ { infile = 1; path = ""; ceiling = ""; target = ""; step = ""; next }
-              /^\[/ && !/^\[\[files\]\]/ { infile = 0 }
-              infile && /^path[ \t]*=/    { gsub(/.*= *"|"/, ""); path = $0 }
-              infile && /^ceiling[ \t]*=/ { gsub(/.*= */, ""); ceiling = $0 }
-              infile && /^target[ \t]*=/  { gsub(/.*= */, ""); target = $0 }
-              infile && /^step[ \t]*=/    { gsub(/.*= */, ""); step = $0
-                                             if (path != "" && ceiling != "" && step != "")
-                                               print path, ceiling, target, step }
-          ' "$RATCHET_FILE")
+          # ONE parser, shared with the enforcing gate.
+          #
+          # This job used to carry its own awk program over the same file, and
+          # the check carried another. They read overlapping but DIFFERENT field
+          # sets -- the check never read `step`, this job never read
+          # `default_ceiling` -- with nothing holding them in agreement. That is
+          # the `head -1` bug with more steps: two readers of one declaration
+          # drifting apart silently. nucleus already treats that shape as worth
+          # its own gate for workflow path predicates
+          # (ci/merge-group-scope-parity.sh) and had no analogue here.
+          #
+          # `cargo xtask line-ratchet --entries` is now the only parser. It
+          # rejects an unknown key and a missing field, so a field nothing reads
+          # cannot sit in this file waiting to be mistaken for one that matters
+          # -- which is exactly what `[ratchet] ceiling` was doing.
+          ENTRIES=$(cargo run -q -p xtask -- line-ratchet --entries)
 
           if [[ -z "$ENTRIES" ]]; then
             echo "ERROR: could not parse any [[files]] entry from $RATCHET_FILE"

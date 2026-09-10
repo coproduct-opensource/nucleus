@@ -75,7 +75,7 @@ impl Rational {
     /// kernel-side micro-USD value without precision loss.
     pub fn from_micro_usd(micro: u64) -> Self {
         Self {
-            num: micro as i128,
+            num: i128::from(micro),
             // SAFETY: 1_000_000 is non-zero.
             den: NonZeroU64::new(1_000_000).expect("1_000_000 is nonzero"),
         }
@@ -85,11 +85,11 @@ impl Rational {
     /// a new `Rational`; original is unchanged. O(log min(|num|, den)).
     pub fn reduce(&self) -> Self {
         let abs_num = self.num.unsigned_abs();
-        let g = gcd_u128(abs_num, self.den.get() as u128);
+        let g = gcd_u128(abs_num, u128::from(self.den.get()));
         if g == 0 || g == 1 {
             return *self;
         }
-        let new_den_u64 = (self.den.get() as u128 / g) as u64;
+        let new_den_u64 = (u128::from(self.den.get()) / g) as u64;
         // SAFETY: g divides den.get() so the quotient is at least 1.
         let new_den = NonZeroU64::new(new_den_u64)
             .expect("reduced denominator is at least 1 because g divides den");
@@ -109,8 +109,8 @@ impl Rational {
     /// monotone projection so the ordering is preserved at the
     /// saturation boundary.
     pub fn cmp_cross(&self, other: &Self) -> Ordering {
-        let lhs = self.num.saturating_mul(other.den.get() as i128);
-        let rhs = other.num.saturating_mul(self.den.get() as i128);
+        let lhs = self.num.saturating_mul(i128::from(other.den.get()));
+        let rhs = other.num.saturating_mul(i128::from(self.den.get()));
         lhs.cmp(&rhs)
     }
 }
