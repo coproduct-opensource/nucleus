@@ -92,6 +92,8 @@ fn arb_budget_lattice() -> impl Strategy<Value = BudgetLattice> {
                 consumed_usd: Decimal::from(consumed.min(max_cost)),
                 max_input_tokens: max_input,
                 max_output_tokens: max_output,
+                consumed_input_tokens: 0,
+                consumed_output_tokens: 0,
             },
         )
 }

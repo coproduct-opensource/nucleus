@@ -121,6 +121,8 @@ pub fn compile(input: CompileInput<'_>) -> Result<TaskGrant, CompileError> {
         consumed_usd: Decimal::ZERO,
         max_input_tokens: input.ceiling.budget.max_input_tokens,
         max_output_tokens: input.ceiling.budget.max_output_tokens,
+        consumed_input_tokens: 0,
+        consumed_output_tokens: 0,
     };
     let time = match input.limits.duration_hours {
         Some(h) => TimeLattice::hours(i64::from(h)),
