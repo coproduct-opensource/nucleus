@@ -888,6 +888,10 @@ impl NucleusMcpServer {
         }
 
         let state = self.state.clone();
+        // The graph this transport actually writes. `observe_flow` records into
+        // `self.flow_graph`, and every other preflight on this path reads it;
+        // the closure below is `move` and would otherwise only have `state`.
+        let flow_graph = self.flow_graph.clone();
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(move || -> Result<String, String> {
                 let sandbox_root = state.runtime.sandbox().root_path();
@@ -970,7 +974,16 @@ impl NucleusMcpServer {
                         // `blocking_lock` rather than `.await`: this loop runs
                         // inside `block_in_place`, which exists precisely to allow
                         // blocking calls off the async executor.
-                        let flow = state.flow_graph.blocking_lock();
+                        //
+                        // `flow_graph`, NOT `state.flow_graph`. This is the one
+                        // site on the MCP path that read the latter, and under
+                        // `--mcp` no HTTP handler ever runs, so that graph is
+                        // permanently empty and `NoAdversarialAncestry` below was
+                        // vacuous — grep was the only MCP effect whose taint check
+                        // could not fire. Same class as the Phase 4.5 re-home in
+                        // `declassify.rs`: "the graph the live egress verdict reads
+                        // — not the kernel's separate, never-populated one".
+                        let flow = flow_graph.blocking_lock();
                         let r = crate::run_gate::preflight_grep_fs(
                             verified_scope,
                             ceiling,
@@ -1377,6 +1390,60 @@ mod tests {
     // The `preflight_runbash` scope tests build `TokenScope`s directly; its home
     // crate import is test-only now that the mint helper moved to `run_gate`.
     use nucleus_provenance_memory::TokenScope;
+
+    // ── the graph grep actually consults ────────────────────────────────
+
+    /// `grep` was the one MCP effect whose taint check could not fire.
+    ///
+    /// `NucleusMcpServer` keeps the transport's own per-session `flow_graph`,
+    /// and `observe_flow` records into it. Five of the six preflights on this
+    /// path locked that graph; the per-file preflight inside `grep` locked
+    /// `state.flow_graph` instead. Under `--mcp`, `main` returns before
+    /// `Router::new()`, so no HTTP handler ever runs and `AppState`'s graph
+    /// stays empty for the life of the process — making the
+    /// `NoAdversarialAncestry` obligation in `preflight_grep_fs` vacuous.
+    ///
+    /// This is the same class `declassify.rs` records fixing in Phase 4.5:
+    /// a scope landing on "the kernel's separate, never-populated
+    /// `flow_graph`" rather than the one the live verdict reads.
+    ///
+    /// A behavioural test would need a full `AppState`, which
+    /// `tests/memory_ifc_e2e.rs` documents avoiding because it "needs a
+    /// sandbox/runtime". So this pins the property syntactically, with a
+    /// non-vacuity assertion so it cannot pass by the preflight being deleted.
+    #[test]
+    fn grep_consults_the_graph_this_transport_writes() {
+        let src = include_str!("mcp.rs");
+        let handler = src
+            .split("async fn grep(")
+            .nth(1)
+            .expect("the grep handler must exist");
+        // Stop at the next `#[tool …]` so this reads only grep's own body.
+        let body = &handler[..handler.find("\n    #[tool").unwrap_or(handler.len())];
+        // Comments stripped first. The fix's own explanatory comment names the
+        // wrong handle in order to say "not this one", and the first version of
+        // this test failed on that prose — the same false positive
+        // `.dead-code-ratchet.toml` records its counter hitting inside string
+        // literals, "including the gate's own test fixtures".
+        let code: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            !code.contains("state.flow_graph"),
+            "grep's per-file preflight must read the graph `observe_flow` writes \
+             (`self.flow_graph`, captured as `flow_graph`), not `AppState`'s — \
+             under --mcp the latter is never written, so the taint check is vacuous"
+        );
+        assert!(
+            code.contains("flow_graph.blocking_lock()"),
+            "non-vacuity: grep must still lock a flow graph and run the per-file \
+             preflight. Deleting the preflight would satisfy the assertion above \
+             while removing the check entirely"
+        );
+    }
 
     // ── build_action_term coverage ──────────────────────────────────────
 
