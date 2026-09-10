@@ -37,6 +37,21 @@ struct Cli {
 enum Command {
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
+    /// Line-count ratchet, split by what decides the verdict.
+    ///
+    /// The declaration half is decided by `.line-ratchet.toml` alone and would give
+    /// the same answer against an empty checkout; the count half needs the tree. Both
+    /// historical defects of this gate lived in the declaration half, because a shell
+    /// script has `awk` and `head -1` where this has a parser.
+    LineRatchet {
+        /// Exit non-zero on a count violation. A malformed declaration fails either way.
+        #[arg(long)]
+        strict: bool,
+        /// Emit the parsed `[[files]]` entries as JSON and exit, so the post-merge
+        /// ratchet workflow can share this parser instead of hand-rolling a second one.
+        #[arg(long)]
+        entries: bool,
+    },
     /// Every source Kani harness must have a CI lane or a named documented exception.
     KaniCoverage,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
@@ -179,6 +194,7 @@ mod ci_otel;
 mod ci_spec;
 mod ci_timings;
 mod kani_coverage;
+mod line_ratchet;
 mod rerun_plan;
 mod scoreboard;
 
@@ -194,6 +210,13 @@ fn main() -> Result<()> {
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
+        Command::LineRatchet { strict, entries } => {
+            if entries {
+                line_ratchet::entries_json()
+            } else {
+                line_ratchet::check(strict)
+            }
+        }
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
             CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
