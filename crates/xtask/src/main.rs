@@ -37,6 +37,15 @@ struct Cli {
 enum Command {
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
+    /// The two pins naming gatehouse must agree: `.gatehouse/pipeline.writ`'s import
+    /// digest must be the SHA-256 of `prelude/ci.writ` at `gatehouse-plan.yml`'s
+    /// `GATEHOUSE_REF`. Decided from declarations alone; reads no source tree.
+    GatehousePin {
+        /// A checkout of `coproduct-private/gatehouse`, which must be AT the pinned ref.
+        /// Without it only the two nucleus-side declarations can be read.
+        #[arg(long)]
+        gatehouse: Option<std::path::PathBuf>,
+    },
     /// Line-count ratchet, split by what decides the verdict.
     ///
     /// The declaration half is decided by `.line-ratchet.toml` alone and would give
@@ -193,6 +202,7 @@ enum CiSpecCmd {
 mod ci_otel;
 mod ci_spec;
 mod ci_timings;
+mod gatehouse_pin;
 mod kani_coverage;
 mod line_ratchet;
 mod rerun_plan;
@@ -210,6 +220,9 @@ fn main() -> Result<()> {
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
+        Command::GatehousePin { gatehouse } => {
+            gatehouse_pin::check(&std::env::current_dir()?, gatehouse)
+        }
         Command::LineRatchet { strict, entries } => {
             if entries {
                 line_ratchet::entries_json()

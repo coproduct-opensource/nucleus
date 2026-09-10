@@ -71,6 +71,17 @@ jobs:
           # gate exists to notice. The GitHub-side commands carry their own denial where they
           # need it (the clippy gate passes `-D warnings` on its own command line).
           rustflags: ''
+      - name: The two pins agree (before spending three minutes on a build)
+        if: steps.tok.outputs.present == 'true'
+        # GATEHOUSE_REF and the plan's import digest are one fact written twice, and the
+        # env comment above has always SAID they must match. Saying it is not checking it:
+        # bumping either alone makes `gate plan check` fail with `no library for import`
+        # about three minutes into the cargo build below. This decides the same thing from
+        # the three declarations in milliseconds, and it also refuses a gatehouse checkout
+        # that is not AT the pinned ref -- reading the mismatch from the wrong side is how
+        # a working pin gets mistaken for a stale one (gatehouse FINDINGS.md F-21).
+        run: cargo run -q -p xtask -- gatehouse-pin --gatehouse gatehouse
+
       - name: gate plan check .gatehouse/pipeline.writ
         if: steps.tok.outputs.present == 'true'
         run: |
