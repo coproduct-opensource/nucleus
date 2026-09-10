@@ -471,20 +471,25 @@ Status
 
 Deficiency
 - `verify()` checks lattice monotonicity and expiry only — no signature, no hash link, no parent binding. `attestation` is stored and only ever tested for non-emptiness. Its own doc says the attestation should cover `{parent_spiffe_id}|{child_spiffe_id}|{drand_round}|{permissions_hash}`; `canonical_attestation_message` instead emits `{spiffe_id}|{drand_round}|{permissions.description}` — no parent, and it signs a free-text metadata field. That function has zero callers.
-- The live path builds the chain **entirely from client-supplied JSON** (`deserialize_trace_chain`) and hands it to the escalation pipeline.
+- **Correction (2026-09-10).** This entry originally said the live path builds the chain *"entirely from client-supplied JSON"*. That is wrong and overstated the exposure. `deserialize_trace_chain` does not serde-deserialize a `SpiffeTraceChain`; it reconstructs one server-side through `new_root`/`SpiffeTraceLink::new`, derives each link's permissions from `preset_to_permissions(&link.preset)` (a server-side table, so a caller cannot supply a lattice), and explicitly discards the client's chain id with a `security_event = "client_id_ignored"` warning.
+- What a caller *does* control is the **shape and the identities**: how many links, and what `spiffe_id` each one claims. Since nothing authenticates those strings, a caller may name any principal as an approver. That is the real defect, and it stands.
 Refs: `crates/portcullis/src/escalation.rs:255-271`, `:163-171`, `:91`; `crates/nucleus-tool-proxy/src/main.rs:4320-4377`
 
 Impact
 - Worse than dead: the object is chain-shaped, so a reader assumes it is authenticated. `EscalationGrant`, the value the pipeline mints, has no consumer either — see item 29.
 
 TODO
-- Delete both ends. If the surface is wanted later, it must be built with the binding its own doc describes.
+- [DONE] Stop the name from lying: `verify()` → `is_structurally_valid()`, with a doc that states what it does *not* check.
+- [OPEN — owner decision] Either implement a real attestation scheme, or make the escalation approval path explicitly fail closed. Both are behaviour changes to a user-facing endpoint, so neither is being taken unilaterally.
 
 DoD (guarantees)
-- Extend `scripts/check-failclosed-verifiers.sh` (existing required context *Fail-closed verifier gate*) to cover `escalation.rs` — this is precisely that gate's subject: a verifier returning `Ok` without checking.
+- ~~Extend `scripts/check-failclosed-verifiers.sh`~~ — **does not fit.** That gate's subject is narrow and specific: a `#[cfg(not(target_os = "..."))]`-gated function whose name says it verifies and whose body returns success. This is a different class (a verifier that checks the *wrong thing*, on every platform), and stretching the gate to cover it would blur the rule it exists to enforce.
 
 Status
-- OPEN.
+- **PARTIAL (2026-09-10).** The misnaming is fixed; the missing cryptography is not, and is an owner decision.
+- `verify()` is now `is_structurally_valid()` at all six call sites (`escalation.rs` ×4, `nucleus-tool-proxy/src/escalate.rs:116`, `exposure-playground/src/app.rs:558`), with a doc listing exactly what it does not do: no signature check, no parent binding, no authentication of the `spiffe_id` strings. Three call sites read the old name as "this delegation chain is genuine".
+- `structural_validity_is_not_authentication` pins the gap as a **fact rather than prose**: a chain naming an arbitrary approver, carrying no attestation, is structurally valid. If someone later adds real signature checking, that test REDS — which is the intent, since closing the gap must also close this entry rather than silently rewording it. Non-vacuity: the same test asserts a permission-widening hop IS refused, so the structural half is real. Perturbation run: removing the monotonicity check reds it with "monotonicity IS enforced — the structural half of the check is real".
+- Why the remaining half is an owner call: making `is_structurally_valid` require a verified attestation would disable the `/v1/escalate` approval path, because nothing in the tree produces one — `canonical_attestation_message` has zero callers and emits the wrong message anyway. That is defensible (the path is already inert: `EscalationGrant` is minted at `escalate.rs:177` and consumed by nobody) but it is an outward-facing behaviour change to a shipped endpoint.
 
 ## 23) Four `SinkClass` variants are structurally unreachable, and the doc says the opposite
 
