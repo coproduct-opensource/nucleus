@@ -33,10 +33,13 @@
 //! loudly rather than silently going stale.
 //!
 //! This says nothing about the gates that are *not* identity-dependent. Those
-//! were plain wiring gaps. `validation::` is now run here too — see the
-//! validator section below and `http_and_stdio_validate_the_same_inputs`.
-//! `effect_gate::admit_http_recorded` (ADR 0004's per-effect method+host+path
-//! gate) still has zero references on this path and is tracked separately.
+//! were plain wiring gaps, and both are now closed: `validation::` runs here
+//! too (the validator section below, pinned by
+//! `http_and_stdio_validate_the_same_inputs`), and so does
+//! `effect_gate::admit_http_recorded`, ADR 0004's per-effect
+//! method+host+path gate (pinned by `http_and_stdio_web_fetch_run_the_same_gates`).
+//! Neither needed an identity: the effect gate is a boot-time object built
+//! from the pod's own certificate, not from a per-request one.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1375,6 +1378,31 @@ impl NucleusMcpServer {
             }
         };
 
+        // Per-effect gate (ADR 0004): when the pod's certificate carries an
+        // effect dimension, a granted effect must vouch for method + host +
+        // path, not merely the host — a grant of `read-ci-logs` must not open
+        // a pull request. Refused here, before any discharge is minted, which
+        // is where the HTTP handler refuses it too.
+        //
+        // Nothing about this gate is per-request. `EffectGate::new` reads the
+        // pod's own certificate once, at `AppState` construction; the object
+        // in `self.state` is the same one the HTTP handler consults. That is
+        // what separates it from the per-request attenuation the module header
+        // declines: this needed an argument threaded, not an identity this
+        // transport does not have.
+        //
+        // `admit_http_recorded` records the refusal on the sink itself, with
+        // `policy_rule = EFFECT_NOT_GRANTED`, so this arm must not record a
+        // second verdict for the same call.
+        if let Err(e) = self.state.effect_gate.admit_http_recorded(
+            req_method.as_str(),
+            &parsed_url,
+            self.sink.as_ref(),
+            ActorIdentity::StdioGuest,
+        ) {
+            return Ok(err_result(e));
+        }
+
         // ─── Sealed discharge gate (B5, parity with the MCP RunBash handler) ──
         // PRECONDITION for the sealed `NetEffect::fetch`: mint the sealed
         // 8-witness `DischargedBundle` via `preflight_web`. Fail closed — a
@@ -1616,11 +1644,7 @@ mod tests {
     /// records its counter hitting inside string literals.
     fn validation_calls(body: &str) -> std::collections::BTreeSet<String> {
         const PREFIX: &str = "validation::";
-        let code: String = body
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let code = code_of(body);
 
         let mut found = std::collections::BTreeSet::new();
         let mut rest = code.as_str();
@@ -1638,13 +1662,27 @@ mod tests {
         found
     }
 
-    /// Take the body of `head`, stopping at `terminator`.
-    fn body_after<'a>(src: &'a str, head: &str, terminator: &str) -> &'a str {
+    /// Take the body of `head`, stopping at whichever `terminator` comes first.
+    fn body_after<'a>(src: &'a str, head: &str, terminators: &[&str]) -> &'a str {
         let start = src
             .split(head)
             .nth(1)
             .unwrap_or_else(|| panic!("`{head}` must exist"));
-        &start[..start.find(terminator).unwrap_or(start.len())]
+        let end = terminators
+            .iter()
+            .filter_map(|t| start.find(t))
+            .min()
+            .unwrap_or(start.len());
+        &start[..end]
+    }
+
+    /// `body` with `//` lines removed, so a comment naming a gate does not
+    /// count as a call to it.
+    fn code_of(body: &str) -> String {
+        body.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The two transports must refuse the same inputs.
@@ -1668,8 +1706,8 @@ mod tests {
             ("async fn glob_search(", "fn validate_glob_params("),
             ("async fn grep_search(", "fn validate_grep_params("),
         ] {
-            let http_calls = validation_calls(body_after(http, http_fn, "\nasync fn "));
-            let stdio_calls = validation_calls(body_after(stdio, stdio_fn, "\n}"));
+            let http_calls = validation_calls(body_after(http, http_fn, &["\nasync fn "]));
+            let stdio_calls = validation_calls(body_after(stdio, stdio_fn, &["\n}"]));
 
             assert!(
                 !http_calls.is_empty(),
@@ -1815,6 +1853,86 @@ mod tests {
             validate_grep_params(&bad_include).is_err(),
             "`include` is a pattern, and gets the pattern checks"
         );
+    }
+
+    /// `web_fetch` must run the same policy gates on both transports, in the
+    /// order that matters.
+    ///
+    /// The set below is the egress policy: what the URL may be, what host it
+    /// may reach, what the allowlist says, what a granted effect vouches for,
+    /// where a redirect may land, and what content type may come back.
+    /// `admit_http_recorded` was the one this transport did not run, so a pod
+    /// whose certificate granted `github/read-ci-logs` could `POST` a pull
+    /// request over stdio and be refused only by the host allowlist — the
+    /// exact widening ADR 0004 milestone 6 exists to close.
+    ///
+    /// The ordering assertion is the security property, not a style rule:
+    /// "refused before any discharge is minted". A gate that runs after
+    /// `preflight_web` refuses a request whose authorization witness has
+    /// already been built.
+    #[test]
+    fn http_and_stdio_web_fetch_run_the_same_gates() {
+        const GATES: [&str; 6] = [
+            "validate_url",
+            "check_dns_allowlist",
+            "check_url_allowlist",
+            "admit_http_recorded",
+            "check_redirect_target",
+            "check_mime_type",
+        ];
+
+        let http = code_of(body_after(
+            include_str!("main.rs"),
+            "async fn web_fetch(",
+            &["\nasync fn "],
+        ));
+        let stdio = code_of(body_after(
+            include_str!("mcp.rs"),
+            "async fn web_fetch(",
+            &["\n    #[tool", "\n}"],
+        ));
+
+        // Both slices must stop at their own handler. A terminator that stops
+        // matching would widen the slice to the rest of the file and make
+        // every `contains` below trivially true.
+        for (transport, body) in [("HTTP", &http), ("stdio", &stdio)] {
+            assert!(
+                !body.contains("async fn "),
+                "{transport}: the `web_fetch` slice ran past its own handler, so \
+                 the assertions below would be reading someone else's gates"
+            );
+            assert!(
+                body.contains("Operation::WebFetch"),
+                "{transport}: the `web_fetch` slice does not look like `web_fetch`"
+            );
+        }
+
+        for gate in GATES {
+            assert!(
+                http.contains(gate),
+                "non-vacuity: the HTTP `web_fetch` must still run `{gate}`. If it \
+                 stopped, the stdio assertion below would be measuring nothing"
+            );
+            assert!(
+                stdio.contains(gate),
+                "the stdio `web_fetch` must run `{gate}` too — it reaches the same \
+                 wire through the same `NetEffect::fetch`"
+            );
+        }
+
+        for (transport, body) in [("HTTP", &http), ("stdio", &stdio)] {
+            let admit = body
+                .find("admit_http_recorded")
+                .expect("asserted present above");
+            let discharge = body
+                .find("preflight_web")
+                .unwrap_or_else(|| panic!("{transport} `web_fetch` must mint a discharge bundle"));
+            assert!(
+                admit < discharge,
+                "{transport}: the per-effect gate must refuse before the discharge \
+                 bundle is minted, not after"
+            );
+        }
     }
 
     /// `web_fetch` was the one tool already covered, indirectly.
