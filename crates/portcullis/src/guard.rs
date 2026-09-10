@@ -31,6 +31,9 @@ use crate::capability::{IncompatibilityConstraint, Operation, StateRisk};
 use crate::graded::Graded;
 use crate::heyting::permission_gap;
 use crate::PermissionLattice;
+use portcullis_core::act::Act;
+#[cfg(test)]
+use portcullis_core::act::{Endpoint, FilePath, ReadSink};
 
 /// A proof type that permission was checked and granted.
 ///
@@ -177,8 +180,14 @@ impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for GuardError<E>
 /// in the previous two-method protocol.
 #[must_use = "CheckProof must be consumed by execute_and_record()"]
 pub struct CheckProof {
-    /// The operation that was checked and approved.
-    operation: Operation,
+    /// The act that was checked and approved — verb *and* target.
+    ///
+    /// Previously this was a bare `Operation`. A proof that says only
+    /// "a read was approved" cannot answer "a read of what?", so the target
+    /// travelled beside the proof as a separate string and the audit record
+    /// was built from that string rather than from the decision. Nothing
+    /// connected the two.
+    act: Act,
     /// Exposure state at check time, for optimistic TOCTOU detection.
     exposure_snapshot: ExposureSet,
     /// Prevents external construction.
@@ -186,16 +195,33 @@ pub struct CheckProof {
 }
 
 impl CheckProof {
+    /// The act this proof authorizes.
+    #[must_use]
+    pub fn act(&self) -> &Act {
+        &self.act
+    }
+
     /// Get the operation this proof authorizes.
+    #[must_use]
     pub fn operation(&self) -> Operation {
-        self.operation
+        self.act.operation()
+    }
+
+    /// The subject this proof authorizes, rendered for the audit record.
+    ///
+    /// An audit record built from this names what was actually decided on.
+    /// One built from a string carried alongside names whatever the caller
+    /// happened to pass, which need not be the same thing.
+    #[must_use]
+    pub fn subject(&self) -> String {
+        self.act.subject()
     }
 }
 
 impl std::fmt::Debug for CheckProof {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CheckProof")
-            .field("operation", &self.operation)
+            .field("act", &self.act)
             .finish_non_exhaustive()
     }
 }
@@ -469,9 +495,72 @@ pub trait ToolCallGuard: Send + Sync {
     /// Check if a tool call is permitted given the current session state.
     ///
     /// Returns a [`CheckProof`] token on success. The token captures a
-    /// snapshot of the exposure state for optimistic TOCTOU detection.
-    /// The token MUST be consumed by [`execute_and_record`].
-    fn check(&self, operation: Operation) -> Result<CheckProof, GuardError>;
+    /// snapshot of the exposure state for optimistic TOCTOU detection, and
+    /// the [`Act`] it authorizes. The token MUST be consumed by
+    /// [`execute_and_record`].
+    ///
+    /// # Why this takes an `Act` and not an `Operation`
+    ///
+    /// It used to take the verb alone. Every caller already had the target in
+    /// scope — a path, a URL, an argv — and every caller threaded it into the
+    /// *audit record* while the *decision* never saw it. A guard cannot refuse
+    /// a read of `/etc/shadow` in particular if all it is told is that a read
+    /// is happening.
+    ///
+    /// Taking an `Act` makes naming the target a condition of compiling, and
+    /// [`CheckProof::subject`] then gives the audit record a string derived
+    /// from the decision rather than one carried beside it.
+    ///
+    /// # The verb alone no longer type-checks
+    ///
+    /// ```compile_fail
+    /// use portcullis::{
+    ///     Act, FilePath, GradedExposureGuard, Operation, PermissionLattice, ReadSink,
+    ///     ToolCallGuard,
+    /// };
+    /// let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+    /// let act = Act::Read {
+    ///     path: FilePath::new("/workspace/main.rs"),
+    ///     sink: ReadSink::AuditLog,
+    /// };
+    /// let proof = guard.check(&act).expect("a read is allowed by default");
+    /// assert_eq!(proof.subject(), "/workspace/main.rs");
+    ///
+    /// // Everything above this line is proven to compile by the block below.
+    /// // This is the only line that can be failing, and it fails because the
+    /// // verb is not an act:
+    /// let _ = guard.check(Operation::ReadFiles);
+    /// ```
+    ///
+    /// The block below is that one character-for-character, minus the last
+    /// statement, and it must pass:
+    ///
+    /// ```
+    /// use portcullis::{
+    ///     Act, FilePath, GradedExposureGuard, Operation, PermissionLattice, ReadSink,
+    ///     ToolCallGuard,
+    /// };
+    /// let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+    /// let act = Act::Read {
+    ///     path: FilePath::new("/workspace/main.rs"),
+    ///     sink: ReadSink::AuditLog,
+    /// };
+    /// let proof = guard.check(&act).expect("a read is allowed by default");
+    /// assert_eq!(proof.subject(), "/workspace/main.rs");
+    /// # let _ = Operation::ReadFiles;
+    /// ```
+    ///
+    /// The pairing is what makes the first block mean something. A
+    /// `compile_fail` doctest that fails for some other reason — a renamed
+    /// import, a wrong arity, a typo — asserts nothing, and this repository
+    /// already has one of those (`Executor::run_args`, which fails on arity).
+    ///
+    /// Pinning the error code is the obvious fix and does not work here:
+    /// rustdoc accepts `compile_fail,E0308` but does not enforce the code on
+    /// stable. Measured, not assumed — breaking an import in the block above
+    /// so it fails with `E0432` instead left the doctest passing. So the
+    /// shared preamble does the work: break it and the second block reds.
+    fn check(&self, act: &Act) -> Result<CheckProof, GuardError>;
 
     /// Execute an operation and record its exposure atomically.
     ///
@@ -559,8 +648,12 @@ impl RuntimeStateGuard {
 
 #[allow(deprecated)]
 impl ToolCallGuard for RuntimeStateGuard {
-    fn check(&self, operation: Operation) -> Result<CheckProof, GuardError> {
+    fn check(&self, act: &Act) -> Result<CheckProof, GuardError> {
         use crate::CapabilityLevel;
+
+        // The verb still drives every layer below; what is new is that the
+        // target arrived with it and survives into the proof.
+        let operation = act.operation();
 
         // Layer 1: Capability level check (is the operation allowed at all?)
         let level = self.perms.capabilities.level_for(operation);
@@ -608,7 +701,7 @@ impl ToolCallGuard for RuntimeStateGuard {
         let exposure_snapshot = current.clone();
 
         Ok(CheckProof {
-            operation,
+            act: act.clone(),
             exposure_snapshot,
             _seal: (),
         })
@@ -657,25 +750,28 @@ impl ToolCallGuard for RuntimeStateGuard {
         // TOCTOU detection: check if exposure grew since check()
         if *exposure != proof.exposure_snapshot && self.perms.uninhabitable_constraint {
             // Re-check with current (grown) exposure using exposure_core
-            let projected = crate::exposure_core::project_exposure(&exposure, proof.operation);
+            let projected = crate::exposure_core::project_exposure(&exposure, proof.operation());
 
-            if projected.is_uninhabitable() && self.perms.requires_approval(proof.operation) {
+            if projected.is_uninhabitable() && self.perms.requires_approval(proof.operation()) {
                 // Record exposure anyway (operation DID execute) for consistency
-                ops.push(proof.operation);
-                *exposure = crate::exposure_core::apply_record(&exposure, proof.operation);
+                ops.push(proof.operation());
+                *exposure = crate::exposure_core::apply_record(&exposure, proof.operation());
                 return Err(ExecuteError::TocTouDenied {
                     reason: format!(
                         "{:?}: concurrent exposure growth detected ({} → {}); \
                          operation would now be denied (projected: {})",
-                        proof.operation, proof.exposure_snapshot, *exposure, projected,
+                        proof.operation(),
+                        proof.exposure_snapshot,
+                        *exposure,
+                        projected,
                     ),
                 });
             }
         }
 
         // Record the operation's exposure via exposure_core
-        ops.push(proof.operation);
-        *exposure = crate::exposure_core::apply_record(&exposure, proof.operation);
+        ops.push(proof.operation());
+        *exposure = crate::exposure_core::apply_record(&exposure, proof.operation());
 
         Ok(value)
     }
@@ -1013,8 +1109,12 @@ impl GradedExposureGuard {
 }
 
 impl ToolCallGuard for GradedExposureGuard {
-    fn check(&self, operation: Operation) -> Result<CheckProof, GuardError> {
+    fn check(&self, act: &Act) -> Result<CheckProof, GuardError> {
         use crate::CapabilityLevel;
+
+        // The verb still drives every layer below; what is new is that the
+        // target arrived with it and survives into the proof.
+        let operation = act.operation();
 
         // Layer 1: Capability level check (is the operation allowed at all?)
         let level = self.perms.capabilities.level_for(operation);
@@ -1070,7 +1170,7 @@ impl ToolCallGuard for GradedExposureGuard {
         };
 
         Ok(CheckProof {
-            operation,
+            act: act.clone(),
             exposure_snapshot,
             _seal: (),
         })
@@ -1107,16 +1207,19 @@ impl ToolCallGuard for GradedExposureGuard {
         // TOCTOU detection: check if exposure grew since check()
         if *exposure != proof.exposure_snapshot && self.perms.uninhabitable_constraint {
             // Re-check with current (grown) exposure using exposure_core
-            let projected = crate::exposure_core::project_exposure(&exposure, proof.operation);
+            let projected = crate::exposure_core::project_exposure(&exposure, proof.operation());
 
-            if projected.is_uninhabitable() && self.perms.requires_approval(proof.operation) {
+            if projected.is_uninhabitable() && self.perms.requires_approval(proof.operation()) {
                 // Record exposure anyway (operation DID execute) for consistency
-                *exposure = crate::exposure_core::apply_record(&exposure, proof.operation);
+                *exposure = crate::exposure_core::apply_record(&exposure, proof.operation());
                 return Err(ExecuteError::TocTouDenied {
                     reason: format!(
                         "{:?}: concurrent exposure growth detected ({} → {}); \
                          operation would now be denied (projected: {})",
-                        proof.operation, proof.exposure_snapshot, *exposure, projected,
+                        proof.operation(),
+                        proof.exposure_snapshot,
+                        *exposure,
+                        projected,
                     ),
                 });
             }
@@ -1129,11 +1232,11 @@ impl ToolCallGuard for GradedExposureGuard {
         // catches any regression where exposure could shrink, which would
         // constitute a privilege escalation vulnerability.
         let old_exposure = exposure.clone();
-        *exposure = crate::exposure_core::apply_record(&exposure, proof.operation);
+        *exposure = crate::exposure_core::apply_record(&exposure, proof.operation());
         debug_assert!(
             exposure.is_superset_of(&old_exposure),
             "E1 violation: exposure shrank after recording {:?} ({} → {})",
-            proof.operation,
+            proof.operation(),
             old_exposure,
             *exposure,
         );
@@ -1169,10 +1272,105 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    // ── the proof names what was checked (ADR 0006, C2.2) ───────────────
+
+    /// A proof answers "a read of *what*?".
+    ///
+    /// Before, it could not: `check` was told only the verb, so the target
+    /// travelled beside the proof as a separate string and the audit record
+    /// was built from that string. Nothing connected the two, and nothing
+    /// would have noticed a handler that checked one path and audited another.
+    #[test]
+    fn a_proof_names_what_was_checked() {
+        let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+        let act = Act::Read {
+            path: FilePath::new("/etc/shadow"),
+            sink: ReadSink::AuditLog,
+        };
+        let proof = guard.check(&act).expect("reads are allowed by default");
+
+        assert_eq!(proof.act(), &act, "the proof carries the act it was given");
+        assert_eq!(
+            proof.subject(),
+            "/etc/shadow",
+            "the audit subject is derived from the decision, not carried beside it"
+        );
+        assert_eq!(
+            proof.operation(),
+            Operation::ReadFiles,
+            "and the verb is still reachable, derived from the act"
+        );
+    }
+
+    /// Two reads of different files are now distinguishable at the guard.
+    ///
+    /// This is the precondition for anything downstream refusing one and
+    /// allowing the other. It is deliberately not itself a policy change —
+    /// both still pass — but before this the guard could not have told them
+    /// apart even in principle.
+    #[test]
+    fn reads_of_different_files_are_distinguishable() {
+        let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+        let secret = guard
+            .check(&Act::Read {
+                path: FilePath::new("/etc/shadow"),
+                sink: ReadSink::AuditLog,
+            })
+            .expect("allowed");
+        let ordinary = guard
+            .check(&Act::Read {
+                path: FilePath::new("/workspace/main.rs"),
+                sink: ReadSink::AuditLog,
+            })
+            .expect("allowed");
+
+        assert_eq!(secret.operation(), ordinary.operation(), "same verb");
+        assert_ne!(
+            secret.subject(),
+            ordinary.subject(),
+            "different target, and the guard can now see the difference"
+        );
+    }
+
+    /// C2.2 changed the vocabulary, not the policy.
+    ///
+    /// The decision still turns on the verb and the accumulated exposure; a
+    /// capability set to `Never` still denies, and the target does not rescue
+    /// it. Without this, "the guard now sees the target" could have been a
+    /// silent loosening.
+    #[test]
+    fn the_decision_still_turns_on_the_verb() {
+        use crate::CapabilityLevel;
+
+        let mut perms = PermissionLattice::default();
+        perms.capabilities.web_fetch = CapabilityLevel::Never;
+        let guard = GradedExposureGuard::new(perms, "schema");
+
+        for host in ["example.com", "127.0.0.1", "internal.corp"] {
+            let act = Act::Fetch {
+                endpoint: Endpoint::new("GET", "https", host, 443, "/", "https://x/"),
+            };
+            assert!(
+                guard.check(&act).is_err(),
+                "{host}: a Never capability denies regardless of target"
+            );
+        }
+
+        let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+        assert!(
+            guard
+                .check(&Act::Fetch {
+                    endpoint: Endpoint::new("GET", "https", "example.com", 443, "/", "https://x/"),
+                })
+                .is_ok(),
+            "non-vacuity: the same act is allowed when the capability is not Never"
+        );
+    }
+
     /// Test helper: check and record an operation in one call.
     /// Panics if check or execute_and_record fails.
     fn check_and_record(guard: &impl ToolCallGuard, op: Operation) {
-        let proof = guard.check(op).expect("check failed");
+        let proof = guard.check(&Act::untargeted(op)).expect("check failed");
         guard
             .execute_and_record(proof, || Ok::<_, String>(()))
             .expect("execute_and_record failed");
@@ -1460,7 +1658,7 @@ mod tests {
         assert_eq!(guard.accumulated_risk(), StateRisk::Medium);
 
         // RunBash (exfil leg) — should be BLOCKED because it completes uninhabitable_state
-        let result = guard.check(Operation::RunBash);
+        let result = guard.check(&Act::untargeted(Operation::RunBash));
         assert!(
             result.is_err(),
             "RunBash should be blocked when completing uninhabitable_state"
@@ -1476,8 +1674,8 @@ mod tests {
         let guard = RuntimeStateGuard::new(uninhabitable_perms(), "[]");
 
         // check() alone does NOT increase risk (proof is dropped, not consumed)
-        let _proof1 = guard.check(Operation::ReadFiles).unwrap();
-        let _proof2 = guard.check(Operation::WebFetch).unwrap();
+        let _proof1 = guard.check(&Act::untargeted(Operation::ReadFiles)).unwrap();
+        let _proof2 = guard.check(&Act::untargeted(Operation::WebFetch)).unwrap();
         assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
 
         // Only execute_and_record increases risk
@@ -1497,7 +1695,7 @@ mod tests {
         assert_eq!(guard.accumulated_risk(), StateRisk::Low);
 
         // More reads are always fine
-        assert!(guard.check(Operation::ReadFiles).is_ok());
+        assert!(guard.check(&Act::untargeted(Operation::ReadFiles)).is_ok());
     }
 
     #[test]
@@ -1726,7 +1924,7 @@ mod tests {
         assert_eq!(guard.accumulated_risk(), StateRisk::Medium);
 
         // RunBash (exfil) — BLOCKED: would uninhabitable_state
-        let result = guard.check(Operation::RunBash);
+        let result = guard.check(&Act::untargeted(Operation::RunBash));
         assert!(
             result.is_err(),
             "RunBash should be blocked when completing uninhabitable_state"
@@ -1739,8 +1937,8 @@ mod tests {
         let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         // check() alone does NOT expose the session (proofs are dropped)
-        let _proof1 = guard.check(Operation::ReadFiles).unwrap();
-        let _proof2 = guard.check(Operation::WebFetch).unwrap();
+        let _proof1 = guard.check(&Act::untargeted(Operation::ReadFiles)).unwrap();
+        let _proof2 = guard.check(&Act::untargeted(Operation::WebFetch)).unwrap();
         assert_eq!(guard.exposure(), ExposureSet::empty());
 
         // Only execute_and_record exposures
@@ -1810,8 +2008,8 @@ mod tests {
         ];
 
         for op in &ops {
-            let r1 = runtime.check(*op);
-            let r2 = graded.check(*op);
+            let r1 = runtime.check(&Act::untargeted(*op));
+            let r2 = graded.check(&Act::untargeted(*op));
             assert_eq!(r1.is_ok(), r2.is_ok(), "disagreement on {:?}", op);
 
             if let (Ok(p1), Ok(p2)) = (r1, r2) {
@@ -1825,8 +2023,8 @@ mod tests {
         }
 
         // Both should block RunBash now (uninhabitable_state complete)
-        assert!(runtime.check(Operation::RunBash).is_err());
-        assert!(graded.check(Operation::RunBash).is_err());
+        assert!(runtime.check(&Act::untargeted(Operation::RunBash)).is_err());
+        assert!(graded.check(&Act::untargeted(Operation::RunBash)).is_err());
 
         // Both report same risk
         assert_eq!(runtime.accumulated_risk(), graded.accumulated_risk());
@@ -1871,7 +2069,7 @@ mod tests {
         // RwLock state instead of pure functional composition
         check_and_record(&guard, Operation::ReadFiles);
         check_and_record(&guard, Operation::WebFetch);
-        assert!(guard.check(Operation::RunBash).is_err());
+        assert!(guard.check(&Act::untargeted(Operation::RunBash)).is_err());
     }
 
     /// Clinejection attack (Feb 2026): prompt injection in a GitHub issue
@@ -1891,7 +2089,7 @@ mod tests {
         // Step 2: Attempt RunBash (npm install from attacker).
         // RunBash projects PrivateData + ExfilVector (omnibus),
         // completing the uninhabitable_state with UntrustedContent.
-        let result = guard.check(Operation::RunBash);
+        let result = guard.check(&Act::untargeted(Operation::RunBash));
         assert!(
             result.is_err(),
             "Clinejection: RunBash after WebFetch must be denied (omnibus projection)"
@@ -1912,7 +2110,7 @@ mod tests {
         // WebFetch then RunBash — should uninhabitable_state
         check_and_record(&guard, Operation::WebFetch);
 
-        let result = guard.check(Operation::RunBash);
+        let result = guard.check(&Act::untargeted(Operation::RunBash));
         assert!(
             result.is_err(),
             "Clinejection: RuntimeStateGuard must also block WebFetch → RunBash"
@@ -1925,7 +2123,7 @@ mod tests {
     fn test_execute_and_record_no_phantom_on_failure() {
         let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
-        let proof = guard.check(Operation::ReadFiles).unwrap();
+        let proof = guard.check(&Act::untargeted(Operation::ReadFiles)).unwrap();
         let result = guard.execute_and_record(proof, || Err::<(), _>("io error"));
         assert!(result.is_err());
 
@@ -1970,7 +2168,7 @@ mod tests {
         // check() MUST fail CLOSED: a Denied error — NOT a panic, NOT an allow,
         // NOT a torn-state allow. This assertion FAILS if someone swaps in
         // `into_inner()` on the decision lock (which would return Ok).
-        match guard.check(Operation::ReadFiles) {
+        match guard.check(&Act::untargeted(Operation::ReadFiles)) {
             Err(GuardError::Denied { reason }) => {
                 assert!(
                     reason.contains("poisoned"),
@@ -2005,7 +2203,7 @@ mod tests {
 
         poison_write_lock(&guard.exposure);
 
-        match guard.check(Operation::ReadFiles) {
+        match guard.check(&Act::untargeted(Operation::ReadFiles)) {
             Err(GuardError::Denied { reason }) => {
                 assert!(reason.contains("poisoned"), "got: {reason}");
             }
@@ -2025,7 +2223,7 @@ mod tests {
 
         // Obtain a valid proof BEFORE poisoning (check reads the lock).
         let proof = guard
-            .check(Operation::ReadFiles)
+            .check(&Act::untargeted(Operation::ReadFiles))
             .expect("check should pass");
 
         // Now poison the exposure decision lock.
@@ -2121,8 +2319,8 @@ mod tests {
         let graded = GradedExposureGuard::new(perms, "[]");
 
         for (i, &op) in ops.iter().enumerate() {
-            let r1 = runtime.check(op);
-            let r2 = graded.check(op);
+            let r1 = runtime.check(&Act::untargeted(op));
+            let r2 = graded.check(&Act::untargeted(op));
 
             assert_eq!(
                 r1.is_ok(),

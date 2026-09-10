@@ -48,7 +48,10 @@ use portcullis::action_term::ActionTerm;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
-use portcullis::{CapabilityLevel, GradedExposureGuard, NodeKind, Operation, ToolCallGuard};
+use portcullis::{
+    Act, Argv, CapabilityLevel, Endpoint, FilePath, GradedExposureGuard, NodeKind, Operation,
+    Pattern, ReadSink, ToolCallGuard, WriteSink,
+};
 // Sealed discharge preflight (#2038): the live RunBash path must mint a
 // `DischargedBundle` before it may spawn. The bundle-minting itself
 // (`preflight_runbash`) now lives in `crate::run_gate` (shared with the HTTP
@@ -520,7 +523,14 @@ impl NucleusMcpServer {
             Err(result) => return Ok(result),
         };
 
-        let proof = match self.guard.check(Operation::ReadFiles) {
+        // The guard now decides on the act, not the verb. `sink` says where
+        // the read lands: this transport records every read on the verdict
+        // sink, and nothing here persists it to memory or a cache.
+        let act = Act::Read {
+            path: FilePath::new(&params.path),
+            sink: ReadSink::AuditLog,
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -562,17 +572,22 @@ impl NucleusMcpServer {
         };
         let read_authority = portcullis_effects::authority::Authority::new(read_bundle);
 
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.sandbox().read_to_string(
-                    &params.path,
+                    &checked,
                     &decision_token,
                     read_authority,
                 )
             })
         }) {
             Ok(contents) => {
-                self.record_verdict(Operation::ReadFiles, &params.path, VerdictOutcome::Allow);
+                self.record_verdict(Operation::ReadFiles, &checked, VerdictOutcome::Allow);
                 // IFC: a file read brings data into the session (Trusted
                 // integrity — does not by itself taint, but contributes to the
                 // confidentiality ceiling). (#1633)
@@ -584,7 +599,7 @@ impl NucleusMcpServer {
             Err(e) => {
                 self.record_verdict(
                     Operation::ReadFiles,
-                    &params.path,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -626,7 +641,14 @@ impl NucleusMcpServer {
             Err(result) => return Ok(result),
         };
 
-        let proof = match self.guard.check(Operation::WriteFiles) {
+        // `sink` says where the write lands: the pod workspace, through the
+        // cap-std sandbox below. A write outside it is `WriteSink::System`,
+        // which this handler cannot reach and therefore does not name.
+        let act = Act::Write {
+            path: FilePath::new(&params.path),
+            sink: WriteSink::Workspace,
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -676,10 +698,15 @@ impl NucleusMcpServer {
         };
         let _discharge_note = discharge_witness(&discharge_bundle);
 
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.sandbox().write(
-                    &params.path,
+                    &checked,
                     params.contents.as_bytes(),
                     &decision_token,
                     portcullis_effects::authority::Authority::new(discharge_bundle),
@@ -687,13 +714,13 @@ impl NucleusMcpServer {
             })
         }) {
             Ok(()) => {
-                self.record_verdict(Operation::WriteFiles, &params.path, VerdictOutcome::Allow);
+                self.record_verdict(Operation::WriteFiles, &checked, VerdictOutcome::Allow);
                 Ok(CallToolResult::success(vec![Content::text("ok")]))
             }
             Err(e) => {
                 self.record_verdict(
                     Operation::WriteFiles,
-                    &params.path,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -747,7 +774,12 @@ impl NucleusMcpServer {
             return Ok(err_result("args must not be empty"));
         }
 
-        let proof = match self.guard.check(Operation::RunBash) {
+        // The argv, not the joined string: the guard sees the command as it
+        // will be spawned, with no shell-quoting round trip in between.
+        let act = Act::Run {
+            argv: Argv::new(params.args.clone()),
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -818,6 +850,11 @@ impl NucleusMcpServer {
             }
         };
 
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.executor().run_args(
@@ -836,7 +873,7 @@ impl NucleusMcpServer {
             Ok(output) => {
                 self.record_verdict_ext(
                     Operation::RunBash,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Allow,
                     BTreeMap::from([("discharge_bundle".to_string(), discharge_note.clone())]),
                 );
@@ -849,13 +886,13 @@ impl NucleusMcpServer {
                 // Most-paranoid #2: command output may carry injected instructions;
                 // taint it (opt-in) so it can't drive a later privileged action.
                 // Brick 3: content-address the exact tool-result bytes ingested.
-                self.observe_tool_result(&subject, json.as_bytes()).await;
+                self.observe_tool_result(&checked, json.as_bytes()).await;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Err(e) => {
                 self.record_verdict_ext(
                     Operation::RunBash,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -897,7 +934,11 @@ impl NucleusMcpServer {
             Err(result) => return Ok(result),
         }
 
-        let proof = match self.guard.check(Operation::GlobSearch) {
+        let act = Act::Glob {
+            pattern: Pattern::new(&params.pattern),
+            sink: ReadSink::AuditLog,
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -923,6 +964,11 @@ impl NucleusMcpServer {
             );
             return Ok(err_result("glob_search capability is disabled"));
         }
+
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
 
         let state = self.state.clone();
         match self.guard.execute_and_record(proof, || {
@@ -975,7 +1021,7 @@ impl NucleusMcpServer {
             })
         }) {
             Ok(paths) => {
-                self.record_verdict(Operation::GlobSearch, &subject, VerdictOutcome::Allow);
+                self.record_verdict(Operation::GlobSearch, &checked, VerdictOutcome::Allow);
                 // Brick 3: content-address the exact match listing ingested.
                 let listing = paths.join("\n");
                 self.observe_flow(NodeKind::FileRead, listing.as_bytes())
@@ -985,7 +1031,7 @@ impl NucleusMcpServer {
             Err(e) => {
                 self.record_verdict(
                     Operation::GlobSearch,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -1026,7 +1072,11 @@ impl NucleusMcpServer {
             Err(result) => return Ok(result),
         }
 
-        let proof = match self.guard.check(Operation::GrepSearch) {
+        let act = Act::Grep {
+            pattern: Pattern::new(&params.pattern),
+            sink: ReadSink::AuditLog,
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -1056,6 +1106,11 @@ impl NucleusMcpServer {
         // The graph this transport actually writes. `observe_flow` records into
         // `self.flow_graph`, and every other preflight on this path reads it;
         // the closure below is `move` and would otherwise only have `state`.
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
         let flow_graph = self.flow_graph.clone();
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(move || -> Result<String, String> {
@@ -1211,7 +1266,7 @@ impl NucleusMcpServer {
             })
         }) {
             Ok(matches) => {
-                self.record_verdict(Operation::GrepSearch, &subject, VerdictOutcome::Allow);
+                self.record_verdict(Operation::GrepSearch, &checked, VerdictOutcome::Allow);
                 // Brick 3: content-address the exact grep output ingested.
                 self.observe_flow(NodeKind::FileRead, matches.as_bytes())
                     .await; // (#1633)
@@ -1220,7 +1275,7 @@ impl NucleusMcpServer {
             Err(e) => {
                 self.record_verdict(
                     Operation::GrepSearch,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -1259,20 +1314,6 @@ impl NucleusMcpServer {
             Ok(_decision_token) => {} // web_fetch doesn't go through Sandbox I/O
             Err(result) => return Ok(result),
         }
-
-        let proof = match self.guard.check(Operation::WebFetch) {
-            Ok(p) => p,
-            Err(e) => {
-                self.record_verdict(
-                    Operation::WebFetch,
-                    &subject,
-                    VerdictOutcome::Deny {
-                        reason: format!("{e}"),
-                    },
-                );
-                return Ok(err_result(e));
-            }
-        };
 
         let level = self.state.runtime.policy().capabilities.web_fetch;
         if level == CapabilityLevel::Never {
@@ -1375,6 +1416,51 @@ impl NucleusMcpServer {
                     },
                 );
                 return Ok(err_result(msg));
+            }
+        };
+
+        // ─── The endpoint, parsed once ──────────────────────────────────────
+        //
+        // Everything above this line established the components: the scheme
+        // and host and port and path from one `Url::parse`, the method from
+        // one `from_bytes`. `Endpoint` carries that result, and the gates
+        // below read it instead of re-deriving it from the string — which is
+        // the whole reason `Act` exists. `Act::Fetch`'s sink is not a choice:
+        // a fetch is `HTTPEgress`, and no other sink is representable for it.
+        //
+        // The guard check moved down to here from above the parse. It has
+        // always been a decision about a request; before, all it was told was
+        // that *a* fetch was happening, and the URL travelled past it into the
+        // audit record. Nothing between the old position and this one touches
+        // the wire — the allowlists and the per-effect gate below are refusals,
+        // and the fetch itself happens inside `execute_and_record`, whose
+        // TOCTOU window is measured from this check and is unchanged.
+        let act = Act::Fetch {
+            endpoint: Endpoint::new(
+                req_method.as_str(),
+                parsed_url.scheme(),
+                parsed_url.host_str().unwrap_or_default(),
+                parsed_url.port_or_known_default().unwrap_or(443),
+                parsed_url.path(),
+                // The raw form is `params.url`, not `parsed_url.as_str()`.
+                // `Url::parse` normalises — lower-casing the host, adding a
+                // trailing slash — and the audit trail should say what the
+                // client asked for. The gates read the parsed components
+                // above; only the record reads this.
+                &subject,
+            ),
+        };
+        let proof = match self.guard.check(&act) {
+            Ok(p) => p,
+            Err(e) => {
+                self.record_verdict(
+                    Operation::WebFetch,
+                    &subject,
+                    VerdictOutcome::Deny {
+                        reason: format!("{e}"),
+                    },
+                );
+                return Ok(err_result(e));
             }
         };
 
@@ -1496,9 +1582,14 @@ impl NucleusMcpServer {
         }
         .await;
 
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
         match self.guard.execute_and_record(proof, || fetch_result) {
             Ok(response) => {
-                self.record_verdict(Operation::WebFetch, &subject, VerdictOutcome::Allow);
+                self.record_verdict(Operation::WebFetch, &checked, VerdictOutcome::Allow);
                 // IFC: web content is adversarial-integrity — observing it
                 // taints the session, so subsequent outbound actions are denied
                 // with `IfcUnsafe` (lethal-trifecta guard). (#1633)
@@ -1510,7 +1601,7 @@ impl NucleusMcpServer {
             Err(e) => {
                 self.record_verdict(
                     Operation::WebFetch,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -1959,6 +2050,89 @@ mod tests {
         assert!(
             crate::web_fetch_policy::validate_url("https://example.com/ok").is_ok(),
             "non-vacuity"
+        );
+    }
+
+    // ── the proof names what was checked (ADR 0006, C2.2) ───────────────
+
+    /// The audit subject is byte-identical to the string the handlers used to
+    /// pass alongside the verb.
+    ///
+    /// `guard.check` now takes an `Act`, and every verdict recorded after the
+    /// check reads `proof.subject()` instead of a local. That was meant to
+    /// change *where the string comes from* — from the decision rather than
+    /// beside it — and nothing else. This pins that: each case is the
+    /// expression the handler used before.
+    ///
+    /// `web_fetch` is the one that could have drifted. `Url::parse`
+    /// normalises — it lower-cases the host and adds a trailing slash — so
+    /// building the `Endpoint`'s raw form from `parsed_url.as_str()` would
+    /// have quietly started auditing a URL the client never typed. It is built
+    /// from `params.url`, and this is what says so.
+    #[test]
+    fn the_checked_subject_is_what_the_handler_used_to_pass() {
+        let path = "/workspace/main.rs";
+        assert_eq!(
+            Act::Read {
+                path: FilePath::new(path),
+                sink: ReadSink::AuditLog,
+            }
+            .subject(),
+            path
+        );
+        assert_eq!(
+            Act::Write {
+                path: FilePath::new(path),
+                sink: WriteSink::Workspace,
+            }
+            .subject(),
+            path
+        );
+
+        let args = vec!["cargo".to_string(), "test".to_string()];
+        assert_eq!(
+            Act::Run {
+                argv: Argv::new(args.clone()),
+            }
+            .subject(),
+            args.join(" "),
+            "`run`'s subject was `params.args.join(\" \")`"
+        );
+
+        let pattern = "**/*.rs";
+        assert_eq!(
+            Act::Glob {
+                pattern: Pattern::new(pattern),
+                sink: ReadSink::AuditLog,
+            }
+            .subject(),
+            pattern
+        );
+        assert_eq!(
+            Act::Grep {
+                pattern: Pattern::new(pattern),
+                sink: ReadSink::AuditLog,
+            }
+            .subject(),
+            pattern
+        );
+
+        // As the client typed it: an upper-case host and no trailing slash,
+        // both of which `Url::parse` would rewrite.
+        let raw = "https://API.Example.COM/v1";
+        let normalised = url::Url::parse(raw).expect("valid").to_string();
+        assert_ne!(
+            raw, normalised,
+            "non-vacuity: if parsing left this alone the assertion below would \
+             hold for either choice and prove nothing"
+        );
+        assert_eq!(
+            Act::Fetch {
+                endpoint: Endpoint::new("GET", "https", "api.example.com", 443, "/v1", raw),
+            }
+            .subject(),
+            raw,
+            "`web_fetch`'s subject was `params.url`, before any parse"
         );
     }
 

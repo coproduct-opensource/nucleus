@@ -391,6 +391,12 @@ pub use portcullis_core::witness::{ChainVerifyError as WitnessChainVerifyError, 
 /// `ZkFlowInput` from a live `FlowTracker` without taking a direct
 /// portcullis-core dependency — the same reason `FlowTracker` is re-exported
 /// above.
+// The targeted boundary vocabulary (ADR 0006, C2). Re-exported beside the
+// untargeted `Operation` it wraps, so a caller reaches both on one path.
+pub use portcullis_core::act::{
+    Act, Argv, EditSink, Endpoint, FilePath, Message, Pattern, PodId, PodSink, Query, ReadSink,
+    Remote, WriteSink,
+};
 pub use portcullis_core::declassify;
 pub use portcullis_core::flow;
 pub use portcullis_core::flow::NodeKind;

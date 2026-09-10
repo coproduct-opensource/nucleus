@@ -514,6 +514,78 @@ impl Act {
     }
 }
 
+/// Placeholder-targeted constructors, for tests only.
+///
+/// **GATED** behind `test-helpers`. `#[cfg(test)]` alone cannot work here:
+/// other crates' tests consume this across the crate boundary, where
+/// `cfg(test)` is false because this crate is compiled as a dependency rather
+/// than as the crate under test. A feature is the only gate that reaches them,
+/// and it keeps the constructor out of any build that does not ask for it.
+///
+/// The gate is the point, not an accident of packaging. Production code must
+/// name a real target — that requirement is what [`Act`] exists to impose, and
+/// an ungated convenience constructor returning a fabricated one would be a
+/// door straight back to the untargeted world these types replace.
+#[cfg(any(test, feature = "test-helpers"))]
+impl Act {
+    /// An act for `op` with a placeholder target and its first admissible sink.
+    ///
+    /// For tests that exercise a gate's verb-level behaviour — exposure
+    /// accumulation, capability level, the typestate protocol — and have no
+    /// target to name because the target is not what they are testing.
+    #[must_use]
+    pub fn untargeted(op: Operation) -> Act {
+        const T: &str = "untargeted-test-placeholder";
+        match op {
+            Operation::ReadFiles => Act::Read {
+                path: FilePath::new(T),
+                sink: ReadSink::AuditLog,
+            },
+            Operation::WriteFiles => Act::Write {
+                path: FilePath::new(T),
+                sink: WriteSink::Workspace,
+            },
+            Operation::EditFiles => Act::Edit {
+                path: FilePath::new(T),
+                sink: EditSink::Workspace,
+            },
+            Operation::RunBash => Act::Run {
+                argv: Argv::new(alloc::vec![T.to_string()]),
+            },
+            Operation::GlobSearch => Act::Glob {
+                pattern: Pattern::new(T),
+                sink: ReadSink::AuditLog,
+            },
+            Operation::GrepSearch => Act::Grep {
+                pattern: Pattern::new(T),
+                sink: ReadSink::AuditLog,
+            },
+            Operation::WebSearch => Act::Search {
+                query: Query::new(T),
+            },
+            Operation::WebFetch => Act::Fetch {
+                endpoint: Endpoint::new("GET", "https", T, 443, "/", T),
+            },
+            Operation::GitCommit => Act::Commit {
+                message: Message::new(T),
+            },
+            Operation::GitPush => Act::Push {
+                remote: Remote::new(T),
+            },
+            Operation::CreatePr => Act::OpenPr {
+                title: Message::new(T),
+            },
+            Operation::ManagePods => Act::ManagePod {
+                pod: PodId::new(T),
+                sink: PodSink::Cloud,
+            },
+            Operation::SpawnAgent => Act::Spawn {
+                agent: PodId::new(T),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,6 +810,23 @@ mod tests {
                 try_bundle_for(op, default).is_some(),
                 "{op:?}/{default:?} must still be earnable, or this test is \
                  measuring a broken helper rather than a broken default"
+            );
+        }
+    }
+
+    /// The test constructor must not lie about the verb.
+    ///
+    /// Every test that reaches for `untargeted` is asserting something about
+    /// `op`; if the constructor returned a different verb those assertions
+    /// would be about something else.
+    #[test]
+    fn untargeted_is_faithful_to_its_operation() {
+        for op in Operation::ALL {
+            let act = Act::untargeted(op);
+            assert_eq!(act.operation(), op);
+            assert!(
+                !act.subject().is_empty(),
+                "{op:?}: a placeholder target is still a target"
             );
         }
     }
