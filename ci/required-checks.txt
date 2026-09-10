@@ -12,7 +12,20 @@
 # `cargo xtask ci-spec live-parity` compares this file with the live branch
 # protection; a mismatch is a red on the schedule, never a silent re-sync.
 #
-# PINNED = 50
+# 2026-09-09, 50 → 51: `Scoped Aeneas (Rust → Lean 4) — routing decision`. The
+# scope check moved out of the expensive job into its own job on the CHEAP pool,
+# so `runs-on` for the expensive one can be a function of the answer and the
+# build pool is entered only when there is something to build. It ran 24s after
+# waiting 442s for a slot (merge-group 60fa8483) and 18s after 792s (a37d21fa) —
+# the critical path in both.
+#
+# It has to be REQUIRED, and `cargo xtask ci-spec check` is what said so: a
+# required job that `needs:` a NON-required one is skipped when the upstream
+# fails, and a skipped required check counts as passed, so a red routing job
+# would VACATE the gate instead of blocking it. CI-I3-NEEDS. The pin grows,
+# which is the allowed direction; the cost is one gate-pool context to stop
+# holding a build-pool slot while deciding.
+# PINNED = 51
 
 # --- ci.yml -------------------------------------------------------------
 Detect changed crates
@@ -63,6 +76,7 @@ Analyze
 # --- twin-paired (real + -noop) ----------------------------------------
 lake build CiSpec (pipeline + merge-queue theorems)
 Scoped Aeneas (Rust → Lean 4) + parity tests
+Scoped Aeneas (Rust → Lean 4) — routing decision
 Scoped Aeneas OIDC→SPIFFE (Rust → Lean 4) + parity tests
 lake build Ck (monotonicity-gate soundness proofs)
 charon+aeneas drift + lake build (extracted-core soundness)

@@ -41,3 +41,18 @@ jobs:
     steps:
       - name: No-op (paths not touched)
         run: echo "no relevant paths changed — gate vacuously green"
+
+  # The real workflow's routing job is a REQUIRED context too (it has to be:
+  # `ci-spec` CI-I3-NEEDS says a required job depending on a non-required one is
+  # skipped when that one fails, and a skipped required check counts as passed,
+  # so a red router would vacate the gate). A required context needs a producer
+  # on every PR, and on a PR that touches none of the paths the real workflow
+  # never starts — which is the entire reason this twin exists. So the twin
+  # twins BOTH contexts, and `ci-spec` CI-I1-JOBS is what catches it if it stops.
+  scope:
+    name: Scoped Aeneas (Rust → Lean 4) — routing decision
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op (paths not touched)
+        run: echo "no relevant paths changed — nothing to route"
