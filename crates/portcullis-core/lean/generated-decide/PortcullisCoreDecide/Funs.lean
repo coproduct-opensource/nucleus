@@ -91,7 +91,7 @@ def exposure.project_exposure
   | some label => exposure.ExposureSet.set current label
 
 /-- [nucleus_ifc_kernel::ifc_ops::is_exfil_operation]:
-    Source: 'crates/nucleus-ifc-kernel/src/ifc_ops.rs', lines 470:0-482:1
+    Source: 'crates/nucleus-ifc-kernel/src/ifc_ops.rs', lines 527:0-539:1
     Visibility: public -/
 def ifc_ops.is_exfil_operation (op : ifc_ops.Operation) : Result Bool := do
   match op with
