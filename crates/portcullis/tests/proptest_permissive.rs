@@ -63,9 +63,9 @@ fn arb_permission_lattice() -> impl Strategy<Value = PermissionLattice> {
 
 fn arb_weakening_cost() -> impl Strategy<Value = WeakeningCost> {
     (
-        (0u32..100u32).prop_map(|n| Decimal::new(n as i64, 2)),
-        (1u32..10u32).prop_map(|n| Decimal::new(n as i64, 0)),
-        (1u32..5u32).prop_map(|n| Decimal::new(n as i64, 0)),
+        (0u32..100u32).prop_map(|n| Decimal::new(i64::from(n), 2)),
+        (1u32..10u32).prop_map(|n| Decimal::new(i64::from(n), 0)),
+        (1u32..5u32).prop_map(|n| Decimal::new(i64::from(n), 0)),
     )
         .prop_map(|(base, uninhabitable_state, isolation)| WeakeningCost {
             base,
@@ -179,8 +179,8 @@ proptest! {
     fn cost_total_monotonic_in_base(base1: u32, base2: u32) {
         let (small, large) = if base1 <= base2 { (base1, base2) } else { (base2, base1) };
 
-        let cost_small = WeakeningCost::new(Decimal::new(small as i64, 2));
-        let cost_large = WeakeningCost::new(Decimal::new(large as i64, 2));
+        let cost_small = WeakeningCost::new(Decimal::new(i64::from(small), 2));
+        let cost_large = WeakeningCost::new(Decimal::new(i64::from(large), 2));
 
         prop_assert!(cost_small.total() <= cost_large.total());
     }

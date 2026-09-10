@@ -127,7 +127,7 @@ theorem invariant_exploit_dag_blocked :
     let intrinsic : IFCLabel := ⟨.Internal, .Trusted, .Directive⟩
     let plan : IFCLabel := [issue, repo].foldl IFCLabel.join intrinsic
     plan.integ = .Adversarial ∧ plan.auth = .NoAuthority ∧ plan.conf = .Internal := by
-  native_decide
+  decide
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- Theorem 11: Propagation through multiple tainted sources
@@ -141,7 +141,7 @@ theorem single_adversarial_taints_chain :
     let intrinsic : IFCLabel := ⟨.Internal, .Trusted, .Directive⟩
     let result : IFCLabel := [trusted, trusted, adversarial, trusted].foldl IFCLabel.join intrinsic
     result.integ = .Adversarial ∧ result.auth = .NoAuthority := by
-  native_decide
+  decide
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- Theorem 12: Clean propagation preserves trust
@@ -155,6 +155,6 @@ theorem clean_chain_preserves_trust :
     let intrinsic : IFCLabel := ⟨.Internal, .Trusted, .Directive⟩
     let result : IFCLabel := [user, file].foldl IFCLabel.join intrinsic
     result.integ = .Trusted ∧ result.auth = .Directive := by
-  native_decide
+  decide
 
 end FlowGraphProofs
