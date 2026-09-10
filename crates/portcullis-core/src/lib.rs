@@ -949,40 +949,21 @@ mod tests {
             SinkClass::AuditLogAppend.required_authority(),
             AuthorityLevel::NoAuthority
         );
-        // Version-control publish requires Directive (SECURITY_TODO #24): only
-        // data carrying full authority to instruct may reach a git-publish
-        // sink. This was Suggestive here and Directive in the duplicate table
-        // in `flow_algebra`; the tables are now one, at the stricter value.
-        for sink in [
-            SinkClass::GitCommit,
-            SinkClass::GitPush,
-            SinkClass::PRCommentWrite,
-        ] {
-            assert_eq!(
-                sink.required_authority(),
-                AuthorityLevel::Directive,
-                "a git-publish sink must require Directive authority, not {:?}",
-                sink.required_authority()
-            );
-        }
-        // Every other write/exec sink requires Suggestive.
+        // All write/exec sinks require Suggestive — including the git-publish
+        // trio. #24 briefly raised those three to Directive when it merged the
+        // duplicate tables at the pointwise-strictest value; `flow_red_team`
+        // showed that denies Deterministic and HumanPromoted data at a verified
+        // sink, which is what such a sink exists to accept. The merge stands;
+        // the value was reverted.
         for sink in SinkClass::ALL {
-            if matches!(
-                sink,
-                SinkClass::SecretRead
-                    | SinkClass::AuditLogAppend
-                    | SinkClass::GitCommit
-                    | SinkClass::GitPush
-                    | SinkClass::PRCommentWrite
-            ) {
-                continue;
+            if sink != SinkClass::SecretRead && sink != SinkClass::AuditLogAppend {
+                assert_eq!(
+                    sink.required_authority(),
+                    AuthorityLevel::Suggestive,
+                    "Expected Suggestive authority for {:?}",
+                    sink
+                );
             }
-            assert_eq!(
-                sink.required_authority(),
-                AuthorityLevel::Suggestive,
-                "Expected Suggestive authority for {:?}",
-                sink
-            );
         }
     }
 

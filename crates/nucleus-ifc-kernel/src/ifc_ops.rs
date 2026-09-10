@@ -316,19 +316,29 @@ impl SinkClass {
         match self {
             // Read-only / append-only — no authority needed
             SinkClass::SecretRead | SinkClass::AuditLogAppend => AuthorityLevel::NoAuthority,
-            // Version-control publish — require Directive (SECURITY_TODO #24).
+            // Write/exec/publish — require Suggestive.
             //
-            // These three sat at `Suggestive` here and at `Directive` in
-            // `flow_algebra::sink_required_authority`, with no parity check
-            // between the two tables. The owner's call was to TIGHTEN, so the
-            // stricter value wins: only data carrying full authority to instruct
-            // (a user prompt, system config) may reach a git-publish sink.
-            // Suggestive data — an MCP tool description, say — no longer can.
-            SinkClass::GitCommit | SinkClass::GitPush | SinkClass::PRCommentWrite => {
-                AuthorityLevel::Directive
-            }
-            // Write/exec/publish — require Suggestive
-            SinkClass::WorkspaceWrite
+            // The git-publish trio sat here at `Suggestive` and at `Directive`
+            // in the duplicate `flow_algebra::sink_required_authority`. #24
+            // merged the tables at the pointwise-strictest value and took
+            // `Directive`. That was WRONG, and `portcullis-core`'s
+            // `flow_red_team` suite is what said so: requiring `Directive`
+            // denies `Deterministic` and `HumanPromoted` data at a git sink,
+            // and those are precisely the derivation classes a verified sink
+            // exists to accept. `Directive` means "can steer the agent" — a
+            // user prompt or system config. Build output is not that, so the
+            // floor would have admitted nothing but user prompts.
+            //
+            // The merge to one decider stands; only this value is restored.
+            // Note what is NOT reverted: deleting the duplicate removed its
+            // `_ => NoAuthority` fallthrough, which is what floored
+            // `AgentSpawn` and `CloudMutation` at `Suggestive` and closed the
+            // last two attack-corpus gaps. That win came from the deletion,
+            // not from this trio.
+            SinkClass::GitCommit
+            | SinkClass::GitPush
+            | SinkClass::PRCommentWrite
+            | SinkClass::WorkspaceWrite
             | SinkClass::SystemWrite
             | SinkClass::BashExec
             | SinkClass::HTTPEgress

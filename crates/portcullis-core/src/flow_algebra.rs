@@ -442,29 +442,25 @@ mod tightened_sink_requirements {
         }
     }
 
-    /// SECURITY_TODO #24 — non-vacuity of the tightening, on BOTH axes.
+    /// SECURITY_TODO #24 — non-vacuity of the tightening, on the integrity axis.
     ///
     /// The two duplicate tables were each stricter on a different axis, so
     /// whichever one a caller happened to consult decided whether a tainted
     /// session could push. Merging them at the pointwise-strictest value has to
     /// actually refuse something on each axis, or the merge was cosmetic:
     ///
-    ///   * authority — `Suggestive` data (an MCP tool description) satisfied
-    ///     `ifc_ops`'s old `Suggestive` floor for GitPush. It must now be
-    ///     refused, because the floor is `Directive`.
     ///   * integrity — `Untrusted` data satisfied this file's old `Untrusted`
     ///     floor for GitPush. It must now be refused, because the floor is
     ///     `Trusted`.
     #[test]
     fn the_merged_table_refuses_what_each_old_copy_admitted() {
-        // Authority axis: Trusted integrity, but only Suggestive authority.
-        let suggestive =
-            FlowState::from_label(label(IntegLevel::Trusted, AuthorityLevel::Suggestive));
-        assert!(
-            !suggestive.flows_to(SinkClass::GitPush),
-            "Suggestive authority reached GitPush — the authority floor did not tighten"
-        );
-
+        // The authority axis is deliberately NOT asserted here any more. #24
+        // raised the git trio's floor to Directive and this test pinned it;
+        // portcullis-core's flow_red_team then showed that denies Deterministic
+        // and HumanPromoted data at a verified sink — the classes such a sink
+        // exists to accept. The floor is back at Suggestive; what stands from
+        // #24 is the merge to one decider.
+        //
         // Integrity axis: full Directive authority, but only Untrusted integrity.
         let untrusted =
             FlowState::from_label(label(IntegLevel::Untrusted, AuthorityLevel::Directive));
