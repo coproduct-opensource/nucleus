@@ -15,6 +15,17 @@
 //! | elan release + its SHA-256 | 12 workflows, ~36 lines | a stale copy is a supply-chain hazard, not just drift |
 //! | `AENEAS_RELEASE`, `CHARON_NIGHTLY` | 6 workflows, 12 lines | a partial bump splits the extraction fleet, and the halves disagree about generated Lean |
 //! | first-party `lean-toolchain` | 9 files | two Lean versions cannot share a `.lake` cache |
+//! | the actions-runner image ref | 2 Dockerfiles | two runner images that must stay in lockstep |
+//! | `RUSTUP_VERSION` + its two SHAs | 2 Dockerfiles | same shape, and `ci/fly-runner/Dockerfile*` sits outside `ci/docker-rust-matches-msrv.sh`'s `docker/Dockerfile*` glob |
+//!
+//! Deliberately NOT here: the `rust:` base image. `docker/Dockerfile.node` ships on
+//! `rust:1.95-bookworm` while `ci/fly-runner/Dockerfile.manager` runs on
+//! `rust:1.96.1-slim-bookworm`, and those are different services with no reason to agree.
+//! `ci/docker-rust-matches-msrv.sh` already covers `docker/Dockerfile*` with the relation
+//! that is actually wanted there — base >= MSRV, not base == anything. A gate asserting
+//! equality across unrelated services would be a gate asserting the wrong thing.
+//! | the workspace MSRV | `Cargo.toml` + `feature-matrix.yml` | `feature-matrix.yml:98` says "Must match `[workspace.package] rust-version`" — a comment |
+//! | the Kani toolchain floor | 2 values **+ a job name** | `feature-matrix.yml:154` says "Must match the rustc that kani-verifier bundles" — also a comment. The version is embedded in the job's `name:`, which is a REQUIRED CONTEXT, so a bump that misses it leaves branch protection naming a floor that moved |
 //!
 //! **All three agree today.** That is the point of gating them now: the cost of the gate
 //! is lowest while it is green, and each is one hurried edit away from splitting. The
@@ -165,6 +176,93 @@ fn collect(root: &Path) -> Result<Vec<Fact>> {
         }
     }
 
+    // --- Dockerfile pairs -------------------------------------------------------------
+    let dockerfiles: Vec<PathBuf> = ["docker", "ci/fly-runner"]
+        .iter()
+        .filter_map(|d| fs::read_dir(root.join(d)).ok())
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("Dockerfile"))
+        })
+        .collect();
+
+    let mut runner_image = Fact {
+        name: "actions-runner image",
+        stake: "two runner images that must stay in lockstep, in two trees",
+        sightings: Vec::new(),
+    };
+    let mut rustup = Fact {
+        name: "RUSTUP_VERSION",
+        stake: "ci/fly-runner/Dockerfile* is outside ci/docker-rust-matches-msrv.sh's glob",
+        sightings: Vec::new(),
+    };
+    let mut dockerfiles = dockerfiles;
+    dockerfiles.sort();
+    for path in &dockerfiles {
+        let text =
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        for line in text.lines() {
+            let t = line.trim();
+            if let Some(v) = t.strip_prefix("FROM ghcr.io/actions/actions-runner:") {
+                runner_image.sightings.push((
+                    path.clone(),
+                    v.split_whitespace().next().unwrap_or(v).to_string(),
+                ));
+            }
+            if let Some(v) = t.strip_prefix("ARG RUSTUP_VERSION=") {
+                rustup.sightings.push((path.clone(), v.trim().to_string()));
+            }
+        }
+    }
+
+    // --- versions whose "must match" is only a comment ---------------------------------
+    let cargo_toml = root.join("Cargo.toml");
+    let fm = root.join(".github/workflows/feature-matrix.yml");
+    let cargo_text = fs::read_to_string(&cargo_toml).context("reading Cargo.toml")?;
+    let fm_text = fs::read_to_string(&fm).context("reading feature-matrix.yml")?;
+
+    let msrv_declared = cargo_text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("rust-version = "))
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .context("Cargo.toml has no [workspace.package] rust-version")?;
+    let mut msrv = Fact {
+        name: "workspace MSRV",
+        stake: "feature-matrix.yml says \"Must match [workspace.package] rust-version\" in a comment",
+        sightings: vec![(cargo_toml.clone(), msrv_declared)],
+    };
+    let mut kani_floor = Fact {
+        name: "Kani toolchain floor",
+        stake: "the floor is also written into a job name, and that name is a required context",
+        sightings: Vec::new(),
+    };
+    // The toolchain a job pins is the first `toolchain:` after its job id.
+    for (job, fact) in [("  msrv:", &mut msrv), ("  kani-msrv:", &mut kani_floor)] {
+        if let Some(i) = fm_text.find(job) {
+            if let Some(v) = fm_text[i..]
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("toolchain: "))
+            {
+                fact.sightings
+                    .push((fm.clone(), v.trim().trim_matches('"').to_string()));
+            }
+        }
+    }
+    // The floor written into the job's display name — `Kani toolchain floor (1.93)`.
+    if let Some(l) = fm_text
+        .lines()
+        .find(|l| l.trim().starts_with("name: Kani toolchain floor"))
+    {
+        if let (Some(a), Some(b)) = (l.find('('), l.rfind(')')) {
+            kani_floor
+                .sightings
+                .push((fm.clone(), l[a + 1..b].to_string()));
+        }
+    }
+
     let mut toolchains = Vec::new();
     first_party_toolchains(root, &mut toolchains)?;
     toolchains.sort();
@@ -181,7 +279,17 @@ fn collect(root: &Path) -> Result<Vec<Fact>> {
         lean.sightings.push((path, v));
     }
 
-    Ok(vec![elan_version, elan_sha, aeneas, charon, lean])
+    Ok(vec![
+        elan_version,
+        elan_sha,
+        aeneas,
+        charon,
+        lean,
+        runner_image,
+        rustup,
+        msrv,
+        kani_floor,
+    ])
 }
 
 pub fn check(root: &Path) -> Result<()> {
