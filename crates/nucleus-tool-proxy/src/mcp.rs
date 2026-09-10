@@ -32,9 +32,11 @@
 //! day stdio gains a bound tier, that test fails and this reasoning expires
 //! loudly rather than silently going stale.
 //!
-//! This says nothing about the gates that are *not* identity-dependent. The
-//! `validation::` module and `effect_gate::admit_http_recorded` are absent from
-//! this path and are plain wiring gaps, tracked separately.
+//! This says nothing about the gates that are *not* identity-dependent. Those
+//! were plain wiring gaps. `validation::` is now run here too — see the
+//! validator section below and `http_and_stdio_validate_the_same_inputs`.
+//! `effect_gate::admit_http_recorded` (ADR 0004's per-effect method+host+path
+//! gate) still has zero references on this path and is tracked separately.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -177,6 +179,98 @@ pub struct NucleusMcpServer {
 /// Convert a tool-level error into a CallToolResult error.
 fn err_result(msg: impl std::fmt::Display) -> CallToolResult {
     CallToolResult::error(vec![Content::text(format!("{msg}"))])
+}
+
+// ---------------------------------------------------------------------------
+// Input validation (ADR 0006 C2.0)
+// ---------------------------------------------------------------------------
+//
+// `crate::validation` is the tool-proxy's bound on unbounded input: pattern
+// length and catastrophic backtracking, path length, argument count and total
+// command size, stdin size, and null bytes anywhere. Every HTTP handler runs
+// it "before any processing" — ahead of the kernel consult, the guard and the
+// sandbox. This transport ran none of it, so the same tool reached the same
+// sandbox with input the HTTP handler refuses: a multi-megabyte stdin, ten
+// thousand argv entries, a path carrying an interior NUL, an `(a+)+` regex.
+//
+// Each function below is the check list of the HTTP handler it names, applied
+// to this transport's parameter struct. The field names differ — `root` is
+// glob's `directory`, `include` is grep's `file_glob` — but the checks do not.
+//
+// They run first in each handler, ahead of `sink.preflight`, matching HTTP's
+// "before any processing" placement. Order is free here: `preflight` is a pure
+// lockdown query with no snapshot and no state, so nothing downstream depends
+// on having been asked first. What the choice buys is an accurate audit
+// reason — a malformed call is recorded as `validation:`, not as a lockdown
+// denial that happens to have been malformed too.
+//
+// They are free functions rather than handler-inline code so the property is
+// testable without an `AppState`, which `tests/memory_ifc_e2e.rs` documents
+// avoiding because it needs a sandbox/runtime.
+//
+// `http_and_stdio_validate_the_same_inputs` derives both check lists from
+// source and asserts they are equal, in both directions. A check added to one
+// path and not the other then fails rather than drifting apart quietly, which
+// is how this gap opened. It compares the *set* of checks, not the number of
+// call sites — grep runs `validate_pattern` twice on both paths, on `pattern`
+// and on the file glob, and the set collapses that. The per-field behaviour is
+// what the `stdio_*_refuses_what_http_*_refuses` tests cover.
+//
+// `validate_query` has no row: it belongs to `web_search`, which is an HTTP
+// endpoint with no tool on this transport.
+//
+// `web_fetch` is the one tool that was already covered: it calls
+// `web_fetch_policy::validate_url`, a one-line delegation to
+// `validation::validate_url`. `web_fetch_was_already_covered` pins that
+// delegation so the coverage stays real.
+
+/// The input checks `read_file` runs before any gate.
+fn validate_read_params(p: &ReadParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_path(&p.path)
+}
+
+/// The input checks `write_file` runs before any gate.
+///
+/// `contents` is unbounded on both paths — the write size limit is the
+/// sandbox's, not this module's.
+fn validate_write_params(p: &WriteParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_path(&p.path)
+}
+
+/// The input checks `run_command` runs before any gate.
+fn validate_run_params(p: &RunParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_command_args(&p.args)?;
+    crate::validation::validate_stdin(p.stdin.as_deref())?;
+    if let Some(directory) = &p.directory {
+        crate::validation::validate_path(directory)?;
+    }
+    Ok(())
+}
+
+/// The input checks `glob_search` runs before any gate.
+///
+/// `GlobParams::root` is `GlobRequest::directory` under another name.
+fn validate_glob_params(p: &GlobParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_pattern(&p.pattern)?;
+    if let Some(root) = &p.root {
+        crate::validation::validate_path(root)?;
+    }
+    Ok(())
+}
+
+/// The input checks `grep_search` runs before any gate.
+///
+/// `GrepParams::include` is `GrepRequest::file_glob` under another name, and
+/// is a pattern rather than a path on both paths.
+fn validate_grep_params(p: &GrepParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_pattern(&p.pattern)?;
+    if let Some(path) = &p.path {
+        crate::validation::validate_path(path)?;
+    }
+    if let Some(include) = &p.include {
+        crate::validation::validate_pattern(include)?;
+    }
+    Ok(())
 }
 
 #[tool_router]
@@ -372,6 +466,28 @@ impl NucleusMcpServer {
         }
     }
 
+    /// Refuse a call whose inputs the HTTP path would have refused.
+    ///
+    /// The HTTP handlers record a `Deny` verdict carrying the validation
+    /// reason before returning, so a refused call is in the audit trail and
+    /// not only in the client's response. This does the same, against this
+    /// transport's fixed `ActorIdentity::StdioGuest`.
+    fn refuse_invalid(
+        &self,
+        operation: Operation,
+        subject: &str,
+        e: crate::validation::ValidationError,
+    ) -> CallToolResult {
+        self.record_verdict(
+            operation,
+            subject,
+            VerdictOutcome::Deny {
+                reason: format!("validation: {e}"),
+            },
+        );
+        err_result(e)
+    }
+
     // -----------------------------------------------------------------------
     // read — uses Sandbox.read_to_string (cap-std kernel protection)
     // -----------------------------------------------------------------------
@@ -381,6 +497,10 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<ReadParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Err(e) = validate_read_params(&params) {
+            return Ok(self.refuse_invalid(Operation::ReadFiles, &params.path, e));
+        }
+
         if let Err(e) = self.sink.preflight(Operation::ReadFiles) {
             self.record_verdict(
                 Operation::ReadFiles,
@@ -480,6 +600,10 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<WriteParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Err(e) = validate_write_params(&params) {
+            return Ok(self.refuse_invalid(Operation::WriteFiles, &params.path, e));
+        }
+
         if let Err(e) = self.sink.preflight(Operation::WriteFiles) {
             self.record_verdict(
                 Operation::WriteFiles,
@@ -588,6 +712,10 @@ impl NucleusMcpServer {
         Parameters(params): Parameters<RunParams>,
     ) -> Result<CallToolResult, McpError> {
         let subject = params.args.join(" ");
+
+        if let Err(e) = validate_run_params(&params) {
+            return Ok(self.refuse_invalid(Operation::RunBash, &subject, e));
+        }
 
         if let Err(e) = self.sink.preflight(Operation::RunBash) {
             self.record_verdict(
@@ -746,6 +874,10 @@ impl NucleusMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let subject = params.pattern.clone();
 
+        if let Err(e) = validate_glob_params(&params) {
+            return Ok(self.refuse_invalid(Operation::GlobSearch, &subject, e));
+        }
+
         if let Err(e) = self.sink.preflight(Operation::GlobSearch) {
             self.record_verdict(
                 Operation::GlobSearch,
@@ -870,6 +1002,10 @@ impl NucleusMcpServer {
         Parameters(params): Parameters<GrepParams>,
     ) -> Result<CallToolResult, McpError> {
         let subject = params.pattern.clone();
+
+        if let Err(e) = validate_grep_params(&params) {
+            return Ok(self.refuse_invalid(Operation::GrepSearch, &subject, e));
+        }
 
         if let Err(e) = self.sink.preflight(Operation::GrepSearch) {
             self.record_verdict(
@@ -1467,6 +1603,244 @@ mod tests {
             delegation_authority(&AuthMethod::SpiffeMtls),
             DelegationAuthority::Bound,
             "non-vacuity: if nothing is Bound, the loop above proves nothing"
+        );
+    }
+
+    // ── input validation parity with the HTTP path ──────────────────────
+
+    /// Strip `//` lines, then collect every `validate_*` reached through the
+    /// `validation::` module in `body`.
+    ///
+    /// Comments go first because the doc blocks on both paths name these
+    /// functions in prose — the same false positive `.dead-code-ratchet.toml`
+    /// records its counter hitting inside string literals.
+    fn validation_calls(body: &str) -> std::collections::BTreeSet<String> {
+        const PREFIX: &str = "validation::";
+        let code: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut found = std::collections::BTreeSet::new();
+        let mut rest = code.as_str();
+        while let Some(i) = rest.find(PREFIX) {
+            let after = &rest[i + PREFIX.len()..];
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if name.starts_with("validate_") {
+                found.insert(name);
+            }
+            rest = after;
+        }
+        found
+    }
+
+    /// Take the body of `head`, stopping at `terminator`.
+    fn body_after<'a>(src: &'a str, head: &str, terminator: &str) -> &'a str {
+        let start = src
+            .split(head)
+            .nth(1)
+            .unwrap_or_else(|| panic!("`{head}` must exist"));
+        &start[..start.find(terminator).unwrap_or(start.len())]
+    }
+
+    /// The two transports must refuse the same inputs.
+    ///
+    /// Both check lists are derived from source and compared as sets, in both
+    /// directions. Neither is written down twice, so this cannot pass by a
+    /// stale copy of one of them; and a check added to `read_file` but not to
+    /// `validate_read_params` (or the reverse) fails here rather than leaving
+    /// one transport quietly weaker — which is exactly how the gap this closes
+    /// opened, `mcp.rs` having reached the same sandbox with zero of these
+    /// bounds applied.
+    #[test]
+    fn http_and_stdio_validate_the_same_inputs() {
+        let http = include_str!("main.rs");
+        let stdio = include_str!("mcp.rs");
+
+        for (http_fn, stdio_fn) in [
+            ("async fn read_file(", "fn validate_read_params("),
+            ("async fn write_file(", "fn validate_write_params("),
+            ("async fn run_command(", "fn validate_run_params("),
+            ("async fn glob_search(", "fn validate_glob_params("),
+            ("async fn grep_search(", "fn validate_grep_params("),
+        ] {
+            let http_calls = validation_calls(body_after(http, http_fn, "\nasync fn "));
+            let stdio_calls = validation_calls(body_after(stdio, stdio_fn, "\n}"));
+
+            assert!(
+                !http_calls.is_empty(),
+                "non-vacuity: `{http_fn}` must still validate its inputs. If it \
+                 stopped, this test would pass by both sides being empty"
+            );
+            assert_eq!(
+                http_calls, stdio_calls,
+                "`{http_fn}` and `{stdio_fn}` must apply the same bounds; the \
+                 field names differ between the request and parameter structs, \
+                 the checks must not"
+            );
+        }
+    }
+
+    #[test]
+    fn stdio_read_refuses_what_http_read_refuses() {
+        let long = ReadParams {
+            path: "a".repeat(crate::validation::MAX_PATH_LENGTH + 1),
+        };
+        assert!(validate_read_params(&long).is_err(), "over-long path");
+
+        let nul = ReadParams {
+            path: "/workspace/ok\0/etc/passwd".to_string(),
+        };
+        assert!(validate_read_params(&nul).is_err(), "interior NUL");
+
+        let ok = ReadParams {
+            path: "/workspace/main.rs".to_string(),
+        };
+        assert!(validate_read_params(&ok).is_ok(), "non-vacuity");
+    }
+
+    #[test]
+    fn stdio_write_refuses_what_http_write_refuses() {
+        let nul = WriteParams {
+            path: "/workspace/ok\0.txt".to_string(),
+            contents: "hello".to_string(),
+        };
+        assert!(validate_write_params(&nul).is_err(), "interior NUL");
+
+        let ok = WriteParams {
+            path: "/workspace/out.txt".to_string(),
+            contents: "hello".to_string(),
+        };
+        assert!(validate_write_params(&ok).is_ok(), "non-vacuity");
+    }
+
+    #[test]
+    fn stdio_run_refuses_what_http_run_refuses() {
+        let base = || RunParams {
+            args: vec!["echo".to_string(), "hi".to_string()],
+            stdin: None,
+            directory: None,
+            _timeout_seconds: None,
+        };
+        assert!(validate_run_params(&base()).is_ok(), "non-vacuity");
+
+        let mut too_many = base();
+        too_many.args = vec!["x".to_string(); crate::validation::MAX_COMMAND_ARGS + 1];
+        assert!(validate_run_params(&too_many).is_err(), "argv count");
+
+        let mut too_long = base();
+        too_long.args = vec!["y".repeat(crate::validation::MAX_COMMAND_LENGTH + 1)];
+        assert!(validate_run_params(&too_long).is_err(), "argv bytes");
+
+        let mut nul_arg = base();
+        nul_arg.args = vec!["echo".to_string(), "a\0b".to_string()];
+        assert!(validate_run_params(&nul_arg).is_err(), "NUL in an argument");
+
+        let mut big_stdin = base();
+        big_stdin.stdin = Some("z".repeat(crate::validation::MAX_STDIN_LENGTH + 1));
+        assert!(validate_run_params(&big_stdin).is_err(), "stdin size");
+
+        let mut bad_dir = base();
+        bad_dir.directory = Some("/workspace\0".to_string());
+        assert!(validate_run_params(&bad_dir).is_err(), "working directory");
+    }
+
+    #[test]
+    fn stdio_glob_refuses_what_http_glob_refuses() {
+        let ok = GlobParams {
+            pattern: "**/*.rs".to_string(),
+            root: Some("/workspace".to_string()),
+        };
+        assert!(
+            validate_glob_params(&ok).is_ok(),
+            "non-vacuity: `**` is a glob"
+        );
+
+        let backtracking = GlobParams {
+            pattern: "(a+)+".to_string(),
+            root: None,
+        };
+        assert!(
+            validate_glob_params(&backtracking).is_err(),
+            "nested quantifier"
+        );
+
+        let bad_root = GlobParams {
+            pattern: "*.rs".to_string(),
+            root: Some("a".repeat(crate::validation::MAX_PATH_LENGTH + 1)),
+        };
+        assert!(validate_glob_params(&bad_root).is_err(), "over-long root");
+    }
+
+    #[test]
+    fn stdio_grep_refuses_what_http_grep_refuses() {
+        let ok = GrepParams {
+            pattern: "TODO".to_string(),
+            path: Some("/workspace".to_string()),
+            include: Some("*.rs".to_string()),
+            context_lines: None,
+        };
+        assert!(validate_grep_params(&ok).is_ok(), "non-vacuity");
+
+        let long_pattern = GrepParams {
+            pattern: "p".repeat(crate::validation::MAX_PATTERN_LENGTH + 1),
+            path: None,
+            include: None,
+            context_lines: None,
+        };
+        assert!(
+            validate_grep_params(&long_pattern).is_err(),
+            "pattern length"
+        );
+
+        let bad_path = GrepParams {
+            pattern: "TODO".to_string(),
+            path: Some("/workspace\0".to_string()),
+            include: None,
+            context_lines: None,
+        };
+        assert!(validate_grep_params(&bad_path).is_err(), "NUL in path");
+
+        let bad_include = GrepParams {
+            pattern: "TODO".to_string(),
+            path: None,
+            include: Some("(a+)+".to_string()),
+            context_lines: None,
+        };
+        assert!(
+            validate_grep_params(&bad_include).is_err(),
+            "`include` is a pattern, and gets the pattern checks"
+        );
+    }
+
+    /// `web_fetch` was the one tool already covered, indirectly.
+    ///
+    /// It calls `web_fetch_policy::validate_url`, which is a one-line
+    /// delegation to `validation::validate_url` — the check the HTTP handler
+    /// runs directly. Pin the delegation: if that wrapper ever stops
+    /// delegating, `web_fetch` silently joins the gap the rest of this section
+    /// closes, and nothing else would notice.
+    #[test]
+    fn web_fetch_was_already_covered() {
+        let long = format!(
+            "https://example.com/{}",
+            "a".repeat(crate::validation::MAX_PATH_LENGTH)
+        );
+        assert!(
+            crate::web_fetch_policy::validate_url(&long).is_err(),
+            "length bound"
+        );
+        assert!(
+            crate::web_fetch_policy::validate_url("file:///etc/passwd").is_err(),
+            "scheme bound"
+        );
+        assert!(
+            crate::web_fetch_policy::validate_url("https://example.com/ok").is_ok(),
+            "non-vacuity"
         );
     }
 
