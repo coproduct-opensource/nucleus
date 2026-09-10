@@ -47,6 +47,7 @@ const DERIVATION_DOMAIN: &[u8] = b"nucleus.snapshot-derivation.v1\n";
 /// In the derivation because a base is only restorable by a host that can talk to the guest it
 /// froze: bump this when `SnapshotReady`'s meaning changes, and every existing base stops being
 /// offered to code that would misread it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) const BARRIER_PROTOCOL: u32 = 1;
 
 /// The machine, as far as a restored guest can tell.
@@ -157,6 +158,7 @@ pub(crate) struct SnapshotInputs {
 
 impl SnapshotInputs {
     /// The derivation for a base taken from this pod.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn derivation(&self, program: String) -> Derivation {
         Derivation {
             program,

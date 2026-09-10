@@ -544,6 +544,7 @@ pub(crate) fn instance_start_request() -> ApiRequest {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
     let JailerPlan {
         firecracker_path,

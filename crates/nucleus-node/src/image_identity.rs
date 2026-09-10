@@ -27,6 +27,7 @@ use nucleus_spec::{ArtifactDigest, ImageSpec};
 use crate::firecracker_config::{JailLayout, in_jail};
 
 /// One artifact to check: what it is called, where it now lives, and what it should hash to.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct Pinned<'a> {
     what: &'static str,
     path: PathBuf,
@@ -34,6 +35,7 @@ struct Pinned<'a> {
 }
 
 /// Resolve the pins to the paths that will actually boot.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn pins<'a>(image: &'a ImageSpec, jail: Option<&JailLayout>) -> Vec<Pinned<'a>> {
     // In the jail every artifact has a fixed name; unjailed, the spec's own path is used.
     let at = |in_jail_name: &str, host: &Path| -> PathBuf {
@@ -82,6 +84,7 @@ fn pins<'a>(image: &'a ImageSpec, jail: Option<&JailLayout>) -> Vec<Pinned<'a>> 
 /// Uses the same `measure_artifact` the launch attestation uses, so the digest a spec pins, the
 /// digest an attestation reports, and the digest a posture claim is admitted against are one
 /// function's output and cannot drift apart.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) async fn verify(image: &ImageSpec, jail: Option<&JailLayout>) -> Result<(), String> {
     for p in pins(image, jail) {
         let measured = nucleus_identity::attestation::measure_artifact(&p.path)
