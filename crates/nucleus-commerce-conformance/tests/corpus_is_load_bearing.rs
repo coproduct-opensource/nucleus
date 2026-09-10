@@ -167,3 +167,52 @@ fn a_payout_vector_exercises_integer_division_dust() {
          assigning the dust would pass this corpus and then skim on every real split"
     );
 }
+
+/// #2736: the checked-in corpus must be what the generator emits.
+///
+/// `examples/independent-conformance/vectors.json` is generated output —
+/// `cargo run --example vectors` — committed so a third-party implementation can
+/// read it without a Rust toolchain. Generated output under version control
+/// goes stale silently, and this one went stale invisibly twice over: nothing
+/// regenerated it, and nothing compared it.
+///
+/// A stale corpus is worse than no corpus. `conform.py` would keep passing while
+/// validating an independent implementation against a spec nucleus has moved
+/// past — certifying conformance to something nobody enforces. When #2359 grew
+/// the corpus 14 -> 16, only luck kept the file current.
+///
+/// This lives here rather than in `ci/` on purpose: it guards the relationship
+/// between `export_vectors()` and one file, so it belongs next to
+/// `export_vectors()`, where a change to the generator sees it fail immediately.
+#[test]
+fn the_checked_in_vectors_are_what_the_generator_emits() {
+    // `examples/vectors.rs` is `println!("{}", export_vectors())`, so the file on
+    // disk is that string plus the newline `println!` adds.
+    let generated = nucleus_commerce_conformance::export_vectors();
+    let checked_in = include_str!("../../../examples/independent-conformance/vectors.json");
+
+    assert_eq!(
+        generated.trim_end(),
+        checked_in.trim_end(),
+        "examples/independent-conformance/vectors.json is stale.\n\
+         Regenerate it:\n  \
+         cargo run -q -p nucleus-commerce-conformance --example vectors \
+         > examples/independent-conformance/vectors.json\n\
+         Do NOT hand-edit it, and do not delete this test to get green — a \
+         third-party implementation is checking itself against that file."
+    );
+
+    // Non-vacuity: both sides must be a real corpus. A generator that returned
+    // "" against an empty file would satisfy the assert above while proving
+    // nothing, which is the failure shape this whole test exists to catch.
+    let parsed: serde_json::Value =
+        serde_json::from_str(checked_in).expect("the checked-in corpus must be JSON");
+    let cases = parsed["cases"]
+        .as_array()
+        .expect("the corpus must carry a `cases` array");
+    assert!(
+        cases.len() >= 16,
+        "expected at least the 16 cases #2359 established, found {}",
+        cases.len()
+    );
+}
