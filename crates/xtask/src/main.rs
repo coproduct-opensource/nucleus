@@ -81,6 +81,15 @@ enum Command {
     /// not wired to the enforcement path — the general case of the class C8
     /// gates for the Aeneas predicates.
     LawMechanisms,
+    /// A witness accepted and dropped is a gate that is present but does
+    /// nothing. Every `_`-bound authority/attestation parameter in the
+    /// production region must be declared in
+    /// `scripts/inert-authority-manifest.txt`, with an exact count per
+    /// `(file, impl target)` and a reason.
+    ///
+    /// The dual of `law-mechanisms`: that gate finds mechanisms with no call
+    /// site, this finds mechanisms that are called and then ignored.
+    InertAuthority,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
     /// catch feature-unification-masked breakages — crates that compile in a
     /// full `--workspace` build but fail standalone (and on `cargo publish`)
@@ -222,6 +231,7 @@ mod ci_spec;
 mod ci_timings;
 mod fly_pools;
 mod gatehouse_pin;
+mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
 mod line_ratchet;
@@ -253,6 +263,12 @@ fn main() -> Result<()> {
         // Exit code mapped here rather than inside the check, so a unit test
         // calling `run()` survives — the SelfPin arm's reasoning.
         Command::LawMechanisms => match law_mechanisms::run()? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
+        // Exit code mapped here, not inside the check, for the SelfPin arm's
+        // reason: a unit test calling `run()` must survive.
+        Command::InertAuthority => match inert_authority::run()? {
             0 => Ok(()),
             code => std::process::exit(code),
         },

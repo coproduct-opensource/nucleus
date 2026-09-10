@@ -1,0 +1,107 @@
+# Inert-authority manifest — witnesses that are ACCEPTED and DROPPED.
+#
+# Read by `cargo xtask inert-authority` (crates/xtask/src/inert_authority.rs)
+# via the shim scripts/check-inert-authority.sh.
+#
+# WHY THIS FILE EXISTS
+#
+# scripts/law-mechanisms-manifest.txt names mechanisms with no call site at
+# all. This names the failure next door, which nothing could see: a mechanism
+# that IS called, IS handed its authorising witness, and throws it away.
+#
+#     fn run(&self, cmd: &str, _authority: Authority) -> Result<ShellOutput> {
+#         let words = shell_words::split(cmd)?;
+#         Command::new(&words[0]).args(&words[1..]).output()      // spawns
+#     }
+#
+# The signature says a caller must hold an `Authority` to get here. The body
+# says the `Authority` decides nothing. The gap between those two true
+# statements is the finding: no witness in this tree carries the TARGET of the
+# act it authorises, so an `Authority` obtained for one command discharges the
+# gate for any other. The type proves that SOME check ran, not that THIS act
+# was checked.
+#
+# Closing that is the `Act` collapse (ADR 0006, C2.2/C2.4) -- signature churn
+# across three crates. This file exists so the number cannot grow while that
+# work lands, which is why C0 precedes the four collapses at all.
+#
+# WHAT COUNTS
+#
+# A parameter whose name starts with `_` and whose type is one of WITNESS
+# below, anywhere in the production region (tests/, benches/, examples/,
+# fuzz/, *_tests.rs and #[cfg(test)] blocks excluded) of every file
+# `git ls-files` reports. The vocabulary lives HERE and not in the Rust, for
+# the reason .clippy-ratchet.toml keeps its lint list in the toml: so the gate
+# and its documentation cannot drift apart.
+#
+# WHAT DELIBERATELY DOES NOT COUNT, AND THIS IS THE ONE JUDGEMENT HERE
+#
+# The `Seal` family -- `Seal`, `CertificateSeal`, `GrantSeal`, `SealedProof` --
+# is NOT in WITNESS. Those are private zero-sized types threaded through
+# constructors so nothing outside the module can call them (#2450). Thirteen
+# sites, and EVERY one is `_`-bound, because being unread is the entire
+# mechanism. Listing them would put the tree's most deliberate witnesses at the
+# top of a list of accidents and bury the ones that are real. A seal guards
+# CONSTRUCTION; this gate is about a guard on ACTION.
+#
+# WHAT A ROW MEANS
+#
+#   CLASS | file | scope | count | note
+#
+# `scope` is the enclosing `impl` target (for `impl T for X`, that is `X`) or
+# `trait T`. Not the file: 30 of the 40 sites are in one file and they are not
+# alike -- DenyAllEffects refuses every call, RecordingEffects writes a log
+# line, and RealEffects::{run, commit, push} spawn processes. A file-level
+# allowance would launder the three that matter behind the twenty-two that do
+# not, which is exactly the shape of laundering .dead-code-ratchet.toml refuses
+# between crates.
+#
+#   N -- the scope performs no act, so no authority is being discarded.
+#   D -- debt: the act happens and the witness is dropped.
+#
+# Counts are EXACT IN BOTH DIRECTIONS and INERT_TOTAL must equal their sum. A
+# slack pin lets a new site appear inside a scope that already has a row, which
+# is the failure this gate exists to catch -- the argument DEAD_COUNT makes
+# next door. A row whose scope has no inert site left also FAILS: the debt was
+# paid, so delete the row and lower the pin.
+#
+# SEEDED 2026-09-10 BY THE GATE, not carried in from the audit's hand count.
+# The instruction .dead-code-ratchet.toml records -- "re-measure with the gate
+# rather than trust the audit's hand-counted 130" -- applied here too, and it
+# again earned its keep: a hand-rolled `#[cfg(test)]` stripper written while
+# prototyping this gate disagreed with the shared
+# `law_mechanisms::production_region` by one site over the same corpus. The
+# stripper is now shared rather than restated, so this gate,
+# check-law-mechanisms.sh, check-mediation.sh and check-extracted-callsites.sh
+# give one answer to "what is production".
+#
+# Adding a row is not a way to park a witness. A row is a debt with a name.
+
+WITNESS = [
+  "Authority",
+  "VerifiedAuthority",
+  "VerifiedPermissions",
+  "CertifiedPermissions",
+  "WorkloadCertificate",
+  "LaunchAttestation",
+  "VerifiedGrant",
+  "BindingProof",
+  "CheckProof",
+  "DecisionToken",
+  "DeclassificationToken",
+  "SessionCleanseToken",
+  "Authorized",
+  "GuardedAction",
+]
+
+D | crates/portcullis-effects/src/lib.rs | RealEffects | 6 | THE finding. run() spawns the parsed command, commit() runs `git add -u` and commits, push() runs `git push` -- each takes Authority BY VALUE and drops it, so the witness bounds nothing about which command, remote or branch. The other three are WebEffect::fetch/search and AgentSpawnEffect::spawn, whose bodies are Err(NotImplemented); the group is mixed and classed D because a group containing debt is debt. C2.2 makes the target part of the witness and splits this row.
+D | crates/nucleus-identity/src/ca/mod.rs | trait CaClient | 1 | sign_attested_csr's DEFAULT body is self.sign_csr(csr, private_key, identity, ttl) with `_attestation: &LaunchAttestation` unread, under a doc comment promising "The attestation is cryptographically bound to the certificate" and "Verifiers can require specific attestation hashes". SelfSignedCa overrides it (ca/self_signed.rs); SpireCaClient (ca/spire.rs) does not, so it inherits the version that binds nothing.
+D | crates/nucleus-ifc-kernel/src/ifc_api.rs | FlowTracker | 1 | reset_session_ceiling takes `_token: &SessionCleanseToken` by REFERENCE and never consumes it, then assigns the new ceiling. A cleanse token that survives its own use is not single-use; ADR 0006's C3.2 folds this into the one burn ledger.
+N | crates/portcullis-effects/src/lib.rs | DenyAllEffects | 12 | every method returns Err(PolicyDenied(..)) or Err(io::Error). Nothing is performed, so there is no act for an authority to bound. Dropping the witness here is correct, not deferred.
+N | crates/portcullis-effects/src/lib.rs | RecordingEffects | 10 | each method calls self.record(..) and returns; a test double that performs no effect. Same reasoning as DenyAllEffects.
+N | crates/portcullis-effects/src/lib.rs | AllowListEffects | 6 | a simulation double: read() returns a canned file_read_response, write()/append() only check_path, glob()/search() return empty. No real I/O. Worth reading anyway as a miniature of the whole finding -- it enforces its OWN allow-list and never consults the authority it was handed.
+N | crates/portcullis-effects/src/lib.rs | trait ShellEffect | 1 | run_argv's declaration, no body. The underscore is a naming choice in a signature; implementors bind it themselves and are counted at their own scope.
+N | crates/portcullis-effects/src/lib.rs | trait AsyncShellSpawnEffect | 1 | run_argv_async's declaration, no body. As above.
+N | crates/portcullis-effects/src/lib.rs | trait NetEffect | 1 | fetch's declaration, no body. As above.
+N | crates/nucleus-cli/src/grant.rs | <free> | 1 | verified_line(_verified: &VerifiedGrant) -> &'static str returns a constant string. A display helper takes the type to prove the caller verified something; there is nothing in the value to read.
+INERT_TOTAL=40
