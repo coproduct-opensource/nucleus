@@ -736,6 +736,42 @@ impl ApprovalRegistry {
         }
         false
     }
+
+    /// Whether a live grant exists for `operation`, WITHOUT spending it.
+    ///
+    /// One human approval must buy exactly one operation, and an operation
+    /// crosses two independent approval gates on its way through: the kernel's
+    /// `RequiresApproval` verdict at the HTTP chokepoint, and the sandbox's own
+    /// capability guard. Both used to want to `consume`, which is #2406's other
+    /// half — a grant of `count: 1` was spent by whichever gate read it first
+    /// and the next gate found nothing, so the caller had to grant more than
+    /// they meant to approve for the write to land at all.
+    ///
+    /// So the gates split the two questions. Every gate before the last asks
+    /// *is this approved* (here); the sandbox approver, which is the last thing
+    /// between the request and the bytes, is the single site that spends it.
+    /// A peek that reports a live grant is therefore always followed by exactly
+    /// one `consume`, or by a refusal further down that spends nothing.
+    ///
+    /// Expiry is evaluated and purged here exactly as in [`Self::consume`], so
+    /// a peek cannot report a grant that a spend would then reject.
+    fn is_granted(&self, operation: &str) -> bool {
+        let mut guard = self.approvals.lock().unwrap();
+        match guard.get(operation) {
+            Some(entry) if is_expired(entry.expires_at_unix) => {
+                guard.remove(operation);
+                false
+            }
+            Some(entry) => entry.count > 0,
+            None => false,
+        }
+    }
+}
+
+impl mediation::ApprovalGrants for ApprovalRegistry {
+    fn is_granted(&self, operation: &str) -> bool {
+        ApprovalRegistry::is_granted(self, operation)
+    }
 }
 
 fn merge_expiry(existing: Option<u64>, incoming: Option<u64>) -> Option<u64> {
@@ -2777,13 +2813,16 @@ async fn http_kernel_decide(
     // records do; it used to hardcode `Unknown` while the sibling record in
     // the same handler carried the SPIFFE ID.
     mediation::decide_and_record(
-        state.verdict_sink.as_ref(),
+        mediation::MediationEnv {
+            sink: state.verdict_sink.as_ref(),
+            actor: actor_from_auth(auth_ctx),
+            transport: "http",
+            grants: state.approvals.as_ref(),
+        },
         &mut kernel,
         &graph,
         operation,
         subject,
-        actor_from_auth(auth_ctx),
-        "http",
     )
 }
 
@@ -3058,19 +3097,28 @@ async fn write_file(
             // `ApprovalRequired` with the same operation string. That ambiguity
             // cost four wrong diagnoses of #2406, so the distinction is logged.
             //
-            // Worth knowing what this arm does NOT cover. `http_kernel_decide`
-            // runs earlier and can return `requires_approval` from mediation,
-            // which propagates before `sandbox.write` is ever called — so a
-            // grant made through `/v1/approve` never reaches this registry at
-            // all. That is #2406, and it is why adding the log here proved the
-            // point by staying silent.
+            // `http_kernel_decide` runs earlier and can also return
+            // `requires_approval`. It used to propagate before `sandbox.write`
+            // was ever called, so a grant made through `/v1/approve` never
+            // reached this registry at all — that was #2406, and it is why
+            // adding the log here first proved the point by staying silent.
+            // That gate now consults the same registry, so an operation can
+            // reach this arm with a grant already on file.
             //
-            // Note also the grant is consumed TWICE per attempt when this arm IS
-            // reached: once here, and again inside `request_approval`, whose
-            // approver is `move |req| approvals.consume(req.operation())`.
+            // Which makes it load-bearing that this guard PEEKS. The grant is
+            // spent exactly once per attempt, inside `request_approval`, whose
+            // approver is `move |req| approvals.consume(req.operation())`. This
+            // used to `consume` as well — two spends per attempt, so `count: 1`
+            // never sufficed and the caller had to approve twice what they meant
+            // to approve once.
             let policy_ok =
                 check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path));
-            let pre_granted = !policy_ok && state.approvals.consume(&op);
+            // `op` is the same string the kernel gate refused with and the
+            // caller posted to `/v1/approve`: both gates name an approval
+            // `{Operation:?} {subject}` (`Sandbox::approval_key`). One human
+            // decision, one name, so one grant carries the operation through
+            // every gate that asks about it.
+            let pre_granted = !policy_ok && state.approvals.is_granted(&op);
             if policy_ok || pre_granted {
                 let approval = match state.runtime.sandbox().request_approval(op.clone()) {
                     Ok(a) => a,
@@ -3079,8 +3127,7 @@ async fn write_file(
                             operation = %op,
                             policy_ok,
                             pre_granted,
-                            "a grant was accepted here but the sandbox approver then refused; \
-                             the grant is consumed twice per attempt"
+                            "a grant was accepted here but the sandbox approver then refused"
                         );
                         return Err(e.into());
                     }
