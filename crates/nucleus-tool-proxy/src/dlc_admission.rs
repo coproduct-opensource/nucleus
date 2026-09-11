@@ -113,7 +113,15 @@ mod tests {
             // with_env call, so no other test in this binary touches the
             // environment concurrently.
             match v {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "ADR 0007 H-1: test-only process-global mutation"
+                )]
                 Some(val) => unsafe { std::env::set_var(k, val) },
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "ADR 0007 H-1: test-only process-global mutation"
+                )]
                 None => unsafe { std::env::remove_var(k) },
             }
         }
@@ -122,7 +130,13 @@ mod tests {
             // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
             // reader. Sound here because this runs before any thread that reads the
             // environment is spawned.
-            unsafe { std::env::remove_var(k) };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "ADR 0007 H-1: test-only process-global mutation"
+            )]
+            unsafe {
+                std::env::remove_var(k)
+            };
         }
     }
 

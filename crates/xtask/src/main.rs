@@ -89,6 +89,11 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         periods: u32,
     },
+    /// Clippy reads ONE `clippy.toml` -- the nearest -- and does not merge, so a
+    /// crate-level config silently drops every root entry. Measured: the two entries
+    /// ADR 0007 wired were not enforced in `nucleus-tool-proxy`, which holds the HTTP
+    /// and MCP effect boundary. Decided from committed files alone.
+    ClippyConfig,
     /// The committed `POOLS` default in ci/fly-runner/manager.toml must be a
     /// configuration the manager accepts, checked with the manager's own validator.
     FlyPools,
@@ -235,6 +240,15 @@ enum CiSpecCmd {
         json: bool,
     },
     /// Print the inline-gate inventory (ci/inline-gates.txt shape).
+    /// Every check context a workflow produces that ci/required-checks.txt does
+    /// NOT list. Advisory contexts block nothing, so one can be red on main
+    /// indefinitely -- which happened on 2026-09-11. Prints the set so
+    /// advisory-by-accident can be told from advisory-by-decision.
+    Advisory {
+        /// Repository root (defaults to the current directory).
+        #[arg(long)]
+        repo: Option<String>,
+    },
     InlineGates {
         #[arg(long)]
         repo: Option<String>,
@@ -276,6 +290,7 @@ mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
 mod ci_timings;
+mod clippy_config;
 mod fly_pools;
 mod gatehouse_pin;
 mod inert_authority;
@@ -317,6 +332,10 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::ClippyConfig => match clippy_config::run(&std::env::current_dir()?)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;
@@ -351,6 +370,7 @@ fn main() -> Result<()> {
         }
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
+            CiSpecCmd::Advisory { repo } => ci_spec::advisory(repo),
             CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
             CiSpecCmd::LiveParity { repo, github, json } => {
                 ci_spec::live_parity(repo, &github, json)

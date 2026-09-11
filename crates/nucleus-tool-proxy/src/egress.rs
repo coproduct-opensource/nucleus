@@ -415,7 +415,13 @@ mod tests {
         // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
         // reader. Sound here because this runs before any thread that reads the
         // environment is spawned.
-        unsafe { std::env::set_var(&sp.credential_env, "super-secret-token") };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::set_var(&sp.credential_env, "super-secret-token")
+        };
         let env = workload_egress_env(std::slice::from_ref(&sp), "http://127.0.0.1:9");
         for (k, v) in &env {
             assert!(
@@ -431,7 +437,13 @@ mod tests {
         // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
         // reader. Sound here because this runs before any thread that reads the
         // environment is spawned.
-        unsafe { std::env::remove_var(&sp.credential_env) };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::remove_var(&sp.credential_env)
+        };
     }
 
     /// **A request cannot redirect where the credential is sent.** Absolute URLs

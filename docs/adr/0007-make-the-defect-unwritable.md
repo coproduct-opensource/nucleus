@@ -1,6 +1,6 @@
 # ADR 0007 — Make the defect unwritable: thirty-nine Rust mandates from the defect record
 
-- Status: **accepted** (2026-09-11) for the mandates; **partially wired** — two entries in `clippy.toml`, the rest carry a named enforcement target and a measured baseline.
+- Status: **accepted** (2026-09-11) for the mandates; **partially wired** — four entries in `clippy.toml` (C-1, C-5, H-1 ×2) plus `cargo xtask clippy-config`, the rest carry a named enforcement target and a measured baseline.
 - Tracks: a full review of `coproduct-opensource/nucleus` (2,248 commits) and `coproduct-private/gatehouse` (232 commits + 62 `FINDINGS.md` rows), 2026-09-11
 - Applies to: all Rust under `crates/` and `tools/`. New code from this ADR forward; existing code as each file is touched.
 
@@ -389,10 +389,14 @@ it living as a value somewhere else that nothing forces the call site to consult
 later reader in the process tree inherits authority nobody granted them.
 `nucleus-guest-init` already did this migration — `src/main.rs:88` records that 28
 values *used to be* `set_var`.
-*Enforcement: **clippy.toml, not yet wired.** Measured 2026-09-11: 0 production call
-sites; 14 `set_var` and 13 `remove_var` sites, every one inside `#[cfg(test)]` or a
-comment. Because CI runs `--all-targets`, wiring this requires `#[expect(...)]` at 27
-test sites first. That is a separate, mechanical PR — see §Enforcement.*
+*Enforcement: **clippy.toml, wired.** Measured 2026-09-11: 0 production call sites.
+Every remaining site is inside `#[cfg(test)]` and carries an
+`#[expect(clippy::disallowed_methods, reason = "ADR 0007 H-1: test-only process-global
+mutation")]`. The count is **25**, not the 27 estimated here from `grep` — two of the
+matches were comments, and nine of the 25 were invisible to the root config until the
+`nucleus-tool-proxy` shadow was closed. `#[expect]` rather than `#[allow]` on purpose:
+when a site stops mutating the environment the expectation becomes unfulfilled and the
+attribute must be deleted, so the suppression cannot outlive its reason (B-5).*
 
 **H-2 — A client that performs an effect is constructible only from a witness.**
 `57920b28` — *a pod cannot build a client for a host its own policy forbids* —
@@ -493,6 +497,37 @@ This also establishes, empirically, that a `clippy.toml` at the workspace root r
 for workspace members — which the Clippy documentation does not state and which
 `CARGO_MANIFEST_DIR` being the *member* directory gives reason to doubt.
 
+**It resolves only for members that do not have their own.** Clippy reads **one**
+configuration file — `CLIPPY_CONF_DIR`, else `CARGO_MANIFEST_DIR` — and the nearest
+`clippy.toml` wins outright. There is no merge. A member with its own config receives
+**none** of the root's entries.
+
+`crates/nucleus-tool-proxy/clippy.toml` has existed since #1216 to hold
+`disallowed-types`, and by existing it dropped the root's `disallowed-methods`. So both
+entries wired above were **not enforced in the crate that holds the HTTP and MCP effect
+boundary** — measured by injecting a violation there and watching the crate compile,
+report the function as unused, and say nothing about `transmute`:
+
+```
+$ printf 'fn probe() { unsafe { std::env::set_var("P","1") }; }\n' \
+    >> crates/nucleus-tool-proxy/src/egress.rs
+$ cargo clippy -p nucleus-tool-proxy --all-targets --all-features
+warning: function `probe` is never used     <- the crate IS being checked
+                                            <- and disallowed_methods does NOT fire
+```
+
+This is I-1 firing against this ADR. Both entries measured **zero** occurrences
+tree-wide, so a green run and a run that never asked were the same observation — the
+vacuity A-2 names, in the gate that exists to prevent it. The probe above is a
+*positive control*: it is the thing the §Enforcement probe should have done in the
+crate it mattered most in.
+
+The remedy is G-2 — where a second copy is unavoidable, the gate lives at the
+declaration. `cargo xtask clippy-config` compares every crate-level `clippy.toml`
+against the root's and REDs on any dropped entry, naming the entry to add. Adding a
+root entry without restating it in a shadowing config is now a build failure rather
+than a silent hole.
+
 ### Why only two entries are wired today
 
 CI runs `cargo clippy --all-targets --all-features -- -D warnings`. A single existing
@@ -503,15 +538,15 @@ is added only when the tree is already clean of it. Measured 2026-09-11:
 |---|---|---|
 | `std::mem::transmute` | **0** | yes |
 | `std::vec::Vec::leak` | **0** | yes |
-| `std::env::set_var` | 14, all `#[cfg(test)]`/comment | no — needs 14 `#[expect]` |
-| `std::env::remove_var` | 13, all `#[cfg(test)]` | no — needs 13 `#[expect]` |
+| `std::env::set_var` | 13, all `#[cfg(test)]` | yes — 13 `#[expect]` |
+| `std::env::remove_var` | 12, all `#[cfg(test)]` | yes — 12 `#[expect]` |
 | `unwrap_or_default` | 218 | no — dylint, scoped |
 | `unwrap_or` | 584 | no — dylint, scoped |
 | `#[derive(Default)]` | 177 | no — dylint, scoped |
 
-H-1 is the next step and is a separate mechanical PR: add `#[expect(clippy::disallowed_methods, reason = "ADR 0007 H-1: test-only process-global mutation")]`
-at the 27 test sites, then add both paths to `clippy.toml`. Splitting it keeps this ADR
-reviewable and keeps that PR's diff uniform.
+H-1 was the next step and has landed, with the `#[expect]` at each of the 25 test sites
+and both paths in `clippy.toml`. It did not stay mechanical: the shadowing defect above
+was found while driving it red, which is what A-19 is for.
 
 ### What the wired half does not cover
 
