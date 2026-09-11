@@ -78,6 +78,25 @@
 //! **360 minutes** — six hours of a runner held by a job that has hung. On a self-hosted
 //! pool already measured starving (gatehouse F-79), that is the cost that matters.
 //!
+//! **What already existed, and what this adds.** `ci-spec`'s `CI-I7-NOTIMEOUT`
+//! (`crates/ci-spec/src/invariants/timeouts.rs`) already finds untimed jobs, and its rationale
+//! is sharper than this one: it filters to workflows triggered by `merge_group`, because those
+//! are the jobs whose 360-minute default equals the queue's own `check_response_timeout_minutes`
+//! and therefore ejects a queue entry. It founds that on a real stall (2026-09-04/05). It
+//! reports **5** such jobs at `Severity::Medium`, which prints as `info` and does **not** fail.
+//!
+//! So this conjunct is not the first to look. It differs in two ways worth stating plainly:
+//! it covers every workflow rather than only `merge_group` ones (23 against those 5, which are
+//! a strict subset), and being a pinned population it **fails** rather than advising, so the
+//! set cannot grow while the 23 individual judgements are made.
+//!
+//! A correction belongs here too, because the wrong belief is more useful than the fix: two
+//! loops before this was written I tested the 360-minute tie, asked whether any REQUIRED
+//! context came from an untimed job, found none, and concluded it was not live. The right
+//! population was `merge_group`-triggered jobs, not required contexts — there are 5, and
+//! `CI-I7` had been saying so. Checking the wrong set and reading the empty answer as absence
+//! is the same error as trusting a gate's name over its log.
+//!
 //! Measured 2026-09-11: **147 jobs, 124 declaring a timeout, 23 not.** None of the 23
 //! produces a required context, so a hang there cannot block the merge queue on a required
 //! check — which is why this is a ratchet (`ci/untimed-jobs.txt`, shrink-only) rather than a

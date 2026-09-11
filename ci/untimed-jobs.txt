@@ -10,6 +10,12 @@
 # number here fails honest jobs. What the ratchet buys immediately is that the population
 # cannot grow while those judgements are made.
 #
+# NOT the first check on this. ci-spec's CI-I7-NOTIMEOUT already reports untimed jobs, with
+# a sharper rationale: it filters to `merge_group`-triggered workflows, where the 360-minute
+# default equals the queue's own check budget and so ejects the entry. It reports 5 such jobs
+# at Medium severity, which prints as info and does not fail. Those 5 are a strict subset of
+# the 23 below. This list covers every workflow and FAILS, so the population cannot grow.
+#
 # Measured 2026-09-11: 147 jobs across the workflows, 124 declaring a timeout, 23 not.
 # None of the 23 produces a required context, checked against ci/required-checks.txt — so
 # a hang here cannot block the merge queue on a required check. It can still hold a
