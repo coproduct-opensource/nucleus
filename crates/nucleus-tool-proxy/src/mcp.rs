@@ -1425,10 +1425,16 @@ mod tests {
     }
 
     #[test]
-    fn build_term_grep_search_maps_to_glob() {
-        // GrepSearch maps to GlobSearch PrimitiveAction (same file-pattern semantic)
+    fn build_term_grep_search_stays_grep_search() {
+        // This asserted `GlobSearch`, on the reasoning that grep and glob share
+        // a file-pattern semantic. They do not share an AUTHORITY: the profiles
+        // grant `grep_search` and `glob_search` separately, and
+        // `WithinDelegationCeiling` compares a term's own operation against the
+        // one its authority names. Lowering grep to a glob primitive made those
+        // two disagree for every grep, so grep was denied under `codegen`, which
+        // grants `grep_search: always` (#2790).
         let term = build_action_term(Operation::GrepSearch, "TODO");
-        assert_eq!(term.operation(), Operation::GlobSearch);
+        assert_eq!(term.operation(), Operation::GrepSearch);
     }
 
     #[test]
@@ -1444,9 +1450,13 @@ mod tests {
     }
 
     #[test]
-    fn build_term_manage_pods() {
+    fn build_term_manage_pods_stays_manage_pods() {
+        // Same collapse as grep above, and the same consequence: `manage_pods`
+        // and `spawn_agent` are separately granted, so a ManagePods term whose
+        // action reported `SpawnAgent` could not pass the ceiling check against
+        // its own authority (#2790).
         let term = build_action_term(Operation::ManagePods, "pod-123");
-        assert_eq!(term.operation(), Operation::SpawnAgent); // ManagePods maps to SpawnAgent
+        assert_eq!(term.operation(), Operation::ManagePods);
     }
 
     // ── ActionTerm derives correct obligations ─────────────────────────
