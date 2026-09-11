@@ -116,6 +116,10 @@ impl Art12Log {
     ///
     /// # Errors
     /// If the file cannot be opened for appending.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "#1216: writes the proxy's own Article 12 record, not agent-directed I/O"
+    )]
     pub fn open(
         path: &Path,
         secret: Vec<u8>,

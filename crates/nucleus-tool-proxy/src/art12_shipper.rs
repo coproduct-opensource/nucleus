@@ -138,6 +138,10 @@ impl Art12Shipper {
     /// Here rather than in `main`, so the secret choice and the client setup sit
     /// beside the reasoning that governs them — and so main.rs stays under its
     /// line ratchet.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "#1216: ships the proxy's own Article 12 records to a configured collector, not agent-directed egress"
+    )]
     pub(crate) fn from_args(
         url: Option<&String>,
         audit_secret: Option<&str>,
@@ -172,6 +176,10 @@ mod tests {
     /// `reqwest::Client::new()` panics without a rustls provider. Production
     /// installs one at startup (main.rs); a test process has to do it itself,
     /// and `install_default` is idempotent-ish so the `ok()` is deliberate.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "#1216: ships the proxy's own Article 12 records to a configured collector, not agent-directed egress"
+    )]
     fn client() -> reqwest::Client {
         let _ = rustls::crypto::ring::default_provider().install_default();
         reqwest::Client::new()

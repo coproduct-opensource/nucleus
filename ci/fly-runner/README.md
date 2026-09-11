@@ -57,8 +57,8 @@ checkout, toolchain or executable); a gate pool Machine has no volume.
 
 | pool | label | Machine | jobs |
 |---|---|---|---|
-| build | `nucleus-fly-build` | performance-8x, 32 GB, one volume each (8 × 40 GB + 8 × 20 GB); size 16, standby 16 | everything on `CI_BUILD_RUNNER`: workspace tests, clippy, live-path gates, hack, llvm-cov, dylint, the A2A example (27 `runs-on` sites) |
-| gate | `nucleus-fly-gate` | shared-cpu-8x, 16 GB, no volume; size 40, standby 40 | everything on `CI_RUNNER` (52 sites), opt-in |
+| build | `nucleus-fly-build` | performance-8x, 32 GB, one volume each (8 × 40 GB + 8 × 20 GB); size 16, standby 16 | everything on `CI_BUILD_RUNNER`: workspace tests, clippy, live-path gates, hack, llvm-cov, dylint, the A2A example (24 `runs-on` sites) |
+| gate | `nucleus-fly-gate` | shared-cpu-8x, 16 GB, no volume; size 40, standby 40 | everything on `CI_RUNNER` (54 sites), opt-in |
 
 Routing is the two repository variables the workflows already read:
 
@@ -70,7 +70,7 @@ gh variable set CI_RUNNER --repo coproduct-opensource/nucleus --body nucleus-fly
 
 The build pool alone removes the jobs that hold a hosted slot for 6 to 12 minutes; the short
 jobs left on hosted runners then flow. The gate pool takes the rest. Jobs that hard-code
-`ubuntu-latest` (44 sites) or `ubuntu-24.04` (13) stay hosted; those are the ones that need
+`ubuntu-latest` (48 sites) or `ubuntu-24.04` (16) stay hosted; those are the ones that need
 Docker, CodeQL or a hosted-only tool. The image here is a Rust build image (pinned
 toolchain, wasm target, clippy, rustfmt, nextest, sccache, just, node via `setup-node`,
 python3); a job on `CI_RUNNER` that needs elan, aeneas or kani installs it in-job today on

@@ -246,7 +246,6 @@ pub(crate) async fn create_sub_pod(
         workload: _workload, // 4b stripped
         credentialed_egress: _credentialed_egress, // 4c clamped to the parent's upstreams
         credentials: _credentials, // 5  orchestrator env merged in
-        audit_sink: _audit_sink, // 4d stripped
 
         // ── Forwarded as the requester wrote them ───────────────────────────
         // Each line is a standing decision to delegate that field unclamped.
@@ -259,10 +258,11 @@ pub(crate) async fn create_sub_pod(
         resources: _resources,       // cpu/memory the child asks the node for
         network: _network,           // egress shape; `credentialed_egress` is the
         // separate field clamped at 4c, not this one
-        image: _image,     // the child names its own kernel and rootfs
-        vsock: _vsock,     // guest-host socket configuration
-        seccomp: _seccomp, // syscall filter — a child may ask for a weaker one
-        cgroup: _cgroup,   // cgroup limits
+        image: _image,           // the child names its own kernel and rootfs
+        vsock: _vsock,           // guest-host socket configuration
+        seccomp: _seccomp,       // syscall filter — a child may ask for a weaker one
+        cgroup: _cgroup,         // cgroup limits
+        audit_sink: _audit_sink, // where the child's audit record is written
     } = &spec.spec;
 
     // `metadata` is a sibling of `spec` on `PodSpec`, so the destructure above

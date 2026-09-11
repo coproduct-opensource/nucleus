@@ -6,6 +6,10 @@
 use std::process::Command;
 
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "#1216: test harness; not the mediated agent path"
+)]
 fn exits_78_without_sandbox_proof() {
     let bin = env!("CARGO_BIN_EXE_nucleus-tool-proxy");
 

@@ -352,6 +352,10 @@ impl WorkloadLaunch {
 ///
 /// # Errors
 /// If the process cannot be started.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "#1216: THE one sanctioned spawn; the mediation allowlist names this line"
+)]
 pub(crate) fn spawn_admitted(
     plan: AdmittedWorkloadPlan,
 ) -> std::io::Result<(tokio::process::Child, LaunchReceipt)> {
