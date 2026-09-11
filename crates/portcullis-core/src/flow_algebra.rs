@@ -12,7 +12,7 @@
 //! ```
 
 use crate::{
-    AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, Operation, SinkClass,
+    IFCLabel, IntegLevel, Operation, SinkClass,
     flow::{NodeKind, intrinsic_label},
 };
 
@@ -72,12 +72,12 @@ impl FlowState {
     /// Freshness is wall-clock-dependent and is checked separately via
     /// [`Self::flows_to_at`] to preserve recompute determinism.
     pub fn flows_to(&self, sink: SinkClass) -> bool {
-        let req_integ = sink_required_integrity(sink);
-        let req_auth = sink_required_authority(sink);
+        let req_integ = sink.required_integrity();
+        let req_auth = sink.required_authority();
 
         self.label.integrity >= req_integ
             && self.label.authority >= req_auth
-            && self.label.confidentiality <= sink_max_confidentiality(sink)
+            && self.label.confidentiality <= sink.max_confidentiality()
     }
 
     /// [`Self::flows_to`] plus a freshness check against the supplied wall-clock
@@ -169,49 +169,23 @@ impl crate::category::Lattice for FlowState {
 // Sink requirements — what does each sink demand?
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn sink_required_integrity(sink: SinkClass) -> IntegLevel {
-    match sink {
-        SinkClass::GitPush | SinkClass::GitCommit | SinkClass::PRCommentWrite => {
-            IntegLevel::Untrusted
-        }
-        SinkClass::WorkspaceWrite | SinkClass::BashExec => IntegLevel::Adversarial,
-        _ => IntegLevel::Adversarial,
-    }
-}
-
-fn sink_required_authority(sink: SinkClass) -> AuthorityLevel {
-    match sink {
-        SinkClass::GitPush | SinkClass::GitCommit | SinkClass::PRCommentWrite => {
-            AuthorityLevel::Directive
-        }
-        SinkClass::WorkspaceWrite => AuthorityLevel::Suggestive,
-        SinkClass::BashExec | SinkClass::HTTPEgress => AuthorityLevel::Suggestive,
-        _ => AuthorityLevel::NoAuthority,
-    }
-}
-
-/// The maximum confidentiality a sink may emit (most-paranoid #4).
-///
-/// Publish/egress sinks (data leaves the trust boundary) cap at `Internal`, so a
-/// `Secret`-confidentiality session cannot flow to them. Local sinks (the data
-/// stays inside the sandbox) cap at `Secret` — they impose no confidentiality
-/// restriction. This is the confidentiality (BLP "no read up → no write down")
-/// dimension the `flows_to` check previously dropped.
-fn sink_max_confidentiality(sink: SinkClass) -> ConfLevel {
-    match sink {
-        // True egress: data crosses the boundary. Block Secret.
-        SinkClass::HTTPEgress
-        | SinkClass::GitPush
-        | SinkClass::PRCommentWrite
-        | SinkClass::EmailSend
-        | SinkClass::MCPWrite
-        | SinkClass::CloudMutation
-        | SinkClass::AgentSpawn
-        | SinkClass::SearchIndexWrite => ConfLevel::Internal,
-        // Local sinks: data stays in the sandbox — no confidentiality restriction.
-        _ => ConfLevel::Secret,
-    }
-}
+// ── Sink requirements: ONE decider ──────────────────────────────────────────
+//
+// These three tables used to live here as private duplicates of the ones on
+// `SinkClass` itself, with no parity check between them (SECURITY_TODO #24).
+// They had drifted, and each copy was stricter on a DIFFERENT axis — so neither
+// file was simply the correct one:
+//
+//   * integrity: `ifc_ops` required Trusted for GitPush/PRCommentWrite, this
+//     copy required only Untrusted;
+//   * authority: this copy required Directive for the three git-publish sinks,
+//     `ifc_ops` required only Suggestive.
+//
+// Whichever table a caller happened to consult decided whether a tainted
+// session could push. They are now gone, not parity-tested: a parity test
+// between two copies still leaves two copies. `SinkClass::{required_integrity,
+// required_authority, max_confidentiality}` is the decider, and it carries the
+// pointwise-strictest value of the two (the owner's call was to tighten).
 
 fn operation_to_node_kind(op: Operation) -> NodeKind {
     match op {
@@ -235,7 +209,7 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ConfLevel, DerivationClass, Freshness, ProvenanceSet};
+    use crate::{AuthorityLevel, ConfLevel, DerivationClass, Freshness, ProvenanceSet};
 
     fn adversarial() -> IFCLabel {
         IFCLabel {
@@ -445,6 +419,62 @@ mod tests {
         assert_eq!(
             met, trusted_state,
             "meet should recover the less restrictive state"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tightened_sink_requirements {
+    use super::*;
+    use crate::{AuthorityLevel, ConfLevel, DerivationClass, Freshness, ProvenanceSet};
+
+    fn label(integrity: IntegLevel, authority: AuthorityLevel) -> IFCLabel {
+        IFCLabel {
+            integrity,
+            confidentiality: ConfLevel::Public,
+            authority,
+            derivation: DerivationClass::Deterministic,
+            provenance: ProvenanceSet::SYSTEM,
+            freshness: Freshness {
+                observed_at: 0,
+                ttl_secs: 0,
+            },
+        }
+    }
+
+    /// SECURITY_TODO #24 — non-vacuity of the tightening, on the integrity axis.
+    ///
+    /// The two duplicate tables were each stricter on a different axis, so
+    /// whichever one a caller happened to consult decided whether a tainted
+    /// session could push. Merging them at the pointwise-strictest value has to
+    /// actually refuse something on each axis, or the merge was cosmetic:
+    ///
+    ///   * integrity — `Untrusted` data satisfied this file's old `Untrusted`
+    ///     floor for GitPush. It must now be refused, because the floor is
+    ///     `Trusted`.
+    #[test]
+    fn the_merged_table_refuses_what_each_old_copy_admitted() {
+        // The authority axis is deliberately NOT asserted here any more. #24
+        // raised the git trio's floor to Directive and this test pinned it;
+        // portcullis-core's flow_red_team then showed that denies Deterministic
+        // and HumanPromoted data at a verified sink — the classes such a sink
+        // exists to accept. The floor is back at Suggestive; what stands from
+        // #24 is the merge to one decider.
+        //
+        // Integrity axis: full Directive authority, but only Untrusted integrity.
+        let untrusted =
+            FlowState::from_label(label(IntegLevel::Untrusted, AuthorityLevel::Directive));
+        assert!(
+            !untrusted.flows_to(SinkClass::GitPush),
+            "Untrusted integrity reached GitPush — the integrity floor did not tighten"
+        );
+
+        // And the combination that should still be admitted, so the test is not
+        // simply asserting that GitPush is unreachable.
+        let ok = FlowState::from_label(label(IntegLevel::Trusted, AuthorityLevel::Directive));
+        assert!(
+            ok.flows_to(SinkClass::GitPush),
+            "Trusted+Directive must still reach GitPush; the gate is tightened, not closed"
         );
     }
 }

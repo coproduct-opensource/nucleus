@@ -49,8 +49,15 @@ pub trait InteriorOperator<T> {
 /// **Enforcement as a closure operator.** `Reflector(backend).close(x)` is the
 /// least posture the backend can enforce that is at-least-as-strong as `x` — the
 /// reflector `L_E` of the enforceable sub-poset. This is the categorical reading
-/// of [`require_isolation`]; on the (built-in-backend-unreachable) `Unenforceable`
-/// case it returns `x`, preserving the inflationary law.
+/// of [`require_isolation`]; on the `Unenforceable` case it returns `x`,
+/// preserving the inflationary law.
+///
+/// That case **is** reachable since SECURITY_TODO #17 added
+/// `BackendCapability::{CONTAINER, LOCAL}`, which declare only the floor. Note
+/// what the fallback means and what it does not: returning `x` keeps the closure
+/// laws, but it is a statement about the *operator*, not a licence to run. The
+/// admission path must refuse an unenforceable posture rather than read
+/// `close(x) == x` as approval — see `nucleus_node::driver::clamp_isolation_to`.
 #[derive(Debug, Clone, Copy)]
 pub struct Reflector<'a>(pub &'a BackendCapability);
 
@@ -175,10 +182,9 @@ mod tests {
     #[test]
     fn enforcement_is_a_closure_operator_on_every_backend() {
         let postures = all_isolations();
-        for backend in [
-            &BackendCapability::FIRECRACKER,
-            &BackendCapability::APPLE_VZ,
-        ] {
+        // Every declared backend, so "on every backend" stays true as backends
+        // are added rather than meaning "on the two someone listed here".
+        for backend in BackendCapability::ALL {
             let violations = verify_closure_laws(&Reflector(backend), &postures);
             assert!(
                 violations.is_empty(),

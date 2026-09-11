@@ -12,6 +12,8 @@ name: Econ Lean Proofs + Golden Seal
 on:
   pull_request:
     paths-ignore:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/nucleus-econ-kernels/lean/**"
       - "crates/nucleus-econ-kernels/tests/golden/**"
       - "scripts/gen-golden-lean.sh"

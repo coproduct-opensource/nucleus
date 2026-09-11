@@ -17,6 +17,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 # Constitutional gate: run ck-kernel admission on PolicyManifest amendments.
 ck-kernel = { path = "../ck-kernel" }
 ck-types = { path = "../ck-types" }
@@ -28,8 +29,8 @@ ci-fly-runner = { path = "../ci-fly-runner" }
 
 # Parse the actual Rust attributes and workflow arguments for Kani coverage.
 syn = { version = "2", features = ["full", "visit"] }
-serde_yaml = { workspace = true }
 toml = { workspace = true }
 # `gatehouse-pin`: the import digest is a plain SHA-256 of prelude/ci.writ.
 sha2 = { workspace = true }
 hex = { workspace = true }
+regex = { workspace = true }

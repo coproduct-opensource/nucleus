@@ -70,7 +70,7 @@ mod pod;
 mod sandbox;
 mod time;
 
-pub use approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
+pub use approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover, approval_key};
 pub use budget::AtomicBudget;
 pub use command::{BudgetModel, ContainmentMode, Executor};
 pub use error::{NucleusError, Result};

@@ -20,13 +20,13 @@ use nucleus::Sandbox;
 use nucleus_ifc_kernel::discharge::test_helpers::allowed_bundle;
 use portcullis::kernel::{DecisionToken, Kernel};
 use portcullis::{
-    CapabilityLevel, ExposureLabel, ExposureSet, GradedExposureGuard, Operation, PermissionLattice,
-    StateRisk, ToolCallGuard,
+    Act, CapabilityLevel, ExposureLabel, ExposureSet, GradedExposureGuard, Operation,
+    PermissionLattice, StateRisk, ToolCallGuard,
 };
 
 /// Test helper: check and record an operation in one call.
 fn check_and_record(guard: &impl ToolCallGuard, op: Operation) {
-    let proof = guard.check(op).expect("check failed");
+    let proof = guard.check(&Act::untargeted(op)).expect("check failed");
     guard
         .execute_and_record(proof, || Ok::<_, String>(()))
         .expect("execute_and_record failed");
@@ -142,7 +142,7 @@ fn test_symlink_read_mcp_parity() {
     let guard = GradedExposureGuard::new(policy, "[]");
 
     // Guard allows the operation (capability check passes)
-    let _proof = guard.check(Operation::ReadFiles);
+    let _proof = guard.check(&Act::untargeted(Operation::ReadFiles));
     assert!(_proof.is_ok());
 
     // But cap-std blocks the symlink escape
@@ -235,7 +235,9 @@ fn test_path_traversal_blocked() {
     let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
 
-    // Absolute path — rejected by policy (check_policy rejects absolute paths)
+    // Absolute path outside the sandbox root — rejected. (An absolute path
+    // *under* the root is accepted as the same file as its relative
+    // spelling since #2787; this one is a genuine escape.)
     let tok = dt(&mut kernel, Operation::ReadFiles, "/etc/passwd");
     let result = sandbox.read_to_string(
         "/etc/passwd",
@@ -320,21 +322,21 @@ fn test_uninhabitable_blocks_exfiltration_sequence() {
     assert_eq!(guard.accumulated_risk(), StateRisk::Medium);
 
     // Step 3: Run bash (exfiltration leg) — BLOCKED!
-    let result = guard.check(Operation::RunBash);
+    let result = guard.check(&Act::untargeted(Operation::RunBash));
     assert!(
         result.is_err(),
         "RunBash should be blocked: would uninhabitable_state"
     );
 
     // Git push also blocked (alternative exfil vector)
-    let result = guard.check(Operation::GitPush);
+    let result = guard.check(&Act::untargeted(Operation::GitPush));
     assert!(
         result.is_err(),
         "GitPush should be blocked: would uninhabitable_state"
     );
 
     // Create PR also blocked
-    let result = guard.check(Operation::CreatePr);
+    let result = guard.check(&Act::untargeted(Operation::CreatePr));
     assert!(
         result.is_err(),
         "CreatePr should be blocked: would uninhabitable_state"
@@ -346,9 +348,13 @@ fn test_uninhabitable_blocks_exfiltration_sequence() {
     // Local sinks are exfil legs too now (most-paranoid #4): writing/editing/
     // committing a tainted secret is an exfiltration channel, so they are ALSO
     // blocked once the private-data + untrusted-content legs are present.
-    assert!(guard.check(Operation::WriteFiles).is_err());
-    assert!(guard.check(Operation::EditFiles).is_err());
-    assert!(guard.check(Operation::GitCommit).is_err());
+    assert!(
+        guard
+            .check(&Act::untargeted(Operation::WriteFiles))
+            .is_err()
+    );
+    assert!(guard.check(&Act::untargeted(Operation::EditFiles)).is_err());
+    assert!(guard.check(&Act::untargeted(Operation::GitCommit)).is_err());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -367,7 +373,7 @@ fn test_credential_isolation() {
 
     // The env var LLM_API_TOKEN should NOT be readable via file tools.
     // Even if an attacker tries to read /proc/self/environ (Linux) or
-    // similar, the sandbox blocks absolute paths.
+    // similar, the sandbox blocks paths outside its root.
     let tok = dt(&mut kernel, Operation::ReadFiles, "/proc/self/environ");
     let result = sandbox.read_to_string(
         "/proc/self/environ",
@@ -496,14 +502,14 @@ fn test_full_rogue_pilot_chain() {
 
     // ── Attack Step 3: Exfiltrate via curl/bash ──
     //  UninhabitableState guard blocks: read + fetch + bash = Complete
-    let result = guard.check(Operation::RunBash);
+    let result = guard.check(&Act::untargeted(Operation::RunBash));
     assert!(
         result.is_err(),
         "RunBash should be blocked: uninhabitable_state Complete"
     );
 
     // ── Attack Step 3 (alt): Exfiltrate via git push ──
-    let result = guard.check(Operation::GitPush);
+    let result = guard.check(&Act::untargeted(Operation::GitPush));
     assert!(
         result.is_err(),
         "GitPush should be blocked: uninhabitable_state Complete"

@@ -46,7 +46,7 @@
 //! ```rust
 //! use portcullis_effects::{DenyAllEffects, RecordingEffects, FileEffect};
 //! use portcullis_effects::authority::Authority;
-//! use portcullis_core::discharge::test_helpers::bundle_for;
+//! use portcullis_core::discharge::test_helpers::{bundle_for, bundle_for_subject};
 //! use portcullis_core::{Operation, SinkClass};
 //!
 //! let read_authority = || Authority::new(
@@ -63,6 +63,7 @@
 //! ```
 
 pub mod async_traits;
+mod doubles;
 pub mod runtime;
 mod spawn;
 
@@ -73,9 +74,10 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::authority::Authority;
+use portcullis_core::act::{Act, Argv, Message, Remote};
 use portcullis_core::discharge::DischargedBundle;
 use portcullis_core::{CapabilityLattice, CapabilityLevel};
 
@@ -153,7 +155,7 @@ impl std::error::Error for EffectError {}
 /// ```compile_fail,E0382
 /// use portcullis_effects::{production_effects_concrete, FileEffect};
 /// use portcullis_effects::authority::Authority;
-/// use portcullis_core::discharge::test_helpers::bundle_for;
+/// use portcullis_core::discharge::test_helpers::{bundle_for, bundle_for_subject};
 /// use portcullis_core::{CapabilityLattice, CapabilityLevel, Operation, SinkClass};
 ///
 /// let fx = production_effects_concrete(CapabilityLattice {
@@ -532,6 +534,20 @@ impl WebEffect for RealEffects {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// The one rendering of each act
+// ───────────────────────────────────────────────────────────────────────────
+//
+// A spend compares the subject the bundle was discharged for against the
+// subject of the act being performed, as strings. So the site that MINTS and
+// the site that SPENDS must render the target identically — and the only way
+// to be sure of that is for both to call the same function.
+//
+// `Runtime::preflight_shell/commit/push` mint through these; `RealEffects::
+// run/commit/push` spend through them. Two renderings would be two answers to
+// "what is this authority for", which is the failure the binding exists to
+// prevent, reintroduced one layer down.
+
 /// **The check the effect functions never made.**
 ///
 /// A `DischargedBundle` was taken as `_proof` — an unused type-level token — so
@@ -548,6 +564,40 @@ impl WebEffect for RealEffects {
 /// The COMPILE-TIME form would make the bundle generic in the operation
 /// (`DischargedBundle<RunBash>`) so a mismatch could not be written at all. That
 /// is a refactor through every signature and caller; this closes the hole now.
+/// The act a shell command is about to perform.
+pub(crate) fn act_run(cmd: &str) -> Act {
+    Act::Run {
+        argv: Argv::new(vec![cmd.to_string()]),
+    }
+}
+
+/// The act a commit is about to perform.
+pub(crate) fn act_commit(message: &str) -> Act {
+    Act::Commit {
+        message: Message::new(message),
+    }
+}
+
+/// The act a push is about to perform.
+pub(crate) fn act_push(remote: &str) -> Act {
+    Act::Push {
+        remote: Remote::new(remote),
+    }
+}
+
+/// The act an argv spawn is about to perform.
+///
+/// The program leads the argv, matching how the tool-proxy's mint side builds
+/// its subject (`args.join(" ")`, with the program as `args[0]`).
+pub(crate) fn act_for_argv(program: &str, args: &[String]) -> Act {
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push(program.to_string());
+    argv.extend(args.iter().cloned());
+    Act::Run {
+        argv: Argv::new(argv),
+    }
+}
+
 pub(crate) fn require_scope(
     proof: &DischargedBundle,
     op: portcullis_core::Operation,
@@ -567,7 +617,21 @@ pub(crate) fn require_scope(
 }
 
 impl ShellEffect for RealEffects {
-    fn run(&self, cmd: &str, _authority: Authority) -> Result<ShellOutput, EffectError> {
+    fn run(&self, cmd: &str, authority: Authority) -> Result<ShellOutput, EffectError> {
+        // This method used to take `_authority` and drop it: the signature said
+        // a caller must hold an authority to get here, and the body said the
+        // authority decided nothing. Both statements were true, and the gap
+        // between them was that an authority earned to run `ls` spawned
+        // whatever this was called with.
+        //
+        // Spent against the command about to be spawned, before the spawn. A
+        // refused spend is not a spawn.
+        drop(
+            authority
+                .spend_on(&act_run(cmd))
+                .map_err(|e| EffectError::PolicyDenied(e.to_string()))?,
+        );
+
         let words = shell_words::split(cmd)
             .map_err(|e| EffectError::Io(format!("shell parse failed: {e}")))?;
         if words.is_empty() {
@@ -598,11 +662,10 @@ impl ShellEffect for RealEffects {
         // authority is spent: a refused argv is not a spawn.
         portcullis_core::argv::check_argv(program, args)?;
         // Spent here and dropped: the right to spawn is consumed at the spawn.
+        // Against the argv, not just `(RunBash, BashExec)` — this boundary
+        // knows exactly what it is about to execute, so it names it.
         let spent = authority
-            .spend(
-                portcullis_core::Operation::RunBash,
-                portcullis_core::SinkClass::BashExec,
-            )
+            .spend_on(&act_for_argv(program, args))
             .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
         drop(spent);
         spawn::spawn_sync(program, args, cwd, stdin, allowed_env, harden)
@@ -718,7 +781,14 @@ impl NetEffect for RealEffects {
 }
 
 impl GitEffect for RealEffects {
-    fn commit(&self, message: &str, _authority: Authority) -> Result<String, EffectError> {
+    fn commit(&self, message: &str, authority: Authority) -> Result<String, EffectError> {
+        // Spent against the message about to be committed, before `git add -u`.
+        drop(
+            authority
+                .spend_on(&act_commit(message))
+                .map_err(|e| EffectError::PolicyDenied(e.to_string()))?,
+        );
+
         // Stage all tracked modifications and commit.
         let add = std::process::Command::new("git")
             .args(["add", "-u"])
@@ -747,7 +817,19 @@ impl GitEffect for RealEffects {
         Ok(out.trim().to_string())
     }
 
-    fn push(&self, remote: &str, branch: &str, _authority: Authority) -> Result<(), EffectError> {
+    fn push(&self, remote: &str, branch: &str, authority: Authority) -> Result<(), EffectError> {
+        // Spent against the remote about to be pushed to, before the push.
+        //
+        // `Act::Push` carries the remote and not the branch, matching what the
+        // discharge term is built from. A branch-level binding would need the
+        // term to carry it too, and a spend that checked more than the mint
+        // recorded would refuse every real push.
+        drop(
+            authority
+                .spend_on(&act_push(remote))
+                .map_err(|e| EffectError::PolicyDenied(e.to_string()))?,
+        );
+
         let output = std::process::Command::new("git")
             .args(["push", remote, branch])
             .current_dir(self.git_cwd())
@@ -855,6 +937,31 @@ impl<E> PolicyEnforced<E> {
         }
     }
 
+    /// Check the capability lattice and hand the authority its log — **without**
+    /// spending it.
+    ///
+    /// For the methods whose inner effect spends. Those are the ones that know
+    /// the target, so they are the ones that can bind it, and an authority is
+    /// single-use: spending here as well would either double-record the act or
+    /// hand the inner effect a spent-and-rewrapped authority whose witness was
+    /// lost on the way. Both happened — the rewrap in [`gate`](Self::gate)
+    /// drops the log, so the inner spend refused as `Unwitnessed`, which is how
+    /// this was found.
+    fn forward(
+        &self,
+        level: CapabilityLevel,
+        capability: &str,
+        authority: Authority,
+        op: portcullis_core::Operation,
+        sink: portcullis_core::SinkClass,
+    ) -> Result<Authority, EffectError> {
+        if let Err(e) = self.require(level, capability) {
+            self.record_policy_denial(op, sink);
+            return Err(e);
+        }
+        Ok(self.witnessed(authority))
+    }
+
     fn require(&self, level: CapabilityLevel, capability: &str) -> Result<(), EffectError> {
         if level == CapabilityLevel::Never {
             Err(EffectError::PolicyDenied(format!(
@@ -938,7 +1045,8 @@ impl<E: WebEffect> WebEffect for PolicyEnforced<E> {
 
 impl<E: ShellEffect> ShellEffect for PolicyEnforced<E> {
     fn run(&self, cmd: &str, authority: Authority) -> Result<ShellOutput, EffectError> {
-        let authority = self.gate(
+        // Forwarded unspent: `RealEffects::run` spends against the command.
+        let authority = self.forward(
             self.policy.run_bash,
             "run_bash",
             authority,
@@ -1062,7 +1170,8 @@ impl<E: NetEffect> NetEffect for PolicyEnforced<E> {
 
 impl<E: GitEffect> GitEffect for PolicyEnforced<E> {
     fn commit(&self, message: &str, authority: Authority) -> Result<String, EffectError> {
-        let authority = self.gate(
+        // Forwarded unspent: `RealEffects::commit` spends against the message.
+        let authority = self.forward(
             self.policy.git_commit,
             "git_commit",
             authority,
@@ -1073,7 +1182,8 @@ impl<E: GitEffect> GitEffect for PolicyEnforced<E> {
     }
 
     fn push(&self, remote: &str, branch: &str, authority: Authority) -> Result<(), EffectError> {
-        let authority = self.gate(
+        // Forwarded unspent: `RealEffects::push` spends against the remote.
+        let authority = self.forward(
             self.policy.git_push,
             "git_push",
             authority,
@@ -1119,7 +1229,7 @@ impl<E: AgentSpawnEffect> AgentSpawnEffect for PolicyEnforced<E> {
 /// ```rust
 /// use portcullis_effects::{production_effects, FileEffect};
 /// # use portcullis_effects::authority::Authority;
-/// # use portcullis_core::discharge::test_helpers::bundle_for;
+/// # use portcullis_core::discharge::test_helpers::{bundle_for, bundle_for_subject};
 /// # use portcullis_core::{Operation, SinkClass};
 /// # let read_authority = || Authority::new(
 /// #     bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
@@ -1178,504 +1288,12 @@ pub fn production_effects_in(
 // ═══════════════════════════════════════════════════════════════════════════
 // Test implementations
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// `RecordingEffects`, `DenyAllEffects` and `AllowListEffects` live in
+// `doubles.rs`; re-exported here so every existing
+// `portcullis_effects::RecordingEffects` path still resolves.
 
-/// A call record captured by [`RecordingEffects`].
-#[derive(Debug, Clone)]
-pub struct EffectCall {
-    pub kind: &'static str,
-    pub detail: String,
-}
-
-/// Records all effect calls without performing real I/O.
-///
-/// Returns configurable stub responses. Default: empty success responses.
-///
-/// # Example
-///
-/// ```rust
-/// use portcullis_effects::{RecordingEffects, FileEffect};
-/// # use portcullis_effects::authority::Authority;
-/// # use portcullis_core::discharge::test_helpers::bundle_for;
-/// # use portcullis_core::{Operation, SinkClass};
-/// # let read_authority = || Authority::new(
-/// #     bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
-///
-/// let fx = RecordingEffects::new();
-/// let _ = fx.read(std::path::Path::new("src/main.rs"), read_authority());
-/// assert_eq!(fx.calls().len(), 1);
-/// assert_eq!(fx.calls()[0].kind, "read");
-/// ```
-pub struct RecordingEffects {
-    calls: Arc<Mutex<Vec<EffectCall>>>,
-    file_read_response: Vec<u8>,
-}
-
-impl RecordingEffects {
-    pub fn new() -> Self {
-        Self {
-            calls: Arc::new(Mutex::new(Vec::new())),
-            file_read_response: Vec::new(),
-        }
-    }
-
-    /// Pre-configure the bytes returned by `read()`.
-    pub fn with_file_content(mut self, content: impl Into<Vec<u8>>) -> Self {
-        self.file_read_response = content.into();
-        self
-    }
-
-    /// Return a snapshot of all calls recorded so far.
-    pub fn calls(&self) -> Vec<EffectCall> {
-        self.calls.lock().unwrap().clone()
-    }
-
-    fn record(&self, kind: &'static str, detail: impl Into<String>) {
-        self.calls.lock().unwrap().push(EffectCall {
-            kind,
-            detail: detail.into(),
-        });
-    }
-}
-
-impl Default for RecordingEffects {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FileEffect for RecordingEffects {
-    fn read(&self, path: &Path, _authority: Authority) -> Result<Vec<u8>, EffectError> {
-        self.record("read", path.display().to_string());
-        Ok(self.file_read_response.clone())
-    }
-
-    fn write(&self, path: &Path, content: &[u8], _authority: Authority) -> Result<(), EffectError> {
-        self.record(
-            "write",
-            format!("{}({} bytes)", path.display(), content.len()),
-        );
-        Ok(())
-    }
-
-    fn append(
-        &self,
-        path: &Path,
-        content: &[u8],
-        _authority: Authority,
-    ) -> Result<(), EffectError> {
-        self.record(
-            "append",
-            format!("{}(+{} bytes)", path.display(), content.len()),
-        );
-        Ok(())
-    }
-
-    fn glob(&self, pattern: &str, _authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
-        self.record("glob", pattern);
-        Ok(Vec::new())
-    }
-}
-
-impl WebEffect for RecordingEffects {
-    fn fetch(&self, url: &str, _authority: Authority) -> Result<Vec<u8>, EffectError> {
-        self.record("fetch", url);
-        Ok(Vec::new())
-    }
-
-    fn search(&self, query: &str, _authority: Authority) -> Result<Vec<SearchResult>, EffectError> {
-        self.record("search", query);
-        Ok(Vec::new())
-    }
-}
-
-impl ShellEffect for RecordingEffects {
-    fn run(&self, cmd: &str, _authority: Authority) -> Result<ShellOutput, EffectError> {
-        self.record("run", cmd);
-        Ok(ShellOutput {
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-            exit_code: 0,
-        })
-    }
-
-    fn run_argv(
-        &self,
-        program: &str,
-        args: &[String],
-        cwd: &Path,
-        _stdin: Option<&[u8]>,
-        _allowed_env: &BTreeMap<String, String>,
-        _harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
-        authority: Authority,
-    ) -> io::Result<Output> {
-        // Spent here for the same reason `RealEffects::run_argv` spends here:
-        // this is one of the three methods `PolicyEnforced` forwards without
-        // spending, so the consumption happens in the inner effect. A double
-        // that dropped the authority instead would silently diverge from the
-        // real implementation on the exact property the receipt tests check.
-        drop(
-            authority
-                .spend(
-                    portcullis_core::Operation::RunBash,
-                    portcullis_core::SinkClass::BashExec,
-                )
-                .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?,
-        );
-        self.record(
-            "run_argv",
-            format!("{program} {args:?} @ {}", cwd.display()),
-        );
-        Ok(empty_success_output())
-    }
-}
-
-#[cfg(feature = "async")]
-impl AsyncShellSpawnEffect for RecordingEffects {
-    async fn run_argv_async(
-        &self,
-        program: &str,
-        args: &[String],
-        cwd: &Path,
-        _stdin: Option<&[u8]>,
-        _allowed_env: &BTreeMap<String, String>,
-        _harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
-        _timeout: Option<std::time::Duration>,
-        authority: Authority,
-    ) -> io::Result<Output> {
-        // Mirrors `RealEffects::run_argv_async` — see `run_argv` above.
-        drop(
-            authority
-                .spend(
-                    portcullis_core::Operation::RunBash,
-                    portcullis_core::SinkClass::BashExec,
-                )
-                .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?,
-        );
-        self.record(
-            "run_argv_async",
-            format!("{program} {args:?} @ {}", cwd.display()),
-        );
-        Ok(empty_success_output())
-    }
-}
-
-/// Records the egress and spends the authority, without ever opening a socket.
-///
-/// `RealEffects::fetch` is the only other `NetEffect`, and it performs a real
-/// send — so without this double the third of the three deferred-spend methods
-/// could not be covered by a receipt test at all.
-/// Test-only, so the production dependency surface of this crate is unchanged:
-/// building a `reqwest::Response` from nothing needs `http` directly, and that
-/// is a dev-dependency.
-#[cfg(all(test, feature = "net"))]
-impl NetEffect for RecordingEffects {
-    async fn fetch(
-        &self,
-        _client: &reqwest::Client,
-        _cap: NetCapability,
-        method: reqwest::Method,
-        url: reqwest::Url,
-        _headers: &[(String, String)],
-        _body: Option<Vec<u8>>,
-        _timeout: Option<std::time::Duration>,
-        authority: Authority,
-    ) -> Result<reqwest::Response, EffectError> {
-        // Mirrors `RealEffects::fetch`: the egress right is consumed at the send.
-        drop(
-            authority
-                .spend(
-                    portcullis_core::Operation::WebFetch,
-                    portcullis_core::SinkClass::HTTPEgress,
-                )
-                .map_err(|e| EffectError::Io(e.to_string()))?,
-        );
-        self.record("net_fetch", format!("{method} {url}"));
-        Ok(reqwest::Response::from(http::Response::new("")))
-    }
-}
-
-impl GitEffect for RecordingEffects {
-    fn commit(&self, message: &str, _authority: Authority) -> Result<String, EffectError> {
-        self.record("commit", message);
-        Ok("deadbeef".to_string())
-    }
-
-    fn push(&self, remote: &str, branch: &str, _authority: Authority) -> Result<(), EffectError> {
-        self.record("push", format!("{remote}/{branch}"));
-        Ok(())
-    }
-}
-
-impl AgentSpawnEffect for RecordingEffects {
-    fn spawn(
-        &self,
-        endpoint: &str,
-        term_json: &str,
-        _authority: Authority,
-    ) -> Result<String, EffectError> {
-        self.record("spawn", format!("{endpoint}: {term_json}"));
-        Ok("decision:allow".to_string())
-    }
-}
-
-/// Denies every effect call.
-///
-/// Useful for testing that code paths handle denial correctly.
-///
-/// # Example
-///
-/// ```rust
-/// use portcullis_effects::{DenyAllEffects, FileEffect};
-/// # use portcullis_effects::authority::Authority;
-/// # use portcullis_core::discharge::test_helpers::bundle_for;
-/// # use portcullis_core::{Operation, SinkClass};
-/// # let read_authority = || Authority::new(
-/// #     bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
-///
-/// let fx = DenyAllEffects;
-/// assert!(fx.read(std::path::Path::new("any.txt"), read_authority()).is_err());
-/// ```
-pub struct DenyAllEffects;
-
-impl FileEffect for DenyAllEffects {
-    fn read(&self, path: &Path, _authority: Authority) -> Result<Vec<u8>, EffectError> {
-        Err(EffectError::PolicyDenied(format!(
-            "read denied: {}",
-            path.display()
-        )))
-    }
-    fn write(
-        &self,
-        path: &Path,
-        _content: &[u8],
-        _authority: Authority,
-    ) -> Result<(), EffectError> {
-        Err(EffectError::PolicyDenied(format!(
-            "write denied: {}",
-            path.display()
-        )))
-    }
-    fn append(
-        &self,
-        path: &Path,
-        _content: &[u8],
-        _authority: Authority,
-    ) -> Result<(), EffectError> {
-        Err(EffectError::PolicyDenied(format!(
-            "append denied: {}",
-            path.display()
-        )))
-    }
-    fn glob(&self, pattern: &str, _authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
-        Err(EffectError::PolicyDenied(format!("glob denied: {pattern}")))
-    }
-}
-
-impl WebEffect for DenyAllEffects {
-    fn fetch(&self, url: &str, _authority: Authority) -> Result<Vec<u8>, EffectError> {
-        Err(EffectError::PolicyDenied(format!("fetch denied: {url}")))
-    }
-    fn search(&self, query: &str, _authority: Authority) -> Result<Vec<SearchResult>, EffectError> {
-        Err(EffectError::PolicyDenied(format!("search denied: {query}")))
-    }
-}
-
-impl ShellEffect for DenyAllEffects {
-    fn run(&self, cmd: &str, _authority: Authority) -> Result<ShellOutput, EffectError> {
-        Err(EffectError::PolicyDenied(format!("shell denied: {cmd}")))
-    }
-
-    fn run_argv(
-        &self,
-        program: &str,
-        _args: &[String],
-        _cwd: &Path,
-        _stdin: Option<&[u8]>,
-        _allowed_env: &BTreeMap<String, String>,
-        _harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
-        _authority: Authority,
-    ) -> io::Result<Output> {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("shell denied: {program}"),
-        ))
-    }
-}
-
-#[cfg(feature = "async")]
-impl AsyncShellSpawnEffect for DenyAllEffects {
-    async fn run_argv_async(
-        &self,
-        program: &str,
-        _args: &[String],
-        _cwd: &Path,
-        _stdin: Option<&[u8]>,
-        _allowed_env: &BTreeMap<String, String>,
-        _harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
-        _timeout: Option<std::time::Duration>,
-        _authority: Authority,
-    ) -> io::Result<Output> {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("shell denied: {program}"),
-        ))
-    }
-}
-
-impl GitEffect for DenyAllEffects {
-    fn commit(&self, message: &str, _authority: Authority) -> Result<String, EffectError> {
-        Err(EffectError::PolicyDenied(format!(
-            "git commit denied: {message}"
-        )))
-    }
-    fn push(&self, remote: &str, branch: &str, _authority: Authority) -> Result<(), EffectError> {
-        Err(EffectError::PolicyDenied(format!(
-            "git push denied: {remote}/{branch}"
-        )))
-    }
-}
-
-impl AgentSpawnEffect for DenyAllEffects {
-    fn spawn(
-        &self,
-        endpoint: &str,
-        _term_json: &str,
-        _authority: Authority,
-    ) -> Result<String, EffectError> {
-        Err(EffectError::PolicyDenied(format!(
-            "spawn denied: {endpoint}"
-        )))
-    }
-}
-
-/// Allows only files and URLs in an explicit allowlist.
-///
-/// All other paths and URLs are denied with `EffectError::PolicyDenied`.
-///
-/// # Example
-///
-/// ```rust
-/// use portcullis_effects::{AllowListEffects, FileEffect};
-/// # use portcullis_effects::authority::Authority;
-/// # use portcullis_core::discharge::test_helpers::bundle_for;
-/// # use portcullis_core::{Operation, SinkClass};
-/// # let read_authority = || Authority::new(
-/// #     bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
-///
-/// let fx = AllowListEffects::new()
-///     .allow_path("/workspace/src");
-/// assert!(fx.read(std::path::Path::new("/workspace/src/main.rs"), read_authority()).is_ok());
-/// assert!(fx.read(std::path::Path::new("/etc/passwd"), read_authority()).is_err());
-/// ```
-pub struct AllowListEffects {
-    allowed_path_prefixes: Vec<PathBuf>,
-    allowed_url_prefixes: Vec<String>,
-    file_read_response: Vec<u8>,
-}
-
-impl AllowListEffects {
-    pub fn new() -> Self {
-        Self {
-            allowed_path_prefixes: Vec::new(),
-            allowed_url_prefixes: Vec::new(),
-            file_read_response: Vec::new(),
-        }
-    }
-
-    pub fn allow_path(mut self, prefix: impl Into<PathBuf>) -> Self {
-        self.allowed_path_prefixes.push(prefix.into());
-        self
-    }
-
-    pub fn allow_url(mut self, prefix: impl Into<String>) -> Self {
-        self.allowed_url_prefixes.push(prefix.into());
-        self
-    }
-
-    pub fn with_file_content(mut self, content: impl Into<Vec<u8>>) -> Self {
-        self.file_read_response = content.into();
-        self
-    }
-
-    fn check_path(&self, path: &Path) -> Result<(), EffectError> {
-        let allowed = self
-            .allowed_path_prefixes
-            .iter()
-            .any(|p| path.starts_with(p));
-        if allowed {
-            Ok(())
-        } else {
-            Err(EffectError::PathViolation(format!(
-                "{} is outside all allowed prefixes",
-                path.display()
-            )))
-        }
-    }
-
-    fn check_url(&self, url: &str) -> Result<(), EffectError> {
-        let allowed = self
-            .allowed_url_prefixes
-            .iter()
-            .any(|p| url.starts_with(p.as_str()));
-        if allowed {
-            Ok(())
-        } else {
-            Err(EffectError::PolicyDenied(format!(
-                "{url} is outside allowed URL prefixes"
-            )))
-        }
-    }
-}
-
-impl Default for AllowListEffects {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FileEffect for AllowListEffects {
-    fn read(&self, path: &Path, _authority: Authority) -> Result<Vec<u8>, EffectError> {
-        self.check_path(path)?;
-        Ok(self.file_read_response.clone())
-    }
-
-    fn write(
-        &self,
-        path: &Path,
-        _content: &[u8],
-        _authority: Authority,
-    ) -> Result<(), EffectError> {
-        self.check_path(path)
-    }
-
-    fn append(
-        &self,
-        path: &Path,
-        _content: &[u8],
-        _authority: Authority,
-    ) -> Result<(), EffectError> {
-        self.check_path(path)
-    }
-
-    fn glob(&self, _pattern: &str, _authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
-        Ok(Vec::new())
-    }
-}
-
-impl WebEffect for AllowListEffects {
-    fn fetch(&self, url: &str, _authority: Authority) -> Result<Vec<u8>, EffectError> {
-        self.check_url(url)?;
-        Ok(Vec::new())
-    }
-
-    fn search(
-        &self,
-        _query: &str,
-        _authority: Authority,
-    ) -> Result<Vec<SearchResult>, EffectError> {
-        Ok(Vec::new())
-    }
-}
+pub use doubles::{AllowListEffects, DenyAllEffects, EffectCall, RecordingEffects};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Internal spawn helpers
@@ -1685,28 +1303,6 @@ impl WebEffect for AllowListEffects {
 /// structured spawn methods (`run_argv` / `run_argv_async` return `io::Result`).
 fn policy_denied_io(err: EffectError) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, err.to_string())
-}
-
-/// A synthetic successful [`Output`] with empty streams — used by the mock
-/// [`ShellEffect`] impls that record but do not spawn a real process.
-fn empty_success_output() -> Output {
-    Output {
-        status: exit_status_zero(),
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-    }
-}
-
-#[cfg(unix)]
-fn exit_status_zero() -> std::process::ExitStatus {
-    use std::os::unix::process::ExitStatusExt as _;
-    std::process::ExitStatus::from_raw(0)
-}
-
-#[cfg(windows)]
-fn exit_status_zero() -> std::process::ExitStatus {
-    use std::os::windows::process::ExitStatusExt as _;
-    std::process::ExitStatus::from_raw(0)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1803,6 +1399,32 @@ mod tests {
             op, sink,
         ))
     }
+
+    /// An authority scoped to a pair **and a target**.
+    ///
+    /// The three verbs whose effects spend with `spend_on` need one of these:
+    /// an authority earned for `"test-helper"` no longer pays for `echo ls`,
+    /// which is the point of the change and why these fixtures now take an
+    /// argument. A test that wants the refusal passes a different target.
+    /// Attach a throwaway receipt log.
+    ///
+    /// For the doubles used WITHOUT the `PolicyEnforced` wrapper: that wrapper
+    /// is what normally attaches the log, and a spend with none refuses before
+    /// any other check — deliberately, so a missing log cannot hide behind a
+    /// policy error.
+    fn witnessed(authority: Authority) -> Authority {
+        authority.witnessed_by(std::sync::Arc::new(crate::receipt::ReceiptLog::new()))
+    }
+
+    fn auth_for_subject(
+        op: portcullis_core::Operation,
+        sink: portcullis_core::SinkClass,
+        subject: &str,
+    ) -> Authority {
+        Authority::new(
+            portcullis_core::discharge::test_helpers::bundle_for_subject(op, sink, subject),
+        )
+    }
     fn fetch_auth() -> Authority {
         auth_for(
             portcullis_core::Operation::WebFetch,
@@ -1815,22 +1437,25 @@ mod tests {
             portcullis_core::SinkClass::HTTPEgress,
         )
     }
-    fn shell_auth() -> Authority {
-        auth_for(
+    fn shell_auth(subject: &str) -> Authority {
+        auth_for_subject(
             portcullis_core::Operation::RunBash,
             portcullis_core::SinkClass::BashExec,
+            subject,
         )
     }
-    fn commit_auth() -> Authority {
-        auth_for(
+    fn commit_auth(subject: &str) -> Authority {
+        auth_for_subject(
             portcullis_core::Operation::GitCommit,
             portcullis_core::SinkClass::GitCommit,
+            subject,
         )
     }
-    fn push_auth() -> Authority {
-        auth_for(
+    fn push_auth(subject: &str) -> Authority {
+        auth_for_subject(
             portcullis_core::Operation::GitPush,
             portcullis_core::SinkClass::GitPush,
+            subject,
         )
     }
     fn spawn_auth() -> Authority {
@@ -1898,7 +1523,7 @@ mod tests {
             },
         };
         let err = fx
-            .push("origin", "main", commit_auth())
+            .push("origin", "main", commit_auth("origin"))
             .expect_err("a commit authority must not pay for a push");
         assert!(
             matches!(err, EffectError::PolicyDenied(ref m) if m.contains("scope")),
@@ -1994,9 +1619,10 @@ mod tests {
         fx.glob("*.rs", glob_auth()).expect("glob");
         WebEffect::fetch(&fx, "https://example.com", fetch_auth()).expect("fetch");
         fx.search("q", search_auth()).expect("search");
-        fx.run("ls", shell_auth()).expect("run");
-        fx.commit("msg", commit_auth()).expect("commit");
-        fx.push("origin", "main", push_auth()).expect("push");
+        fx.run("ls", shell_auth("ls")).expect("run");
+        fx.commit("msg", commit_auth("msg")).expect("commit");
+        fx.push("origin", "main", push_auth("origin"))
+            .expect("push");
         fx.spawn("http://a", "{}", spawn_auth()).expect("spawn");
 
         // All ten reached the inner impl — nothing was refused on scope.
@@ -2047,9 +1673,10 @@ mod tests {
         fx.glob("*.rs", glob_auth()).expect("glob");
         WebEffect::fetch(&fx, "https://example.com", fetch_auth()).expect("fetch");
         fx.search("q", search_auth()).expect("search");
-        fx.run("ls", shell_auth()).expect("run");
-        fx.commit("msg", commit_auth()).expect("commit");
-        fx.push("origin", "main", push_auth()).expect("push");
+        fx.run("ls", shell_auth("ls")).expect("run");
+        fx.commit("msg", commit_auth("msg")).expect("commit");
+        fx.push("origin", "main", push_auth("origin"))
+            .expect("push");
         fx.spawn("http://a", "{}", spawn_auth()).expect("spawn");
 
         let entries = fx.receipts().entries();
@@ -2138,8 +1765,16 @@ mod tests {
         };
 
         let env = BTreeMap::new();
-        fx.run_argv("ls", &[], Path::new("/tmp"), None, &env, None, shell_auth())
-            .expect("run_argv");
+        fx.run_argv(
+            "ls",
+            &[],
+            Path::new("/tmp"),
+            None,
+            &env,
+            None,
+            shell_auth("ls"),
+        )
+        .expect("run_argv");
 
         fx.run_argv_async(
             "ls",
@@ -2149,10 +1784,20 @@ mod tests {
             &env,
             None,
             None,
-            shell_auth(),
+            shell_auth("ls"),
         )
         .await
         .expect("run_argv_async");
+
+        // Same reason as `net_fetch_denied_when_policy_never`: the workspace
+        // reqwest is `rustls-no-provider`, so `Client::new()` panics unless a
+        // provider is installed first (idempotent — ignore the already-set Err).
+        // It has to be done HERE too, not only in that test: nextest runs each
+        // test in its own process, so an install over there does not carry.
+        // This passed until now only because a full-workspace build unified
+        // reqwest's `rustls` feature in from nucleus-control-plane-server; a
+        // run scoped to a crate set that excludes it has no provider at all.
+        let _ = rustls::crypto::ring::default_provider().install_default();
 
         NetEffect::fetch(
             &fx,
@@ -2203,7 +1848,7 @@ mod tests {
             receipts: Arc::new(crate::receipt::ReceiptLog::new()),
             policy: CapabilityLattice::bottom(),
         };
-        let _ = denied_by_policy.push("origin", "main", push_auth());
+        let _ = denied_by_policy.push("origin", "main", push_auth("origin"));
         assert_eq!(
             denied_by_policy.receipts().entries()[0].outcome,
             EffectOutcome::DeniedByPolicy
@@ -2218,7 +1863,7 @@ mod tests {
                 ..CapabilityLattice::bottom()
             },
         };
-        let _ = denied_by_scope.push("origin", "main", commit_auth());
+        let _ = denied_by_scope.push("origin", "main", commit_auth("origin"));
         let e = &denied_by_scope.receipts().entries()[0];
         assert_eq!(e.outcome, EffectOutcome::DeniedByScope);
         assert_eq!(e.operation, portcullis_core::Operation::GitPush);
@@ -2277,15 +1922,15 @@ mod tests {
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.run("ls", shell_auth()),
+            fx.run("ls", shell_auth("ls")),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.commit("msg", commit_auth()),
+            fx.commit("msg", commit_auth("msg")),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.push("origin", "main", push_auth()),
+            fx.push("origin", "main", push_auth("origin")),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
@@ -2301,7 +1946,10 @@ mod tests {
         let fx = RecordingEffects::new();
         let _ = fx.read(Path::new("a.rs"), read_auth());
         let _ = fx.write(Path::new("b.rs"), b"hi", write_auth());
-        let _ = fx.run("echo hello", shell_auth());
+        // `run` spends now, and a spend with no log attached refuses. Used
+        // bare here, without the `PolicyEnforced` wrapper that normally
+        // attaches one, so the test attaches it.
+        let _ = fx.run("echo hello", witnessed(shell_auth("echo hello")));
         let calls = fx.calls();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[0].kind, "read");
@@ -2319,7 +1967,9 @@ mod tests {
     #[test]
     fn recording_commit_returns_stub_hash() {
         let fx = RecordingEffects::new();
-        let hash = fx.commit("fix: something", commit_auth()).unwrap();
+        let hash = fx
+            .commit("fix: something", witnessed(commit_auth("fix: something")))
+            .unwrap();
         assert_eq!(hash, "deadbeef");
     }
 
@@ -2371,15 +2021,15 @@ mod tests {
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.run("ls", shell_auth()),
+            fx.run("ls", shell_auth("ls")),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.commit("msg", commit_auth()),
+            fx.commit("msg", commit_auth("msg")),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.push("origin", "main", push_auth()),
+            fx.push("origin", "main", push_auth("origin")),
             Err(EffectError::PolicyDenied(_))
         ));
         // Nothing should have reached the inner impl
@@ -2520,7 +2170,7 @@ mod tests {
         let mut policy = CapabilityLattice::bottom();
         policy.run_bash = CapabilityLevel::Always;
         let fx = production_effects(policy);
-        let out = fx.run("echo nucleus", shell_auth()).unwrap();
+        let out = fx.run("echo nucleus", shell_auth("echo nucleus")).unwrap();
         assert!(out.success());
         assert!(out.stdout_str().contains("nucleus"));
     }
@@ -2540,7 +2190,7 @@ mod tests {
         // `run_argv`, which is the confused deputy sitting in the test suite:
         // authority earned for one action presented for another. It passed only
         // because the bundle was an unused `_proof` token.
-        use portcullis_core::discharge::test_helpers::bundle_for;
+        use portcullis_core::discharge::test_helpers::bundle_for_subject;
         use portcullis_core::{Operation, SinkClass};
 
         let mut policy = CapabilityLattice::bottom();
@@ -2549,8 +2199,17 @@ mod tests {
         // One authority per spawn: an `Authority` is spent by the call, so a
         // single bundle can no longer cover four of them. That is the property,
         // not an inconvenience — this test used to replay one discharge.
-        let shell_authority =
-            || Authority::new(bundle_for(Operation::RunBash, SinkClass::BashExec));
+        // Each spawn needs an authority earned for THAT program: the spend now
+        // binds the target, so one bundle no longer covers `pwd`, `printenv`
+        // and `cat` alike. Same property as the four-discharge note above, one
+        // level finer.
+        let shell_authority = |program: &str| {
+            Authority::new(bundle_for_subject(
+                Operation::RunBash,
+                SinkClass::BashExec,
+                program,
+            ))
+        };
 
         let dir = tempfile::tempdir().unwrap();
         let want_cwd = dir.path().canonicalize().unwrap();
@@ -2568,7 +2227,7 @@ mod tests {
                 None,
                 &allowed_env,
                 None,
-                shell_authority(),
+                shell_authority("pwd"),
             )
             .expect("run_argv spawns pwd");
         assert!(pwd_out.status.success());
@@ -2590,7 +2249,7 @@ mod tests {
                 None,
                 &allowed_env,
                 None,
-                shell_authority(),
+                shell_authority("printenv"),
             )
             .expect("run_argv spawns printenv");
         assert!(env_out.status.success());
@@ -2613,7 +2272,7 @@ mod tests {
                 Some(b"piped-stdin"),
                 &allowed_env,
                 None,
-                shell_authority(),
+                shell_authority("cat"),
             )
             .expect("run_argv spawns cat with stdin");
         assert!(cat_out.status.success());
@@ -2768,8 +2427,13 @@ mod witness_completeness_tests {
                 let name = chunk.split('(').next().unwrap_or("<unknown>").trim();
                 // `witnessed_by` counts: it is what `witnessed` itself calls, so
                 // the helper that attaches the log must not be flagged for
-                // attaching the log.
+                // attaching the log. `forward` counts for the same reason — it
+                // is `require` plus `witnessed`, for the methods whose inner
+                // effect does the spending. This vocabulary is the one thing
+                // here that must be kept in step by hand; the gate REDs on a
+                // new routing helper, which is how `forward` was added to it.
                 if !chunk.contains(".gate(")
+                    && !chunk.contains(".forward(")
                     && !chunk.contains(".witnessed(")
                     && !chunk.contains(".witnessed_by(")
                 {

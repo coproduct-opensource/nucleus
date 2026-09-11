@@ -43,8 +43,8 @@ use nucleus::Sandbox;
 use nucleus_ifc_kernel::discharge::test_helpers::allowed_bundle;
 use portcullis::kernel::Kernel;
 use portcullis::{
-    CapabilityLevel, ExecuteError, GradedExposureGuard, Operation, PermissionLattice, StateRisk,
-    ToolCallGuard,
+    Act, CapabilityLevel, ExecuteError, GradedExposureGuard, Operation, PermissionLattice,
+    StateRisk, ToolCallGuard,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
@@ -418,7 +418,7 @@ impl ToolDispatcher {
         };
 
         // Layer 1: Guard check (capability + uninhabitable_state)
-        let proof = match self.guard.check(Operation::ReadFiles) {
+        let proof = match self.guard.check(&Act::untargeted(Operation::ReadFiles)) {
             Ok(p) => p,
             Err(e) => return (format!("BLOCKED by guard: {e}"), true),
         };
@@ -460,7 +460,7 @@ impl ToolDispatcher {
             None => return ("Missing 'contents' parameter".into(), true),
         };
 
-        let proof = match self.guard.check(Operation::WriteFiles) {
+        let proof = match self.guard.check(&Act::untargeted(Operation::WriteFiles)) {
             Ok(p) => p,
             Err(e) => return (format!("BLOCKED by guard: {e}"), true),
         };
@@ -505,7 +505,7 @@ impl ToolDispatcher {
         }
 
         // Layer 1: Guard check (capability + uninhabitable_state)
-        let proof = match self.guard.check(Operation::RunBash) {
+        let proof = match self.guard.check(&Act::untargeted(Operation::RunBash)) {
             Ok(p) => p,
             Err(e) => return (format!("BLOCKED by guard: {e}"), true),
         };
@@ -545,7 +545,7 @@ impl ToolDispatcher {
             None => return ("Missing 'pattern' parameter".into(), true),
         };
 
-        let proof = match self.guard.check(Operation::GlobSearch) {
+        let proof = match self.guard.check(&Act::untargeted(Operation::GlobSearch)) {
             Ok(p) => p,
             Err(e) => return (format!("BLOCKED by guard: {e}"), true),
         };
@@ -590,7 +590,7 @@ impl ToolDispatcher {
             None => return ("Missing 'pattern' parameter".into(), true),
         };
 
-        let proof = match self.guard.check(Operation::GrepSearch) {
+        let proof = match self.guard.check(&Act::untargeted(Operation::GrepSearch)) {
             Ok(p) => p,
             Err(e) => return (format!("BLOCKED by guard: {e}"), true),
         };
@@ -689,7 +689,7 @@ impl ToolDispatcher {
             None => return ("Missing 'url' parameter".into(), true),
         };
 
-        let proof = match self.guard.check(Operation::WebFetch) {
+        let proof = match self.guard.check(&Act::untargeted(Operation::WebFetch)) {
             Ok(p) => p,
             Err(e) => return (format!("BLOCKED by guard: {e}"), true),
         };

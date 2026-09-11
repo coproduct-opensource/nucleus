@@ -1,0 +1,64 @@
+# Law-mechanism manifest — mechanisms that are DECLARED but not WIRED.
+#
+# Read by `cargo xtask law-mechanisms` (crates/xtask/src/law_mechanisms.rs) via
+# the shim scripts/check-law-mechanisms.sh.
+#
+# WHY THIS FILE EXISTS
+#
+# A 2026-09-09 architectural audit asked whether nucleus's operational concepts
+# are instances of shared algebraic objects. They mostly are. The finding that
+# mattered was different: most of those unifications are ALREADY BUILT, several
+# are machine-proved, and they are not wired to the enforcement path. The gap
+# between the proven algebra and the running enforcement is where the live
+# defects were.
+#
+# The repo already knew this class in two narrower places — docs/north-star.md
+# demoted clause C9 because "the attested-cert producer is dead-code with its
+# result discarded", and scripts/check-extracted-callsites.sh (C8) gates it for
+# the Aeneas predicates: "a predicate proven about a function nobody calls is a
+# proof about dead code." This file is the general case.
+#
+# WHAT A ROW MEANS
+#
+#   CLASS | LAW | mechanism | decl_anchor | use_anchor | file | note
+#
+# Class D — declared, with no live call site. The gate asserts, over the
+# production region (tests/, benches/, examples/, fuzz/, *_tests.rs and
+# #[cfg(test)] blocks all excluded) of every file `git ls-files` reports:
+#
+#   1. `decl_anchor` still appears in the declaring file — a row whose
+#      mechanism was renamed or deleted is stale, and a stale row is itself a
+#      finding;
+#   2. `use_anchor` appears NOWHERE else. A row that becomes wired FAILS, and
+#      the fix is to delete the row and lower DEAD_COUNT.
+#
+# TWO anchors, not one, because a definition and its call sites never share a
+# literal: the file says `pub fn with_isolation`, callers say
+# `Kernel::with_isolation(`. A single anchor made check 1 pass on whatever doc
+# comment happened to mention the qualified name, which is passing by accident.
+# The use form must also be qualified enough not to collide: `with_isolation(`
+# alone would match `PolicyContext::with_isolation` and
+# `WeakeningCost::with_isolation`, which are unrelated methods.
+#
+# So the list may only shrink, and it shrinks by wiring the mechanism or by
+# deleting it. Both are progress. DEAD_COUNT is exact: a slack pin lets a row
+# vanish unnoticed, which is the failure this gate exists to catch.
+#
+# ANCHORS MUST BE UNAMBIGUOUS LITERALS. This is a grep, not a resolver, so a
+# method whose call site is `x.extend(...)` cannot be anchored — the literal
+# would match every Vec in the tree. `TimeLattice::extend` is dead (no non-test
+# callers) and is deliberately NOT listed for that reason; recording an anchor
+# that over-matches would make the gate lie in the safe-looking direction.
+#
+# Adding a row is not a way to park a mechanism. A row is a debt with a name.
+
+D | attenuation (x ∧ y ≼ x) | ProductLattice | pub struct ProductLattice | ProductLattice | crates/portcullis-core/src/category.rs | the categorical product in Lat. PermissionLattice is a hand-rolled 6-factor product that does not use it and spells meet/join/leq out by hand.
+D | attenuation (x ∧ y ≼ x) | MeetCap | pub struct MeetCap | MeetCap | crates/portcullis-core/src/attenuation.rs | Lean-proved (AttenuationProofs.lean). Kernel::attenuate is this transcribed by hand, with a defensive leq recheck of the law the trait would guarantee.
+D | risk closure cl(S) | ConstraintNucleus | pub struct ConstraintNucleus | ConstraintNucleus:: | crates/portcullis/src/uninhabitable_state.rs | the data-driven trifecta closure. Production uses IncompatibilityConstraint, which is hardcoded ifs. Re-exported at lib.rs, so the use anchor is the constructor form: exported is not wired.
+D | fs containment | PathLattice::with_work_dir | pub fn with_work_dir | with_work_dir( | crates/portcullis/src/path.rs | the sandbox root. All 11 callers are tests, three of them the adversarial suites that prove path-traversal containment — of a configuration production never builds.
+D | lineage composition | ProvenanceDAG | pub struct ProvenanceDAG | ProvenanceDAG | crates/portcullis-core/src/provenance_node.rs | a complete content-addressed Merkle DAG with verify_integrity/verify_all. Nothing constructs one.
+D | IFC admissibility rules | Kernel::set_policy_rules | pub fn set_policy_rules | set_policy_rules( | crates/portcullis/src/kernel.rs | .nucleus/policy.toml rules never load, so the kernel's rule-evaluation branch is unreachable.
+D | isolation is enforced | Kernel::with_isolation | pub fn with_isolation | Kernel::with_isolation( | crates/portcullis/src/kernel.rs | every production kernel is built at IsolationLattice::localhost(), so the isolation-minimum and airgap gates have never fired. SECURITY_TODO #28.
+D | isolation is enforced | Authorized<A> | pub struct Authorized<A> | require_enforced( | crates/portcullis/src/enforcement.rs | the fabric act-gate: a verified authority AND a posture the backend can enforce, so an enforcement point requiring it cannot act on a decision whose isolation the platform cannot back. Nothing production-side constructs one -- require_enforced('s only caller outside this file is a #[test] at nucleus-policy-cert/src/lib.rs:1138. Its doc says "you cannot obtain Authorized without both halves", and the type derives Clone + Copy with both fields pub, so a caller holding one can rebuild it with either half swapped: the claim is false as written, which is why the row records the mechanism rather than the doc.
+D | complete mediation (no act without a check) | GuardedAction<A> | pub struct GuardedAction<A> | GuardedAction::new( | crates/portcullis/src/guard.rs | the typestate proof that permission was checked, with a private field so only the guard system can mint one. Constructed nowhere outside its own module. Re-exported at lib.rs:296, so the use anchor is the constructor -- exported is not wired, the same reading ConstraintNucleus's row already takes. The wired proof token on this path is CheckProof, which ADR 0006's C2.2 gave a target; GuardedAction is the older, unreached one beside it.
+DEAD_COUNT=9

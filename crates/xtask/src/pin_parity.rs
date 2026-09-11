@@ -12,7 +12,7 @@
 //!
 //! | fact | copies | why a split hurts |
 //! |---|---|---|
-//! | elan release + its SHA-256 | 12 workflows, ~36 lines | a stale copy is a supply-chain hazard, not just drift |
+//! | `leanprover/lean-action` pin | 13 workflows | the commit that installs the Lean toolchain; a stale copy is a supply-chain hazard, not just drift |
 //! | `AENEAS_RELEASE`, `CHARON_NIGHTLY` | 6 workflows, 12 lines | a partial bump splits the extraction fleet, and the halves disagree about generated Lean |
 //! | first-party `lean-toolchain` | 9 files | two Lean versions cannot share a `.lake` cache |
 //! | the actions-runner image ref | 2 Dockerfiles | two runner images that must stay in lockstep |
@@ -118,14 +118,20 @@ fn first_party_toolchains(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 
 fn collect(root: &Path) -> Result<Vec<Fact>> {
     let wfs = workflows(root)?;
-    let mut elan_version = Fact {
-        name: "elan release",
-        stake: "the version whose checksum is pinned beside it",
-        sightings: Vec::new(),
-    };
-    let mut elan_sha = Fact {
-        name: "elan tarball SHA-256",
-        stake: "a stale checksum next to a bumped version fails closed; a stale PAIR does not",
+    // Was two facts: the elan release and the SHA-256 of its tarball, copied into
+    // twelve hand-rolled install blocks. Those blocks are gone — `leanprover/lean-action`
+    // installs the toolchain now — so the gate would have found zero copies and bailed,
+    // which is exactly what it did and exactly what it should have done.
+    //
+    // The supply-chain control did not go away with them; it MOVED. What decides the elan
+    // version is now the commit of the action that installs it, and that commit is copied
+    // into thirteen workflows with nothing else asserting the copies agree. Same fact
+    // shape, one layer out. Deleting the elan rows without adding this one would have
+    // deleted the coverage too, which is the failure this gate exists to name.
+    let mut lean_action = Fact {
+        name: "leanprover/lean-action pin",
+        stake: "this commit is what installs the Lean toolchain now, so a split pin means two \
+                elan versions across the Lean fleet — the hazard the elan rows used to carry",
         sightings: Vec::new(),
     };
     let mut aeneas = Fact {
@@ -142,22 +148,9 @@ fn collect(root: &Path) -> Result<Vec<Fact>> {
     for path in &wfs {
         let text =
             fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        for v in scan(&text, "elan/releases/download/", '/') {
-            elan_version.sightings.push((path.clone(), v));
-        }
-        // The checksum line is `echo "<64 hex>  /tmp/elan.tar.gz" | sha256sum -c -`.
-        for line in text.lines() {
-            if line.contains("/tmp/elan.tar.gz") && line.contains("sha256sum") {
-                if let Some(h) = line
-                    .split('"')
-                    .nth(1)
-                    .and_then(|s| s.split_whitespace().next())
-                {
-                    if h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) {
-                        elan_sha.sightings.push((path.clone(), h.to_string()));
-                    }
-                }
-            }
+        // `uses: leanprover/lean-action@<sha> # v1` — the SHA runs to the first space.
+        for v in scan(&text, "leanprover/lean-action@", ' ') {
+            lean_action.sightings.push((path.clone(), v));
         }
         for (fact, key) in [
             (&mut aeneas, "AENEAS_RELEASE:"),
@@ -280,8 +273,7 @@ fn collect(root: &Path) -> Result<Vec<Fact>> {
     }
 
     Ok(vec![
-        elan_version,
-        elan_sha,
+        lean_action,
         aeneas,
         charon,
         lean,
@@ -298,9 +290,12 @@ pub fn check(root: &Path) -> Result<()> {
 
     for fact in &facts {
         if fact.sightings.is_empty() {
-            // A fact that has vanished is not a pass. If every copy of the elan block were
+            // A fact that has vanished is not a pass. If every copy of a pinned version were
             // deleted or renamed, this gate would go quiet exactly when it stopped watching
-            // anything — the vacuity failure the ledger ratchets exist to catch.
+            // anything — the vacuity failure the ledger ratchets exist to catch. It has
+            // already earned itself once: migrating the Lean workflows to
+            // `leanprover/lean-action` removed every hand-rolled elan install, and this is
+            // what said so rather than passing on an empty scan.
             bail!(
                 "{}: no occurrences found. Either every copy was removed — in which case delete \
                  this fact — or the shape it is matched by changed and this gate is now watching \

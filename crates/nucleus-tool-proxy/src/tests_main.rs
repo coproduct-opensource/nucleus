@@ -449,13 +449,16 @@ mod ifc_http_enforcement {
         let sink = CapturingSink::default();
         let graph = mirror_graph(flow);
         let mapped = crate::mediation::decide_and_record(
-            &sink,
+            crate::mediation::MediationEnv {
+                sink: &sink,
+                actor: portcullis::verdict_sink::ActorIdentity::Unknown,
+                transport: "http",
+                grants: &crate::mediation::NoGrants,
+            },
             kernel,
             &graph,
             operation,
             subject,
-            portcullis::verdict_sink::ActorIdentity::Unknown,
-            "http",
         );
         let seen = sink.records.lock().unwrap().clone();
         // The tests below are about the mapped error and what was recorded; the
@@ -1368,16 +1371,20 @@ mod phase2_flowgraph_switch {
 
         let mut kernel = permissive_kernel();
         let r = crate::mediation::decide_and_record(
-            &NoopSink,
+            crate::mediation::MediationEnv {
+                sink: &NoopSink,
+                actor: portcullis::verdict_sink::ActorIdentity::Unknown,
+                transport: "http",
+                grants: &crate::mediation::NoGrants,
+            },
             &mut kernel,
             &tainted,
             Operation::WriteFiles,
             "out.txt",
-            portcullis::verdict_sink::ActorIdentity::Unknown,
-            "http",
-        );
+        )
+        .map_err(|d| d.error);
         assert!(
-            matches!(r.map_err(|d| d.error), Err(ApiError::IfcDenied(_))),
+            matches!(r, Err(ApiError::IfcDenied(_))),
             "a tainted graph must fail closed through decide_and_record"
         );
     }
@@ -1389,14 +1396,18 @@ mod phase2_flowgraph_switch {
         let clean = FlowGraph::new();
         let mut kernel = permissive_kernel();
         let r = crate::mediation::decide_and_record(
-            &NoopSink,
+            crate::mediation::MediationEnv {
+                sink: &NoopSink,
+                actor: portcullis::verdict_sink::ActorIdentity::Unknown,
+                transport: "http",
+                grants: &crate::mediation::NoGrants,
+            },
             &mut kernel,
             &clean,
             Operation::ReadFiles,
             "in.txt",
-            portcullis::verdict_sink::ActorIdentity::Unknown,
-            "http",
-        );
+        )
+        .map_err(|d| d.error);
         assert!(r.is_ok(), "a clean graph must serve the verdict; got {r:?}");
     }
 }
@@ -1742,6 +1753,195 @@ mod refusal_carries_its_proposal {
     }
 }
 
+// ── #2406: a granted approval satisfies the retry it was granted for ────────
+//
+// The kernel's `RequiresApproval` is a deferral to a person, not a refusal, and
+// the person's answer lives in the `ApprovalRegistry` that `/v1/approve` writes
+// to. That gate did not read the registry, so an operator who approved got a
+// 200 and no effect: the write was refused again with the same operation string
+// they had just approved. Measured on a live aarch64/KVM pod before the fix.
+//
+// The dangerous way to fix this is to let a grant turn any refusal into an
+// allow, so the tests below pin BOTH directions — an approved deferral proceeds,
+// and nothing else moves.
+mod approval_grants_2406 {
+    use super::*;
+    use portcullis::flow_graph::FlowGraph;
+    use portcullis::kernel::Kernel;
+
+    struct Granted(&'static str);
+    impl crate::mediation::ApprovalGrants for Granted {
+        fn is_granted(&self, operation: &str) -> bool {
+            operation == self.0
+        }
+    }
+
+    struct NoopSink;
+    impl portcullis::verdict_sink::VerdictSink for NoopSink {
+        fn record(
+            &self,
+            _ctx: portcullis::verdict_sink::VerdictContext,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+        fn preflight(
+            &self,
+            _operation: Operation,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+    }
+
+    /// A lattice shaped like the one the live pod ran under: `write_files` is
+    /// `LowRisk`, which is what makes the kernel defer rather than allow or
+    /// deny. Built explicitly rather than by profile name — `codegen` resolves
+    /// through the YAML registry in production and through a legacy hardcoded
+    /// constructor in `PermissionLattice::codegen()`, and only the first of
+    /// those is `low_risk` (`crates/portcullis/profiles/codegen.yaml:19`). A
+    /// fixture that disagreed with the live path is exactly how this defect
+    /// stayed invisible to unit tests for as long as it did.
+    /// A kernel that defers `WriteFiles` to a person, by the mechanism the live
+    /// pod defers by: an approval **obligation** on the lattice
+    /// (`Kernel::decide` step 7 — `self.effective.requires_approval(op)`).
+    ///
+    /// Not by capability level: `write_files: low_risk` on its own is allowed
+    /// outright, which is why an earlier version of this fixture passed
+    /// vacuously. `Obligations` is also what `Sandbox::check_capability`
+    /// consults, so this is the one field that puts BOTH gates in play — the
+    /// pair whose disagreement was #2406.
+    fn deferring_kernel() -> Kernel {
+        let mut lattice = PermissionLattice::permissive();
+        lattice.obligations.insert(Operation::WriteFiles);
+        Kernel::new(lattice)
+    }
+
+    /// The key both sides agree on, built the way the mapping builds it.
+    const WRITE_KEY: &str = "WriteFiles notes.txt";
+
+    /// PRECONDITION for everything below. If `codegen` ever stops deferring on
+    /// `write_files` these tests would pass vacuously — the grant would be
+    /// irrelevant because the operation was allowed outright.
+    #[test]
+    fn the_fixture_actually_defers() {
+        let mut kernel = deferring_kernel();
+        let r = crate::mediation::decide_and_record(
+            crate::mediation::MediationEnv {
+                sink: &NoopSink,
+                actor: portcullis::verdict_sink::ActorIdentity::Unknown,
+                transport: "http",
+                grants: &crate::mediation::NoGrants,
+            },
+            &mut kernel,
+            &FlowGraph::new(),
+            Operation::WriteFiles,
+            "notes.txt",
+        )
+        .map_err(|d| d.error);
+        match r {
+            Err(ApiError::Nucleus(nucleus::NucleusError::ApprovalRequired { operation })) => {
+                assert_eq!(
+                    operation, WRITE_KEY,
+                    "the key handed to the caller is the key the registry is asked about"
+                );
+            }
+            other => panic!("a LowRisk write_files must defer, got {other:?}"),
+        }
+    }
+
+    /// The defect itself: with the grant on file the deferral is satisfied.
+    #[test]
+    fn a_grant_on_file_satisfies_the_deferral() {
+        let mut kernel = deferring_kernel();
+        let r = crate::mediation::decide_and_record(
+            crate::mediation::MediationEnv {
+                sink: &NoopSink,
+                actor: portcullis::verdict_sink::ActorIdentity::Unknown,
+                transport: "http",
+                grants: &Granted(WRITE_KEY),
+            },
+            &mut kernel,
+            &FlowGraph::new(),
+            Operation::WriteFiles,
+            "notes.txt",
+        )
+        .map_err(|d| d.error);
+        assert!(
+            r.is_ok(),
+            "an approved deferral must yield a token; got {r:?}"
+        );
+    }
+
+    /// A grant for a DIFFERENT operation buys nothing. The registry is keyed on
+    /// the whole `{operation} {subject}` string precisely so that approving one
+    /// write does not approve every write.
+    #[test]
+    fn a_grant_for_another_subject_does_not_transfer() {
+        let mut kernel = deferring_kernel();
+        let r = crate::mediation::decide_and_record(
+            crate::mediation::MediationEnv {
+                sink: &NoopSink,
+                actor: portcullis::verdict_sink::ActorIdentity::Unknown,
+                transport: "http",
+                grants: &Granted("WriteFiles somethingelse.txt"),
+            },
+            &mut kernel,
+            &FlowGraph::new(),
+            Operation::WriteFiles,
+            "notes.txt",
+        )
+        .map_err(|d| d.error);
+        assert!(
+            matches!(
+                r,
+                Err(ApiError::Nucleus(
+                    nucleus::NucleusError::ApprovalRequired { .. }
+                ))
+            ),
+            "a grant for another subject must not satisfy this one; got {r:?}"
+        );
+    }
+
+    /// THE property that keeps this from being a widening path. A grant may only
+    /// settle a deferral; it can never move a `Deny`. Here the graph is tainted,
+    /// so the verdict is `IfcUnsafe` rather than `RequiresApproval`, and a grant
+    /// naming the very same operation changes nothing.
+    #[test]
+    fn a_grant_cannot_move_a_denial() {
+        let mut tainted = FlowGraph::new();
+        tainted
+            .observe_with_content_hash(
+                NodeKind::WebContent,
+                &[],
+                0,
+                crate::ingest_content_hash(b"web"),
+            )
+            .expect("observe adversarial");
+        assert!(
+            tainted.is_tainted(),
+            "precondition: the graph carries taint"
+        );
+
+        let mut kernel = deferring_kernel();
+        let r = crate::mediation::decide_and_record(
+            crate::mediation::MediationEnv {
+                sink: &NoopSink,
+                actor: portcullis::verdict_sink::ActorIdentity::Unknown,
+                transport: "http",
+                grants: &Granted(WRITE_KEY),
+            },
+            &mut kernel,
+            &tainted,
+            Operation::WriteFiles,
+            "notes.txt",
+        )
+        .map_err(|d| d.error);
+        assert!(
+            matches!(r, Err(ApiError::IfcDenied(_))),
+            "a human grant must not override an IFC denial; got {r:?}"
+        );
+    }
+}
+
 /// `verify --tier2` asserts that an uncredentialed operation was refused BY THE
 /// ADMISSION GATE, not merely refused. It used to establish that by looking for
 /// the string `DlcAdmissionDenied` in the response body — which was there only
@@ -1782,4 +1982,82 @@ fn an_admission_refusal_carries_its_deny_code_to_the_wire() {
         body.contains("kernel_denied"),
         "`kind` must stay `kernel_denied` so the SDK's mapping is untouched: {body}"
     );
+}
+
+// ── One name for one decision ───────────────────────────────────────────────
+//
+// The second half of #2406. Both approval gates were internally consistent and
+// disagreed with each other: the kernel refused `WriteFiles notes.txt`, the
+// caller approved that, and the sandbox then asked for `write notes.txt` — the
+// same act under the name of the *method* rather than of the authority. One
+// human decision cost two approvals, in two vocabularies, and no test compared
+// them because each side only ever tested itself.
+//
+// This is that comparison. It is deliberately about the two producers, not
+// about a string constant: pinning the literal would pass just as happily if
+// both sides drifted together somewhere the caller could not follow.
+mod approval_naming_parity {
+    use super::*;
+
+    /// The key `mediation` hands the caller, built exactly as the
+    /// `Verdict::RequiresApproval` arm builds it.
+    fn kernel_key(operation: Operation, subject: &str) -> String {
+        format!("{operation:?} {subject}")
+    }
+
+    #[test]
+    fn every_gate_names_an_approval_the_same_way() {
+        for (operation, subject) in [
+            (Operation::WriteFiles, "notes.txt"),
+            (Operation::EditFiles, "src/main.rs"),
+            (Operation::ReadFiles, "docs/design.md"),
+            (Operation::WriteFiles, "deep/nested/path/file.rs"),
+        ] {
+            let from_kernel = kernel_key(operation, subject);
+            let from_sandbox =
+                nucleus::Sandbox::approval_key(operation, std::path::Path::new(subject));
+            let from_rule = nucleus::approval_key(operation, subject);
+            assert_eq!(
+                from_kernel, from_sandbox,
+                "the reference monitor and the sandbox must ask for the same approval by the \
+                 same name, or a grant satisfies one gate and not the next (#2406)"
+            );
+            assert_eq!(from_kernel, from_rule, "and both must be the shared rule");
+        }
+        // The COMMAND path is a third gate, and it was left out of the first
+        // version of this test — which is exactly why it kept its own
+        // vocabulary (`echo hello`, no operation at all) until a live agency
+        // run tripped over it. A parity test that covers two of three gates
+        // licenses the third to drift.
+        for (operation, subject) in [
+            (Operation::RunBash, "cargo test"),
+            (Operation::GitCommit, "git commit -m x"),
+            (Operation::GitPush, "git push origin main"),
+        ] {
+            assert_eq!(
+                kernel_key(operation, subject),
+                nucleus::approval_key(operation, subject),
+                "the command executor must ask by the same name as the kernel"
+            );
+        }
+    }
+
+    /// Non-vacuity: the comparison above would hold trivially if the key
+    /// ignored its inputs. Different acts must have different names, or one
+    /// approval would silently buy another.
+    #[test]
+    fn different_acts_have_different_names() {
+        let write = nucleus::Sandbox::approval_key(
+            Operation::WriteFiles,
+            std::path::Path::new("notes.txt"),
+        );
+        let edit =
+            nucleus::Sandbox::approval_key(Operation::EditFiles, std::path::Path::new("notes.txt"));
+        let other = nucleus::Sandbox::approval_key(
+            Operation::WriteFiles,
+            std::path::Path::new("other.txt"),
+        );
+        assert_ne!(write, edit, "operation must be part of the name");
+        assert_ne!(write, other, "subject must be part of the name");
+    }
 }

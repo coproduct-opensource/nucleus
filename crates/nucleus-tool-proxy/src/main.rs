@@ -762,6 +762,42 @@ impl ApprovalRegistry {
         }
         false
     }
+
+    /// Whether a live grant exists for `operation`, WITHOUT spending it.
+    ///
+    /// One human approval must buy exactly one operation, and an operation
+    /// crosses two independent approval gates on its way through: the kernel's
+    /// `RequiresApproval` verdict at the HTTP chokepoint, and the sandbox's own
+    /// capability guard. Both used to want to `consume`, which is #2406's other
+    /// half — a grant of `count: 1` was spent by whichever gate read it first
+    /// and the next gate found nothing, so the caller had to grant more than
+    /// they meant to approve for the write to land at all.
+    ///
+    /// So the gates split the two questions. Every gate before the last asks
+    /// *is this approved* (here); the sandbox approver, which is the last thing
+    /// between the request and the bytes, is the single site that spends it.
+    /// A peek that reports a live grant is therefore always followed by exactly
+    /// one `consume`, or by a refusal further down that spends nothing.
+    ///
+    /// Expiry is evaluated and purged here exactly as in [`Self::consume`], so
+    /// a peek cannot report a grant that a spend would then reject.
+    fn is_granted(&self, operation: &str) -> bool {
+        let mut guard = self.approvals.lock().unwrap();
+        match guard.get(operation) {
+            Some(entry) if is_expired(entry.expires_at_unix) => {
+                guard.remove(operation);
+                false
+            }
+            Some(entry) => entry.count > 0,
+            None => false,
+        }
+    }
+}
+
+impl mediation::ApprovalGrants for ApprovalRegistry {
+    fn is_granted(&self, operation: &str) -> bool {
+        ApprovalRegistry::is_granted(self, operation)
+    }
 }
 
 fn merge_expiry(existing: Option<u64>, incoming: Option<u64>) -> Option<u64> {
@@ -2619,13 +2655,16 @@ async fn http_kernel_decide(
     // records do; it used to hardcode `Unknown` while the sibling record in
     // the same handler carried the SPIFFE ID.
     let decided = mediation::decide_and_record(
-        state.verdict_sink.as_ref(),
+        mediation::MediationEnv {
+            sink: state.verdict_sink.as_ref(),
+            actor: actor_from_auth(auth_ctx),
+            transport: "http",
+            grants: state.approvals.as_ref(),
+        },
         &mut kernel,
         &graph,
         operation,
         subject,
-        actor_from_auth(auth_ctx),
-        "http",
     );
 
     // The moment of denial is the only moment the affordance is useful. The
@@ -2728,8 +2767,12 @@ async fn read_file(
             Ok(contents) => contents,
             Err(NucleusError::ApprovalRequired { operation: op }) => {
                 // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
+                // PEEK. The spend is the sandbox approver reached through
+                // `request_approval` on the next line, and this guard used to
+                // consume as well — two spends per attempt, so a grant of
+                // `count: 1` never sufficed (#2406).
                 if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
-                    || state.approvals.consume(&op)
+                    || state.approvals.is_granted(&op)
                 {
                     let approval = state.runtime.sandbox().request_approval(op.clone())?;
                     let approved_dt = {
@@ -2823,7 +2866,14 @@ async fn write_file(
     Json(req): Json<WriteRequest>,
 ) -> Result<Json<WriteResponse>, ApiError> {
     let sink = &state.verdict_sink;
-    let operation = Operation::WriteFiles;
+    // Which capability this write is actually checked against — `EditFiles`
+    // when the path exists, `WriteFiles` when it does not — asked of the
+    // sandbox that will enforce it rather than assumed here. Assuming
+    // `WriteFiles` meant the kernel decided about one operation and the
+    // sandbox enforced another, so an approval the caller was told to get did
+    // not satisfy the retry, and every overwrite was recorded in the audit
+    // trail as a create.
+    let operation = state.runtime.sandbox().write_operation_for(&req.path);
     let auth_ctx = auth.map(|e| e.0);
     let actor = actor_from_auth(auth_ctx.as_ref());
 
@@ -2867,15 +2917,9 @@ async fn write_file(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let fs_ceiling = state.ceiling(Operation::WriteFiles, certified.as_ref());
+        let fs_ceiling = state.ceiling(operation, certified.as_ref());
         let flow = state.flow_graph.lock().await;
-        let result = run_gate::preflight_fs(
-            Operation::WriteFiles,
-            verified_scope,
-            fs_ceiling,
-            &path,
-            &flow,
-        );
+        let result = run_gate::preflight_fs(operation, verified_scope, fs_ceiling, &path, &flow);
         drop(flow);
         match result {
             PreflightResult::Allowed(bundle) => bundle,
@@ -2915,19 +2959,28 @@ async fn write_file(
             // `ApprovalRequired` with the same operation string. That ambiguity
             // cost four wrong diagnoses of #2406, so the distinction is logged.
             //
-            // Worth knowing what this arm does NOT cover. `http_kernel_decide`
-            // runs earlier and can return `requires_approval` from mediation,
-            // which propagates before `sandbox.write` is ever called — so a
-            // grant made through `/v1/approve` never reaches this registry at
-            // all. That is #2406, and it is why adding the log here proved the
-            // point by staying silent.
+            // `http_kernel_decide` runs earlier and can also return
+            // `requires_approval`. It used to propagate before `sandbox.write`
+            // was ever called, so a grant made through `/v1/approve` never
+            // reached this registry at all — that was #2406, and it is why
+            // adding the log here first proved the point by staying silent.
+            // That gate now consults the same registry, so an operation can
+            // reach this arm with a grant already on file.
             //
-            // Note also the grant is consumed TWICE per attempt when this arm IS
-            // reached: once here, and again inside `request_approval`, whose
-            // approver is `move |req| approvals.consume(req.operation())`.
+            // Which makes it load-bearing that this guard PEEKS. The grant is
+            // spent exactly once per attempt, inside `request_approval`, whose
+            // approver is `move |req| approvals.consume(req.operation())`. This
+            // used to `consume` as well — two spends per attempt, so `count: 1`
+            // never sufficed and the caller had to approve twice what they meant
+            // to approve once.
             let policy_ok =
                 check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path));
-            let pre_granted = !policy_ok && state.approvals.consume(&op);
+            // `op` is the same string the kernel gate refused with and the
+            // caller posted to `/v1/approve`: both gates name an approval
+            // `{Operation:?} {subject}` (`Sandbox::approval_key`). One human
+            // decision, one name, so one grant carries the operation through
+            // every gate that asks about it.
+            let pre_granted = !policy_ok && state.approvals.is_granted(&op);
             if policy_ok || pre_granted {
                 let approval = match state.runtime.sandbox().request_approval(op.clone()) {
                     Ok(a) => a,
@@ -2936,8 +2989,7 @@ async fn write_file(
                             operation = %op,
                             policy_ok,
                             pre_granted,
-                            "a grant was accepted here but the sandbox approver then refused; \
-                             the grant is consumed twice per attempt"
+                            "a grant was accepted here but the sandbox approver then refused"
                         );
                         return Err(e.into());
                     }
@@ -2953,15 +3005,10 @@ async fn write_file(
                 let retry_bundle = {
                     use nucleus_ifc_kernel::discharge::PreflightResult;
                     let verified_scope = state.session_task_token.verified_scope();
-                    let fs_ceiling = state.ceiling(Operation::WriteFiles, certified.as_ref());
+                    let fs_ceiling = state.ceiling(operation, certified.as_ref());
                     let flow = state.flow_graph.lock().await;
-                    let r = run_gate::preflight_fs(
-                        Operation::WriteFiles,
-                        verified_scope,
-                        fs_ceiling,
-                        &path,
-                        &flow,
-                    );
+                    let r =
+                        run_gate::preflight_fs(operation, verified_scope, fs_ceiling, &path, &flow);
                     drop(flow);
                     match r {
                         PreflightResult::Allowed(b) => b,
@@ -3194,11 +3241,16 @@ async fn run_command(
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
+            // PEEK, for the same reason as the read and write paths: the
+            // executor's own approver spends it on the next line. Measured on
+            // a live pod after the naming was unified — the gate then asked by
+            // the right name (`RunBash echo ...`) and still refused, because
+            // the grant had already been spent here.
             if check_identity_policy(
                 &state,
                 auth_ctx.as_ref(),
                 &format!("execute {}", display_command),
-            ) || state.approvals.consume(&op)
+            ) || state.approvals.is_granted(&op)
             {
                 let approval = executor.request_approval(&op)?;
                 let approved_dt = {
@@ -3621,13 +3673,14 @@ async fn glob_search(
         .map_err(|e| ApiError::Spec(format!("sandbox root not accessible: {e}")))?;
 
     let search_root = if let Some(ref dir) = req.directory {
-        // Reject absolute paths immediately
-        if Path::new(dir).is_absolute() {
-            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
-                path: PathBuf::from(dir),
-            }));
-        }
-        let resolved = sandbox_root.join(dir);
+        // An absolute directory under the root names the same directory as its
+        // relative spelling; one outside it is still an escape (#2787).
+        let dir = state
+            .runtime
+            .sandbox()
+            .root_relative(Path::new(dir))
+            .map_err(ApiError::Nucleus)?;
+        let resolved = sandbox_root.join(&dir);
         // Canonicalize to resolve symlinks and .. components (path must exist)
         let canonical = resolved.canonicalize().map_err(|_| {
             ApiError::Nucleus(NucleusError::SandboxEscape {
@@ -3793,14 +3846,15 @@ async fn grep_search(
 
     // Collect files to search
     let files: Vec<std::path::PathBuf> = if let Some(ref path) = req.path {
-        // Reject absolute paths immediately
-        if Path::new(path).is_absolute() {
-            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
-                path: PathBuf::from(path),
-            }));
-        }
+        // An absolute path under the root names the same file as its relative
+        // spelling; one outside it is still an escape (#2787).
+        let path = state
+            .runtime
+            .sandbox()
+            .root_relative(Path::new(path))
+            .map_err(ApiError::Nucleus)?;
         // Search single file
-        let full_path = sandbox_root.join(path);
+        let full_path = sandbox_root.join(&path);
         // Canonicalize to verify we're within sandbox (handles symlinks and ..)
         let canonical = full_path.canonicalize().map_err(|_| {
             ApiError::Nucleus(NucleusError::SandboxEscape {

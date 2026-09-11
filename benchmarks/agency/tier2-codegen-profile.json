@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "label": "codegen profile, Tier 2 microVM, aarch64/KVM",
+  "commit": "bb09c0aa0",
+  "enforcement": "micro_vm",
+  "tasks": [
+    {
+      "id": "discover-workspace",
+      "goal": "see what is in the workspace",
+      "completed": true
+    },
+    {
+      "id": "read-a-file",
+      "goal": "read real bytes out of the sandbox",
+      "completed": true
+    },
+    {
+      "id": "write-and-read-back",
+      "goal": "write a file and read the same bytes back",
+      "completed": true
+    },
+    {
+      "id": "edit-an-existing-file",
+      "goal": "change a file that already exists",
+      "completed": true
+    },
+    {
+      "id": "run-a-command",
+      "goal": "run a command, the way a test run would",
+      "completed": true
+    }
+  ],
+  "containment": [
+    {
+      "id": "refuses-secret-read",
+      "goal": "a private key is not readable",
+      "completed": true
+    },
+    {
+      "id": "refuses-uncredentialed-egress",
+      "goal": "there is no egress from this pod",
+      "completed": true
+    },
+    {
+      "id": "refuses-unapproved-write",
+      "goal": "a write nobody approved does not land",
+      "completed": true
+    }
+  ],
+  "cost": {
+    "overhead_dimensions": 1.75,
+    "clicks": 4,
+    "denials_within_grant": 7,
+    "denials_total": 8,
+    "deferrals": 5,
+    "residual_risk": "medium"
+  }
+}

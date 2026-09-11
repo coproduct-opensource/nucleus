@@ -66,6 +66,7 @@
 
 use std::sync::Arc;
 
+use portcullis_core::act::Act;
 use portcullis_core::discharge::DischargedBundle;
 use portcullis_core::{Operation, SinkClass};
 
@@ -125,6 +126,20 @@ pub struct Authority {
 pub enum SpendError {
     /// The authority was earned for a different (operation, sink) pair.
     ScopeMismatch(String),
+    /// The right kind of act, on the wrong thing.
+    ///
+    /// Separate from [`ScopeMismatch`](SpendError::ScopeMismatch) because it is
+    /// a different failure and reads differently in a log: the pair matched, so
+    /// every check that looks at the pair passed, and what did not match is the
+    /// target. That is the case the pair check cannot see — an authority earned
+    /// to run `ls` is `(RunBash, BashExec)`, and so is one earned to run
+    /// `rm -rf /`.
+    TargetMismatch {
+        /// The subject the authority was earned for.
+        earned_for: String,
+        /// The subject it was presented against.
+        attempted: String,
+    },
     /// No receipt log was attached, so the spend could not be recorded.
     ///
     /// Refused rather than performed. An effect that happens without a record is
@@ -138,6 +153,14 @@ impl std::fmt::Display for SpendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SpendError::ScopeMismatch(why) => write!(f, "{why}"),
+            SpendError::TargetMismatch {
+                earned_for,
+                attempted,
+            } => write!(
+                f,
+                "authority target mismatch: earned for {earned_for:?}, presented \
+                 against {attempted:?} — the same kind of act on a different thing"
+            ),
             SpendError::Unwitnessed => write!(
                 f,
                 "authority spent with no receipt log attached — refusing, because \
@@ -176,20 +199,34 @@ impl Authority {
         (self.bundle.operation(), self.bundle.sink_class())
     }
 
-    /// Spend this authority on exactly one `(operation, sink)` pair.
+    /// The subject this authority was earned for, without spending it.
+    #[must_use]
+    pub fn subject(&self) -> &str {
+        self.bundle.subject()
+    }
+
+    /// Spend this authority on exactly one [`Act`] — verb, sink **and** target.
     ///
-    /// Consumes `self`. On success the bundle is handed back so the caller can
-    /// pass it to today's `&DischargedBundle` effect surface — this is the
-    /// transitional seam, and it is worth being precise about what it does and
-    /// does not buy:
+    /// # Why this exists beside [`spend`](Self::spend)
     ///
-    /// * **Bought:** one `Authority` authorises one scope check. Holding it
-    ///   twice, or checking two different scopes with it, will not compile.
-    /// * **Not bought:** once the bundle is handed back, the old ambient
-    ///   surface applies to it again. Closing that is the signature change
-    ///   through the effect traits, which this type exists to inform rather
-    ///   than to pre-empt.
-    pub fn spend(self, op: Operation, sink: SinkClass) -> Result<DischargedBundle, SpendError> {
+    /// `spend` binds the *kind* of act. Binding a token to the kind leaves the
+    /// confused deputy one level down: an authority earned to run `ls` is
+    /// `(RunBash, BashExec)`, and so is one earned to run `rm -rf /`. The
+    /// macaroon caveat this implements is a *request*-hash caveat, and the
+    /// request includes what it acts on.
+    ///
+    /// The comparison is on the subject string the bundle was discharged for,
+    /// so the site that mints and the site that spends must render the target
+    /// the same way. [`Act::subject`] is that one rendering — which is why it
+    /// lives on the type instead of at each call site.
+    ///
+    /// A caller that can name what it is about to do should use this one.
+    /// `spend` remains for the layers whose trait signatures do not yet carry
+    /// a target to name; retiring it is what the effect-trait signature change
+    /// is for.
+    pub fn spend_on(self, act: &Act) -> Result<DischargedBundle, SpendError> {
+        let op = act.operation();
+        let sink = act.sink_class();
         // NO SPEND WITHOUT A RECEIPT, checked before the scope check.
         //
         // The witness used to be optional at the spend: an authority with no log
@@ -210,6 +247,51 @@ impl Authority {
         // Record against the scope ATTEMPTED, not the scope held. A refused
         // spend is evidence about what was reached for, and the pair held is
         // already implied by whichever authority was issued.
+        // The pair first, then the target. Ordered so a bundle earned for an
+        // entirely different verb reports that, rather than reporting a target
+        // mismatch and leaving the reader to notice the verb differed too.
+        if let Err(why) = crate::require_scope(&self.bundle, op, sink) {
+            log.append(op, sink, EffectOutcome::DeniedByScope);
+            return Err(SpendError::ScopeMismatch(why));
+        }
+
+        let attempted = act.subject();
+        if self.bundle.subject() != attempted {
+            log.append(op, sink, EffectOutcome::DeniedByScope);
+            return Err(SpendError::TargetMismatch {
+                earned_for: self.bundle.subject().to_string(),
+                attempted,
+            });
+        }
+
+        log.append(op, sink, EffectOutcome::Allowed);
+        Ok(self.bundle)
+    }
+
+    /// Spend this authority on one `(operation, sink)` pair, without binding
+    /// the target.
+    ///
+    /// Consumes `self`. On success the bundle is handed back so the caller can
+    /// pass it to today's `&DischargedBundle` effect surface — this is the
+    /// transitional seam, and it is worth being precise about what it does and
+    /// does not buy:
+    ///
+    /// * **Bought:** one `Authority` authorises one scope check. Holding it
+    ///   twice, or checking two different scopes with it, will not compile.
+    /// * **Not bought:** the target. This cannot tell `ls` from `rm -rf /`,
+    ///   and [`spend_on`](Self::spend_on) is the one that can. Every caller
+    ///   whose signature carries a target should use that instead; the callers
+    ///   left here are the ones whose traits do not carry one yet.
+    /// * **Not bought:** once the bundle is handed back, the old ambient
+    ///   surface applies to it again. Closing that is the signature change
+    ///   through the effect traits, which this type exists to inform rather
+    ///   than to pre-empt.
+    pub fn spend(self, op: Operation, sink: SinkClass) -> Result<DischargedBundle, SpendError> {
+        // NO SPEND WITHOUT A RECEIPT, checked before the scope check — see
+        // `spend_on`, which states the reasoning in full.
+        let Some(log) = self.witness.clone() else {
+            return Err(SpendError::Unwitnessed);
+        };
         match crate::require_scope(&self.bundle, op, sink) {
             Ok(()) => {
                 log.append(op, sink, EffectOutcome::Allowed);
@@ -226,7 +308,8 @@ impl Authority {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use portcullis_core::discharge::test_helpers::bundle_for;
+    use portcullis_core::act::{Argv, Remote};
+    use portcullis_core::discharge::test_helpers::{bundle_for, bundle_for_subject};
 
     /// An authority with a throwaway log attached.
     ///
@@ -235,6 +318,104 @@ mod tests {
     /// so a missing log cannot hide behind a policy error.
     fn witnessed(op: Operation, sink: SinkClass) -> Authority {
         Authority::new(bundle_for(op, sink)).witnessed_by(Arc::new(ReceiptLog::new()))
+    }
+
+    /// An authority earned for a specific target, with a throwaway log.
+    fn witnessed_for(op: Operation, sink: SinkClass, subject: &str) -> Authority {
+        Authority::new(bundle_for_subject(op, sink, subject))
+            .witnessed_by(Arc::new(ReceiptLog::new()))
+    }
+
+    // ── the target, not just its category (ADR 0006, C2.4) ──────────────
+
+    /// **An authority earned to run one command does not pay for another.**
+    ///
+    /// This is the finding `scripts/inert-authority-manifest.txt` led with, in
+    /// its executable form. `spend` binds `(Operation, SinkClass)`, and both
+    /// commands below are `(RunBash, BashExec)` — so the pair check passes for
+    /// each of them, which is exactly why the pair is not enough.
+    #[test]
+    fn an_authority_earned_for_ls_does_not_pay_for_rm() {
+        let ls = Act::Run {
+            argv: Argv::new(vec!["ls".to_string()]),
+        };
+        let rm = Act::Run {
+            argv: Argv::new(vec!["rm".to_string(), "-rf".to_string(), "/".to_string()]),
+        };
+        assert_eq!(
+            (ls.operation(), ls.sink_class()),
+            (rm.operation(), rm.sink_class()),
+            "non-vacuity: if the pair differed, the old check would already have \
+             refused and this test would prove nothing about the target"
+        );
+
+        let authority = witnessed_for(Operation::RunBash, SinkClass::BashExec, &ls.subject());
+        // The pair matches, so `spend` — the check this replaces — would allow.
+        match authority.spend_on(&rm) {
+            Err(SpendError::TargetMismatch {
+                earned_for,
+                attempted,
+            }) => {
+                assert_eq!(earned_for, "ls");
+                assert_eq!(attempted, "rm -rf /");
+            }
+            other => panic!("a bundle earned for `ls` must not pay for `rm -rf /`: {other:?}"),
+        }
+    }
+
+    /// The same authority pays for the act it was earned for.
+    ///
+    /// Without this, the test above would pass on an authority that refuses
+    /// everything — a spend that always denies binds the target no better than
+    /// one that never checks it.
+    #[test]
+    fn an_authority_earned_for_ls_pays_for_ls() {
+        let ls = Act::Run {
+            argv: Argv::new(vec!["ls".to_string()]),
+        };
+        let authority = witnessed_for(Operation::RunBash, SinkClass::BashExec, &ls.subject());
+        assert!(authority.spend_on(&ls).is_ok());
+    }
+
+    /// A mismatched verb still reports the verb, not the target.
+    ///
+    /// The two checks are ordered so a bundle earned for an entirely different
+    /// act says so, rather than reporting a target mismatch and leaving the
+    /// reader to notice the verb differed too.
+    #[test]
+    fn a_mismatched_verb_reports_the_verb() {
+        let push = Act::Push {
+            remote: Remote::new("origin"),
+        };
+        let authority = witnessed_for(Operation::GitCommit, SinkClass::GitCommit, "origin");
+        assert!(matches!(
+            authority.spend_on(&push),
+            Err(SpendError::ScopeMismatch(_))
+        ));
+    }
+
+    /// A refused spend is still recorded.
+    ///
+    /// A target mismatch is evidence about what was reached for, and it would
+    /// be the more interesting entry of the two to lose.
+    #[test]
+    fn a_target_mismatch_is_witnessed() {
+        let log = Arc::new(ReceiptLog::new());
+        let authority = Authority::new(bundle_for_subject(
+            Operation::RunBash,
+            SinkClass::BashExec,
+            "ls",
+        ))
+        .witnessed_by(Arc::clone(&log));
+
+        let rm = Act::Run {
+            argv: Argv::new(vec!["rm".to_string()]),
+        };
+        assert!(authority.spend_on(&rm).is_err());
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1, "the refusal is on the record");
+        assert_eq!(entries[0].outcome, EffectOutcome::DeniedByScope);
     }
 
     #[test]
