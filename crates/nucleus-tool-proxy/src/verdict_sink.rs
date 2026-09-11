@@ -462,6 +462,7 @@ pub(crate) fn record_kernel_decision(
     subject: &str,
     actor: ActorIdentity,
     transport: &str,
+    kernel_session_id: uuid::Uuid,
 ) {
     use portcullis::gate_class;
     use portcullis::kernel::Verdict;
@@ -469,6 +470,25 @@ pub(crate) fn record_kernel_decision(
 
     let mut extensions = BTreeMap::new();
     extensions.insert("transport".to_string(), transport.to_string());
+    // The KERNEL's session id, which is not the one this sink carries.
+    //
+    // `ToolProxyVerdictSink.session_id` is `runtime.policy().id` — the
+    // PermissionLattice's uuid, whose own doc calls it "unique identifier for
+    // this permission set". `Kernel.session_id` is a separate `Uuid::new_v4()`,
+    // and it is the one the policy engine sees: `kernel.rs` passes it to Cedar
+    // as the principal. Two fresh uuids, both called a session id, written by
+    // the two objects that record the same decision — so a verdict could not be
+    // correlated with the kernel audit entry for the same call.
+    //
+    // Recorded rather than reconciled. Making one of them adopt the other means
+    // choosing which is the session, and the kernel is constructed AFTER this
+    // sink, so it is not a rename — it is a reordering with its own risk. This
+    // puts both in one record so the join is possible now, and names the
+    // choice for whoever makes it.
+    extensions.insert(
+        "kernel_session_id".to_string(),
+        kernel_session_id.to_string(),
+    );
     extensions.insert(
         "decision_sequence".to_string(),
         decision.sequence.to_string(),
@@ -774,6 +794,10 @@ mod tests {
     /// reframed this chokepoint: a verdict (allow or refusal) must reach the sink,
     /// never just a log line. `record_kernel_decision` is the same call the live
     /// HTTP and MCP paths make.
+    /// A fixed kernel session id, so the assertion below is about the value
+    /// travelling rather than about two `new_v4()`s happening to differ.
+    const KERNEL_SESSION: uuid::Uuid = uuid::uuid!("11111111-2222-3333-4444-555555555555");
+
     #[test]
     fn the_kernel_decision_reaches_the_record() {
         let sink = CapturingSink::default();
@@ -784,6 +808,7 @@ mod tests {
             "s",
             ActorIdentity::Unknown,
             "http",
+            KERNEL_SESSION,
         );
         let recorded = sink.0.lock().unwrap();
         assert_eq!(
@@ -797,6 +822,22 @@ mod tests {
         assert!(
             ext.contains_key("gate_class"),
             "the verdict's gate class must be in the evidence"
+        );
+
+        // The kernel's session id, which is NOT the one this sink carries.
+        //
+        // `ToolProxyVerdictSink.session_id` is the PermissionLattice's uuid;
+        // `Kernel.session_id` is a separate `Uuid::new_v4()` and is what the
+        // policy engine sees as the principal. Both are fresh uuids called a
+        // session id, written by the two objects that record one decision. Until
+        // this, a verdict could not be joined to the kernel audit entry for the
+        // same call. Asserting the exact value is what makes this about the id
+        // TRAVELLING rather than about a key existing.
+        assert_eq!(
+            ext.get("kernel_session_id").map(String::as_str),
+            Some("11111111-2222-3333-4444-555555555555"),
+            "the kernel's session id must reach the record, or a verdict cannot be \
+             correlated with the kernel audit entry for the same decision"
         );
     }
 

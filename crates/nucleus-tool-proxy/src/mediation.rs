@@ -316,6 +316,7 @@ pub(crate) fn decide_and_record(
         subject,
         actor.clone(),
         transport,
+        kernel.session_id(),
     );
 
     // A deferral that a human grant satisfied is TWO governance events, and the
