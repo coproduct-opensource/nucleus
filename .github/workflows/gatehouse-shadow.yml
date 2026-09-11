@@ -131,7 +131,18 @@ jobs:
           # runner (gatehouse F-100) did exactly that on sixteen open pull
           # requests. A gate's own timeout must fire before its job is killed,
           # or the gate cannot report its own failure.
-          timeout: "2100"
+          #
+          # 2100 -> 1200, and the reasoning above is unchanged: this is the same rule applied
+          # to BOTH runs. `compare` defaults true, so the command runs a second time for the
+          # agreement line, and this PR bounds that run too (gatehouse.sh) — so the job must
+          # hold 2 x timeout + setup, not one. At 2100 that is 4260s inside a 2700s job, which
+          # fails the same way 2700 did, one run later. 1200 x2 + 60 = 2460s fits.
+          #
+          # `cargo xtask gate-budget` decides this from the declarations, and reds on 2100.
+          # If the agreement line is worth more than the second run's deadline, the other
+          # answer is `compare: false` for this entry and 2100 stands — that is a judgement
+          # about what shadow mode is for, and it belongs to whoever set 2100.
+          timeout: "1200"
           bin-dir: gatehouse/target/debug
           control-url: ${{ vars.GATEHOUSE_CONTROL_URL || 'https://gatehouse-controld.fly.dev' }}
       - name: The agreement line

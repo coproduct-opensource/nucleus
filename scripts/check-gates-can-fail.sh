@@ -629,6 +629,16 @@ perturb_coverage_floor() {
     sed -i.bak -E 's/(--fail-under-lines )[0-9.]+/\182.4/' "$1" && rm -f "$1.bak"
 }
 
+perturb_gate_budget_timeout() {
+    # The live 2026-09-11 defect: the action's timeout as large as the job's own, so GitHub
+    # kills the job before the runner can report and the overrun comes back `cancelled`.
+    # Matches the KEY and rewrites the value, never matching the value -- the 2026-09-07
+    # incident where a probe keyed on a literal silently stopped perturbing anything when
+    # the subject moved. `timeout-minutes` is untouched: it has a hyphen, so `timeout: `
+    # cannot match it.
+    sed -i.bak -E 's/^( *)timeout: "[0-9]+"/\1timeout: "9999"/' "$1" && rm -f "$1.bak"
+}
+
 perturb_fly_pool_volumes() {
     # The exact configuration the manager refuses, and the one that was committed:
     # requires_volume with no volumes for eight machines, so the machines past the
@@ -650,6 +660,8 @@ probe_xtask push-auth .github/workflows/clippy-ratchet.yml \
     "a CI push relying on the checkout's ambient credential" perturb_push_auth_strip
 probe_xtask coverage-floor .github/workflows/coverage-matrix.yml \
     "a coverage floor lowered without moving its pin" perturb_coverage_floor
+probe_xtask gate-budget .github/workflows/gatehouse-shadow.yml \
+    "a gate timeout its job kills before the runner can report" perturb_gate_budget_timeout
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet

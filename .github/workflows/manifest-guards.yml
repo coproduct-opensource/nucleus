@@ -123,6 +123,14 @@ jobs:
       # Pinning it makes the reason a line of prose in review instead of a digit in a command.
       - name: A coverage floor may not move without saying so
         run: cargo run -q -p xtask -- coverage-floor
+      # Two clocks run over the same work: the gatehouse action's `timeout`, which the runner
+      # enforces and reports, and the job's `timeout-minutes`, which GitHub enforces and does
+      # not. When GitHub's is first the runner never reports -- the job ends `cancelled`, the
+      # same conclusion an infrastructure fault gives, and the overrun carries no verdict. The
+      # shadow lane was in exactly that state: a 2700s gate, run twice for the agreement line,
+      # inside a 2700s job. 304 runs over two days produced no verdict at all.
+      - name: A gate's timeout must fire before its job is killed
+        run: cargo run -q -p xtask -- gate-budget
 
       # Seven scan-vs-allowlist gates lived in four shell scripts, each with its own copy
       # of the same `#[cfg(test)]`-stripping awk program -- five copies, four of them
