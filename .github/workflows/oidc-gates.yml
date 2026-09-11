@@ -27,7 +27,12 @@ on:
 # when a new push lands.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only on pull_request. Under `push:` this group is keyed on `github.ref`, so a second
+  # push to main cancels the run for the commit BEFORE it -- a commit already on main, whose
+  # CI signal is then simply absent rather than red. A gate that stopped running looks like a
+  # gate that passed. On a pull request superseding is what you want; on main it is a hole.
+  # Same form gatehouse-shadow.yml already uses.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
