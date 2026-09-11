@@ -24,6 +24,8 @@
   - [Hardening Checklist](assurance/hardening-checklist.md)
   - [CI Assurance](assurance/ci-assurance.md)
 - [Decision Records]()
+  - [0007 — Make the defect unwritable](adr/0007-make-the-defect-unwritable.md)
+  - [0006 — Four collapses](adr/0006-four-collapses.md)
   - [0005 — Delegatable agency is the objective](adr/0005-delegatable-agency.md)
   - [0004 — Nucleus is a delegation compiler](adr/0004-delegation-compiler.md)
   - [0003 — Gatehouse owns the merge](adr/0003-gatehouse-owns-the-merge.md)

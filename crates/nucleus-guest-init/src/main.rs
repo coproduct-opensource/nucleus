@@ -172,6 +172,13 @@ fn run() -> Result<(), String> {
     // worth doing at all. Neither number existed before.
     let handshake_start = std::time::Instant::now();
     if let Some(port) = workload_api_port {
+        // Announce the barrier before asking for anything. After the first fetch below this VM
+        // is one particular pod, and a snapshot of it would hand that pod's identity to every
+        // clone. Best-effort: a host that does not know the command simply never records it, and
+        // the only consequence is that this VM cannot be used as a base.
+        if let Err(e) = identity::announce_snapshot_ready(port) {
+            eprintln!("snapshot barrier not announced (continuing): {e}");
+        }
         match timed("identity", || identity::fetch_identity(port)) {
             Ok(spiffe_id) => {
                 eprintln!("fetched identity: {spiffe_id}");

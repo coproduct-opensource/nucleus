@@ -580,7 +580,8 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 ///
 /// An in-scope, primitively-distinct, uncredentialed operation reaches the
 /// kernel, where the admission gate runs before the capability lattice — so
-/// the refusal must arrive as the gate's own reason (`DlcAdmissionDenied`);
+/// the refusal must arrive as the gate's own reason — `deny_code` on the error
+/// body reading `dlc_admission_denied`;
 /// anything else means a different control refused and this check proves
 /// nothing about admission.
 fn check_admission_gate(pod: &Pod) -> Result<()> {
@@ -620,7 +621,13 @@ fn check_admission_gate(pod: &Pod) -> Result<()> {
             body.trim()
         );
     }
-    if !body.contains("DlcAdmissionDenied") {
+    // `deny_code` is the kernel's own machine-readable reason on the error body.
+    // This used to look for the string `DlcAdmissionDenied`, which reached the
+    // wire only because the proxy formatted the `DenyReason` with `{:?}` — so
+    // the check depended on Debug output as a wire format, and broke the moment
+    // that was replaced with a written sentence for the human reading it. The
+    // code is stable and intentional; the prose is free to change.
+    if !body.contains("dlc_admission_denied") {
         bail!(
             "run was refused ({status}) but NOT by the admission gate: {}\n\
              A refusal for another reason (lattice, scope, IFC) does not prove\n\

@@ -16,7 +16,15 @@
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 
+// `allow(dead_code)` because this module is compiled STANDALONE here: its real
+// callers (`workload_api_vsock`) and its `#[cfg(test)]` suite are not part of
+// this build, so anything the parser itself does not reach looks dead under
+// `-D warnings` and fails the fuzz build rather than the fuzzer finding a bug.
+// `personalizes_the_vm` hit exactly that. Scoped to the module so adding a
+// method to the protocol never reds this job again — the production build,
+// where the dead-code signal is worth having, is unaffected.
 #[path = "../../crates/nucleus-node/src/workload_api_protocol.rs"]
+#[allow(dead_code)]
 mod proto;
 
 use proto::{parse_command, CommandParseError, MAX_COMMAND_LEN};

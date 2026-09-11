@@ -88,7 +88,16 @@ pub const KNOWN_VULNERABLE: &[VmmVersion] = &[VmmVersion::new(1, 15, 0)];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmmVerdict {
     /// At or above the floor and not denylisted.
-    Acceptable,
+    Acceptable {
+        /// What was found.
+        ///
+        /// Carried, not discarded, and every other variant already did. A caller that needs to
+        /// know which VMM is actually running would otherwise have to re-execute `--version` or
+        /// assume [`PINNED`] — and assuming is how three provisioners came to pin three different
+        /// Firecracker builds on 2026-07-29 with nothing noticing. An acceptable version is not
+        /// necessarily the pinned one; that is the entire meaning of having a floor.
+        found: VmmVersion,
+    },
     /// Older than [`FLOOR`].
     BelowFloor {
         /// What was found.
@@ -111,14 +120,27 @@ pub enum VmmVerdict {
 impl VmmVerdict {
     /// Whether a microVM may be launched on this build.
     pub fn is_acceptable(&self) -> bool {
-        matches!(self, VmmVerdict::Acceptable)
+        matches!(self, VmmVerdict::Acceptable { .. })
+    }
+
+    /// The version that was actually observed, when the output was parseable at all.
+    ///
+    /// `None` only for [`VmmVerdict::Unparseable`], where there is genuinely no version to
+    /// report — which is why this is an `Option` rather than a default.
+    pub const fn found(&self) -> Option<VmmVersion> {
+        match self {
+            Self::Acceptable { found }
+            | Self::BelowFloor { found, .. }
+            | Self::KnownVulnerable { found } => Some(*found),
+            Self::Unparseable { .. } => None,
+        }
     }
 }
 
 impl fmt::Display for VmmVerdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VmmVerdict::Acceptable => write!(f, "acceptable"),
+            VmmVerdict::Acceptable { found } => write!(f, "acceptable ({found})"),
             VmmVerdict::BelowFloor { found, floor } => write!(
                 f,
                 "Firecracker {found} is below the required floor {floor} — it carries known \
@@ -208,12 +230,38 @@ pub fn judge_version(found: VmmVersion) -> VmmVerdict {
     if KNOWN_VULNERABLE.contains(&found) {
         return VmmVerdict::KnownVulnerable { found };
     }
-    VmmVerdict::Acceptable
+    VmmVerdict::Acceptable { found }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An acceptable verdict reports WHICH build it accepted.
+    ///
+    /// The floor exists precisely so that more than one version is acceptable, so "acceptable"
+    /// alone does not identify the VMM. A snapshot is only restorable by the build that wrote it,
+    /// and a caller that had to fall back to [`PINNED`] here would name the wrong one on any node
+    /// legitimately running something else.
+    #[test]
+    fn an_acceptable_verdict_still_says_which_version() {
+        let above_floor = VmmVersion::new(1, 14, 4);
+        assert_ne!(above_floor, PINNED, "the point is a non-pinned acceptable");
+        let verdict = judge_version(above_floor);
+        assert!(verdict.is_acceptable());
+        assert_eq!(
+            verdict.found(),
+            Some(above_floor),
+            "the observed version must survive the judgement that accepted it"
+        );
+        // Only genuinely unreadable output has no version to report.
+        assert_eq!(judge("not a version at all").found(), None);
+        assert_eq!(
+            judge_version(VmmVersion::new(1, 0, 0)).found(),
+            Some(VmmVersion::new(1, 0, 0)),
+            "a refusal names the build it refused"
+        );
+    }
 
     #[test]
     fn parses_the_shapes_firecracker_actually_prints() {

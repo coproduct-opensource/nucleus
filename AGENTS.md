@@ -120,8 +120,15 @@ says so:
 
 `POST /v1/pods` then issues a real authority (`parent=Root`, `chain_depth=1`),
 spawns a tool-proxy, and returns its address. `GET /v1/pods`, `GET
-/v1/pods/{id}/receipt` and `POST /v1/pods/{id}/cancel` all work from there;
-cancel removes the pod, so read the receipt first.
+/v1/pods/{id}/receipt` and `POST /v1/pods/{id}/cancel` all work from there.
+
+**Cancel does not remove the pod.** Nothing in the node removes a pod from
+`state.pods` — a cancelled pod stays listed by `GET /v1/pods` and stays
+fetchable, with its state `Exited`. What a cancelled pod *does* stop having is
+an exit report, and `get_receipt` maps that absence (`NoExitReport`) onto
+`ApiError::NotFound`, whose message is the literal `pod not found`. So the 404
+you get after cancelling is about the receipt, not the pod, and reading it as
+"the pod is gone" will send you looking for a deletion path that does not exist.
 
 **This matters for coverage.** `pod_api.rs` and `pod_receipt.rs` are reachable
 end-to-end this way, with a genuine `NodeState` and `IdentityManager` rather
@@ -178,6 +185,16 @@ misleads: "Avail" at 0 with low "Used" means the allowance is spent.
 
 - `rm -rf target/debug` reclaims ~20 GB and is the usual fix for `ENOSPC`.
 - `export CARGO_INCREMENTAL=0` — the incremental directory alone reached 10 GB.
+- **`CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0` is the fix, not the
+  cleanup.** Debug info is most of the directory, not a share of it: the same
+  test run that had grown `target/` to 28 GB rebuilt from empty in **2.6 GB**
+  with those two set. Clearing `target/debug` buys one more run; turning debug
+  info off means not needing to. Backtraces get less readable, which matters
+  when you are debugging a panic and not when you are running a gate.
+- A stale `git worktree` keeps its own `target/`. One left over from an earlier
+  session held 16 GB. `git worktree list` finds them; deleting just the
+  `target/` inside is safe and keeps any commits that worktree holds, since
+  worktrees share the repository's object store.
 - `cargo llvm-cov --workspace` writes a *separate* `target/llvm-cov-target` and
   exhausts the allowance before it finishes. Per-crate (`-p nucleus-node`) fits.
   Workspace coverage is a number only CI can produce from here.

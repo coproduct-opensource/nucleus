@@ -43,7 +43,61 @@ path = "crates/nucleus-node/src/main.rs"
 # the file-discovery change to this ratchet landing the same day). A new
 # `ApiError::Authorization` variant and its one match arm cannot move out
 # of this file; `ApiError` lives here.
-ceiling = 4045
+# Bumped 4045 -> 4080 2026-09-09: API-mode boot. The lowering and the whole
+# transport live in firecracker_config.rs and the new firecracker_api.rs (not
+# ratchet-tracked yet, and deliberately where the testable parts went); what is
+# left here is irreducibly a branch in THIS function — the three spawn arms each
+# decide whether `--config-file` is in the argv, and the configure/start pair has
+# to sit between the spawn and the seccomp check because it needs `child`,
+# `pod_dir`, `jail_layout` and the same cleanup path as every other failure. The
+# comment carrying the measurement that Firecracker installs its seccomp filter
+# at InstanceStart rather than at exec is the largest single piece, and it is
+# there because the obvious ordering is wrong and cost a debugging cycle.
+# Bumped 4080 -> 4095 the same day: image digest verification. The measuring and
+# comparing are in image_identity.rs; what is here is the call plus the same
+# net-resource cleanup every other failure in this function does, and it has to
+# be HERE — between `prepare_jail` and the spawn — because verifying after
+# placement is what removes the measure-then-swap window, and the cleanup needs
+# `net_plan`, `netns_name` and `dns_proxy` by mutable reference.
+# Bumped 4095 -> 4100 the same day: two `mod` declarations, for snapshot_vmm and
+# image_identity. This is the growth the ratchet WANTS — main.rs grew by two
+# lines because ~400 went into new modules that are testable on their own — but
+# a module declaration cannot be extracted, so it has to be paid for here.
+# Bumped 4100 -> 4101 the same day: the snapshot store gets a production caller.
+# Five lines were needed and four were bought back by putting the work where it
+# belongs — `mod snapshot_store;`, one field on `FirecrackerPod`, one line
+# assembling it (the assembly itself is `FirecrackerConfig::snapshot_inputs`, in
+# firecracker_config.rs, because the fields it reads are private there anyway),
+# and one `.route(...)`. The handler is ~120 lines and lives in pod_api.rs, which
+# exists for exactly this. A route line and a struct field cannot be extracted;
+# the router and the struct are both here.
+# LOWERED 4101 -> 3992 the same day, which is the first time this entry has moved
+# in the direction the ratchet exists for. `GetReceipt` assembled its receipt
+# inline in the gRPC handler — 155 lines — so gRPC was the only way to get one
+# and the SDKs' `GET /v1/pods/{id}/receipt` 404'd. That assembly moved to
+# pod_receipt.rs, where both transports call it, and main.rs kept only the proto
+# conversion plus two route lines. Set to the measured value rather than left
+# slack: banked headroom is spent without justification later, which is the whole
+# failure mode the ceiling is here to prevent.
+# Bumped 3992 -> 3996 2026-09-09, merging main into this branch. The four lines
+# are main's production-confinement hardening, not this branch's growth: `mod
+# production_confinement;`, one doc comment that became two lines, and the
+# two-line `admit_seccomp` guard. The mod declaration cannot be extracted — the
+# module is declared here — and the guard has to sit on the pod-creation path in
+# THIS file, because that is where a spec is admitted and where rejecting one
+# still has the request to reject. Reseeded at the measured value again rather
+# than restoring the old 4045 that main carries: this branch earned 3992 by
+# moving 155 lines out, and taking main's slack back would spend that.
+# Bumped 3996 -> 4007 2026-09-11, merging main into this branch a third time.
+# All eleven lines are main's #2789 scratch work, none of them this branch's: a
+# three-line comment, the five-line `scratch_for_pod` call that decides the
+# writable `/work` BEFORE the config that declares the drive, the one-line
+# `let image = &effective_image;` rebind, and the `scratch_is_node_provisioned`
+# argument threaded into `prepare_jail`. The call cannot be extracted -- it sits
+# on the pod-creation path in THIS file because that is where the jail layout and
+# the jailer uid/gid are both in scope. Re-seeded at the measured value, as every
+# move of this entry has been.
+ceiling = 4007
 target = 2000
 step = 1
 
@@ -69,5 +123,65 @@ step = 0
 [[files]]
 path = "crates/nucleus-audit/src/main.rs"
 ceiling = 2627
+target = 2500
+step = 0
+
+[[files]]
+path = "crates/nucleus-node/src/firecracker_config.rs"
+# Added 2026-09-09 with the content-addressed pod identity work, which took this
+# file 2220 -> 2629 and past the 2500 default sweep ceiling. Seeded at the
+# measured value rather than a round number, the same rule the entries above
+# follow: banked headroom gets spent without justification later.
+#
+# The overage was tests, and the note here used to say they could not move: not
+# to `tests/`, which sees only the public API, and what they cover (`from_spec`,
+# `snapshot_inputs`, the drive and boot-arg lowering) is `pub(crate)`. That is
+# still true of `tests/` and was the wrong destination. They moved to a SIBLING
+# SOURCE FILE instead — `#[path = "firecracker_config_tests.rs"] mod tests;`,
+# the same shape `portcullis::certificate` already uses for
+# `certificate_tests.rs`. Same crate, same module, `use super::*` still reaches
+# every `pub(crate)` item, so no seam was widened to suit a test. All 29
+# `firecracker_config::tests::*` cases run exactly as before.
+#
+# 2629 -> 1190, re-seeded at measured truth rather than left high: this file
+# should not carry ~1300 lines of banked headroom just because its tests left.
+# The sibling is swept against the 2500 default like any other file.
+#
+# `step = 0` deliberately: the production half is not being actively shrunk, and
+# a non-zero step here would ratchet against test coverage, which is the one
+# thing this file should not be pressured to drop. Raise it if the production
+# half starts growing on its own.
+#
+# Bumped 1190 -> 1193 2026-09-11, merging main into this branch. The three lines
+# are main's #2690, which annotates the OS boundary: one
+# `// OS assumption: KB-VSOCK-PEER-CID` above the kernel-command-line block and a
+# two-line `KB-PROCFS-STATUS` doc above `verify_seccomp_active`. None of them is
+# this branch's code and none is production half growing on its own, which is the
+# condition the note above says would justify a non-zero step. Re-seeded at the
+# measured value, as every move of these entries is.
+#
+# Bumped 1193 -> 1203 2026-09-11, merging main into this branch a second time.
+# The ten lines are main's #2786, all comment: the reasoning for why a writable
+# rootfs must be hard-linked and why `ImageSpec::read_only` now defaults to
+# true — a hard link means the guest writes through to the shared installed
+# artifact, so `read_only: false` hands every later pod the previous pod's
+# writes. Deleting a security rationale to fit a line ceiling is the one way
+# this gate could make the tree worse, so the ceiling follows. Still not this
+# branch's code, still not the production half growing on its own. The two
+# tests #2786 added to this module went into the extracted sibling
+# (`firecracker_config_tests.rs`), which is swept against the 2500 default.
+#
+# Bumped 1203 -> 1335 2026-09-11, merging main into this branch a third time.
+# The 132 lines are main's #2789 scratch work and are the first move of this
+# entry that IS production half growing: three new functions --
+# `provision_pod_scratch`, `build_scratch_image`, `scratch_for_pod` -- plus the
+# `scratch_is_node_provisioned` parameter threaded through `jail_resources` and
+# `prepare_jail`. Still not this branch's code. The note above says a non-zero
+# step is justified when the production half starts growing on its own; it now
+# has, but raising `step` in the same commit that absorbs someone else's feature
+# would ratchet this branch against work it did not write. Left at 0, and flagged
+# here so the next person to touch the production half decides it deliberately.
+# The five tests #2789 added to this module went into the extracted sibling.
+ceiling = 1335
 target = 2500
 step = 0

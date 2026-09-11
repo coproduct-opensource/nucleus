@@ -46,6 +46,9 @@ tonic-prost = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# RFC 8785 JCS, for the snapshot derivation name. The same crate nucleus-spec
+# uses for `program_digest` — one canonical form, not a second one.
+serde_json_canonicalizer = "0.3"
 ipnet = "2.12"
 
 # GitHub OIDC support. Use the workspace pin (aws_lc_rs backend) so node doesn't

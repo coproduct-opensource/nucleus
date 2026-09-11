@@ -1,0 +1,32 @@
+# Clippy configuration for the workspace.
+#
+# Entries here back the mandates in `docs/adr/0007-make-the-defect-unwritable.md`.
+# Every rule id below (C-1, C-5, ...) dereferences to a rule in that ADR, and every
+# rule cites the commit whose defect motivated it.
+#
+# A-19 applies: an entry is added only once it has been driven RED on a real
+# violation and green with the violation removed. An entry that has never fired is
+# a claim, not a gate. `docs/adr/0007` §Enforcement records how each was probed.
+#
+# ENTRIES ARE ADDED ONLY WHEN THE TREE IS ALREADY CLEAN OF THEM. `cargo clippy`
+# runs `--all-targets -D warnings` in CI, so a single existing violation — in test
+# code as much as in production — reds the merge queue. Where a mandate is not yet
+# clean, the ADR records the measured count and the ratchet instead of putting a
+# red gate on main.
+
+disallowed-methods = [
+    # C-1 — a type that names evidence has a private constructor.
+    # `transmute` fabricates a sealed witness from any value of the same layout,
+    # which defeats the private constructor without `unsafe` appearing at the
+    # mint site. One of the three things `c05ee2af` measured re-opening module
+    # privacy on four types at once (the other two are `unsafe` field access and
+    # a derived `Deserialize`; neither is expressible here — see the ADR).
+    # Measured 2026-09-11: 0 occurrences under `crates/` and `tools/`.
+    { path = "std::mem::transmute", reason = "ADR 0007 C-1: fabricates a sealed witness; use the minting constructor" },
+
+    # C-5 — capability and authority types are !Clone, !Copy, #[must_use].
+    # `leak` converts an owned, must-use value into a `&'static` that outlives
+    # every consumer, which is the affine discipline of C-4 defeated by other
+    # means. Measured 2026-09-11: 0 occurrences.
+    { path = "std::vec::Vec::leak", reason = "ADR 0007 C-5: defeats the consuming discipline; pass the value" },
+]

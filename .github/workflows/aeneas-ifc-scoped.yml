@@ -79,11 +79,22 @@ env:
   EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::ifc_authority::aflows_to,nucleus_ifc_kernel::extracted::ifc_authority::ameet,nucleus_ifc_kernel::extracted::ifc_authority::arun_step,nucleus_ifc_kernel::extracted::ifc_derivation::djoin,nucleus_ifc_kernel::extracted::ifc_derivation::dleq,nucleus_ifc_kernel::extracted::ifc_derivation::drun_step,nucleus_ifc_kernel::extracted::ifc_provenance::punion,nucleus_ifc_kernel::extracted::ifc_provenance::psubset,nucleus_ifc_kernel::extracted::ifc_provenance::prun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::mediation::med_step,nucleus_ifc_kernel::extracted::mediation::med_idle,nucleus_ifc_kernel::extracted::credential::sinkrank,nucleus_ifc_kernel::extracted::credential::sink_ceiling,nucleus_ifc_kernel::extracted::credential::cred_may_deliver,nucleus_ifc_kernel::extracted::credential::credential_may_reach,nucleus_ifc_kernel::extracted::egress::netmask,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits,nucleus_ifc_kernel::extracted::capability_quantale::caprank,nucleus_ifc_kernel::extracted::capability_quantale::capunit,nucleus_ifc_kernel::extracted::capability_quantale::capbot,nucleus_ifc_kernel::extracted::capability_quantale::capmeet,nucleus_ifc_kernel::extracted::capability_quantale::capjoin,nucleus_ifc_kernel::extracted::capability_quantale::capleq,nucleus_ifc_kernel::extracted::capability_quantale::capresidual,nucleus_ifc_kernel::extracted::identity::matcode,nucleus_ifc_kernel::extracted::identity::prinrank,nucleus_ifc_kernel::extracted::identity::mat_label,nucleus_ifc_kernel::extracted::identity::principal_ceiling,nucleus_ifc_kernel::extracted::identity::ident_may_deliver,nucleus_ifc_kernel::extracted::identity::identity_reaches_workload,nucleus_ifc_kernel::extracted::channel::chanrank,nucleus_ifc_kernel::extracted::channel::is_public,nucleus_ifc_kernel::extracted::channel::channel_admits,nucleus_ifc_kernel::extracted::channel::channel_reaches_workload,nucleus_ifc_kernel::extracted::declassify::mask_admits,nucleus_ifc_kernel::extracted::declassify::effective_conf,nucleus_ifc_kernel::extracted::declassify::declass_release_ok,nucleus_ifc_kernel::extracted::declassify::declass_fresh,nucleus_ifc_kernel::extracted::declassify::declass_step,nucleus_ifc_kernel::extracted::declassify::value_authorized"
 
 jobs:
-  aeneas-ifc-scoped:
-    name: Scoped Aeneas (Rust → Lean 4) + parity tests
-    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 40
-
+  # The scope DECISION, on the cheap pool.
+  #
+  # It used to be the first step of the expensive job below, which meant that
+  # job acquired a `nucleus-fly-build` slot and checked out before discovering
+  # it had nothing to do. Measured: on merge-group run 60fa8483 it ran for 24
+  # SECONDS after waiting 442 for the slot (18:1), and on a37d21fa the same
+  # shape waited 792s to run 18s (44:1). It was the critical path in both. A
+  # slot held while deciding is a slot the gate that does have work waits for,
+  # and `ci/merge-queue.toml` records why adding slots does not fix it: "a
+  # single group's fifty required contexts already saturate the pool".
+  scope:
+    name: Scoped Aeneas (Rust → Lean 4) — routing decision
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.scope.outputs.relevant }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,17 +131,43 @@ jobs:
             echo "steps. The job still reports, so it stays required-check safe."
           fi
 
+  aeneas-ifc-scoped:
+    name: Scoped Aeneas (Rust → Lean 4) + parity tests
+    needs: scope
+    # The build pool ONLY when there is something to build; otherwise the gate
+    # pool, where a job that reports and exits costs nothing scarce.
+    #
+    # The job still RUNS either way. That is deliberate: it keeps the required
+    # context reporting for the reason the `-noop` twin exists — a workflow that
+    # `paths:` filters out never reports its context at all and blocks forever.
+    # This does NOT lean on "a skipped required check counts as passed", even
+    # though `coverage-matrix.yml` documents that it does.
+    #
+    # GitHub expressions return VALUES, not booleans, so `c && a || b` is a
+    # ternary: false picks `b`, and an unset `CI_BUILD_RUNNER` falls through its
+    # own `||` chain rather than yielding an empty label.
+    runs-on: >-
+      ${{ needs.scope.outputs.relevant == 'true'
+          && (vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest')
+          || (vars.CI_RUNNER || 'ubuntu-latest') }}
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
 
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: ${{ env.CHARON_NIGHTLY }}
           components: rustc-dev,llvm-tools-preview,rust-src
 
       - name: Rust / cargo cache (Charon target dir)
-        if: ${{ runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true') }}
+        if: ${{ runner.environment == 'github-hosted' && (needs.scope.outputs.relevant == 'true') }}
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
         with:
           workspaces: crates/nucleus-ifc-kernel
@@ -142,18 +179,18 @@ jobs:
       # of the real IFCLabel::join / flows_to and that GitPush requires Trusted.
       # They close the model<->code gap that the Lean theorem then builds on.
       - name: Stable toolchain (for cargo test)
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: stable
 
       - name: Parity tests (extracted slice == production enforcement)
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: cargo test -p nucleus-ifc-kernel --lib extracted
 
       # --- Aeneas prebuilt binaries (Charon + Aeneas, no OCaml build) ---
       - name: Cache Aeneas binary
-        if: runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true')
+        if: runner.environment == 'github-hosted' && (needs.scope.outputs.relevant == 'true')
         id: cache-aeneas-bin
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
@@ -161,7 +198,7 @@ jobs:
           key: aeneas-bin-${{ runner.os }}-${{ runner.arch }}-${{ env.AENEAS_RELEASE }}
 
       - name: Download Aeneas pre-built binaries
-        if: steps.scope.outputs.relevant == 'true' && (steps.cache-aeneas-bin.outputs.cache-hit != 'true') && runner.environment == 'github-hosted'
+        if: needs.scope.outputs.relevant == 'true' && (steps.cache-aeneas-bin.outputs.cache-hit != 'true') && runner.environment == 'github-hosted'
         run: |
           gh release download "$AENEAS_RELEASE" \
             --repo AeneasVerif/aeneas \
@@ -173,7 +210,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Add Aeneas to PATH
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         # Self-hosted: use the baked copy when the image has one, and otherwise
         # install to the machine's persistent volume.
         run: |
@@ -207,7 +244,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Verify tools
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           which charon && charon version
           which aeneas && aeneas -version
@@ -216,7 +253,7 @@ jobs:
       # --start-from each root walks ONLY the reachable callees, so the
       # crashing unrelated function bodies are never translated by Aeneas.
       - name: Charon scoped MIR extraction
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         working-directory: crates/nucleus-ifc-kernel
         run: |
           # `charon cargo` exits 0 and emits NOTHING when cargo has nothing to
@@ -237,7 +274,7 @@ jobs:
           charon cargo --preset aeneas $STARTS
 
       - name: Aeneas Lean 4 translation (scoped slice)
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           mkdir -p crates/portcullis-core/lean/ci-generated-ifc
           # Charon now runs in crates/nucleus-ifc-kernel (the IFC source crate
@@ -262,7 +299,7 @@ jobs:
       # committed Lean lib keeps the stable PortcullisCoreIFC module name so it
       # does not collide with the whole-crate «PortcullisCore» lib.
       - name: Canonicalize generated-ifc from the fresh extraction
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -279,7 +316,7 @@ jobs:
           echo "generated-ifc/ canonicalized from the fresh extraction; theorem builds against it."
 
       - name: Canonicalize generated-mediation from the fresh extraction
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-mediation/PortcullisCoreMediation
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -310,7 +347,7 @@ jobs:
       # disclosed hand-edit as the two steps above: only the inter-module import
       # is retargeted so the lib names do not collide.
       - name: Canonicalize generated-egress from the fresh extraction
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-egress/PortcullisCoreEgress
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -327,7 +364,7 @@ jobs:
           echo "generated-egress/ canonicalized from the fresh extraction; theorem builds against it."
 
       - name: Canonicalize generated-credential from the fresh extraction
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-credential/PortcullisCoreCredential
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -357,7 +394,7 @@ jobs:
       # That is why the lake build step below gained two targets rather than this
       # being a one-line addition.
       - name: Canonicalize generated-cap-quantale from the fresh extraction
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-cap-quantale/PortcullisCoreCapQuantale
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -378,7 +415,7 @@ jobs:
       # only the inter-module import is retargeted so the lib name does not
       # collide with the whole-crate «PortcullisCore» lib.
       - name: Canonicalize generated-identity from the fresh extraction
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-identity/PortcullisCoreIdentity
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -398,7 +435,7 @@ jobs:
       # taxonomy. Same single disclosed hand-edit as every step above: only the
       # inter-module import is retargeted so the lib name does not collide.
       - name: Canonicalize generated-channel from the fresh extraction
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-channel/PortcullisCoreChannel
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -421,7 +458,7 @@ jobs:
       # disclosed hand-edit as every step above: only the inter-module import is
       # retargeted so the lib name does not collide.
       - name: Canonicalize generated-declass from the fresh extraction
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-declass/PortcullisCoreDeclass
           SRC=crates/portcullis-core/lean/ci-generated-ifc
@@ -438,7 +475,7 @@ jobs:
           echo "generated-declass/ canonicalized from the fresh extraction; theorem builds against it."
 
       - name: Dump FULL canonical generated defs (to develop the proof against)
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         run: |
           echo "CANONICAL-TYPES-START"
           cat crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC/Types.lean
@@ -449,7 +486,7 @@ jobs:
 
       # --- Build the theorem + capture the REAL axiom set ---
       - name: Build Lean project with cached artifacts
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
         env:
           LEAN_NUM_THREADS: "4"
@@ -483,7 +520,7 @@ jobs:
             DeclassifySinkScopeExtracted
 
       - name: Replay build messages for axiom-profile checks (extracted core + theorem)
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
         # `shell: bash` is LOAD-BEARING, not style. GitHub's default `run` shell
         # is `bash -e {0}` — `-e` WITHOUT pipefail — so `lake build X | tee log`
@@ -536,7 +573,7 @@ jobs:
       # the build log above. Surface it explicitly and fail on a dirty axiom set.
 
       - name: Assert clean axiom set (no sorryAx / opaque axioms)
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
         shell: bash
         run: |
@@ -646,7 +683,7 @@ jobs:
           # above are it — pin them in a follow-up, with a real log as input.
 
       - name: Reject sorry (proof holes)
-        if: steps.scope.outputs.relevant == 'true'
+        if: needs.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
         run: |
           # Match `sorry`/`admit` only as actual tactic/term USAGE (preceded by

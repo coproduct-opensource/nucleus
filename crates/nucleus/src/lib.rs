@@ -64,6 +64,9 @@
 mod approval;
 mod budget;
 mod command;
+/// One enforced check that the decision is about the operation being performed.
+/// Was thirty `debug_assert_eq!` copies, which compile out in release.
+mod decision_scope;
 mod error;
 mod hardening;
 mod pod;

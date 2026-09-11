@@ -178,6 +178,35 @@ pub struct BrokerCapability {
     pub port: u32,
 }
 
+/// Tell the host this guest is booted and has asked for nothing that names it.
+///
+/// Sent BEFORE the first `FETCH_*`, which is the whole point: it marks the one moment at which
+/// this VM is far enough along to be a useful snapshot base and not yet far enough along to be
+/// anybody. The host cannot work that out for itself — it can see what it has served, but not
+/// whether the guest has finished booting — and timing it host-side is a guess that is wrong in
+/// the unsafe direction.
+///
+/// Best-effort by design. A host that does not know the command answers with an error, and this
+/// returns `Ok(())` anyway: announcing a barrier is not a request for anything, so failing to
+/// announce it must never stop a pod from starting. The cost of a host that never hears it is
+/// that the VM is refused as a snapshot base, which is the correct answer.
+pub fn announce_snapshot_ready(port: u32) -> Result<(), String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"SNAPSHOT_READY\n")
+        .map_err(|e| format!("failed to send SNAPSHOT_READY: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+    // Read the reply so the host has finished recording before the first fetch goes out; the
+    // content is not interesting, the ordering is.
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    let _ = reader.read_line(&mut response);
+    Ok(())
+}
+
 pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;

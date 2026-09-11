@@ -7106,6 +7106,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "serde_yaml",
  "sha2 0.11.0",
  "spiffe",
@@ -7405,6 +7406,7 @@ dependencies = [
  "tokio-test",
  "tonic",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -7415,6 +7417,7 @@ dependencies = [
  "portcullis",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "serde_yaml",
  "sha2 0.11.0",
  "thiserror 2.0.20",
@@ -7469,6 +7472,7 @@ dependencies = [
  "glob",
  "hex",
  "hmac 0.13.0",
+ "http-body-util",
  "libc",
  "nucleus",
  "nucleus-client",
