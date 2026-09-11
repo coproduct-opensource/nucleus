@@ -561,6 +561,13 @@ pub fn gate_of_gates_unlisted_divergence_probe() -> bool {
 RUST
 }
 
+perturb_assurance_required_pin() {
+    # The count of claims whose falsifier produces no required context, moved past any honest
+    # value. 255 by KEY, never by editing the number in place: only eight non-NOT-YET claims
+    # exist, so no real pin can reach it and it can never equal what it replaces.
+    awk '{ if ($0 ~ /^UNREQUIRED_FALSIFIERS=/) print "UNREQUIRED_FALSIFIERS=255"; else print }' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+
 perturb_allowlist_pin() {
     # An allowlist grows past its pinned size. 255 rather than a literal edit of
     # the current value: there are only a handful of entries, so no honest pin can
@@ -576,6 +583,8 @@ perturb_fly_pool_volumes() {
     sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
 }
 
+probe_xtask assurance-required ci/assurance-required-ratchet.txt \
+    "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask allowlist-gates ci/allowlist-gates.txt \
     "an allowlist grown past its pinned size" perturb_allowlist_pin
 probe_xtask fly-pools ci/fly-runner/manager.toml \
