@@ -56,6 +56,7 @@ mod node_identity;
 mod pod_cert;
 mod pod_mgmt;
 mod policy;
+mod proposal;
 mod run_gate;
 mod sandbox_proof;
 mod session_token;
@@ -330,6 +331,24 @@ struct Args {
     #[arg(long, env = "NUCLEUS_POD_CERT")]
     pod_cert: Option<String>,
 
+    /// The sealed task grant this pod runs under (a `SealedTaskGrant` JSON
+    /// path, as `nucleus run --save-grant` writes).
+    ///
+    /// Optional, and only ever used to make a refusal more useful. The
+    /// certificate says what this pod may do; the grant says what a person was
+    /// ASKED to approve — the goal in their words, the ceiling they chose, the
+    /// effects the compiler proposed. With it, a denial can carry the
+    /// escalation proposal that until now existed only after the run had ended
+    /// and only at the CLI: what was attempted, why, the least authority that
+    /// would allow it, what new risk that would add, and the one command that
+    /// grants it.
+    ///
+    /// Verified against `--cert-root-pubkey` like the certificate is. Absent,
+    /// or failing verification, means denials read exactly as they do today —
+    /// this can make a refusal more informative and can never make one allow.
+    #[arg(long, env = "NUCLEUS_POD_GRANT")]
+    pod_grant: Option<PathBuf>,
+
     // === Live-Path Session Task Token (PR-2, present-not-consumed) ===
     // Host-minted session capability token injected on the SAME host-controlled
     // boot channel that provisions credentials (the pod boot environment set by
@@ -426,6 +445,10 @@ pub(crate) struct AppState {
     /// (`pod_cert.rs`). `None` only for a pod created before its node issued
     /// certificates.
     pod_cert: Option<Arc<pod_cert::PodCertificate>>,
+    /// What a denial needs to explain itself: the grant a person approved, the
+    /// ceiling they chose, and the effect catalog. `None` for a profile run,
+    /// and then refusals read exactly as they did before.
+    proposals: Option<Arc<proposal::ProposalContext>>,
     /// The certificate's granted effects, read with the catalog: per-effect
     /// egress enforcement (ADR 0004, `effect_gate.rs`).
     effect_gate: Arc<effect_gate::EffectGate>,
@@ -1789,6 +1812,24 @@ async fn main() -> Result<(), ApiError> {
     // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
     enforce_hmac_key_quality(&args.auth_secret, host_verified);
 
+    // The grant a person approved, so a denial can explain itself. Verified
+    // against the same root the certificate is, and simply absent on any
+    // failure — a refusal that cannot be explained is still a refusal, and
+    // this must never be a reason not to start.
+    let proposals = args.pod_grant.as_deref().and_then(|path| {
+        match proposal::load(path, args.cert_root_pubkey.as_deref()) {
+            Ok(ctx) => {
+                tracing::info!(path = %path.display(), "denials will carry an escalation proposal");
+                Some(Arc::new(ctx))
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e,
+                    "--pod-grant was not usable; denials will not carry a proposal");
+                None
+            }
+        }
+    });
+
     let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
     let state = AppState {
         receipts: Arc::clone(&receipts),
@@ -1822,6 +1863,7 @@ async fn main() -> Result<(), ApiError> {
             .map(Arc::new),
         effect_gate: effect_gate::EffectGate::new(pod_cert.as_deref(), &spec.spec.work_dir),
         pod_cert,
+        proposals,
         exposure_guard,
         file_lockdown,
         stream_lockdown,
@@ -2401,7 +2443,10 @@ async fn auth_middleware(
         && let Some(why) =
             run_gate::certificate_denies_endpoint(&state, certified, parts.uri.path())
     {
-        return Err(ApiError::KernelDenied(why));
+        return Err(ApiError::KernelDenied {
+            message: why,
+            code: None,
+        });
     }
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
@@ -2613,7 +2658,7 @@ async fn http_kernel_decide(
     // The kernel-decision record names the same actor the handler's own
     // records do; it used to hardcode `Unknown` while the sibling record in
     // the same handler carried the SPIFFE ID.
-    mediation::decide_and_record(
+    let decided = mediation::decide_and_record(
         mediation::MediationEnv {
             sink: state.verdict_sink.as_ref(),
             actor: actor_from_auth(auth_ctx),
@@ -2624,7 +2669,22 @@ async fn http_kernel_decide(
         &graph,
         operation,
         subject,
-    )
+    );
+
+    // The moment of denial is the only moment the affordance is useful. The
+    // proposal used to be rebuilt after the run, from a trace file, at the CLI
+    // — so the agent got a sentence and gave up, and the person got the one
+    // command that would have helped once it no longer mattered.
+    //
+    // Nothing here can turn a refusal into an allowance: `Refused` reports the
+    // status, kind and message of the error it wraps.
+    decided.map_err(|d| match (state.proposals.as_ref(), &d.reason) {
+        (Some(ctx), Some(reason)) => ApiError::Refused {
+            proposal: Box::new(ctx.propose(operation, subject, reason)),
+            inner: Box::new(d.error),
+        },
+        _ => d.error,
+    })
 }
 
 /// Content-address the *actual ingested bytes* of an agent input (InputsAuthorized

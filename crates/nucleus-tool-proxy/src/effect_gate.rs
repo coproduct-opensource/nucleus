@@ -103,10 +103,13 @@ impl EffectGate {
                     let ids: Vec<String> = would_admit.iter().map(|e| e.to_string()).collect();
                     format!("would be admitted by {}", ids.join(", "))
                 };
-                Err(ApiError::KernelDenied(format!(
-                    "{EFFECT_NOT_GRANTED}: {method} {host}{path} is vouched for by none of the {granted} \
+                Err(ApiError::KernelDenied {
+                    message: format!(
+                        "{EFFECT_NOT_GRANTED}: {method} {host}{path} is vouched for by none of the {granted} \
                      effect(s) sealed into this pod's certificate ({remedy})"
-                )))
+                    ),
+                    code: None,
+                })
             }
         }
     }

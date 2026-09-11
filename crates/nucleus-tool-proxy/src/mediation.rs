@@ -132,11 +132,17 @@ pub(crate) fn kernel_denial_to_api_error(
             // reachable only after the run had ended. One producer now
             // (`DenyReason::describe`), and the operation is passed because
             // this call site has it.
-            ApiError::KernelDenied(format!(
-                "{} (operation {} on {subject})",
-                other.describe(Some(operation)),
-                operation_name(operation)
-            ))
+            ApiError::KernelDenied {
+                message: format!(
+                    "{} (operation {} on {subject})",
+                    other.describe(Some(operation)),
+                    operation_name(operation)
+                ),
+                // The written sentence is for a person; this is for a caller
+                // that must know WHICH gate refused. `verify --tier2` used to
+                // read the variant name out of Debug output for exactly this.
+                code: Some(portcullis::gate_class::deny_code(&other)),
+            }
         }
     }
 }
@@ -288,7 +294,7 @@ pub(crate) fn decide_and_record(
     graph: &FlowGraph,
     operation: Operation,
     subject: &str,
-) -> Result<DecisionToken, ApiError> {
+) -> Result<DecisionToken, Box<Denied>> {
     let MediationEnv {
         sink,
         actor,
@@ -340,5 +346,39 @@ pub(crate) fn decide_and_record(
         }
     }
 
-    mapped
+    mapped.map_err(|error| {
+        Box::new(Denied {
+            // Handed back so the caller can build the escalation proposal for THIS
+            // refusal without re-deriving it from the mapped error, which is lossy:
+            // several reasons collapse onto one `ApiError`, and a proposal built
+            // from a guess would name the wrong minimum authority.
+            reason: match decision.verdict {
+                Verdict::Deny(reason) => Some(reason),
+                _ => None,
+            },
+            error,
+        })
+    })
+}
+
+/// A refusal, with the kernel's own reason for it.
+///
+/// `ApiError` is the wire shape and is deliberately lossy — several
+/// `DenyReason`s map onto one error so a caller sees a stable `kind`. The
+/// reason is kept alongside it, unmapped, for the one consumer that needs the
+/// original: the escalation proposal, which has to name the least authority
+/// that would have allowed *this* denial.
+#[derive(Debug)]
+pub(crate) struct Denied {
+    /// The refusal as the caller will see it.
+    pub error: ApiError,
+    /// What the kernel actually said. `None` for a refusal that did not come
+    /// from a `Verdict::Deny` — an approval deferral, say.
+    pub reason: Option<DenyReason>,
+}
+
+impl From<Denied> for ApiError {
+    fn from(d: Denied) -> Self {
+        d.error
+    }
 }
