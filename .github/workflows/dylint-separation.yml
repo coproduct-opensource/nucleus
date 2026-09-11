@@ -60,6 +60,8 @@ on:
       - "tools/nucleus-observed-lint/**"
       - ".observed-ratchet.toml"
       - "scripts/check-observed-dylint.sh"
+      - "tools/nucleus-rest-pattern-lint/**"
+      - "scripts/check-rest-pattern-dylint.sh"
       - ".github/workflows/dylint-separation.yml"
   pull_request:
     paths:
@@ -73,6 +75,8 @@ on:
       - "tools/nucleus-observed-lint/**"
       - ".observed-ratchet.toml"
       - "scripts/check-observed-dylint.sh"
+      - "tools/nucleus-rest-pattern-lint/**"
+      - "scripts/check-rest-pattern-dylint.sh"
       - ".github/workflows/dylint-separation.yml"
   workflow_dispatch:
 
@@ -371,3 +375,39 @@ jobs:
         env:
           DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-observed-lint/target/debug
         run: scripts/check-observed-dylint.sh
+
+      # ── rest_pattern_on_policy_path (ADR 0007 E-1) ──────────────────────
+      #
+      # No `..` in a record pattern over a policy or delegation record. For
+      # those records the field list IS the authority: `create_sub_pod` decides
+      # four of `PodSpecInner`'s fourteen fields, and a `..` would put the other
+      # ten back to being granted by default. The exhaustive destructure is what
+      # makes a new field an `E0027`; this is what keeps the destructure.
+      #
+      # Gates at ZERO, unlike `observed`. The pass is scoped by RECORD TYPE, and
+      # the six it watches have zero rest-patterns workspace-wide, production and
+      # test. Crate scoping was measured and rejected: 284 production
+      # rest-patterns across the policy crates, almost all correct.
+      - name: Build the pass
+        working-directory: tools/nucleus-rest-pattern-lint
+        run: cargo build
+
+      - name: Name the dylib the way dylint resolves it
+        run: |
+          cd tools/nucleus-rest-pattern-lint/target/debug
+          host=$(rustc -vV | sed -n 's/host: //p')
+          cp libnucleus_rest_pattern_lint.so \
+             "libnucleus_rest_pattern_lint@nightly-2026-04-16-${host}.so"
+
+      # REDS-ON-REVERT, before the enforcing run. Perturbs the REAL subject, not
+      # a fixture: collapses `create_sub_pod`'s destructure back to `..` — the
+      # shape ADR 0006 C4.2 removed — and asserts the count goes non-zero.
+      - name: The rest-pattern gate reds on a `..` at the delegation boundary
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-rest-pattern-lint/target/debug
+        run: scripts/check-rest-pattern-dylint.sh --self-test
+
+      - name: No `..` in a record pattern on a policy path
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-rest-pattern-lint/target/debug
+        run: scripts/check-rest-pattern-dylint.sh
