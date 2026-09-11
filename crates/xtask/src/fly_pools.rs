@@ -34,6 +34,10 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 const MANAGER_TOML: &str = "ci/fly-runner/manager.toml";
+/// The prose table that documents the same pools, and disagreed with them.
+const README: &str = "ci/fly-runner/README.md";
+/// How many `(pool, field)` pairs the README and the TOML may still disagree on. Shrink-only.
+const DRIFT: &str = "ci/fly-pools-drift.txt";
 
 /// The `POOLS = '...'` value, as the manager would receive it.
 pub fn pools_json(manager_toml: &str) -> Result<String> {
@@ -78,7 +82,7 @@ pub fn check(root: &Path) -> Result<()> {
             if pools.is_empty() {
                 bail!("{MANAGER_TOML}: POOLS parsed to no pools at all");
             }
-            Ok(())
+            readme_agrees(root, &pools)
         }
         Err(e) => bail!(
             "{MANAGER_TOML}'s POOLS default is a configuration the manager REFUSES:\n  {e}\n\
@@ -86,6 +90,90 @@ pub fn check(root: &Path) -> Result<()> {
              replaces it, so a default the manager rejects is a deployment that does not start."
         ),
     }
+}
+
+/// `ci/fly-runner/README.md`'s pool table must agree with the value the manager receives.
+///
+/// The README is how anyone learns what the pools ARE — it is the first thing a reader opens, and
+/// `fly-pools` referenced it zero times, checking only that the TOML parses. So the two could drift
+/// silently, and had: measured 2026-09-11, **all four numbers disagreed** — the README said the
+/// build pool is size 16 standby 16 where the TOML says 8 and 8, and the gate pool size 40 standby
+/// 40 where the TOML says 16 and 16.
+///
+/// RATCHETED rather than driven to zero, and the reason is that neither side is obviously right.
+/// `manager.toml`'s POOLS is the default a fresh deployment uses until `fly secrets set POOLS=...`
+/// replaces it, so the README may be describing the deployed secret truthfully while the tracked
+/// default describes a bootstrap. Live runner counts settle nothing — `FINDINGS.md` F-75 measured
+/// one to two build machines, which matches neither 8 nor 16. Deciding that needs the secret, which
+/// is not readable from a checkout; making the disagreement visible and un-growable does not.
+fn readme_agrees(root: &Path, pools: &[ci_fly_runner::PoolSpec]) -> Result<()> {
+    let text =
+        fs::read_to_string(root.join(README)).with_context(|| format!("reading {README}"))?;
+    let pin: usize = fs::read_to_string(root.join(DRIFT))
+        .with_context(|| format!("{DRIFT} is missing — nothing to ratchet the drift against"))?
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("DRIFT="))
+        .and_then(|v| v.trim().parse().ok())
+        .with_context(|| format!("{DRIFT} has no DRIFT= line"))?;
+
+    let mut drift = Vec::new();
+    let mut rows = 0usize;
+    for p in pools {
+        // The row naming this pool's label, and the `size N, standby M` it claims.
+        let Some(row) = text
+            .lines()
+            .find(|l| l.starts_with('|') && l.contains(&format!("`{}`", p.label)))
+        else {
+            bail!(
+                "{README} has no table row for pool {:?} — the table is the documentation of record",
+                p.label
+            );
+        };
+        rows += 1;
+        for (field, declared) in [("size", p.size), ("standby", p.standby)] {
+            let claimed = row
+                .split(&format!("{field} "))
+                .nth(1)
+                .and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|n| n.parse::<usize>().ok());
+            match claimed {
+                None => bail!("{README}'s row for {:?} states no {field}", p.label),
+                Some(c) if c != declared => {
+                    drift.push(format!(
+                        "{} {field}: README {c}, {MANAGER_TOML} {declared}",
+                        p.label
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if rows == 0 {
+        bail!("{README} matched no pool rows — the comparison examined nothing");
+    }
+    for d in &drift {
+        println!("  drift  {d}");
+    }
+    if drift.len() > pin {
+        bail!(
+            "{} README/TOML disagreement(s), pin {pin} — the file a reader opens to learn the pool \
+             sizes does not agree with the value the manager receives. Fix one side, or raise the \
+             pin with the reason they differ",
+            drift.len()
+        );
+    }
+    if drift.len() < pin {
+        bail!(
+            "{} disagreement(s), pin {pin} — lower the pin in the same change that fixed one",
+            drift.len()
+        );
+    }
+    println!(
+        "OK: {rows} pool(s) compared against {README}; {} still disagree (pin {pin})",
+        drift.len()
+    );
+    Ok(())
 }
 
 #[cfg(test)]
