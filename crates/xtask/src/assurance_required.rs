@@ -105,30 +105,22 @@ fn pinned(root: &Path) -> Result<usize> {
         .with_context(|| format!("{RATCHET} has no UNREQUIRED_FALSIFIERS= line"))
 }
 
-pub fn check(root: &Path) -> Result<()> {
-    let model = ci_spec::loader::from_repo(root)?;
-    let required: BTreeSet<&str> = model.ledger.contexts.iter().map(String::as_str).collect();
-    if required.len() < 10 {
-        bail!(
-            "only {} required context(s) loaded — the required set did not load, so every \
-             falsifier below would read as unrequired and this gate would be noise",
-            required.len()
-        );
-    }
-
-    let text =
-        fs::read_to_string(root.join(LEDGER)).with_context(|| format!("{LEDGER} not found"))?;
-    let rows = rows(&text);
-    if rows.len() < 2 {
-        bail!(
-            "{LEDGER} yielded {} row(s) — the parse is wrong, so this gate examined nothing",
-            rows.len()
-        );
-    }
-
+/// The verdict, separated from the reading of it.
+///
+/// Pure over its three inputs so the interesting half is testable without a repository on disk.
+/// That is not only for coverage: the shape of the failure this whole gate exists to prevent is a
+/// check that looks right and decides nothing, and a decision procedure nobody can call is exactly
+/// the thing that acquires that property quietly.
+///
+/// Returns `(descriptions of rows whose falsifier produces no required context, rows examined)`.
+fn decide(
+    rows: &[Row],
+    workflows: &[ci_spec::model::Workflow],
+    required: &BTreeSet<&str>,
+) -> Result<(Vec<String>, usize)> {
     let mut unrequired = Vec::new();
     let mut checked = 0usize;
-    for row in &rows {
+    for row in rows {
         if row.status == "NOT-YET" {
             continue;
         }
@@ -142,7 +134,7 @@ pub fn check(root: &Path) -> Result<()> {
         // Every context produced by a job that invokes this falsifier. A workflow named as the
         // falsifier (some rows name `.github/workflows/x.yml`) counts every job in it.
         let mut produced: BTreeSet<String> = BTreeSet::new();
-        for w in &model.workflows {
+        for w in workflows {
             let names_workflow = w.path.ends_with(f.trim_start_matches("./"));
             for j in &w.jobs {
                 let runs_it = names_workflow
@@ -170,6 +162,31 @@ pub fn check(root: &Path) -> Result<()> {
             ));
         }
     }
+    Ok((unrequired, checked))
+}
+
+pub fn check(root: &Path) -> Result<()> {
+    let model = ci_spec::loader::from_repo(root)?;
+    let required: BTreeSet<&str> = model.ledger.contexts.iter().map(String::as_str).collect();
+    if required.len() < 10 {
+        bail!(
+            "only {} required context(s) loaded — the required set did not load, so every \
+             falsifier below would read as unrequired and this gate would be noise",
+            required.len()
+        );
+    }
+
+    let text =
+        fs::read_to_string(root.join(LEDGER)).with_context(|| format!("{LEDGER} not found"))?;
+    let rows = rows(&text);
+    if rows.len() < 2 {
+        bail!(
+            "{LEDGER} yielded {} row(s) — the parse is wrong, so this gate examined nothing",
+            rows.len()
+        );
+    }
+
+    let (unrequired, checked) = decide(&rows, &model.workflows, &required)?;
 
     if checked == 0 {
         bail!("no non-NOT-YET row was examined — every claim would pass vacuously");
@@ -201,4 +218,136 @@ pub fn check(root: &Path) -> Result<()> {
         unrequired.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Row, decide, rows};
+    use std::collections::BTreeSet;
+
+    /// The falsifier is the FIFTH column. The EVIDENCE column is also full of backticked handles,
+    /// and reading one of those instead is a mistake that leaves the gate checking the wrong thing
+    /// while still reporting a number — which is what it looks like when a gate is decorative.
+    /// I made exactly this mistake while writing the parser, and the first run of the gate checked
+    /// evidence handles against the required set.
+    #[test]
+    fn the_falsifier_comes_from_the_fifth_column_not_the_evidence() {
+        let doc = "\
+| # | Clause | Status | Evidence | Falsified by |
+|---|---|---|---|---|
+| CI-1 | \"a clause\" | PROVED | `crates/evidence/src/lib.rs#sym`, `docs/other.md` | `scripts/check-the-falsifier.sh` |
+";
+        let r = rows(doc);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].id, "CI-1");
+        assert_eq!(r[0].status, "PROVED");
+        assert_eq!(
+            r[0].falsifier.as_deref(),
+            Some("scripts/check-the-falsifier.sh"),
+            "took a handle from the evidence column"
+        );
+    }
+
+    /// Header and separator rows are not claims. A parser that counted them would inflate the
+    /// population and dilute the ratchet.
+    #[test]
+    fn only_ci_numbered_rows_are_claims() {
+        let doc =
+            "| # | Clause |\n|---|---|\n| CI-7 | x | DECIDED | `e` | `f` |\n| note | not a row |\n";
+        assert_eq!(rows(doc).len(), 1);
+    }
+
+    fn row(id: &str, status: &str, f: Option<&str>) -> Row {
+        Row {
+            id: id.into(),
+            status: status.into(),
+            falsifier: f.map(Into::into),
+        }
+    }
+
+    fn workflow(yaml: &str) -> ci_spec::model::Workflow {
+        ci_spec::loader::parse_workflow(".github/workflows/t.yml", yaml).expect("parses")
+    }
+
+    const WF: &str = "\
+name: T
+on: [push]
+jobs:
+  gated:
+    name: The required one
+    runs-on: ubuntu-latest
+    steps:
+      - run: scripts/check-required.sh
+  ungated:
+    name: The advisory one
+    runs-on: ubuntu-latest
+    steps:
+      - run: scripts/check-advisory.sh
+";
+
+    #[test]
+    fn a_falsifier_whose_context_is_required_is_not_reported() {
+        let wfs = vec![workflow(WF)];
+        let required: BTreeSet<&str> = ["The required one"].into_iter().collect();
+        let (un, checked) = decide(
+            &[row("CI-1", "PROVED", Some("scripts/check-required.sh"))],
+            &wfs,
+            &required,
+        )
+        .unwrap();
+        assert_eq!(checked, 1);
+        assert!(un.is_empty(), "{un:?}");
+    }
+
+    /// The whole point: the gate CI runs, and the queue does not gate on it.
+    #[test]
+    fn a_falsifier_whose_context_is_not_required_is_reported() {
+        let wfs = vec![workflow(WF)];
+        let required: BTreeSet<&str> = ["The required one"].into_iter().collect();
+        let (un, checked) = decide(
+            &[row("CI-2", "DECIDED", Some("scripts/check-advisory.sh"))],
+            &wfs,
+            &required,
+        )
+        .unwrap();
+        assert_eq!(checked, 1);
+        assert_eq!(un.len(), 1);
+        assert!(un[0].contains("CI-2"), "{un:?}");
+    }
+
+    /// A `NOT-YET` row is a claim nobody is making yet; it owes no falsifier and must not be
+    /// counted, or the ratchet would move when a row is promoted for unrelated reasons.
+    #[test]
+    fn not_yet_rows_are_skipped_and_uncounted() {
+        let wfs = vec![workflow(WF)];
+        let required: BTreeSet<&str> = ["The required one"].into_iter().collect();
+        let (un, checked) = decide(&[row("CI-9", "NOT-YET", None)], &wfs, &required).unwrap();
+        assert_eq!(checked, 0);
+        assert!(un.is_empty());
+    }
+
+    /// A live row with no falsifier is the ledger gate's failure, and this one refuses rather than
+    /// passing it over — two gates silently disagreeing about a row is worse than either failing.
+    #[test]
+    fn a_live_row_without_a_falsifier_is_an_error() {
+        let wfs = vec![workflow(WF)];
+        let required: BTreeSet<&str> = ["The required one"].into_iter().collect();
+        assert!(decide(&[row("CI-3", "PROVED", None)], &wfs, &required).is_err());
+    }
+
+    /// A falsifier no job runs is the ledger gate's failure too, and reporting it as "advisory"
+    /// would quietly fold a missing gate into the ratchet instead of failing.
+    #[test]
+    fn a_falsifier_no_job_runs_is_an_error() {
+        let wfs = vec![workflow(WF)];
+        let required: BTreeSet<&str> = ["The required one"].into_iter().collect();
+        assert!(
+            decide(
+                &[row("CI-4", "PROVED", Some("scripts/check-nowhere.sh"))],
+                &wfs,
+                &required
+            )
+            .is_err()
+        );
+    }
 }
