@@ -385,6 +385,19 @@ pub struct DecisionToken {
     pub(crate) operation: Operation,
     /// The decision sequence number for audit correlation.
     pub(crate) sequence: u64,
+    /// Checksum of the effective permissions this decision was taken against.
+    ///
+    /// The affine discipline on this type proves a token cannot be used TWICE.
+    /// It proves nothing about whether the token is still TRUE: the consume-side
+    /// check compared two `Operation`s and never consulted the state the
+    /// decision was made under. A token decided against one policy could be
+    /// redeemed under another.
+    ///
+    /// Carrying the fingerprint makes that answerable at the redeem site without
+    /// threading the kernel there. It is the first step of a validity interval,
+    /// and the honest name for what it bounds: not elapsed time, but whether the
+    /// thing the decision depended on is the thing being executed under.
+    pub(crate) permissions: String,
     /// Prevents external construction.
     _seal: (),
 }
@@ -398,6 +411,15 @@ impl DecisionToken {
     /// The decision sequence number for audit correlation.
     pub fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    /// Checksum of the effective permissions this decision was taken against.
+    ///
+    /// A redeemer compares this with the permissions it is about to execute
+    /// under, and refuses on a mismatch.
+    #[must_use]
+    pub fn permissions(&self) -> &str {
+        &self.permissions
     }
 }
 
@@ -1941,9 +1963,21 @@ impl Kernel {
         self.next_seq += 1;
 
         let token = if matches!(verdict, Verdict::Allow) {
+            // NORMALIZED, not `post_hash`. The kernel decides against
+            // `self.effective` as written; an executor enforces
+            // `policy.clone().normalize()`, and `normalize` is not the identity —
+            // it applies the uninhabitable-state constraint, which ADDS approval
+            // obligations. So the two sides hold different values of the same
+            // policy, and comparing the raw checksum would refuse every token
+            // for a policy that normalization changes.
+            //
+            // Computed only on the Allow branch, so the deny path does not pay
+            // for it, and `normalize` is idempotent (`permission_normalize_is_
+            // idempotent`) so an already-normalized policy costs a clone.
             Some(DecisionToken {
                 operation,
                 sequence: seq,
+                permissions: self.effective.clone().normalize().checksum(),
                 _seal: (),
             })
         } else {

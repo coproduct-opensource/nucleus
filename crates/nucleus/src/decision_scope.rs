@@ -54,9 +54,87 @@ pub(crate) fn require_decision_for(
     })
 }
 
+/// A decision may only be redeemed under the permissions it was taken against.
+///
+/// The affine discipline on `DecisionToken` proves it cannot be used TWICE — two
+/// `compile_fail` doctests on `Authority` next door prove the same for replay
+/// (E0382) and clone (E0599). It proves nothing about whether the token is still
+/// TRUE, and until now nothing else did either: [`require_decision_for`] above
+/// compares two `Operation`s and consults no state, so a token decided under one
+/// policy was redeemable under any other.
+///
+/// The token carries the checksum of the effective permissions at decision time;
+/// the executor carries the checksum of the permissions it is about to act
+/// under. Equal or refuse.
+///
+/// This is the first step of a validity interval, and the honest statement of
+/// what it bounds: **not elapsed time, but whether the thing the decision
+/// depended on is the thing being executed under.** It does not yet catch a
+/// budget spent or an approval consumed between decision and effect — those are
+/// kernel state the executor does not hold — and it does not re-read the kernel,
+/// so a policy attenuated after this executor was built is not seen. Both are
+/// the next steps, and both are cheap once the fingerprint is on the token.
+pub(crate) fn require_permissions_match(
+    decided_under: &str,
+    executing_under: &str,
+) -> Result<(), NucleusError> {
+    if decided_under == executing_under {
+        return Ok(());
+    }
+    Err(NucleusError::ScopeMismatch {
+        reason: format!(
+            "decision was taken against permissions {} but this effect runs under {}: \
+             a decision does not carry across a change of policy",
+            short(decided_under),
+            short(executing_under)
+        ),
+    })
+}
+
+/// First eight hex characters, or the whole string when it is shorter.
+///
+/// Enough to tell two checksums apart in a message; the full digest belongs in
+/// the trace, not in an error a human reads.
+fn short(digest: &str) -> &str {
+    digest.get(..8).unwrap_or(digest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permissions_that_match_are_accepted() {
+        assert!(require_permissions_match("abc123", "abc123").is_ok());
+    }
+
+    #[test]
+    fn a_decision_taken_under_other_permissions_is_refused() {
+        // THE property. Before this, the redeem side compared two `Operation`s
+        // and consulted no state at all, so a token decided under one policy was
+        // redeemable under any other. The affine discipline proved the token
+        // could not be used twice; nothing proved it was still true.
+        let err = require_permissions_match("aaaaaaaabbbb", "ccccccccdddd")
+            .expect_err("a decision does not carry across a change of policy");
+        assert!(matches!(err, NucleusError::ScopeMismatch { .. }));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("aaaaaaaa"),
+            "names what it was decided under: {msg}"
+        );
+        assert!(
+            msg.contains("cccccccc"),
+            "and what it would run under: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_message_shortens_a_digest_without_losing_a_short_one() {
+        // Eight hex characters is enough to tell two checksums apart; the full
+        // digest belongs in the trace, not in an error a human reads.
+        assert_eq!(short("0123456789abcdef"), "01234567");
+        assert_eq!(short("tiny"), "tiny");
+    }
 
     #[test]
     fn a_matching_decision_is_accepted() {
