@@ -7,7 +7,9 @@
       ".github/workflows/**",
       "ci/**",
       "crates/ci-spec/**",
-      "scripts/check-ci-spec.sh"
+      "scripts/check-ci-spec.sh",
+      "crates/*/Cargo.toml",
+      ".cargo/**"
     ],
     "exclude": [],
     "external": [],
@@ -30,7 +32,9 @@
       ".github/workflows/**",
       "ci/**",
       "crates/ci-spec/**",
-      "scripts/check-ci-spec.sh"
+      "scripts/check-ci-spec.sh",
+      "crates/*/Cargo.toml",
+      ".cargo/**"
     ],
     "fs_write": [
       "target/**",
