@@ -557,6 +557,25 @@ lattice_laws!(
     }
 
     #[test]
+    fn the_family_entry_point_reports_the_three_numbers_the_card_prints() {
+        // The scorecard calls this, not `report`; an untested adapter is how a
+        // correct census reaches the card wrong.
+        let corpus = BTreeMap::from([(
+            "crates/demo/src/lib.rs".to_string(),
+            "impl Lattice for Declared {}\n\
+             impl BoundedLattice for Declared {}\n\
+             lattice_laws!(d, Declared, v(), [lattice]);\n\
+             impl Orphan {\n    fn meet(&self, o: &Self) -> Self { todo!() }\n}\n"
+                .to_string(),
+        )]);
+        let c = Alg.census(&corpus).expect("the census succeeds");
+        assert_eq!(c.population, LATTICE_LAWS + BOUNDED_LAWS, "9 + 4 obliged");
+        assert_eq!(c.discharged, LATTICE_LAWS, "only `lattice` declared");
+        assert_eq!(c.undeclared, 1, "Orphan has meet and no trait impl");
+        assert_eq!(c.basis_points(), 6_923, "9 of 13");
+    }
+
+    #[test]
     fn obligations_sum_across_the_traits_a_type_implements() {
         let corpus = BTreeMap::from([(
             "crates/demo/src/lib.rs".to_string(),
