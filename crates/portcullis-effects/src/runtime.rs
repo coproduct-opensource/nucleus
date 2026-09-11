@@ -1236,9 +1236,20 @@ impl NucleusRuntime {
             // raises both taint ceiling (OpaqueExternal) and conf ceiling.
             // A more precise approach would set ceilings directly, but
             // the FlowTracker API only allows raising via observation.
-            let _ = child
+            // The result is PROPAGATED, not discarded. This used to be
+            // `let _ = ...` (ADR 0007 C-5). A sentinel that fails to be observed
+            // leaves the child's ceilings BELOW the parent's, so a tainted parent
+            // hands back a child that reads as CLEAN — the taint escape this
+            // branch exists to prevent, and it would be silent. ADR 0007 A-2:
+            // "I could not look" is never "I looked and it was fine."
+            child
                 .flow_tracker_mut()
-                .observe(portcullis_core::flow::NodeKind::WebContent);
+                .observe(portcullis_core::flow::NodeKind::WebContent)
+                .map_err(|e| {
+                    RuntimeError::Config(format!(
+                        "child runtime could not inherit the parent's flow ceilings: {e}"
+                    ))
+                })?;
         }
 
         Ok(child)
@@ -2519,6 +2530,37 @@ mod tests {
         let child = child.unwrap();
         assert!(child.can(RuntimeCapability::ReadFiles));
         assert!(!child.can(RuntimeCapability::WriteFiles)); // ReadOnly has no write
+    }
+
+    /// A tainted parent must hand back a tainted child.
+    ///
+    /// `spawn_child` raises the child's ceilings by observing a sentinel node,
+    /// and that call's result was discarded until ADR 0007 C-5. Nothing asserted
+    /// the propagation, so the discard was invisible: a failed observation would
+    /// have produced a child reading as clean out of a tainted parent. This is
+    /// the property that makes the returned error worth returning.
+    #[test]
+    fn a_tainted_parent_hands_back_a_tainted_child() {
+        let mut parent = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        parent
+            .flow_tracker_mut()
+            .observe(portcullis_core::flow::NodeKind::WebContent)
+            .expect("a parent observes web content");
+        assert!(
+            parent.is_tainted(),
+            "the parent is tainted after observing web content"
+        );
+
+        let child = parent
+            .spawn_child(PolicyProfile::ReadOnly, "review")
+            .expect("ReadOnly is under Codegen");
+
+        assert!(
+            child.is_tainted(),
+            "a tainted parent must not hand back a child that reads as clean"
+        );
     }
 
     #[test]

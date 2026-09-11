@@ -1,6 +1,11 @@
 # ADR 0006 — Four collapses: the security surface is compositions of four objects, not sixty-five
 
-- Status: **proposed** (2026-09-10). Nothing in this ADR is implemented.
+- Status: **accepted** (2026-09-10); **partially implemented** (updated 2026-09-11). C0.1, C0.2,
+  C1.1, C1.2, C2.0, C2.1 and C2.2 landed in `d761b1ae6` (#2781) the day after this was written.
+  C2.3–C2.5, C3.1–C3.2 and C4.1–C4.2 remain proposed; the Milestones table below is the per-row
+  status. The original line read "Nothing in this ADR is implemented", which stopped being true
+  within a day and is exactly the drift this ADR is about — a document whose green is
+  indistinguishable from vacuity.
 - Tracks: the 2026-09-09 architectural audit; `SECURITY_TODO.md` items 17–30; PR #2778 (Tiers 1–2)
 - Applies to: `portcullis`, `portcullis-core`, `portcullis-effects`, `nucleus-ifc-kernel`, `nucleus`, `nucleus-node`, `nucleus-tool-proxy` — the ~217k LOC dependency closure of `nucleus-node`
 
@@ -342,17 +347,17 @@ of their stack rather than the end.
 
 | # | Delivers | Folded-in defect | Status |
 |---|---|---|---|
-| C0.1 | `xtask` ratchet on inert authority: `_authority` / `_proof` / `_cert` bindings, seeded exact at the measured 43 of 226, with the genuine no-op impls allow-listed by path and reason | an authority accepted and dropped is a gate that is present but does nothing | proposed |
-| C0.2 | Add `GuardedAction` and `Authorized<A>` to #2778's law-mechanism manifest | `Authorized<A>` is `Clone + Copy` with public fields and zero call sites — unsound *and* dead | proposed |
+| C0.1 | `xtask` ratchet on inert authority: `_authority` / `_proof` / `_cert` bindings, seeded exact at the measured 43 of 226, with the genuine no-op impls allow-listed by path and reason | an authority accepted and dropped is a gate that is present but does nothing | **landed** `d761b1ae6` |
+| C0.2 | Add `GuardedAction` and `Authorized<A>` to #2778's law-mechanism manifest | `Authorized<A>` is `Clone + Copy` with public fields and zero call sites — unsound *and* dead | **landed** `d761b1ae6` |
 | C0.3 | This ADR, renumbered off #2753's 0005, with the three corrections above | the ADR's own claims about `DeclassificationToken`, `max_uses` and parametricity | **this PR** |
-| C1.1 | `LedgerCore<Unit>`: `Unit` trait with stated saturating-arithmetic laws, `PhantomData`, `*_micro` → `*_units`. Drop `const fn new` (const trait methods are unstable at MSRV 1.93). Keep every `while i < N` loop and add no heap — `budget_ledger.rs` has zero `kani-divergence.toml` entries and must keep it | `LedgerError::UnrepresentableAmount` names `Decimal` but is produced only by `BudgetLedger` | proposed |
-| C1.2 | E1/E2 onto the `kani-fast` lane | `FORMAL_METHODS.md` claims budget conservation runs every PR; it runs nightly | proposed |
+| C1.1 | `LedgerCore<Unit>`: `Unit` trait with stated saturating-arithmetic laws, `PhantomData`, `*_micro` → `*_units`. Drop `const fn new` (const trait methods are unstable at MSRV 1.93). Keep every `while i < N` loop and add no heap — `budget_ledger.rs` has zero `kani-divergence.toml` entries and must keep it | `LedgerError::UnrepresentableAmount` names `Decimal` but is produced only by `BudgetLedger` | **landed** `d761b1ae6` |
+| C1.2 | E1/E2 onto the `kani-fast` lane | `FORMAL_METHODS.md` claims budget conservation runs every PR; it runs nightly | **landed** `d761b1ae6` |
 | C1.3 | First two consumers: `BudgetGate` (already micro-USD `u64`) and `AtomicBudget` | `AtomicBudget::reserve` splits token limits by `/2` — *"Give half of remaining"* — which the ledger's law rejects | proposed |
-| C2.0 | MCP path gets the per-request certificate attenuation HTTP has, or a written reason it must not | **the MCP/HTTP divergence** | proposed |
-| C2.1 | The `Act` sum in `portcullis-core`, totality proved against the 27 admissible pairs | `default_sink_class` returns `SecretRead` for 3 of 13 operations — a pair `operation_allowed_for_sink` **rejects** | proposed |
-| C2.2 | `CheckProof` carries the `Act`; `ToolCallGuard::check(Act)` | makes the six untargeted `guard.check(Operation::…)` MCP sites a compile error | proposed |
+| C2.0 | MCP path gets the per-request certificate attenuation HTTP has, or a written reason it must not | **the MCP/HTTP divergence** | **landed** `d761b1ae6` |
+| C2.1 | The `Act` sum in `portcullis-core`, totality proved against the 27 admissible pairs | `default_sink_class` returns `SecretRead` for 3 of 13 operations — a pair `operation_allowed_for_sink` **rejects** | **landed** `d761b1ae6` |
+| C2.2 | `CheckProof` carries the `Act`; `ToolCallGuard::check(Act)` | makes the six untargeted `guard.check(Operation::…)` MCP sites a compile error | **landed** `d761b1ae6` |
 | C2.3 | `GuardedAction<Act>` replaces `GuardedAction<Operation>` / `<String>`; delete `Authorized<A>` | lowers `DEAD_COUNT` from C0.2 | proposed |
-| C2.4 | `Authority::spend(act)`; `EffectCall` stops being `(&'static str, String)` | the `gate()` helper's `Ok(Authority::new(bundle))` re-wrap, which reopens the affine seam it just closed | proposed |
+| C2.4 | `Authority::spend(act)`; `EffectCall` stops being `(&'static str, String)` | the `gate()` helper's `Ok(Authority::new(bundle))` re-wrap, which reopens the affine seam it just closed | **partial** — `spend_on(self, &Act)` exists beside a transitional `spend(self, Operation, SinkClass)` |
 | C2.5 | Effect traits take the witness by value, one trait per PR | `run_args`'s `compile_fail` doctest fails on **arity**, so it pins nothing; `DecisionToken` is inert outside `debug_assert` (item 25) | proposed |
 | C3.1 | The `Ceiling` / `Permit` / `Voucher` split; `Action = Act` | — | proposed |
 | C3.2 | One burn ledger for the five that exist | `SessionCleanseToken` is taken by `&` and never consumed | proposed |

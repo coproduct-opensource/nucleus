@@ -39,15 +39,15 @@
 //! base's ownership for every later pod — and it is unnecessary, because the measurement above
 //! says the guest never writes the file. Read permission is the whole requirement.
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use crate::firecracker_config::{FirecrackerConfig, JailLayout, in_jail};
 use crate::snapshot_store::HostIdentity;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use crate::snapshot_store::{Derivation, Lookup, SnapshotStore};
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use crate::snapshot_vmm::SnapshotArtifacts;
 
 /// Why this launch is cold-booting.
@@ -262,6 +262,7 @@ pub(crate) async fn bring_up(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::firecracker_api::stub_vmm::{StubVmm, sample_config};
 
     /// Every refusal renders something a human can act on, and none of them is the empty string.
@@ -561,6 +562,7 @@ mod tests {
     // path here opens a socket, so nothing reached them without a VMM.
 
     /// With no base, the machine is built from the configuration and started.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn bringing_up_without_a_base_configures_then_starts() {
         let vmm = StubVmm::start(vec![]).await;
@@ -586,6 +588,7 @@ mod tests {
     /// With a base, the VMM is told to LOAD rather than configured field by
     /// field — and is resumed, not started. Firecracker rejects `InstanceStart`
     /// on a restored machine, so confusing the two is a boot failure.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn bringing_up_from_a_base_loads_the_snapshot_and_resumes() {
         let vmm = StubVmm::start(vec![]).await;
@@ -628,6 +631,7 @@ mod tests {
     /// A previous VMM leaves its vsock socket behind and Firecracker re-binds
     /// the same path at load, so the stale file is `EADDRINUSE` from deep inside
     /// device restore. Clearing it is a precondition, not tidying.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_stale_vsock_socket_is_cleared_before_a_restore() {
         let vmm = StubVmm::start(vec![]).await;
@@ -658,6 +662,7 @@ mod tests {
 
     /// A refusal from the VMM during restore reaches the caller rather than
     /// being swallowed into a half-loaded machine.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_refused_snapshot_load_is_reported() {
         let vmm = StubVmm::start(vec![(400, r#"{"fault_message":"mem file truncated"}"#)]).await;
@@ -678,6 +683,7 @@ mod tests {
     /// The tap is the one thing a restore retargets: the base was frozen holding
     /// a different pod's device. An empty override list would silently restore a
     /// VM pointing at a tap that belongs to another pod.
+    #[cfg(target_os = "linux")]
     #[test]
     fn network_overrides_name_this_pods_taps() {
         let cfg = sample_config();

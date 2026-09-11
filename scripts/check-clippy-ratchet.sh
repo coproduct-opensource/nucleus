@@ -57,9 +57,19 @@ FAILED=$(jq -r 'select(.reason=="compiler-message") | .message
 # both lib and test yields the same warning twice, and which targets cargo
 # rebuilds varies -- consecutive runs reported 406 then 404 on an unchanged
 # tree before this dedupe.
-COUNT=$(jq -r 'select(.reason=="compiler-message") | .message
+# The lint set is the one parsed from the toml at the top of this file, passed
+# in rather than restated. It used to be `startswith("clippy::cast")`, which
+# agreed with the toml only because every tracked lint happened to be a cast:
+# the `-W` flags came from the toml and the COUNT came from a hardcoded prefix,
+# so any non-cast lint added to `lints` would have been warned by clippy and
+# then counted as zero. The ceiling would never move and the gate would report
+# OK while tracking nothing -- a gate that cannot fail, which is exactly what
+# `check-gates-can-fail.sh` exists to forbid.
+COUNT=$(jq -r --arg lints "$LINTS" '($lints | split("\n") | map(select(length > 0))) as $tracked
+           | select(.reason=="compiler-message") | .message
            | select(.level=="warning" or .level=="error")
-           | select((.code.code // "") | startswith("clippy::cast"))
+           | (.code.code // "") as $c
+           | select(($tracked | index($c)) != null)
            | (.spans[] | select(.is_primary)) as $s
            | "\($s.file_name):\($s.line_start):\($s.column_start):\(.code.code)"' "$RAW" \
   | sort -u | wc -l | tr -d ' ')

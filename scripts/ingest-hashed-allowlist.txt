@@ -34,8 +34,14 @@ if let Ok(node_id) = kernel.observe(obs_kind, &obs_parents) {
 #   the Labeled type carries the adversarial taint, the observe marks the op.
 .observe(NodeKind::WebContent)
 #
-# ── portcullis-effects: child-ceiling propagation sentinel (runtime.rs :1091) ──
+# ── portcullis-effects: child-ceiling propagation sentinel (runtime.rs :1247) ──
 # WebContent used purely as a SENTINEL to raise a freshly-built child runtime's
 # taint/conf ceilings to the parent's (the FlowTracker API only raises ceilings
 # via observation). No bytes are ingested — it is a ceiling-init, not an input.
-.observe(portcullis_core::flow::NodeKind::WebContent);
+#
+# The trailing `;` is gone because the call is no longer `let _ = ...`: its
+# Result is now propagated, since a sentinel that fails to be observed leaves
+# the child BELOW the parent and a tainted parent would hand back a child
+# reading as clean. This allowlist matches the trimmed line TEXT, so handling
+# the error changed the key — worth knowing before the next edit here.
+.observe(portcullis_core::flow::NodeKind::WebContent)

@@ -69,11 +69,20 @@
 //!    correct for a LIBRARY. This target is a BINARY whose handlers are private
 //!    (`async fn run_command`, never `pub`), so the filter hid all of them.
 //!
-//! **Bugs 1 and 2 are present in `nucleus-mediation-lint` today**, which is a
-//! CI gate. It skips closures and has no `ExprKind::Closure` handling at all, so
-//! it cannot see any `async fn` body: 153 of ~571 functions in `nucleus-node`
-//! and 21 of ~376 in `portcullis-effects` are invisible to it. Its green board
-//! is not evidence over that code. Fixing it is a separate change.
+//! **Bugs 1 and 2 WERE present in `nucleus-mediation-lint`, and are fixed.**
+//! When this comment was written that pass skipped closures entirely, so it
+//! could not see any `async fn` body — 153 of ~571 functions in `nucleus-node`
+//! and 21 of ~376 in `portcullis-effects` were invisible to a CI gate, and its
+//! green board was not evidence over that code. `aba8da1c1` ("mediation lint was
+//! blind to every async fn — 14 hidden unmediated paths", #2138) closed it:
+//! `strip_generics` at `nucleus-mediation-lint/src/lib.rs:181` normalises the
+//! path before matching, and `ExprKind::Closure` descent at `:340` walks into
+//! `tcx.hir_body`. Verified 2026-09-11.
+//!
+//! The paragraph is kept rather than deleted because the failure it describes is
+//! the reason this pass handles closures from its first line, and because a lint
+//! that says a live sibling gate is blind when it is not is the same defect in
+//! the other direction.
 //!
 //! # What is deliberately not flagged
 //!

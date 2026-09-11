@@ -331,7 +331,11 @@ mod tests {
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect::<BTreeMap<_, _>>();
 
-            let child = tokio::process::Command::new(if exit { "/bin/true" } else { "/bin/sleep" })
+            // Resolved through `PATH` rather than by absolute path: `true` lives in
+            // `/usr/bin` on macOS and `/bin` on most Linux distributions, and the
+            // hardcoded `/bin/true` made these five tests fail to spawn on a Mac
+            // the moment the crate became compilable there.
+            let child = tokio::process::Command::new(if exit { "true" } else { "sleep" })
                 .args(if exit { vec![] } else { vec!["30"] })
                 .spawn()
                 .expect("a child spawns");
