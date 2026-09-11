@@ -14,6 +14,18 @@
 # root entry missing here. Add an entry there, add it here.
 
 # Enforcement completeness (#1216): all I/O must go through portcullis-effects.
+#
+# `disallowed-types` lints TYPE POSITIONS -- annotations, generics, struct
+# fields. It does NOT lint associated-function calls, which is how every one of
+# these types is actually used: `Command::new(..)`, `File::open(..)`,
+# `Client::new()`. Measured 2026-09-11 by appending a function using all three
+# to this crate: clippy reported the function as unused and said nothing about
+# any of them.
+#
+# So the list below could not fire on the pattern it names, and the constructors
+# are listed under `disallowed-methods` as well. The types stay: a `struct S {
+# f: std::fs::File }` is still worth refusing, and that is the half this key
+# does catch.
 disallowed-types = [
     { path = "std::fs::File", reason = "use portcullis_effects::FileEffect" },
     { path = "std::fs::OpenOptions", reason = "use portcullis_effects::FileEffect" },
@@ -28,6 +40,17 @@ disallowed-methods = [
     { path = "std::mem::transmute", reason = "ADR 0007 C-1: fabricates a sealed witness; use the minting constructor" },
     # C-5 -- capability and authority types are !Clone, !Copy, #[must_use].
     { path = "std::vec::Vec::leak", reason = "ADR 0007 C-5: defeats the consuming discipline; pass the value" },
+    # #1216 -- the constructors the `disallowed-types` list above cannot see.
+    # Every current call site carries an `#[expect]` naming why it is there;
+    # a new one fails the build, which is what #1216 asked for and what the
+    # type-position form never delivered.
+    { path = "std::process::Command::new", reason = "#1216: spawn through portcullis_effects::ShellEffect" },
+    { path = "tokio::process::Command::new", reason = "#1216: spawn through portcullis_effects::ShellEffect" },
+    { path = "std::fs::File::open", reason = "#1216: read through portcullis_effects::FileEffect" },
+    { path = "std::fs::File::create", reason = "#1216: write through portcullis_effects::FileEffect" },
+    { path = "std::fs::OpenOptions::new", reason = "#1216: open through portcullis_effects::FileEffect" },
+    { path = "reqwest::Client::new", reason = "#1216: fetch through portcullis_effects::WebEffect" },
+
     # H-1 -- no ambient process-global mutation.
     { path = "std::env::set_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },
     { path = "std::env::remove_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },

@@ -63,6 +63,10 @@ impl ReceiptLog {
     ///
     /// # Errors
     /// If the file cannot be opened for appending.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "#1216: writes the proxy's own Article 12 sink, not agent-directed I/O"
+    )]
     fn open(path: &Path) -> std::io::Result<Self> {
         let file = std::fs::OpenOptions::new()
             .create(true)
