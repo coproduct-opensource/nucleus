@@ -167,8 +167,17 @@ jobs:
           total=0
           for crate in nucleus-node nucleus-cred-broker nucleus-tool-proxy portcullis-effects; do
             echo "::group::$crate"
-            out=$(cargo dylint --lib nucleus_cb4a_lint -- -p "$crate" 2>&1) || true
+            # Keep the exit status. `|| true` discarded it, leaving only a grep for two known
+            # failure strings -- and a run that fails printing NEITHER (a dylint panic, an
+            # OOM, a driver that never started) yields an empty $out, a zero count, and a
+            # PASS. Assert the run ARRIVED rather than enumerating the ways it can die.
+            rc=0
+            out=$(cargo dylint --lib nucleus_cb4a_lint -- -p "$crate" 2>&1) || rc=$?
             echo "$out"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::the lint run over $crate exited $rc — it did not complete, so zero findings would be a false green."
+              exit 1
+            fi
             echo "::endgroup::"
             # A crate that fails to COMPILE under the lint reports zero findings,
             # and the `|| true` above swallows the exit status — so a broken
@@ -243,8 +252,17 @@ jobs:
           DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-identity-lint/target/debug
         run: |
           set -o pipefail
-          out=$(cargo dylint --lib nucleus_identity_lint -- -p nucleus-tool-proxy 2>&1) || true
+          # Keep the exit status. `|| true` discarded it, leaving only a grep for two known
+          # failure strings -- and a run that fails printing NEITHER (a dylint panic, an
+          # OOM, a driver that never started) yields an empty $out, a zero count, and a
+          # PASS. Assert the run ARRIVED rather than enumerating the ways it can die.
+          rc=0
+          out=$(cargo dylint --lib nucleus_identity_lint -- -p nucleus-tool-proxy 2>&1) || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the lint run over nucleus-tool-proxy exited $rc — it did not complete, so zero findings would be a false green."
+            exit 1
+          fi
           # Same false-green guard as the cb4a job: a compile failure yields
           # zero findings and `|| true` swallows the status.
           if printf '%s\n' "$out" | grep -qE 'could not compile|Compilation failed'; then
@@ -288,8 +306,17 @@ jobs:
           DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-egress-lint/target/debug
         run: |
           set -o pipefail
-          out=$(cargo dylint --lib nucleus_egress_lint -- -p nucleus-node --all-features 2>&1) || true
+          # Keep the exit status. `|| true` discarded it, leaving only a grep for two known
+          # failure strings -- and a run that fails printing NEITHER (a dylint panic, an
+          # OOM, a driver that never started) yields an empty $out, a zero count, and a
+          # PASS. Assert the run ARRIVED rather than enumerating the ways it can die.
+          rc=0
+          out=$(cargo dylint --lib nucleus_egress_lint -- -p nucleus-node --all-features 2>&1) || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the lint run over nucleus-node exited $rc — it did not complete, so zero findings would be a false green."
+            exit 1
+          fi
           n=$(printf '%s\n' "$out" | grep -c 'HTTP client constructed outside' || true)
           if [ "$n" -lt 1 ]; then
             echo "::error::the pass reported 0 findings on a crate known to build raw clients — it is not running, so a clean guest below would be a false green."
@@ -306,8 +333,17 @@ jobs:
           total=0
           for crate in nucleus-tool-proxy nucleus-client; do
             echo "::group::$crate"
-            out=$(cargo dylint --lib nucleus_egress_lint -- -p "$crate" --all-features 2>&1) || true
+            # Keep the exit status. `|| true` discarded it, leaving only a grep for two known
+            # failure strings -- and a run that fails printing NEITHER (a dylint panic, an
+            # OOM, a driver that never started) yields an empty $out, a zero count, and a
+            # PASS. Assert the run ARRIVED rather than enumerating the ways it can die.
+            rc=0
+            out=$(cargo dylint --lib nucleus_egress_lint -- -p "$crate" --all-features 2>&1) || rc=$?
             echo "$out"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::the lint run over $crate exited $rc — it did not complete, so zero findings would be a false green."
+              exit 1
+            fi
             echo "::endgroup::"
             if printf '%s\n' "$out" | grep -qE 'could not compile|Compilation failed'; then
               echo "::error::$crate failed to compile under the pass — zero findings would be a false green."
