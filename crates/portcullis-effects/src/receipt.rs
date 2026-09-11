@@ -1056,6 +1056,7 @@ mod witness_tests {
                 EffectOutcome::Allowed,
             );
         }
+        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts")]
         let _ = w.witness(&rewritten.sign_checkpoint(&lk), &lvk, 4, &[], &wk);
         assert_eq!(
             w.latest().unwrap(),
