@@ -410,4 +410,134 @@ mod tests {
         let wf = "jobs:\n  j:\n    timeout-minutes: 45\n    steps:\n      # - uses: ./.github/actions/gatehouse\n";
         assert!(sites(wf, 3600, true).is_empty());
     }
+
+    // ---- `check` end to end, against a temp tree -------------------------------------
+    //
+    // `check` takes its root as an argument, so the whole verdict — including the two
+    // refusals that have no live subject to perturb — can be exercised without the real
+    // repository. These were written because the module shipped at 66% line coverage and
+    // the untested third was `check` itself: the part that decides.
+
+    const ACTION_YML: &str = "\
+inputs:
+  timeout:
+    description: \"Seconds.\"
+    required: false
+    default: \"3600\"
+  compare:
+    description: \"Run it plainly too.\"
+    required: false
+    default: \"true\"
+";
+
+    fn tree(dir: &Path, action: &str, workflows: &[(&str, &str)]) {
+        fs::create_dir_all(dir.join(".github/actions/gatehouse")).unwrap();
+        fs::create_dir_all(dir.join(".github/workflows")).unwrap();
+        fs::write(dir.join(ACTION), action).unwrap();
+        for (name, body) in workflows {
+            fs::write(dir.join(".github/workflows").join(name), body).unwrap();
+        }
+    }
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("xtask-gate-budget-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn shadow(job_minutes: u32, timeout: &str) -> String {
+        format!(
+            "jobs:\n  shadow:\n    timeout-minutes: {job_minutes}\n    steps:\n      - name: gate\n        uses: {USES}\n        with:\n          run: cargo clippy\n          timeout: \"{timeout}\"\n"
+        )
+    }
+
+    #[test]
+    fn check_passes_when_the_runner_reports_first() {
+        let d = tmp("ok");
+        tree(
+            &d,
+            ACTION_YML,
+            &[("gatehouse-shadow.yml", &shadow(45, "1200"))],
+        );
+        check(&d).expect("1200 x2 + setup fits inside 45 minutes");
+    }
+
+    #[test]
+    fn check_fails_on_the_measured_defect() {
+        let d = tmp("defect");
+        tree(
+            &d,
+            ACTION_YML,
+            &[("gatehouse-shadow.yml", &shadow(45, "2700"))],
+        );
+        let e = check(&d).expect_err("2700 x2 cannot fit a 2700s job");
+        let msg = e.to_string();
+        assert!(msg.contains("cannot fire"), "{msg}");
+    }
+
+    /// The action's own default applies when the step omits `timeout`, and 3600 twice
+    /// cannot fit any job this repository declares.
+    #[test]
+    fn check_uses_the_action_default_when_the_step_is_silent() {
+        let d = tmp("default");
+        let wf = format!(
+            "jobs:\n  shadow:\n    timeout-minutes: 45\n    steps:\n      - uses: {USES}\n        with:\n          run: cargo clippy\n"
+        );
+        tree(&d, ACTION_YML, &[("gatehouse-shadow.yml", &wf)]);
+        assert!(
+            check(&d).is_err(),
+            "the 3600s default must be read and refused"
+        );
+    }
+
+    /// A workflow using the action but not listed is a budget nothing compares.
+    #[test]
+    fn check_refuses_an_unlisted_user_of_the_action() {
+        let d = tmp("unlisted");
+        tree(
+            &d,
+            ACTION_YML,
+            &[
+                ("gatehouse-shadow.yml", &shadow(45, "1200")),
+                ("sneaky.yml", &shadow(45, "1200")),
+            ],
+        );
+        let e = check(&d).expect_err("an unlisted workflow must red");
+        assert!(e.to_string().contains("sneaky.yml"), "{e}");
+    }
+
+    /// A gate that measures nothing passes everything, so finding no site is a refusal.
+    #[test]
+    fn check_refuses_a_workflow_with_no_site() {
+        let d = tmp("nosite");
+        tree(
+            &d,
+            ACTION_YML,
+            &[(
+                "gatehouse-shadow.yml",
+                "jobs:\n  shadow:\n    timeout-minutes: 45\n    steps:\n      - run: echo hi\n",
+            )],
+        );
+        let e = check(&d).expect_err("no site is not a pass");
+        assert!(e.to_string().contains("found no"), "{e}");
+    }
+
+    #[test]
+    fn check_reports_a_missing_action_definition() {
+        let d = tmp("noaction");
+        fs::create_dir_all(d.join(".github/workflows")).unwrap();
+        assert!(
+            check(&d).is_err(),
+            "an absent action definition is not a pass"
+        );
+    }
+
+    #[test]
+    fn an_input_without_a_default_is_an_error() {
+        let src = "inputs:\n  timeout:\n    description: \"no default here\"\n";
+        assert!(action_default(src, "timeout").is_err());
+        assert!(action_default(src, "nonexistent").is_err());
+    }
 }
