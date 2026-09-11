@@ -144,6 +144,48 @@ forward-looking and the backlog is a migration, not a cleanup:
 A single command with no branching, no arithmetic, and no exit-code inspection. The moment there
 is an `if`, a count, or a pipeline whose status matters, it is Rust.
 
+## Mandate: make the defect unwritable
+
+**`docs/adr/0007-make-the-defect-unwritable.md` is thirty-nine rules, each derived from a defect
+this repository shipped and fixed. New Rust follows them; existing Rust follows them as each file
+is touched. Cite the rule id (`C-4`, `E-1`, …) in review.**
+
+They came out of a full read of both repositories' history: 252 defect records, of which **58 —
+23% — needed no language extension, no verifier and no rewrite.** The type discipline already
+existed in stable Rust and was not applied.
+
+The one to know by heart is **C-4**, because it is the reason the ADR exists. In `f7f9719b`,
+`DischargedBundle` was already `!Clone`, `!Copy` and `#[must_use]` — every affine signal Rust
+offers was present — and a one-shot authorization could still be replayed, because three
+signatures took it by `&`. Nothing was missing from the language. The refactor was the fix, and a
+written rule would have been cheaper.
+
+The nine families, in one line each:
+
+- **A — sum types that lost a case.** "Could not look" is never "looked and it was fine"; a `bool`
+  may not carry a three-valued decision; no blanket `map_err`.
+- **B — defaults that grant.** No `#[derive(Default)]` on a security type; `Option::None` may not
+  mean unrestricted; a `_ =>` arm denies.
+- **C — evidence and witnesses.** Evidence has a private constructor and is minted by the checker;
+  a capability is indexed by what it authorizes; a one-shot right is taken **by value**.
+- **D — order as a type.** Typestate, not source-line adjacency. A `compile_fail` doctest is not a
+  substitute for a type.
+- **E — records and exhaustiveness.** No `..` on a policy path — `E0027` is the mechanism.
+- **F — derive, never restate.** Derived serialization; one `Deserialize` struct and a `for` loop;
+  never a count restated beside the thing it counts.
+- **G — one decider per fact.** If a fact is written twice, delete one. A parity test leaves two
+  copies and converts the next drift into a test failure rather than an impossibility.
+- **H — ambient authority.** No `set_var`; an effect is reachable only from a witness.
+- **I — gates that can fail.** Every gate driven red on the real defect first (A-19).
+
+Three enforcement tiers — `clippy.toml`, a `tools/nucleus-*-lint/` dylint pass, or review — and
+the tier is named on every rule so "review" reads as a gap rather than as coverage. **A-19 binds
+the lints too: a lint ships only once it has been driven red on the commit its rule cites.**
+
+What the ADR does **not** claim: 58 of 252 is not a majority, these rules reach no effectful
+defect directly (103 records are in code that spawns, syscalls or awaits), and none of them
+addresses `unsafe`. Those limits are in the ADR rather than left to be discovered.
+
 ## Startup Loops
 
 On init, read `LOOPS.md` (git-ignored, local only) and start any loops defined there.
