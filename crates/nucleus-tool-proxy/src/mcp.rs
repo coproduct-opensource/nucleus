@@ -8,6 +8,38 @@
 //!
 //! Auth: stdio transport implies the client is the pod's guest process —
 //! already authenticated by sandbox proof. HMAC auth is skipped.
+//!
+//! # Why there is no per-request certificate attenuation here (#2784-adjacent, ADR 0006 C2.0)
+//!
+//! The HTTP path narrows every gate by the delegation certificate the request
+//! carried: `AppState::ceiling` folds `CertifiedPermissions` into a three-way
+//! meet (boot ∧ market-effective ∧ chain-verified). This path does not, and
+//! that is a property of the transport rather than an omission.
+//!
+//! A delegation certificate is only honoured on a tier that binds an identity
+//! for its leaf to be checked against. `pod_cert::delegation_authority` returns
+//! `Bound` for `AuthMethod::SpiffeMtls` and nothing else, and
+//! `evaluate_request_cert` refuses a certificate on any unbound tier — "no
+//! identity to bind it to" (#2427). stdio has no `AuthMethod` at all: its trust
+//! story is the sandbox proof established at boot, and every verdict here is
+//! recorded against the fixed `ActorIdentity::StdioGuest`.
+//!
+//! So threading a certificate through would not be wiring an argument that was
+//! forgotten; it would be honouring a certificate on an unbound tier, which is
+//! exactly what #2427 deleted. The ceiling this path uses is therefore the boot
+//! ceiling, obtained through [`stdio_ceiling`] so the decision is named in one
+//! place. `stdio_has_no_bound_tier_to_attenuate_against` pins the premise: the
+//! day stdio gains a bound tier, that test fails and this reasoning expires
+//! loudly rather than silently going stale.
+//!
+//! This says nothing about the gates that are *not* identity-dependent. Those
+//! were plain wiring gaps, and both are now closed: `validation::` runs here
+//! too (the validator section below, pinned by
+//! `http_and_stdio_validate_the_same_inputs`), and so does
+//! `effect_gate::admit_http_recorded`, ADR 0004's per-effect
+//! method+host+path gate (pinned by `http_and_stdio_web_fetch_run_the_same_gates`).
+//! Neither needed an identity: the effect gate is a boot-time object built
+//! from the pod's own certificate, not from a per-request one.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -16,7 +48,10 @@ use portcullis::action_term::ActionTerm;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
-use portcullis::{CapabilityLevel, GradedExposureGuard, NodeKind, Operation, ToolCallGuard};
+use portcullis::{
+    Act, Argv, CapabilityLevel, Endpoint, FilePath, GradedExposureGuard, NodeKind, Operation,
+    Pattern, ReadSink, ToolCallGuard, WriteSink,
+};
 // Sealed discharge preflight (#2038): the live RunBash path must mint a
 // `DischargedBundle` before it may spawn. The bundle-minting itself
 // (`preflight_runbash`) now lives in `crate::run_gate` (shared with the HTTP
@@ -150,6 +185,98 @@ pub struct NucleusMcpServer {
 /// Convert a tool-level error into a CallToolResult error.
 fn err_result(msg: impl std::fmt::Display) -> CallToolResult {
     CallToolResult::error(vec![Content::text(format!("{msg}"))])
+}
+
+// ---------------------------------------------------------------------------
+// Input validation (ADR 0006 C2.0)
+// ---------------------------------------------------------------------------
+//
+// `crate::validation` is the tool-proxy's bound on unbounded input: pattern
+// length and catastrophic backtracking, path length, argument count and total
+// command size, stdin size, and null bytes anywhere. Every HTTP handler runs
+// it "before any processing" — ahead of the kernel consult, the guard and the
+// sandbox. This transport ran none of it, so the same tool reached the same
+// sandbox with input the HTTP handler refuses: a multi-megabyte stdin, ten
+// thousand argv entries, a path carrying an interior NUL, an `(a+)+` regex.
+//
+// Each function below is the check list of the HTTP handler it names, applied
+// to this transport's parameter struct. The field names differ — `root` is
+// glob's `directory`, `include` is grep's `file_glob` — but the checks do not.
+//
+// They run first in each handler, ahead of `sink.preflight`, matching HTTP's
+// "before any processing" placement. Order is free here: `preflight` is a pure
+// lockdown query with no snapshot and no state, so nothing downstream depends
+// on having been asked first. What the choice buys is an accurate audit
+// reason — a malformed call is recorded as `validation:`, not as a lockdown
+// denial that happens to have been malformed too.
+//
+// They are free functions rather than handler-inline code so the property is
+// testable without an `AppState`, which `tests/memory_ifc_e2e.rs` documents
+// avoiding because it needs a sandbox/runtime.
+//
+// `http_and_stdio_validate_the_same_inputs` derives both check lists from
+// source and asserts they are equal, in both directions. A check added to one
+// path and not the other then fails rather than drifting apart quietly, which
+// is how this gap opened. It compares the *set* of checks, not the number of
+// call sites — grep runs `validate_pattern` twice on both paths, on `pattern`
+// and on the file glob, and the set collapses that. The per-field behaviour is
+// what the `stdio_*_refuses_what_http_*_refuses` tests cover.
+//
+// `validate_query` has no row: it belongs to `web_search`, which is an HTTP
+// endpoint with no tool on this transport.
+//
+// `web_fetch` is the one tool that was already covered: it calls
+// `web_fetch_policy::validate_url`, a one-line delegation to
+// `validation::validate_url`. `web_fetch_was_already_covered` pins that
+// delegation so the coverage stays real.
+
+/// The input checks `read_file` runs before any gate.
+fn validate_read_params(p: &ReadParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_path(&p.path)
+}
+
+/// The input checks `write_file` runs before any gate.
+///
+/// `contents` is unbounded on both paths — the write size limit is the
+/// sandbox's, not this module's.
+fn validate_write_params(p: &WriteParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_path(&p.path)
+}
+
+/// The input checks `run_command` runs before any gate.
+fn validate_run_params(p: &RunParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_command_args(&p.args)?;
+    crate::validation::validate_stdin(p.stdin.as_deref())?;
+    if let Some(directory) = &p.directory {
+        crate::validation::validate_path(directory)?;
+    }
+    Ok(())
+}
+
+/// The input checks `glob_search` runs before any gate.
+///
+/// `GlobParams::root` is `GlobRequest::directory` under another name.
+fn validate_glob_params(p: &GlobParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_pattern(&p.pattern)?;
+    if let Some(root) = &p.root {
+        crate::validation::validate_path(root)?;
+    }
+    Ok(())
+}
+
+/// The input checks `grep_search` runs before any gate.
+///
+/// `GrepParams::include` is `GrepRequest::file_glob` under another name, and
+/// is a pattern rather than a path on both paths.
+fn validate_grep_params(p: &GrepParams) -> Result<(), crate::validation::ValidationError> {
+    crate::validation::validate_pattern(&p.pattern)?;
+    if let Some(path) = &p.path {
+        crate::validation::validate_path(path)?;
+    }
+    if let Some(include) = &p.include {
+        crate::validation::validate_pattern(include)?;
+    }
+    Ok(())
 }
 
 #[tool_router]
@@ -345,6 +472,28 @@ impl NucleusMcpServer {
         }
     }
 
+    /// Refuse a call whose inputs the HTTP path would have refused.
+    ///
+    /// The HTTP handlers record a `Deny` verdict carrying the validation
+    /// reason before returning, so a refused call is in the audit trail and
+    /// not only in the client's response. This does the same, against this
+    /// transport's fixed `ActorIdentity::StdioGuest`.
+    fn refuse_invalid(
+        &self,
+        operation: Operation,
+        subject: &str,
+        e: crate::validation::ValidationError,
+    ) -> CallToolResult {
+        self.record_verdict(
+            operation,
+            subject,
+            VerdictOutcome::Deny {
+                reason: format!("validation: {e}"),
+            },
+        );
+        err_result(e)
+    }
+
     // -----------------------------------------------------------------------
     // read — uses Sandbox.read_to_string (cap-std kernel protection)
     // -----------------------------------------------------------------------
@@ -354,6 +503,10 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<ReadParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Err(e) = validate_read_params(&params) {
+            return Ok(self.refuse_invalid(Operation::ReadFiles, &params.path, e));
+        }
+
         if let Err(e) = self.sink.preflight(Operation::ReadFiles) {
             self.record_verdict(
                 Operation::ReadFiles,
@@ -370,7 +523,14 @@ impl NucleusMcpServer {
             Err(result) => return Ok(result),
         };
 
-        let proof = match self.guard.check(Operation::ReadFiles) {
+        // The guard now decides on the act, not the verb. `sink` says where
+        // the read lands: this transport records every read on the verdict
+        // sink, and nothing here persists it to memory or a cache.
+        let act = Act::Read {
+            path: FilePath::new(&params.path),
+            sink: ReadSink::AuditLog,
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -389,7 +549,7 @@ impl NucleusMcpServer {
         // never cleared the obligations `FileEffect::read` enforces.
         let read_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::ReadFiles, None);
+            let fs_ceiling = stdio_ceiling(&self.state, Operation::ReadFiles);
             let flow = self.flow_graph.lock().await;
             let result =
                 crate::run_gate::preflight_read_fs(verified_scope, fs_ceiling, &params.path, &flow);
@@ -412,17 +572,22 @@ impl NucleusMcpServer {
         };
         let read_authority = portcullis_effects::authority::Authority::new(read_bundle);
 
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.sandbox().read_to_string(
-                    &params.path,
+                    &checked,
                     &decision_token,
                     read_authority,
                 )
             })
         }) {
             Ok(contents) => {
-                self.record_verdict(Operation::ReadFiles, &params.path, VerdictOutcome::Allow);
+                self.record_verdict(Operation::ReadFiles, &checked, VerdictOutcome::Allow);
                 // IFC: a file read brings data into the session (Trusted
                 // integrity — does not by itself taint, but contributes to the
                 // confidentiality ceiling). (#1633)
@@ -434,7 +599,7 @@ impl NucleusMcpServer {
             Err(e) => {
                 self.record_verdict(
                     Operation::ReadFiles,
-                    &params.path,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -453,6 +618,10 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<WriteParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Err(e) = validate_write_params(&params) {
+            return Ok(self.refuse_invalid(Operation::WriteFiles, &params.path, e));
+        }
+
         if let Err(e) = self.sink.preflight(Operation::WriteFiles) {
             self.record_verdict(
                 Operation::WriteFiles,
@@ -472,7 +641,14 @@ impl NucleusMcpServer {
             Err(result) => return Ok(result),
         };
 
-        let proof = match self.guard.check(Operation::WriteFiles) {
+        // `sink` says where the write lands: the pod workspace, through the
+        // cap-std sandbox below. A write outside it is `WriteSink::System`,
+        // which this handler cannot reach and therefore does not name.
+        let act = Act::Write {
+            path: FilePath::new(&params.path),
+            sink: WriteSink::Workspace,
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -494,7 +670,7 @@ impl NucleusMcpServer {
         // handler returns its error and NEVER writes (cap-std is never reached).
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let fs_ceiling = crate::run_gate::levels_for(&self.state, Operation::WriteFiles, None);
+            let fs_ceiling = stdio_ceiling(&self.state, Operation::WriteFiles);
             let flow = self.flow_graph.lock().await;
             let result = preflight_fs(
                 Operation::WriteFiles,
@@ -522,10 +698,15 @@ impl NucleusMcpServer {
         };
         let _discharge_note = discharge_witness(&discharge_bundle);
 
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.sandbox().write(
-                    &params.path,
+                    &checked,
                     params.contents.as_bytes(),
                     &decision_token,
                     portcullis_effects::authority::Authority::new(discharge_bundle),
@@ -533,13 +714,13 @@ impl NucleusMcpServer {
             })
         }) {
             Ok(()) => {
-                self.record_verdict(Operation::WriteFiles, &params.path, VerdictOutcome::Allow);
+                self.record_verdict(Operation::WriteFiles, &checked, VerdictOutcome::Allow);
                 Ok(CallToolResult::success(vec![Content::text("ok")]))
             }
             Err(e) => {
                 self.record_verdict(
                     Operation::WriteFiles,
-                    &params.path,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -561,6 +742,10 @@ impl NucleusMcpServer {
         Parameters(params): Parameters<RunParams>,
     ) -> Result<CallToolResult, McpError> {
         let subject = params.args.join(" ");
+
+        if let Err(e) = validate_run_params(&params) {
+            return Ok(self.refuse_invalid(Operation::RunBash, &subject, e));
+        }
 
         if let Err(e) = self.sink.preflight(Operation::RunBash) {
             self.record_verdict(
@@ -589,7 +774,12 @@ impl NucleusMcpServer {
             return Ok(err_result("args must not be empty"));
         }
 
-        let proof = match self.guard.check(Operation::RunBash) {
+        // The argv, not the joined string: the guard sees the command as it
+        // will be spawned, with no shell-quoting round trip in between.
+        let act = Act::Run {
+            argv: Argv::new(params.args.clone()),
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -613,8 +803,7 @@ impl NucleusMcpServer {
         // authorization proof.
         let (discharge_note, discharge_bundle) = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let run_bash_ceiling =
-                crate::run_gate::levels_for(&self.state, Operation::RunBash, None);
+            let run_bash_ceiling = stdio_ceiling(&self.state, Operation::RunBash);
             let flow = self.flow_graph.lock().await;
             let result = preflight_runbash(verified_scope, run_bash_ceiling, &subject, &flow);
             drop(flow);
@@ -661,6 +850,11 @@ impl NucleusMcpServer {
             }
         };
 
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.executor().run_args(
@@ -679,7 +873,7 @@ impl NucleusMcpServer {
             Ok(output) => {
                 self.record_verdict_ext(
                     Operation::RunBash,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Allow,
                     BTreeMap::from([("discharge_bundle".to_string(), discharge_note.clone())]),
                 );
@@ -692,13 +886,13 @@ impl NucleusMcpServer {
                 // Most-paranoid #2: command output may carry injected instructions;
                 // taint it (opt-in) so it can't drive a later privileged action.
                 // Brick 3: content-address the exact tool-result bytes ingested.
-                self.observe_tool_result(&subject, json.as_bytes()).await;
+                self.observe_tool_result(&checked, json.as_bytes()).await;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Err(e) => {
                 self.record_verdict_ext(
                     Operation::RunBash,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -720,6 +914,10 @@ impl NucleusMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let subject = params.pattern.clone();
 
+        if let Err(e) = validate_glob_params(&params) {
+            return Ok(self.refuse_invalid(Operation::GlobSearch, &subject, e));
+        }
+
         if let Err(e) = self.sink.preflight(Operation::GlobSearch) {
             self.record_verdict(
                 Operation::GlobSearch,
@@ -736,7 +934,11 @@ impl NucleusMcpServer {
             Err(result) => return Ok(result),
         }
 
-        let proof = match self.guard.check(Operation::GlobSearch) {
+        let act = Act::Glob {
+            pattern: Pattern::new(&params.pattern),
+            sink: ReadSink::AuditLog,
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -762,6 +964,11 @@ impl NucleusMcpServer {
             );
             return Ok(err_result("glob_search capability is disabled"));
         }
+
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
 
         let state = self.state.clone();
         match self.guard.execute_and_record(proof, || {
@@ -814,7 +1021,7 @@ impl NucleusMcpServer {
             })
         }) {
             Ok(paths) => {
-                self.record_verdict(Operation::GlobSearch, &subject, VerdictOutcome::Allow);
+                self.record_verdict(Operation::GlobSearch, &checked, VerdictOutcome::Allow);
                 // Brick 3: content-address the exact match listing ingested.
                 let listing = paths.join("\n");
                 self.observe_flow(NodeKind::FileRead, listing.as_bytes())
@@ -824,7 +1031,7 @@ impl NucleusMcpServer {
             Err(e) => {
                 self.record_verdict(
                     Operation::GlobSearch,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -845,6 +1052,10 @@ impl NucleusMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let subject = params.pattern.clone();
 
+        if let Err(e) = validate_grep_params(&params) {
+            return Ok(self.refuse_invalid(Operation::GrepSearch, &subject, e));
+        }
+
         if let Err(e) = self.sink.preflight(Operation::GrepSearch) {
             self.record_verdict(
                 Operation::GrepSearch,
@@ -861,7 +1072,11 @@ impl NucleusMcpServer {
             Err(result) => return Ok(result),
         }
 
-        let proof = match self.guard.check(Operation::GrepSearch) {
+        let act = Act::Grep {
+            pattern: Pattern::new(&params.pattern),
+            sink: ReadSink::AuditLog,
+        };
+        let proof = match self.guard.check(&act) {
             Ok(p) => p,
             Err(e) => {
                 self.record_verdict(
@@ -888,6 +1103,15 @@ impl NucleusMcpServer {
         }
 
         let state = self.state.clone();
+        // The graph this transport actually writes. `observe_flow` records into
+        // `self.flow_graph`, and every other preflight on this path reads it;
+        // the closure below is `move` and would otherwise only have `state`.
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
+        let flow_graph = self.flow_graph.clone();
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(move || -> Result<String, String> {
                 let sandbox_root = state.runtime.sandbox().root_path();
@@ -965,12 +1189,20 @@ impl NucleusMcpServer {
                     // loop would be the replay the by-value cutover removed.
                     let search_authority = {
                         let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling =
-                            crate::run_gate::levels_for(&state, Operation::GrepSearch, None);
+                        let ceiling = stdio_ceiling(&state, Operation::GrepSearch);
                         // `blocking_lock` rather than `.await`: this loop runs
                         // inside `block_in_place`, which exists precisely to allow
                         // blocking calls off the async executor.
-                        let flow = state.flow_graph.blocking_lock();
+                        //
+                        // `flow_graph`, NOT `state.flow_graph`. This is the one
+                        // site on the MCP path that read the latter, and under
+                        // `--mcp` no HTTP handler ever runs, so that graph is
+                        // permanently empty and `NoAdversarialAncestry` below was
+                        // vacuous — grep was the only MCP effect whose taint check
+                        // could not fire. Same class as the Phase 4.5 re-home in
+                        // `declassify.rs`: "the graph the live egress verdict reads
+                        // — not the kernel's separate, never-populated one".
+                        let flow = flow_graph.blocking_lock();
                         let r = crate::run_gate::preflight_grep_fs(
                             verified_scope,
                             ceiling,
@@ -1034,7 +1266,7 @@ impl NucleusMcpServer {
             })
         }) {
             Ok(matches) => {
-                self.record_verdict(Operation::GrepSearch, &subject, VerdictOutcome::Allow);
+                self.record_verdict(Operation::GrepSearch, &checked, VerdictOutcome::Allow);
                 // Brick 3: content-address the exact grep output ingested.
                 self.observe_flow(NodeKind::FileRead, matches.as_bytes())
                     .await; // (#1633)
@@ -1043,7 +1275,7 @@ impl NucleusMcpServer {
             Err(e) => {
                 self.record_verdict(
                     Operation::GrepSearch,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -1082,20 +1314,6 @@ impl NucleusMcpServer {
             Ok(_decision_token) => {} // web_fetch doesn't go through Sandbox I/O
             Err(result) => return Ok(result),
         }
-
-        let proof = match self.guard.check(Operation::WebFetch) {
-            Ok(p) => p,
-            Err(e) => {
-                self.record_verdict(
-                    Operation::WebFetch,
-                    &subject,
-                    VerdictOutcome::Deny {
-                        reason: format!("{e}"),
-                    },
-                );
-                return Ok(err_result(e));
-            }
-        };
 
         let level = self.state.runtime.policy().capabilities.web_fetch;
         if level == CapabilityLevel::Never {
@@ -1201,6 +1419,76 @@ impl NucleusMcpServer {
             }
         };
 
+        // ─── The endpoint, parsed once ──────────────────────────────────────
+        //
+        // Everything above this line established the components: the scheme
+        // and host and port and path from one `Url::parse`, the method from
+        // one `from_bytes`. `Endpoint` carries that result, and the gates
+        // below read it instead of re-deriving it from the string — which is
+        // the whole reason `Act` exists. `Act::Fetch`'s sink is not a choice:
+        // a fetch is `HTTPEgress`, and no other sink is representable for it.
+        //
+        // The guard check moved down to here from above the parse. It has
+        // always been a decision about a request; before, all it was told was
+        // that *a* fetch was happening, and the URL travelled past it into the
+        // audit record. Nothing between the old position and this one touches
+        // the wire — the allowlists and the per-effect gate below are refusals,
+        // and the fetch itself happens inside `execute_and_record`, whose
+        // TOCTOU window is measured from this check and is unchanged.
+        let act = Act::Fetch {
+            endpoint: Endpoint::new(
+                req_method.as_str(),
+                parsed_url.scheme(),
+                parsed_url.host_str().unwrap_or_default(),
+                parsed_url.port_or_known_default().unwrap_or(443),
+                parsed_url.path(),
+                // The raw form is `params.url`, not `parsed_url.as_str()`.
+                // `Url::parse` normalises — lower-casing the host, adding a
+                // trailing slash — and the audit trail should say what the
+                // client asked for. The gates read the parsed components
+                // above; only the record reads this.
+                &subject,
+            ),
+        };
+        let proof = match self.guard.check(&act) {
+            Ok(p) => p,
+            Err(e) => {
+                self.record_verdict(
+                    Operation::WebFetch,
+                    &subject,
+                    VerdictOutcome::Deny {
+                        reason: format!("{e}"),
+                    },
+                );
+                return Ok(err_result(e));
+            }
+        };
+
+        // Per-effect gate (ADR 0004): when the pod's certificate carries an
+        // effect dimension, a granted effect must vouch for method + host +
+        // path, not merely the host — a grant of `read-ci-logs` must not open
+        // a pull request. Refused here, before any discharge is minted, which
+        // is where the HTTP handler refuses it too.
+        //
+        // Nothing about this gate is per-request. `EffectGate::new` reads the
+        // pod's own certificate once, at `AppState` construction; the object
+        // in `self.state` is the same one the HTTP handler consults. That is
+        // what separates it from the per-request attenuation the module header
+        // declines: this needed an argument threaded, not an identity this
+        // transport does not have.
+        //
+        // `admit_http_recorded` records the refusal on the sink itself, with
+        // `policy_rule = EFFECT_NOT_GRANTED`, so this arm must not record a
+        // second verdict for the same call.
+        if let Err(e) = self.state.effect_gate.admit_http_recorded(
+            req_method.as_str(),
+            &parsed_url,
+            self.sink.as_ref(),
+            ActorIdentity::StdioGuest,
+        ) {
+            return Ok(err_result(e));
+        }
+
         // ─── Sealed discharge gate (B5, parity with the MCP RunBash handler) ──
         // PRECONDITION for the sealed `NetEffect::fetch`: mint the sealed
         // 8-witness `DischargedBundle` via `preflight_web`. Fail closed — a
@@ -1209,7 +1497,7 @@ impl NucleusMcpServer {
         // handler returns its error and NEVER fetches (no wire egress).
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
-            let web_ceiling = crate::run_gate::levels_for(&self.state, Operation::WebFetch, None);
+            let web_ceiling = stdio_ceiling(&self.state, Operation::WebFetch);
             let flow = self.flow_graph.lock().await;
             let result = preflight_web(
                 Operation::WebFetch,
@@ -1294,9 +1582,14 @@ impl NucleusMcpServer {
         }
         .await;
 
+        // The audit subject, taken from the proof before
+        // `execute_and_record` consumes it: the record below names what the
+        // guard decided on, not a string that travelled beside the decision.
+        let checked = proof.subject();
+
         match self.guard.execute_and_record(proof, || fetch_result) {
             Ok(response) => {
-                self.record_verdict(Operation::WebFetch, &subject, VerdictOutcome::Allow);
+                self.record_verdict(Operation::WebFetch, &checked, VerdictOutcome::Allow);
                 // IFC: web content is adversarial-integrity — observing it
                 // taints the session, so subsequent outbound actions are denied
                 // with `IfcUnsafe` (lethal-trifecta guard). (#1633)
@@ -1308,7 +1601,7 @@ impl NucleusMcpServer {
             Err(e) => {
                 self.record_verdict(
                     Operation::WebFetch,
-                    &subject,
+                    &checked,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
@@ -1371,12 +1664,531 @@ use crate::run_gate::{discharge_witness, preflight_fs, preflight_runbash, prefli
 // Tests — enforcement boundary coverage (#1295)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The gate ceiling for `op` on the stdio transport.
+///
+/// The `None` is the decision, not an oversight: there is no per-request
+/// delegation certificate on this transport to attenuate against, and there
+/// cannot be one until stdio gains a tier that binds an identity. See the
+/// module header. Named so the argument carries its reason, rather than
+/// appearing five times as a literal someone might take for an omission.
+fn stdio_ceiling(state: &crate::AppState, op: Operation) -> crate::run_gate::GateLevels {
+    crate::run_gate::levels_for(state, op, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     // The `preflight_runbash` scope tests build `TokenScope`s directly; its home
     // crate import is test-only now that the mint helper moved to `run_gate`.
     use nucleus_provenance_memory::TokenScope;
+
+    // ── the premise behind `stdio_ceiling` ──────────────────────────────
+
+    /// The module header argues this transport *cannot* carry per-request
+    /// certificate attenuation, because a delegation certificate is only
+    /// honoured on a tier that binds an identity and stdio has no tier at all.
+    ///
+    /// That argument is only sound while `SpiffeMtls` is the sole bound tier.
+    /// If a future tier becomes `Bound` — a signed stdio handshake, a peer-cred
+    /// socket promoted to carry identity — then `stdio_ceiling`'s `None` stops
+    /// being a property of the transport and becomes a real gap. This fails on
+    /// that day, so the reasoning expires loudly instead of quietly going
+    /// stale, which is the failure mode `law-mechanisms-manifest.txt` exists
+    /// for: a stated reason nothing rechecks.
+    ///
+    /// Exhaustive over `AuthMethod` on purpose: a new variant that is `Bound`
+    /// must be considered here, and a new `Unbound` one costs a line.
+    #[test]
+    fn stdio_has_no_bound_tier_to_attenuate_against() {
+        use crate::auth::AuthMethod;
+        use crate::pod_cert::{DelegationAuthority, delegation_authority};
+
+        for method in [
+            AuthMethod::Hmac,
+            AuthMethod::HmacDrand,
+            AuthMethod::HostVsock,
+            AuthMethod::Ed25519Drand,
+        ] {
+            assert_eq!(
+                delegation_authority(&method),
+                DelegationAuthority::Unbound,
+                "{method:?} became a bound tier. If stdio can now reach it, \
+                 `stdio_ceiling`'s `None` is no longer a property of the \
+                 transport and the module header's reasoning must be revisited"
+            );
+        }
+
+        assert_eq!(
+            delegation_authority(&AuthMethod::SpiffeMtls),
+            DelegationAuthority::Bound,
+            "non-vacuity: if nothing is Bound, the loop above proves nothing"
+        );
+    }
+
+    // ── input validation parity with the HTTP path ──────────────────────
+
+    /// Strip `//` lines, then collect every `validate_*` reached through the
+    /// `validation::` module in `body`.
+    ///
+    /// Comments go first because the doc blocks on both paths name these
+    /// functions in prose — the same false positive `.dead-code-ratchet.toml`
+    /// records its counter hitting inside string literals.
+    fn validation_calls(body: &str) -> std::collections::BTreeSet<String> {
+        const PREFIX: &str = "validation::";
+        let code = code_of(body);
+
+        let mut found = std::collections::BTreeSet::new();
+        let mut rest = code.as_str();
+        while let Some(i) = rest.find(PREFIX) {
+            let after = &rest[i + PREFIX.len()..];
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if name.starts_with("validate_") {
+                found.insert(name);
+            }
+            rest = after;
+        }
+        found
+    }
+
+    /// Take the body of `head`, stopping at whichever `terminator` comes first.
+    fn body_after<'a>(src: &'a str, head: &str, terminators: &[&str]) -> &'a str {
+        let start = src
+            .split(head)
+            .nth(1)
+            .unwrap_or_else(|| panic!("`{head}` must exist"));
+        let end = terminators
+            .iter()
+            .filter_map(|t| start.find(t))
+            .min()
+            .unwrap_or(start.len());
+        &start[..end]
+    }
+
+    /// `body` with `//` lines removed, so a comment naming a gate does not
+    /// count as a call to it.
+    fn code_of(body: &str) -> String {
+        body.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The two transports must refuse the same inputs.
+    ///
+    /// Both check lists are derived from source and compared as sets, in both
+    /// directions. Neither is written down twice, so this cannot pass by a
+    /// stale copy of one of them; and a check added to `read_file` but not to
+    /// `validate_read_params` (or the reverse) fails here rather than leaving
+    /// one transport quietly weaker — which is exactly how the gap this closes
+    /// opened, `mcp.rs` having reached the same sandbox with zero of these
+    /// bounds applied.
+    #[test]
+    fn http_and_stdio_validate_the_same_inputs() {
+        let http = include_str!("main.rs");
+        let stdio = include_str!("mcp.rs");
+
+        for (http_fn, stdio_fn) in [
+            ("async fn read_file(", "fn validate_read_params("),
+            ("async fn write_file(", "fn validate_write_params("),
+            ("async fn run_command(", "fn validate_run_params("),
+            ("async fn glob_search(", "fn validate_glob_params("),
+            ("async fn grep_search(", "fn validate_grep_params("),
+        ] {
+            let http_calls = validation_calls(body_after(http, http_fn, &["\nasync fn "]));
+            let stdio_calls = validation_calls(body_after(stdio, stdio_fn, &["\n}"]));
+
+            assert!(
+                !http_calls.is_empty(),
+                "non-vacuity: `{http_fn}` must still validate its inputs. If it \
+                 stopped, this test would pass by both sides being empty"
+            );
+            assert_eq!(
+                http_calls, stdio_calls,
+                "`{http_fn}` and `{stdio_fn}` must apply the same bounds; the \
+                 field names differ between the request and parameter structs, \
+                 the checks must not"
+            );
+        }
+    }
+
+    #[test]
+    fn stdio_read_refuses_what_http_read_refuses() {
+        let long = ReadParams {
+            path: "a".repeat(crate::validation::MAX_PATH_LENGTH + 1),
+        };
+        assert!(validate_read_params(&long).is_err(), "over-long path");
+
+        let nul = ReadParams {
+            path: "/workspace/ok\0/etc/passwd".to_string(),
+        };
+        assert!(validate_read_params(&nul).is_err(), "interior NUL");
+
+        let ok = ReadParams {
+            path: "/workspace/main.rs".to_string(),
+        };
+        assert!(validate_read_params(&ok).is_ok(), "non-vacuity");
+    }
+
+    #[test]
+    fn stdio_write_refuses_what_http_write_refuses() {
+        let nul = WriteParams {
+            path: "/workspace/ok\0.txt".to_string(),
+            contents: "hello".to_string(),
+        };
+        assert!(validate_write_params(&nul).is_err(), "interior NUL");
+
+        let ok = WriteParams {
+            path: "/workspace/out.txt".to_string(),
+            contents: "hello".to_string(),
+        };
+        assert!(validate_write_params(&ok).is_ok(), "non-vacuity");
+    }
+
+    #[test]
+    fn stdio_run_refuses_what_http_run_refuses() {
+        let base = || RunParams {
+            args: vec!["echo".to_string(), "hi".to_string()],
+            stdin: None,
+            directory: None,
+            _timeout_seconds: None,
+        };
+        assert!(validate_run_params(&base()).is_ok(), "non-vacuity");
+
+        let mut too_many = base();
+        too_many.args = vec!["x".to_string(); crate::validation::MAX_COMMAND_ARGS + 1];
+        assert!(validate_run_params(&too_many).is_err(), "argv count");
+
+        let mut too_long = base();
+        too_long.args = vec!["y".repeat(crate::validation::MAX_COMMAND_LENGTH + 1)];
+        assert!(validate_run_params(&too_long).is_err(), "argv bytes");
+
+        let mut nul_arg = base();
+        nul_arg.args = vec!["echo".to_string(), "a\0b".to_string()];
+        assert!(validate_run_params(&nul_arg).is_err(), "NUL in an argument");
+
+        let mut big_stdin = base();
+        big_stdin.stdin = Some("z".repeat(crate::validation::MAX_STDIN_LENGTH + 1));
+        assert!(validate_run_params(&big_stdin).is_err(), "stdin size");
+
+        let mut bad_dir = base();
+        bad_dir.directory = Some("/workspace\0".to_string());
+        assert!(validate_run_params(&bad_dir).is_err(), "working directory");
+    }
+
+    #[test]
+    fn stdio_glob_refuses_what_http_glob_refuses() {
+        let ok = GlobParams {
+            pattern: "**/*.rs".to_string(),
+            root: Some("/workspace".to_string()),
+        };
+        assert!(
+            validate_glob_params(&ok).is_ok(),
+            "non-vacuity: `**` is a glob"
+        );
+
+        let backtracking = GlobParams {
+            pattern: "(a+)+".to_string(),
+            root: None,
+        };
+        assert!(
+            validate_glob_params(&backtracking).is_err(),
+            "nested quantifier"
+        );
+
+        let bad_root = GlobParams {
+            pattern: "*.rs".to_string(),
+            root: Some("a".repeat(crate::validation::MAX_PATH_LENGTH + 1)),
+        };
+        assert!(validate_glob_params(&bad_root).is_err(), "over-long root");
+    }
+
+    #[test]
+    fn stdio_grep_refuses_what_http_grep_refuses() {
+        let ok = GrepParams {
+            pattern: "TODO".to_string(),
+            path: Some("/workspace".to_string()),
+            include: Some("*.rs".to_string()),
+            context_lines: None,
+        };
+        assert!(validate_grep_params(&ok).is_ok(), "non-vacuity");
+
+        let long_pattern = GrepParams {
+            pattern: "p".repeat(crate::validation::MAX_PATTERN_LENGTH + 1),
+            path: None,
+            include: None,
+            context_lines: None,
+        };
+        assert!(
+            validate_grep_params(&long_pattern).is_err(),
+            "pattern length"
+        );
+
+        let bad_path = GrepParams {
+            pattern: "TODO".to_string(),
+            path: Some("/workspace\0".to_string()),
+            include: None,
+            context_lines: None,
+        };
+        assert!(validate_grep_params(&bad_path).is_err(), "NUL in path");
+
+        let bad_include = GrepParams {
+            pattern: "TODO".to_string(),
+            path: None,
+            include: Some("(a+)+".to_string()),
+            context_lines: None,
+        };
+        assert!(
+            validate_grep_params(&bad_include).is_err(),
+            "`include` is a pattern, and gets the pattern checks"
+        );
+    }
+
+    /// `web_fetch` must run the same policy gates on both transports, in the
+    /// order that matters.
+    ///
+    /// The set below is the egress policy: what the URL may be, what host it
+    /// may reach, what the allowlist says, what a granted effect vouches for,
+    /// where a redirect may land, and what content type may come back.
+    /// `admit_http_recorded` was the one this transport did not run, so a pod
+    /// whose certificate granted `github/read-ci-logs` could `POST` a pull
+    /// request over stdio and be refused only by the host allowlist — the
+    /// exact widening ADR 0004 milestone 6 exists to close.
+    ///
+    /// The ordering assertion is the security property, not a style rule:
+    /// "refused before any discharge is minted". A gate that runs after
+    /// `preflight_web` refuses a request whose authorization witness has
+    /// already been built.
+    #[test]
+    fn http_and_stdio_web_fetch_run_the_same_gates() {
+        const GATES: [&str; 6] = [
+            "validate_url",
+            "check_dns_allowlist",
+            "check_url_allowlist",
+            "admit_http_recorded",
+            "check_redirect_target",
+            "check_mime_type",
+        ];
+
+        let http = code_of(body_after(
+            include_str!("main.rs"),
+            "async fn web_fetch(",
+            &["\nasync fn "],
+        ));
+        let stdio = code_of(body_after(
+            include_str!("mcp.rs"),
+            "async fn web_fetch(",
+            &["\n    #[tool", "\n}"],
+        ));
+
+        // Both slices must stop at their own handler. A terminator that stops
+        // matching would widen the slice to the rest of the file and make
+        // every `contains` below trivially true.
+        for (transport, body) in [("HTTP", &http), ("stdio", &stdio)] {
+            assert!(
+                !body.contains("async fn "),
+                "{transport}: the `web_fetch` slice ran past its own handler, so \
+                 the assertions below would be reading someone else's gates"
+            );
+            assert!(
+                body.contains("Operation::WebFetch"),
+                "{transport}: the `web_fetch` slice does not look like `web_fetch`"
+            );
+        }
+
+        for gate in GATES {
+            assert!(
+                http.contains(gate),
+                "non-vacuity: the HTTP `web_fetch` must still run `{gate}`. If it \
+                 stopped, the stdio assertion below would be measuring nothing"
+            );
+            assert!(
+                stdio.contains(gate),
+                "the stdio `web_fetch` must run `{gate}` too — it reaches the same \
+                 wire through the same `NetEffect::fetch`"
+            );
+        }
+
+        for (transport, body) in [("HTTP", &http), ("stdio", &stdio)] {
+            let admit = body
+                .find("admit_http_recorded")
+                .expect("asserted present above");
+            let discharge = body
+                .find("preflight_web")
+                .unwrap_or_else(|| panic!("{transport} `web_fetch` must mint a discharge bundle"));
+            assert!(
+                admit < discharge,
+                "{transport}: the per-effect gate must refuse before the discharge \
+                 bundle is minted, not after"
+            );
+        }
+    }
+
+    /// `web_fetch` was the one tool already covered, indirectly.
+    ///
+    /// It calls `web_fetch_policy::validate_url`, which is a one-line
+    /// delegation to `validation::validate_url` — the check the HTTP handler
+    /// runs directly. Pin the delegation: if that wrapper ever stops
+    /// delegating, `web_fetch` silently joins the gap the rest of this section
+    /// closes, and nothing else would notice.
+    #[test]
+    fn web_fetch_was_already_covered() {
+        let long = format!(
+            "https://example.com/{}",
+            "a".repeat(crate::validation::MAX_PATH_LENGTH)
+        );
+        assert!(
+            crate::web_fetch_policy::validate_url(&long).is_err(),
+            "length bound"
+        );
+        assert!(
+            crate::web_fetch_policy::validate_url("file:///etc/passwd").is_err(),
+            "scheme bound"
+        );
+        assert!(
+            crate::web_fetch_policy::validate_url("https://example.com/ok").is_ok(),
+            "non-vacuity"
+        );
+    }
+
+    // ── the proof names what was checked (ADR 0006, C2.2) ───────────────
+
+    /// The audit subject is byte-identical to the string the handlers used to
+    /// pass alongside the verb.
+    ///
+    /// `guard.check` now takes an `Act`, and every verdict recorded after the
+    /// check reads `proof.subject()` instead of a local. That was meant to
+    /// change *where the string comes from* — from the decision rather than
+    /// beside it — and nothing else. This pins that: each case is the
+    /// expression the handler used before.
+    ///
+    /// `web_fetch` is the one that could have drifted. `Url::parse`
+    /// normalises — it lower-cases the host and adds a trailing slash — so
+    /// building the `Endpoint`'s raw form from `parsed_url.as_str()` would
+    /// have quietly started auditing a URL the client never typed. It is built
+    /// from `params.url`, and this is what says so.
+    #[test]
+    fn the_checked_subject_is_what_the_handler_used_to_pass() {
+        let path = "/workspace/main.rs";
+        assert_eq!(
+            Act::Read {
+                path: FilePath::new(path),
+                sink: ReadSink::AuditLog,
+            }
+            .subject(),
+            path
+        );
+        assert_eq!(
+            Act::Write {
+                path: FilePath::new(path),
+                sink: WriteSink::Workspace,
+            }
+            .subject(),
+            path
+        );
+
+        let args = vec!["cargo".to_string(), "test".to_string()];
+        assert_eq!(
+            Act::Run {
+                argv: Argv::new(args.clone()),
+            }
+            .subject(),
+            args.join(" "),
+            "`run`'s subject was `params.args.join(\" \")`"
+        );
+
+        let pattern = "**/*.rs";
+        assert_eq!(
+            Act::Glob {
+                pattern: Pattern::new(pattern),
+                sink: ReadSink::AuditLog,
+            }
+            .subject(),
+            pattern
+        );
+        assert_eq!(
+            Act::Grep {
+                pattern: Pattern::new(pattern),
+                sink: ReadSink::AuditLog,
+            }
+            .subject(),
+            pattern
+        );
+
+        // As the client typed it: an upper-case host and no trailing slash,
+        // both of which `Url::parse` would rewrite.
+        let raw = "https://API.Example.COM/v1";
+        let normalised = url::Url::parse(raw).expect("valid").to_string();
+        assert_ne!(
+            raw, normalised,
+            "non-vacuity: if parsing left this alone the assertion below would \
+             hold for either choice and prove nothing"
+        );
+        assert_eq!(
+            Act::Fetch {
+                endpoint: Endpoint::new("GET", "https", "api.example.com", 443, "/v1", raw),
+            }
+            .subject(),
+            raw,
+            "`web_fetch`'s subject was `params.url`, before any parse"
+        );
+    }
+
+    // ── the graph grep actually consults ────────────────────────────────
+
+    /// `grep` was the one MCP effect whose taint check could not fire.
+    ///
+    /// `NucleusMcpServer` keeps the transport's own per-session `flow_graph`,
+    /// and `observe_flow` records into it. Five of the six preflights on this
+    /// path locked that graph; the per-file preflight inside `grep` locked
+    /// `state.flow_graph` instead. Under `--mcp`, `main` returns before
+    /// `Router::new()`, so no HTTP handler ever runs and `AppState`'s graph
+    /// stays empty for the life of the process — making the
+    /// `NoAdversarialAncestry` obligation in `preflight_grep_fs` vacuous.
+    ///
+    /// This is the same class `declassify.rs` records fixing in Phase 4.5:
+    /// a scope landing on "the kernel's separate, never-populated
+    /// `flow_graph`" rather than the one the live verdict reads.
+    ///
+    /// A behavioural test would need a full `AppState`, which
+    /// `tests/memory_ifc_e2e.rs` documents avoiding because it "needs a
+    /// sandbox/runtime". So this pins the property syntactically, with a
+    /// non-vacuity assertion so it cannot pass by the preflight being deleted.
+    #[test]
+    fn grep_consults_the_graph_this_transport_writes() {
+        let src = include_str!("mcp.rs");
+        let handler = src
+            .split("async fn grep(")
+            .nth(1)
+            .expect("the grep handler must exist");
+        // Stop at the next `#[tool …]` so this reads only grep's own body.
+        let body = &handler[..handler.find("\n    #[tool").unwrap_or(handler.len())];
+        // Comments stripped first. The fix's own explanatory comment names the
+        // wrong handle in order to say "not this one", and the first version of
+        // this test failed on that prose — the same false positive
+        // `.dead-code-ratchet.toml` records its counter hitting inside string
+        // literals, "including the gate's own test fixtures".
+        let code: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            !code.contains("state.flow_graph"),
+            "grep's per-file preflight must read the graph `observe_flow` writes \
+             (`self.flow_graph`, captured as `flow_graph`), not `AppState`'s — \
+             under --mcp the latter is never written, so the taint check is vacuous"
+        );
+        assert!(
+            code.contains("flow_graph.blocking_lock()"),
+            "non-vacuity: grep must still lock a flow graph and run the per-file \
+             preflight. Deleting the preflight would satisfy the assertion above \
+             while removing the check entirely"
+        );
+    }
 
     // ── build_action_term coverage ──────────────────────────────────────
 

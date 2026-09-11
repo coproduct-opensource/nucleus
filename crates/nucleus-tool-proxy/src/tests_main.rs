@@ -1670,7 +1670,7 @@ mod approval_naming_parity {
     }
 
     #[test]
-    fn both_gates_name_an_approval_the_same_way() {
+    fn every_gate_names_an_approval_the_same_way() {
         for (operation, subject) in [
             (Operation::WriteFiles, "notes.txt"),
             (Operation::EditFiles, "src/main.rs"),
@@ -1680,10 +1680,28 @@ mod approval_naming_parity {
             let from_kernel = kernel_key(operation, subject);
             let from_sandbox =
                 nucleus::Sandbox::approval_key(operation, std::path::Path::new(subject));
+            let from_rule = nucleus::approval_key(operation, subject);
             assert_eq!(
                 from_kernel, from_sandbox,
                 "the reference monitor and the sandbox must ask for the same approval by the \
                  same name, or a grant satisfies one gate and not the next (#2406)"
+            );
+            assert_eq!(from_kernel, from_rule, "and both must be the shared rule");
+        }
+        // The COMMAND path is a third gate, and it was left out of the first
+        // version of this test — which is exactly why it kept its own
+        // vocabulary (`echo hello`, no operation at all) until a live agency
+        // run tripped over it. A parity test that covers two of three gates
+        // licenses the third to drift.
+        for (operation, subject) in [
+            (Operation::RunBash, "cargo test"),
+            (Operation::GitCommit, "git commit -m x"),
+            (Operation::GitPush, "git push origin main"),
+        ] {
+            assert_eq!(
+                kernel_key(operation, subject),
+                nucleus::approval_key(operation, subject),
+                "the command executor must ask by the same name as the kernel"
             );
         }
     }

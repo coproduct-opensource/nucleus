@@ -86,6 +86,12 @@
 #![deny(unsafe_code)]
 
 pub mod action_term;
+/// One measurement of the frontier ADR 0005 names: how much useful work got
+/// done, and what the authority to do it cost. The half a trace cannot give.
+///
+/// Needs `spec` for [`grant_usage`], which supplies the denominator.
+#[cfg(all(feature = "spec", feature = "serde", not(kani)))]
+pub mod agency_report;
 pub mod audit;
 #[cfg(feature = "serde")]
 pub mod audit_backend;
@@ -263,8 +269,12 @@ pub mod workspace;
 #[cfg(kani)]
 mod kani;
 
+#[cfg(all(feature = "spec", feature = "serde", not(kani)))]
+pub use agency_report::{AgencyReport, AuthorityCost, Enforcement, TaskOutcome};
 pub use budget::BudgetLattice;
-pub use budget_ledger::{BudgetLedger, LedgerCore, LedgerError};
+pub use budget_ledger::{
+    BudgetError, BudgetLedger, ChildId, LedgerCore, LedgerError, MicroUsd, Unit,
+};
 pub use capability::{
     default_sink_class, CapabilityLattice, CapabilityLevel, ExtensionOperation,
     IncompatibilityConstraint, Obligations, Operation, OperationParseError, SinkClass, StateRisk,
@@ -395,6 +405,12 @@ pub use portcullis_core::witness::{ChainVerifyError as WitnessChainVerifyError, 
 /// `ZkFlowInput` from a live `FlowTracker` without taking a direct
 /// portcullis-core dependency — the same reason `FlowTracker` is re-exported
 /// above.
+// The targeted boundary vocabulary (ADR 0006, C2). Re-exported beside the
+// untargeted `Operation` it wraps, so a caller reaches both on one path.
+pub use portcullis_core::act::{
+    Act, Argv, EditSink, Endpoint, FilePath, Message, Pattern, PodId, PodSink, Query, ReadSink,
+    Remote, WriteSink,
+};
 pub use portcullis_core::declassify;
 pub use portcullis_core::flow;
 pub use portcullis_core::flow::NodeKind;

@@ -10,12 +10,16 @@ on:
   push:
     branches: ["main"]
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/nucleus-econ-kernels/lean/**"
       - "crates/nucleus-econ-kernels/tests/golden/**"
       - "scripts/gen-golden-lean.sh"
       - ".github/workflows/econ-lean.yml"
   pull_request:
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/nucleus-econ-kernels/lean/**"
       - "crates/nucleus-econ-kernels/tests/golden/**"
       - "scripts/gen-golden-lean.sh"
@@ -62,7 +66,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.merge_group.head_sha }}
-          PATTERN: '^crates/nucleus-econ-kernels/|^scripts/gen-golden-lean\.sh$|^\.github/workflows/econ-lean\.yml$'
+          PATTERN: '^crates/nucleus-econ-kernels/|^scripts/gen-golden-lean\.sh$|^\.github/workflows/econ-lean\.yml$|^scripts/(check-lean-external-state\.py|lean-axiom-audit\.sh)$'
         run: |
           set -euo pipefail
           if [ "$EVENT" != "merge_group" ]; then

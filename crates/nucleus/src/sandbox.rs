@@ -402,12 +402,15 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
-        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        // The SAME operation the capability check below will use, and the same
+        // one the reference monitor upstream decided about: writing over an
+        // existing file is an edit. Hardcoding `WriteFiles` here made the
+        // authority spend disagree with the discharge bundle the caller had
+        // minted — "bundle authorises EditFiles/WorkspaceWrite, this effect is
+        // WriteFiles/WorkspaceWrite" — measured on a live pod.
+        let op = self.write_operation_for(path.as_ref());
+        debug_assert_eq!(decision.operation(), op, "DecisionToken operation mismatch");
+        self.spend_as(authority, op, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, None)
     }
 
@@ -425,12 +428,15 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
-        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        // The SAME operation the capability check below will use, and the same
+        // one the reference monitor upstream decided about: writing over an
+        // existing file is an edit. Hardcoding `WriteFiles` here made the
+        // authority spend disagree with the discharge bundle the caller had
+        // minted — "bundle authorises EditFiles/WorkspaceWrite, this effect is
+        // WriteFiles/WorkspaceWrite" — measured on a live pod.
+        let op = self.write_operation_for(path.as_ref());
+        debug_assert_eq!(decision.operation(), op, "DecisionToken operation mismatch");
+        self.spend_as(authority, op, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, Some(approval))
     }
 
@@ -672,6 +678,36 @@ impl Sandbox {
         self.root.exists(path)
     }
 
+    /// Which capability a write to `path` will actually be checked against.
+    ///
+    /// [`Operation::EditFiles`] when the path already exists,
+    /// [`Operation::WriteFiles`] when it does not — the same test
+    /// `check_write_or_edit_capability` makes, exposed so the reference monitor
+    /// upstream can decide about the SAME operation this sandbox will enforce.
+    ///
+    /// It has to be exposed rather than guessed. The HTTP write path mediated
+    /// every write as `WriteFiles`, so writing over an existing file was
+    /// decided by the kernel as one operation and enforced here as another: the
+    /// caller was told to approve `WriteFiles notes.txt`, did, and was then
+    /// refused for want of `EditFiles notes.txt`. Measured on a live pod
+    /// (`nucleus-perf agency`, task `edit-an-existing-file`). The audit record
+    /// was wrong in the same way — an edit recorded as a write.
+    ///
+    /// Deliberately NOT gated on a `DecisionToken`, unlike [`Self::exists`].
+    /// It answers one bit about a path inside the pod's own workspace, which
+    /// `glob` already answers in bulk, and its only use is choosing which of
+    /// two gates applies. Gating it would force the caller to guess the
+    /// operation before it may ask which operation it is, which is precisely
+    /// the ordering that produced the mismatch.
+    #[must_use]
+    pub fn write_operation_for(&self, path: impl AsRef<Path>) -> Operation {
+        if self.root.exists(path.as_ref()) {
+            Operation::EditFiles
+        } else {
+            Operation::WriteFiles
+        }
+    }
+
     /// Get the absolute path of the sandbox root.
     pub fn root_path(&self) -> &Path {
         &self.root_path
@@ -763,28 +799,14 @@ impl Sandbox {
         }
     }
 
-    /// The name an approval is asked for, granted under, and matched by.
+    /// [`crate::approval::approval_key`] for a path subject.
     ///
-    /// There is exactly ONE spelling in the system, and it is the kernel's:
-    /// `{Operation:?} {subject}`. It has to be one, because the same human
-    /// decision crosses more than one gate — the kernel's reference monitor
-    /// refuses first with this name, the caller posts that name to
-    /// `/v1/approve`, and this sandbox is the next gate to ask. When the two
-    /// disagreed, an approval that a person had already given did not satisfy
-    /// the retry it was granted for: the sandbox composed its key from the
-    /// *method* being called (`write`, `create`, `create_dir`, `open_with`),
-    /// which is an implementation detail, not a unit of authority, so
-    /// `WriteFiles notes.txt` and `write notes.txt` named the same act and
-    /// neither gate recognised the other's grant. That was #2406, measured on a
-    /// live pod.
-    ///
-    /// `Operation` is the authority vocabulary — it is what the lattice, the
-    /// certificate, the receipts and the audit trail are all keyed on — so it
-    /// is the vocabulary an approval is named in too. The method verb survives
-    /// where it belongs: in the error's own text, not in the identity of the
-    /// decision.
+    /// A thin forward on purpose: the rule lives with `ApprovalRequest`, next
+    /// to the type it names, so the file sandbox and the command executor
+    /// cannot drift apart by each keeping their own copy of it.
+    #[must_use]
     pub fn approval_key(op: Operation, subject: &Path) -> String {
-        format!("{:?} {}", op, subject.display())
+        crate::approval_key(op, &subject.display().to_string())
     }
 
     fn check_capability(

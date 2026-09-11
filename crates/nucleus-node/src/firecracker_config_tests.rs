@@ -1437,3 +1437,65 @@ fn enforcing_pci_off_is_idempotent() {
         1
     );
 }
+
+// ── Writable-rootfs isolation ────────────────────────────────────────
+// Added to this module on main (#2786) while this branch had already moved
+// it into its own file, so the merge conflicted on the module declaration
+// rather than on the tests. Both sides are kept: the extraction, and these.
+
+/// The pin `jail_resources` has named since it was written, and which
+/// #2784 found did not exist: `grep -rn rw_rootfs_is_hard_link_only`
+/// returned exactly one hit, the comment claiming it.
+///
+/// A writable rootfs MUST be hard-linked. Copying it would put the guest's
+/// writes in a jail-local copy that is discarded when the jail is torn
+/// down — the writes would vanish silently, which is worse than refusing.
+/// A read-only rootfs may be copied, because nothing writes through it.
+#[test]
+fn rw_rootfs_is_hard_link_only() {
+    let rw = jail_resources(&image(false, false), &base_spec());
+    let rootfs = rw
+        .iter()
+        .find(|r| r.in_jail == in_jail::ROOTFS)
+        .expect("a rootfs resource must be jailed");
+    assert_eq!(
+        rootfs.placement,
+        Placement::HardLinkOnly,
+        "a writable rootfs that gets copied loses every guest write when the \
+         jail is torn down"
+    );
+
+    let ro = jail_resources(&image(true, false), &base_spec());
+    let rootfs = ro
+        .iter()
+        .find(|r| r.in_jail == in_jail::ROOTFS)
+        .expect("a rootfs resource must be jailed");
+    assert_eq!(
+        rootfs.placement,
+        Placement::CopyableIfCrossDevice,
+        "a read-only rootfs is safe to copy, and copying is what lets the \
+         artifact live on a different device from the jail"
+    );
+}
+
+/// The consequence the placement above cannot avoid, stated so it is not
+/// rediscovered: a hard link is the SAME FILE. `read_only: false` therefore
+/// means the guest writes through to the artifact every other pod boots
+/// from. Measured in #2784 — the installed rootfs digest changed from
+/// `7739f5cd…` to `b7c40744…` after `verify --tier2` pod boots, and the
+/// jail entry shared the artifact's inode with `links=2`.
+#[test]
+fn a_writable_rootfs_is_the_artifact_itself_not_a_copy() {
+    let rw = jail_resources(&image(false, false), &base_spec());
+    let rootfs = rw
+        .iter()
+        .find(|r| r.in_jail == in_jail::ROOTFS)
+        .expect("a rootfs resource must be jailed");
+    assert_eq!(
+        rootfs.host_source,
+        PathBuf::from("/var/lib/nucleus/rootfs.ext4"),
+        "the jail entry links the shared artifact, so a writable rootfs is \
+         shared mutable state between pods — the reason the spec default is \
+         now read_only: true"
+    );
+}

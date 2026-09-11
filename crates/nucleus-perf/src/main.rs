@@ -15,6 +15,7 @@
 //!   harness exists to catch, so `failed` is a first-class column.
 //! * **Percentiles, not just a mean.** Under contention the tail is the story.
 
+mod agency;
 mod symmetry;
 
 use std::collections::BTreeMap;
@@ -36,6 +37,62 @@ enum Cli {
     Toolcall(ToolCall),
     /// How many cross-pod checks does isolation actually require at N pods?
     Symmetry(SymmetryArgs),
+    /// Measure one point on the safely-delegatable-agency frontier: how much
+    /// useful work a pod completes, and what the authority cost (ADR 0005).
+    Agency(AgencyArgs),
+}
+
+#[derive(Parser)]
+struct AgencyArgs {
+    /// Node base URL.
+    #[arg(long, default_value = "http://127.0.0.1:8080")]
+    url: String,
+    /// Hex-encoded auth secret for request signing. Required to reach a node;
+    /// `--local` needs none, because it spawns its own proxy.
+    #[arg(long, env = "NUCLEUS_AUTH_SECRET")]
+    auth_secret: Option<String>,
+    /// Actor name recorded on each signed request.
+    #[arg(long, default_value = "nucleus-agency")]
+    actor: String,
+    /// Pod spec used as the template. Required to reach a node; `--local`
+    /// builds its own from the compiled grant.
+    #[arg(long)]
+    spec: Option<String>,
+    /// PKCS8 DER Ed25519 approver key. Without it the harness cannot act as
+    /// the person, so every approval-gated task is reported as refused rather
+    /// than skipped — a lower completion rate, honestly earned.
+    #[arg(long)]
+    approval_key: Option<String>,
+    /// Where to write the report.
+    #[arg(long)]
+    out: Option<String>,
+    /// What this measurement is, in a sentence.
+    #[arg(long, default_value = "codegen profile, Tier 2 microVM")]
+    label: String,
+    /// The commit being measured. A report that cannot be traced to a tree is
+    /// an anecdote.
+    #[arg(long)]
+    commit: Option<String>,
+    /// Tier 1: compile `--goal` into a grant, seal it, and spawn a local
+    /// tool-proxy under it instead of booting a pod through the node.
+    ///
+    /// This is the arm where ρ_effect is defined: a profile has no semantic
+    /// effects to divide by, a compiled grant does, and the same grant's
+    /// effects are sealed into the certificate the proxy verifies.
+    #[arg(long)]
+    local: bool,
+    /// The goal to compile (local mode).
+    #[arg(long)]
+    goal: Option<String>,
+    /// Ceiling profile the grant is met with (local mode).
+    #[arg(long, default_value = "codegen")]
+    ceiling: String,
+    /// Path to the tool-proxy binary (local mode).
+    #[arg(long, default_value = "nucleus-tool-proxy")]
+    tool_proxy_path: String,
+    /// Directory the pod treats as its workspace (local mode).
+    #[arg(long)]
+    work_dir: Option<String>,
 }
 
 #[derive(Parser)]
@@ -107,7 +164,143 @@ fn main() -> Result<()> {
         Cli::Podburst(b) => podburst(b),
         Cli::Toolcall(t) => toolcall(t),
         Cli::Symmetry(s) => symmetry_report(s),
+        Cli::Agency(a) => agency_run(a),
     }
+}
+
+/// Boot a pod from `spec`, run both suites against it, and report.
+fn agency_run(a: AgencyArgs) -> Result<()> {
+    if a.local {
+        return agency_local(a);
+    }
+    let secret_str = a
+        .auth_secret
+        .as_deref()
+        .context("--auth-secret is required to reach a node (or pass --local)")?;
+    let spec_path = a
+        .spec
+        .as_deref()
+        .context("--spec is required to reach a node (or pass --local --goal)")?;
+    let secret = secret_str.trim().as_bytes().to_vec();
+    let mut spec: serde_json::Value = {
+        let raw = std::fs::read_to_string(spec_path)
+            .with_context(|| format!("reading spec {spec_path}"))?;
+        serde_yaml::from_str(&raw).with_context(|| format!("parsing spec {spec_path}"))?
+    };
+
+    // The lattice the report divides by is the one the POD resolved, read from
+    // the same spec the pod was created from rather than assumed. A ρ computed
+    // against a lattice the pod did not run under is a number about nothing.
+    let typed: nucleus_spec::PodSpec = serde_json::from_value(spec.clone())
+        .with_context(|| format!("{spec_path} is not a PodSpec"))?;
+    let lattice = typed
+        .spec
+        .resolve_policy()
+        .with_context(|| "resolving the spec's policy")?;
+
+    let (issuer, creds) =
+        // Every operation the suite attempts. `edit_files` is here because
+        // writing over an existing file is an EDIT, not a write, and leaving it
+        // out made `edit-an-existing-file` fail with `DlcAdmissionDenied` — the
+        // harness's own gap reported as a runtime limitation, which is the
+        // failure mode a measurement tool can least afford.
+        mint_admission(&[
+            "read_files",
+            "write_files",
+            "edit_files",
+            "glob_search",
+            "run_bash",
+        ])?;
+    set(&mut spec, "/metadata/name", serde_json::json!("agency"));
+    set(
+        &mut spec,
+        "/metadata/labels/dlc_trusted_keys",
+        serde_json::json!(issuer),
+    );
+    set(
+        &mut spec,
+        "/metadata/labels/dlc_issuer",
+        serde_json::json!(issuer),
+    );
+    set(
+        &mut spec,
+        "/metadata/labels/dlc_credentials",
+        serde_json::json!(creds),
+    );
+
+    let body = serde_json::to_string(&spec)?;
+    let (id, proxy) = create_pod_with_proxy(&a.url, &secret, &a.actor, &body)?;
+    println!("pod {id} up, proxy {proxy}");
+
+    let key = match a.approval_key.as_deref() {
+        Some(path) => Some(load_approval_key(path)?),
+        None => {
+            println!("(no --approval-key: approval-gated work will be reported as refused)");
+            None
+        }
+    };
+
+    let report = agency::measure(
+        &proxy,
+        key.as_ref(),
+        &a.actor,
+        &lattice,
+        &a.label,
+        portcullis::agency_report::Enforcement::MicroVm,
+        a.commit,
+    );
+
+    let _ = cancel_pod(&a.url, &secret, &a.actor, &id);
+    agency::write_report(&report?, a.out.as_deref())
+}
+
+/// Tier 1: compile the goal, seal it, spawn a proxy under it, measure.
+///
+/// No node and no microVM, so the containment this arm can check is what the
+/// kernel and the effect gate enforce — NOT the microVM's. `Enforcement::Local`
+/// records that, because the same completion rate means different things on
+/// either side of a hypervisor.
+fn agency_local(a: AgencyArgs) -> Result<()> {
+    let goal = a
+        .goal
+        .as_deref()
+        .context("--local needs --goal: the whole point of this arm is a compiled grant")?;
+    let work_dir = a
+        .work_dir
+        .clone()
+        .map(std::path::PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+
+    let run = agency::spawn_local_under_grant(goal, &a.ceiling, &a.tool_proxy_path, &work_dir)?;
+    println!(
+        "grant {} under ceiling {}: {} effect(s) granted, {} clipped\nproxy {}",
+        run.grant.id,
+        a.ceiling,
+        run.grant.can.len(),
+        run.grant.cannot.len(),
+        run.proxy_url
+    );
+
+    let key = match a.approval_key.as_deref() {
+        Some(path) => Some(load_approval_key(path)?),
+        None => {
+            println!("(no --approval-key: approval-gated work will be reported as refused)");
+            None
+        }
+    };
+    let report = agency::measure_under_grant(
+        agency::GrantRun {
+            proxy: &run.proxy_url,
+            secret: Some(run.auth_secret.clone()),
+            key: key.as_ref(),
+            actor: &a.actor,
+            label: &a.label,
+            enforcement: portcullis::agency_report::Enforcement::Local,
+            commit: a.commit.clone(),
+        },
+        &run.grant,
+    )?;
+    agency::write_report(&report, a.out.as_deref())
 }
 
 fn podburst(b: Burst) -> Result<()> {
@@ -600,6 +793,75 @@ fn mint_admission(ops: &[&str]) -> Result<(String, String)> {
 
 /// POST a tool call to a pod's own tool-proxy. No auth headers: admission is
 /// carried by the pod spec's `dlc_*` labels, established before the pod ran.
+/// Sign a request the way the TOOL-PROXY verifies it: `{ts}.{actor}.{body}`.
+///
+/// Deliberately not `nucleus_client::sign_http_headers`, and that is a finding
+/// rather than a preference. That helper emits `{ts}.{actor}.{nonce}.{body}`
+/// and sends the nonce in `x-nucleus-nonce`; the tool-proxy's HMAC tier
+/// (`auth::verify_http`, whose own doc comment reads *"Message format:
+/// `{timestamp}.{actor}.{body}`"*) reconstructs the message WITHOUT the nonce,
+/// so a signature from that helper does not verify. The node accepts it — the
+/// pod-creating half of this harness uses it and works — so the two verifiers
+/// disagree, and the client helper matches only one of them.
+///
+/// Worth flagging beyond this harness: `nucleus-mcp`, the shipped bridge
+/// between an agent and the tool-proxy, signs with `sign_http_headers`
+/// (`nucleus-mcp/src/main.rs:360`). Not asserted as broken here — this harness
+/// has not exercised that path end to end — but it is the same producers-
+/// disagree shape as #2406, one layer out, and nothing compares the two.
+fn proxy_signed_headers(secret: &[u8], actor: &str, body: &[u8]) -> Vec<(String, String)> {
+    use hmac::{Hmac, Mac, digest::KeyInit};
+    use sha2::Sha256;
+    // Seconds since the epoch as u64, into the i64 the signing scheme uses. Lossless
+    // until year ~292 billion; the ratcheted cast lints cannot see that and the tree is
+    // at its ceiling with zero headroom, so the exemption is scoped and stated rather
+    // than the ceiling raised. Same site and same treatment as #2765.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut message = Vec::with_capacity(body.len() + actor.len() + 24);
+    message.extend_from_slice(ts.to_string().as_bytes());
+    message.push(b'.');
+    message.extend_from_slice(actor.as_bytes());
+    message.push(b'.');
+    message.extend_from_slice(body);
+    let mut mac =
+        <Hmac<Sha256> as KeyInit>::new_from_slice(secret).expect("hmac accepts any key size");
+    mac.update(&message);
+    let signature = hex::encode(mac.finalize().into_bytes());
+    vec![
+        ("x-nucleus-timestamp".to_string(), ts.to_string()),
+        ("x-nucleus-signature".to_string(), signature),
+        ("x-nucleus-actor".to_string(), actor.to_string()),
+    ]
+}
+
+/// A tool call on a proxy that requires HMAC-signed requests.
+fn signed_tool_call(
+    proxy: &str,
+    secret: &[u8],
+    actor: &str,
+    route: &str,
+    body: serde_json::Value,
+) -> Result<(u16, String, u128)> {
+    let payload = body.to_string();
+    let t0 = Instant::now();
+    let mut req = agent()
+        .post(format!("{proxy}/v1/{route}"))
+        .header("content-type", "application/json");
+    for (k, v) in proxy_signed_headers(secret, actor, payload.as_bytes()) {
+        req = req.header(k, v);
+    }
+    let mut resp = req
+        .send(payload.as_bytes())
+        .map_err(|e| anyhow::anyhow!("tool-proxy did not answer /v1/{route}: {e}"))?;
+    let status = resp.status().as_u16();
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    Ok((status, text, t0.elapsed().as_millis()))
+}
+
 fn tool_call(proxy: &str, route: &str, body: serde_json::Value) -> Result<(u16, String, u128)> {
     let payload = body.to_string();
     let t0 = Instant::now();

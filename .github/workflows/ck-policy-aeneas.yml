@@ -24,6 +24,8 @@ on:
   push:
     branches: ["main"]
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/ck-policy/lean-aeneas/**"
       - "crates/ck-policy/src/extracted.rs"
       - "crates/ck-policy/tests/policy_aeneas_parity.rs"
@@ -32,6 +34,8 @@ on:
       - "crates/ck-types/**"
   pull_request:
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/ck-policy/lean-aeneas/**"
       - "crates/ck-policy/src/extracted.rs"
       - "crates/ck-policy/tests/policy_aeneas_parity.rs"
@@ -89,7 +93,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.merge_group.head_sha }}
-          PATTERN: '^\.github/workflows/ck\-policy\-aeneas\.yml$|^crates/ck\-policy/lean\-aeneas/|^crates/ck\-policy/src/extracted\.rs$|^crates/ck\-policy/src/lib\.rs$|^crates/ck\-policy/tests/policy_aeneas_parity\.rs$|^crates/ck\-types/'
+          PATTERN: '^\.github/workflows/ck\-policy\-aeneas\.yml$|^crates/ck\-policy/lean\-aeneas/|^crates/ck\-policy/src/extracted\.rs$|^crates/ck\-policy/src/lib\.rs$|^crates/ck\-policy/tests/policy_aeneas_parity\.rs$|^crates/ck\-types/|^scripts/(check-lean-external-state\.py|lean-axiom-audit\.sh)$'
         run: |
           set -euo pipefail
           if [ "$EVENT" != "merge_group" ]; then

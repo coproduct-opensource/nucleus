@@ -24,3 +24,15 @@ portcullis = { path = "../portcullis", features = ["spec", "dlc"] }
 # approval signing key from its DER file.
 ed25519-dalek = { workspace = true, features = ["pkcs8", "alloc"] }
 hex = { workspace = true }
+# The report is a portcullis type; the spec gives the harness the same lattice
+# the pod resolved, so ρ is divided by what actually ran.
+nucleus-spec = { path = "../nucleus-spec" }
+chrono = { workspace = true }
+uuid = { workspace = true }
+# Local-mode arm: compile a goal into a grant and seal it, so the run is bounded
+# by the effects it is measured against.
+nucleus-task-compiler = { path = "../nucleus-task-compiler" }
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+ring = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }

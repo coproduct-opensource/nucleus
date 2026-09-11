@@ -150,6 +150,17 @@ path = "crates/nucleus-node/src/firecracker_config.rs"
 # this branch's code and none is production half growing on its own, which is the
 # condition the note above says would justify a non-zero step. Re-seeded at the
 # measured value, as every move of these entries is.
-ceiling = 1193
+#
+# Bumped 1193 -> 1203 2026-09-11, merging main into this branch a second time.
+# The ten lines are main's #2786, all comment: the reasoning for why a writable
+# rootfs must be hard-linked and why `ImageSpec::read_only` now defaults to
+# true — a hard link means the guest writes through to the shared installed
+# artifact, so `read_only: false` hands every later pod the previous pod's
+# writes. Deleting a security rationale to fit a line ceiling is the one way
+# this gate could make the tree worse, so the ceiling follows. Still not this
+# branch's code, still not the production half growing on its own. The two
+# tests #2786 added to this module went into the extracted sibling
+# (`firecracker_config_tests.rs`), which is swept against the 2500 default.
+ceiling = 1203
 target = 2500
 step = 0

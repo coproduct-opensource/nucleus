@@ -405,6 +405,11 @@ impl NetworkSpec {
     }
 }
 
+/// Rootfs isolation is the default; see [`ImageSpec::read_only`] for why (#2784).
+fn default_read_only() -> bool {
+    true
+}
+
 /// VM image configuration for Firecracker pods.
 /// A pinned artifact digest, written `sha-256:<64 lowercase hex>`.
 ///
@@ -476,7 +481,21 @@ pub struct ImageSpec {
     #[serde(default)]
     pub boot_args: Option<String>,
     /// Whether the root filesystem should be mounted read-only.
-    #[serde(default)]
+    ///
+    /// **Defaults to `true`, and the default is load-bearing** (#2784). A
+    /// writable rootfs is hard-linked into the jail rather than copied — it has
+    /// to be, or the guest's writes would go nowhere — so `read_only: false`
+    /// against the shared installed artifact makes that one file mutable state
+    /// behind every pod booted from it: one pod's writes are visible to the
+    /// next, concurrent pods share a writable block device, and the launch
+    /// measurement `verify-attestation` compares against `--expect-rootfs`
+    /// changes underneath the attestation reporting it.
+    ///
+    /// `#[serde(default)]` on a `bool` is `false`, so a spec that simply omitted
+    /// this field got the unsafe value. Omission now means isolation; a caller
+    /// that genuinely wants a writable rootfs must say so, and should give the
+    /// pod a private image or a `scratch_path`.
+    #[serde(default = "default_read_only")]
     pub read_only: bool,
     /// Optional scratch disk image for writable storage.
     #[serde(default)]
@@ -2073,5 +2092,35 @@ spec:
              them is silently ignored:\n  {}",
             offenders.join("\n  ")
         );
+    }
+
+    /// #2784: `#[serde(default)]` on a `bool` is `false`, so a spec that simply
+    /// omitted `read_only` got a WRITABLE rootfs — which is hard-linked into
+    /// the jail, so the guest writes through to the shared installed artifact.
+    /// Omission must mean isolation.
+    #[test]
+    fn an_image_that_omits_read_only_is_read_only() {
+        let spec: ImageSpec = serde_json::from_str(
+            r#"{"kernel_path":"/var/lib/nucleus/vmlinux",
+                "rootfs_path":"/var/lib/nucleus/rootfs.ext4"}"#,
+        )
+        .expect("an image with only its two required paths must deserialize");
+
+        assert!(
+            spec.read_only,
+            "an omitted read_only used to mean `false`, which hard-links the \
+             shared rootfs artifact into the jail and lets one pod's writes \
+             reach the next"
+        );
+    }
+
+    /// The escape hatch still works: a caller that genuinely wants a writable
+    /// rootfs says so, and gets it. The default is a default, not a ban.
+    #[test]
+    fn a_writable_rootfs_can_still_be_asked_for_explicitly() {
+        let spec: ImageSpec =
+            serde_json::from_str(r#"{"kernel_path":"/k","rootfs_path":"/r","read_only":false}"#)
+                .expect("an explicit read_only must deserialize");
+        assert!(!spec.read_only);
     }
 }

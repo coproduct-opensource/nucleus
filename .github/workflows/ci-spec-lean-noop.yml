@@ -13,6 +13,8 @@ name: CI Spec Lean Proofs
 on:
   pull_request:
     paths-ignore:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "ci/lean/**"
       - "scripts/check-ci-spec-bite.sh"
       - ".github/workflows/ci-spec-lean.yml"

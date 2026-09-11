@@ -415,7 +415,11 @@ pub fn decide(manifest: &Manifest, corpus: &BTreeMap<String, String>) -> Vec<Fin
 
 /// Read tracked `crates/**/*.rs` matching `keep`. `git ls-files`, never a
 /// filesystem walk — see the module doc for why that distinction is load-bearing.
-fn tracked(keep: fn(&str) -> bool) -> Result<BTreeMap<String, String>> {
+///
+/// `pub` so `inert_authority` shares the domain rule rather than restating it;
+/// two gates that disagree about which files exist would be two answers to the
+/// question this one was built to make singular.
+pub fn tracked(keep: fn(&str) -> bool) -> Result<BTreeMap<String, String>> {
     let out = std::process::Command::new("git")
         .args(["ls-files", "-z", "crates"])
         .output()

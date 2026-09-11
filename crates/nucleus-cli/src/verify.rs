@@ -392,6 +392,14 @@ struct CreatePodResponse {
 async fn create_pod(admission: &AdmissionMaterial) -> Result<Pod> {
     let issuer = &admission.issuer_hex;
     let creds = &admission.credentials;
+    // `read_only: true` (#2784). This pod boots from the SHARED installed
+    // artifact, and a writable rootfs is hard-linked into the jail rather than
+    // copied — so `verify --tier2` was writing through to the very artifact
+    // whose digest `nucleus setup` pinned and `verify-attestation` compares
+    // against `--expect-rootfs`. The reporter measured it: the installed rootfs
+    // went from `7739f5cd…` to `b7c40744…` across tier-2 runs. Read-only boots
+    // since #2379 put the SVID on tmpfs, so verifying the node no longer
+    // invalidates the thing being verified.
     let body = format!(
         r#"{{"apiVersion":"nucleus/v1","kind":"Pod",
             "metadata":{{"name":"nucleus-verify",
@@ -402,7 +410,7 @@ async fn create_pod(admission: &AdmissionMaterial) -> Result<Pod> {
               "policy":{{"type":"profile","name":"codegen"}},
               "image":{{"kernel_path":"{HOST_ARTIFACTS_DIR}/vmlinux",
                         "rootfs_path":"{HOST_ARTIFACTS_DIR}/rootfs.ext4",
-                        "read_only":false}},
+                        "read_only":true}},
               "vsock":{{"guest_cid":3,"port":5005}}}}}}"#
     );
 

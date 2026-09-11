@@ -211,7 +211,17 @@ pub(crate) fn jail_resources(image: &nucleus_spec::ImageSpec, spec: &PodSpec) ->
             in_jail: in_jail::ROOTFS,
             // Mirrors `lower_drives`' `is_read_only: image.read_only` exactly. If
             // these two ever disagree, a writable rootfs gets copied and the
-            // guest's writes vanish — hence the `rw_rootfs_is_hard_link_only` pin.
+            // guest's writes vanish — hence the `rw_rootfs_is_hard_link_only`
+            // pin, which until #2784 was named here and never written.
+            //
+            // The agreement is necessary and NOT sufficient. A hard link means
+            // the guest writes through to `image.rootfs_path` itself, so
+            // `read_only: false` against the shared installed artifact gives
+            // every later pod the previous pod's writes and lets concurrent
+            // pods share one writable block device. That is why
+            // `ImageSpec::read_only` now defaults to TRUE: the placement below
+            // is correct for a private image and unsafe for a shared one, and
+            // nothing here can tell which it was handed.
             placement: if image.read_only {
                 Placement::CopyableIfCrossDevice
             } else {

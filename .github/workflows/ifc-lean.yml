@@ -12,11 +12,15 @@ on:
   push:
     branches: ["main"]
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/nucleus-ifc-kernel/lean/**"
       - ".github/workflows/ifc-lean.yml"
       - "scripts/lean-axiom-audit.sh"
   pull_request:
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/nucleus-ifc-kernel/lean/**"
       - ".github/workflows/ifc-lean.yml"
       - "scripts/lean-axiom-audit.sh"
@@ -50,7 +54,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.merge_group.head_sha }}
-          PATTERN: '^crates/nucleus-ifc-kernel/lean/|^\.github/workflows/ifc-lean\.yml$|^scripts/lean-axiom-audit\.sh$'
+          PATTERN: '^crates/nucleus-ifc-kernel/lean/|^\.github/workflows/ifc-lean\.yml$|^scripts/lean-axiom-audit\.sh$|^scripts/(check-lean-external-state\.py|lean-axiom-audit\.sh)$'
         run: |
           set -euo pipefail
           if [ "$EVENT" != "merge_group" ]; then

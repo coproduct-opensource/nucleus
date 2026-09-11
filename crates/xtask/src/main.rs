@@ -81,6 +81,15 @@ enum Command {
     /// not wired to the enforcement path — the general case of the class C8
     /// gates for the Aeneas predicates.
     LawMechanisms,
+    /// A witness accepted and dropped is a gate that is present but does
+    /// nothing. Every `_`-bound authority/attestation parameter in the
+    /// production region must be declared in
+    /// `scripts/inert-authority-manifest.txt`, with an exact count per
+    /// `(file, impl target)` and a reason.
+    ///
+    /// The dual of `law-mechanisms`: that gate finds mechanisms with no call
+    /// site, this finds mechanisms that are called and then ignored.
+    InertAuthority,
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
     /// catch feature-unification-masked breakages — crates that compile in a
     /// full `--workspace` build but fail standalone (and on `cargo publish`)
@@ -131,6 +140,20 @@ enum Command {
         #[arg(long, default_value_t = 15)]
         top: usize,
         /// Dump one JSON object per job instead of the report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// How often does a merge-queue entry EJECT, and on what? The number that
+    /// decides a batch size: batching multiplies the cost of a red, so a queue
+    /// that does not know its ejection rate can only guess at one. Counts only
+    /// DECIDED entries — an entry the queue still holds is in flight, not an
+    /// ejection, which is the distinction measuring it by hand got wrong.
+    CiEjections {
+        /// Workflow runs to scan, paginated. A merge group is ~31 runs, so
+        /// 100 is only ~3 entries; the default aims at a usable sample.
+        #[arg(long, default_value_t = 1000)]
+        limit: usize,
+        /// Dump one JSON object per entry instead of the report.
         #[arg(long)]
         json: bool,
     },
@@ -217,11 +240,13 @@ enum CiSpecCmd {
     },
 }
 
+mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
 mod ci_timings;
 mod fly_pools;
 mod gatehouse_pin;
+mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
 mod line_ratchet;
@@ -241,6 +266,7 @@ fn main() -> Result<()> {
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
+        Command::CiEjections { limit, json } => ci_ejections::ci_ejections(limit, json),
         Command::SelfPin => match self_pin::check(&std::env::current_dir()?)? {
             // 2 is "could not look", which is never a pass. Mapped here rather than
             // exited from inside the check, so a unit test calling it survives.
@@ -253,6 +279,12 @@ fn main() -> Result<()> {
         // Exit code mapped here rather than inside the check, so a unit test
         // calling `run()` survives — the SelfPin arm's reasoning.
         Command::LawMechanisms => match law_mechanisms::run()? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
+        // Exit code mapped here, not inside the check, for the SelfPin arm's
+        // reason: a unit test calling `run()` must survive.
+        Command::InertAuthority => match inert_authority::run()? {
             0 => Ok(()),
             code => std::process::exit(code),
         },
