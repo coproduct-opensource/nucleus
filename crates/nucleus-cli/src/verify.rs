@@ -36,6 +36,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
+use portcullis::gate_class::deny_code;
 use portcullis::kernel::DenyReason;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -581,7 +582,8 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 ///
 /// An in-scope, primitively-distinct, uncredentialed operation reaches the
 /// kernel, where the admission gate runs before the capability lattice — so
-/// the refusal must arrive as the gate's own reason (`DlcAdmissionDenied`);
+/// the refusal must arrive as the gate's own reason — `deny_code` on the error
+/// body reading `dlc_admission_denied`;
 /// anything else means a different control refused and this check proves
 /// nothing about admission.
 ///
@@ -631,26 +633,34 @@ fn check_admission_gate(pod: &Pod) -> Result<()> {
             body.trim()
         );
     }
-    // Built from the producer, never typed. `detail` is emptied so only the
-    // variant's own words remain, and the trailing ` (` — where `describe` opens
-    // the detail — is where they stop.
-    let rendered = DenyReason::DlcAdmissionDenied {
+    // `deny_code` is the kernel's own machine-readable reason on the error body.
+    // This used to look for the string `DlcAdmissionDenied`, which reached the
+    // wire only because the proxy formatted the `DenyReason` with `{:?}` — so
+    // the check depended on Debug output as a wire format, and broke the moment
+    // that was replaced with a written sentence for the human reading it. The
+    // code is stable and intentional; the prose is free to change.
+    //
+    // ASKED FOR rather than typed. `gate_class::deny_code` is the one producer
+    // of these codes, and a literal here could drift from it with nothing
+    // comparing the two — which is the same shape as the defect above, one
+    // layer along. `deny_code_matches_the_serde_tag` already ties that producer
+    // to the serde tag, so deriving from it puts this check inside that chain.
+    let code = deny_code(&DenyReason::DlcAdmissionDenied {
         detail: String::new(),
-    }
-    .describe(None);
-    let marker = rendered.split(" (").next().unwrap_or(rendered.as_str());
-    if !body.contains(marker) {
+    });
+    if !body.contains(code) {
         bail!(
             "run was refused ({status}) but NOT by the admission gate: {}\n\
              A refusal for another reason (lattice, scope, IFC) does not prove\n\
              the verified-admission gate fired.\n\
-             Looked for {marker:?}, which is DenyReason::DlcAdmissionDenied's own\n\
-             rendering — if the wire has changed shape again, fix it there, not here.",
+             Looked for the deny code {code:?}, which is what gate_class::deny_code\n\
+             gives DlcAdmissionDenied — if the wire has changed shape again, fix it\n\
+             there, not here.",
             body.trim()
         );
     }
     println!("  [OK] uncredentialed operation refused by the verified-admission gate");
-    println!("       run without an issuer credential -> {status} ({marker})");
+    println!("       run without an issuer credential -> {status} ({code})");
     Ok(())
 }
 
@@ -1207,77 +1217,51 @@ mod leak_sweep {
 
 #[cfg(test)]
 mod admission_marker_tests {
+    use portcullis::gate_class::deny_code;
     use portcullis::kernel::DenyReason;
 
-    /// The marker `check_admission_gate` looks for, built the way it builds it.
-    fn marker() -> String {
-        let rendered = DenyReason::DlcAdmissionDenied {
-            detail: String::new(),
-        }
-        .describe(None);
-        rendered
-            .split(" (")
-            .next()
-            .unwrap_or(rendered.as_str())
-            .to_string()
-    }
-
     /// The body a real refusal produced, copied verbatim from the job log of the
-    /// run that went red on 2026-09-11 (nucleus #2798, quickstart-boot). Frozen
-    /// here so the assertion is checked against the wire rather than against a
-    /// guess at the wire — the exact thing that was missing when this broke.
-    const OBSERVED: &str = r#"{"error":"kernel denied: no signed admission credential covers it (no issuer-signed credential presented for this operation) (operation run_bash on true)","kind":"kernel_denied"}"#;
+    /// run that went red on 2026-09-11 (nucleus #2798, quickstart-boot) — before
+    /// #2762 put `deny_code` on the wire. Frozen because it is the evidence that
+    /// the old assertion was unsatisfiable rather than flaky.
+    const OBSERVED_BEFORE_DENY_CODE: &str = r#"{"error":"kernel denied: no signed admission credential covers it (no issuer-signed credential presented for this operation) (operation run_bash on true)","kind":"kernel_denied"}"#;
 
+    /// The regression, pinned. `check_admission_gate` asserted
+    /// `body.contains("DlcAdmissionDenied")`, and that string reached the wire
+    /// only because the proxy formatted the reason with `{:?}`. #2758 replaced
+    /// that with a written sentence, so the assertion could not match this body
+    /// and could not match any other: not flaky, unsatisfiable. `main` was red on
+    /// it for two and a half hours and the merge queue took nine more PRs through,
+    /// because the check is not in `ci/required-checks.txt`.
     #[test]
-    fn the_marker_matches_a_real_admission_refusal() {
+    fn the_debug_name_assertion_could_never_have_passed() {
         assert!(
-            OBSERVED.contains(&marker()),
-            "marker {:?} is not in the body a real refusal produced",
-            marker()
+            !OBSERVED_BEFORE_DENY_CODE.contains("DlcAdmissionDenied"),
+            "the Debug variant name is on the wire again — re-decide which marker this check uses"
         );
     }
 
-    /// The half that matters. `kind` is `kernel_denied` for sixteen variants, so a
-    /// check keyed on it would pass for a refusal by the lattice, by scope, or by
-    /// IFC — which is precisely what `check_admission_gate` exists to rule out. The
-    /// marker has to tell those apart, and this is where that is asserted rather
-    /// than assumed.
+    /// `kind` is `kernel_denied` for sixteen variants, so a check keyed on it
+    /// would pass for a refusal by the lattice, by scope, or by IFC — precisely
+    /// what `check_admission_gate` exists to rule out. The code has to tell them
+    /// apart, and that is asserted here rather than assumed of it.
     #[test]
-    fn the_marker_refuses_another_variants_rendering() {
-        let egress = DenyReason::EgressBlocked {
-            host: "api.github.com".to_string(),
-            policy_reason: "not in allowlist".to_string(),
+    fn the_deny_code_discriminates_between_variants() {
+        let admission = deny_code(&DenyReason::DlcAdmissionDenied {
+            detail: String::new(),
+        });
+        for other in [
+            DenyReason::EgressBlocked {
+                host: "api.github.com".to_string(),
+                policy_reason: "not in allowlist".to_string(),
+            },
+            DenyReason::InsufficientCapability,
+        ] {
+            assert_ne!(
+                admission,
+                deny_code(&other),
+                "deny_code gives {other:?} the admission gate's code"
+            );
         }
-        .describe(None);
-        assert!(
-            !egress.contains(&marker()),
-            "marker {:?} also matches EgressBlocked ({egress:?}) — it does not discriminate",
-            marker()
-        );
-    }
-
-    /// The regression itself, pinned. The wire carries no Rust variant name since
-    /// #2758 replaced `format!("{other:?} ...")` with `DenyReason::describe`, so the
-    /// old assertion — `body.contains("DlcAdmissionDenied")` — could not match this
-    /// body and could not match any other. It was not flaky; it was unsatisfiable.
-    /// If a variant name ever returns to the wire, this fails and someone decides
-    /// deliberately which of the two markers the check should use.
-    #[test]
-    fn the_old_assertion_could_never_have_passed() {
-        assert!(
-            !OBSERVED.contains("DlcAdmissionDenied"),
-            "the wire carries the variant name again — re-decide which marker this check uses"
-        );
-    }
-
-    /// A marker that is empty, or a bare word, would match everything. `describe`
-    /// giving the variant no words of its own is the failure this catches.
-    #[test]
-    fn the_marker_is_substantial() {
-        let m = marker();
-        assert!(
-            m.len() > 12 && m.contains(' '),
-            "marker {m:?} is too thin to identify anything"
-        );
     }
 }

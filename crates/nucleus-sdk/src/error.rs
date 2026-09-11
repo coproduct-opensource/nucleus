@@ -3,6 +3,7 @@
 //! Maps the tool-proxy JSON error `kind` field to typed variants,
 //! mirroring the Python SDK's `errors.py`.
 
+use portcullis::escalation_proposal::EscalationProposal;
 use serde_json::Value;
 
 /// Errors returned by nucleus SDK operations.
@@ -13,11 +14,23 @@ pub enum Error {
     ApprovalRequired { operation: String, message: String },
 
     /// The requested operation was denied by the permission lattice.
+    ///
+    /// `proposal`, when present, is the tool-proxy's escalation proposal for
+    /// *this* denial: what was attempted, the least authority that would have
+    /// allowed it, what new risk that adds, and the command that grants it.
+    /// Before this field the same analysis existed only at the CLI, rebuilt
+    /// from a trace file once the run had already ended — so an agent holding
+    /// this error had a sentence and nothing to act on.
+    ///
+    /// It is `None` whenever the proxy had no grant to propose against, which
+    /// is every profile run. Callers must treat it as an explanation that may
+    /// be missing, never as the thing that makes a denial a denial.
     #[error("access denied ({kind}): {message}")]
     AccessDenied {
         kind: String,
         message: String,
         operation: Option<String>,
+        proposal: Option<Box<EscalationProposal>>,
     },
 
     /// Authentication failed (invalid HMAC, expired timestamp, etc.).
@@ -59,6 +72,11 @@ pub enum Error {
 /// ```json
 /// {"error": "message", "kind": "approval_required", "operation": "write"}
 /// ```
+///
+/// A denial may additionally carry `proposal`. A payload whose `proposal` is
+/// absent, null or malformed still parses to the same denial with `None` — an
+/// explanation that fails to decode must never downgrade the refusal it
+/// explains into an unclassified `Request` error.
 pub fn from_error_payload(status: u16, payload: &Value) -> Error {
     let message = payload
         .get("error")
@@ -70,6 +88,10 @@ pub fn from_error_payload(status: u16, payload: &Value) -> Error {
         .get("operation")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let proposal = payload
+        .get("proposal")
+        .and_then(|v| serde_json::from_value::<EscalationProposal>(v.clone()).ok())
+        .map(Box::new);
 
     match kind {
         "approval_required" => Error::ApprovalRequired {
@@ -90,6 +112,7 @@ pub fn from_error_payload(status: u16, payload: &Value) -> Error {
             kind: kind.to_string(),
             message,
             operation,
+            proposal,
         },
         "auth_error" => Error::Auth(message),
         "spec_error" | "serde_error" | "body_error" | "validation_error" => Error::Spec(message),
@@ -135,6 +158,94 @@ mod tests {
                 "kind '{}' should map to AccessDenied",
                 kind
             );
+        }
+    }
+
+    /// A denial that carries a proposal parses it, and the proposal survives
+    /// intact — the SDK is the last hop before the agent, so anything it drops
+    /// here is dropped for good.
+    #[test]
+    fn a_denial_carries_its_proposal_through() {
+        let sent = a_proposal();
+        let payload = json!({
+            "error": "kernel denied",
+            "kind": "kernel_denied",
+            "operation": "web_fetch",
+            "proposal": serde_json::to_value(&sent).unwrap(),
+        });
+        match from_error_payload(403, &payload) {
+            Error::AccessDenied { proposal, .. } => {
+                let got = proposal.expect("the proposal must survive the hop");
+                assert_eq!(got.attempted, sent.attempted);
+                assert_eq!(got.blocked, sent.blocked);
+                assert_eq!(got.plain, sent.plain);
+            }
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    /// Non-vacuity for the test above: a denial without the field is still a
+    /// denial, so the assertion is not passing because every payload yields a
+    /// proposal. This is the common case — every profile run.
+    #[test]
+    fn a_denial_without_a_proposal_is_still_a_denial() {
+        let payload = json!({"error": "kernel denied", "kind": "kernel_denied"});
+        match from_error_payload(403, &payload) {
+            Error::AccessDenied { proposal, .. } => assert!(proposal.is_none()),
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    /// THE property. An explanation is a courtesy; the refusal is the contract.
+    /// A proposal the SDK cannot decode — a newer schema, a truncated body, a
+    /// field renamed upstream — must leave the classification exactly where it
+    /// was. The failure this forbids is a client that stops recognising a
+    /// denial as a denial because the *reason* it was given got harder to read.
+    #[test]
+    fn a_malformed_proposal_never_downgrades_the_denial() {
+        for junk in [
+            json!("not an object"),
+            json!(null),
+            json!({"version": 1}),
+            json!({"attempted": {"operation": "no_such_operation", "subject": "s"}}),
+        ] {
+            let payload = json!({
+                "error": "kernel denied",
+                "kind": "kernel_denied",
+                "proposal": junk,
+            });
+            match from_error_payload(403, &payload) {
+                Error::AccessDenied { proposal, .. } => {
+                    assert!(proposal.is_none(), "junk must not parse: {junk}");
+                }
+                other => panic!("a bad proposal changed the classification: {other:?}"),
+            }
+        }
+    }
+
+    fn a_proposal() -> EscalationProposal {
+        use portcullis::escalation_proposal::{Attempt, Blocked};
+        use portcullis::kernel::DenyReason;
+        EscalationProposal {
+            version: EscalationProposal::VERSION,
+            grant_id: uuid::Uuid::nil(),
+            attempted: Attempt {
+                operation: portcullis::Operation::WebFetch,
+                subject: "https://api.github.com/x".to_string(),
+            },
+            blocked: Blocked {
+                code: "kernel_denied".to_string(),
+                reason: DenyReason::EgressBlocked {
+                    host: "api.github.com".to_string(),
+                    policy_reason: "not in allowlist".to_string(),
+                },
+            },
+            plain: "web_fetch was denied".to_string(),
+            minimum: None,
+            risk: None,
+            scopes: Vec::new(),
+            outside_ceiling: None,
+            repair: None,
         }
     }
 
