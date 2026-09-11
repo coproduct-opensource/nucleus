@@ -640,8 +640,18 @@ perturb_convergence_linearity() {
 # decides nothing, which is the 60% defect class the 2026-09-11 issue census
 # found. `Authority` because it is the witness with the most live sites, so the
 # perturbation lands in the same population the ratio is computed over.
+#
+# UNQUALIFIED, unlike perturb_convergence_linearity's `portcullis_effects::Authority`
+# beside it. The two gates read the same line differently: `convergence` asks
+# whether an affine type is taken by reference and matches the tail of a path,
+# while `bound` extracts the head of the type and compares it against a closed
+# vocabulary, where the head of `portcullis_effects::Authority` is the crate
+# name. The first spelling of this perturbation used the qualified form by
+# symmetry with its neighbour and the gate stayed green -- a probe that proves
+# nothing, which is the failure this whole script exists to catch, caught here
+# on itself.
 perturb_bound_dropped_witness() {
-    append_line "$1" 'fn _gate_of_gates_dropped(_authority: portcullis_effects::Authority) {}'
+    append_line "$1" 'fn _gate_of_gates_dropped(_authority: Authority) {}'
 }
 
 probe_xtask convergence crates/nucleus-tool-proxy/src/run_gate.rs \
