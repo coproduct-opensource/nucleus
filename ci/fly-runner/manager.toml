@@ -17,8 +17,13 @@ primary_region = "iad"
   # billed for its root filesystem only, $0.15/GB-month — about $0.40 a month each for this
   # image — while a machine that has to be created and warmed on demand costs a job two passes
   # and an image pull. Warm capacity is the cheapest thing in this system; the volumes are what
-  # cost money ($48/month for the build pool's eight), which is why the build pool's size is
-  # pinned to its volume count until the compile cache is shared rather than per machine.
+  # cost money, which is why the build pool's size is pinned to its volume count until the
+  # compile cache is shared rather than per machine. That figure read "$48/month for the build
+  # pool's eight" until 2026-09-11, which was the cost of eight 40 GB volumes and stopped being
+  # true when the pool went 8 -> 16: the README records the sixteen (8 x 40 GB + 8 x 20 GB =
+  # $72/month standing) and this comment did not follow. The POOLS value BELOW is still eight,
+  # and that is not the same staleness — it is the volume-less fallback and must stay at or
+  # under the deployed size.
   IDLE_MINUTES = "30"
   LOOKBACK_RUNS = "25"
   # The pools. `build` takes every job on the CI_BUILD_RUNNER label (cargo test, clippy, hack,

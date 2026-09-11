@@ -53,7 +53,25 @@ Workers receive exactly one JIT configuration and never a GitHub or Fly token. A
 Machine owns one volume at `/data` for its sccache store and cargo registry cache (never a
 checkout, toolchain or executable); a gate pool Machine has no volume.
 
-## Pools (manager.toml `POOLS`)
+## Pools (the DEPLOYED `POOLS` secret)
+
+**These sizes are the deployed pool, set by `fly secrets set POOLS=...` with the real volume
+ids — not the `POOLS` default tracked in `ci/fly-runner/manager.toml`, which is smaller and
+declares `requires_volume: false` because a committed default cannot carry volume ids that do
+not exist yet.** The two differ on purpose and `cargo xtask fly-pools` holds the relationship:
+every configured pool must appear in this table, and the volume-less fallback may never be
+LARGER than the pool it falls back from, because a build machine past the end of the volume
+list compiles onto an 8 GB rootfs and fills it.
+
+Saying which number this is, is not decoration. gatehouse's F-82 took *"sixteen warm build
+machines"* out of this table, at a time when the tracked default said eight and nothing in the
+tree said which a reader was looking at. The measurement in that finding (peak concurrency 2,
+3, 3) stands either way, and so does its conclusion — 2–3 is far under eight — but the number
+in its first sentence was only as good as the file it came from.
+
+**Neither committed file is the deployment.** The live value is whatever the last
+`fly secrets set` wrote, and no gate over this repository can see it; `fly secrets list` and
+`cargo xtask fly-pools live-parity`'s sibling checks are where that is observed.
 
 | pool | label | Machine | jobs |
 |---|---|---|---|

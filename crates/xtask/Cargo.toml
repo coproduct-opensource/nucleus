@@ -33,3 +33,7 @@ toml = { workspace = true }
 # `gatehouse-pin`: the import digest is a plain SHA-256 of prelude/ci.writ.
 sha2 = { workspace = true }
 hex = { workspace = true }
+
+[dev-dependencies]
+# The pool gate builds a two-file tree to drive itself red on the real hazard.
+tempfile = { workspace = true }
