@@ -1,5 +1,6 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
+pub mod identity;
 pub mod tier2_artifacts;
 pub mod vmm_version;
 
@@ -410,6 +411,65 @@ fn default_read_only() -> bool {
 }
 
 /// VM image configuration for Firecracker pods.
+/// A pinned artifact digest, written `sha-256:<64 lowercase hex>`.
+///
+/// Algorithm-prefixed so moving to another hash later is a new prefix rather than a wire break,
+/// and validated at PARSE time so a malformed digest is a rejected spec instead of a launch that
+/// fails somewhere less obvious.
+///
+/// It exists because `ImageSpec` names its artifacts by PATH. A path is an assertion about which
+/// bytes are meant; a digest is checkable against the bytes that actually boot. Until this was
+/// added, two identical pod specs pointing at two different rootfs files were indistinguishable
+/// to the node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct ArtifactDigest(String);
+
+impl ArtifactDigest {
+    /// The `sha-256:…` form, as written in the spec.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The 64 hex characters, without the algorithm prefix.
+    pub fn hex(&self) -> &str {
+        self.0.split_once(':').map_or("", |(_, h)| h)
+    }
+
+    /// Parse and validate. The only accepted algorithm today is `sha-256`.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let Some((alg, hex)) = s.split_once(':') else {
+            return Err(format!(
+                "artifact digest must be `<algorithm>:<hex>`, got {s:?}"
+            ));
+        };
+        if alg != "sha-256" {
+            return Err(format!(
+                "unsupported digest algorithm {alg:?} (only `sha-256` is understood)"
+            ));
+        }
+        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!(
+                "sha-256 digest must be 64 hex characters, got {} in {s:?}",
+                hex.len()
+            ));
+        }
+        if hex.bytes().any(|b| b.is_ascii_uppercase()) {
+            return Err(format!(
+                "digest hex must be lowercase so equal digests compare equal: {s:?}"
+            ));
+        }
+        Ok(Self(s.to_string()))
+    }
+}
+
+impl<'de> Deserialize<'de> for ArtifactDigest {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageSpec {
@@ -440,6 +500,45 @@ pub struct ImageSpec {
     /// Optional scratch disk image for writable storage.
     #[serde(default)]
     pub scratch_path: Option<PathBuf>,
+    /// Expected digest of the kernel image, if the spec pins one.
+    ///
+    /// Absent means unpinned, which is what every spec written before this field says, so absence
+    /// cannot be a refusal without breaking them. What it costs is that the node has nothing to
+    /// check the bytes against — a later flag can turn absence itself into a refusal; today it simply means unchecked.
+    #[serde(default)]
+    pub kernel_digest: Option<ArtifactDigest>,
+    /// Expected digest of the root filesystem, if the spec pins one.
+    #[serde(default)]
+    pub rootfs_digest: Option<ArtifactDigest>,
+    /// Expected digest of the scratch image, if the spec pins one.
+    #[serde(default)]
+    pub scratch_digest: Option<ArtifactDigest>,
+    /// An additional READ-ONLY filesystem image handed to the guest.
+    ///
+    /// A microVM has no host-directory mount and there never will be one: Firecracker rejected
+    /// virtio-fs on attack-surface grounds, and a p9 implementation before it. So the only way to
+    /// put a corpus of bytes in front of a workload — a source tree, a dataset, a model, a
+    /// reference corpus — is a block device, which is what this is.
+    ///
+    /// Read-only is the whole point and not a convenience:
+    /// * the guest cannot write through to it, so one image safely backs many pods;
+    /// * it is therefore not per-pod writable state, so it does not make the pod unsnapshottable
+    ///   the way a scratch disk does (see `snapshot::clone_safety`);
+    /// * and being immutable, it has a digest, which is what lets it enter the pod's program
+    ///   identity rather than being invisible input.
+    #[serde(default)]
+    pub data_path: Option<PathBuf>,
+    /// Expected digest of the read-only data image, if the spec pins one.
+    ///
+    /// Load-bearing beyond integrity. Two pods differing only in the CONTENT of this image
+    /// compute different things, so the digest belongs in the program identity — and through it
+    /// in a snapshot's derivation, because Firecracker offers no `drive_overrides` on
+    /// `/snapshot/load` (unlike `network_overrides`). A restored VM reopens its drives at the
+    /// paths baked into the snapshot, so a base is only valid for a pod whose data image holds
+    /// the same bytes. Without this field in the identity, a base could be restored against a
+    /// different corpus and the guest would carry the old one's page cache.
+    #[serde(default)]
+    pub data_digest: Option<ArtifactDigest>,
 }
 
 /// Vsock configuration for VM communication.

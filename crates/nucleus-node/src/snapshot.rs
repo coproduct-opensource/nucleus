@@ -161,6 +161,33 @@ pub enum SnapshotSafety {
         /// The offending key, so the refusal is actionable.
         key: String,
     },
+    /// The VM has already been made one particular pod, over vsock.
+    ///
+    /// The failure this exists to stop is silent and total: `guest-init` fetches an SVID, a task
+    /// token, a caller token, a pod certificate, a broker capability served EXACTLY ONCE, and a
+    /// mediation signing key — all after boot, none of it on the kernel command line. Snapshot
+    /// after that and every clone restores holding one pod's credentials, while a boot-args scan
+    /// returns `SafeToClone` and is not wrong about what it looked at.
+    ///
+    /// Decided from the HOST's own record of what it served, never from a declaration by the
+    /// guest: the guest is the thing being contained.
+    PersonalizedSince,
+    /// The guest never said it had reached a point worth snapshotting.
+    ///
+    /// Refused rather than guessed. The host can see that nothing has been served yet, but not
+    /// whether the guest has finished booting — and a base taken too early is a VM that has not
+    /// set itself up, restored forever after. An image that predates `SNAPSHOT_READY` lands here
+    /// and stays unusable as a base, which is the honest answer for one that cannot say where
+    /// its barrier is.
+    NotAtBarrier,
+    /// A writable scratch disk is attached, so clones would share or diverge on it.
+    ///
+    /// Scratch is per-pod and writable. A restored clone inherits the base's in-memory ext4
+    /// state for it, so two clones pointed at one file corrupt each other, and giving each a
+    /// fresh file at the same in-jail name leaves the guest's cached metadata describing a
+    /// filesystem that is no longer there. Both are filesystem corruption arriving later and
+    /// elsewhere, so this is refused outright rather than made an option.
+    WritableScratchAttached,
 }
 
 impl SnapshotSafety {
@@ -174,6 +201,21 @@ impl std::fmt::Display for SnapshotSafety {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SnapshotSafety::SafeToClone => write!(f, "safe to clone"),
+            SnapshotSafety::WritableScratchAttached => write!(
+                f,
+                "this microVM has a writable scratch disk, which clones cannot share and cannot \
+                 be given fresh without stranding the guest's cached filesystem state"
+            ),
+            SnapshotSafety::NotAtBarrier => write!(
+                f,
+                "this microVM has not announced SNAPSHOT_READY, so there is no declared point at \
+                 which it is booted but not yet anybody"
+            ),
+            SnapshotSafety::PersonalizedSince => write!(
+                f,
+                "this microVM has already been served per-pod material over vsock, so a snapshot \
+                 of it would give every clone one pod's identity"
+            ),
             SnapshotSafety::WouldDuplicateSecret { key } => write!(
                 f,
                 "refusing to snapshot: the kernel command line carries {key}, which every clone \
@@ -202,6 +244,42 @@ pub fn snapshot_safety(boot_args: &str) -> SnapshotSafety {
     SnapshotSafety::SafeToClone
 }
 
+/// Whether this microVM may be snapshotted for cloning, considering everything the host knows.
+///
+/// Two questions, and they fail in different ways, so both are asked:
+///
+/// 1. Does the kernel command line carry per-pod material? ([`snapshot_safety`])
+/// 2. Has the host already SERVED per-pod material to this VM over vsock?
+/// 3. Has the guest announced it is booted and has asked for nothing (`SNAPSHOT_READY`)?
+///
+/// The third is the guest's to answer and only the guest's; the second is the host's and only
+/// the host's. Neither is trusted for the other's question, which is why both are asked.
+///
+/// The second is the one a boot-args scan cannot see, and it is the one that actually bites: the
+/// per-pod secrets were deliberately moved OFF the command line and onto the post-boot workload
+/// API, which is what made a shareable boot line possible — and, in the same move, made the
+/// command line stop being where the answer lives.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn clone_safety(
+    boot_args: &str,
+    at_barrier: bool,
+    personalized: bool,
+    writable_scratch: bool,
+) -> SnapshotSafety {
+    if writable_scratch {
+        return SnapshotSafety::WritableScratchAttached;
+    }
+    // Order matters for the message, not the verdict: a VM that is both personalised and past
+    // its barrier should say the dangerous thing, because that is the one worth reading.
+    if personalized {
+        return SnapshotSafety::PersonalizedSince;
+    }
+    if !at_barrier {
+        return SnapshotSafety::NotAtBarrier;
+    }
+    snapshot_safety(boot_args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,7 +304,7 @@ mod tests {
             );
             match verdict {
                 SnapshotSafety::WouldDuplicateSecret { key: found } => assert_eq!(&found, key),
-                SnapshotSafety::SafeToClone => unreachable!(),
+                other => unreachable!("a cmdline secret must be reported as one, got {other:?}"),
             }
         }
     }
@@ -436,14 +514,66 @@ mod tests {
     /// naming the offending key. The denylist is categorical and unchanged even
     /// though nothing emits these today — that is what makes re-introducing one
     /// a caught regression rather than a silent clone.
+    /// A VM that has been served per-pod material is refused even with a spotless cmdline.
+    ///
+    /// This is the whole point of the second question. The boot args here are the SAFE ones —
+    /// the same string the existing tests call clonable — and the answer still has to be no,
+    /// because the identity did not arrive on the command line. It arrived afterwards.
+    #[test]
+    fn a_personalized_vm_is_refused_however_clean_its_boot_args_are() {
+        let clean = format!("{BASE} nucleus.workload_api_port=15012");
+        assert!(
+            snapshot_safety(&clean).is_safe_to_clone(),
+            "precondition: these boot args are the clonable ones"
+        );
+        assert_eq!(
+            clone_safety(&clean, true, true, false),
+            SnapshotSafety::PersonalizedSince,
+            "a VM that has been handed its identity is not a base, whatever its cmdline says"
+        );
+    }
+
+    /// Not personalised falls through to the cmdline question rather than passing blindly.
+    #[test]
+    fn an_unpersonalized_vm_is_still_judged_on_its_boot_args() {
+        let clean = format!("{BASE} nucleus.workload_api_port=15012");
+        assert!(clone_safety(&clean, true, false, false).is_safe_to_clone());
+
+        let dirty = format!("{BASE} {}=deadbeef", PER_POD_SECRET_KEYS[0]);
+        assert!(
+            !clone_safety(&dirty, true, false, false).is_safe_to_clone(),
+            "the cmdline scan must still apply when nothing has been served yet"
+        );
+    }
+
+    /// A guest that never announced its barrier is not a base, however clean everything else is.
+    ///
+    /// This is the case an older rootfs lands in: nothing served, boot args spotless, and still
+    /// refused — because "nothing has happened yet" and "the guest is ready" are different facts
+    /// and only the guest knows the second.
+    #[test]
+    fn a_guest_that_never_announced_its_barrier_is_refused() {
+        let clean = format!("{BASE} nucleus.workload_api_port=15012");
+        assert_eq!(
+            clone_safety(&clean, false, false, false),
+            SnapshotSafety::NotAtBarrier
+        );
+        // ...and being personalised is the louder complaint of the two.
+        assert_eq!(
+            clone_safety(&clean, false, true, false),
+            SnapshotSafety::PersonalizedSince,
+            "when both are wrong, say the dangerous one"
+        );
+    }
+
     #[test]
     fn a_cmdline_that_carries_a_per_pod_secret_is_still_refused() {
         for key in PER_POD_SECRET_KEYS {
             let args = format!("{BASE} nucleus.workload_api_port=15012 {key}=deadbeef");
             match snapshot_safety(&args) {
                 SnapshotSafety::WouldDuplicateSecret { key: found } => assert_eq!(&found, key),
-                SnapshotSafety::SafeToClone => {
-                    panic!("{key} on the cmdline must make the base unclonable")
+                other => {
+                    panic!("{key} on the cmdline must make the base unclonable, got {other:?}")
                 }
             }
         }

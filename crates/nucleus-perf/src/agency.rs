@@ -506,6 +506,7 @@ pub(crate) fn measure(
             deferrals,
             residual_risk: risk.after,
         },
+        recovery: None,
     })
 }
 
@@ -581,6 +582,7 @@ pub(crate) fn measure_under_grant(
             deferrals,
             residual_risk: grant.risk.after,
         },
+        recovery: None,
     })
 }
 
@@ -696,11 +698,17 @@ impl Drop for TempDir {
 }
 
 /// Compile `goal` against `ceiling`, seal it, and spawn a proxy under it.
+///
+/// `explicit` is what `nucleus grant widen` adds: effects granted on top of
+/// what the goal implies, still clamped by the ceiling. The recovery lane uses
+/// it to grant exactly the minimum a proposal named, which is what makes that
+/// path one decision rather than a person editing a profile.
 pub(crate) fn spawn_local_under_grant(
     goal: &str,
     ceiling_profile: &str,
     proxy_bin: &str,
     work_dir: &std::path::Path,
+    explicit: &std::collections::BTreeSet<portcullis::EffectId>,
 ) -> Result<LocalGrantRun> {
     use portcullis::sealed_grant::SealedTaskGrant;
     use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -715,7 +723,6 @@ pub(crate) fn spawn_local_under_grant(
         .with_context(|| format!("probing the repository at {}", work_dir.display()))?;
     let proposer = nucleus_task_compiler::RuleProposer;
     let cost = portcullis::WeakeningCostConfig::default();
-    let explicit = std::collections::BTreeSet::new();
     let grant = nucleus_task_compiler::compile(nucleus_task_compiler::CompileInput {
         goal,
         ctx: &ctx,
@@ -723,7 +730,7 @@ pub(crate) fn spawn_local_under_grant(
         ceiling_profile,
         ceiling: &ceiling,
         proposers: &[&proposer],
-        explicit: &explicit,
+        explicit,
         limits: Default::default(),
         cost_config: &cost,
     })
@@ -743,7 +750,7 @@ pub(crate) fn spawn_local_under_grant(
         .to_base64()
         .context("encoding the sealed certificate")?;
 
-    let run_id = format!("agency-{}", std::process::id());
+    let run_id = format!("agency-{}-{}", std::process::id(), grant.id.simple());
     let tmp = std::env::temp_dir().join(format!("nucleus-{run_id}"));
     std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
     let tmp_guard = TempDir(tmp.clone());
@@ -865,6 +872,144 @@ pub(crate) fn spawn_local_under_grant(
         auth_secret: auth_secret.clone().into_bytes(),
         _proxy: proxy,
         _tmp: tmp_guard,
+    })
+}
+
+// ── Recovery friction ───────────────────────────────────────────────────────
+
+/// Measure the path from a refusal back to working.
+///
+/// `D`'s denominator has four terms and only `C(T)` was ever measured. This
+/// measures the one that decides whether a delegation *survives* being wrong:
+/// an agent refused something it needed, and how far it is from there to a
+/// grant that works.
+///
+/// The lane is deliberately under-granted. `goal` is compiled with no explicit
+/// effects, and the work attempted is a write — so a read-shaped goal is
+/// refused, on purpose, by the boundary doing its job. Then:
+///
+/// 1. the refusal is read off the wire,
+/// 2. `escalation_proposal::propose` names the least authority that would have
+///    allowed it,
+/// 3. the grant is recompiled with exactly that effect added — **one decision**,
+/// 4. the same work is attempted again.
+///
+/// # What the harness is not allowed to know
+///
+/// The effect that fixes it comes from `propose`, never from this file. A lane
+/// that hard-coded `fs/edit-workspace` would report one decision while proving
+/// only that the author knew the answer. The assertion worth making is that
+/// the proposal's minimum was **sufficient** — refused before, granted, and
+/// completed after — because a proposal that names a minimum which does not
+/// work is worse than none: it spends the person's one decision and leaves
+/// them exactly where they started.
+///
+/// # On reconstructing the reason
+///
+/// `propose` takes a structured `DenyReason`; the wire carries the stable deny
+/// *code*. The code is the contract (`gate_class::deny_code`), and for a
+/// capability held at `never` the mapping back is exact. It is still a
+/// reconstruction, and it exists only because a denial does not yet carry its
+/// own proposal in band — when it does, this step is deleted and the harness
+/// reads `proposal.minimum` straight off the refusal it was given.
+pub(crate) fn measure_recovery(
+    goal: &str,
+    ceiling_profile: &str,
+    proxy_bin: &str,
+    work_dir: &std::path::Path,
+) -> Result<portcullis::agency_report::Recovery> {
+    use portcullis::escalation_proposal::propose;
+    use portcullis::kernel::DenyReason;
+
+    let none = std::collections::BTreeSet::new();
+    let under = spawn_local_under_grant(goal, ceiling_profile, proxy_bin, work_dir, &none)?;
+
+    // The attempt that must fail. A lane whose first attempt SUCCEEDS has not
+    // measured recovery — it has measured a grant that was wide enough all
+    // along — so that case is an error rather than a zero.
+    let nonce = std::process::id();
+    let path = format!("agency-recovery-{nonce}.txt");
+    let payload = format!("nucleus recovery {nonce}");
+    let attempt = |run: &LocalGrantRun| -> Result<(u16, String)> {
+        let ctx = Ctx::new(&run.proxy_url, None, "nucleus-agency")
+            .with_secret(Some(run.auth_secret.clone()));
+        ctx.call(
+            "write",
+            Operation::WriteFiles,
+            &path,
+            serde_json::json!({"path": &path, "contents": &payload}),
+        )
+    };
+
+    let started = std::time::Instant::now();
+    let (status, body) = attempt(&under)?;
+    if (200..300).contains(&status) {
+        bail!(
+            "the recovery lane's goal {goal:?} already grants the write it is supposed to be \
+             refused; under-grant it or the measurement means nothing"
+        );
+    }
+    let blocked_by = Ctx::body_field(&body, "kind").unwrap_or_else(|| format!("http {status}"));
+
+    // The proposal. The reason is reconstructed from the stable code; the
+    // ANSWER is not — that comes from the catalog, the grant and the ceiling.
+    let catalog = portcullis::effect_catalog::EffectCatalog::builtin()
+        .context("the built-in effect catalog must parse")?;
+    let ceiling = portcullis::profile::ProfileRegistry::default()
+        .resolve(ceiling_profile)
+        .with_context(|| format!("unknown ceiling profile '{ceiling_profile}'"))?;
+    let proposal = propose(
+        &under.grant,
+        &ceiling,
+        &catalog,
+        &portcullis::WeakeningCostConfig::default(),
+        Operation::WriteFiles,
+        &path,
+        &DenyReason::InsufficientCapability,
+    );
+    let named = proposal
+        .minimum
+        .as_ref()
+        .and_then(|m| m.effects.first())
+        .cloned();
+
+    let Some(effect) = named.clone() else {
+        // The loop is open. Reported, not hidden: a denial that proposes
+        // nothing is the failure this whole part exists to detect, and it is
+        // worth a row in the report rather than an error that stops the run.
+        return Ok(portcullis::agency_report::Recovery {
+            task: "write-after-refusal".to_string(),
+            blocked_by,
+            proposal_named: None,
+            decisions: 0,
+            seconds: started.elapsed().as_secs_f64(),
+            recovered: false,
+        });
+    };
+
+    // ONE decision: re-seal the same goal under the same ceiling with exactly
+    // the effect the proposal named. Nothing else changes — not the goal, not
+    // the ceiling, not the limits.
+    let mut widened = std::collections::BTreeSet::new();
+    widened.insert(effect.clone());
+    drop(under);
+    let after = spawn_local_under_grant(goal, ceiling_profile, proxy_bin, work_dir, &widened)?;
+    let (status, body) = attempt(&after)?;
+    let recovered = (200..300).contains(&status);
+    if !recovered {
+        println!(
+            "  recovery: still refused after granting {effect}: {}",
+            body.trim()
+        );
+    }
+
+    Ok(portcullis::agency_report::Recovery {
+        task: "write-after-refusal".to_string(),
+        blocked_by,
+        proposal_named: Some(effect.to_string()),
+        decisions: 1,
+        seconds: started.elapsed().as_secs_f64(),
+        recovered,
     })
 }
 

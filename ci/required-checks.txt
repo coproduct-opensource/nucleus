@@ -12,6 +12,19 @@
 # `cargo xtask ci-spec live-parity` compares this file with the live branch
 # protection; a mismatch is a red on the schedule, never a silent re-sync.
 #
+# 2026-09-09, 50 → 51: `Scoped Aeneas (Rust → Lean 4) — routing decision`. The
+# scope check moved out of the expensive job into its own job on the CHEAP pool,
+# so `runs-on` for the expensive one can be a function of the answer and the
+# build pool is entered only when there is something to build. It ran 24s after
+# waiting 442s for a slot (merge-group 60fa8483) and 18s after 792s (a37d21fa) —
+# the critical path in both.
+#
+# It has to be REQUIRED, and `cargo xtask ci-spec check` is what said so: a
+# required job that `needs:` a NON-required one is skipped when the upstream
+# fails, and a skipped required check counts as passed, so a red routing job
+# would VACATE the gate instead of blocking it. CI-I3-NEEDS. The pin grows,
+# which is the allowed direction; the cost is one gate-pool context to stop
+# holding a build-pool slot while deciding.
 # 2026-09-09, owner decision, 50 → 47: `deny (advisories)`, `deny (bans)`,
 # `deny (licenses)` and `deny (sources)` become the single context `deny`. The
 # four were a matrix sharding ONE command (`cargo deny check advisories bans
@@ -22,7 +35,12 @@
 # worth doing is in ci/merge-queue.toml: a single group's required contexts
 # already saturate the pool, so four slots for one gate is four slots another
 # gate waits for.
-# PINNED = 47
+#
+# 2026-09-10, merge of the two above: they compose rather than conflict. From 50,
+# main's deny fold removed three contexts (-> 47) and this branch's routing
+# decision adds one (-> 48). Neither number alone is right on the merge; 51 was
+# computed against a 50-context main that no longer exists.
+# PINNED = 48
 
 # --- ci.yml -------------------------------------------------------------
 Detect changed crates
@@ -70,6 +88,7 @@ Analyze
 # --- twin-paired (real + -noop) ----------------------------------------
 lake build CiSpec (pipeline + merge-queue theorems)
 Scoped Aeneas (Rust → Lean 4) + parity tests
+Scoped Aeneas (Rust → Lean 4) — routing decision
 Scoped Aeneas OIDC→SPIFFE (Rust → Lean 4) + parity tests
 lake build Ck (monotonicity-gate soundness proofs)
 charon+aeneas drift + lake build (extracted-core soundness)

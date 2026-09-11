@@ -123,6 +123,51 @@ pub struct AuthorityCost {
     pub residual_risk: StateRisk,
 }
 
+/// How far it is from a refusal back to working.
+///
+/// `D`'s denominator is human decisions + configuration + security knowledge +
+/// recovery friction, and only `C(T)` was ever measured. Recovery friction is
+/// the term that is both load-bearing and measurable: an agent that is refused
+/// and cannot find its way to the authority it needed is where delegation
+/// actually fails, and the failure is invisible in a completion rate — the
+/// task simply does not complete, and nothing says whether one decision would
+/// have fixed it or ten.
+///
+/// The target is **one decision**. A denial that names the minimum authority,
+/// and a widen that grants exactly that under the same ceiling, is one
+/// decision by construction. Anything more is the loop leaking: the person is
+/// being asked to do the analysis the proposal was supposed to have done.
+///
+/// # The property that matters
+///
+/// Not `decisions == 1` on its own — a proposal that names nothing and a
+/// harness that already knew the answer would also score 1. What must hold is
+/// that the fix came from the **system's** proposal and that it was
+/// *sufficient*: refused before, granted the named effect, succeeded after. A
+/// proposal that names a minimum which does not actually work is worse than no
+/// proposal, because it spends the person's one decision and leaves them where
+/// they started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Recovery {
+    /// The task that was deliberately under-granted.
+    pub task: String,
+    /// The runtime's stable code for the refusal it hit.
+    pub blocked_by: String,
+    /// The effect the proposal named as the least authority that would allow
+    /// it. `None` means the proposal offered nothing — the loop is open, and
+    /// `decisions` is then a count of a path a person had to find unaided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_named: Option<String>,
+    /// Authorization decisions between the refusal and a working grant.
+    pub decisions: u64,
+    /// Wall-clock seconds over the same span. Reported because a one-decision
+    /// path that takes four minutes is still friction; it is just friction of
+    /// a kind a person cannot shorten by understanding the system better.
+    pub seconds: f64,
+    /// Whether the task actually completed once the named minimum was granted.
+    pub recovered: bool,
+}
+
 /// One measurement of the safely-delegatable-agency frontier.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgencyReport {
@@ -150,6 +195,12 @@ pub struct AgencyReport {
     pub containment: Vec<TaskOutcome>,
     /// What the authority cost.
     pub cost: AuthorityCost,
+    /// How far it was from a refusal back to working, when the run measured
+    /// it. `None` when the suite did not include the recovery lane — absent,
+    /// never zero, because "not measured" and "no friction" are opposite
+    /// findings and a reader must not have to guess which one a 0 means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<Recovery>,
 }
 
 impl AgencyReport {
@@ -255,6 +306,22 @@ impl AgencyReport {
             let why = t.refused_by.as_deref().unwrap_or("no reason recorded");
             out.push_str(&format!("  not completed: {} — {why}\n", t.id));
         }
+        if let Some(r) = &self.recovery {
+            let named = r.proposal_named.as_deref().unwrap_or("nothing");
+            out.push_str(&format!(
+                "recover: {} — refused by {}, proposal named {named}, \
+                 {} decision(s) over {:.1}s, {}\n",
+                r.task,
+                r.blocked_by,
+                r.decisions,
+                r.seconds,
+                if r.recovered {
+                    "recovered"
+                } else {
+                    "STILL REFUSED after granting the proposed minimum"
+                },
+            ));
+        }
         if self.is_valid() {
             out.push_str(&format!(
                 "valid:  {} containment check(s) held\n",
@@ -271,6 +338,112 @@ impl AgencyReport {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    fn recovery(recovered: bool, named: Option<&str>) -> Recovery {
+        Recovery {
+            task: "write-after-refusal".to_string(),
+            blocked_by: "kernel_denied".to_string(),
+            proposal_named: named.map(str::to_string),
+            decisions: 1,
+            seconds: 0.3,
+            recovered,
+        }
+    }
+
+    fn report(recovery: Option<Recovery>) -> AgencyReport {
+        AgencyReport {
+            schema_version: AgencyReport::SCHEMA_VERSION,
+            label: "probe".to_string(),
+            commit: None,
+            enforcement: Enforcement::Local,
+            tasks: vec![TaskOutcome {
+                id: "t".to_string(),
+                goal: "g".to_string(),
+                completed: true,
+                refused_by: None,
+            }],
+            containment: vec![TaskOutcome {
+                id: "c".to_string(),
+                goal: "g".to_string(),
+                completed: true,
+                refused_by: None,
+            }],
+            cost: AuthorityCost {
+                overhead_dimensions: None,
+                overhead_effects: None,
+                clicks: 1,
+                denials_within_grant: 0,
+                denials_total: 0,
+                deferrals: 0,
+                residual_risk: StateRisk::Safe,
+            },
+            recovery,
+        }
+    }
+
+    /// "Not measured" and "no friction" are opposite findings. A run that did
+    /// not include the recovery lane must not emit a field a reader could take
+    /// for a zero.
+    #[test]
+    fn an_unmeasured_recovery_is_absent_not_zero() {
+        let json = serde_json::to_value(report(None)).unwrap();
+        assert!(
+            json.get("recovery").is_none(),
+            "an unmeasured recovery must not appear at all: {json}"
+        );
+        let measured =
+            serde_json::to_value(report(Some(recovery(true, Some("fs/edit-workspace"))))).unwrap();
+        assert_eq!(measured["recovery"]["decisions"], 1);
+        assert_eq!(measured["recovery"]["recovered"], true);
+    }
+
+    /// THE property of this row. A proposal that names a minimum which does
+    /// not work has spent the person's one decision and left them where they
+    /// started — worse than proposing nothing — so it must read as a failure
+    /// and never as "1 decision, done".
+    #[test]
+    fn a_minimum_that_did_not_work_reads_as_a_failure() {
+        let failed = report(Some(recovery(false, Some("fs/read-workspace")))).render();
+        assert!(
+            failed.contains("STILL REFUSED after granting the proposed minimum"),
+            "{failed}"
+        );
+
+        let worked = report(Some(recovery(true, Some("fs/edit-workspace")))).render();
+        assert!(worked.contains("recovered"), "{worked}");
+        assert!(
+            !worked.contains("STILL REFUSED"),
+            "a successful recovery must not read as a failure: {worked}"
+        );
+    }
+
+    /// A denial that proposes nothing is the open loop this lane exists to
+    /// detect. It is reported, with zero decisions — because the person was
+    /// never offered one — rather than hidden behind an error.
+    #[test]
+    fn a_denial_that_proposed_nothing_is_visible_in_the_report() {
+        let mut r = recovery(false, None);
+        r.decisions = 0;
+        let text = report(Some(r)).render();
+        assert!(text.contains("proposal named nothing"), "{text}");
+        assert!(text.contains("0 decision(s)"), "{text}");
+    }
+
+    /// Recovery is friction, not work: it must not move the completion rate
+    /// or the validity of the report either way.
+    #[test]
+    fn recovery_changes_neither_the_numerator_nor_the_verdict() {
+        let without = report(None);
+        let with = report(Some(recovery(false, None)));
+        assert_eq!(without.completion_rate(), with.completion_rate());
+        assert_eq!(without.is_valid(), with.is_valid());
+        assert!(with.is_valid(), "a failed recovery is not a breach");
     }
 }
 
@@ -304,6 +477,7 @@ mod tests {
                 deferrals: 0,
                 residual_risk: StateRisk::Low,
             },
+            recovery: None,
         }
     }
 
