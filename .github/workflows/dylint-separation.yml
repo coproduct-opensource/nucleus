@@ -54,6 +54,12 @@ on:
       - "tools/nucleus-mediation-lint/**"
       - "tools/nucleus-cb4a-lint/**"
       - "tools/nucleus-identity-lint/**"
+      # egress has run in this job since #2348 and was never in the filter, so a
+      # change confined to that lint did not trigger the job that gates it.
+      - "tools/nucleus-egress-lint/**"
+      - "tools/nucleus-observed-lint/**"
+      - ".observed-ratchet.toml"
+      - "scripts/check-observed-dylint.sh"
       - ".github/workflows/dylint-separation.yml"
   pull_request:
     paths:
@@ -61,6 +67,12 @@ on:
       - "tools/nucleus-mediation-lint/**"
       - "tools/nucleus-cb4a-lint/**"
       - "tools/nucleus-identity-lint/**"
+      # egress has run in this job since #2348 and was never in the filter, so a
+      # change confined to that lint did not trigger the job that gates it.
+      - "tools/nucleus-egress-lint/**"
+      - "tools/nucleus-observed-lint/**"
+      - ".observed-ratchet.toml"
+      - "scripts/check-observed-dylint.sh"
       - ".github/workflows/dylint-separation.yml"
   workflow_dispatch:
 
@@ -322,3 +334,40 @@ jobs:
             echo "::warning::$total findings, below the baseline of $BASELINE — lower BASELINE in this workflow to lock the improvement in."
           fi
           echo "guest egress: $total finding(s), at or under the baseline of $BASELINE"
+
+      # ── observed (unobserved ingest) ────────────────────────────────────
+      #
+      # The SOURCE-SIDE DUAL of `mediated`. `mediated` asks whether every path to
+      # an effect crosses an authority boundary; this asks whether every path
+      # that ingests external bytes reaches an observe. Bytes entering a session
+      # unobserved create no flow node, so the IFC gate cannot see them and the
+      # theorems downstream rest on an antecedent nothing enforced — until now,
+      # because this pass was built and wired to nothing.
+      #
+      # Ratcheted at 28, not gated at zero. `.observed-ratchet.toml` says why:
+      # the agent-facing crate also does infrastructure I/O, the two share a
+      # crate, and scoping by handler would be a hand-maintained list.
+      - name: Build the pass
+        working-directory: tools/nucleus-observed-lint
+        run: cargo build
+
+      - name: Name the dylib the way dylint resolves it
+        run: |
+          cd tools/nucleus-observed-lint/target/debug
+          host=$(rustc -vV | sed -n 's/host: //p')
+          cp libnucleus_observed_lint.so \
+             "libnucleus_observed_lint@nightly-2026-04-16-${host}.so"
+
+      # REDS-ON-REVERT, before the enforcing run. Deletes `run_command`'s
+      # observation of its own subprocess output — the exact defect this pass was
+      # written after — and asserts the count rises ABOVE the ceiling. "Non-zero"
+      # would prove nothing here: the clean tree is already 28.
+      - name: The observed gate reds when run_command stops observing
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-observed-lint/target/debug
+        run: scripts/check-observed-dylint.sh --self-test
+
+      - name: Unobserved ingest is at or under the ceiling
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-observed-lint/target/debug
+        run: scripts/check-observed-dylint.sh

@@ -100,7 +100,7 @@ extern crate rustc_span;
 
 use clippy_utils::diagnostics::span_lint_and_help;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_hir::def_id::{DefId, LocalDefId};
+use rustc_hir::def_id::{DefId, LOCAL_CRATE, LocalDefId};
 use rustc_hir::intravisit::{FnKind, Visitor, walk_expr};
 use rustc_hir::{Expr, ExprKind, FnDecl};
 use rustc_lint::{LateContext, LateLintPass};
@@ -208,7 +208,42 @@ const INGEST_CONTAINS: &[&str] = &["Executor::run_args", "Sandbox::read_to_strin
 ///
 /// Matched on the tracker's method rather than on the proxy's local helper, so a
 /// new helper does not silently become an unrecognised boundary.
-const OBSERVE_MARKERS: &[&str] = &["ifc_api::FlowTracker::observe", "FlowTracker::observe"];
+/// Paths that count as discharging the observation obligation.
+///
+/// `FlowTracker` was the only spelling when this pass was written, and it is the
+/// wrong one for the crate the pass most needs to read: `nucleus-tool-proxy`
+/// observes through `FlowGraph::observe_with_content_hash` — a different type
+/// reached via `ingest::http_observe_*`. Every handler in that crate therefore
+/// read as unobserved, `read_file` and `run_command` included, both of which
+/// observe correctly. A needle set that does not name the API under test makes a
+/// miss indistinguishable from a real finding, which is the failure this pass
+/// exists to prevent, pointed at itself.
+///
+/// Measured 2026-09-11: adding the `FlowGraph` family took the finding count
+/// over `nucleus-tool-proxy` from 85 to 80.
+const OBSERVE_MARKERS: &[&str] = &[
+    "ifc_api::FlowTracker::observe",
+    "FlowTracker::observe",
+    "flow_graph::FlowGraph::observe",
+    "FlowGraph::observe",
+];
+
+/// Crates whose unobserved-ingest finding is ENFORCED.
+///
+/// The same move `mediated` makes with `MEDIATED_CRATES`, and for the same
+/// reason. The pass runs once per workspace member in the dependency closure, so
+/// without a scope it reports the host runtime's own infrastructure I/O —
+/// `build_mtls_config`, `load_last_hash`, `require_node_identity`,
+/// `build_audit_log` — which is not agent-attributed ingest and was never what
+/// the IFC antecedent quantifies over. Measured 2026-09-11: 80 findings without
+/// a scope, of which the overwhelming majority are that.
+///
+/// `nucleus_tool_proxy` is the agent-facing ingest surface: the HTTP and MCP
+/// handlers that hand external bytes back to the model. It is the crate whose
+/// `/v1/run` gap this pass was written after.
+///
+/// Crate names are the **lib crate** spelling (hyphens become underscores).
+const OBSERVED_CRATES: &[&str] = &["nucleus_tool_proxy"];
 
 /// Strip generic argument lists from a `def_path_str` rendering.
 ///
@@ -409,6 +444,18 @@ impl<'tcx> LateLintPass<'tcx> for Observed {
     fn check_crate_post(&mut self, cx: &LateContext<'tcx>) {
         let facts = self.facts.borrow();
 
+        // Is the crate under compilation in the observed set? The pass runs once
+        // per workspace member in the dependency closure, so this is what keeps
+        // the ENFORCED finding on the agent-facing ingest surface rather than on
+        // the host runtime's own infra I/O. See [`OBSERVED_CRATES`]. The
+        // unresolved-call reports below are NOT scoped by it — they stay
+        // advisory for every crate, exactly as `mediated` leaves its closure
+        // reports advisory.
+        let crate_is_observed = {
+            let name = cx.tcx.crate_name(LOCAL_CRATE);
+            OBSERVED_CRATES.contains(&name.as_str())
+        };
+
         // Least fixpoint of "ingests external bytes without reaching an observe".
         //
         // Seed: functions ingesting directly that do not themselves observe.
@@ -480,7 +527,7 @@ impl<'tcx> LateLintPass<'tcx> for Observed {
             // Reporting at the ingesting function is also the better location for
             // this lint regardless — the observation belongs next to the ingest,
             // not at some exported ancestor.
-            if unobserved.contains(did) {
+            if crate_is_observed && unobserved.contains(did) {
                 let detail = match &f.direct_ingest {
                     Some(hit) => format!("ingests external bytes: {hit}"),
                     None => "ingests external bytes transitively through its callees".to_string(),

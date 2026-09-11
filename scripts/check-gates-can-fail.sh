@@ -767,6 +767,13 @@ UNCOVERED_CEILING=8
 #     raw-I/O sink to the sealed effect home and asserts the finding count goes
 #     non-zero; it runs in the `dylint` job of dylint-separation.yml, BEFORE the
 #     enforcing run, every CI invocation.
+#   check-observed-dylint.sh — same toolchain reason as its sibling above. Its
+#     `--self-test` DELETES `run_command`'s observation of its own subprocess
+#     output — the defect the pass was written after — and asserts the count
+#     rises ABOVE the ceiling. Asserting "non-zero" would prove nothing there:
+#     the clean tree is 28, because the agent-facing crate also does
+#     infrastructure I/O (see .observed-ratchet.toml). It runs in the `dylint`
+#     job of dylint-separation.yml, BEFORE the enforcing run, every invocation.
 #   check-egress-probe.sh — is itself a falsifier, not a watcher of an external
 #     subject: it reconstructs the net::apply_default_deny fence in a netns and
 #     asserts the probe PASSes with it present, FAILs when OUTPUT is opened
@@ -798,6 +805,7 @@ UNCOVERED_CEILING=8
 #     coverage-matrix.yml before the enforcing step, every CI invocation.
 SELF_FALSIFIED=(
     "check-mediation-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
+    "check-observed-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
     "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)"
     "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)"
     "check-clippy-ratchet.sh     ceiling-below-actual in the 'ratchet-falsifier' job (clippy-ratchet.yml)"
