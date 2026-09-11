@@ -23,8 +23,18 @@
 # ledger and ci/required-checks.txt already use. Raising one needs no ceremony
 # beyond moving both numbers together.
 #
+# The `.ignore` and `.exclude` keys pin the OTHER two levers on the same command:
+# `--ignore-filename-regex` and `--exclude`. Widening either moves the floor without
+# touching the number — and that is the sharper hatch, because a changed digit is legible
+# in review and `|src/` appended inside a quoted regex is not. `none` means the flag is
+# absent. Exclusions are sorted and comma-joined, so reordering the flags is not a diff.
+#
 # Changes:
 #   2026-09-11 — pinned at the values in force, nothing moved.
 
 workspace = 82.5
+workspace.ignore = (tests/|kani\.rs|main\.rs)
+workspace.exclude = nucleus-verifier-service
 portcullis = 87
+portcullis.ignore = (tests/|kani\.rs)
+portcullis.exclude = none
