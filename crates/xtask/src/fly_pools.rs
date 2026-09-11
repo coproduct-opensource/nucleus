@@ -40,6 +40,9 @@ const README: &str = "ci/fly-runner/README.md";
 const DRIFT: &str = "ci/fly-pools-drift.txt";
 /// The other config the same README restates numbers from.
 const QUEUE_TOML: &str = "ci/merge-queue.toml";
+/// The numeric merge-queue constants this README quotes. One today; the list is the extension
+/// point, and a key added here is compared without further code.
+const QUEUE_KEYS: &[&str] = &["max_entries_to_build"];
 
 /// The `POOLS = '...'` value, as the manager would receive it.
 pub fn pools_json(manager_toml: &str) -> Result<String> {
@@ -198,17 +201,17 @@ fn readme_queue_constants(root: &Path, readme: &str) -> Result<()> {
         .with_context(|| format!("reading {QUEUE_TOML}"))?;
     let joined: String = readme.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut checked = 0usize;
-    for key in ["max_entries_to_build"] {
+    for key in QUEUE_KEYS {
         let Some(declared) = toml
             .lines()
             .map(str::trim)
-            .find_map(|l| l.strip_prefix(key))
+            .find_map(|l| l.strip_prefix(*key))
             .and_then(|r| r.trim_start().strip_prefix('='))
             .and_then(|r| r.trim().parse::<usize>().ok())
         else {
             bail!("{QUEUE_TOML} states no {key} — the constant this README quotes is gone");
         };
-        let Some(after) = joined.split(key).nth(1) else {
+        let Some(after) = joined.split(*key).nth(1) else {
             bail!("{README} no longer quotes {key}; drop this check or restore the sentence");
         };
         let claimed = after
