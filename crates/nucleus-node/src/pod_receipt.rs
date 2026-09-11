@@ -298,4 +298,229 @@ mod tests {
         let unique: std::collections::BTreeSet<&String> = rendered.iter().collect();
         assert_eq!(unique.len(), 3, "each must read differently: {rendered:?}");
     }
+
+    // ── `build`, against a real exited pod ──────────────────────────────────
+    //
+    // Everything above tests the value and the refusals' wording. `build` — the
+    // function that turns a pod into a receipt — was reached by nothing, because
+    // it needs a `PodHandle`, which needs a live `DriverState`. Under the local
+    // driver that is a real child process, so these spawn one and let it exit.
+    //
+    // `local-driver` is not a default feature; CI's coverage job runs
+    // `--all-features`, which compiles it.
+
+    #[cfg(feature = "local-driver")]
+    mod against_a_real_pod {
+        use super::*;
+        use std::collections::BTreeMap;
+
+        /// A pod handle whose child has actually run and exited, or is still
+        /// running when `exit` is false.
+        async fn pod(
+            work_dir: &std::path::Path,
+            exit: bool,
+            labels: &[(&str, &str)],
+        ) -> Arc<crate::PodHandle> {
+            let mut spec: nucleus_spec::PodSpec =
+                serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+                    .expect("a minimal PodSpec deserializes");
+            spec.spec.work_dir = work_dir.to_path_buf();
+            spec.metadata.name = Some("probe".to_string());
+            spec.metadata.labels = labels
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect::<BTreeMap<_, _>>();
+
+            let child = tokio::process::Command::new(if exit { "/bin/true" } else { "/bin/sleep" })
+                .args(if exit { vec![] } else { vec!["30"] })
+                .spawn()
+                .expect("a child spawns");
+
+            let handle = Arc::new(crate::PodHandle {
+                id: uuid::Uuid::new_v4(),
+                spec,
+                created_at: 1_757_000_000,
+                log_path: work_dir.join("pod.log"),
+                proxy_addr: tokio::sync::Mutex::new(None),
+                driver_state: crate::DriverState::Local(Box::new(crate::LocalPod {
+                    child: tokio::sync::Mutex::new(child),
+                    signed_proxy: tokio::sync::Mutex::new(None),
+                })),
+                parent_pod_id: None,
+                posture_stamp: None,
+            });
+
+            if exit {
+                // Poll rather than `wait()`: `status()` reads `try_wait`, and the
+                // point is to reach the state the real code will see.
+                for _ in 0..200 {
+                    if matches!(handle.status().await, crate::PodState::Exited { .. }) {
+                        return handle;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                panic!("/bin/true did not exit");
+            }
+            handle
+        }
+
+        fn write_report(work_dir: &std::path::Path, json: &str) {
+            std::fs::write(work_dir.join(".nucleus-exit-report.json"), json)
+                .expect("the exit report is written");
+        }
+
+        const REPORT: &str = r#"{
+            "workspace_hash":"ws-abc","audit_tail_hash":"tail-def",
+            "audit_entry_count":7,"timestamp_unix":1757000123,
+            "input_tokens":11,"output_tokens":22,"cache_read_tokens":33,"cost_usd":1.5
+        }"#;
+
+        /// A pod still running is "not yet", not a failure — the caller should
+        /// retry rather than go looking at why the pod died.
+        #[tokio::test]
+        async fn a_running_pod_has_no_receipt_yet() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let handle = pod(dir.path(), false, &[]).await;
+            // `let Err(..) else` rather than `expect_err`: `Built` has no
+            // `Debug`, and a test is not a reason to add one to a production type.
+            let Err(err) = build(&handle).await else {
+                panic!("a running pod must not produce a receipt");
+            };
+            assert!(matches!(err, ReceiptError::NotExited), "{err:?}");
+            let _ = handle.cancel().await;
+        }
+
+        /// The proxy writes the report at shutdown, so its absence means the pod
+        /// died before shutdown ran — a different thing to go and look at.
+        #[tokio::test]
+        async fn an_exited_pod_with_no_report_says_which_file_is_missing() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let handle = pod(dir.path(), true, &[]).await;
+            let Err(err) = build(&handle).await else {
+                panic!("no report on disk, so no receipt");
+            };
+            let ReceiptError::NoExitReport(why) = err else {
+                panic!("expected NoExitReport, got {err:?}");
+            };
+            assert!(
+                why.contains(".nucleus-exit-report.json"),
+                "the path is the actionable part: {why}"
+            );
+        }
+
+        /// A report that is there and unreadable is "something is broken",
+        /// distinct from "it is not there".
+        #[tokio::test]
+        async fn an_unreadable_report_is_reported_as_malformed() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_report(dir.path(), "{not json");
+            let handle = pod(dir.path(), true, &[]).await;
+            let Err(err) = build(&handle).await else {
+                panic!("malformed json must not produce a receipt");
+            };
+            assert!(matches!(err, ReceiptError::Malformed(_)), "{err:?}");
+        }
+
+        /// The whole assembly: every number the proxy reported reaches the
+        /// receipt unchanged, and the pod's own id identifies it.
+        #[tokio::test]
+        async fn a_receipt_carries_the_reports_numbers_and_the_pods_id() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_report(dir.path(), REPORT);
+            let handle = pod(dir.path(), true, &[]).await;
+            let built = build(&handle).await.expect("a receipt is produced");
+
+            let r = &built.receipt;
+            assert_eq!(r.pod_id, handle.id.to_string());
+            assert_eq!(r.workspace_hash, "ws-abc");
+            assert_eq!(r.audit_tail_hash, "tail-def");
+            assert_eq!(r.audit_entry_count, 7);
+            assert_eq!(r.timestamp_unix, 1_757_000_123);
+            assert_eq!(r.input_tokens, 11);
+            assert_eq!(r.output_tokens, 22);
+            assert_eq!(r.cache_read_tokens, 33);
+            assert!((r.cost_usd - 1.5).abs() < f64::EPSILON);
+            assert_eq!(r.version, 1);
+            assert_eq!(built.exit_code, 0, "/bin/true exits 0");
+            assert!(!r.manifest_hash.is_empty(), "the spec must be hashed");
+            assert!(
+                !r.v1_content_hash.is_empty(),
+                "the content hash is the point"
+            );
+        }
+
+        /// The content hash is a hash OF something: two pods with different
+        /// specs must not produce the same one, or the "two parties compute the
+        /// same value" argument the module opens with is empty.
+        #[tokio::test]
+        async fn two_different_pods_do_not_share_a_content_hash() {
+            let a = tempfile::tempdir().expect("tempdir");
+            let b = tempfile::tempdir().expect("tempdir");
+            write_report(a.path(), REPORT);
+            write_report(b.path(), REPORT);
+            let one = build(&pod(a.path(), true, &[]).await).await.expect("built");
+            let two = build(&pod(b.path(), true, &[]).await).await.expect("built");
+
+            assert_ne!(
+                one.receipt.v1_content_hash, two.receipt.v1_content_hash,
+                "distinct pods with distinct specs must hash differently"
+            );
+            assert_ne!(one.receipt.manifest_hash, two.receipt.manifest_hash);
+        }
+
+        /// Trust labels are read from the spec, and the SPIFFE id is the
+        /// sandbox's cryptographic identity — the upgrade path in the trust
+        /// service keys on it, so a receipt that dropped it would silently
+        /// downgrade the session.
+        #[tokio::test]
+        async fn trust_labels_reach_the_receipt() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_report(dir.path(), REPORT);
+            let handle = pod(
+                dir.path(),
+                true,
+                &[
+                    ("trust.coproduct.one/bracket", "B2"),
+                    ("trust.coproduct.one/profile", "restricted"),
+                    ("trust.coproduct.one/agent-id", "agent-7"),
+                    ("spiffe.io/identity", "spiffe://nucleus.local/ns/pods/sa/7"),
+                ],
+            )
+            .await;
+            let built = build(&handle).await.expect("built");
+
+            assert_eq!(built.trust_bracket.as_deref(), Some("B2"));
+            assert_eq!(built.trust_profile.as_deref(), Some("restricted"));
+            assert_eq!(built.agent_identity, "agent-7");
+            assert_eq!(
+                built.receipt.spiffe_id,
+                "spiffe://nucleus.local/ns/pods/sa/7"
+            );
+            assert_eq!(
+                built.receipt.sandbox_tier, "restricted",
+                "the tier is the trust profile, not a separate label"
+            );
+        }
+
+        /// With no labels at all the receipt still identifies the pod rather
+        /// than carrying an empty agent. The fallback chain is agent-id, then
+        /// the SPIFFE id, then the pod name, then the id.
+        #[tokio::test]
+        async fn an_unlabelled_pod_still_names_itself() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_report(dir.path(), REPORT);
+            let built = build(&pod(dir.path(), true, &[]).await)
+                .await
+                .expect("built");
+            assert_eq!(
+                built.agent_identity, "probe",
+                "the spec's name is the next-best identity"
+            );
+            assert!(
+                built.receipt.spiffe_id.is_empty(),
+                "no SPIFFE label means no SPIFFE id, not a fabricated one"
+            );
+            assert!(built.trust_bracket.is_none());
+        }
+    }
 }

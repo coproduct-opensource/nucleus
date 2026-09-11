@@ -862,3 +862,304 @@ mod ownership_tests {
         );
     }
 }
+
+// ── The handlers, against a real `NodeState` ────────────────────────────────
+//
+// Everything in `ownership_tests` is about the pure predicates. The handlers
+// themselves — the things a request actually reaches — were covered by nothing,
+// because each takes a `NodeState`, and nothing outside `main()` built one.
+//
+// It turns out `NodeState` is built almost entirely from parsed `Args`, so a
+// test can parse the same defaults an operator would get and assemble the rest.
+// No subsystem is faked: this is the real `PodAuthority`, the real
+// `NetworkAllocator`, the real signing key loaded off disk.
+//
+// `local-driver` is not a default feature; CI's coverage job runs
+// `--all-features`, which compiles this.
+#[cfg(all(test, feature = "local-driver"))]
+mod handler_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    /// The arguments an operator running the local driver would get, with only
+    /// the two that have no default supplied.
+    fn args(state_dir: &std::path::Path) -> crate::Args {
+        <crate::Args as clap::Parser>::parse_from([
+            "nucleus-node",
+            "--state-dir",
+            state_dir.to_str().expect("utf-8 tempdir"),
+            "--driver",
+            "local",
+            "--allow-local-driver",
+            "--proxy-auth-secret",
+            "test-auth-secret",
+            "--proxy-approval-secret",
+            "test-approval-secret",
+        ])
+    }
+
+    /// Mirrors `main()`'s construction. A field added to `NodeState` breaks this
+    /// at compile time, which is the right failure: the fixture should not drift
+    /// silently away from what the node actually runs with.
+    fn state(dir: &tempfile::TempDir) -> NodeState {
+        // `main()` installs this before building any client; this crate takes
+        // reqwest with `rustls-no-provider`, so `Client::new()` PANICS without
+        // it. Idempotent, so every test may call it.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let a = args(dir.path());
+        let authority = Arc::new(crate::pod_authority::PodAuthority::from_args(&a));
+        NodeState {
+            pods: Arc::new(Mutex::new(HashMap::new())),
+            state_dir: a.state_dir.clone(),
+            driver: a.driver.clone(),
+            tool_proxy_path: a.tool_proxy_path.clone(),
+            firecracker_path: a.firecracker_path.clone(),
+            firecracker_pool: None,
+            firecracker_api_boot: a.firecracker_api_boot,
+            firecracker_netns: a.firecracker_netns,
+            firecracker_netns_drift_check: a.firecracker_netns_drift_check,
+            firecracker_netns_drift_interval: std::time::Duration::from_secs(
+                a.firecracker_netns_drift_interval_secs,
+            ),
+            firecracker_seccomp_verify: a.firecracker_seccomp_verify,
+            firecracker_jailer: a.firecracker_jailer,
+            jailer_path: a.jailer_path.clone(),
+            jailer_chroot_base: a.jailer_chroot_base.clone(),
+            jailer_uid: a.jailer_uid,
+            jailer_gid: a.jailer_gid,
+            network_allocator: Arc::new(crate::net::NetworkAllocator::new()),
+            listen_addr: a.listen.clone(),
+            proxy_auth_secret: a.proxy_auth_secret.clone(),
+            caller_secret: Arc::new([7u8; 32]),
+            proxy_approval_secret: a.proxy_approval_secret.clone(),
+            approval_signer: Arc::new(crate::trust_gate::load_or_create_approval_signing_key(
+                &a.state_dir,
+            )),
+            proxy_actor: None,
+            trusted_postures: crate::posture::PostureRegistry::from_operator_str(""),
+            drand_config: None,
+            identity_manager: None,
+            identity_vsock_port: a.identity_workload_api_vsock_port,
+            broker_listen: a.broker_listen,
+            broker_enforcing: a.broker_enforcing,
+            broker_vsock_port: a.broker_vsock_port,
+            github_oidc: None,
+            authz_policy: crate::auth::AuthorizationPolicy::new(&a.identity_trust_domain),
+            container_image: a.container_image.clone(),
+            container_network: a.container_network.clone(),
+            container_proxy_unix: a.container_proxy_unix,
+            container_pool: None,
+            docker: None,
+            trust_gate: crate::trust_gate::TrustGateConfig::from_env(&a.state_dir),
+            authority,
+            http_client: reqwest::Client::new(),
+            lockdown_tx: tokio::sync::broadcast::channel::<crate::proto::LockdownCommand>(16).0,
+        }
+    }
+
+    /// A registered pod, running, optionally owned by `parent`.
+    async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
+        let dir = st.state_dir.join("w");
+        std::fs::create_dir_all(&dir).expect("work dir");
+        let mut spec: nucleus_spec::PodSpec =
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+                .expect("minimal spec");
+        spec.spec.work_dir = dir;
+        let id = uuid::Uuid::new_v4();
+        let child = tokio::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("a child spawns");
+        let handle = Arc::new(crate::PodHandle {
+            id,
+            spec,
+            created_at: 1_757_000_000,
+            log_path: st.state_dir.join("pod.log"),
+            proxy_addr: Mutex::new(Some("http://127.0.0.1:1".to_string())),
+            driver_state: crate::DriverState::Local(Box::new(crate::LocalPod {
+                child: Mutex::new(child),
+                signed_proxy: Mutex::new(None),
+            })),
+            parent_pod_id: parent,
+            posture_stamp: None,
+        });
+        st.pods.lock().await.insert(id, handle);
+        id
+    }
+
+    async fn cancel_all(st: &NodeState) {
+        for (_, h) in st.pods.lock().await.iter() {
+            let _ = h.cancel().await;
+        }
+    }
+
+    /// An unidentified caller — an operator on the node's own API — sees every
+    /// pod. A pod caller sees only its own lineage. This is the same rule the
+    /// predicates state, asserted here through the handler that applies it.
+    #[tokio::test]
+    async fn collect_pod_infos_scopes_to_the_callers_lineage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let a = register(&st, None).await;
+        let b = register(&st, None).await;
+        let child_of_a = register(&st, Some(a)).await;
+
+        let all = collect_pod_infos(&st, None).await;
+        assert_eq!(all.len(), 3, "an operator sees every pod");
+
+        let seen: Vec<uuid::Uuid> = collect_pod_infos(&st, Some(a))
+            .await
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert!(seen.contains(&a), "a pod sees itself");
+        assert!(seen.contains(&child_of_a), "and its own child");
+        assert!(!seen.contains(&b), "never a sibling: {seen:?}");
+        cancel_all(&st).await;
+    }
+
+    /// A pod that exists is found; one that does not is a 404 rather than a
+    /// panic or an empty success.
+    #[tokio::test]
+    async fn get_pod_finds_a_registered_pod_and_refuses_an_unknown_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let id = register(&st, None).await;
+
+        let found = get_pod(&st, id).await.expect("a registered pod is found");
+        assert_eq!(found.id, id);
+
+        let Err(err) = get_pod(&st, uuid::Uuid::new_v4()).await else {
+            panic!("an unknown id must not resolve");
+        };
+        assert!(matches!(err, ApiError::NotFound), "{err:?}");
+        cancel_all(&st).await;
+    }
+
+    /// The scoped lookup is the one a pod's request goes through, and it must
+    /// refuse a sibling BY ID — otherwise lineage scoping is only a filter on
+    /// listings and not on access.
+    #[tokio::test]
+    async fn a_pod_cannot_fetch_a_sibling_by_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let a = register(&st, None).await;
+        let b = register(&st, None).await;
+
+        assert!(
+            get_pod_for_caller(&st, a, Some(a)).await.is_ok(),
+            "a pod reaches itself"
+        );
+        assert!(
+            get_pod_for_caller(&st, b, Some(a)).await.is_err(),
+            "a pod must not reach a sibling by naming its id"
+        );
+        assert!(
+            get_pod_for_caller(&st, b, None).await.is_ok(),
+            "an operator reaches any pod"
+        );
+        cancel_all(&st).await;
+    }
+
+    /// Cancelling stops the pod but LEAVES it in the registry.
+    ///
+    /// Worth pinning because it is easy to assume otherwise — nothing in the
+    /// node removes a pod from `state.pods`, so a cancelled pod stays listable
+    /// and fetchable with its state now `Exited`. A reader who assumed removal
+    /// would misread the 404 the receipt route returns next (see below).
+    #[tokio::test]
+    async fn a_cancelled_pod_stops_but_stays_addressable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let id = register(&st, None).await;
+
+        let _cancelled = cancel_pod(
+            axum::extract::State(st.clone()),
+            axum::Extension(None),
+            axum::extract::Path(id),
+        )
+        .await
+        .expect("a running pod cancels");
+
+        let pod = get_pod(&st, id)
+            .await
+            .expect("a cancelled pod is still registered");
+        assert!(
+            matches!(pod.status().await, crate::PodState::Exited { .. }),
+            "cancel must actually stop the child"
+        );
+    }
+
+    /// **A pod that exists gets `404 pod not found` from the receipt route.**
+    ///
+    /// `get_receipt` maps `NoExitReport` onto `ApiError::NotFound`, whose
+    /// message is "pod not found" — so a cancelled pod, still listed by
+    /// `GET /v1/pods` and still fetchable by id, is reported missing when the
+    /// only missing thing is the exit report the proxy writes at shutdown.
+    ///
+    /// The mapping is deliberate (the comment at the call site argues the
+    /// artifact genuinely is not there) and the MESSAGE is what misleads. This
+    /// test pins the behaviour as it is rather than asserting the wording I
+    /// would prefer; changing `ApiError::NotFound`'s text is a decision for a
+    /// change that is about denials, not for this one.
+    #[tokio::test]
+    async fn a_pod_with_no_exit_report_is_reported_as_a_missing_pod() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let id = register(&st, None).await;
+        let _cancelled = cancel_pod(
+            axum::extract::State(st.clone()),
+            axum::Extension(None),
+            axum::extract::Path(id),
+        )
+        .await
+        .expect("cancels");
+
+        // The pod is demonstrably still there ...
+        assert!(get_pod(&st, id).await.is_ok());
+        // ... and the receipt route says it is not.
+        let Err(err) = get_receipt(
+            axum::extract::State(st.clone()),
+            axum::Extension(None),
+            axum::extract::Path(id),
+        )
+        .await
+        else {
+            panic!("no exit report, so no receipt");
+        };
+        assert!(matches!(err, ApiError::NotFound), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "pod not found",
+            "recorded because it names the wrong thing: the POD is found, the \
+             exit report is not"
+        );
+    }
+
+    /// A receipt is refused for a pod that has not exited — the handler carries
+    /// `pod_receipt`'s distinction rather than flattening it.
+    #[tokio::test]
+    async fn a_receipt_for_a_running_pod_is_refused_not_fabricated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let id = register(&st, None).await;
+
+        let Err(err) = get_receipt(
+            axum::extract::State(st.clone()),
+            axum::Extension(None),
+            axum::extract::Path(id),
+        )
+        .await
+        else {
+            panic!("a running pod has no receipt");
+        };
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("has not exited"),
+            "the caller must be told to wait, not that the pod is missing: {rendered}"
+        );
+        cancel_all(&st).await;
+    }
+}
