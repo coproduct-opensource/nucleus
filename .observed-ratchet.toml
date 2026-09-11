@@ -1,0 +1,37 @@
+# The unobserved-ingest ceiling for `nucleus-tool-proxy`. May only go DOWN.
+#
+# WHY A RATCHET AND NOT A ZERO GATE. `mediated` gates at zero because its
+# boundary is a SIGNATURE property over one sealed crate: `portcullis-effects`
+# reaches every raw sink through an `Authority` taken by value, and that is
+# either true or it is not. `observed`'s obligation is a CALL, and the crate it
+# must read — `nucleus-tool-proxy`, the agent-facing ingest surface — also does
+# a great deal of infrastructure I/O that is not agent-attributed ingest:
+# config and policy file loads, the node client's own HTTP, exit-report hashing,
+# Article 12 shipping, sandbox-proof reads.
+#
+# Scoping by CRATE, the way `mediated` does, is the wrong axis here: the infra
+# and the handlers live in the same crate. Scoping by HANDLER would be a
+# hand-maintained list of exactly the kind ADR 0006 argues against. So the
+# honest mechanism is the one this repository already uses for a number it
+# intends to drive to zero without being able to get there today.
+#
+# MEASURED 2026-09-11, on the fixes in this change:
+#   85  before — `OBSERVE_MARKERS` named only `FlowTracker::observe`, so every
+#                handler reading through `FlowGraph::observe_with_content_hash`
+#                counted as unobserved, `read_file` and `run_command` included
+#   80  after adding the `FlowGraph` family to the marker set
+#   28  after scoping the ENFORCED finding to `OBSERVED_CRATES`
+#
+# What the 28 are: node_client (5), pod_mgmt (5), exit_report (3), art12_shipper
+# (2), node_identity (2), sandbox_proof (2), and single sites in build_mtls_config,
+# build_audit_log, load_last_hash, load_policy_file, proposal::load, main, and
+# web_fetch_policy::read_body_capped. None is an agent-facing handler; every
+# agent-facing handler now absorbs its obligation correctly, which is the thing
+# this change fixed.
+#
+# `target = 0` is the real goal and the direction of travel is DOWN. The next
+# move is not to lower this by one: it is to decide whether infrastructure
+# ingest inside this crate should be observed too, or given a marker that says
+# it is not agent-attributed. Either answer shrinks this number honestly.
+ceiling = 28
+target = 0
