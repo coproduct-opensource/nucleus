@@ -28,6 +28,17 @@ pub struct ToolProxyVerdictSink {
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
     policy_checksum: String,
     session_id: String,
+    /// The KERNEL's accumulated exposure, mirrored by `decide_and_record`.
+    ///
+    /// `exposure_guard` above is populated only by `NucleusMcpServer::new`, and
+    /// the two transports are mutually exclusive (`main.rs`: `if args.mcp {
+    /// return ... }`). On an HTTP pod that slot is `None` for the pod's whole
+    /// life, so `read_exposure` reported four false flags — not because nothing
+    /// was measured, but because it read the wrong object. The decision is made
+    /// by `portcullis::kernel::Kernel`, which accumulates its own `ExposureSet`
+    /// and gates on it (kernel step 7). This mirrors that set so the telemetry
+    /// reports the exposure the decision was actually made against.
+    kernel_exposure: Arc<std::sync::RwLock<portcullis::guard::ExposureSet>>,
     /// Whether DLC-D verified admission is provisioned on this pod's kernels.
     /// When true, every `Allow` this sink records has — by kernel construction
     /// (the dlc gate is consulted before any Allow can emerge from
@@ -87,6 +98,7 @@ pub fn build_monitored_sink(
     policy_checksum: String,
     session_id: String,
     dlc_provisioned: bool,
+    kernel_exposure: Arc<std::sync::RwLock<portcullis::guard::ExposureSet>>,
     art12_log: Option<Arc<crate::art12::Art12Log>>,
     art12_shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
     mediation_receipt_log: Option<std::path::PathBuf>,
@@ -100,6 +112,7 @@ pub fn build_monitored_sink(
         policy_checksum.clone(),
         session_id.clone(),
         dlc_provisioned,
+        kernel_exposure,
     ));
 
     // Article 12 record-keeping, when configured. INSIDE the monitor, so the
@@ -144,8 +157,10 @@ impl ToolProxyVerdictSink {
         policy_checksum: String,
         session_id: String,
         dlc_provisioned: bool,
+        kernel_exposure: Arc<std::sync::RwLock<portcullis::guard::ExposureSet>>,
     ) -> Self {
         Self {
+            kernel_exposure,
             consecutive_denials: AtomicU32::new(0),
             denial_budget: denial_budget_from_env(),
             file_lockdown,
@@ -261,7 +276,11 @@ impl ToolProxyVerdictSink {
                     is_uninhabitable: exp.is_uninhabitable(),
                 }
             } else {
-                telemetry::VerdictExposure::default()
+                // No MCP guard: this is an HTTP pod. Report the KERNEL's
+                // exposure — the set the decision was actually made against —
+                // rather than `default()`, four false flags that read as
+                // "measured, and clean".
+                self.read_kernel_exposure()
             }
         } else {
             tracing::error!("exposure_guard RwLock poisoned — reporting uninhabitable");
@@ -271,6 +290,29 @@ impl ToolProxyVerdictSink {
                 exfil_vector: true,
                 is_uninhabitable: true,
             }
+        }
+    }
+
+    /// The kernel's accumulated exposure, as telemetry.
+    ///
+    /// Fails CLOSED on a poisoned lock for the reason `read_exposure` does: a
+    /// torn set could under-report taint, and under-reporting is the direction
+    /// that makes a session look safer than it is.
+    fn read_kernel_exposure(&self) -> telemetry::VerdictExposure {
+        let Ok(exp) = self.kernel_exposure.read() else {
+            tracing::error!("kernel_exposure RwLock poisoned — reporting uninhabitable");
+            return telemetry::VerdictExposure {
+                private_data: true,
+                untrusted_content: true,
+                exfil_vector: true,
+                is_uninhabitable: true,
+            };
+        };
+        telemetry::VerdictExposure {
+            private_data: exp.contains(portcullis::guard::ExposureLabel::PrivateData),
+            untrusted_content: exp.contains(portcullis::guard::ExposureLabel::UntrustedContent),
+            exfil_vector: exp.contains(portcullis::guard::ExposureLabel::ExfilVector),
+            is_uninhabitable: exp.is_uninhabitable(),
         }
     }
 }
@@ -497,6 +539,9 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            Arc::new(std::sync::RwLock::new(
+                portcullis::guard::ExposureSet::empty(),
+            )),
         )
     }
 
@@ -615,6 +660,9 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            Arc::new(std::sync::RwLock::new(
+                portcullis::guard::ExposureSet::empty(),
+            )),
             None,
             None,
             None,
@@ -670,6 +718,9 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            Arc::new(std::sync::RwLock::new(
+                portcullis::guard::ExposureSet::empty(),
+            )),
             None,
             None,
             None,
