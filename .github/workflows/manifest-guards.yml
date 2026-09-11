@@ -122,6 +122,16 @@ jobs:
       - name: A mechanism declared dead is still dead
         run: scripts/check-law-mechanisms.sh
 
+      # The dual of the gate above. That one finds a mechanism with no call
+      # site; this finds one that IS called, IS handed its authorising witness,
+      # and drops it -- `fn run(&self, cmd: &str, _authority: Authority)` that
+      # goes on to spawn the command. Because no witness in this tree carries
+      # the target of the act it authorises, an Authority obtained for one
+      # command discharges the gate for any other. Closing that is ADR 0006's
+      # C2; this keeps the count from growing until it lands.
+      - name: A witness accepted is a witness read
+        run: scripts/check-inert-authority.sh
+
       # `.gitignore` said `/target/` — anchored to the root, so every nested
       # target/ escaped it, and tools/nucleus-mediation-lint/target was
       # committed: 2664 files, 1269 MB, 98% of the HEAD tree. The same mistake

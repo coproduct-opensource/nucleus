@@ -75,6 +75,7 @@
 //!   proof verifies algebraic structure of the type. Together they provide
 //!   complementary assurance.
 
+pub mod act;
 pub mod agent_message;
 pub mod argv;
 #[cfg(feature = "artifact")]

@@ -40,8 +40,9 @@ use portcullis_core::{CapabilityLattice, CapabilityLevel, IFCLabel, Operation, S
 
 use crate::{
     AgentSpawnEffect, EffectError, FileEffect, GitEffect, ShellEffect, ShellOutput, WebEffect,
-    production_effects,
+    act_commit, act_push, act_run, production_effects,
 };
+use portcullis_core::act::Act;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VerifiedTaskRef — typestate proof that a task token verified (PR2, #2032)
@@ -831,8 +832,12 @@ impl NucleusRuntime {
     }
 
     /// Preflight a shell command — returns proof bundle without executing.
-    pub fn preflight_shell(&self) -> Result<DischargedBundle, RuntimeError> {
-        let term = self.build_term(Operation::RunBash, SinkClass::BashExec);
+    ///
+    /// Takes `cmd`. It did not, and could not therefore mint a bundle bound to
+    /// the command: the caller supplied it afterwards, to `run_shell`. A proof
+    /// obtained before the target exists cannot be a proof about the target.
+    pub fn preflight_shell(&self, cmd: &str) -> Result<DischargedBundle, RuntimeError> {
+        let term = self.build_term_for(&act_run(cmd));
         self.discharge(&term)
     }
 
@@ -857,8 +862,11 @@ impl NucleusRuntime {
     }
 
     /// Preflight a git commit — returns proof bundle without executing.
-    pub fn preflight_commit(&self) -> Result<DischargedBundle, RuntimeError> {
-        let term = self.build_term(Operation::GitCommit, SinkClass::GitCommit);
+    ///
+    /// Takes `message`, for the reason [`preflight_shell`](Self::preflight_shell)
+    /// takes `cmd`.
+    pub fn preflight_commit(&self, message: &str) -> Result<DischargedBundle, RuntimeError> {
+        let term = self.build_term_for(&act_commit(message));
         self.discharge(&term)
     }
 
@@ -883,8 +891,13 @@ impl NucleusRuntime {
     }
 
     /// Preflight a git push — returns proof bundle without executing.
-    pub fn preflight_push(&self) -> Result<DischargedBundle, RuntimeError> {
-        let term = self.build_term(Operation::GitPush, SinkClass::GitPush);
+    ///
+    /// Takes `remote`, for the reason [`preflight_shell`](Self::preflight_shell)
+    /// takes `cmd`. The branch is not part of the binding — see
+    /// `RealEffects::push`, which explains why the mint and the spend must
+    /// agree on exactly this much and no more.
+    pub fn preflight_push(&self, remote: &str) -> Result<DischargedBundle, RuntimeError> {
+        let term = self.build_term_for(&act_push(remote));
         self.discharge(&term)
     }
 
@@ -930,6 +943,26 @@ impl NucleusRuntime {
     /// highest taint as the artifact label. This ensures the discharge checks
     /// (IntegrityGate, NoAdversarialAncestry, DerivationClear) operate on
     /// actual session state, not fabricated defaults.
+    /// Build an `ActionTerm` for a specific [`Act`], so the bundle it discharges
+    /// binds the target and not only its category.
+    ///
+    /// [`build_term`](Self::build_term) sets `subject` from `self.task` — the
+    /// agent's prose description of what it is doing. That is useful in a
+    /// denial message and useless as a binding: a bundle whose subject is
+    /// "refactor the parser" authorises any shell command at all. The three
+    /// verbs whose effects actually spawn a process go through here instead,
+    /// and their `preflight_*` takes the target for that reason.
+    ///
+    /// The remaining `preflight_*` methods still use `build_term`. That is
+    /// visible rather than hidden: each one that has not moved is a verb whose
+    /// authority still binds a category, and `Authority::spend` (as opposed to
+    /// `spend_on`) is the matching half.
+    fn build_term_for(&self, act: &Act) -> ActionTerm {
+        let mut term = self.build_term(act.operation(), act.sink_class());
+        term.subject = act.subject();
+        term
+    }
+
     fn build_term(&self, operation: Operation, sink_class: SinkClass) -> ActionTerm {
         // Back-compat shim: the discharge `ActionTerm` shape is unchanged. The
         // verified task scope (PR2) is discarded here; callers that need it use
@@ -2097,7 +2130,7 @@ mod tests {
     fn run_shell_denied_by_research_profile() {
         let mut rt = rt_tok(PolicyProfile::Research);
         let result = {
-            let p = rt.preflight_shell().unwrap();
+            let p = rt.preflight_shell("echo hello").unwrap();
             rt.run_shell("echo hello", p)
         };
         assert!(result.is_err());
@@ -2108,7 +2141,7 @@ mod tests {
     fn git_push_denied_by_codegen_profile() {
         let mut rt = rt_tok(PolicyProfile::Codegen);
         let result = {
-            let p = rt.preflight_push().unwrap();
+            let p = rt.preflight_push("origin").unwrap();
             rt.git_push("origin", "main", p)
         };
         assert!(result.is_err());
@@ -2119,7 +2152,7 @@ mod tests {
     fn denied_error_mentions_capability() {
         let mut rt = rt_tok(PolicyProfile::ReadOnly);
         let result = {
-            let p = rt.preflight_shell().unwrap();
+            let p = rt.preflight_shell("echo hello").unwrap();
             rt.run_shell("echo hello", p)
         };
         let err = result.unwrap_err();
@@ -2241,7 +2274,7 @@ mod tests {
         // Codegen has git_commit but NOT git_push
         let mut rt = rt_tok(PolicyProfile::Codegen);
         let result = {
-            let p = rt.preflight_push().unwrap();
+            let p = rt.preflight_push("origin").unwrap();
             rt.git_push("origin", "main", p)
         };
         assert!(result.is_err());
@@ -2288,7 +2321,7 @@ mod tests {
             .build();
 
         let result = {
-            let p = rt.preflight_commit().unwrap();
+            let p = rt.preflight_commit("test commit").unwrap();
             rt.git_commit("test commit", p)
         };
         if let Err(RuntimeError::Denied { .. }) = &result {
@@ -2330,7 +2363,7 @@ mod tests {
             .task_token(token, root_vk, now, nonce)
             .expect("full-scope test token verifies")
             .build();
-        let p = rt.preflight_commit().unwrap();
+        let p = rt.preflight_commit("scoped").unwrap();
         rt.git_commit("scoped", p).expect("commit should succeed");
 
         assert_eq!(
@@ -2345,7 +2378,7 @@ mod tests {
         let mut rt = rt_tok(PolicyProfile::Codegen);
         // run_shell may fail on I/O but should NOT fail on policy
         let result = {
-            let p = rt.preflight_shell().unwrap();
+            let p = rt.preflight_shell("echo test").unwrap();
             rt.run_shell("echo test", p)
         };
         if let Err(RuntimeError::Denied { .. }) = &result {

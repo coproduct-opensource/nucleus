@@ -70,7 +70,7 @@ use portcullis::certificate::{
     DEFAULT_MAX_CHAIN_DEPTH, LatticeCertificate, SinkScope, verify_certificate,
 };
 use portcullis::token::AttenuationToken;
-use portcullis::{BudgetLedger, LedgerError, PermissionLattice};
+use portcullis::{BudgetError, BudgetLedger, PermissionLattice};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -662,7 +662,7 @@ impl PodAuthority {
     }
 }
 
-fn ledger_denial(e: LedgerError) -> ApiError {
+fn ledger_denial(e: BudgetError) -> ApiError {
     ApiError::Authority(format!("budget conservation: {e}"))
 }
 

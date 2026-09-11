@@ -47,7 +47,7 @@ permissions:
 # execs the wrapper verbatim and an empty one is "No such file or directory".
 
 jobs:
-  # Fast tier: 5 lightweight harnesses — runs on every PR and push
+  # Fast tier: 9 lightweight harnesses — runs on every PR and push
   # The 3 normalize_* harnesses use build_ordered_permissions() which creates
   # a massive symbolic state space (24 symbolic capabilities + obligations).
   # They require 15+ minutes each and are verified in the nightly full tier.
@@ -74,6 +74,15 @@ jobs:
           # Bump this suffix together with the `kani-version` input below when
           # upgrading Kani.
           key: kani-toolchain-${{ runner.os }}-kani-0.67.0
+      # E1/E2 (proof_budget_ledger_*) are in this list as of #2778's follow-up.
+      # They were only ever in the nightly `kani-full` tier, which is
+      # schedule/dispatch-only AND is documented at that job as dying at exit
+      # 143 before it ever reaches its timeout -- so `sum of live child
+      # allocations + consumed <= max` was not actually verified anywhere a PR
+      # could see it, while FORMAL_METHODS.md:205 claimed it ran "Every PR".
+      # Their cost belongs in this tier: symbolic `u8` amounts over a 4-slot
+      # ledger at unwind(8), the same profile as the seven harnesses beside
+      # them, not the 15-minute normalize_* shape the header warns about.
       - name: Run Kani (fast harnesses)
         id: verify
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
@@ -92,6 +101,8 @@ jobs:
             --harness proof_operation_exposure_completeness
             --harness proof_clinejection_blocked
             --harness proof_ifc_flow_gate_rejects_iff_forbidden
+            --harness proof_budget_ledger_conserves
+            --harness proof_budget_ledger_release_conserves
       - name: Proof count regression gate
         run: |
           # One census, counted by scripts/check-kani-proof-count.sh (#2561): the
