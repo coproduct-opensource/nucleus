@@ -29,6 +29,11 @@ ci-fly-runner = { path = "../ci-fly-runner" }
 
 # Parse the actual Rust attributes and workflow arguments for Kani coverage.
 syn = { version = "2", features = ["full", "visit"] }
+# `reach-export` emits file:line for every node and edge, which is what makes the
+# exported CSV navigable back to source. Spans only carry a line when this
+# feature is on, and it is a no-op outside a proc-macro context — which is where
+# xtask runs.
+proc-macro2 = { version = "1", features = ["span-locations"] }
 toml = { workspace = true }
 # `gatehouse-pin`: the import digest is a plain SHA-256 of prelude/ci.writ.
 sha2 = { workspace = true }

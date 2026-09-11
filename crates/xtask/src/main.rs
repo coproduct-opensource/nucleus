@@ -105,6 +105,28 @@ enum Command {
     /// The dual of `law-mechanisms`: that gate finds mechanisms with no call
     /// site, this finds mechanisms that are called and then ignored.
     InertAuthority,
+    /// Export the call-graph reach relation as CSV, for an external index.
+    ///
+    /// `mediated`, `law-mechanisms`, `inert-authority` and
+    /// `check-extracted-callsites.sh` are four reachability questions over one
+    /// relation, each answered today by grepping its own hand-maintained
+    /// ledger. This exports the relation so it can be queried once.
+    ///
+    /// It is an INDEX, not a gate: no required context consumes it, and it
+    /// exits 0 unless the export itself failed. `mediated` derives its graph
+    /// inside rustc with full type information; this reads `syn` ASTs with
+    /// none, so every edge carries a resolution class and every call that
+    /// defeats static resolution is recorded rather than dropped.
+    ReachExport {
+        /// Directory to write the CSVs into, relative to the repo root.
+        #[arg(long, default_value = "target/reach")]
+        out: String,
+        /// Also print the resolution-class census, the saturation depth, and
+        /// this index's answer to each ledger's question — for reconciling
+        /// against the gates before anything is wired to a check.
+        #[arg(long)]
+        report: bool,
+    },
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
     /// catch feature-unification-masked breakages — crates that compile in a
     /// full `--workspace` build but fail standalone (and on `cargo publish`)
@@ -268,6 +290,7 @@ mod law_mechanisms;
 mod lean_action_builds;
 mod line_ratchet;
 mod pin_parity;
+mod reach_export;
 mod rerun_plan;
 mod scoreboard;
 mod self_pin;
@@ -311,6 +334,11 @@ fn main() -> Result<()> {
         // Exit code mapped here, not inside the check, for the SelfPin arm's
         // reason: a unit test calling `run()` must survive.
         Command::InertAuthority => match inert_authority::run()? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
+        // Exit code mapped here, not inside the run, for the SelfPin arm's reason.
+        Command::ReachExport { out, report } => match reach_export::run(&out, report)? {
             0 => Ok(()),
             code => std::process::exit(code),
         },
