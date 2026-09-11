@@ -246,6 +246,23 @@ fn is_gate_harness(path: &str) -> bool {
     path.starts_with("crates/xtask/")
 }
 
+/// The corpus `affine_types` is meant to range over: production regions only,
+/// gate harnesses removed.
+///
+/// Extracted because `life` counts the same population and got a different
+/// number by passing raw sources — 6 against this function's 7. Raw sources
+/// include `#[cfg(test)]` regions, so a `Clone` impl written for a test rejected
+/// a type that is affine in the shipped build. Two gates disagreeing about one
+/// population is the defect `bound` bails on rather than reports, and the fix is
+/// for both to ask the same question through the same code.
+pub fn affine_corpus(corpus: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    corpus
+        .iter()
+        .filter(|(p, _)| !is_gate_harness(p))
+        .map(|(p, s)| (p.clone(), production_region(s)))
+        .collect()
+}
+
 pub struct Finding {
     pub row: &'static str,
     pub found: usize,
@@ -282,11 +299,7 @@ pub fn run() -> Result<i32> {
     // Production region only, and `git ls-files` rather than a filesystem walk —
     // the repo root carries an untracked worktree copy with a full `crates/`
     // tree, and a walk over-counted a sibling gate's number by 64%.
-    let corpus: BTreeMap<String, String> = tracked(is_production_path)?
-        .into_iter()
-        .filter(|(p, _)| !is_gate_harness(p))
-        .map(|(p, s)| (p, production_region(&s)))
-        .collect();
+    let corpus = affine_corpus(&tracked(is_production_path)?);
 
     let types = affine_types(&corpus);
     let per_type = count_linearity(&corpus, &types);

@@ -691,6 +691,16 @@ perturb_scorecard_partial_totality() {
     sed -i.gate-bak 's/^        clippy::indexing_slicing,$//' "$1" && rm -f "$1.gate-bak"
 }
 
+# The first affine right to gain a validity interval. `life` is pinned at a
+# MEASURED zero -- 7 rights, none of which expires -- and the whole defence of
+# admitting a zero floor is that the slack check turns the first discharge into a
+# red demanding the pin be raised. This probe is that claim, on a real type: give
+# ServeToken an `expires_at` and the family goes 0.00% -> 14.28% and the gate
+# refuses to carry the stale zero forward.
+perturb_scorecard_first_expiry() {
+    sed -i.gate-bak 's/^pub struct ServeToken {$/pub struct ServeToken {\n    expires_at: u64,/' "$1" && rm -f "$1.gate-bak"
+}
+
 probe_xtask convergence crates/nucleus-tool-proxy/src/run_gate.rs \
     "one more affine type taken by reference" perturb_convergence_linearity
 probe_xtask bound crates/nucleus-tool-proxy/src/run_gate.rs \
@@ -702,6 +712,8 @@ probe_xtask scorecard crates/nucleus-tool-proxy/src/pod_mgmt.rs \
 probe_xtask scorecard crates/nucleus-pca/src/lib.rs \
     "a crate's totality declaration losing one of its seven lints" \
     perturb_scorecard_partial_totality
+probe_xtask scorecard crates/nucleus-node/src/broker_launch.rs \
+    "the first affine right to gain a validity interval" perturb_scorecard_first_expiry
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask pin-parity ci/lean/lean-toolchain \
