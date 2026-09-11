@@ -12,6 +12,8 @@ name: Rubric Lean Proofs
 on:
   pull_request:
     paths-ignore:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/nucleus-rubric/lean/**"
       - ".github/workflows/rubric-lean.yml"
 

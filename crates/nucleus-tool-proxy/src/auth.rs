@@ -522,6 +522,7 @@ fn verify_ed25519_any(
 /// Deliberately NOT a fallback. It is selected only when the server was started
 /// on a host-verified vsock listener; every other transport keeps its existing
 /// mechanism.
+/// OS assumption: KB-VSOCK-PEER-CID (docs/assumptions/kernel-behaviour.md).
 pub fn verify_host_vsock() -> AuthContext {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -86,21 +86,21 @@ jobs:
           fi
 
 
-      - name: Install elan (Lean toolchain)
+      - name: Build Lean project with cached artifacts
         if: steps.scope.outputs.relevant == 'true'
-        run: |
-          # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
-          # script is handed to an interpreter (Scorecard Pinned-Dependencies).
-          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
-          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  /tmp/elan.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/elan.tar.gz -C /tmp elan-init
-          /tmp/elan-init -y --no-modify-path
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      - name: lake build (a broken proof FAILS here)
-        if: steps.scope.outputs.relevant == 'true'
-        working-directory: crates/nucleus-uniform-primitive/lean
-        run: lake build UniformPrimitive
+        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
+        env:
+          LEAN_NUM_THREADS: "4"
+        with:
+          lake-package-directory: crates/nucleus-uniform-primitive/lean
+          auto-config: "false"
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "false"
+          use-github-cache: "${{ runner.environment == 'github-hosted' }}"
+          build-args: >-
+            UniformPrimitive
 
       - name: Reject sorry / admit (the spine must stay sorry-free)
         if: steps.scope.outputs.relevant == 'true'

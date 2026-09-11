@@ -7,6 +7,8 @@ name: IFC Kernel Lean Proofs
 on:
   pull_request:
     paths-ignore:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/nucleus-ifc-kernel/lean/**"
       - ".github/workflows/ifc-lean.yml"
       - "scripts/lean-axiom-audit.sh"

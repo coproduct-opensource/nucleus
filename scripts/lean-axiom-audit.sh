@@ -42,7 +42,8 @@
 # (scripts/check-gates-can-fail.sh discipline).
 set -euo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 PROJECT=${1:?project dir}
 MODE=${2:?root list or --self-test}
 cd "$PROJECT"
@@ -50,6 +51,15 @@ PROJECT_ABS=$(pwd)
 
 # Native proofs must not run compiler-substituted owned definitions.
 python3 "$SCRIPT_DIR/../crates/portcullis-core/lean/check_compiler_overrides.py" .
+
+# Source lint runs even when Lake restores cached elaboration output. Both
+# pre-checks stay: main added the compiler-override check while this branch
+# added the external-state lint, and they answer different questions.
+if [ "$MODE" = "--self-test" ]; then
+    python3 "$SCRIPT_DIR/check-lean-external-state.py" --self-test
+else
+    python3 "$SCRIPT_DIR/check-lean-external-state.py" . "$MODE"
+fi
 
 ALLOWED='["propext","Classical.choice","Quot.sound"]'
 EXC_FILE=.axiom-audit-exceptions

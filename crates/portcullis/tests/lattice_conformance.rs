@@ -2157,7 +2157,7 @@ mod structural_bisimulation {
 #[allow(deprecated)]
 mod protocol_conformance {
     use portcullis::{
-        CapabilityLevel, GradedExposureGuard, Operation, PermissionLattice, RuntimeStateGuard,
+        Act, CapabilityLevel, GradedExposureGuard, Operation, PermissionLattice, RuntimeStateGuard,
         StateRisk, ToolCallGuard,
     };
 
@@ -2178,7 +2178,7 @@ mod protocol_conformance {
         let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         // Must call check() first to get a proof
-        let proof = guard.check(Operation::ReadFiles).unwrap();
+        let proof = guard.check(&Act::untargeted(Operation::ReadFiles)).unwrap();
         // Proof is consumed by execute_and_record
         let result = guard.execute_and_record(proof, || Ok::<_, String>(()));
         assert!(result.is_ok());
@@ -2193,12 +2193,16 @@ mod protocol_conformance {
         let runtime = RuntimeStateGuard::new(perms, "[]");
 
         // Both guards should support the check → execute_and_record cycle
-        let p1 = graded.check(Operation::ReadFiles).unwrap();
+        let p1 = graded
+            .check(&Act::untargeted(Operation::ReadFiles))
+            .unwrap();
         graded
             .execute_and_record(p1, || Ok::<_, String>(()))
             .unwrap();
 
-        let p2 = runtime.check(Operation::ReadFiles).unwrap();
+        let p2 = runtime
+            .check(&Act::untargeted(Operation::ReadFiles))
+            .unwrap();
         runtime
             .execute_and_record(p2, || Ok::<_, String>(()))
             .unwrap();
@@ -2213,7 +2217,7 @@ mod protocol_conformance {
         let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         // Get a proof but don't consume it
-        let _proof = guard.check(Operation::ReadFiles).unwrap();
+        let _proof = guard.check(&Act::untargeted(Operation::ReadFiles)).unwrap();
         // Drop the proof (goes out of scope)
         drop(_proof);
 
@@ -2228,8 +2232,8 @@ mod protocol_conformance {
         let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         // Two checks for the same operation should both succeed
-        let proof1 = guard.check(Operation::ReadFiles);
-        let proof2 = guard.check(Operation::ReadFiles);
+        let proof1 = guard.check(&Act::untargeted(Operation::ReadFiles));
+        let proof2 = guard.check(&Act::untargeted(Operation::ReadFiles));
         assert!(proof1.is_ok());
         assert!(proof2.is_ok());
 
@@ -2240,13 +2244,13 @@ mod protocol_conformance {
         drop(proof2);
 
         // After exposureing with WebFetch, RunBash check consistently fails
-        let proof3 = guard.check(Operation::WebFetch).unwrap();
+        let proof3 = guard.check(&Act::untargeted(Operation::WebFetch)).unwrap();
         guard
             .execute_and_record(proof3, || Ok::<_, String>(()))
             .unwrap();
 
-        let r1 = guard.check(Operation::RunBash);
-        let r2 = guard.check(Operation::RunBash);
+        let r1 = guard.check(&Act::untargeted(Operation::RunBash));
+        let r2 = guard.check(&Act::untargeted(Operation::RunBash));
         assert!(r1.is_err());
         assert!(r2.is_err());
     }
@@ -2256,13 +2260,13 @@ mod protocol_conformance {
     fn conformance_closure_failure_no_exposure() {
         let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
-        let proof = guard.check(Operation::ReadFiles).unwrap();
+        let proof = guard.check(&Act::untargeted(Operation::ReadFiles)).unwrap();
         let result = guard.execute_and_record(proof, || Err::<(), _>("simulated IO error"));
         assert!(result.is_err());
         assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
 
         // Can still do a successful check → record
-        let proof2 = guard.check(Operation::ReadFiles).unwrap();
+        let proof2 = guard.check(&Act::untargeted(Operation::ReadFiles)).unwrap();
         guard
             .execute_and_record(proof2, || Ok::<_, String>(()))
             .unwrap();
@@ -2621,7 +2625,7 @@ mod galois_conformance {
 #[cfg(test)]
 mod enforcement_monotonicity {
     use portcullis::{
-        CapabilityLevel, ExposureLabel, ExposureSet, GradedExposureGuard, Operation,
+        Act, CapabilityLevel, ExposureLabel, ExposureSet, GradedExposureGuard, Operation,
         PermissionLattice, ToolCallGuard,
     };
 
@@ -2718,7 +2722,7 @@ mod enforcement_monotonicity {
         let mut prev_exposure = guard.exposure();
 
         for &op in &ops {
-            if let Ok(proof) = guard.check(op) {
+            if let Ok(proof) = guard.check(&Act::untargeted(op)) {
                 let _ = guard.execute_and_record(proof, || Ok::<_, String>(()));
             }
 
@@ -2754,19 +2758,19 @@ mod enforcement_monotonicity {
         let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         // Build up to uninhabitable_state: read + fetch → RunBash would complete it
-        let proof = guard.check(Operation::ReadFiles).unwrap();
+        let proof = guard.check(&Act::untargeted(Operation::ReadFiles)).unwrap();
         guard
             .execute_and_record(proof, || Ok::<_, String>(()))
             .unwrap();
 
-        let proof = guard.check(Operation::WebFetch).unwrap();
+        let proof = guard.check(&Act::untargeted(Operation::WebFetch)).unwrap();
         guard
             .execute_and_record(proof, || Ok::<_, String>(()))
             .unwrap();
 
         // RunBash should now be denied (uninhabitable_state would complete)
         assert!(
-            guard.check(Operation::RunBash).is_err(),
+            guard.check(&Act::untargeted(Operation::RunBash)).is_err(),
             "RunBash should be denied with ReadFiles + WebFetch exposure"
         );
 
@@ -2779,7 +2783,7 @@ mod enforcement_monotonicity {
             Operation::GrepSearch,
             Operation::WebSearch,
         ] {
-            let proof = guard.check(op).unwrap();
+            let proof = guard.check(&Act::untargeted(op)).unwrap();
             guard
                 .execute_and_record(proof, || Ok::<_, String>(()))
                 .unwrap();
@@ -2792,7 +2796,7 @@ mod enforcement_monotonicity {
             Operation::GitCommit,
         ] {
             assert!(
-                guard.check(op).is_err(),
+                guard.check(&Act::untargeted(op)).is_err(),
                 "local-sink exfil op {:?} should be denied at uninhabitable exposure",
                 op
             );
@@ -2800,17 +2804,17 @@ mod enforcement_monotonicity {
 
         // RunBash should STILL be denied (exposure only grew)
         assert!(
-            guard.check(Operation::RunBash).is_err(),
+            guard.check(&Act::untargeted(Operation::RunBash)).is_err(),
             "E3 violation: RunBash allowed after exposure growth (should stay denied)"
         );
 
         // Also check that GitPush/CreatePr are denied (same exposure legs)
         assert!(
-            guard.check(Operation::GitPush).is_err(),
+            guard.check(&Act::untargeted(Operation::GitPush)).is_err(),
             "E3 violation: GitPush allowed after uninhabitable_state (should be denied)"
         );
         assert!(
-            guard.check(Operation::CreatePr).is_err(),
+            guard.check(&Act::untargeted(Operation::CreatePr)).is_err(),
             "E3 violation: CreatePr allowed after uninhabitable_state (should be denied)"
         );
     }
@@ -2850,19 +2854,19 @@ mod enforcement_monotonicity {
             let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
             // Record the two exposure legs
-            let proof = guard.check(*leg1).unwrap();
+            let proof = guard.check(&Act::untargeted(*leg1)).unwrap();
             guard
                 .execute_and_record(proof, || Ok::<_, String>(()))
                 .unwrap();
 
-            let proof = guard.check(*leg2).unwrap();
+            let proof = guard.check(&Act::untargeted(*leg2)).unwrap();
             guard
                 .execute_and_record(proof, || Ok::<_, String>(()))
                 .unwrap();
 
             // Verify denial
             assert!(
-                guard.check(*denied_op).is_err(),
+                guard.check(&Act::untargeted(*denied_op)).is_err(),
                 "{:?} should be denied after [{:?}, {:?}]",
                 denied_op,
                 leg1,
@@ -2871,7 +2875,7 @@ mod enforcement_monotonicity {
 
             // Record all neutral operations (skip if capability-denied)
             for &neutral in &neutral_ops {
-                if let Ok(proof) = guard.check(neutral) {
+                if let Ok(proof) = guard.check(&Act::untargeted(neutral)) {
                     guard
                         .execute_and_record(proof, || Ok::<_, String>(()))
                         .unwrap();
@@ -2880,7 +2884,7 @@ mod enforcement_monotonicity {
 
             // Denial must persist
             assert!(
-                guard.check(*denied_op).is_err(),
+                guard.check(&Act::untargeted(*denied_op)).is_err(),
                 "E3 violation: {:?} became allowed after neutral ops (was denied after [{:?}, {:?}])",
                 denied_op,
                 leg1,
@@ -3494,6 +3498,8 @@ mod budget_monotonicity {
                     consumed_usd: Decimal::from(consumed),
                     max_input_tokens: 100_000,
                     max_output_tokens: 10_000,
+                    consumed_input_tokens: 0,
+                    consumed_output_tokens: 0,
                 };
                 let before = budget.consumed_usd;
                 let ok = budget.charge(Decimal::from(amount));
@@ -3517,6 +3523,8 @@ mod budget_monotonicity {
                     consumed_usd: Decimal::from(consumed),
                     max_input_tokens: 100_000,
                     max_output_tokens: 10_000,
+                    consumed_input_tokens: 0,
+                    consumed_output_tokens: 0,
                 };
                 let before_remaining = budget.remaining();
                 budget.charge(Decimal::from(amount));
@@ -3586,12 +3594,16 @@ mod budget_monotonicity {
             consumed_usd: Decimal::from(2),
             max_input_tokens: 100_000,
             max_output_tokens: 10_000,
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         };
         let b = BudgetLattice {
             max_cost_usd: Decimal::from(5),
             consumed_usd: Decimal::from(1),
             max_input_tokens: 50_000,
             max_output_tokens: 20_000,
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         };
         let met = a.meet(&b);
         assert!(met.max_cost_usd <= a.max_cost_usd);

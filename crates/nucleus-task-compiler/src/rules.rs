@@ -251,6 +251,71 @@ pub const RULES: &[Rule] = &[
         requires: None,
         effects: &["web/search"],
     },
+    // ── Beyond the repository ───────────────────────────────────────────────
+    //
+    // These rules propose READ effects only, and that asymmetry is the design.
+    // A goal is evidence about what a person wants to LEARN; it is much weaker
+    // evidence about what they are willing to have CHANGED. "the deploy is
+    // broken" plausibly means read the logs and see what is running — it does
+    // not mean roll something out, and a rule that inferred so would widen
+    // authority from a guess.
+    //
+    // The mutating effects in these packs are reachable, but by being asked
+    // for: `--effects kubernetes/apply-manifest`, or an escalation proposal
+    // raised by the denial the read-only grant produces. Both put the decision
+    // in front of a person, which is where a deploy belongs.
+    Rule {
+        id: "cloud-inspect",
+        any_of: &[
+            "aws",
+            "cloud",
+            "s3",
+            "bucket",
+            "ec2",
+            "lambda",
+            "cloudwatch",
+            "cloudformation",
+        ],
+        requires: None,
+        effects: &["aws/read-inventory", "aws/read-logs"],
+    },
+    Rule {
+        id: "cluster-inspect",
+        any_of: &[
+            "kubernetes",
+            "k8s",
+            "kubectl",
+            "cluster",
+            "pod",
+            "pods",
+            "deployment",
+            "helm",
+        ],
+        requires: None,
+        effects: &["kubernetes/read-workloads", "kubernetes/read-logs"],
+    },
+    Rule {
+        id: "database-inspect",
+        any_of: &[
+            "database",
+            "sql",
+            "postgres",
+            "postgresql",
+            "mysql",
+            "sqlite",
+            "schema",
+            "migration",
+            "query",
+        ],
+        requires: None,
+        effects: &["database/read-schema", "database/read-rows"],
+    },
+    Rule {
+        id: "chat-read",
+        any_of: &["slack", "channel", "thread", "what did the team", "standup"],
+        requires: None,
+        effects: &["slack/read-channel"],
+    },
 ];
 
 /// Run every rule against the goal. Returns an empty proposal (no rules
@@ -409,5 +474,95 @@ mod tests {
         let p = apply("push a branch and open a PR", &ctx(true, true, true));
         assert!(has(&p, "github/open-pr"));
         assert!(has(&p, "git/push-branch"));
+    }
+
+    // ── The rules beyond the repository ─────────────────────────────────────
+
+    #[test]
+    fn a_goal_about_the_cluster_proposes_reading_it() {
+        let p = apply(
+            "find out why the pods keep restarting",
+            &ctx(true, true, true),
+        );
+        assert!(has(&p, "kubernetes/read-workloads"));
+        assert!(has(&p, "kubernetes/read-logs"));
+    }
+
+    #[test]
+    fn a_goal_about_the_database_proposes_reading_it() {
+        let p = apply(
+            "check the postgres schema for the users table",
+            &ctx(true, true, true),
+        );
+        assert!(has(&p, "database/read-schema"));
+        assert!(has(&p, "database/read-rows"));
+    }
+
+    #[test]
+    fn a_goal_about_the_cloud_proposes_reading_it() {
+        let p = apply(
+            "look at the cloudwatch logs for the lambda",
+            &ctx(true, true, true),
+        );
+        assert!(has(&p, "aws/read-inventory"));
+        assert!(has(&p, "aws/read-logs"));
+    }
+
+    /// THE property of these four rules, and the reason they exist as reads
+    /// only. A goal is evidence about what a person wants to LEARN and much
+    /// weaker evidence about what they will let be CHANGED. No phrase in a goal
+    /// may propose a deploy, a migration, a message to a team, or an IAM
+    /// rewrite — those are reachable by being asked for, which puts the
+    /// decision in front of a person.
+    #[test]
+    fn no_goal_phrase_proposes_a_mutation_beyond_the_repository() {
+        let goals = [
+            "the deploy is broken, roll it back",
+            "delete the failing pods and redeploy",
+            "run the migration and drop the old table",
+            "tell the team in slack that the incident is over",
+            "give the service permission to write to the bucket",
+            "terminate the ec2 instances that are idle",
+        ];
+        let forbidden = [
+            "kubernetes/apply-manifest",
+            "kubernetes/exec-into-pod",
+            "kubernetes/delete-workloads",
+            "database/write-rows",
+            "database/run-migration",
+            "database/drop-data",
+            "slack/post-message",
+            "aws/write-object",
+            "aws/delete-object",
+            "aws/start-compute",
+            "aws/mutate-iam",
+            "aws/delete-resources",
+        ];
+        for goal in goals {
+            let p = apply(goal, &ctx(true, true, true));
+            for effect in forbidden {
+                assert!(
+                    !has(&p, effect),
+                    "goal {goal:?} proposed {effect}: a stated goal must never widen \
+                     authority beyond the repository on its own"
+                );
+            }
+        }
+    }
+
+    /// Non-vacuity for the test above: those goals DO fire their rules, so the
+    /// absence of mutating effects is a decision and not a failure to match.
+    #[test]
+    fn those_goals_do_fire_their_rules() {
+        let p = apply(
+            "delete the failing pods and redeploy",
+            &ctx(true, true, true),
+        );
+        assert!(has(&p, "kubernetes/read-workloads"), "the rule fired");
+        let p = apply(
+            "run the migration and drop the old table",
+            &ctx(true, true, true),
+        );
+        assert!(has(&p, "database/read-schema"), "the rule fired");
     }
 }

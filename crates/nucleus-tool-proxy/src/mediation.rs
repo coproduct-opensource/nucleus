@@ -19,6 +19,36 @@ use tracing::{info, warn};
 
 use crate::ApiError;
 
+/// Whether a human approval is already on file for an operation key.
+///
+/// The kernel can return [`Verdict::RequiresApproval`], which is a deferral to a
+/// person, not a refusal. Something has to answer "did that person answer yet",
+/// and in the proxy that answer lives in the `ApprovalRegistry` that
+/// `/v1/approve` writes to. This trait is how the reference monitor asks,
+/// without `mediation` having to know about `AppState` — the module stays
+/// unit-testable against a bare `Kernel` + `FlowGraph`, which is why
+/// `decide_with_flow_mapped` was split out in the first place.
+///
+/// The method PEEKS. See `ApprovalRegistry::is_granted` for why the spend
+/// belongs to the last gate rather than this one.
+pub(crate) trait ApprovalGrants {
+    /// Whether a live, unexpired grant exists for this operation key.
+    fn is_granted(&self, operation: &str) -> bool;
+}
+
+/// No approvals are on file. What every mediation test uses unless it is
+/// testing approval; production always has the real `ApprovalRegistry`, so this
+/// is `cfg(test)` rather than a default a handler could reach for by accident.
+#[cfg(test)]
+pub(crate) struct NoGrants;
+
+#[cfg(test)]
+impl ApprovalGrants for NoGrants {
+    fn is_granted(&self, _operation: &str) -> bool {
+        false
+    }
+}
+
 /// Translate a kernel [`DenyReason`] into the HTTP error surface, preserving
 /// what the kernel actually said.
 ///
@@ -137,6 +167,7 @@ fn decide_with_flow_mapped(
     graph: &FlowGraph,
     operation: Operation,
     subject: &str,
+    grants: &dyn ApprovalGrants,
 ) -> (Decision, Result<DecisionToken, ApiError>) {
     let term = ActionTerm::from_operation(operation, subject);
     // The single authoritative `FlowGraph` backs the egress verdict (its
@@ -172,37 +203,75 @@ fn decide_with_flow_mapped(
             Err(kernel_denial_to_api_error(operation, subject, reason))
         }
         Verdict::RequiresApproval => {
-            info!(
-                ?operation,
-                subject,
-                exposure = decision.exposure_transition.post_count,
-                "HTTP kernel requires approval — a /v1/approve grant does NOT \
-                 satisfy this layer (#2406)"
-            );
-            // `approval_required`, which the response mapping already models.
-            //
-            // The caller is NOT told how to satisfy it, and the honest reason is
-            // that presenting one does not work. `/v1/approve` writes into
-            // `ApprovalRegistry`, and this decision never reads that registry:
-            // the refusal happens in `http_kernel_decide`, which returns before
-            // `sandbox.write` and therefore before the only code that consults
-            // grants. An operator who grants an approval here gets a 200 and no
-            // effect (#2406).
-            //
-            // The operation key is the SAME string the registry is keyed on, so
-            // the two layers agree about what is being approved and disagree
-            // only about who reads it — which is what makes this look like a
-            // working approval flow right up until the retry.
-            //
-            // Deliberately not enriched with that explanation: this field is
-            // echoed to the caller as the response's `operation`, and callers
-            // feed it back to `/v1/approve` verbatim.
-            Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                operation: format!("{operation:?} {subject}"),
-            }))
+            // The operation key is the string the registry is keyed on, and it
+            // is also what the caller is handed back and feeds to `/v1/approve`
+            // verbatim. One spelling, built once, so the layer that asks and the
+            // layer that answers cannot disagree about what was approved.
+            let key = format!("{operation:?} {subject}");
+            if grants.is_granted(&key) {
+                // A person already answered this deferral. Issuing the token is
+                // the whole point of `Kernel::issue_approved_token`, which
+                // exists for exactly this shape — `decide()` said
+                // `RequiresApproval`, an external mechanism authorized it, and
+                // the caller needs a token for the sandbox I/O that follows.
+                // Re-running `decide()` would double-count the operation in the
+                // exposure accumulator; this does not.
+                //
+                // This is NOT a widening path. The kernel already decided the
+                // operation is one a person MAY authorize; nothing here can turn
+                // a `Deny` into an allow, and with no grant on file the arm
+                // below refuses exactly as before. The grant is not spent here
+                // (see `ApprovalRegistry::is_granted`) — the sandbox approver
+                // spends it, once.
+                info!(
+                    ?operation,
+                    subject,
+                    exposure = decision.exposure_transition.post_count,
+                    "HTTP kernel required approval and a human grant is on file; \
+                     issuing an approved token (#2406)"
+                );
+                Ok(kernel.issue_approved_token(operation, subject))
+            } else {
+                info!(
+                    ?operation,
+                    subject,
+                    exposure = decision.exposure_transition.post_count,
+                    "HTTP kernel requires approval and no grant is on file"
+                );
+                // `approval_required`, which the response mapping already
+                // models. The caller is told which operation to approve, and
+                // presenting one through `/v1/approve` now satisfies this layer
+                // — which it did not before #2406 was fixed: this decision
+                // returned before `sandbox.write`, so it never reached the only
+                // code that consulted grants, and an operator who approved got
+                // a 200 and no effect.
+                Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                    operation: key,
+                }))
+            }
         }
     };
     (decision, mapped)
+}
+
+/// Everything a decision is recorded and resolved *in*, as opposed to what it
+/// is *about*.
+///
+/// Grouped because these four travel together and are set once per transport:
+/// the sink the verdict is written to, the actor it is attributed to, the
+/// transport it arrived on, and the approvals already on file. Keeping them
+/// apart from `(operation, subject)` also keeps the two halves of a call site
+/// readable — which of eight positional arguments was the subject was not.
+pub(crate) struct MediationEnv<'a> {
+    /// Where the verdict is recorded. Never optional: a refusal with no
+    /// evidence is the defect `decide_and_record` exists to prevent.
+    pub sink: &'a dyn VerdictSink,
+    /// Who the decision is attributed to.
+    pub actor: ActorIdentity,
+    /// Which surface the request arrived on (`"http"`, `"mcp"`).
+    pub transport: &'a str,
+    /// Approvals a person has already given.
+    pub grants: &'a dyn ApprovalGrants,
 }
 
 /// Decide, record, and map — in that order, indivisibly.
@@ -214,25 +283,62 @@ fn decide_with_flow_mapped(
 /// cannot be produced anywhere else, so it cannot escape unrecorded. That is a
 /// property of the module boundary, not of a test that must remember to check.
 pub(crate) fn decide_and_record(
-    sink: &dyn VerdictSink,
+    env: MediationEnv<'_>,
     kernel: &mut Kernel,
     graph: &FlowGraph,
     operation: Operation,
     subject: &str,
-    actor: ActorIdentity,
-    transport: &str,
 ) -> Result<DecisionToken, ApiError> {
+    let MediationEnv {
+        sink,
+        actor,
+        transport,
+        grants,
+    } = env;
     // The live egress verdict is read from the single authoritative `FlowGraph`
     // (Phase 2 retirement: the retained `FlowTracker` oracle and its divergence
     // canary are gone — there is one graph now, so there is nothing left to
     // diverge from). The graph's `is_poisoned` / `is_tainted` /
     // `session_exfiltration_check` aggregates carry the lethal-trifecta taint, and
     // on absence/error the kernel path denies fail-closed.
-    let (decision, mapped) = decide_with_flow_mapped(kernel, graph, operation, subject);
+    let (decision, mapped) = decide_with_flow_mapped(kernel, graph, operation, subject, grants);
 
     crate::verdict_sink::record_kernel_decision(
-        sink, &decision, operation, subject, actor, transport,
+        sink,
+        &decision,
+        operation,
+        subject,
+        actor.clone(),
+        transport,
     );
+
+    // A deferral that a human grant satisfied is TWO governance events, and the
+    // record has to carry both: the system escalated to a person (recorded just
+    // above as `RequiresApproval`, the Article 14 evidence), and then it went
+    // ahead. Recording only the first would leave an evidence log in which
+    // approved operations look pending forever; recording only the second would
+    // erase that a person was ever consulted.
+    if matches!(decision.verdict, Verdict::RequiresApproval) && mapped.is_ok() {
+        use nucleus::portcullis::verdict_sink::{VerdictContext, VerdictOutcome};
+        use std::collections::BTreeMap;
+        let mut extensions = BTreeMap::new();
+        extensions.insert("transport".to_string(), transport.to_string());
+        extensions.insert(
+            "satisfied_by".to_string(),
+            "human_approval_grant".to_string(),
+        );
+        if let Err(e) = sink.record(VerdictContext {
+            operation,
+            subject: subject.to_string(),
+            outcome: VerdictOutcome::Allow,
+            actor,
+            policy_rule: None,
+            extensions,
+        }) {
+            warn!(error = %e, ?operation, subject,
+                  "verdict recording failed for an approved deferral -- audit gap");
+        }
+    }
 
     mapped
 }

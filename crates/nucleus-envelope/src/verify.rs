@@ -1044,6 +1044,15 @@ fn verify_merkle_anchor(
             anchor.sth.timestamp_ms,
             &root_arr,
         );
+        // Dual-accept window (SECURITY_TODO #30): the pre-domain-separator
+        // preimage. A cosignature carries no version, so the only migration
+        // available is to try both. Drop this — and the `.chain()` below — one
+        // release after the change that added the separator.
+        let nucleus_canonical_legacy = nucleus_lineage::canonical_sth_bytes_legacy(
+            anchor.sth.tree_size,
+            anchor.sth.timestamp_ms,
+            &root_arr,
+        );
         // C2SP cosignatures sign the tlog-checkpoint body bytes. We
         // build this on demand only when a C2SP-kind cosig is found,
         // using the trust anchor's expected origin string. If a
@@ -1078,10 +1087,16 @@ fn verify_merkle_anchor(
             // HIGH-1 check above, a C2SP cosig + no origin is now
             // impossible at this point — c2sp_body is `Some` whenever
             // we reach a C2SP cosig.
-            let signed_bytes: &[u8] = match cosig.kind {
-                nucleus_lineage::CosignatureKind::Nucleus => &nucleus_canonical,
+            // A Nucleus-kind cosig may have been produced under either
+            // preimage during the #30 dual-accept window, so it has two
+            // candidate byte strings. C2SP has one: its own domain separation
+            // comes from the origin line, and it never changed.
+            let candidates: Vec<&[u8]> = match cosig.kind {
+                nucleus_lineage::CosignatureKind::Nucleus => {
+                    vec![&nucleus_canonical, &nucleus_canonical_legacy]
+                }
                 nucleus_lineage::CosignatureKind::C2sp => match c2sp_body.as_deref() {
-                    Some(b) => b,
+                    Some(b) => vec![b],
                     None => continue, // defensive — should be unreachable post-HIGH-1
                 },
             };
@@ -1091,7 +1106,9 @@ fn verify_merkle_anchor(
                     continue;
                 }
                 if let Ok(vk) = VerifyingKey::from_bytes(trusted)
-                    && vk.verify_strict(signed_bytes, &sig).is_ok()
+                    && candidates
+                        .iter()
+                        .any(|bytes| vk.verify_strict(bytes, &sig).is_ok())
                 {
                     matched_witnesses.insert(*trusted);
                     matched_this_cosig = true;

@@ -1428,21 +1428,93 @@ mod llm10_unbounded_consumption {
         );
     }
 
+    /// SECURITY_TODO #20 — `record_tokens` consumes; it is not a ceiling check.
+    ///
+    /// This test previously called `record_tokens(1000, 100)` on a 1000/100
+    /// budget three times and expected the first to succeed — which it did, and
+    /// so would the thousandth, because the method took `&self` and compared
+    /// against the maximum rather than the remainder. Nothing was ever spent.
     #[test]
     fn token_limits_enforced() {
-        let budget = BudgetLattice::with_token_limits(1000, 100);
+        let mut budget = BudgetLattice::with_token_limits(1000, 100);
 
         assert!(
             budget.record_tokens(1000, 100),
-            "Within limits should succeed"
+            "the first record fits exactly and must succeed"
+        );
+        assert_eq!(budget.remaining_input_tokens(), 0, "input is now spent");
+        assert_eq!(budget.remaining_output_tokens(), 0, "output is now spent");
+
+        // The defect: this used to succeed, unboundedly.
+        assert!(
+            !budget.record_tokens(1000, 100),
+            "a spent token budget must refuse the same record again"
         );
         assert!(
-            !budget.record_tokens(1001, 100),
-            "Exceeding input limit should fail"
+            !budget.record_tokens(1, 0),
+            "not even one token remains once the budget is spent"
+        );
+    }
+
+    /// Per-call limits still bite on a fresh budget, and a refusal consumes
+    /// nothing — the same monoid-action property `charge` documents.
+    #[test]
+    fn a_refused_token_record_consumes_nothing() {
+        let mut budget = BudgetLattice::with_token_limits(1000, 100);
+
+        assert!(!budget.record_tokens(1001, 100), "input limit exceeded");
+        assert!(!budget.record_tokens(1000, 101), "output limit exceeded");
+        assert!(!budget.record_tokens(0, 0), "an empty record is rejected");
+        assert_eq!(
+            budget.remaining_input_tokens(),
+            1000,
+            "a refused record must not have spent input"
+        );
+        assert_eq!(
+            budget.remaining_output_tokens(),
+            100,
+            "a refused record must not have spent output"
+        );
+
+        // Atomicity ACROSS the two dimensions: an over-large output count must
+        // not quietly spend the input allowance on its way to being refused.
+        assert!(!budget.record_tokens(1000, 101), "output over limit");
+        assert_eq!(
+            budget.remaining_input_tokens(),
+            1000,
+            "a partial charge would let an over-large output drain the input budget"
+        );
+
+        // An overflowing count refuses rather than wrapping to a small consumed value.
+        assert!(!budget.record_tokens(u64::MAX, 0), "overflow must refuse");
+        assert_eq!(budget.remaining_input_tokens(), 1000);
+    }
+
+    /// The fan-out this closes: N children of one parent each used to receive
+    /// the parent's FULL token allowance, because the parent's spend was never
+    /// recorded. `meet` takes the max of consumed, so a child that inherits the
+    /// parent's budget inherits what has already been spent against it.
+    #[test]
+    fn a_child_inherits_the_parents_token_spend() {
+        let mut parent = BudgetLattice::with_token_limits(1000, 100);
+        assert!(parent.record_tokens(900, 90), "parent spends most of it");
+
+        let child = parent.meet(&BudgetLattice::with_token_limits(1000, 100));
+        assert_eq!(
+            child.remaining_input_tokens(),
+            100,
+            "a child must not get the parent's budget refreshed"
+        );
+
+        // And the order agrees: the spent child is BELOW the fresh parent.
+        let fresh = BudgetLattice::with_token_limits(1000, 100);
+        assert!(
+            child.leq(&fresh),
+            "a budget with more consumed must be <= one with less"
         );
         assert!(
-            !budget.record_tokens(1000, 101),
-            "Exceeding output limit should fail"
+            !fresh.leq(&child),
+            "resetting consumed tokens to zero must not pass the monotone check"
         );
     }
 

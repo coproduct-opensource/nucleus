@@ -24,6 +24,8 @@ on:
   push:
     branches: ["main"]
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/ck-policy/lean-aeneas/**"
       - "crates/ck-policy/src/extracted.rs"
       - "crates/ck-policy/tests/policy_aeneas_parity.rs"
@@ -32,6 +34,8 @@ on:
       - "crates/ck-types/**"
   pull_request:
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/ck-policy/lean-aeneas/**"
       - "crates/ck-policy/src/extracted.rs"
       - "crates/ck-policy/tests/policy_aeneas_parity.rs"
@@ -89,7 +93,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.merge_group.head_sha }}
-          PATTERN: '^\.github/workflows/ck\-policy\-aeneas\.yml$|^crates/ck\-policy/lean\-aeneas/|^crates/ck\-policy/src/extracted\.rs$|^crates/ck\-policy/src/lib\.rs$|^crates/ck\-policy/tests/policy_aeneas_parity\.rs$|^crates/ck\-types/'
+          PATTERN: '^\.github/workflows/ck\-policy\-aeneas\.yml$|^crates/ck\-policy/lean\-aeneas/|^crates/ck\-policy/src/extracted\.rs$|^crates/ck\-policy/src/lib\.rs$|^crates/ck\-policy/tests/policy_aeneas_parity\.rs$|^crates/ck\-types/|^scripts/(check-lean-external-state\.py|lean-axiom-audit\.sh)$'
         run: |
           set -euo pipefail
           if [ "$EVENT" != "merge_group" ]; then
@@ -235,49 +239,22 @@ jobs:
           echo "No drift — committed generated Lean matches the Charon+Aeneas output."
 
       # --- Build the proofs over the generated core ---
-      - name: Install elan (Lean toolchain)
-        if: steps.scope.outputs.relevant == 'true' && runner.environment == 'github-hosted'
-        run: |
-          # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
-          # script is handed to an interpreter (Scorecard Pinned-Dependencies).
-          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
-          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  /tmp/elan.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/elan.tar.gz -C /tmp elan-init
-          /tmp/elan-init -y --no-modify-path
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      - name: Cache Lake build artifacts
-        if: runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true')
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+      - name: Build Lean project with cached artifacts
+        if: steps.scope.outputs.relevant == 'true'
+        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
+        env:
+          LEAN_NUM_THREADS: "4"
         with:
-          path: |
-            crates/ck-policy/lean-aeneas/.lake
-            ~/.elan
-            ~/.cache/mathlib
-          key: lean-ck-policy-aeneas-${{ runner.os }}-${{ hashFiles('crates/ck-policy/lean-aeneas/lean-toolchain', 'crates/ck-policy/lean-aeneas/lakefile.lean', 'crates/ck-policy/lean-aeneas/lake-manifest.json') }}
-          restore-keys: |
-            lean-ck-policy-aeneas-${{ runner.os }}-
+          lake-package-directory: crates/ck-policy/lean-aeneas
+          auto-config: "false"
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "true"
+          use-github-cache: "${{ runner.environment == 'github-hosted' }}"
+          build-args: >-
+            CkPolicyAeneas
 
-      # Aeneas Std transitively requires Mathlib; fetch its prebuilt oleans so a
-      # cold cache does not trigger a ~1h Mathlib compile.
-      - name: Fetch Mathlib cache (prebuilt oleans)
-        if: steps.scope.outputs.relevant == 'true'
-        working-directory: crates/ck-policy/lean-aeneas
-        run: lake exe cache get || true
-
-      - name: lake build (soundness proofs over extracted core)
-        if: steps.scope.outputs.relevant == 'true'
-        working-directory: crates/ck-policy/lean-aeneas
-        run: lake build CkPolicyAeneas
-
-      # --- Ban proof holes in OUR file (NOT the Aeneas stdlib) ---
-      # Comments are stripped first: the file's own status docstrings say
-      # "0 native_decide" / describe the ban, and the previous bare
-      # `native_decide` alternation matched those comment lines (latent —
-      # this job only runs when its own paths change, so the self-match
-      # only surfaced via an actions-bump PR touching all workflows). The
-      # kernel-level backstop is the #print-axioms step below; this grep
-      # is the fast human-readable layer.
       - name: Ban sorry / admit / native_decide in our proof file
         if: steps.scope.outputs.relevant == 'true'
         run: |

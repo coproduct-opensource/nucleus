@@ -447,6 +447,72 @@ mod tests {
         );
     }
 
+    /// `nucleus_dir()` exists because `dirs::config_dir()` is
+    /// `~/Library/Application Support` on macOS while every nucleus path is
+    /// `~/.config/nucleus`. That drift has now been found twice: in `main.rs`
+    /// (2026-07-29, recorded in `nucleus_dir()`'s own doc comment) and in
+    /// `doctor::check_config` (#2734), which reported "not found" about a file
+    /// `setup` had just written. The first fix added
+    /// `the_cli_default_and_setups_output_are_the_same_file`, but that pins two
+    /// named constants against each other — it cannot see a third caller
+    /// resolving the path its own way, which is exactly how doctor drifted.
+    ///
+    /// So pin the property that actually failed: nothing in this crate resolves
+    /// a nucleus path through `dirs::config_dir()`.
+    ///
+    /// `keychain.rs` is the one allowed file, and deliberately named rather
+    /// than pattern-matched:
+    ///
+    /// * `secret_file_path` is `#[cfg(not(target_os = "macos"))]` — it only
+    ///   compiles where the two resolvers agree.
+    /// * `MetadataStore::metadata_path` is NOT cfg-gated, so on macOS the
+    ///   rotation metadata does live outside `nucleus_dir()`. It is
+    ///   self-consistent (the same function reads and writes it) so nothing
+    ///   misreports today, but it is a real divergence from this module's
+    ///   "one directory on every platform" claim. Moving it would relocate an
+    ///   existing file on a platform CI does not walk, so it is left alone
+    ///   here and called out rather than quietly covered by this test.
+    #[test]
+    fn no_nucleus_path_is_resolved_through_dirs_config_dir() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut scanned = 0usize;
+        for entry in std::fs::read_dir(&src).expect("src/ is readable") {
+            let path = entry.expect("readable entry").path();
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            scanned += 1;
+            if name == "keychain.rs" || name == "config.rs" {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).expect("readable source");
+            for (i, line) in body.lines().enumerate() {
+                // Skip prose: every mention in this crate's comments is an
+                // explanation of why NOT to call it.
+                let code = line.trim_start();
+                if code.starts_with("//") || code.starts_with("///") {
+                    continue;
+                }
+                if code.contains("dirs::config_dir()") {
+                    offenders.push(format!("{name}:{}", i + 1));
+                }
+            }
+        }
+        // Non-vacuity: a test that scanned nothing would pass silently.
+        assert!(
+            scanned > 10,
+            "only {scanned} sources scanned — the sweep is not reading the crate"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these resolve a nucleus path through dirs::config_dir(), which is \
+             ~/Library/Application Support on macOS and so is not the directory \
+             the rest of the CLI uses — call config::nucleus_dir() instead: {offenders:?}"
+        );
+    }
+
     /// Artifacts must sit beside the config, not under a second root.
     #[test]
     fn artifacts_live_under_the_same_nucleus_directory_as_the_config() {

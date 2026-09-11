@@ -668,12 +668,24 @@ pub struct DischargedBundle {
     operation: Operation,
     /// The sink class this bundle was discharged FOR.
     sink_class: SinkClass,
+    /// The subject this bundle was discharged FOR.
+    ///
+    /// `operation` and `sink_class` bind the *kind* of action. They do not bind
+    /// which one: a bundle earned to run `ls` is `(RunBash, BashExec)`, and so
+    /// is a bundle earned to run `rm -rf /`. The confused-deputy argument above
+    /// applies one level deeper than it was applied, and this closes it — the
+    /// "request-hash caveat" is about the request, not its category.
+    ///
+    /// Set from `ActionTerm::subject` at the single point a bundle can be
+    /// built. Nothing else reads `subject` on the term: the kernel uses it only
+    /// in denial messages, so binding it here changes no obligation.
+    subject: String,
     _seal: Seal,
 }
 
 impl DischargedBundle {
     /// Private constructor — only callable from within this module.
-    fn new(operation: Operation, sink_class: SinkClass) -> Self {
+    fn new(operation: Operation, sink_class: SinkClass, subject: String) -> Self {
         Self {
             integrity_gate: Discharged::mint(),
             path_allowed: Discharged::mint(),
@@ -685,6 +697,7 @@ impl DischargedBundle {
             inputs_authorized: Discharged::mint(),
             operation,
             sink_class,
+            subject,
             _seal: Seal,
         }
     }
@@ -700,6 +713,12 @@ impl DischargedBundle {
         self.sink_class
     }
 
+    /// The subject this bundle authorises — the target, not its category.
+    #[must_use]
+    pub fn subject(&self) -> &str {
+        &self.subject
+    }
+
     /// **Does this bundle authorise `op` at `sink`?**
     ///
     /// The check the effect functions never made. Each effect knows which
@@ -712,6 +731,17 @@ impl DischargedBundle {
     #[must_use]
     pub fn authorizes(&self, op: Operation, sink: SinkClass) -> bool {
         self.operation == op && self.sink_class == sink
+    }
+
+    /// **Does this bundle authorise `op` at `sink`, on `subject`?**
+    ///
+    /// [`authorizes`](Self::authorizes) answers for the *kind* of action. This
+    /// answers for the action. A caller that can name what it is about to do —
+    /// the command it will spawn, the remote it will push to — should ask this
+    /// one, because the other cannot tell `ls` from `rm -rf /`.
+    #[must_use]
+    pub fn authorizes_subject(&self, op: Operation, sink: SinkClass, subject: &str) -> bool {
+        self.authorizes(op, sink) && self.subject == subject
     }
 }
 
@@ -963,6 +993,22 @@ pub mod test_helpers {
         ProvenanceSet, SinkClass,
     };
 
+    /// Produce a bundle scoped to a specific operation, sink **and subject**.
+    ///
+    /// The subject-less forms mint `"test-helper"`, which is right for a test
+    /// asserting something about the `(operation, sink)` pair and wrong for one
+    /// that spends the authority: a spend binds the target, so the bundle must
+    /// have been earned for it. Panics if the pair is not earnable.
+    pub fn bundle_for_subject(
+        operation: Operation,
+        sink_class: SinkClass,
+        subject: &str,
+    ) -> DischargedBundle {
+        try_bundle_for_subject(operation, sink_class, subject).unwrap_or_else(|| {
+            panic!("test_helpers::bundle_for_subject: {operation:?}/{sink_class:?} is not earnable")
+        })
+    }
+
     /// Produce a bundle scoped to a SPECIFIC operation and sink.
     ///
     /// `allowed_bundle` mints a WriteFiles/WorkspaceWrite bundle, and tests were
@@ -1010,6 +1056,21 @@ pub mod test_helpers {
     /// earned" from "this pair was earned and then misused", which the panicking
     /// form cannot express.
     pub fn try_bundle_for(operation: Operation, sink_class: SinkClass) -> Option<DischargedBundle> {
+        try_bundle_for_subject(operation, sink_class, "test-helper")
+    }
+
+    /// Like [`try_bundle_for`], with the subject the bundle is discharged for.
+    ///
+    /// A bundle binds its subject, so a test that spends one against a real
+    /// target needs a bundle minted for that target. The subject-less forms
+    /// mint `"test-helper"`, which is the right default for a test asserting
+    /// something about the `(operation, sink)` pair and the wrong one for a
+    /// test that spends.
+    pub fn try_bundle_for_subject(
+        operation: Operation,
+        sink_class: SinkClass,
+        subject: &str,
+    ) -> Option<DischargedBundle> {
         let term = ActionTerm {
             operation,
             sink_class,
@@ -1025,7 +1086,7 @@ pub mod test_helpers {
                 },
                 derivation: DerivationClass::Deterministic,
             },
-            subject: "test-helper".to_string(),
+            subject: subject.to_string(),
             estimated_cost_micro_usd: 0,
             capability_ceiling: Some(crate::CapabilityLevel::LowRisk),
             requested_capability: Some(crate::CapabilityLevel::LowRisk),
@@ -1242,7 +1303,11 @@ pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
         };
     }
 
-    PreflightResult::Allowed(DischargedBundle::new(term.operation, term.sink_class))
+    PreflightResult::Allowed(DischargedBundle::new(
+        term.operation,
+        term.sink_class,
+        term.subject.clone(),
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1294,9 +1359,53 @@ fn sink_min_integrity(sink: SinkClass) -> IntegLevel {
 /// indicates a caller bug (e.g., submitting `Operation::GitPush` with
 /// `SinkClass::WorkspaceWrite`).
 ///
-/// Returns `true` (permissive) for combinations not explicitly restricted,
-/// so adding new `Operation` or `SinkClass` variants does not break existing
-/// callers by default.
+/// **Restrictive, not permissive** (SECURITY_TODO #23). The doc here used to
+/// claim the opposite — *"returns `true` (permissive) for combinations not
+/// explicitly restricted, so adding new `Operation` or `SinkClass` variants does
+/// not break existing callers by default"* — and the code has never behaved that
+/// way. The `match` is exhaustive over `Operation` and every arm is a `matches!`
+/// against a closed list of sinks, so an unlisted pairing returns `false`.
+///
+/// Which direction the mismatch runs matters. Adding an `Operation` is a compile
+/// error (good). Adding a `SinkClass` silently makes it **undischargeable** —
+/// safe, but invisible, and the doc promised the opposite so nobody looked.
+///
+/// Four sinks are unreachable today for exactly that reason, and it is a gap in
+/// the `Operation` vocabulary rather than a policy decision: there is no verb for
+/// reading a secret, calling an MCP tool, sending email, or writing a ticket.
+/// They are enumerated in `SINKS_WITH_NO_OPERATION` below, and
+/// `every_sink_is_reachable_or_documented` fails if that list drifts from
+/// reality in either direction — so a sink becoming reachable, or a new sink
+/// quietly becoming unreachable, is a test failure rather than a silent one.
+/// Sinks that no `Operation` can currently be paired with, each with the reason.
+///
+/// This is a **gap in the `Operation` vocabulary**, not a policy judgement: the
+/// enum has thirteen verbs and none of them denotes reading a secret, invoking
+/// an MCP tool, sending mail, or filing a ticket. Until `Effect` carries a
+/// target (the Tier-3 collapse), an `ActionTerm` naming one of these cannot be
+/// constructed from any operation, so the pairing gate refuses it.
+///
+/// Being unreachable is the SAFE direction — nothing can discharge to them — so
+/// this is documented rather than "fixed" by inventing a mapping. What was not
+/// safe was that it was invisible, and that the doc on
+/// [`operation_allowed_for_sink`] asserted the opposite.
+#[cfg(test)] // the expectation table for `every_sink_is_reachable_or_documented`
+const SINKS_WITH_NO_OPERATION: [(SinkClass, &str); 4] = [
+    (
+        SinkClass::SecretRead,
+        "no Operation denotes reading a secret; env/secret access is untyped",
+    ),
+    (
+        SinkClass::MCPWrite,
+        "an MCP tool call is classified INTO an Operation, it is not one itself",
+    ),
+    (SinkClass::EmailSend, "no Operation denotes sending mail"),
+    (
+        SinkClass::TicketWrite,
+        "no Operation denotes filing a ticket",
+    ),
+];
+
 fn operation_allowed_for_sink(op: Operation, sink: SinkClass) -> bool {
     match op {
         Operation::WriteFiles => {
@@ -2333,6 +2442,59 @@ mod tests {
                 .unwrap()
                 .contains("WithinDelegationCeiling"),
             "ceiling (check 6) should fire before scope (check 7)"
+        );
+    }
+
+    // ── SECURITY_TODO #23: the unreachable-sink list cannot drift ───────────
+
+    /// Every `SinkClass` is either reachable from at least one `Operation`, or
+    /// is listed in `SINKS_WITH_NO_OPERATION` with a reason. The check runs in
+    /// BOTH directions, which is what makes it a gate rather than a comment:
+    ///
+    ///   * a sink that is unreachable and undocumented fails — this is what
+    ///     silently happened to four sinks, under a doc claiming the pairing
+    ///     gate was permissive by default;
+    ///   * a sink that is documented as unreachable but has become reachable
+    ///     also fails, so the list cannot rot into a lie the other way.
+    ///
+    /// Same shape as `documented_inventory_equals_the_enum` in
+    /// `egress_channel.rs`: the enum and the prose are pinned to each other.
+    #[test]
+    fn every_sink_is_reachable_or_documented() {
+        for sink in SinkClass::ALL {
+            let reachable = Operation::ALL
+                .iter()
+                .any(|&op| operation_allowed_for_sink(op, sink));
+            let documented = SINKS_WITH_NO_OPERATION.iter().any(|(s, _)| *s == sink);
+
+            assert!(
+                reachable != documented,
+                "{sink:?}: reachable={reachable}, documented_unreachable={documented} — \
+                 a sink must be exactly one of the two. If a new Operation made it \
+                 reachable, drop it from SINKS_WITH_NO_OPERATION; if a new sink is \
+                 undischargeable, add it there with the reason."
+            );
+        }
+    }
+
+    /// Non-vacuity for the above: the four are genuinely unreachable today, and
+    /// at least one sink is genuinely reachable. Without this, an empty
+    /// `Operation::ALL` or an all-inclusive list would still satisfy the
+    /// exclusive-or.
+    #[test]
+    fn the_documented_sinks_are_the_unreachable_ones() {
+        assert_eq!(SINKS_WITH_NO_OPERATION.len(), 4);
+        for (sink, reason) in SINKS_WITH_NO_OPERATION {
+            assert!(
+                !Operation::ALL
+                    .iter()
+                    .any(|&op| operation_allowed_for_sink(op, sink)),
+                "{sink:?} is documented unreachable ({reason}) but some Operation admits it"
+            );
+        }
+        assert!(
+            operation_allowed_for_sink(Operation::GitPush, SinkClass::GitPush),
+            "a control pairing must be reachable, or the gate proves nothing"
         );
     }
 }
