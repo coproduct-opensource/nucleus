@@ -1,0 +1,37 @@
+# How many claims in docs/assurance/ci-assurance.md have a falsifier the merge queue does not
+# gate on. Checked by `cargo xtask assurance-required`. Shrink-only.
+#
+# The ledger gate already refuses a falsifier that does not exist, and one that no workflow
+# invokes -- "a gate CI does not run enforces nothing". This is the second half of that sentence:
+# a gate CI RUNS, that goes red, and that the merge queue merges past anyway also enforces
+# nothing. The queue gates on ci/required-checks.txt and on nothing else.
+#
+# 2026-09-11, first measurement. 11 rows: 4 PROVED, 2 DECIDED, 2 TESTED, 3 NOT-YET. Of the EIGHT
+# non-NOT-YET rows, SIX have a falsifier that produces no required context -- including two of the
+# four PROVED rows, whose falsifier is the thing that would catch a proved claim regressing:
+#
+#   CI-1, CI-2 (PROVED), CI-3   scripts/check-ci-spec.sh
+#                               -> "CI configuration is sound (CI-1)"                not required
+#   CI-4 (DECIDED)              scripts/check-gates-can-fail.sh
+#                               -> "Live-path gates (one pod)"                       not required
+#   CI-5, CI-8 (TESTED)         .github/workflows/ci-assurance.yml
+#                               -> "Required-check ledger and merge-queue pin match GitHub"
+#                                  "The merge queue's last day replays through the model"
+#                                                                                    not required
+#   CI-6, CI-7 (PROVED)         check-ci-spec-golden.sh / -bite.sh
+#                               -> "lake build CiSpec (pipeline + merge-queue theorems)"  REQUIRED
+#
+# I counted FOUR by reading the table before writing this gate, and it found six: CI-5 and CI-8
+# name a WORKFLOW as their falsifier rather than a script, so their contexts are the workflow's
+# jobs and I did not look. That is the reason the number belongs in a gate and not in a report.
+#
+# This is F-41 generalised. That finding caught the same hole under one check -- `a real nucleus
+# pod boots and is enforced (x86_64)` is not required, so main was red on it for 2h24m while the
+# queue merged nine PRs through.
+#
+# NOT driven to zero on purpose. Whether a given check should be required is a judgement about
+# cost and flakiness -- the pod-boot check boots a real Firecracker microVM on a self-hosted
+# runner, and requiring it makes one machine's availability a merge dependency (F-40). Making the
+# gap visible and un-growable is a smaller claim than closing it, and it is the one that can be
+# made honestly today. Lower this in the change that requires a context; a seventh is a red.
+UNREQUIRED_FALSIFIERS=6

@@ -309,6 +309,15 @@ jobs:
       - name: Every row is verbatim, dereferenced, wired, and pinned
         shell: bash
         run: scripts/check-ci-assurance-ledger.sh
+      # The second half of "a gate CI does not run enforces nothing": a gate CI RUNS,
+      # that goes red, and that the merge queue merges past anyway also enforces nothing.
+      # The queue gates on ci/required-checks.txt and nothing else, and six of the eight
+      # non-NOT-YET claims have a falsifier outside it -- including two PROVED rows.
+      # Ratcheted rather than driven to zero: whether a given check should be required is a
+      # judgement about cost, and this only makes the gap visible and un-growable.
+      - name: A claim's falsifier produces a required context
+        shell: bash
+        run: cargo run -q -p xtask -- assurance-required
 
   ingest-hash-gate:
     name: No-unwitnessed-ingest gate (InputsAuthorized)
