@@ -43,11 +43,31 @@
 # file is still an allowance, and exempting them would make the number look
 # better by moving debt rather than paying it.
 
-total_ceiling = 130
+# RAISED 2026-09-11, 130 -> 132 and nucleus-node 41 -> 43, for the two
+# allowances this branch adds. Both are the shape the file's own text asks for —
+# a named gap rather than a hidden one — so they are listed here by site rather
+# than absorbed into a round number:
+#
+#   * crates/nucleus-node/src/snapshot_vmm.rs — `load`, the restore half of the
+#     snapshot pair. `create` is reached from POST /v1/pods/{id}/snapshot; this
+#     is reached only from the round-trip test, because the launch path still
+#     cold-boots and never asks the store for a base. Restore-instead-of-boot
+#     needs a guest that reconnects its vsock after restore, which is a rootfs
+#     release and a GUEST_RELEASE_FLOOR bump. The doc at the site says so.
+#   * crates/nucleus-node/src/workload_api_vsock.rs — `material`, the host's own
+#     record of what the bridge has served. It sits beside `pod_id` and
+#     `socket_path`, which are already allowances here for the same reason.
+#
+# This is the "explain in the file why the ceiling rose" branch of the rule
+# above, taken deliberately. The debt is two accessors-with-no-caller-yet, not
+# two new mechanisms, and it comes down when the restore path acquires the
+# caller both are waiting for.
+
+total_ceiling = 132
 
 [[crates]]
 name = "nucleus-node"
-ceiling = 41
+ceiling = 43
 
 [[crates]]
 name = "nucleus-tool-proxy"
