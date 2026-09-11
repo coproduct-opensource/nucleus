@@ -682,6 +682,15 @@ perturb_scorecard_undischarged_law() {
     append_line "$1" 'impl DistributiveLattice for _GateOfGatesAlg {}'
 }
 
+# A crate that declared itself panic-free drops one lint from the list. Six of
+# seven still leaves a way to panic, so the crate stops discharging the `tot`
+# obligation and the family falls. The subject is a real annotation on a real
+# crate, not an appended line, because this is the one family whose declaration
+# is something the tree already carries.
+perturb_scorecard_partial_totality() {
+    sed -i.gate-bak 's/^        clippy::indexing_slicing,$//' "$1" && rm -f "$1.gate-bak"
+}
+
 probe_xtask convergence crates/nucleus-tool-proxy/src/run_gate.rs \
     "one more affine type taken by reference" perturb_convergence_linearity
 probe_xtask bound crates/nucleus-tool-proxy/src/run_gate.rs \
@@ -690,6 +699,9 @@ probe_xtask scorecard crates/nucleus-tool-proxy/src/run_gate.rs \
     "a family's pin gone slack under it" perturb_scorecard_slack
 probe_xtask scorecard crates/nucleus-tool-proxy/src/pod_mgmt.rs \
     "a law the tree declares and nothing discharges" perturb_scorecard_undischarged_law
+probe_xtask scorecard crates/nucleus-pca/src/lib.rs \
+    "a crate's totality declaration losing one of its seven lints" \
+    perturb_scorecard_partial_totality
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask pin-parity ci/lean/lean-toolchain \
