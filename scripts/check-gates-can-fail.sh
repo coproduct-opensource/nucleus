@@ -170,8 +170,26 @@ probe_xtask() {
     local sub="$1" target="$2" desc="$3"
     shift 3
 
-    if [[ "$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null | grep -cvE '^[[:space:]]*#')" -eq 0 ]]; then
+    local invocations
+    invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
+        | grep -vE '^[[:space:]]*#' \
+        | grep -oE "xtask -- $sub[^\"'\`|]*" \
+        | sed -E "s/xtask -- $sub//; s/^[[:space:]]+//; s/[[:space:]]+\$//")"
+    if [[ -z "$(printf '%s' "$invocations")" ]] && ! grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null | grep -qvE '^[[:space:]]*#'; then
         echo "  FAIL  xtask $sub — no workflow invokes it"
+        failures=$((failures + 1))
+        return
+    fi
+    # CI-PARITY. probe() has carried this guard for shell gates since a probe ran a
+    # gate with different flags than CI does; probe_xtask shipped WITHOUT it and
+    # invokes flaglessly, so a gate CI calls with arguments would be probed as a
+    # different command and nothing would say so. `scoreboard-ratchet` is exactly
+    # that shape — CI passes `--current scoreboard.json --baseline ...`, and
+    # `scoreboard.json` is generated in the job and is not in the tree.
+    if ! printf '%s\n' "$invocations" | grep -qx ""; then
+        echo "  FAIL  xtask $sub — CI invokes it with flags ($(printf '%s' "$invocations" | head -1))"
+        echo "        but probe_xtask runs it bare. Probing a gate differently from CI"
+        echo "        tests something CI does not run."
         failures=$((failures + 1))
         return
     fi
