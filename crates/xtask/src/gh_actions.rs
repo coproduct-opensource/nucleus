@@ -6,11 +6,12 @@
 //! divergence is invisible until the numbers disagree. `ci-facts ingest` would have been the
 //! third copy; this module is what it calls instead.
 //!
-//! **The structs are the UNION of what the two callers read, and nothing more.** Both hit the
+//! **The structs are the UNION of what the callers read, and nothing more.** All three hit the
 //! same endpoints, so every field is present in every response; a caller that does not need
-//! `steps` simply ignores it. Fields a later caller will want — a job's `id`, a step's `number`,
-//! a run's `head_sha` — are deliberately absent until something reads them, because this change
-//! claims to be a refactor and a field nobody reads is not one.
+//! `steps` simply ignores it. When this module was extracted it carried a job's `id`, a step's
+//! `number` and a run's `head_sha` for a caller that did not exist yet, and the compiler was
+//! right to call them dead: they came out, and came back with `ci_facts`, which is the first
+//! thing here that identifies a row rather than summarising one.
 //!
 //! The `Option` fields are the ones GitHub really does omit (a job that never started has no
 //! `started_at`); `#[serde(default)]` covers the two the *list* endpoints leave out.
@@ -46,6 +47,12 @@ pub struct Run {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+    /// The commit the run is about. `ci_facts` keys a run to a tree by it; the two reporters do
+    /// not name it because a report is already scoped to one commit or one window.
+    #[serde(default)]
+    pub head_sha: String,
+    #[serde(default)]
+    pub conclusion: Option<String>,
 }
 
 /// `GET …/actions/runs/{id}/jobs` — the envelope.
@@ -60,6 +67,10 @@ pub struct JobList {
 /// responses; both callers fill it in from the enclosing run when it comes back empty.
 #[derive(Deserialize, Clone)]
 pub struct Job {
+    /// GitHub's own identifier. The two reporters group by NAME, which is enough to summarise
+    /// and not enough to store: two jobs in one window can share a name.
+    #[serde(default)]
+    pub id: u64,
     pub name: String,
     pub status: String,
     pub conclusion: Option<String>,
@@ -76,6 +87,9 @@ pub struct Job {
 /// One step of one job.
 #[derive(Deserialize, Clone)]
 pub struct Step {
+    /// The step's position in its job. Names repeat within a job (`Post …`); positions do not.
+    #[serde(default)]
+    pub number: u32,
     pub name: String,
     pub conclusion: Option<String>,
     pub started_at: Option<String>,

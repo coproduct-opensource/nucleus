@@ -1,9 +1,18 @@
 name: CI metrics (OpenTelemetry)
 
-# Every 15 minutes: push the GitHub side of CI throughput — per-job queue
-# wait and duration, completions by conclusion, merge-queue depth — to an
-# OpenTelemetry collector over OTLP/HTTP. `cargo xtask ci-otel`
-# (crates/xtask/src/ci_otel.rs) does the pull and the export.
+# Every 15 minutes, two exports of the same window, and they are not
+# alternatives:
+#
+#   * `cargo xtask ci-facts ingest` POSTs the window's terminal runs, jobs
+#     and STEPS as rows to gatehouse's `/v1/{tenant}/ci-facts`, where they
+#     stay and can be re-cut later. Every one of F-80, F-81 and F-82 in
+#     gatehouse's FINDINGS.md was a finer cut of data already gathered, and
+#     a histogram bucket cannot be re-cut.
+#   * `cargo xtask ci-otel` pushes AGGREGATES to an OTLP collector, for a
+#     live dashboard.
+#
+# Each runs only when its destination is configured, and says so when it is
+# not. Neither reddens the workflow for an address nobody set.
 #
 # The collector this pointed at — `otel-collector.ci-metrics.svc.cluster.local`
 # on the pci-k3s cluster (k8s/ci-metrics) — stopped at the Fly cutover on
@@ -19,11 +28,15 @@ name: CI metrics (OpenTelemetry)
 # A variable can name a reachable endpoint from anywhere, so reachability is
 # the operator's business now and the runner-environment check is gone.
 #
-# To send these to gatehouse, note that gatehouse-controld has no OTLP ingest
-# today: `GET /v1/{tenant}/metrics` SERVES Prometheus text it computes from its
-# own store (log size, queue length, paused, refutations, the 7-day roll-up hit
-# ratio) and accepts no pushes. Pointing this at gatehouse means adding an
-# ingest route there first, then setting CI_OTEL_ENDPOINT to its base URL.
+# The paragraph that used to stand here said gatehouse-controld had no
+# ingest route and that pointing this at gatehouse meant adding one first.
+# That step was taken: `POST /v1/{tenant}/ci-facts`. It is NOT an OTLP
+# endpoint and CI_OTEL_ENDPOINT must not be set to it — it takes rows, not
+# metrics, and it is bearer-protected. Set GATEHOUSE_URL (a variable) and
+# GATEHOUSE_TOKEN (a secret) instead.
+#
+# `GET /v1/{tenant}/metrics` still SERVES Prometheus text it computes from
+# its own store and still accepts no pushes; that is unchanged.
 
 on:
   schedule:
@@ -44,28 +57,56 @@ concurrency:
 
 jobs:
   export:
-    name: Push job timings to the collector
+    name: Store the window's job facts, and push its aggregates
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Is a collector named?
+      - name: Is anywhere to send this configured?
         id: where
         env:
           ENDPOINT: ${{ vars.CI_OTEL_ENDPOINT }}
+          GATEHOUSE: ${{ vars.GATEHOUSE_URL }}
         run: |
           if [ -n "$ENDPOINT" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "otel=true" >> "$GITHUB_OUTPUT"
           else
-            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "otel=false" >> "$GITHUB_OUTPUT"
             echo "::notice::CI_OTEL_ENDPOINT is not set: there is no collector to export to (see the header of this workflow)"
           fi
+          if [ -n "$GATEHOUSE" ]; then
+            echo "facts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "facts=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GATEHOUSE_URL is not set: this window's rows are pulled nowhere and are gone when the run ends"
+          fi
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        if: ${{ steps.where.outputs.run == 'true' }}
+        if: ${{ steps.where.outputs.otel == 'true' || steps.where.outputs.facts == 'true' }}
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
+      # Exit 3 is "the window had no terminal jobs", which is a quiet fleet or
+      # a broken puller and this command cannot tell them apart. It is not a
+      # failure of THIS run, so it is reported as a notice and not a red — but
+      # it is also not a success, which is why the command refuses to print one.
+      - name: cargo xtask ci-facts ingest
+        if: ${{ steps.where.outputs.facts == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINCE: ${{ inputs.since || '15' }}
+          GATEHOUSE_URL: ${{ vars.GATEHOUSE_URL }}
+          GATEHOUSE_TOKEN: ${{ secrets.GATEHOUSE_TOKEN }}
+        run: |
+          set +e
+          cargo xtask ci-facts ingest --since "$SINCE"
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "::notice::no terminal jobs in the window"
+            exit 0
+          fi
+          exit "$code"
       - name: cargo xtask ci-otel
-        if: ${{ steps.where.outputs.run == 'true' }}
+        if: ${{ steps.where.outputs.otel == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SINCE: ${{ inputs.since || '15' }}

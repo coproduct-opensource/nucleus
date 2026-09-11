@@ -33,6 +33,27 @@ struct Cli {
     command: Command,
 }
 
+/// `ci-facts` has one verb today and will have two: `ingest` writes, and a `query` that reads
+/// belongs with the rules that answer, not here.
+#[derive(Subcommand)]
+enum CiFactsCmd {
+    /// Pull a window and POST it to gatehouse.
+    Ingest {
+        /// Window in minutes; a job counts when its `completed_at` is inside.
+        #[arg(long, default_value_t = 15)]
+        since: u64,
+        /// gatehouse base URL (default: `$GATEHOUSE_URL`). The token is `$GATEHOUSE_TOKEN`.
+        #[arg(long)]
+        url: Option<String>,
+        /// Tenant to write the facts under.
+        #[arg(long, default_value = "nucleus")]
+        tenant: String,
+        /// Print the facts instead of posting them.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Inventory repo shell scripts and flag which are xtask port candidates.
@@ -144,6 +165,13 @@ enum Command {
         #[arg(long)]
         baseline: String,
     },
+    /// Pull the last N minutes of terminal GitHub Actions runs, jobs and steps
+    /// and POST them to gatehouse's `/v1/{tenant}/ci-facts`, where they can be
+    /// queried later. See crates/xtask/src/ci_facts.rs.
+    CiFacts {
+        #[command(subcommand)]
+        what: CiFactsCmd,
+    },
     /// Push the last N minutes of GitHub Actions job timings to an OTLP
     /// endpoint as OpenTelemetry metrics (queue wait, duration, conclusions,
     /// merge-queue depth). See crates/xtask/src/ci_otel.rs.
@@ -208,6 +236,7 @@ enum CiSpecCmd {
     },
 }
 
+mod ci_facts;
 mod ci_otel;
 mod ci_spec;
 mod ci_timings;
@@ -232,6 +261,18 @@ fn main() -> Result<()> {
         } => policy_gate(&base, &candidate, changed_files.as_deref()),
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
+        Command::CiFacts {
+            what:
+                CiFactsCmd::Ingest {
+                    since,
+                    url,
+                    tenant,
+                    dry_run,
+                },
+        } => {
+            let outcome = ci_facts::ingest(since, url, tenant, dry_run)?;
+            std::process::exit(outcome.exit_code())
+        }
         Command::SelfPin => match self_pin::check(&std::env::current_dir()?)? {
             // 2 is "could not look", which is never a pass. Mapped here rather than
             // exited from inside the check, so a unit test calling it survives.
