@@ -43,6 +43,15 @@
 //! accurate `unused-wrapper` warning for the entry in `deny.toml`: the
 //! permission is declared ahead of its first use.
 
+// ADR 0007 B-3/E-2: a wildcard arm over an enum silently absorbs variants added
+// later, which is how a sum type loses a case without anyone reading the diff.
+// Denied here rather than workspace-wide because the workspace baseline is ~200
+// sites; this crate measured ZERO on 2026-09-11, so the deny costs no cleanup
+// and only forbids a regression. A crate-level attribute rather than a
+// `[lints.clippy]` table because cargo rejects that alongside the
+// `[lints] workspace = true` these crates already carry.
+#![deny(clippy::wildcard_enum_match_arm)]
+
 pub use nucleus_cred_protocol::TaskRequestEnvelope;
 
 /// Who is asking, **as established by the host**.
