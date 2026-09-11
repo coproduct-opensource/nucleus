@@ -13736,6 +13736,7 @@ dependencies = [
  "ck-types",
  "clap",
  "hex",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",
