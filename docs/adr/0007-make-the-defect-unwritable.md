@@ -467,8 +467,19 @@ so that "review" is on the record as a gap rather than mistaken for coverage.
 | tier | mechanism | where |
 |---|---|---|
 | **clippy** | a workspace lint, or a `clippy.toml` entry | `clippy.toml` (new in this ADR), `[workspace.lints]` in `Cargo.toml` |
-| **dylint** | a pass with UI tests | `tools/nucleus-*-lint/` — six exist today |
+| **dylint** | a pass with UI tests | `tools/nucleus-*-lint/` — six exist, **four are wired** |
 | **review** | no mechanical check is possible yet | stated, not hidden |
+
+**Which four.** `mediated`, `cb4a_separation`, `identity-isolation` and `egress` run in
+`.github/workflows/dylint-separation.yml`. **`nucleus-observed-lint` and
+`nucleus-guarantee-lint` are built and wired to nothing** — no workflow, no script;
+`guarantee` appears in the tree only as an `exclude` comment in the root manifest. The
+line above read "six exist today", which counts crates rather than coverage and is the
+membership-versus-enforcement confusion ADR 0006 is about, inside this ADR's own
+enforcement table. `observed` is the source-side dual of `mediated` — it asks whether
+every path that ingests external bytes reaches `FlowTracker::observe*` — so the gap it
+leaves is an antecedent the IFC theorems assume and nothing checks. Wiring it is its own
+change; recorded here so the number is coverage, not inventory.
 
 ### A-19 applies to every lint in this ADR
 
