@@ -73,6 +73,22 @@ enum Command {
     /// checksum, the aeneas/charon pins, the first-party lean-toolchain files. Decided
     /// from committed declarations alone — no source tree, no toolchain.
     PinParity,
+    /// A gate that is not running looks exactly like a gate that is passing.
+    /// GitHub drops scheduled runs entirely under load -- not failed, not
+    /// cancelled, never created -- and on 2026-09-09 `ci-assurance` lost about
+    /// seven in a row with no notification (#2652). Reds when the newest
+    /// conclusion is older than a multiple of the schedule's own period.
+    ScheduleLiveness {
+        /// `owner/repo` to ask about.
+        #[arg(long, default_value = "coproduct-opensource/nucleus")]
+        repo: String,
+        /// Workflow file name under `.github/workflows`.
+        #[arg(long, default_value = "ci-assurance.yml")]
+        workflow: String,
+        /// How many periods may pass before absence is a finding.
+        #[arg(long, default_value_t = 3)]
+        periods: u32,
+    },
     /// Clippy reads ONE `clippy.toml` -- the nearest -- and does not merge, so a
     /// crate-level config silently drops every root entry. Measured: the two entries
     /// ADR 0007 wired were not enforced in `nucleus-tool-proxy`, which holds the HTTP
@@ -290,6 +306,7 @@ mod lean_action_builds;
 mod line_ratchet;
 mod pin_parity;
 mod rerun_plan;
+mod schedule_liveness;
 mod scoreboard;
 mod self_pin;
 
@@ -313,6 +330,14 @@ fn main() -> Result<()> {
             self_pin::Outcome::Clean => Ok(()),
         },
         Command::PinParity => pin_parity::check(&std::env::current_dir()?),
+        Command::ScheduleLiveness {
+            repo,
+            workflow,
+            periods,
+        } => match schedule_liveness::run(&repo, &workflow, periods) {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::ClippyConfig => match clippy_config::run(&std::env::current_dir()?)? {
             0 => Ok(()),
             code => std::process::exit(code),
