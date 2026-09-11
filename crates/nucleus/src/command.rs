@@ -1459,7 +1459,13 @@ mod tests {
         // concurrent reader, and the test harness is multi-threaded. This is
         // a real caveat, not a formality: it is sound here only because the
         // key is unique to this test, so no other test reads or writes it.
-        unsafe { std::env::set_var("TEST_PARENT_SECRET", "super-secret-value") };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::set_var("TEST_PARENT_SECRET", "super-secret-value")
+        };
 
         let tmp = tempdir().unwrap();
         let policy = test_policy();
@@ -1492,7 +1498,13 @@ mod tests {
         // concurrent reader, and the test harness is multi-threaded. This is
         // a real caveat, not a formality: it is sound here only because the
         // key is unique to this test, so no other test reads or writes it.
-        unsafe { std::env::remove_var("TEST_PARENT_SECRET") };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::remove_var("TEST_PARENT_SECRET")
+        };
     }
 
     #[test]
@@ -1576,7 +1588,13 @@ mod tests {
         // concurrent reader, and the test harness is multi-threaded. This is
         // a real caveat, not a formality: it is sound here only because the
         // key is unique to this test, so no other test reads or writes it.
-        unsafe { std::env::set_var("TEST_RUN_ARGS_SECRET", "leaked-secret") };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::set_var("TEST_RUN_ARGS_SECRET", "leaked-secret")
+        };
 
         let tmp = tempdir().unwrap();
         let policy = test_policy();
@@ -1628,7 +1646,13 @@ mod tests {
         // concurrent reader, and the test harness is multi-threaded. This is
         // a real caveat, not a formality: it is sound here only because the
         // key is unique to this test, so no other test reads or writes it.
-        unsafe { std::env::remove_var("TEST_RUN_ARGS_SECRET") };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::remove_var("TEST_RUN_ARGS_SECRET")
+        };
     }
 
     // ───────────────────────────────────────────────────────────────────────
@@ -1895,7 +1919,13 @@ mod tests {
             // concurrent reader, and the test harness is multi-threaded. This is
             // a real caveat, not a formality: it is sound here only because the
             // key is unique to this test, so no other test reads or writes it.
-            unsafe { std::env::set_var("TEST_ASYNC_PARENT_SECRET", "leaked") };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "ADR 0007 H-1: test-only process-global mutation"
+            )]
+            unsafe {
+                std::env::set_var("TEST_ASYNC_PARENT_SECRET", "leaked")
+            };
 
             let tmp = tempdir().unwrap();
             let policy = test_policy();
@@ -1943,7 +1973,13 @@ mod tests {
 
             // key is unique to this test, so no other test reads or writes it.
 
-            unsafe { std::env::remove_var("TEST_ASYNC_PARENT_SECRET") };
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "ADR 0007 H-1: test-only process-global mutation"
+            )]
+            unsafe {
+                std::env::remove_var("TEST_ASYNC_PARENT_SECRET")
+            };
         }
     }
 

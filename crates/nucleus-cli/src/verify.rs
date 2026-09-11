@@ -36,6 +36,8 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
+use portcullis::gate_class::deny_code;
+use portcullis::kernel::DenyReason;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -584,6 +586,16 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 /// body reading `dlc_admission_denied`;
 /// anything else means a different control refused and this check proves
 /// nothing about admission.
+///
+/// **How that reason is recognised, and why it is not typed here.** This used to
+/// grep the body for the string `DlcAdmissionDenied`, because the wire carried
+/// the Rust struct literal — `format!("{other:?} ...")` in the tool proxy's
+/// deny-reason mapping. #2758 replaced that with one producer,
+/// [`DenyReason::describe`], so the variant NAME left the wire by design and this
+/// assertion could never match again: the check that proves the admission gate is
+/// on the live path could only fail, and `main` was red for two and a half hours
+/// before anything said so. The marker is now BUILT from that same producer, so a
+/// reworded sentence moves this with it instead of silently disarming it.
 fn check_admission_gate(pod: &Pod) -> Result<()> {
     // First: was the gate ARMED at all? The proxy's health endpoint reports
     // whether NUCLEUS_DLC_* provisioning reached it — without this, a refusal
@@ -627,16 +639,28 @@ fn check_admission_gate(pod: &Pod) -> Result<()> {
     // the check depended on Debug output as a wire format, and broke the moment
     // that was replaced with a written sentence for the human reading it. The
     // code is stable and intentional; the prose is free to change.
-    if !body.contains("dlc_admission_denied") {
+    //
+    // ASKED FOR rather than typed. `gate_class::deny_code` is the one producer
+    // of these codes, and a literal here could drift from it with nothing
+    // comparing the two — which is the same shape as the defect above, one
+    // layer along. `deny_code_matches_the_serde_tag` already ties that producer
+    // to the serde tag, so deriving from it puts this check inside that chain.
+    let code = deny_code(&DenyReason::DlcAdmissionDenied {
+        detail: String::new(),
+    });
+    if !body.contains(code) {
         bail!(
             "run was refused ({status}) but NOT by the admission gate: {}\n\
              A refusal for another reason (lattice, scope, IFC) does not prove\n\
-             the verified-admission gate fired.",
+             the verified-admission gate fired.\n\
+             Looked for the deny code {code:?}, which is what gate_class::deny_code\n\
+             gives DlcAdmissionDenied — if the wire has changed shape again, fix it\n\
+             there, not here.",
             body.trim()
         );
     }
     println!("  [OK] uncredentialed operation refused by the verified-admission gate");
-    println!("       run without an issuer credential -> {status} (DlcAdmissionDenied)");
+    println!("       run without an issuer credential -> {status} ({code})");
     Ok(())
 }
 
@@ -1188,5 +1212,56 @@ mod leak_sweep {
         let sneaky = format!("{}some_other_line SECRET={CANARY}\n", clean_sweep());
         let err = assess_leak_sweep(&sneaky, CANARY).expect_err("the value is on the console");
         assert!(!format!("{err}").contains(CANARY));
+    }
+}
+
+#[cfg(test)]
+mod admission_marker_tests {
+    use portcullis::gate_class::deny_code;
+    use portcullis::kernel::DenyReason;
+
+    /// The body a real refusal produced, copied verbatim from the job log of the
+    /// run that went red on 2026-09-11 (nucleus #2798, quickstart-boot) — before
+    /// #2762 put `deny_code` on the wire. Frozen because it is the evidence that
+    /// the old assertion was unsatisfiable rather than flaky.
+    const OBSERVED_BEFORE_DENY_CODE: &str = r#"{"error":"kernel denied: no signed admission credential covers it (no issuer-signed credential presented for this operation) (operation run_bash on true)","kind":"kernel_denied"}"#;
+
+    /// The regression, pinned. `check_admission_gate` asserted
+    /// `body.contains("DlcAdmissionDenied")`, and that string reached the wire
+    /// only because the proxy formatted the reason with `{:?}`. #2758 replaced
+    /// that with a written sentence, so the assertion could not match this body
+    /// and could not match any other: not flaky, unsatisfiable. `main` was red on
+    /// it for two and a half hours and the merge queue took nine more PRs through,
+    /// because the check is not in `ci/required-checks.txt`.
+    #[test]
+    fn the_debug_name_assertion_could_never_have_passed() {
+        assert!(
+            !OBSERVED_BEFORE_DENY_CODE.contains("DlcAdmissionDenied"),
+            "the Debug variant name is on the wire again — re-decide which marker this check uses"
+        );
+    }
+
+    /// `kind` is `kernel_denied` for sixteen variants, so a check keyed on it
+    /// would pass for a refusal by the lattice, by scope, or by IFC — precisely
+    /// what `check_admission_gate` exists to rule out. The code has to tell them
+    /// apart, and that is asserted here rather than assumed of it.
+    #[test]
+    fn the_deny_code_discriminates_between_variants() {
+        let admission = deny_code(&DenyReason::DlcAdmissionDenied {
+            detail: String::new(),
+        });
+        for other in [
+            DenyReason::EgressBlocked {
+                host: "api.github.com".to_string(),
+                policy_reason: "not in allowlist".to_string(),
+            },
+            DenyReason::InsufficientCapability,
+        ] {
+            assert_ne!(
+                admission,
+                deny_code(&other),
+                "deny_code gives {other:?} the admission gate's code"
+            );
+        }
     }
 }

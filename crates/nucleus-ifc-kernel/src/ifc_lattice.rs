@@ -550,3 +550,80 @@ impl IFCLabel {
             && self.derivation.leq(other.derivation)
     }
 }
+
+#[cfg(test)]
+mod default_is_hand_written_tests {
+    use super::*;
+
+    /// ADR 0007 B-1: no `#[derive(Default)]` on a security-relevant type —
+    /// "the derive does not know which end of the lattice is safe."
+    ///
+    /// [`IFCLabel`] obeys that rule the way B-1 asks: it does **not** derive
+    /// `Default`, it writes one by hand, and that hand-written value
+    /// deliberately disagrees with what a derive would have produced.
+    ///
+    /// The disagreement is the whole point, and it is invisible without this
+    /// test. `IntegLevel` carries `#[default] Trusted` and `AuthorityLevel`
+    /// carries `#[default] Directive` — the *most* trusting value each lattice
+    /// has. Those attributes exist for the enums' own sake; a struct that
+    /// derived `Default` over these fields would silently label unlabelled data
+    /// maximally trusted and able to instruct the agent.
+    ///
+    /// So `IFCLabel`'s hand-written default overrides exactly those two. If
+    /// someone later "simplifies" it to `#[derive(Default)]`, nothing else in
+    /// the tree notices — the type still compiles, still has a `Default`, and
+    /// every label built from it is silently promoted. This test is what
+    /// notices.
+    ///
+    /// Measured 2026-09-11: the per-enum defaults are not reachable on their
+    /// own — nothing calls `IntegLevel::default()` and no struct holding these
+    /// fields derives `Default`. The risk this pins is prospective, which is
+    /// when a guard is cheap.
+    #[test]
+    fn the_hand_written_label_default_refuses_the_trusting_end() {
+        let hand = IFCLabel::default();
+
+        assert_ne!(
+            hand.integrity,
+            IntegLevel::default(),
+            "IFCLabel::default() must NOT take IntegLevel's derive default \
+             ({:?}); a derived Default here labels unlabelled data trusted",
+            IntegLevel::default()
+        );
+        assert_eq!(
+            hand.integrity,
+            IntegLevel::Untrusted,
+            "the hand-written default is Untrusted on purpose"
+        );
+
+        assert_ne!(
+            hand.authority,
+            AuthorityLevel::default(),
+            "IFCLabel::default() must NOT take AuthorityLevel's derive default \
+             ({:?}); a derived Default here lets unlabelled data instruct the agent",
+            AuthorityLevel::default()
+        );
+        assert_eq!(
+            hand.authority,
+            AuthorityLevel::NoAuthority,
+            "the hand-written default is NoAuthority on purpose"
+        );
+    }
+
+    /// Non-vacuity: the test above would pass against a `Default` that simply
+    /// differed from the derives in any direction at all. These two dimensions
+    /// are contravariant — join is `min` — so the safe end is the LOW end, and
+    /// the hand-written value must sit at or below what a derive would give.
+    #[test]
+    fn the_override_moves_toward_less_privilege_not_merely_away() {
+        let hand = IFCLabel::default();
+        assert!(
+            hand.integrity < IntegLevel::default(),
+            "integrity is contravariant; the safe default is lower, not just different"
+        );
+        assert!(
+            hand.authority < AuthorityLevel::default(),
+            "authority is contravariant; the safe default is lower, not just different"
+        );
+    }
+}

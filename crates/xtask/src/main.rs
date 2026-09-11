@@ -73,6 +73,11 @@ enum Command {
     /// checksum, the aeneas/charon pins, the first-party lean-toolchain files. Decided
     /// from committed declarations alone — no source tree, no toolchain.
     PinParity,
+    /// Clippy reads ONE `clippy.toml` -- the nearest -- and does not merge, so a
+    /// crate-level config silently drops every root entry. Measured: the two entries
+    /// ADR 0007 wired were not enforced in `nucleus-tool-proxy`, which holds the HTTP
+    /// and MCP effect boundary. Decided from committed files alone.
+    ClippyConfig,
     /// The committed `POOLS` default in ci/fly-runner/manager.toml must be a
     /// configuration the manager accepts, checked with the manager's own validator.
     FlyPools,
@@ -275,6 +280,7 @@ mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
 mod ci_timings;
+mod clippy_config;
 mod fly_pools;
 mod gatehouse_pin;
 mod inert_authority;
@@ -307,6 +313,10 @@ fn main() -> Result<()> {
             self_pin::Outcome::Clean => Ok(()),
         },
         Command::PinParity => pin_parity::check(&std::env::current_dir()?),
+        Command::ClippyConfig => match clippy_config::run(&std::env::current_dir()?)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {

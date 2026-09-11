@@ -688,6 +688,10 @@ mod tests {
         // doc comment above: SPIFFE_ENDPOINT_SOCKET is mutated by this test and
         // no other, both scenarios run sequentially inside it, and no lock is
         // held across an `.await`. The original value is restored at the end.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
         unsafe {
             std::env::set_var(
                 SPIFFE_ENDPOINT_ENV,
@@ -702,7 +706,13 @@ mod tests {
 
         // (2) No env configured + (on a dev/CI host) no default socket ⇒ refuse.
         // SAFETY: as above.
-        unsafe { std::env::remove_var(SPIFFE_ENDPOINT_ENV) };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::remove_var(SPIFFE_ENDPOINT_ENV)
+        };
         let none = auto_detect_ca_strict().await;
         if !std::path::Path::new(DEFAULT_SPIRE_SOCKET).exists() {
             assert!(
@@ -714,7 +724,15 @@ mod tests {
         // SAFETY: as above. Restores whatever the environment held on entry.
         unsafe {
             match prev {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "ADR 0007 H-1: test-only process-global mutation"
+                )]
                 Some(v) => std::env::set_var(SPIFFE_ENDPOINT_ENV, v),
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "ADR 0007 H-1: test-only process-global mutation"
+                )]
                 None => std::env::remove_var(SPIFFE_ENDPOINT_ENV),
             }
         }
