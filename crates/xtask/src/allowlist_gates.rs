@@ -223,16 +223,21 @@ const GATES: &[Gate] = &[
 fn production_lines(src: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     let mut skip = false;
-    let mut brace: i64 = 0;
+    // Unsigned and saturating, where the awk is signed and tests `brace <= 0`. The two agree on
+    // the only thing the depth is read for: awk lets the count go negative and ends the skip at or
+    // below zero, saturation floors it at zero and ends the skip there. Written this way because
+    // `as i64` would be two more entries under a clippy cast ratchet that has no headroom
+    // (`FINDINGS.md` F-27), and a cast that exists only to model a negative number nothing reads is
+    // the wrong thing to spend them on.
+    let mut brace: usize = 0;
     let mut pending = false;
     for (i, line) in src.lines().enumerate() {
-        let opens = line.matches('{').count() as i64;
-        let closes = line.matches('}').count() as i64;
+        let opens = line.matches('{').count();
+        let closes = line.matches('}').count();
         if skip {
-            brace += opens - closes;
-            if brace <= 0 {
+            brace = brace.saturating_add(opens).saturating_sub(closes);
+            if brace == 0 {
                 skip = false;
-                brace = 0;
             }
             continue;
         }
@@ -243,11 +248,10 @@ fn production_lines(src: &str) -> Vec<(usize, String)> {
         if pending {
             if opens > 0 {
                 skip = true;
-                brace = opens - closes;
+                brace = opens.saturating_sub(closes);
                 pending = false;
-                if brace <= 0 {
+                if brace == 0 {
                     skip = false;
-                    brace = 0;
                 }
                 continue;
             }
@@ -516,7 +520,9 @@ pub fn check(root: &Path) -> Result<()> {
     // A run that scanned the tree and matched nothing anywhere is not a pass; it is a broken
     // checkout, a moved crate, or a `scope` that no longer exists.
     if total_matched == 0 {
-        bail!("no gate matched any production line — the scan found nothing to decide (exit 2 shape: could not look)");
+        bail!(
+            "no gate matched any production line — the scan found nothing to decide (exit 2 shape: could not look)"
+        );
     }
     if failures > 0 {
         bail!("{failures} violation(s) across the scan-vs-allowlist family");
@@ -613,6 +619,9 @@ mod tests {
             .map(|(_, l)| l)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(joined.contains("\"x\""), "the `use` swallowed the fn: {joined}");
+        assert!(
+            joined.contains("\"x\""),
+            "the `use` swallowed the fn: {joined}"
+        );
     }
 }
