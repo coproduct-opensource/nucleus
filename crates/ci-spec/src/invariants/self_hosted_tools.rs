@@ -127,7 +127,14 @@ pub fn check(m: &Model) -> Vec<Finding> {
     for job in pin.difference(&live) {
         out.push(finding(
             "CI-I10-STALE",
-            Severity::Info,
+            // Medium, not Info. The header above says a stale entry is a finding "so the file
+            // cannot rot into a list nobody reads" -- and under Info it rotted anyway: on
+            // 2026-09-11 seven of sixteen entries were stale, all reported and none acted on,
+            // because an advisory is something a reader scrolls past. A pin that may only
+            // shrink has to be able to fail in BOTH directions or the shrink half is prose.
+            // This file is not under .github/workflows/, so the required-context downgrade in
+            // lib.rs does not apply to it and Medium means what it says.
+            Severity::Medium,
             INVENTORY,
             0,
             job,
