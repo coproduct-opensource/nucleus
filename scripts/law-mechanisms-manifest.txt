@@ -22,6 +22,24 @@
 #
 #   CLASS | LAW | mechanism | decl_anchor | use_anchor | file | note
 #
+# Two classes. D is the original; W was earned.
+#
+# Class W — WIRED: the mechanism IS called, and the row exists because its
+# finding is something OTHER than "nobody calls it". Its check is the DUAL of
+# D's: the use-anchor (or its `Self::` spelling, inside an impl of the row's own
+# type) must appear in some production region, and a W row that loses its only
+# call site is a finding — a note about live code silently becoming a note about
+# dead code is the same class of wrong this file exists to prevent, pointing the
+# other way.
+#
+# W exists because a D row was false. `Kernel::with_isolation` was declared dead
+# and the gate agreed, while `Kernel::new` called it as `Self::with_isolation(..)`
+# — a spelling the anchor could not match, in the one file the scan skipped. The
+# lesson recorded here rather than only in the commit: a string anchor decides
+# what it can spell, so the population it certifies is bounded by the spellings
+# someone thought of. `cargo xtask reach-export` is the answer that does not
+# depend on that, and it is how this was found.
+#
 # Class D — declared, with no live call site. The gate asserts, over the
 # production region (tests/, benches/, examples/, fuzz/, *_tests.rs and
 # #[cfg(test)] blocks all excluded) of every file `git ls-files` reports:
@@ -58,7 +76,8 @@ D | risk closure cl(S) | ConstraintNucleus | pub struct ConstraintNucleus | Cons
 D | fs containment | PathLattice::with_work_dir | pub fn with_work_dir | with_work_dir( | crates/portcullis/src/path.rs | the sandbox root. All 11 callers are tests, three of them the adversarial suites that prove path-traversal containment — of a configuration production never builds.
 D | lineage composition | ProvenanceDAG | pub struct ProvenanceDAG | ProvenanceDAG | crates/portcullis-core/src/provenance_node.rs | a complete content-addressed Merkle DAG with verify_integrity/verify_all. Nothing constructs one.
 D | IFC admissibility rules | Kernel::set_policy_rules | pub fn set_policy_rules | set_policy_rules( | crates/portcullis/src/kernel.rs | .nucleus/policy.toml rules never load, so the kernel's rule-evaluation branch is unreachable.
-D | isolation is enforced | Kernel::with_isolation | pub fn with_isolation | Kernel::with_isolation( | crates/portcullis/src/kernel.rs | every production kernel is built at IsolationLattice::localhost(), so the isolation-minimum and airgap gates have never fired. SECURITY_TODO #28.
+W | isolation is enforced | Kernel::with_isolation | pub fn with_isolation | Kernel::with_isolation( | crates/portcullis/src/kernel.rs | WAS class D, and the claim was false. Kernel::new calls it as `Self::with_isolation(initial, IsolationLattice::localhost())` at kernel.rs:590 -- a spelling the use-anchor cannot match, in the one file the use-anchor scan skipped. Two holes stacked and the row read as true for as long as it existed. Both are closed (see self_sites in crates/xtask/src/law_mechanisms.rs); the row is reclassified rather than dropped because the finding in it survives and is narrower than D: the mechanism IS called, at exactly one constant point of its domain, so every production kernel is built at IsolationLattice::localhost() and the isolation-minimum and airgap gates have never fired. Wiring it and exercising one point of it are different properties with different fixes, and only the second is still open. SECURITY_TODO #28.
 D | isolation is enforced | Authorized<A> | pub struct Authorized<A> | require_enforced( | crates/portcullis/src/enforcement.rs | the fabric act-gate: a verified authority AND a posture the backend can enforce, so an enforcement point requiring it cannot act on a decision whose isolation the platform cannot back. Nothing production-side constructs one -- require_enforced('s only caller outside this file is a #[test] at nucleus-policy-cert/src/lib.rs:1138. Its doc says "you cannot obtain Authorized without both halves", and the type derives Clone + Copy with both fields pub, so a caller holding one can rebuild it with either half swapped: the claim is false as written, which is why the row records the mechanism rather than the doc.
 D | complete mediation (no act without a check) | GuardedAction<A> | pub struct GuardedAction<A> | GuardedAction::new( | crates/portcullis/src/guard.rs | the typestate proof that permission was checked, with a private field so only the guard system can mint one. Constructed nowhere outside its own module. Re-exported at lib.rs:296, so the use anchor is the constructor -- exported is not wired, the same reading ConstraintNucleus's row already takes. The wired proof token on this path is CheckProof, which ADR 0006's C2.2 gave a target; GuardedAction is the older, unreached one beside it.
-DEAD_COUNT=9
+DEAD_COUNT=8
+WIRED_COUNT=1

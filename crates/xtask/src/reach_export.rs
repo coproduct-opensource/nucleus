@@ -1395,62 +1395,75 @@ fn print_report(g: &Graph, mechs: &[MechanismRow]) {
 
     println!("\n── the hand-maintained ledgers, as queries ──");
 
-    // A law-mechanism row names either a function or a type. This index is a
-    // CALL graph, so it can answer the reach question for the former and not
-    // the latter — a type's "use" is a construction or a trait impl, not a
-    // call. Reporting both under one number would look like a disagreement
-    // with the gate when it is a scope boundary, so they are split.
-    let mut fn_rows = 0usize;
-    let mut fn_rows_wired = 0usize;
-    let mut fn_rows_unseen = Vec::new();
+    // A law-mechanism row names either a function or a type. This is a CALL
+    // graph, so it can answer the reach question for the former and not the
+    // latter — a type's "use" is a construction or a trait impl, not a call.
+    // Reporting both under one number would look like a disagreement with the
+    // gate when it is a scope boundary, so they are split.
+    let mut dead_fn_rows = 0usize;
+    let mut dead_fn_rows_wired = Vec::new();
+    let mut wired_rows = 0usize;
+    let mut wired_rows_unreached = Vec::new();
     let mut type_rows = 0usize;
     for m in mechs {
         if !m.decl_anchor.contains("fn ") {
             type_rows += 1;
             continue;
         }
-        fn_rows += 1;
         let declared: Vec<&FnNode> = g
             .fns
             .iter()
             .filter(|f| f.file == m.file && m.decl_anchor.ends_with(&f.name))
             .collect();
-        if declared.is_empty() {
-            fn_rows_unseen.push(m.name.as_str());
-            continue;
-        }
-        if declared
+        let called = declared
             .iter()
-            .any(|d| g.edges.iter().any(|e| e.callee == d.id))
-        {
-            fn_rows_wired += 1;
+            .any(|d| g.edges.iter().any(|e| e.callee == d.id));
+        if m.class == "W" {
+            wired_rows += 1;
+            if !called {
+                wired_rows_unreached.push(m.name.as_str());
+            }
+        } else {
+            dead_fn_rows += 1;
+            if called {
+                dead_fn_rows_wired.push(m.name.as_str());
+            }
         }
     }
     println!(
-        "  law-mechanisms: {} rows declared dead — {type_rows} name a TYPE (out of a call \
-         graph's scope: a type is constructed, not called) and {fn_rows} name a function.",
+        "  {} rows: {type_rows} name a TYPE (out of a call graph's scope — a type is \
+         constructed, not called), {dead_fn_rows} are class-D functions, {wired_rows} class-W.",
         mechs.len()
     );
+    if dead_fn_rows_wired.is_empty() {
+        println!(
+            "  No class-D function row has an inbound production call edge. The gate and \
+                  this index agree."
+        );
+    } else {
+        println!(
+            "  {} class-D function row(s) DO have an inbound call edge: {}. Either a \
+             name-resolved edge is spurious (ambiguity picked the wrong callee) or the gate's \
+             string anchor misses a real call — reconcile by hand.",
+            dead_fn_rows_wired.len(),
+            dead_fn_rows_wired.join(", ")
+        );
+    }
+    if !wired_rows_unreached.is_empty() {
+        println!(
+            "  {} class-W row(s) have NO inbound call edge here: {}. A W row claims the \
+             mechanism is called; if the gate still passes, its anchor is seeing something \
+             this index is not.",
+            wired_rows_unreached.len(),
+            wired_rows_unreached.join(", ")
+        );
+    }
     println!(
-        "  Of the {fn_rows} function rows, this index finds an inbound production call edge \
-         for {fn_rows_wired}. The gate says zero, by construction — a row only exists while \
-         its use-anchor appears nowhere."
+        "  Class W exists because this index disagreed with the gate and was right: \
+         `Kernel::with_isolation` was declared dead while `Kernel::new` called it as \
+         `Self::with_isolation(..)`. Both halves of that hole are closed in \
+         `law_mechanisms::self_sites`."
     );
-    if !fn_rows_unseen.is_empty() {
-        println!(
-            "  {} function row(s) whose declaring fn this index could not locate: {}. \
-             That is this index failing, not the gate.",
-            fn_rows_unseen.len(),
-            fn_rows_unseen.join(", ")
-        );
-    }
-    if fn_rows_wired > 0 {
-        println!(
-            "  A non-zero count above is exactly what read-only mode is for: either a \
-             name-resolved edge is spurious (ambiguity picked the wrong callee) or the \
-             gate's string anchor misses a real call. Reconcile by hand before wiring."
-        );
-    }
 
     let inert = g.demands.iter().filter(|d| d.inert).count();
     println!(

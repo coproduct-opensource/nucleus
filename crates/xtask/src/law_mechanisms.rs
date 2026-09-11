@@ -180,8 +180,14 @@ pub fn decide_dead_code(
 /// One manifest row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
-    /// Currently always `D`. Kept as a field so folding C8's A/B/C in later is
-    /// a parser change and not a format change.
+    /// `D` — declared, with no live call site.
+    /// `W` — wired: the mechanism IS called, and the row exists because the
+    ///       concern in its note is something OTHER than "nobody calls it".
+    ///       Its check is the dual of D's: the use-anchor must appear, and a
+    ///       W row whose call site disappears is a finding, because a note
+    ///       about live code silently becomes a note about dead code.
+    ///
+    /// Folding C8's A/B/C in later stays a parser change, not a format change.
     pub class: char,
     /// The law or property the mechanism is supposed to serve.
     pub law: String,
@@ -206,7 +212,13 @@ pub struct Row {
 #[derive(Debug, Clone)]
 pub struct Manifest {
     pub rows: Vec<Row>,
+    /// Pinned population of class-D rows.
     pub dead_count: usize,
+    /// Pinned population of class-W rows. Pinned for DEAD_COUNT's reason: an
+    /// unpinned population can shrink by deleting a row, which is the failure
+    /// this gate exists to catch, and it does not become less true for a
+    /// different class.
+    pub wired_count: usize,
 }
 
 /// Parse the manifest. Declaration-only: decidable against an empty checkout,
@@ -214,6 +226,7 @@ pub struct Manifest {
 pub fn parse(text: &str) -> Result<Manifest> {
     let mut rows = Vec::new();
     let mut dead_count = None;
+    let mut wired_count = None;
 
     for (lineno, raw) in text.lines().enumerate() {
         let line = raw.trim();
@@ -230,6 +243,16 @@ pub fn parse(text: &str) -> Result<Manifest> {
             }
             continue;
         }
+        if let Some(rest) = line.strip_prefix("WIRED_COUNT=") {
+            let n: usize = rest
+                .trim()
+                .parse()
+                .with_context(|| format!("line {}: WIRED_COUNT is not a number", lineno + 1))?;
+            if wired_count.replace(n).is_some() {
+                bail!("line {}: WIRED_COUNT declared twice", lineno + 1);
+            }
+            continue;
+        }
         let cols: Vec<&str> = line.split('|').map(str::trim).collect();
         if cols.len() != 7 {
             bail!(
@@ -241,7 +264,8 @@ pub fn parse(text: &str) -> Result<Manifest> {
         }
         let class = match cols[0] {
             "D" => 'D',
-            other => bail!("line {}: unknown class {other:?} (want D)", lineno + 1),
+            "W" => 'W',
+            other => bail!("line {}: unknown class {other:?} (want D or W)", lineno + 1),
         };
         if cols[1..6].iter().any(|c| c.is_empty()) {
             bail!(
@@ -263,15 +287,30 @@ pub fn parse(text: &str) -> Result<Manifest> {
     let dead_count = dead_count.context(
         "manifest must pin DEAD_COUNT=<n>; an unpinned population can shrink by deleting a row",
     )?;
-    if dead_count != rows.len() {
+    let wired_count = wired_count.context(
+        "manifest must pin WIRED_COUNT=<n>; DEAD_COUNT's reasoning does not stop applying \
+         because the class changed",
+    )?;
+    let declared_dead = rows.iter().filter(|r| r.class == 'D').count();
+    let declared_wired = rows.iter().filter(|r| r.class == 'W').count();
+    if dead_count != declared_dead {
         bail!(
-            "DEAD_COUNT={dead_count} but {} class-D rows are declared. The pin is exact on \
-             purpose: a slack pin lets a row vanish unnoticed, which is the failure this \
-             gate exists to catch.",
-            rows.len()
+            "DEAD_COUNT={dead_count} but {declared_dead} class-D rows are declared. The pin is \
+             exact on purpose: a slack pin lets a row vanish unnoticed, which is the failure \
+             this gate exists to catch."
         );
     }
-    Ok(Manifest { rows, dead_count })
+    if wired_count != declared_wired {
+        bail!(
+            "WIRED_COUNT={wired_count} but {declared_wired} class-W rows are declared. Exact, \
+             for DEAD_COUNT's reason."
+        );
+    }
+    Ok(Manifest {
+        rows,
+        dead_count,
+        wired_count,
+    })
 }
 
 /// Strip `#[cfg(test)]` items and comment lines, leaving the production region.
@@ -279,6 +318,13 @@ pub fn parse(text: &str) -> Result<Manifest> {
 /// Brace-balanced, the same shape `scripts/check-mediation.sh` and
 /// `scripts/check-extracted-callsites.sh` use — deliberately, so the three
 /// gates agree on what "production" means rather than each deciding for itself.
+///
+/// **Stripped lines are BLANKED, not dropped**, so line N of the result is line
+/// N of the source. Every consumer tests the result with `contains`, so a blank
+/// line changes no verdict — but it does change the line numbers a finding
+/// reports, which were previously indices into the stripped region and
+/// therefore pointed at the wrong source line. A gate that names the wrong line
+/// spends a reader's attention before it spends their judgement.
 pub fn production_region(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut skipping = false;
@@ -294,10 +340,12 @@ pub fn production_region(src: &str) -> String {
             if depth == 0 {
                 skipping = false;
             }
+            out.push('\n');
             continue;
         }
         if line.contains("#[cfg(test)]") {
             pending = true;
+            out.push('\n');
             continue;
         }
         if pending {
@@ -308,14 +356,17 @@ pub fn production_region(src: &str) -> String {
                 if depth == 0 {
                     skipping = false;
                 }
+                out.push('\n');
                 continue;
             }
             if line.contains(';') {
                 pending = false;
             }
+            out.push('\n');
             continue;
         }
         if line.trim_start().starts_with("//") {
+            out.push('\n');
             continue;
         }
         out.push_str(line);
@@ -358,6 +409,10 @@ pub enum FindingKind {
     MissingFile { file: String },
     /// The anchor now appears in production elsewhere: it got wired.
     NowWired { sites: Vec<String> },
+    /// A class-W row whose use-anchor appears nowhere in production. The dual
+    /// of `NowWired`: a mechanism recorded as WIRED has lost its only call
+    /// site, so whatever the row's note says about it is now about dead code.
+    NoLongerWired { anchor: String },
 }
 
 /// Decide the manifest against a corpus of `path -> source` pairs.
@@ -403,14 +458,185 @@ pub fn decide(manifest: &Manifest, corpus: &BTreeMap<String, String>) -> Vec<Fin
                 }
             }
         }
-        if !sites.is_empty() {
-            findings.push(Finding {
-                mechanism: row.mechanism.clone(),
-                kind: FindingKind::NowWired { sites },
-            });
+
+        // The declaring file, for the `Self::` spelling only, and only inside
+        // an `impl` of the row's own type. See [`self_anchor`] for why this one
+        // alternate and nothing else, and [`self_sites`] for why the impl
+        // scoping is not optional.
+        if let (Some(alt), Some(ty)) = (self_anchor(&row.use_anchor), anchor_type(&row.use_anchor))
+        {
+            for line_no in self_sites(&production_region(declaring), &ty, &alt) {
+                sites.push(format!("{}:{line_no} (as `{alt}`)", row.file));
+            }
+        }
+
+        match row.class {
+            'W' => {
+                if sites.is_empty() {
+                    findings.push(Finding {
+                        mechanism: row.mechanism.clone(),
+                        kind: FindingKind::NoLongerWired {
+                            anchor: row.use_anchor.clone(),
+                        },
+                    });
+                }
+            }
+            _ => {
+                if !sites.is_empty() {
+                    findings.push(Finding {
+                        mechanism: row.mechanism.clone(),
+                        kind: FindingKind::NowWired { sites },
+                    });
+                }
+            }
         }
     }
     findings
+}
+
+/// The `Self::` spelling of a `Type::method(` use-anchor, if it has one.
+///
+/// # The defect this closes
+///
+/// `Kernel::with_isolation` was declared class D — *no live call site* — and
+/// the gate agreed, for two years of commits. `crates/portcullis/src/kernel.rs`
+/// calls it from `Kernel::new` as `Self::with_isolation(..)`, which the anchor
+/// `Kernel::with_isolation(` cannot match, in a file the use-anchor scan skips
+/// anyway. Two holes stacked, and the row read as true.
+///
+/// # Why only this one alternate, and only in the declaring file
+///
+/// The declaring-file skip is RIGHT for the raw anchor and stays: a row whose
+/// use-anchor is a bare type name (`ProvenanceDAG`) matches its own `impl
+/// ProvenanceDAG` block, so scanning the declaring file for it would report
+/// every such row as wired. `Self::method(` has no such ambiguity — inside the
+/// declaring file it can only mean that type's method.
+///
+/// What is deliberately NOT added: the receiver form `.method(`. Resolving
+/// `x.with_isolation()` needs the type of `x`, and a grep gate does not have
+/// it; matching `.new(` or `.push(` textually would report half the tree as
+/// wired. A false "now wired" is a wrong red, which costs more than the hole.
+/// That is the question `cargo xtask reach-export` exists to answer, and the
+/// answer is not a string search.
+fn self_anchor(use_anchor: &str) -> Option<String> {
+    let (_ty, method) = use_anchor.rsplit_once("::")?;
+    if method.is_empty() {
+        // A bare `Type::` anchor names the type, not a method.
+        return None;
+    }
+    Some(format!("Self::{method}"))
+}
+
+/// The type named by a `Type::method(` use-anchor.
+fn anchor_type(use_anchor: &str) -> Option<String> {
+    let (ty, method) = use_anchor.rsplit_once("::")?;
+    if method.is_empty() || ty.is_empty() {
+        return None;
+    }
+    Some(ty.to_string())
+}
+
+/// Source line numbers (1-based) where `alt` appears INSIDE an `impl` block
+/// whose self type is `ty`.
+///
+/// # Why the impl scoping is not optional
+///
+/// The first version of this matched `Self::new(` anywhere in the declaring
+/// file, and reported `GuardedAction<A>` as wired on the strength of
+/// `crates/portcullis/src/guard.rs:333` — which sits inside
+/// `impl<A, E> Default for CompositeGuard<A, E>`, where `Self` is
+/// `CompositeGuard`. `Self` means whichever impl you are in, and a file
+/// declares many types. A false "now wired" is a WRONG RED, which costs more
+/// than the hole it was closing.
+///
+/// Brace counting is naive — a `{` inside a string literal misleads it — which
+/// is the same imprecision [`production_region`] already accepts for
+/// `#[cfg(test)]`, and for the same reason: a grep gate has no parser. The
+/// failure direction is a missed site, not an invented one, because a
+/// mis-tracked depth closes an impl early rather than opening one.
+fn self_sites(region: &str, ty: &str, alt: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut depth: usize = 0;
+    // (self type, brace depth the block body sits at)
+    let mut open_impls: Vec<(String, usize)> = Vec::new();
+    let mut pending: Option<String> = None;
+
+    for (i, line) in region.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed == "impl"
+            || trimmed.starts_with("impl ")
+            || trimmed.starts_with("impl<")
+            || trimmed.starts_with("pub impl ")
+        {
+            pending = impl_self_type(trimmed);
+        }
+
+        let inside = open_impls.last().map(|(t, _)| t == ty).unwrap_or(false);
+        if inside && line.contains(alt) {
+            out.push(i + 1);
+        }
+
+        for c in line.chars() {
+            match c {
+                '{' => {
+                    depth += 1;
+                    if let Some(t) = pending.take() {
+                        open_impls.push((t, depth));
+                    }
+                }
+                '}' => {
+                    if open_impls.last().map(|(_, d)| *d == depth).unwrap_or(false) {
+                        open_impls.pop();
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// The self type of an `impl` header line: the type after `for` when there is
+/// one, otherwise the type after the `impl` generics.
+///
+/// `impl Kernel {` → `Kernel`;
+/// `impl<A> GuardedAction<A> {` → `GuardedAction`;
+/// `impl<A, E> Default for CompositeGuard<A, E> {` → `CompositeGuard`.
+fn impl_self_type(line: &str) -> Option<String> {
+    let rest = line.trim_start().strip_prefix("impl")?;
+    let rest = skip_balanced_generics(rest.trim_start());
+    let target = match rest.find(" for ") {
+        Some(i) => &rest[i + 5..],
+        None => rest,
+    };
+    let ident: String = target
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if ident.is_empty() { None } else { Some(ident) }
+}
+
+/// Skip a leading `<..>` generic list, honouring nesting.
+fn skip_balanced_generics(s: &str) -> &str {
+    if !s.starts_with('<') {
+        return s;
+    }
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &s[i + 1..];
+                }
+            }
+            _ => {}
+        }
+    }
+    s
 }
 
 /// Read tracked `crates/**/*.rs` matching `keep`. `git ls-files`, never a
@@ -473,6 +699,14 @@ pub fn run() -> Result<i32> {
             "     A row leaving this list means the mechanism was wired or deleted — both good."
         );
         println!(
+            "OK: {} declared-WIRED mechanism(s) still have a production call site.",
+            manifest.wired_count
+        );
+        println!(
+            "     A W row records a mechanism whose problem is NOT that nobody calls it. \
+             Losing its call site is a finding, not a graduation."
+        );
+        println!(
             "OK: {} #[allow(dead_code)] allowance(s) across {} crate(s), all within ceiling.",
             counts.values().sum::<usize>(),
             counts.len()
@@ -516,6 +750,12 @@ pub fn run() -> Result<i32> {
                     println!("      {s}");
                 }
             }
+            FindingKind::NoLongerWired { anchor } => println!(
+                "  {}: declared WIRED but {anchor:?} appears in no production region. Its only \
+                 call site is gone, so the row's note is now about dead code — re-read it, then \
+                 either move the row to class D or drop it and lower WIRED_COUNT.",
+                f.mechanism
+            ),
         }
     }
     Ok(1)
@@ -533,7 +773,7 @@ mod tests {
     }
 
     const ONE_ROW: &str = "D | attenuation | MeetCap | struct MeetCap | MeetCap( | \
-         crates/a/src/lib.rs | proved, never called\nDEAD_COUNT=1\n";
+         crates/a/src/lib.rs | proved, never called\nDEAD_COUNT=1\nWIRED_COUNT=0\n";
 
     #[test]
     fn parses_a_row_and_its_pin() {
@@ -742,5 +982,224 @@ mod tests {
         assert!(!is_production_path("crates/a/tests/it.rs"));
         assert!(!is_production_path("crates/a/src/foo_tests.rs"));
         assert!(!is_production_path("crates/a/src/lib.md"));
+    }
+
+    // ─── The `Self::` hole, and the hole in closing it ─────────────
+
+    #[test]
+    fn self_anchor_is_derived_only_from_a_type_qualified_method() {
+        assert_eq!(
+            self_anchor("Kernel::with_isolation("),
+            Some("Self::with_isolation(".to_string())
+        );
+        assert_eq!(
+            self_anchor("GuardedAction::new("),
+            Some("Self::new(".to_string())
+        );
+        // A bare anchor names no method, so there is no `Self::` spelling.
+        assert_eq!(self_anchor("with_work_dir("), None);
+        // A trailing `::` names the TYPE (the ConstraintNucleus row's shape),
+        // not a method on it.
+        assert_eq!(self_anchor("ConstraintNucleus::"), None);
+    }
+
+    #[test]
+    fn impl_self_type_reads_the_type_the_impl_is_for() {
+        assert_eq!(impl_self_type("impl Kernel {").as_deref(), Some("Kernel"));
+        assert_eq!(
+            impl_self_type("impl<A> GuardedAction<A> {").as_deref(),
+            Some("GuardedAction")
+        );
+        assert_eq!(
+            impl_self_type("impl<A, E> Default for CompositeGuard<A, E> {").as_deref(),
+            Some("CompositeGuard")
+        );
+        assert_eq!(
+            impl_self_type("impl<'a> From<&'a str> for Wrapper {").as_deref(),
+            Some("Wrapper"),
+            "the generic list may itself contain `for`-free angle brackets"
+        );
+        assert_eq!(impl_self_type("fn not_an_impl() {"), None);
+    }
+
+    #[test]
+    fn a_self_call_in_the_declaring_type_is_a_call_site() {
+        // THE DEFECT. `Kernel::with_isolation` was class D — no live call site —
+        // and the gate agreed, while kernel.rs called it from `Kernel::new` as
+        // `Self::with_isolation(..)`.
+        let src = "\
+impl Kernel {
+    pub fn new(initial: PermissionLattice) -> Self {
+        Self::with_isolation(initial, IsolationLattice::localhost())
+    }
+    pub fn with_isolation(i: PermissionLattice, iso: IsolationLattice) -> Self { todo!() }
+}
+";
+        assert_eq!(
+            self_sites(src, "Kernel", "Self::with_isolation("),
+            vec![3],
+            "the call must be found, at its real line"
+        );
+    }
+
+    #[test]
+    fn a_self_call_in_a_different_impl_is_not_a_call_site() {
+        // THE HOLE IN CLOSING THE DEFECT. The first version matched `Self::new(`
+        // anywhere in the declaring file and reported `GuardedAction<A>` wired
+        // on the strength of guard.rs:333, which is inside
+        // `impl<A, E> Default for CompositeGuard<A, E>`. `Self` means whichever
+        // impl you are in. A false "now wired" is a wrong red.
+        let src = "\
+impl<A> GuardedAction<A> {
+    pub fn new(inner: A) -> Self { todo!() }
+}
+
+impl<A, E> Default for CompositeGuard<A, E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+";
+        assert!(
+            self_sites(src, "GuardedAction", "Self::new(").is_empty(),
+            "`Self::new()` under CompositeGuard is not a GuardedAction call site"
+        );
+        assert_eq!(
+            self_sites(src, "CompositeGuard", "Self::new("),
+            vec![7],
+            "and it IS one for CompositeGuard, or the scoping is just a mute button"
+        );
+    }
+
+    #[test]
+    fn a_self_call_nested_deeper_in_the_impl_still_counts() {
+        // Inner blocks raise the brace depth without opening an impl, so the
+        // enclosing impl must stay current.
+        let src = "\
+impl Kernel {
+    pub fn new() -> Self {
+        if true {
+            return Self::with_isolation();
+        }
+        todo!()
+    }
+}
+";
+        assert_eq!(self_sites(src, "Kernel", "Self::with_isolation("), vec![4]);
+    }
+
+    // ─── Class W ───────────────────────────────────────────────────
+
+    const W_ROW: &str = "W | isolation | Kernel::with_isolation | pub fn with_isolation | \
+         Kernel::with_isolation( | crates/a/src/lib.rs | wired, but at one constant point\n\
+         DEAD_COUNT=0\nWIRED_COUNT=1\n";
+
+    #[test]
+    fn a_wired_row_with_a_live_call_site_is_clean() {
+        let m = parse(W_ROW).expect("parses");
+        assert_eq!(m.wired_count, 1);
+        assert_eq!(m.dead_count, 0);
+        let corpus = corpus_of(&[(
+            "crates/a/src/lib.rs",
+            "impl Kernel {\n    pub fn with_isolation() {}\n    pub fn new() { Self::with_isolation(); }\n}\n",
+        )]);
+        assert!(
+            decide(&m, &corpus).is_empty(),
+            "a wired W row is the clean case"
+        );
+    }
+
+    #[test]
+    fn a_wired_row_that_lost_its_call_site_is_a_finding() {
+        // The dual of NowWired, and the reason W is a class rather than a
+        // comment: a note about live code must not quietly become a note about
+        // dead code.
+        let m = parse(W_ROW).expect("parses");
+        let corpus = corpus_of(&[(
+            "crates/a/src/lib.rs",
+            "impl Kernel {\n    pub fn with_isolation() {}\n}\n",
+        )]);
+        let f = decide(&m, &corpus);
+        assert_eq!(f.len(), 1);
+        assert!(
+            matches!(f[0].kind, FindingKind::NoLongerWired { .. }),
+            "got {:?}",
+            f[0]
+        );
+    }
+
+    #[test]
+    fn each_class_is_pinned_by_its_own_count() {
+        // A shared pin would let a row change class and vanish from its
+        // population without the total moving.
+        let mixed = "D | l | M | struct M | M( | crates/a/src/lib.rs | dead\n\
+             W | l | K::go | pub fn go | K::go( | crates/a/src/lib.rs | wired\n\
+             DEAD_COUNT=1\nWIRED_COUNT=1\n";
+        let m = parse(mixed).expect("parses");
+        assert_eq!((m.dead_count, m.wired_count), (1, 1));
+
+        let wrong = mixed.replace("DEAD_COUNT=1", "DEAD_COUNT=2");
+        assert!(
+            parse(&wrong).is_err(),
+            "DEAD_COUNT must count class-D rows only"
+        );
+        let wrong = mixed.replace("WIRED_COUNT=1", "WIRED_COUNT=0");
+        assert!(
+            parse(&wrong).is_err(),
+            "WIRED_COUNT must count class-W rows only"
+        );
+    }
+
+    #[test]
+    fn a_manifest_without_a_wired_pin_is_rejected() {
+        let unpinned = "D | l | M | struct M | M( | crates/a/src/lib.rs | dead\nDEAD_COUNT=1\n";
+        let err = parse(unpinned).expect_err("an unpinned population can shrink silently");
+        assert!(format!("{err}").contains("WIRED_COUNT"), "got {err}");
+    }
+
+    #[test]
+    fn an_unknown_class_is_rejected() {
+        let bad =
+            "X | l | M | struct M | M( | crates/a/src/lib.rs | ?\nDEAD_COUNT=0\nWIRED_COUNT=0\n";
+        assert!(parse(bad).is_err(), "only D and W are classes");
+    }
+
+    // ─── Line positions ────────────────────────────────────────────
+
+    #[test]
+    fn the_production_region_preserves_line_numbers() {
+        // Findings name a line for a human to open. Before this, the index was
+        // into the STRIPPED region, so every finding after a comment pointed at
+        // the wrong line — `Self::with_isolation` reported kernel.rs:243 for a
+        // call on kernel.rs:590.
+        let src = "\
+// a comment
+fn real() {}
+#[cfg(test)]
+mod t {
+    fn hidden() {}
+}
+fn also_real() {}
+";
+        let region = production_region(src);
+        let lines: Vec<&str> = region.lines().collect();
+        assert_eq!(
+            lines.len(),
+            src.lines().count(),
+            "line count must be preserved"
+        );
+        assert_eq!(lines[1], "fn real() {}", "source line 2 stays at index 1");
+        assert_eq!(
+            lines[6], "fn also_real() {}",
+            "source line 7 stays at index 6"
+        );
+        assert!(
+            !region.contains("hidden"),
+            "test code must still be stripped"
+        );
+        assert!(
+            !region.contains("a comment"),
+            "comments must still be stripped"
+        );
     }
 }
