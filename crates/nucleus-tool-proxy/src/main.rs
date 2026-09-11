@@ -1597,6 +1597,15 @@ async fn main() -> Result<(), ApiError> {
         );
     }
 
+    // The single authoritative information-flow graph the egress verdict reads.
+    //
+    // Declared HERE, ahead of the node client, because the client observes into
+    // it. It used to be built ~170 lines further down, which is why
+    // `NodeClient` had no way to reach it and every node response arrived
+    // unobserved. The graph has no dependencies of its own, so moving it up is
+    // ordering, not restructuring.
+    let flow_graph = Arc::new(tokio::sync::Mutex::new(FlowGraph::new()));
+
     // Build node client for pod management (orchestrator mode). mTLS-only:
     // the node's HTTP listener requires a client cert unconditionally.
     let node_client = if args.enable_pod_mgmt {
@@ -1609,7 +1618,12 @@ async fn main() -> Result<(), ApiError> {
         identity_pem.extend_from_slice(identity.key_pem.as_bytes());
         let bundle_pem = identity.bundle_pem.into_bytes();
         info!("pod management enabled (node_url={})", node_url);
-        match node_client::NodeClient::new(node_url.to_string(), &identity_pem, &bundle_pem) {
+        match node_client::NodeClient::new(
+            node_url.to_string(),
+            &identity_pem,
+            &bundle_pem,
+            flow_graph.clone(),
+        ) {
             Ok(client) => Some(Arc::new(client)),
             Err(e) => {
                 error!("failed to build node client: {e}");
@@ -1773,9 +1787,6 @@ async fn main() -> Result<(), ApiError> {
         }
         k
     }));
-
-    // The single authoritative information-flow graph the egress verdict reads.
-    let flow_graph = Arc::new(tokio::sync::Mutex::new(FlowGraph::new()));
 
     // Provenance-memory state (next-bet #1). Trusted declassify keys + threshold
     // come from env; absent ⇒ empty/1 ⇒ declassification is fail-closed.
