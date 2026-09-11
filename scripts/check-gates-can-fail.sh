@@ -265,7 +265,14 @@ perturb_inert_authority_paid() {
     # (the binding is named, so the body may read it) and the row is left
     # behind. The pin is exact in both directions, so a stale row is a finding
     # too -- without this probe, only growth would be proven detectable.
-    sed -i 's/_verified: &VerifiedGrant/verified: \&VerifiedGrant/' "$1"
+    # `-i.gate-bak`, like every other perturbation in this file. Bare `sed -i`
+    # is GNU-only: BSD sed reads the next argument as the backup SUFFIX and then
+    # the filename as the script, which dies with "command c expects \ followed
+    # by text". So on macOS this probe changed nothing and reported itself as a
+    # no-op — the harness caught that correctly, and said so, for anyone who ran
+    # it locally. Line 268 was the only `sed -i` here missing the suffix.
+    sed -i.gate-bak 's/_verified: &VerifiedGrant/verified: \&VerifiedGrant/' "$1"
+    rm -f "$1.gate-bak"
 }
 
 perturb_dead_code_ratchet() {
@@ -793,6 +800,14 @@ UNCOVERED_CEILING=8
 #     the clean tree is 28, because the agent-facing crate also does
 #     infrastructure I/O (see .observed-ratchet.toml). It runs in the `dylint`
 #     job of dylint-separation.yml, BEFORE the enforcing run, every invocation.
+#   check-rest-pattern-dylint.sh — same toolchain reason as its siblings. Its
+#     `--self-test` collapses `create_sub_pod`'s `PodSpecInner` destructure back
+#     to `..` — the shape ADR 0006 C4.2 removed — and asserts the count goes
+#     non-zero. It perturbs the REAL subject rather than a fixture, which is
+#     what makes a green run evidence about the delegation path. Gates at ZERO,
+#     unlike its `observed` sibling, because the pass is scoped by record TYPE
+#     and those types have no rest-patterns workspace-wide. Runs in the `dylint`
+#     job of dylint-separation.yml, BEFORE the enforcing run, every invocation.
 #   check-egress-probe.sh — is itself a falsifier, not a watcher of an external
 #     subject: it reconstructs the net::apply_default_deny fence in a netns and
 #     asserts the probe PASSes with it present, FAILs when OUTPUT is opened
@@ -825,6 +840,7 @@ UNCOVERED_CEILING=8
 SELF_FALSIFIED=(
     "check-mediation-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
     "check-observed-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
+    "check-rest-pattern-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
     "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)"
     "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)"
     "check-clippy-ratchet.sh     ceiling-below-actual in the 'ratchet-falsifier' job (clippy-ratchet.yml)"
