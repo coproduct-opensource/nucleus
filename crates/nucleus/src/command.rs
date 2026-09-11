@@ -407,11 +407,7 @@ impl<'a> Executor<'a> {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<Output> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::RunBash,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
         // Fail-closed isolation gate: refuse unless containment is declared and
         // meets the policy's required isolation (most-paranoid #2).
         self.enforce_isolation()?;
@@ -475,20 +471,50 @@ impl<'a> Executor<'a> {
     ///
     /// Requires an `Authority` (mint via `preflight_action`, then wrap). This is
     /// the executor-proof gate: an un-preflighted spawn is a *compile* error, not a
-    /// runtime check. The following omits the proof and does **not** compile
-    /// (mirrors the sealed-bundle `compile_fail` doctest in
-    /// `nucleus_ifc_kernel::discharge`):
+    /// runtime check.
+    ///
+    /// ## Why the snippet below passes the wrong number of arguments on purpose
+    ///
+    /// This doctest used to omit the last argument entirely:
+    ///
+    /// ```ignore
+    /// let _ = executor.run_args(args, None, None, dt);   // four arguments
+    /// ```
+    ///
+    /// and its comment claimed the snippet failed because "the sealed proof is
+    /// missing". **It did not.** Compiled directly, that snippet reports
+    ///
+    /// ```text
+    /// error[E0061]: this method takes 5 arguments but 4 arguments were supplied
+    /// ```
+    ///
+    /// — measured, not inferred. `compile_fail` passes when a snippet fails for
+    /// ANY reason, so an arity error satisfied it exactly as well as a missing
+    /// authority would: the test would have stayed green if the fifth parameter
+    /// were `verbose: bool`. It pinned the arity of the signature and nothing
+    /// about authorisation (ADR 0007 D-3, and I-1 — a gate whose green is
+    /// indistinguishable from vacuity). The comment also named
+    /// `&DischargedBundle`, a parameter this signature has not had for some time.
+    ///
+    /// So the snippet now supplies the right NUMBER of arguments and the wrong
+    /// KIND, which makes the failure a type error about `Authority` specifically:
     ///
     /// ```compile_fail
     /// use nucleus::Executor;
     /// use nucleus::portcullis::kernel::DecisionToken;
     ///
     /// fn un_preflighted_spawn(executor: &Executor, args: &[String], dt: &DecisionToken) {
-    ///     // No trailing `&DischargedBundle` — the sealed proof is missing, so
-    ///     // this call cannot be typed. There is no way to spawn without one.
-    ///     let _ = executor.run_args(args, None, None, dt);
+    ///     // Right arity, no authority. `()` is not an `Authority`, and an
+    ///     // `Authority` cannot be conjured — `Authority::new` takes a sealed
+    ///     // `DischargedBundle` whose constructor is private to discharge.
+    ///     let _ = executor.run_args(args, None, None, dt, ());
     /// }
     /// ```
+    ///
+    /// Established by perturbation rather than assumed, the discipline the
+    /// `Authority` doctests in `portcullis-effects` already document: pass a real
+    /// `Authority` as that fifth argument and the snippet COMPILES, so the failure
+    /// does depend on the authority and on nothing else.
     pub fn run_args(
         &self,
         args: &[String],
@@ -497,11 +523,7 @@ impl<'a> Executor<'a> {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<Output> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::RunBash,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
         self.run_args_internal(args, stdin, directory, None, authority)
     }
 
@@ -515,11 +537,7 @@ impl<'a> Executor<'a> {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Output> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::RunBash,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
         self.run_args_internal(args, stdin, directory, Some(approval), authority)
     }
 
@@ -603,11 +621,7 @@ impl<'a> Executor<'a> {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Output> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::RunBash,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
@@ -668,11 +682,7 @@ impl<'a> Executor<'a> {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<Output> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::RunBash,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
@@ -722,11 +732,7 @@ impl<'a> Executor<'a> {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Output> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::RunBash,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
