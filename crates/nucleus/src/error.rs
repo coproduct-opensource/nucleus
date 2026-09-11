@@ -60,8 +60,24 @@ pub enum NucleusError {
         reason: String,
     },
 
-    /// Command execution denied by policy.
-    #[error("command denied: '{command}' blocked by policy")]
+    /// Command execution refused. `reason` says by what.
+    ///
+    /// The rendering used to be `"command denied: '{command}' blocked by policy"`
+    /// -- a constant that named POLICY whatever the cause was, with `reason`
+    /// carried in the struct and never printed. Four different reasons reach this
+    /// variant and only two of them are policy:
+    ///
+    ///   blocked by command policy          <- policy
+    ///   blocked by the command lattice     <- policy
+    ///   malformed command (unbalanced quotes)   <- a PARSE error
+    ///   <the argv predicate's own message>      <- a predicate, with detail
+    ///
+    /// So a command with an unbalanced quote was reported as refused by a policy
+    /// that had no part in it. ADR 0007 A-4, and the same shape `15e3530f` fixed
+    /// for paths -- `crates/nucleus-perf/src/main.rs:990` still records the cost
+    /// of that one: "`EISDIR` ... for a long time was reported as `blocked by
+    /// policy`, so it read as a refusal rather than `that is a directory`".
+    #[error("command denied: '{command}': {reason}")]
     CommandDenied {
         /// The command that was denied.
         command: String,
@@ -173,4 +189,68 @@ pub enum NucleusError {
     /// IO error from underlying operation.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod command_denied_says_why_tests {
+    use super::*;
+
+    fn rendered(reason: &str) -> String {
+        NucleusError::CommandDenied {
+            command: "grep 'unbalanced".to_string(),
+            reason: reason.to_string(),
+        }
+        .to_string()
+    }
+
+    /// THE regression. `Display` was the constant
+    /// `"command denied: '{command}' blocked by policy"` and `reason` was never
+    /// printed, so a PARSE failure was reported as a policy refusal — sending
+    /// the reader to inspect a policy that had no part in it (ADR 0007 A-4).
+    #[test]
+    fn a_parse_failure_is_not_reported_as_a_policy_refusal() {
+        let msg = rendered("malformed command (unbalanced quotes)");
+        assert!(
+            msg.contains("malformed command"),
+            "the cause must reach the reader: {msg}"
+        );
+        assert!(
+            !msg.contains("blocked by policy"),
+            "a parse error must not claim policy refused it: {msg}"
+        );
+    }
+
+    /// The complement, so the test above is not satisfied by a rendering that
+    /// simply never mentions policy. A real policy refusal must still say so.
+    #[test]
+    fn a_policy_refusal_still_says_policy() {
+        assert!(rendered("blocked by command policy").contains("policy"));
+        assert!(rendered("blocked by the command lattice").contains("lattice"));
+    }
+
+    /// Non-vacuity: both tests above would pass against a rendering that
+    /// dropped the command and printed only the reason. All four reasons that
+    /// reach this variant must render distinctly, and all must carry the
+    /// command, or the message is a constant again in a different disguise.
+    #[test]
+    fn every_reason_renders_distinctly_and_keeps_the_command() {
+        let reasons = [
+            "blocked by command policy",
+            "blocked by the command lattice",
+            "malformed command (unbalanced quotes)",
+            "argv predicate: NUL byte in argument 2",
+        ];
+        let mut seen: Vec<String> = reasons.iter().map(|r| rendered(r)).collect();
+        for m in &seen {
+            assert!(m.contains("grep 'unbalanced"), "the command is lost: {m}");
+        }
+        let before = seen.len();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(
+            before,
+            seen.len(),
+            "two reasons render identically: {seen:?}"
+        );
+    }
 }
