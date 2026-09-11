@@ -561,6 +561,19 @@ pub fn gate_of_gates_unlisted_divergence_probe() -> bool {
 RUST
 }
 
+perturb_lean_toolchain_split() {
+    # Two first-party Lean versions. The gate's own stake line says why it matters: "two Lean
+    # versions cannot share a .lake cache, and the second one rebuilds everything."
+    sed -i.bak 's|leanprover/lean4:v4\.30\.0-rc2|leanprover/lean4:v4.29.0|' "$1" && rm -f "$1.bak"
+}
+
+perturb_self_pin_sha() {
+    # The repo pins a SHA of itself in a workflow `uses:`. Point it at a commit that does not
+    # exist: the gate must refuse rather than call a missing commit agreement. It exits 2 ("could
+    # not look"), which is red and is the right red — a pin nobody can resolve is not a pin.
+    sed -i.bak 's|\(uses: coproduct-opensource/nucleus/[^@]*@\)[0-9a-f]\{40\}|\10000000000000000000000000000000000000000|' "$1" && rm -f "$1.bak"
+}
+
 perturb_allowlist_pin() {
     # An allowlist grows past its pinned size. 255 rather than a literal edit of
     # the current value: there are only a handful of entries, so no honest pin can
@@ -576,6 +589,10 @@ perturb_fly_pool_volumes() {
     sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
 }
 
+probe_xtask pin-parity ci/lean/lean-toolchain \
+    "two first-party Lean versions in one tree" perturb_lean_toolchain_split
+probe_xtask self-pin .github/workflows/scan.yml \
+    "a self-pin naming a commit that does not exist" perturb_self_pin_sha
 probe_xtask allowlist-gates ci/allowlist-gates.txt \
     "an allowlist grown past its pinned size" perturb_allowlist_pin
 probe_xtask fly-pools ci/fly-runner/manager.toml \
@@ -690,17 +707,24 @@ UNCOVERED=(
     "xtask gatehouse-pin           takes --gatehouse <path>; the probe needs a gatehouse checkout this script does not have"
     "xtask lean-action-builds      needs a Lean toolchain to reach its verdict"
     "xtask line-ratchet            probed through scripts/check-line-ratchet.sh, which is the same decision procedure"
-    "xtask pin-parity              perturbation not yet written; reads several declaration files and one is enough"
     "xtask policy-gate             runs ck-kernel admission on a manifest amendment; needs a real amendment"
     "xtask scoreboard-ratchet      perturbation not yet written"
-    "xtask self-pin                perturbs the repo SHA pinned by the repo; needs care not to leave the tree claiming a wrong SHA"
 )
 # Was 5. Three were paid down once their detection was read rather than guessed
 # at. The remaining two need a Cargo.lock change, which this script will not make.
 # 2 -> 10 on 2026-09-11, and the direction is the honest part: this is not a
-# relaxation, it is ten gates entering the domain at once. Eight of them are
-# listed above and owe a perturbation; it may only shrink from here.
-UNCOVERED_CEILING=10
+# relaxation, it is ten gates entering the domain at once. Eight of them were
+# listed above and owed a perturbation; it may only shrink from here.
+#
+# 10 -> 8 the same day: pin-parity and self-pin now have one. Both were listed
+# "perturbation not yet written" and "needs care" after my first two attempts at
+# them were NO-OPS — guesses at what the gates read, which left the gate passing
+# on an unchanged tree. The working pair came from reading the code instead:
+# pin-parity compares first-party lean-toolchain files for one value, so two
+# versions reds it; self-pin resolves a `uses: .../nucleus/<dir>@<sha>` against
+# the clone, so a SHA that does not exist reds it (exit 2, "could not look",
+# which is the right red -- a pin nobody can resolve is not a pin).
+UNCOVERED_CEILING=8
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #
