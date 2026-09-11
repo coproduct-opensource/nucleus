@@ -449,8 +449,14 @@ mod tests {
     fn report_never_claims_it_could_not_look() {
         let tolerance = Duration::from_secs(60 * 60);
         for liveness in [
-            Liveness::Fresh { age: Duration::from_secs(1), tolerance },
-            Liveness::Stale { age: Duration::from_secs(9_999), tolerance },
+            Liveness::Fresh {
+                age: Duration::from_secs(1),
+                tolerance,
+            },
+            Liveness::Stale {
+                age: Duration::from_secs(9_999),
+                tolerance,
+            },
             Liveness::NeverRan { tolerance },
         ] {
             assert_ne!(
