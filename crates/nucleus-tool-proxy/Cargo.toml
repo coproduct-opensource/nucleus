@@ -124,6 +124,8 @@ tokio-vsock = "0.7"
 dlc-crypto = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }
 dlc-d = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }
 tempfile = { workspace = true }
+# Draining a `Response` body to assert what a denial actually puts on the wire.
+http-body-util = "0.1"
 # In-process router driving for the H-3 panic-net regression test
 # (ServiceExt::oneshot). Dev-only; production graph unchanged.
 tower = { version = "0.5", features = ["util"] }

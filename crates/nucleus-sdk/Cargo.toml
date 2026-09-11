@@ -42,6 +42,8 @@ default = []
 identity = ["dep:nucleus-identity"]
 
 [dev-dependencies]
+# The proposal on a denial is keyed by grant id; tests build one.
+uuid = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tokio-test = { workspace = true }
 
