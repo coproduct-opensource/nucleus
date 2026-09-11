@@ -262,6 +262,7 @@ pub(crate) async fn bring_up(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::firecracker_api::stub_vmm::{StubVmm, sample_config};
 
     /// Every refusal renders something a human can act on, and none of them is the empty string.
     ///
@@ -550,5 +551,152 @@ mod tests {
         .to_string();
         assert!(rendered.contains("some other silicon"), "{rendered}");
         assert!(rendered.contains("this silicon"), "{rendered}");
+    }
+
+    // ── `bring_up`, both branches ───────────────────────────────────────────
+    //
+    // One function serves cold boot and restore so the launch path cannot drift
+    // into two shapes that disagree about ordering. That is only worth
+    // asserting if both shapes are actually exercised, and neither was: every
+    // path here opens a socket, so nothing reached them without a VMM.
+
+    /// With no base, the machine is built from the configuration and started.
+    #[tokio::test]
+    async fn bringing_up_without_a_base_configures_then_starts() {
+        let vmm = StubVmm::start(vec![]).await;
+        bring_up(&vmm.sock, &sample_config(), None, None)
+            .await
+            .expect("a cold boot is accepted");
+
+        let seen = vmm.seen().await;
+        assert!(
+            seen.iter().any(|s| s.path == "/boot-source"),
+            "the machine must be configured: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|s| s.body.contains("InstanceStart")),
+            "a cold boot must start the vCPUs: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|s| s.path == "/snapshot/load"),
+            "there is no base, so nothing may be loaded: {seen:?}"
+        );
+    }
+
+    /// With a base, the VMM is told to LOAD rather than configured field by
+    /// field — and is resumed, not started. Firecracker rejects `InstanceStart`
+    /// on a restored machine, so confusing the two is a boot failure.
+    #[tokio::test]
+    async fn bringing_up_from_a_base_loads_the_snapshot_and_resumes() {
+        let vmm = StubVmm::start(vec![]).await;
+        let base = SnapshotArtifacts {
+            vmstate: PathBuf::from(in_jail::SNAPSHOT_VMSTATE),
+            mem: PathBuf::from(in_jail::SNAPSHOT_MEM),
+        };
+        bring_up(&vmm.sock, &sample_config(), Some(&base), None)
+            .await
+            .expect("a restore is accepted");
+
+        let seen = vmm.seen().await;
+        let load = seen
+            .iter()
+            .find(|s| s.path == "/snapshot/load")
+            .unwrap_or_else(|| panic!("a base must be loaded: {seen:?}"));
+        assert!(
+            load.body.contains(in_jail::SNAPSHOT_VMSTATE),
+            "the vmstate is named by its IN-JAIL path, which is what the VMM opens \
+             after chroot: {load:?}"
+        );
+        assert!(
+            load.body.contains(r#""resume_vm":false"#),
+            "load must not resume: the sandbox is verified between load and resume: {load:?}"
+        );
+        assert!(
+            !seen.iter().any(|s| s.path == "/boot-source"),
+            "a restored machine is not configured field by field: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|s| s.body.contains("InstanceStart")),
+            "a restored machine is RESUMED, never started: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|s| s.body.contains("Resumed")),
+            "the machine must actually be resumed: {seen:?}"
+        );
+    }
+
+    /// A previous VMM leaves its vsock socket behind and Firecracker re-binds
+    /// the same path at load, so the stale file is `EADDRINUSE` from deep inside
+    /// device restore. Clearing it is a precondition, not tidying.
+    #[tokio::test]
+    async fn a_stale_vsock_socket_is_cleared_before_a_restore() {
+        let vmm = StubVmm::start(vec![]).await;
+        let jail_dir = tempfile::tempdir().expect("tempdir");
+        let jail = JailLayout::new(
+            jail_dir.path(),
+            std::path::Path::new("/usr/bin/firecracker"),
+            "p1",
+        );
+        let stale = jail.host_path(in_jail::VSOCK);
+        std::fs::create_dir_all(stale.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(&stale, b"leftover").expect("plant a stale socket");
+        assert!(stale.exists(), "the fixture must actually plant one");
+
+        let base = SnapshotArtifacts {
+            vmstate: PathBuf::from(in_jail::SNAPSHOT_VMSTATE),
+            mem: PathBuf::from(in_jail::SNAPSHOT_MEM),
+        };
+        bring_up(&vmm.sock, &sample_config(), Some(&base), Some(&jail))
+            .await
+            .expect("a restore is accepted");
+
+        assert!(
+            !stale.exists(),
+            "the stale socket must be gone before load, or the VMM fails EADDRINUSE"
+        );
+    }
+
+    /// A refusal from the VMM during restore reaches the caller rather than
+    /// being swallowed into a half-loaded machine.
+    #[tokio::test]
+    async fn a_refused_snapshot_load_is_reported() {
+        let vmm = StubVmm::start(vec![(400, r#"{"fault_message":"mem file truncated"}"#)]).await;
+        let base = SnapshotArtifacts {
+            vmstate: PathBuf::from(in_jail::SNAPSHOT_VMSTATE),
+            mem: PathBuf::from(in_jail::SNAPSHOT_MEM),
+        };
+        let err = bring_up(&vmm.sock, &sample_config(), Some(&base), None)
+            .await
+            .expect_err("a refused load must not read as success");
+        assert!(err.contains("/snapshot/load"), "{err}");
+        assert!(
+            err.contains("mem file truncated"),
+            "the VMM's words survive: {err}"
+        );
+    }
+
+    /// The tap is the one thing a restore retargets: the base was frozen holding
+    /// a different pod's device. An empty override list would silently restore a
+    /// VM pointing at a tap that belongs to another pod.
+    #[test]
+    fn network_overrides_name_this_pods_taps() {
+        let cfg = sample_config();
+        let overrides = network_overrides(&cfg);
+        let expected = cfg.interface_names();
+        assert_eq!(
+            overrides.len(),
+            expected.len(),
+            "one override per interface, or a tap is left pointing at the base's"
+        );
+        for (iface_id, host_dev_name) in expected {
+            assert!(
+                overrides.iter().any(|o| {
+                    o.get("iface_id").and_then(|v| v.as_str()) == Some(iface_id.as_str())
+                        && o.get("host_dev_name").and_then(|v| v.as_str())
+                            == Some(host_dev_name.as_str())
+                }),
+                "{iface_id} -> {host_dev_name} is missing from {overrides:?}"
+            );
+        }
     }
 }

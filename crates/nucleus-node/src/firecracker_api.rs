@@ -183,9 +183,17 @@ pub(crate) async fn start(sock: &Path) -> Result<(), String> {
     send(sock, &crate::firecracker_config::instance_start_request()).await
 }
 
+/// A stub Firecracker API server, for tests in this module and in
+/// `snapshot_restore`. Its own file so it can be shared without declaring a
+/// module in `main.rs`, which is at its line ceiling.
+#[cfg(test)]
+#[path = "stub_vmm.rs"]
+pub(crate) mod stub_vmm;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stub_vmm::{Seen, StubVmm, sample_config};
 
     /// A socket that never appears fails by naming the path, not by hanging.
     ///
@@ -281,6 +289,262 @@ mod tests {
                     .find(|c| c.is_file())
             })
             .ok_or(())
+    }
+
+    // ── A stub VMM, so the transport is testable without one ────────────────
+    //
+    // Everything below drives the REAL client (`send`/`apply`/`configure`/
+    // `start`) against a socket this test owns. That matters because the only
+    // test that previously exercised the success path is
+    // `it_configures_and_is_refused_by_a_real_firecracker`, which self-skips
+    // when `firecracker` is not on PATH — so on any machine without the VMM,
+    // including the coverage runner, `send` was never executed at all and the
+    // transport's success path went unexercised. The module's own header says
+    // the lowering half is "checkable on a machine with no KVM"; this gives the
+    // transport half the same property.
+    //
+    // Hand-rolled rather than hyper's server: this crate takes hyper with
+    // `["client", "http1"]` only, and a test fixture is not a reason to widen a
+    // production dependency. HTTP/1.1 with a known Content-Length is small
+    // enough to answer honestly in a few lines.
+
+    /// The client puts the method, path and body it was given on the wire.
+    ///
+    /// Asserted against what the server RECEIVED rather than against the
+    /// `ApiRequest` it was handed, which would only prove the struct round-trips
+    /// through itself.
+    #[tokio::test]
+    async fn a_request_reaches_the_vmm_as_it_was_written() {
+        let vmm = StubVmm::start(vec![]).await;
+        send(
+            &vmm.sock,
+            &ApiRequest {
+                method: "PUT",
+                path: "/machine-config".into(),
+                body: r#"{"vcpu_count":2}"#.into(),
+            },
+        )
+        .await
+        .expect("a 204 is success");
+
+        assert_eq!(
+            vmm.seen().await,
+            vec![Seen {
+                method: "PUT".into(),
+                path: "/machine-config".into(),
+                body: r#"{"vcpu_count":2}"#.into(),
+            }]
+        );
+    }
+
+    /// A refusal carries the VMM's OWN words, which is the entire reason this
+    /// module prefers the API socket to `--config-file`.
+    #[tokio::test]
+    async fn a_refusal_carries_the_vmms_fault_message_verbatim() {
+        let fault = r#"{"fault_message":"No such file or directory (os error 2)"}"#;
+        let vmm = StubVmm::start(vec![(400, fault)]).await;
+
+        let err = send(
+            &vmm.sock,
+            &ApiRequest {
+                method: "PUT",
+                path: "/boot-source".into(),
+                body: "{}".into(),
+            },
+        )
+        .await
+        .expect_err("a 400 is not success");
+
+        assert!(err.contains("/boot-source"), "names the call: {err}");
+        assert!(err.contains("400"), "names the status: {err}");
+        assert!(
+            err.contains("No such file or directory (os error 2)"),
+            "the VMM's own words must survive rather than be replaced: {err}"
+        );
+    }
+
+    /// An empty error body says so instead of rendering as nothing.
+    #[tokio::test]
+    async fn a_refusal_with_no_body_still_reads_as_a_refusal() {
+        let vmm = StubVmm::start(vec![(500, "")]).await;
+        let err = send(
+            &vmm.sock,
+            &ApiRequest {
+                method: "PUT",
+                path: "/vm".into(),
+                body: "{}".into(),
+            },
+        )
+        .await
+        .expect_err("a 500 is not success");
+        assert!(err.contains("(no body)"), "{err}");
+    }
+
+    /// `apply` stops at the first refusal — and the requests after it are never
+    /// sent. Asserted on the SERVER's record, because "stopped" is a claim about
+    /// what did not happen, and the error alone cannot distinguish a sequence
+    /// that halted from one that ran on and reported the first failure.
+    #[tokio::test]
+    async fn apply_stops_at_the_first_refusal_and_sends_nothing_after_it() {
+        let vmm = StubVmm::start(vec![(204, ""), (400, r#"{"fault_message":"bad"}"#)]).await;
+
+        let reqs = [
+            ApiRequest {
+                method: "PUT",
+                path: "/first".into(),
+                body: "{}".into(),
+            },
+            ApiRequest {
+                method: "PUT",
+                path: "/second".into(),
+                body: "{}".into(),
+            },
+            ApiRequest {
+                method: "PUT",
+                path: "/third".into(),
+                body: "{}".into(),
+            },
+        ];
+        let err = apply(&vmm.sock, &reqs)
+            .await
+            .expect_err("the second is refused");
+        assert!(
+            err.contains("/second"),
+            "the error names the call that failed: {err}"
+        );
+
+        let paths: Vec<String> = vmm.seen().await.into_iter().map(|s| s.path).collect();
+        assert_eq!(
+            paths,
+            vec!["/first".to_string(), "/second".to_string()],
+            "/third must never be sent: the machine is not described past a refusal"
+        );
+    }
+
+    /// A whole sequence lands in order when nothing refuses.
+    #[tokio::test]
+    async fn apply_sends_every_request_in_order_when_the_vmm_accepts() {
+        let vmm = StubVmm::start(vec![]).await;
+        let reqs = [
+            ApiRequest {
+                method: "PUT",
+                path: "/a".into(),
+                body: "1".into(),
+            },
+            ApiRequest {
+                method: "PUT",
+                path: "/b".into(),
+                body: "2".into(),
+            },
+            ApiRequest {
+                method: "PATCH",
+                path: "/c".into(),
+                body: "3".into(),
+            },
+        ];
+        apply(&vmm.sock, &reqs).await.expect("all accepted");
+
+        let seen = vmm.seen().await;
+        assert_eq!(
+            seen.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(),
+            vec!["/a", "/b", "/c"],
+            "order is the construction, not an accident: {seen:?}"
+        );
+        assert_eq!(
+            seen[2].method, "PATCH",
+            "the method varies and must survive"
+        );
+    }
+
+    /// `start` asks for the one transition that boots the vCPUs.
+    #[tokio::test]
+    async fn start_issues_the_instance_start_action() {
+        let vmm = StubVmm::start(vec![]).await;
+        start(&vmm.sock).await.expect("accepted");
+        let seen = vmm.seen().await;
+        assert_eq!(seen.len(), 1, "exactly one call: {seen:?}");
+        assert!(
+            seen[0].body.contains("InstanceStart"),
+            "the body must ask for InstanceStart: {seen:?}"
+        );
+    }
+
+    /// `configure` drives the lowering and leaves the machine NOT started —
+    /// which is the property the snapshot path depends on.
+    #[tokio::test]
+    async fn configure_builds_the_machine_without_starting_it() {
+        let vmm = StubVmm::start(vec![]).await;
+        let cfg = sample_config();
+        configure(&vmm.sock, &cfg).await.expect("accepted");
+
+        let seen = vmm.seen().await;
+        assert!(!seen.is_empty(), "configure must issue calls");
+        assert!(
+            !seen.iter().any(|s| s.body.contains("InstanceStart")),
+            "configure must leave the vCPUs stopped so the sandbox can be \
+             verified before anything runs: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|s| s.path == "/boot-source"),
+            "the kernel must be configured: {seen:?}"
+        );
+    }
+
+    /// `patch_vm` is the one call whose method is not PUT, and Firecracker is
+    /// strict about that.
+    #[tokio::test]
+    async fn a_state_transition_goes_out_as_a_patch() {
+        let vmm = StubVmm::start(vec![]).await;
+        send(&vmm.sock, &patch_vm("Paused"))
+            .await
+            .expect("accepted");
+        let seen = vmm.seen().await;
+        assert_eq!(seen[0].method, "PATCH", "PUT would be refused: {seen:?}");
+        assert_eq!(seen[0].path, "/vm");
+        assert!(seen[0].body.contains("Paused"), "{seen:?}");
+    }
+
+    /// `put_json` serializes the value it was handed.
+    #[tokio::test]
+    async fn put_json_sends_the_value_it_was_given() {
+        let vmm = StubVmm::start(vec![]).await;
+        let body = serde_json::json!({ "snapshot_path": "/s/mem" });
+        send(&vmm.sock, &put_json("/snapshot/create", &body))
+            .await
+            .expect("accepted");
+        let seen = vmm.seen().await;
+        assert_eq!(seen[0].method, "PUT");
+        assert_eq!(seen[0].path, "/snapshot/create");
+        assert!(seen[0].body.contains("/s/mem"), "{seen:?}");
+    }
+
+    /// The jailed and unjailed socket paths differ, and getting it wrong times
+    /// out on a file that will never exist rather than failing loudly.
+    #[test]
+    fn the_api_socket_is_inside_the_jail_when_there_is_one() {
+        let pod_dir = std::path::Path::new("/var/lib/nucleus/state/pods/p1");
+        assert_eq!(
+            api_socket_path(None, pod_dir),
+            pod_dir.join("firecracker.socket"),
+            "unjailed, the node passes --api-sock into the pod directory"
+        );
+
+        let jail = crate::firecracker_config::JailLayout::new(
+            std::path::Path::new("/srv/jailer"),
+            std::path::Path::new("/usr/bin/firecracker"),
+            "p1",
+        );
+        let jailed = api_socket_path(Some(&jail), pod_dir);
+        assert!(
+            jailed.starts_with(&jail.jail_root),
+            "firecracker resolves its default socket INSIDE the chroot: {}",
+            jailed.display()
+        );
+        assert!(
+            jailed.ends_with("run/firecracker.socket"),
+            "{}",
+            jailed.display()
+        );
     }
 
     /// Connecting to a path with no listener is an error, never a silent success.

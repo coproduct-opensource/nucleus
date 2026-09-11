@@ -122,6 +122,7 @@ pub(crate) async fn resume(sock: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::firecracker_api::stub_vmm::StubVmm;
 
     fn artifacts() -> SnapshotArtifacts {
         SnapshotArtifacts {
@@ -307,5 +308,102 @@ mod tests {
             err.contains("cannot connect"),
             "a safe verdict must get as far as the socket: {err}"
         );
+    }
+
+    // ── The success paths, which nothing reached without a VMM ──────────────
+
+    /// The VM is PAUSED before the snapshot is asked for, and the order is the
+    /// assertion. `/snapshot/create` on a running VM is refused by Firecracker,
+    /// so a version that created first would fail on every real machine while
+    /// passing any test that only checked both calls happened.
+    #[tokio::test]
+    async fn a_safe_verdict_pauses_before_it_creates() {
+        let vmm = StubVmm::start(vec![]).await;
+        create(&vmm.sock, &SnapshotSafety::SafeToClone, &artifacts())
+            .await
+            .expect("a safe verdict proceeds");
+
+        let seen = vmm.seen().await;
+        let paths: Vec<&str> = seen.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["/vm", "/snapshot/create"],
+            "pause must come first, and nothing else may be issued: {seen:?}"
+        );
+        assert!(seen[0].body.contains("Paused"), "{seen:?}");
+        assert_eq!(
+            seen[0].method, "PATCH",
+            "the transition is a PATCH: {seen:?}"
+        );
+    }
+
+    /// The create call names both files and asks for a FULL snapshot — a diff
+    /// snapshot cannot be restored without its base, so it is the wrong kind for
+    /// a published base.
+    #[tokio::test]
+    async fn the_create_call_names_both_files_and_asks_for_a_full_snapshot() {
+        let vmm = StubVmm::start(vec![]).await;
+        create(&vmm.sock, &SnapshotSafety::SafeToClone, &artifacts())
+            .await
+            .expect("accepted");
+
+        let seen = vmm.seen().await;
+        let body = &seen[1].body;
+        assert!(body.contains(r#""snapshot_type":"Full""#), "{body}");
+        assert!(body.contains("/unused/vmstate"), "the vmstate path: {body}");
+        assert!(body.contains("/unused/mem"), "the memory path: {body}");
+    }
+
+    /// A refused pause stops the sequence — the snapshot is never asked for.
+    /// Asserted on what the VMM was NOT sent, which the error alone cannot show.
+    #[tokio::test]
+    async fn a_refused_pause_never_asks_for_a_snapshot() {
+        let vmm = StubVmm::start(vec![(400, r#"{"fault_message":"vm not running"}"#)]).await;
+        let err = create(&vmm.sock, &SnapshotSafety::SafeToClone, &artifacts())
+            .await
+            .expect_err("a refused pause must not read as success");
+        assert!(
+            err.contains("vm not running"),
+            "the VMM's words survive: {err}"
+        );
+
+        let seen = vmm.seen().await;
+        let paths: Vec<&str> = seen.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["/vm"],
+            "a snapshot of a running VM must never be requested"
+        );
+    }
+
+    /// `load` deliberately does NOT resume: the per-pod tap and vsock have to be
+    /// patched in between, and a function that did both would leave no seam.
+    #[tokio::test]
+    async fn loading_a_snapshot_does_not_resume_it() {
+        let vmm = StubVmm::start(vec![]).await;
+        load(&vmm.sock, &artifacts()).await.expect("accepted");
+
+        let seen = vmm.seen().await;
+        assert_eq!(seen.len(), 1, "exactly one call: {seen:?}");
+        assert_eq!(seen[0].path, "/snapshot/load");
+        assert!(
+            seen[0].body.contains(r#""resume_vm":false"#),
+            "resuming here would leave nowhere to retarget the tap: {seen:?}"
+        );
+        assert!(
+            seen[0].body.contains(r#""backend_type":"File""#),
+            "the memory backend must be named: {seen:?}"
+        );
+    }
+
+    /// `resume` is the other half of that seam.
+    #[tokio::test]
+    async fn resume_asks_for_the_resumed_state() {
+        let vmm = StubVmm::start(vec![]).await;
+        resume(&vmm.sock).await.expect("accepted");
+        let seen = vmm.seen().await;
+        assert_eq!(seen[0].method, "PATCH");
+        assert_eq!(seen[0].path, "/vm");
+        assert!(seen[0].body.contains("Resumed"), "{seen:?}");
     }
 }
