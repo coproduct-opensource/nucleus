@@ -214,6 +214,62 @@ pub(crate) async fn create_sub_pod(
         spec.spec.credentials = Some(creds);
     }
 
+    // 5c. THE DELEGATION BOUNDARY, ENFORCED BY THE COMPILER (ADR 0006 C4.2).
+    //
+    // Steps 4-5 decide four of `PodSpecInner`'s fourteen fields. The other ten,
+    // and all four of `Metadata`'s, reach the serialized child spec exactly as
+    // the requester wrote them. That enumeration IS the security boundary, and
+    // until now it was maintained by hand. The comment at 4b says the quiet
+    // part: authority "must be made deliberately, not inherited from a field
+    // being added."
+    //
+    // These destructures are what make that true. Every field is bound by name,
+    // so adding one to either struct fails to compile HERE until someone writes
+    // down what delegation should do with it. They borrow and produce nothing —
+    // the pattern is the mechanism, not the bindings.
+    //
+    // This does NOT subsume `create_sub_pod_still_clamps_credentialed_egress` or
+    // `create_sub_pod_always_narrows_and_reserves`. Those read this function's
+    // own source for the three calls, so they notice a call being DELETED —
+    // which a destructure cannot see, because the binding survives the clamp's
+    // removal. The two mechanisms catch opposite failures; both are kept.
+    let nucleus_spec::PodSpecInner {
+        // ── Decided above ───────────────────────────────────────────────────
+        policy: _policy,                           // 4  narrowed to this pod's ceiling
+        workload: _workload,                       // 4b stripped
+        credentialed_egress: _credentialed_egress, // 4c clamped to the parent's upstreams
+        credentials: _credentials,                 // 5  orchestrator env merged in
+
+        // ── Forwarded as the requester wrote them ───────────────────────────
+        // Each line is a standing decision to delegate that field unclamped.
+        // None is an oversight and none is an endorsement: this is the backlog
+        // C4.2 exists to work through, in severity order, one change each.
+        work_dir: _work_dir,               // the child names its own working directory
+        timeout_seconds: _timeout_seconds, // becomes the session-token TTL, uncapped
+                                           // (nucleus-node/src/pod_authority.rs:738)
+        budget_model: _budget_model,       // pricing shape; the AMOUNT is reserved at 5b
+        resources: _resources,             // cpu/memory the child asks the node for
+        network: _network,                 // egress shape; `credentialed_egress` is the
+                                           // separate field clamped at 4c, not this one
+        image: _image,                     // the child names its own kernel and rootfs
+        vsock: _vsock,                     // guest-host socket configuration
+        seccomp: _seccomp,                 // syscall filter — a child may ask for a weaker one
+        cgroup: _cgroup,                   // cgroup limits
+        audit_sink: _audit_sink,           // where the child's audit record is written
+    } = &spec.spec;
+
+    // `metadata` is a sibling of `spec` on `PodSpec`, so the destructure above
+    // does not reach it. ADR 0006 C4.2 enumerates `metadata.labels` and
+    // `metadata.task_grant_id`; `name` and `namespace` ride through too, which
+    // is the ADR's own hand-maintained list being incomplete — the argument for
+    // this mechanism, made by the list it replaces.
+    let nucleus_spec::Metadata {
+        name: _name,                   // child-chosen pod name
+        namespace: _namespace,         // child-chosen namespace
+        labels: _labels,               // child-chosen labels
+        task_grant_id: _task_grant_id, // child-asserted task grant
+    } = &spec.metadata;
+
     // 5b. Reserve the child's budget from THIS pod's live budget (#2426):
     //     the child's max_cost is debited here, atomically, before the node
     //     call, and mirrored into the kernel so its own BudgetExhausted arm
