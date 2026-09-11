@@ -25,6 +25,76 @@ pub fn check(repo: Option<String>, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `ci-spec advisory`: every check context a workflow produces that the
+/// required-check ledger does not list.
+///
+/// A required check blocks a merge; everything else is advisory, and an advisory
+/// gate can be red on `main` indefinitely with nothing to notice. That is not a
+/// hypothetical here: `a real nucleus pod boots and is enforced (x86_64)` --
+/// the only lane that boots a real microVM and proves the enforcement end to end
+/// -- went red on `main` on 2026-09-11 and a PR was enqueued past it.
+///
+/// This does NOT say every context should be required. Release jobs, nightly
+/// lanes, the explicitly "informational" shadow gates and scheduled workflows are
+/// advisory on purpose. It says what the set IS, so the ones that are advisory by
+/// accident can be told from the ones that are advisory by decision -- the same
+/// thing `ci/inline-gates.txt` does for gate steps, and the same reason ADR 0007
+/// gives for naming an enforcement tier on every rule: so a gap reads as a gap
+/// rather than as coverage.
+///
+/// Contexts still carrying an unexpanded `${{ ... }}` are reported separately.
+/// They are matrix jobs the model could not expand (`matrix_opaque`), so their
+/// real context names are unknown -- and "unknown" is not "unrequired" (A-2).
+pub fn advisory(repo: Option<String>) -> Result<()> {
+    let root = repo_root(repo)?;
+    let model = ci_spec::loader::from_repo(&root)?;
+    let required: std::collections::BTreeSet<&str> =
+        model.ledger.contexts.iter().map(String::as_str).collect();
+
+    let mut produced = std::collections::BTreeSet::new();
+    for w in &model.workflows {
+        for j in &w.jobs {
+            for c in j.contexts() {
+                produced.insert(c);
+            }
+        }
+    }
+
+    let (opaque, concrete): (Vec<&String>, Vec<&String>) = produced
+        .iter()
+        .filter(|c| !required.contains(c.as_str()))
+        .partition(|c| c.contains("${{"));
+
+    println!(
+        "# Check contexts produced by a workflow and NOT listed in\n\
+         # ci/required-checks.txt. Advisory: nothing blocks a merge on them.\n\
+         #\n\
+         # Not a to-do list. Release, nightly and shadow lanes belong here. The\n\
+         # point is that the set is visible, so advisory-by-accident can be told\n\
+         # from advisory-by-decision."
+    );
+    println!(
+        "#\n# produced={} required={} advisory={} unexpanded={}",
+        produced.len(),
+        required.len(),
+        concrete.len(),
+        opaque.len()
+    );
+    for c in &concrete {
+        println!("{c}");
+    }
+    if !opaque.is_empty() {
+        println!(
+            "\n# Unexpanded matrix contexts -- the model could not resolve these names,\n\
+             # so whether they are required is UNKNOWN, which is not the same as no."
+        );
+        for c in &opaque {
+            println!("# ?  {c}");
+        }
+    }
+    Ok(())
+}
+
 /// `ci-spec inline-gates`: print the inline-gate inventory in
 /// `ci/inline-gates.txt` shape, carrying forward any falsifier already on
 /// record so regenerating never loses an annotation.
