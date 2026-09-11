@@ -777,11 +777,27 @@ impl FlowTracker {
     /// This is the **only way** to lower the session ceiling. Without the
     /// token, the monotonic ratchet cannot be bypassed — the guarantee
     /// that "taint never silently decreases" is enforced by the type system.
+    /// The token is taken **by value** and consumed. It used to be `&token`,
+    /// which is the whole guarantee defeated by the calling convention: a sealed,
+    /// unforgeable, human-authorized token that survives its own use is not
+    /// single-use, and one authorization could lower the ceiling any number of
+    /// times. That is ADR 0007 C-4 — "a one-shot right is taken by value; a `&`
+    /// on a consuming parameter is the bug" — and `f7f9719b`, its load-bearing
+    /// example, is the same defect on `DischargedBundle`.
+    ///
+    /// It also discharges a hypothesis the Lean carries.
+    /// `portcullis-core/lean/SessionCeilingProofs.lean` proves `reset_re_enables`:
+    /// an explicit reset is the ONLY move that re-enables a denied session. That
+    /// theorem is about a reset that happens once. A replayable token is a model
+    /// mismatch, not just untidy code.
     pub fn reset_session_ceiling(
         &mut self,
         new_ceiling: DerivationClass,
-        _token: &SessionCleanseToken,
+        token: SessionCleanseToken,
     ) {
+        // Bound so the consumption is visible, then dropped: the token's own
+        // `reason` is the audit string, and nothing here may keep a copy.
+        let _consumed = token;
         self.session_taint_ceiling = new_ceiling;
         // The human-authorized cleanse is also the only way to clear the
         // fail-closed poison flag (most-paranoid #3).
@@ -1374,7 +1390,7 @@ mod tests {
         // Explicit reset — requires a SessionCleanseToken + DischargedBundle
         let bundle = crate::discharge::test_helpers::allowed_bundle();
         let token = SessionCleanseToken::authorize("test: reset for verification", &bundle);
-        t.reset_session_ceiling(DerivationClass::Deterministic, &token);
+        t.reset_session_ceiling(DerivationClass::Deterministic, token);
         assert_eq!(t.session_taint_ceiling(), DerivationClass::Deterministic);
         assert!(!t.is_session_tainted());
     }
@@ -1400,7 +1416,7 @@ mod tests {
         let bundle = crate::discharge::test_helpers::allowed_bundle();
         let token =
             SessionCleanseToken::authorize("test: cleanse after dropped observation", &bundle);
-        t.reset_session_ceiling(DerivationClass::Deterministic, &token);
+        t.reset_session_ceiling(DerivationClass::Deterministic, token);
         assert!(!t.is_poisoned(), "authorized cleanse must clear poison");
     }
 
@@ -1414,7 +1430,7 @@ mod tests {
 
         let bundle = crate::discharge::test_helpers::allowed_bundle();
         let token = SessionCleanseToken::authorize("test: reset taint status", &bundle);
-        t.reset_session_ceiling(DerivationClass::Deterministic, &token);
+        t.reset_session_ceiling(DerivationClass::Deterministic, token);
         assert!(!t.is_session_tainted());
     }
 

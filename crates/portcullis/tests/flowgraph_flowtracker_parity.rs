@@ -351,8 +351,8 @@ fn cleanse_parity_ceiling_and_poison() {
     let bundle = allowed_bundle();
     let ft_token = SessionCleanseToken::authorize("parity: cleanse ft", &bundle);
     let fg_token = SessionCleanseToken::authorize("parity: cleanse fg", &bundle);
-    ft.reset_session_ceiling(DerivationClass::Deterministic, &ft_token);
-    fg.reset_session_ceiling(DerivationClass::Deterministic, &fg_token);
+    ft.reset_session_ceiling(DerivationClass::Deterministic, ft_token);
+    fg.reset_session_ceiling(DerivationClass::Deterministic, fg_token);
 
     // Effect 1: derivation ceiling lowered on both.
     assert_eq!(ft.session_taint_ceiling(), DerivationClass::Deterministic);
@@ -586,8 +586,8 @@ fn differential_egress_verdicts_identical_across_full_sequence() {
     let bundle = allowed_bundle();
     let ft_tok = SessionCleanseToken::authorize("harness cleanse ft", &bundle);
     let fg_tok = SessionCleanseToken::authorize("harness cleanse fg", &bundle);
-    ft.reset_session_ceiling(DerivationClass::Deterministic, &ft_tok);
-    fg.reset_session_ceiling(DerivationClass::Deterministic, &fg_tok);
+    ft.reset_session_ceiling(DerivationClass::Deterministic, ft_tok);
+    fg.reset_session_ceiling(DerivationClass::Deterministic, fg_tok);
     assert!(
         !ft.is_poisoned() && !fg.is_poisoned(),
         "cleanse cleared poison on both"
