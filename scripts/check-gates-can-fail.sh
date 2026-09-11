@@ -265,7 +265,14 @@ perturb_inert_authority_paid() {
     # (the binding is named, so the body may read it) and the row is left
     # behind. The pin is exact in both directions, so a stale row is a finding
     # too -- without this probe, only growth would be proven detectable.
-    sed -i 's/_verified: &VerifiedGrant/verified: \&VerifiedGrant/' "$1"
+    # `-i.gate-bak`, like every other perturbation in this file. Bare `sed -i`
+    # is GNU-only: BSD sed reads the next argument as the backup SUFFIX and then
+    # the filename as the script, which dies with "command c expects \ followed
+    # by text". So on macOS this probe changed nothing and reported itself as a
+    # no-op — the harness caught that correctly, and said so, for anyone who ran
+    # it locally. Line 268 was the only `sed -i` here missing the suffix.
+    sed -i.gate-bak 's/_verified: &VerifiedGrant/verified: \&VerifiedGrant/' "$1"
+    rm -f "$1.gate-bak"
 }
 
 perturb_dead_code_ratchet() {
