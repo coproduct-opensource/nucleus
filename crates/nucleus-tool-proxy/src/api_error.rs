@@ -22,6 +22,15 @@ use crate::validation;
 pub(crate) struct ErrorBody {
     error: String,
     kind: String,
+    /// The kernel's own reason code (`gate_class::deny_code`) when this is a
+    /// kernel refusal — `dlc_admission_denied`, `ifc_unsafe`, `path_blocked`.
+    ///
+    /// ADDITIVE on purpose: `kind` stays `kernel_denied` for every kernel
+    /// refusal, so the SDK's `kind` -> typed-variant mapping is untouched.
+    /// This is the field a caller reads when it needs to know WHICH gate
+    /// refused, which `verify --tier2` does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deny_code: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     operation: Option<String>,
     /// Payment metadata for 402 responses (vendor-agnostic).
@@ -89,8 +98,23 @@ pub(crate) enum ApiError {
     /// The permission kernel refused, for a reason that is not a capability
     /// level. Carries the kernel's own reason rather than flattening every
     /// refusal into "capability is Never".
-    #[error("kernel denied: {0}")]
-    KernelDenied(String),
+    #[error("kernel denied: {message}")]
+    KernelDenied {
+        message: String,
+        /// `gate_class::deny_code` for the `DenyReason` behind this refusal,
+        /// when the call site had one.
+        ///
+        /// The wire used to carry `{reason:?}` — the Rust Debug form — and
+        /// `verify --tier2` keyed on the variant name `DlcAdmissionDenied`
+        /// appearing in it. Replacing Debug output with a written sentence was
+        /// right, and it removed the only thing distinguishing WHICH gate
+        /// refused, so the Tier-2 check that asserts the admission gate fired
+        /// could no longer tell that refusal from any other kernel denial.
+        ///
+        /// A machine-readable code is what that check should have had all
+        /// along: stable, intentional, and not a by-product of a derive.
+        code: Option<&'static str>,
+    },
     #[error("validation error: {0}")]
     Validation(#[from] validation::ValidationError),
     #[error("permission bid denied: insufficient value")]
@@ -183,7 +207,7 @@ impl ApiError {
             ApiError::Nucleus(NucleusError::SandboxEscape { .. }) => {
                 (StatusCode::FORBIDDEN, "sandbox_escape", None, None)
             }
-            ApiError::KernelDenied(_) => (StatusCode::FORBIDDEN, "kernel_denied", None, None),
+            ApiError::KernelDenied { .. } => (StatusCode::FORBIDDEN, "kernel_denied", None, None),
             ApiError::Nucleus(NucleusError::Io(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None)
             }
@@ -252,24 +276,43 @@ impl ApiError {
     }
 }
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
+impl ApiError {
+    /// The body this error serializes to, and the status it goes out with.
+    ///
+    /// Split from [`IntoResponse::into_response`] so a test can assert on the
+    /// REAL body rather than a reconstruction of it — the contract
+    /// `verify --tier2` reads (`deny_code`) is only worth pinning if the thing
+    /// pinned is what actually reaches the wire.
+    pub(crate) fn response_body(&self) -> (StatusCode, ErrorBody) {
         let (status, kind, operation, payment) = self.classify();
-        let proposal = match &self {
+        let proposal = match self {
             ApiError::Refused { proposal, .. } => Some((**proposal).clone()),
             _ => None,
         };
-
+        let deny_code = match self {
+            ApiError::KernelDenied { code, .. } => *code,
+            _ => None,
+        };
         // Sanitize error message to prevent information disclosure
         let sanitized_error = validation::sanitize_error_message(&self.to_string(), None);
 
-        let body = Json(ErrorBody {
-            error: sanitized_error,
-            kind: kind.to_string(),
-            operation,
-            payment,
-            proposal,
-        });
-        (status, body).into_response()
+        (
+            status,
+            ErrorBody {
+                error: sanitized_error,
+                kind: kind.to_string(),
+                deny_code,
+                operation,
+                payment,
+                proposal,
+            },
+        )
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, body) = self.response_body();
+        (status, Json(body)).into_response()
     }
 }

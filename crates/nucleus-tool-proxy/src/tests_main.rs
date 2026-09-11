@@ -1576,7 +1576,7 @@ mod deny_reason_parity {
                 reason.clone(),
             );
             assert!(
-                matches!(err, ApiError::KernelDenied(_)),
+                matches!(err, ApiError::KernelDenied { .. }),
                 "{reason:?} changed class, not just wording"
             );
         }
@@ -1740,4 +1740,46 @@ mod refusal_carries_its_proposal {
             "a refusal built without a grant must stay bare"
         );
     }
+}
+
+/// `verify --tier2` asserts that an uncredentialed operation was refused BY THE
+/// ADMISSION GATE, not merely refused. It used to establish that by looking for
+/// the string `DlcAdmissionDenied` in the response body — which was there only
+/// because the proxy formatted the `DenyReason` with `{:?}`. Debug output was
+/// never a wire format, and replacing it with a sentence written for the person
+/// reading it removed the only thing that distinguished which gate refused.
+///
+/// So the contract that check depends on is pinned here: the kernel's own
+/// machine-readable code reaches the body. Prose is free to change; this is not.
+#[test]
+fn an_admission_refusal_carries_its_deny_code_to_the_wire() {
+    let err = crate::mediation::kernel_denial_to_api_error(
+        Operation::RunBash,
+        "true",
+        DenyReason::DlcAdmissionDenied {
+            detail: "no issuer-signed credential presented for this operation".to_string(),
+        },
+    );
+
+    let crate::api_error::ApiError::KernelDenied { ref code, .. } = err else {
+        panic!("an admission refusal must stay a kernel denial: {err:?}");
+    };
+    assert_eq!(
+        *code,
+        Some("dlc_admission_denied"),
+        "verify --tier2 reads this to tell the admission gate from any other \
+         kernel refusal; without it the Tier-2 check cannot distinguish them"
+    );
+
+    // And it must actually reach the serialized body, not just the enum.
+    let (_status, wire) = err.response_body();
+    let body = serde_json::to_string(&wire).expect("serializable");
+    assert!(
+        body.contains("dlc_admission_denied"),
+        "the code never reaches the wire, so the check reads a body without it: {body}"
+    );
+    assert!(
+        body.contains("kernel_denied"),
+        "`kind` must stay `kernel_denied` so the SDK's mapping is untouched: {body}"
+    );
 }

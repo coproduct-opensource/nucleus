@@ -102,11 +102,17 @@ pub(crate) fn kernel_denial_to_api_error(
             // reachable only after the run had ended. One producer now
             // (`DenyReason::describe`), and the operation is passed because
             // this call site has it.
-            ApiError::KernelDenied(format!(
-                "{} (operation {} on {subject})",
-                other.describe(Some(operation)),
-                operation_name(operation)
-            ))
+            ApiError::KernelDenied {
+                message: format!(
+                    "{} (operation {} on {subject})",
+                    other.describe(Some(operation)),
+                    operation_name(operation)
+                ),
+                // The written sentence is for a person; this is for a caller
+                // that must know WHICH gate refused. `verify --tier2` used to
+                // read the variant name out of Debug output for exactly this.
+                code: Some(portcullis::gate_class::deny_code(&other)),
+            }
         }
     }
 }

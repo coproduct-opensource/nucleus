@@ -232,7 +232,10 @@ pub(crate) async fn create_sub_pod(
         .map_err(|e| ApiError::Spec(format!("budget conservation: {e}")))?;
     if let Err(reason) = state.kernel.lock().await.charge(child_budget_usd) {
         state.runtime.budget().release(reserved_usd);
-        return Err(ApiError::KernelDenied(format!("{reason:?}")));
+        return Err(ApiError::KernelDenied {
+            message: format!("{reason:?}"),
+            code: Some(portcullis::gate_class::deny_code(&reason)),
+        });
     }
 
     // 6. Forward to nucleus-node; a refusal hands the reservation back.

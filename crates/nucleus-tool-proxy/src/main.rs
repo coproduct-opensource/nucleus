@@ -2403,7 +2403,10 @@ async fn auth_middleware(
         && let Some(why) =
             run_gate::certificate_denies_endpoint(&state, certified, parts.uri.path())
     {
-        return Err(ApiError::KernelDenied(why));
+        return Err(ApiError::KernelDenied {
+            message: why,
+            code: None,
+        });
     }
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
