@@ -233,6 +233,81 @@ fn readme_queue_constants(root: &Path, readme: &str) -> Result<()> {
         bail!("no merge-queue constant was compared — the check examined nothing");
     }
     println!("OK: {checked} merge-queue constant(s) in {README} agree with {QUEUE_TOML}");
+    readme_site_counts(root, &joined)
+}
+
+/// The README also counts how many `runs-on:` sites each pool serves, and those are facts about
+/// the tree rather than opinions about a deployment.
+///
+/// Unlike the pool sizes — where `manager.toml` is a default the deployed secret may override, so
+/// neither side is authoritative and the drift is ratcheted — a site count is decidable here and
+/// now by counting lines. There is a right answer, so this comparison HARD-FAILS rather than
+/// ratchets, and the README was corrected in the change that added it.
+///
+/// Measured 2026-09-11, before the correction: the README claimed 52 gate sites and 27 build sites;
+/// the tree had **54 and 24**. Both wrong, in opposite directions.
+fn readme_site_counts(root: &Path, joined: &str) -> Result<()> {
+    let dir = root.join(".github/workflows");
+    let mut runs_on: Vec<String> = Vec::new();
+    for e in fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+        let path = e?.path();
+        if path.extension().is_none_or(|x| x != "yml") {
+            continue;
+        }
+        for line in fs::read_to_string(&path)?.lines() {
+            if line.trim_start().starts_with("runs-on:") {
+                runs_on.push(line.to_string());
+            }
+        }
+    }
+    if runs_on.len() < 50 {
+        bail!(
+            "only {} `runs-on:` lines found — the scan is wrong, so every count below is noise",
+            runs_on.len()
+        );
+    }
+
+    // Routing: a line naming CI_BUILD_RUNNER goes to the build pool even though it also names
+    // CI_RUNNER as its fallback, so the gate count is the difference and not the raw match.
+    let build = runs_on
+        .iter()
+        .filter(|l| l.contains("vars.CI_BUILD_RUNNER"))
+        .count();
+    let gate = runs_on
+        .iter()
+        .filter(|l| l.contains("vars.CI_RUNNER") && !l.contains("vars.CI_BUILD_RUNNER"))
+        .count();
+
+    let mut wrong = Vec::new();
+    for (claim, actual, what) in [
+        ("`runs-on` sites)", build, "build"),
+        (" sites), opt-in", gate, "gate"),
+    ] {
+        // The number immediately before the claim phrase, e.g. "(27 `runs-on` sites)".
+        let Some(before) = joined
+            .split(claim)
+            .next()
+            .filter(|_| joined.contains(claim))
+        else {
+            bail!("{README} no longer states the {what} site count in the expected form");
+        };
+        let claimed: usize = before
+            .rsplit(|c: char| !c.is_ascii_digit())
+            .find(|t| !t.is_empty())
+            .and_then(|n| n.parse().ok())
+            .with_context(|| format!("{README}: no number before the {what} site count"))?;
+        if claimed != actual {
+            wrong.push(format!("{what}: README {claimed}, tree {actual}"));
+        }
+    }
+    if !wrong.is_empty() {
+        bail!(
+            "{README} miscounts `runs-on` sites — {}. The tree is the authority here: count the \
+             lines and correct the prose",
+            wrong.join("; ")
+        );
+    }
+    println!("OK: {README}'s site counts match the tree (gate {gate}, build {build})");
     Ok(())
 }
 
