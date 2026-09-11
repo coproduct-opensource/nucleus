@@ -1,5 +1,11 @@
 # cargo-mutants configuration.
 #
+# In .cargo/, not the repo root. `cargo mutants --help` says so plainly —
+# "Read configuration from this file instead of .cargo/mutants.toml" — and a
+# root-level mutants.toml is read by nothing. The first version of this file was
+# at the root, CI reported the same two survivors unchanged, and `--list` locally
+# confirmed the exclusion was doing nothing at all.
+#
 # WHY THIS FILE EXISTS
 #
 # `Mutation Testing` runs `cargo mutants --package portcullis --all-features`.
