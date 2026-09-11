@@ -55,7 +55,7 @@ use crate::{
 /// • Commands: intersection(allowed), union(blocked)
 /// • Time: max(valid_from), min(valid_until)
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct PermissionLattice {
     /// Unique identifier for this permission set
@@ -116,6 +116,44 @@ pub struct PermissionLattice {
     pub created_at: DateTime<Utc>,
     /// Who/what created this permission
     pub created_by: String,
+}
+
+/// Equality is over what the permissions PERMIT, not over how they were made.
+///
+/// Derived `PartialEq` compared `id`, `description` and `derived_from` — audit
+/// provenance that `meet`, `join` and `leq` all deliberately ignore. Since
+/// `meet` mints `id: Uuid::new_v4()` on every call and builds an order-dependent
+/// `description`, the derived equality made this type satisfy **none** of the
+/// fifteen laws its three lattice traits declare: `verify_lattice_laws` over
+/// three of its own constructors reported 99 violations, `a.meet(&a) != a` among
+/// them, and `a.meet(&b) == a` was never true for any `a` and `b` — which breaks
+/// the `a ≤ b ⟺ a ∧ b = a` correspondence by construction.
+///
+/// It also meant two policy-identical permission sets compared unequal, which is
+/// the wrong answer to the only question `==` is ever asked here.
+///
+/// This is the move [`crate::delegation`]'s neighbour already makes:
+/// `portcullis_core::attenuation::LiteralDelegation` hand-writes `PartialEq`
+/// because *"deriving `PartialEq` would break join commutativity: `a ∨ b` and
+/// `b ∨ a` list elements in different orders"*. Same wall, same answer — make
+/// `PartialEq` **be** the law equality rather than adding a second notion of
+/// equality beside it.
+///
+/// `leq` was never affected and is unchanged: it compares only the policy
+/// fields, so the one production enforcement site
+/// (`certificate.rs`'s `effective_permissions.leq(prev_permissions)`) was sound
+/// throughout.
+impl PartialEq for PermissionLattice {
+    fn eq(&self, other: &Self) -> bool {
+        self.capabilities == other.capabilities
+            && self.obligations == other.obligations
+            && self.paths == other.paths
+            && self.budget == other.budget
+            && self.commands == other.commands
+            && self.time == other.time
+            && self.minimum_isolation == other.minimum_isolation
+            && self.uninhabitable_constraint == other.uninhabitable_constraint
+    }
 }
 
 /// Parse a UUID from a string WITHOUT risking a panic on hostile input.
@@ -1441,6 +1479,117 @@ impl Default for EffectivePermissions {
 
 #[cfg(test)]
 mod tests {
+    // ── The laws PermissionLattice actually satisfies ─────────────────
+    //
+    // `verify_lattice_laws` is all-or-nothing, and this type does not pass it:
+    // absorption fails, for a reason worth naming rather than papering over.
+    // These pin the four laws that DO hold, so the equality fix below cannot
+    // regress silently, and `absorption_fails_because_meet_applies_a_closure`
+    // records the one that does not.
+
+    fn law_samples() -> Vec<PermissionLattice> {
+        vec![
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::default(),
+        ]
+    }
+
+    #[test]
+    fn meet_and_join_are_idempotent() {
+        for a in law_samples() {
+            assert_eq!(a.meet(&a), a, "a ∧ a = a");
+            assert_eq!(a.join(&a), a, "a ∨ a = a");
+        }
+    }
+
+    #[test]
+    fn meet_and_join_are_commutative() {
+        for a in law_samples() {
+            for b in law_samples() {
+                assert_eq!(a.meet(&b), b.meet(&a), "a ∧ b = b ∧ a");
+                assert_eq!(a.join(&b), b.join(&a), "a ∨ b = b ∨ a");
+            }
+        }
+    }
+
+    #[test]
+    fn meet_and_join_are_associative() {
+        for a in law_samples() {
+            for b in law_samples() {
+                for c in law_samples() {
+                    assert_eq!(a.meet(&b.meet(&c)), a.meet(&b).meet(&c));
+                    assert_eq!(a.join(&b.join(&c)), a.join(&b).join(&c));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn leq_agrees_with_meet() {
+        // `a ≤ b ⟺ a ∧ b = a`. This was FALSE for every pair before the
+        // equality fix, because `meet` mints a fresh `id` so `a.meet(&b) == a`
+        // could never hold.
+        for a in law_samples() {
+            for b in law_samples() {
+                assert_eq!(
+                    a.leq(&b),
+                    a.meet(&b) == a,
+                    "leq and meet must agree on {} ≤ {}",
+                    a.description,
+                    b.description
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn equality_is_over_what_is_permitted_not_over_provenance() {
+        let a = PermissionLattice::restrictive();
+        let mut b = a.clone();
+        b.id = Uuid::new_v4();
+        b.description = "a different label".to_string();
+        b.derived_from = Some(Uuid::new_v4());
+        assert_eq!(a, b, "provenance is an audit handle, not identity");
+    }
+
+    #[test]
+    fn absorption_fails_because_meet_applies_a_closure() {
+        // `a ∧ (a ∨ b) = a` is the law a closure operator breaks, and `meet`
+        // applies one: `IncompatibilityConstraint::enforcing()` adds approval
+        // obligations for the capabilities the meet produces. So the composite
+        // is `j(a ∧ b)` for a closure `j`, which is a NUCLEUS on a lattice and
+        // not a lattice meet.
+        //
+        // Recorded rather than fixed: the obligations it adds are the
+        // uninhabitable-state constraint doing its job, so "make absorption
+        // hold" would mean weakening it. The type nonetheless implements
+        // `Lattice`, `BoundedLattice` and `DistributiveLattice`, three traits
+        // whose laws it does not satisfy — and this repo already has the right
+        // vocabulary for what it IS: `frame::Nucleus`, and the
+        // `ConstraintNucleus` that `scripts/law-mechanisms-manifest.txt` records
+        // as declared-dead, with production using "hardcoded ifs" instead.
+        //
+        // This test exists so that stops being invisible. If absorption ever
+        // starts holding, something changed about the constraint and this test
+        // says so.
+        let a = PermissionLattice::restrictive();
+        let b = PermissionLattice::permissive();
+        let absorbed = a.meet(&a.join(&b));
+        assert_ne!(
+            absorbed, a,
+            "if this now passes, meet stopped applying the uninhabitable closure"
+        );
+        assert_eq!(
+            absorbed.capabilities, a.capabilities,
+            "the break is in obligations, not capabilities"
+        );
+        assert!(
+            absorbed.obligations != a.obligations,
+            "the closure added approval obligations the operand did not carry"
+        );
+    }
+
     use super::*;
 
     /// Regression: a non-ASCII `id` used to PANIC uuid's error formatter
