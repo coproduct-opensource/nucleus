@@ -2371,6 +2371,16 @@ async fn spawn_firecracker_pod(
             &identity_grant,
             state.identity_vsock_port,
         );
+        // #2789: give the pod a writable `/work`. Decided before the config that
+        // declares the drive, so a disk that cannot be made means no drive
+        // rather than a dead boot.
+        let (effective_image, scratch_is_node_provisioned) = firecracker_config::scratch_for_pod(
+            image,
+            jail_layout.as_ref(),
+            state.jailer_uid.get(),
+            state.jailer_gid,
+        );
+        let image = &effective_image;
         // Live-path: mint the session capability token. It is served to the
         // guest over the workload API (`FETCH_TASK_TOKEN`, per-pod socket) — no
         // longer written to the kernel cmdline — so `from_spec` does not take
@@ -2429,6 +2439,7 @@ async fn spawn_firecracker_pod(
                 &jail_config_json,
                 state.jailer_uid.get(),
                 state.jailer_gid,
+                scratch_is_node_provisioned,
             ) {
                 cleanup_net_resources(
                     &state.network_allocator,

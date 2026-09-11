@@ -668,12 +668,24 @@ pub struct DischargedBundle {
     operation: Operation,
     /// The sink class this bundle was discharged FOR.
     sink_class: SinkClass,
+    /// The subject this bundle was discharged FOR.
+    ///
+    /// `operation` and `sink_class` bind the *kind* of action. They do not bind
+    /// which one: a bundle earned to run `ls` is `(RunBash, BashExec)`, and so
+    /// is a bundle earned to run `rm -rf /`. The confused-deputy argument above
+    /// applies one level deeper than it was applied, and this closes it — the
+    /// "request-hash caveat" is about the request, not its category.
+    ///
+    /// Set from `ActionTerm::subject` at the single point a bundle can be
+    /// built. Nothing else reads `subject` on the term: the kernel uses it only
+    /// in denial messages, so binding it here changes no obligation.
+    subject: String,
     _seal: Seal,
 }
 
 impl DischargedBundle {
     /// Private constructor — only callable from within this module.
-    fn new(operation: Operation, sink_class: SinkClass) -> Self {
+    fn new(operation: Operation, sink_class: SinkClass, subject: String) -> Self {
         Self {
             integrity_gate: Discharged::mint(),
             path_allowed: Discharged::mint(),
@@ -685,6 +697,7 @@ impl DischargedBundle {
             inputs_authorized: Discharged::mint(),
             operation,
             sink_class,
+            subject,
             _seal: Seal,
         }
     }
@@ -700,6 +713,12 @@ impl DischargedBundle {
         self.sink_class
     }
 
+    /// The subject this bundle authorises — the target, not its category.
+    #[must_use]
+    pub fn subject(&self) -> &str {
+        &self.subject
+    }
+
     /// **Does this bundle authorise `op` at `sink`?**
     ///
     /// The check the effect functions never made. Each effect knows which
@@ -712,6 +731,17 @@ impl DischargedBundle {
     #[must_use]
     pub fn authorizes(&self, op: Operation, sink: SinkClass) -> bool {
         self.operation == op && self.sink_class == sink
+    }
+
+    /// **Does this bundle authorise `op` at `sink`, on `subject`?**
+    ///
+    /// [`authorizes`](Self::authorizes) answers for the *kind* of action. This
+    /// answers for the action. A caller that can name what it is about to do —
+    /// the command it will spawn, the remote it will push to — should ask this
+    /// one, because the other cannot tell `ls` from `rm -rf /`.
+    #[must_use]
+    pub fn authorizes_subject(&self, op: Operation, sink: SinkClass, subject: &str) -> bool {
+        self.authorizes(op, sink) && self.subject == subject
     }
 }
 
@@ -963,6 +993,22 @@ pub mod test_helpers {
         ProvenanceSet, SinkClass,
     };
 
+    /// Produce a bundle scoped to a specific operation, sink **and subject**.
+    ///
+    /// The subject-less forms mint `"test-helper"`, which is right for a test
+    /// asserting something about the `(operation, sink)` pair and wrong for one
+    /// that spends the authority: a spend binds the target, so the bundle must
+    /// have been earned for it. Panics if the pair is not earnable.
+    pub fn bundle_for_subject(
+        operation: Operation,
+        sink_class: SinkClass,
+        subject: &str,
+    ) -> DischargedBundle {
+        try_bundle_for_subject(operation, sink_class, subject).unwrap_or_else(|| {
+            panic!("test_helpers::bundle_for_subject: {operation:?}/{sink_class:?} is not earnable")
+        })
+    }
+
     /// Produce a bundle scoped to a SPECIFIC operation and sink.
     ///
     /// `allowed_bundle` mints a WriteFiles/WorkspaceWrite bundle, and tests were
@@ -1010,6 +1056,21 @@ pub mod test_helpers {
     /// earned" from "this pair was earned and then misused", which the panicking
     /// form cannot express.
     pub fn try_bundle_for(operation: Operation, sink_class: SinkClass) -> Option<DischargedBundle> {
+        try_bundle_for_subject(operation, sink_class, "test-helper")
+    }
+
+    /// Like [`try_bundle_for`], with the subject the bundle is discharged for.
+    ///
+    /// A bundle binds its subject, so a test that spends one against a real
+    /// target needs a bundle minted for that target. The subject-less forms
+    /// mint `"test-helper"`, which is the right default for a test asserting
+    /// something about the `(operation, sink)` pair and the wrong one for a
+    /// test that spends.
+    pub fn try_bundle_for_subject(
+        operation: Operation,
+        sink_class: SinkClass,
+        subject: &str,
+    ) -> Option<DischargedBundle> {
         let term = ActionTerm {
             operation,
             sink_class,
@@ -1025,7 +1086,7 @@ pub mod test_helpers {
                 },
                 derivation: DerivationClass::Deterministic,
             },
-            subject: "test-helper".to_string(),
+            subject: subject.to_string(),
             estimated_cost_micro_usd: 0,
             capability_ceiling: Some(crate::CapabilityLevel::LowRisk),
             requested_capability: Some(crate::CapabilityLevel::LowRisk),
@@ -1242,7 +1303,11 @@ pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
         };
     }
 
-    PreflightResult::Allowed(DischargedBundle::new(term.operation, term.sink_class))
+    PreflightResult::Allowed(DischargedBundle::new(
+        term.operation,
+        term.sink_class,
+        term.subject.clone(),
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

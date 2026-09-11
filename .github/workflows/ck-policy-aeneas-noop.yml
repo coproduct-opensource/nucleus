@@ -12,6 +12,8 @@ name: CK Policy Aeneas (extracted-core soundness)
 on:
   pull_request:
     paths-ignore:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/ck-policy/lean-aeneas/**"
       - "crates/ck-policy/src/extracted.rs"
       - "crates/ck-policy/tests/policy_aeneas_parity.rs"

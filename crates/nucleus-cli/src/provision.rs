@@ -740,7 +740,87 @@ pub async fn provision_mtls_identity(
     trust_domain: &str,
 ) -> Result<MtlsIdentityPaths> {
     let ca = load_or_seed_host_ca(host, trust_domain)?;
-    mint_cli_identity(&ca, trust_domain, &crate::config::Config::identity_dir()?).await
+    let paths =
+        mint_cli_identity(&ca, trust_domain, &crate::config::Config::identity_dir()?).await?;
+    install_identity_on_tier2_host(host, &paths)?;
+    Ok(paths)
+}
+
+/// Where `verify --tier2` looks for the CLI identity on the Tier 2 host.
+///
+/// `verify --tier2` re-invokes the Linux CLI as root on that host
+/// (`limactl shell <vm> -- sudo /usr/local/bin/nucleus verify --tier2 --here`),
+/// and `Config::identity_dir()` evaluated as root is this path. It is written
+/// out rather than computed because the process that computes it runs on the
+/// other machine — on macOS, `Config::identity_dir()` here resolves under the
+/// operator's own home, which is what #2715 was.
+const TIER2_IDENTITY_DIR: &str = "/root/.config/nucleus/identity";
+
+/// Put the identity just minted where the Tier 2 host will look for it.
+///
+/// # Why this is a second write and not a different destination
+///
+/// `mint_cli_identity` writes into `Config::identity_dir()`, which resolves on
+/// the machine running `setup`. On macOS that is the operator's Mac, while
+/// `verify --tier2` runs the CLI inside the Lima VM as root — so setup minted
+/// an identity, verification looked somewhere else, and the error it printed
+/// was `run: nucleus setup`, the command that had just run (#2715). The CA root
+/// was already seeded in the VM by `load_or_seed_host_ca`, so the identity was
+/// the only missing piece; both are needed and both belong on that host.
+///
+/// The operator's own copy stays where it is: `nucleus node` on the Mac reads
+/// it, so this adds a destination rather than moving one. On a Linux host where
+/// `setup` already runs as root the two paths coincide and the write is an
+/// idempotent rewrite of identical bytes.
+///
+/// # Why the key goes into the VM at all
+///
+/// It is the operator's own credential and the VM is the operator's own
+/// machine, already holding the CA **private key** that can mint more of them
+/// (`{HOST_CA_DIR}/ca-key.pem`). Writing a leaf key beside a root key it is
+/// derived from adds no reachable authority. It is written by root, `umask 077`
+/// before creation and `chmod 0600` after, matching how the CA key is written.
+fn install_identity_on_tier2_host(host: &Tier2Host, paths: &MtlsIdentityPaths) -> Result<()> {
+    let read = |p: &Path| {
+        std::fs::read_to_string(p).with_context(|| format!("failed to read {}", p.display()))
+    };
+    let script = tier2_identity_install_script(
+        &read(&paths.cli_cert)?,
+        &read(&paths.cli_key)?,
+        &read(&paths.trust_bundle)?,
+    );
+    host.sh(&script).with_context(|| {
+        format!(
+            "failed to install the CLI identity into {TIER2_IDENTITY_DIR} on {} — \
+             `nucleus verify --tier2` reads it from there",
+            host.describe()
+        )
+    })?;
+    Ok(())
+}
+
+/// The pure half of [`install_identity_on_tier2_host`]: the script, built from
+/// the three PEMs, with no `Tier2Host` involved so a test can read it.
+///
+/// Split for the same reason `mint_cli_identity` is split from
+/// `load_or_seed_host_ca` — the half that runs real shell commands is exercised
+/// by review, and the half that decides WHAT to run is exercised by a test.
+fn tier2_identity_install_script(cert_pem: &str, key_pem: &str, bundle_pem: &str) -> String {
+    // `set -e` so a failed mkdir cannot leave a later `cat` writing into the
+    // wrong directory, and `umask 077` so the key is never briefly world-readable
+    // between creation and chmod.
+    format!(
+        "set -e
+         mkdir -p {TIER2_IDENTITY_DIR}
+         umask 077
+         cat > {TIER2_IDENTITY_DIR}/cli-cert.pem <<'NUCLEUS_CLI_CERT_EOF'
+{cert_pem}NUCLEUS_CLI_CERT_EOF
+         cat > {TIER2_IDENTITY_DIR}/cli-key.pem <<'NUCLEUS_CLI_KEY_EOF'
+{key_pem}NUCLEUS_CLI_KEY_EOF
+         cat > {TIER2_IDENTITY_DIR}/trust-bundle.pem <<'NUCLEUS_TRUST_BUNDLE_EOF'
+{bundle_pem}NUCLEUS_TRUST_BUNDLE_EOF
+         chmod 0600 {TIER2_IDENTITY_DIR}/cli-key.pem"
+    )
 }
 
 /// The `Tier2Host`-touching half: load the CA root already at `HOST_CA_DIR`
@@ -1236,5 +1316,64 @@ mod tests {
         assert_eq!(resp.status(), 200);
 
         server_handle.await.unwrap();
+    }
+
+    /// The whole of #2715 in one assertion: the directory setup writes into
+    /// must be the directory the root CLI on the Tier 2 host reads from.
+    /// Computed here from `Config::identity_dir()`'s own shape rather than
+    /// restated, so changing `nucleus_dir()` moves both or fails loudly — the
+    /// two drifting apart is exactly the bug.
+    #[test]
+    fn the_tier2_identity_dir_is_where_the_root_cli_will_look() {
+        let home = dirs::home_dir().expect("home directory");
+        let local = crate::config::Config::identity_dir().expect("identity dir");
+        let under_home = local
+            .strip_prefix(&home)
+            .expect("the identity dir is under the home directory");
+        assert_eq!(
+            std::path::Path::new(TIER2_IDENTITY_DIR),
+            std::path::Path::new("/root").join(under_home),
+            "setup would write the identity somewhere `verify --tier2` does not read"
+        );
+    }
+
+    /// The three filenames are not free: `node.rs::provisioned_identity_paths_in`
+    /// requires all three to be present before it will default the node client's
+    /// flags, and treats a partial set as none. A script that wrote two of them
+    /// would leave `verify --tier2` failing exactly as it did before.
+    #[test]
+    fn the_install_script_writes_all_three_files_the_node_client_requires() {
+        let script = tier2_identity_install_script("CERT\n", "KEY\n", "BUNDLE\n");
+        for name in ["cli-cert.pem", "cli-key.pem", "trust-bundle.pem"] {
+            assert!(
+                script.contains(&format!("{TIER2_IDENTITY_DIR}/{name}")),
+                "{name} is never written, so the identity stays partial: {script}"
+            );
+        }
+        for pem in ["CERT", "KEY", "BUNDLE"] {
+            assert!(script.contains(pem), "{pem} never reaches the host");
+        }
+    }
+
+    /// The key is a private key on a shared filesystem. `umask 077` must come
+    /// before the first `cat`, or it exists world-readable for the window
+    /// between creation and `chmod`.
+    #[test]
+    fn the_install_script_never_exposes_the_key() {
+        let script = tier2_identity_install_script("CERT\n", "KEY\n", "BUNDLE\n");
+        let umask = script.find("umask 077").expect("umask is set");
+        let first_write = script.find("cat >").expect("something is written");
+        assert!(
+            umask < first_write,
+            "umask must precede the first write or the key is briefly world-readable"
+        );
+        assert!(
+            script.contains(&format!("chmod 0600 {TIER2_IDENTITY_DIR}/cli-key.pem")),
+            "the key is left at the umask default rather than explicitly restricted"
+        );
+        assert!(
+            script.starts_with("set -e"),
+            "a failed mkdir must stop the script"
+        );
     }
 }

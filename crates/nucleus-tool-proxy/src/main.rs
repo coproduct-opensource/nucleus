@@ -3613,13 +3613,14 @@ async fn glob_search(
         .map_err(|e| ApiError::Spec(format!("sandbox root not accessible: {e}")))?;
 
     let search_root = if let Some(ref dir) = req.directory {
-        // Reject absolute paths immediately
-        if Path::new(dir).is_absolute() {
-            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
-                path: PathBuf::from(dir),
-            }));
-        }
-        let resolved = sandbox_root.join(dir);
+        // An absolute directory under the root names the same directory as its
+        // relative spelling; one outside it is still an escape (#2787).
+        let dir = state
+            .runtime
+            .sandbox()
+            .root_relative(Path::new(dir))
+            .map_err(ApiError::Nucleus)?;
+        let resolved = sandbox_root.join(&dir);
         // Canonicalize to resolve symlinks and .. components (path must exist)
         let canonical = resolved.canonicalize().map_err(|_| {
             ApiError::Nucleus(NucleusError::SandboxEscape {
@@ -3785,14 +3786,15 @@ async fn grep_search(
 
     // Collect files to search
     let files: Vec<std::path::PathBuf> = if let Some(ref path) = req.path {
-        // Reject absolute paths immediately
-        if Path::new(path).is_absolute() {
-            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
-                path: PathBuf::from(path),
-            }));
-        }
+        // An absolute path under the root names the same file as its relative
+        // spelling; one outside it is still an escape (#2787).
+        let path = state
+            .runtime
+            .sandbox()
+            .root_relative(Path::new(path))
+            .map_err(ApiError::Nucleus)?;
         // Search single file
-        let full_path = sandbox_root.join(path);
+        let full_path = sandbox_root.join(&path);
         // Canonicalize to verify we're within sandbox (handles symlinks and ..)
         let canonical = full_path.canonicalize().map_err(|_| {
             ApiError::Nucleus(NucleusError::SandboxEscape {

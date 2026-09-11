@@ -109,6 +109,19 @@ jobs:
       - name: The committed runner-pool default is one the manager accepts
         run: cargo run -q -p xtask -- fly-pools
 
+      # Seven scan-vs-allowlist gates lived in four shell scripts, each with its own copy
+      # of the same `#[cfg(test)]`-stripping awk program -- five copies, four of them
+      # differing byte-for-byte, one carrying a false negative its own comment names. This
+      # decides all seven in one place, and adds the two properties no copy could state:
+      # a pattern that matches NOTHING has stopped watching (and prints PASSED either way),
+      # and an allowlist may only shrink.
+      - name: The scan-vs-allowlist family, decided once
+        run: cargo run -q -p xtask -- allowlist-gates
+      # The port is only worth having if it decides the same thing the scripts do. Agreement
+      # on a green tree is weak evidence -- both could be blind -- so the four scripts are
+      # also driven RED together with the harness in scripts/check-gates-can-fail.sh.
+      - name: ...and agrees with the shell gates it replaces
+        run: cargo run -q -p xtask -- allowlist-gates --parity
       # A 2026-09-09 audit found that most of nucleus's algebraic unifications
       # are already built, several machine-proved, and not wired to the
       # enforcement path: ProductLattice had zero uses, Lean-proved MeetCap had
@@ -121,6 +134,16 @@ jobs:
       # must still be dead, and the list may only shrink.
       - name: A mechanism declared dead is still dead
         run: scripts/check-law-mechanisms.sh
+
+      # The dual of the gate above. That one finds a mechanism with no call
+      # site; this finds one that IS called, IS handed its authorising witness,
+      # and drops it -- `fn run(&self, cmd: &str, _authority: Authority)` that
+      # goes on to spawn the command. Because no witness in this tree carries
+      # the target of the act it authorises, an Authority obtained for one
+      # command discharges the gate for any other. Closing that is ADR 0006's
+      # C2; this keeps the count from growing until it lands.
+      - name: A witness accepted is a witness read
+        run: scripts/check-inert-authority.sh
 
       # `.gitignore` said `/target/` — anchored to the root, so every nested
       # target/ escaped it, and tools/nucleus-mediation-lint/target was

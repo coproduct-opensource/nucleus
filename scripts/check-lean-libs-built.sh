@@ -47,6 +47,8 @@ if [[ -z "$lakefiles" ]]; then
     exit 1
 fi
 
+action_builds=$(cargo run -q -p xtask -- lean-action-builds) || exit 1
+
 # Every lib named as an explicit `lake build` target in any workflow.
 #
 # Targets are frequently listed across BACKSLASH-CONTINUED lines:
@@ -75,6 +77,8 @@ named=$(for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
                 | sed 's/lake build//'
         done | tr ' ' '\n' | grep -vE '^$' | sort -u)
 
+named=$(printf '%s\n' "$named" "$(printf '%s\n' "$action_builds" | awk '$1 == "named" {print $2}')" | sort -u)
+
 # Every module imported by any Lean source in the tree. A lib whose root module
 # appears here is compiled as a dependency of whoever imports it.
 # Packages some workflow BARE-builds: a step with `working-directory: <pkg>`
@@ -90,6 +94,8 @@ barebuilt=$(for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
                   /run:.*lake build[[:space:]]*$/ && wd != "" { print wd }
                 ' "$wf" 2>/dev/null
             done | sed "s#^\./##; s#/\$##" | sort -u)
+
+barebuilt=$(printf '%s\n' "$barebuilt" "$(printf '%s\n' "$action_builds" | awk '$1 == "bare" {print $2}')" | sort -u)
 
 # "<importing file> <module>" pairs (space-separated: paths here carry no
 # spaces, and a literal tab is not portable between BSD and GNU sed/grep — the

@@ -117,6 +117,24 @@ probe() {
 
     "$@" "$target"
 
+    # Did the perturbation DO anything? A perturbation whose pattern no longer
+    # matches the file is a no-op, the gate then passes on an unchanged tree,
+    # and the probe reports "the gate cannot detect the thing it is named for" —
+    # which sends whoever reads it to debug a gate that is working correctly.
+    # #2582 moved the Lean builds from a bare `lake build` step to a pinned
+    # action, and `perturb_default_target_unbuilt` went on deleting a line that
+    # no longer existed. A probe whose perturbation changes nothing is not a
+    # probe, exactly as a gate that cannot fail is not a gate.
+    if cmp -s "$target" "$RESTORE_FROM"; then
+        echo "  FAIL  $gate — the perturbation for '$desc' changed $target not at all"
+        echo "        It is a no-op, so this probe tests nothing. The file moved"
+        echo "        under it: update the perturbation to match what is there now."
+        restore
+        RESTORE_FROM=""
+        failures=$((failures + 1))
+        return
+    fi
+
     local perturbed_rc=0
     # shellcheck disable=SC2086 — ci_flags is a deliberate word-split.
     bash "scripts/$gate" $ci_flags >/dev/null 2>&1 || perturbed_rc=$?
@@ -157,6 +175,24 @@ perturb_law_mechanism_wired() {
     # Appending to a .rs file does not trigger a crate build here: the gate is
     # `cargo run -p xtask`, which compiles xtask and then greps the tree.
     append_line "$1" 'fn _gate_of_gates() { let _: Option<ProvenanceDAG> = None; }'
+}
+
+perturb_inert_authority_added() {
+    # A new witness is accepted and dropped. `Authority` is in the manifest's
+    # WITNESS vocabulary and this file has no row, so the site is undeclared --
+    # which is the growth the gate exists to refuse.
+    #
+    # Appending to a .rs file does not trigger a crate build here: the gate is
+    # `cargo run -p xtask`, which compiles xtask and then greps the tree.
+    append_line "$1" 'fn _gate_of_gates_inert(_authority: Authority) {}'
+}
+
+perturb_inert_authority_paid() {
+    # The OTHER direction, and it needs its own probe: a declared site is fixed
+    # (the binding is named, so the body may read it) and the row is left
+    # behind. The pin is exact in both directions, so a stale row is a finding
+    # too -- without this probe, only growth would be proven detectable.
+    sed -i 's/_verified: &VerifiedGrant/verified: \&VerifiedGrant/' "$1"
 }
 
 perturb_dead_code_ratchet() {
@@ -230,13 +266,17 @@ LEAN
 }
 
 perturb_default_target_unbuilt() {
-    # A package whose libs are `@[default_target]` but which NO workflow
-    # bare-builds: delete the bare `lake build` step from the one workflow that
-    # builds nucleus-ifc-kernel/lean. Before #2564 the coverage gate counted
-    # `@[default_target]` alone as "built" and this package read as covered
-    # while its 19 theorems were never elaborated in CI.
+    # A package whose libs are `@[default_target]` but which NO workflow builds.
+    # The one workflow that builds nucleus-ifc-kernel/lean now does it through
+    # leanprover/lean-action with `build: "true"`; before #2582 it was a bare
+    # `lake build` step. Both forms are turned off here, so the probe keeps
+    # working whichever the workflow uses. Before #2564 the coverage gate
+    # counted `@[default_target]` alone as "built" and this package read as
+    # covered while its 19 theorems were never elaborated in CI.
     local tmp; tmp="$(mktemp)"
-    grep -v 'run: LEAN_NUM_THREADS=4 lake build$' "$1" > "$tmp"; cat "$tmp" > "$1"; rm -f "$tmp"
+    sed -e '/run: LEAN_NUM_THREADS=4 lake build$/d' \
+        -e 's/^\([[:space:]]*\)build: "true"$/\1build: "false"/' "$1" > "$tmp"
+    cat "$tmp" > "$1"; rm -f "$tmp"
 }
 
 perturb_kani_harness_deleted() {
@@ -472,6 +512,10 @@ probe check-law-mechanisms.sh "" crates/portcullis/src/lattice.rs \
       "a declared-dead mechanism gains a production call site" perturb_law_mechanism_wired
 probe check-law-mechanisms.sh "" crates/portcullis/src/budget.rs \
       "one allowance past the crate's dead-code ceiling" perturb_dead_code_ratchet
+probe check-inert-authority.sh "" crates/portcullis/src/lattice.rs \
+      "a new witness accepted and dropped"    perturb_inert_authority_added
+probe check-inert-authority.sh "" crates/nucleus-cli/src/grant.rs \
+      "a declared site fixed, its row left behind" perturb_inert_authority_paid
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
       "a raw Command::new on the agent path"  perturb_mediation
 probe check-sealed-home.sh    "" crates/portcullis-effects/src/lib.rs \

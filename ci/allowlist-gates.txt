@@ -1,0 +1,36 @@
+# Allowlist population pins for `cargo xtask allowlist-gates`.
+#
+# One line per gate: how many non-comment, non-blank entries its allowlist carries. The value may
+# only SHRINK. An allowlist that grows is a decision — a construct the gate was built to forbid,
+# blessed — and a decision should be an edit to this file with a date and a reason, not a line
+# appearing in a diff nobody reads. Removing an entry lowers the pin in the same change.
+#
+# The gate that reads this also refuses a pattern that matches NOTHING. A scan gate whose pattern
+# has gone stale prints PASSED and exits 0, which is indistinguishable from a gate that is working;
+# every gate here must find at least one matching production line, allowlisted or not.
+#
+# 2026-09-10, first measurement, transcribed from the four shell gates this harness decides in one
+# place. Every count below was measured, not copied from the scripts:
+#
+#   mediation/spawn      2 files,  1 matching line,  1 entry   scripts/mediation-allowlist.txt
+#   mediation/net        3 files,  7 matching lines, 4 entries scripts/mediation-net-allowlist.txt
+#   mediation/vsock      1 file,   1 matching line,  1 entry   scripts/mediation-vsock-allowlist.txt
+#   sealed-home/spawn    3 files,  6 matching lines, 7 entries scripts/sealed-home-allowlist.txt
+#   sealed-home/net      1 file,   1 matching line,  7 entries  (the SAME file — see below)
+#   ingest-hashed        2 files,  5 matching lines, 5 entries scripts/ingest-hashed-allowlist.txt
+#   verify-strict       70 files,  2 matching lines, 2 entries scripts/verify-strict-allowlist.txt
+#
+# `sealed-home/spawn` and `sealed-home/net` read ONE allowlist between them, so their pins are two
+# readings of the same file and move together. That is the script's design (a single sealed home,
+# one list of blessed lines) and is left alone rather than split, because splitting it would change
+# which snippets each pattern accepts.
+#
+# `verify-strict` scans 70 files for 2 matching lines. That ratio is the gate working as intended:
+# it selects every file mentioning `ed25519_dalek` and then asks a narrow question of each.
+mediation/spawn=1
+mediation/net=4
+mediation/vsock=1
+sealed-home/spawn=7
+sealed-home/net=7
+ingest-hashed=5
+verify-strict=2
