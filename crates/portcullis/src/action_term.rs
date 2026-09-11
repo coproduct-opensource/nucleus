@@ -100,6 +100,18 @@ pub enum PrimitiveAction {
         /// Glob pattern (e.g., `src/**/*.rs`).
         pattern: String,
     },
+    /// Search file *contents* for a regular expression.
+    ///
+    /// Distinct from [`PrimitiveAction::GlobSearch`] even though both take a
+    /// pattern, because [`ActionTerm::operation`] is how the kernel recovers
+    /// which authority a term spends. Collapsing grep onto glob made
+    /// `from_operation(GrepSearch, _).operation()` answer `GlobSearch`, and
+    /// the obligation check compares that against the authority the caller
+    /// asked for — so grep could not be granted by any profile. See #2790.
+    GrepSearch {
+        /// Regular expression matched against file contents.
+        pattern: String,
+    },
     /// Fetch the body of a URL.
     WebFetch {
         /// URL to fetch.
@@ -133,6 +145,16 @@ pub enum PrimitiveAction {
         endpoint: String,
         /// Serialized payload size in bytes.
         payload_bytes: usize,
+    },
+    /// Manage pods (create, stop, inspect).
+    ///
+    /// Was collapsed onto [`PrimitiveAction::SpawnAgent`] for the same reason
+    /// grep was collapsed onto glob, with the same consequence: a caller
+    /// holding `manage_pods` authority presented a term that reported itself
+    /// as `SpawnAgent`. See #2790.
+    ManagePods {
+        /// Pod or pod-set the request names.
+        target: String,
     },
 }
 
@@ -288,6 +310,7 @@ impl ActionTerm {
                 | PrimitiveAction::ReadFile { .. }
                 | PrimitiveAction::WriteFile { .. }
                 | PrimitiveAction::GlobSearch { .. }
+                | PrimitiveAction::GrepSearch { .. }
         ) {
             obs.push(ProofObligation::FsPathAllowed);
         }
@@ -364,12 +387,14 @@ impl ActionTerm {
             PrimitiveAction::ReadFile { .. } => Operation::ReadFiles,
             PrimitiveAction::WriteFile { .. } => Operation::WriteFiles,
             PrimitiveAction::GlobSearch { .. } => Operation::GlobSearch,
+            PrimitiveAction::GrepSearch { .. } => Operation::GrepSearch,
             PrimitiveAction::WebFetch { .. } => Operation::WebFetch,
             PrimitiveAction::WebSearch { .. } => Operation::WebSearch,
             PrimitiveAction::GitCommit { .. } => Operation::GitCommit,
             PrimitiveAction::GitPush { .. } => Operation::GitPush,
             PrimitiveAction::CreatePr { .. } => Operation::CreatePr,
             PrimitiveAction::SpawnAgent { .. } => Operation::SpawnAgent,
+            PrimitiveAction::ManagePods { .. } => Operation::ManagePods,
         }
     }
 
@@ -380,13 +405,16 @@ impl ActionTerm {
             | PrimitiveAction::ReadFile { path }
             | PrimitiveAction::WriteFile { path } => path,
             PrimitiveAction::RunCommand { command } => command,
-            PrimitiveAction::GlobSearch { pattern } => pattern,
+            PrimitiveAction::GlobSearch { pattern } | PrimitiveAction::GrepSearch { pattern } => {
+                pattern
+            }
             PrimitiveAction::WebFetch { url } => url,
             PrimitiveAction::WebSearch { query } => query,
             PrimitiveAction::GitCommit { message } => message,
             PrimitiveAction::GitPush { remote, .. } => remote,
             PrimitiveAction::CreatePr { title } => title,
             PrimitiveAction::SpawnAgent { endpoint, .. } => endpoint,
+            PrimitiveAction::ManagePods { target } => target,
         }
     }
 
@@ -420,7 +448,10 @@ impl ActionTerm {
             Operation::RunBash => PrimitiveAction::RunCommand {
                 command: subject.to_string(),
             },
-            Operation::GlobSearch | Operation::GrepSearch => PrimitiveAction::GlobSearch {
+            Operation::GlobSearch => PrimitiveAction::GlobSearch {
+                pattern: subject.to_string(),
+            },
+            Operation::GrepSearch => PrimitiveAction::GrepSearch {
                 pattern: subject.to_string(),
             },
             Operation::WebSearch => PrimitiveAction::WebSearch {
@@ -439,9 +470,12 @@ impl ActionTerm {
             Operation::CreatePr => PrimitiveAction::CreatePr {
                 title: subject.to_string(),
             },
-            Operation::ManagePods | Operation::SpawnAgent => PrimitiveAction::SpawnAgent {
+            Operation::SpawnAgent => PrimitiveAction::SpawnAgent {
                 endpoint: subject.to_string(),
                 payload_bytes: 0,
+            },
+            Operation::ManagePods => PrimitiveAction::ManagePods {
+                target: subject.to_string(),
             },
         };
 
@@ -625,10 +659,27 @@ pub fn preflight_action(term: &ActionTerm, ctx: &PreflightContext<'_>) -> Prefli
                 }
             }
             ProofObligation::WithinDelegationCeiling => {
-                let available = ctx.permissions.capabilities.level_for(term.operation());
-                if term.authority.operation != term.operation()
-                    || term.authority.requested_level > available
-                {
+                let acting = term.operation();
+                let available = ctx.permissions.capabilities.level_for(acting);
+                if term.authority.operation != acting {
+                    // Not a ceiling failure at all. The term's action and the
+                    // authority it carries name different operations, so there
+                    // is no single operation whose ceiling could be compared --
+                    // and `available` above was looked up for the wrong one.
+                    // Reporting this as "exceeds available" sent readers to
+                    // raise a grant the check had never consulted (#2790).
+                    push_failure(
+                        &mut result,
+                        obligation.clone(),
+                        format!(
+                            "term action is {acting:?} but its authority names \
+                             {claimed:?}; these must agree before a ceiling can \
+                             be compared",
+                            claimed = term.authority.operation
+                        ),
+                        PreflightVerdict::Deny,
+                    );
+                } else if term.authority.requested_level > available {
                     push_failure(
                         &mut result,
                         obligation.clone(),
@@ -1120,5 +1171,96 @@ mod tests {
         );
         assert_eq!(spawn.operation(), Operation::SpawnAgent);
         assert_eq!(spawn.subject(), "http://child");
+    }
+
+    // ── Operation identity round-trips (#2790) ──────────────────────────
+
+    /// The law the collapsed arms broke: lowering an operation and reading it
+    /// back must give the same operation.
+    ///
+    /// `from_operation` mapped `GrepSearch` onto a `GlobSearch` primitive and
+    /// `ManagePods` onto a `SpawnAgent` one, so for those two the term's
+    /// action and the authority it carries named *different* operations. The
+    /// `WithinDelegationCeiling` check compares exactly those, so grep could
+    /// not be granted by any profile -- `codegen`'s `grep_search: always`
+    /// included. This is the test the issue notes would have failed on day one.
+    #[test]
+    fn from_operation_round_trips_every_operation() {
+        for op in Operation::ALL {
+            let term = ActionTerm::from_operation(op, "subject");
+            assert_eq!(
+                term.operation(),
+                op,
+                "from_operation({op:?}) lowered to an action that reads back as {:?}",
+                term.operation()
+            );
+            assert_eq!(
+                term.authority.operation,
+                term.operation(),
+                "term for {op:?} carries an authority naming a different operation"
+            );
+            assert_eq!(term.subject(), "subject", "subject lost for {op:?}");
+        }
+    }
+
+    /// The onboarding symptom: grep is denied under a profile that grants it.
+    #[test]
+    fn grep_preflights_clean_when_granted() {
+        let perms = PermissionLattice::permissive();
+        let ctx = PreflightContext::new(&perms);
+        let term = ActionTerm::from_operation(Operation::GrepSearch, "hello");
+
+        let result = preflight_action(&term, &ctx);
+        assert_eq!(
+            result.verdict,
+            PreflightVerdict::Pass,
+            "grep denied despite being granted: {:?}",
+            result.failures
+        );
+    }
+
+    /// An operation mismatch is a kernel inconsistency, and must not be
+    /// reported as a ceiling that was exceeded -- the levels are fine, and the
+    /// old text sent readers to raise a grant the check never consulted.
+    #[test]
+    fn operation_mismatch_reports_the_mismatch_not_the_ceiling() {
+        let perms = PermissionLattice::permissive();
+        let ctx = PreflightContext::new(&perms);
+        // Deliberately disagree: a glob action carrying grep authority.
+        let mut term = ActionTerm::from_operation(Operation::GlobSearch, "*.txt");
+        term.authority = CapabilityRequest::new(Operation::GrepSearch, CapabilityLevel::LowRisk);
+
+        let result = preflight_action(&term, &ctx);
+        assert_eq!(result.verdict, PreflightVerdict::Deny);
+        let failure = result
+            .failures
+            .iter()
+            .find(|f| f.obligation == ProofObligation::WithinDelegationCeiling)
+            .expect("ceiling obligation should have failed");
+        assert!(
+            failure.detail.contains("GlobSearch") && failure.detail.contains("GrepSearch"),
+            "detail should name both operations, got: {}",
+            failure.detail
+        );
+        assert!(
+            !failure.detail.contains("exceeds available"),
+            "a mismatch is not a ceiling overrun, got: {}",
+            failure.detail
+        );
+    }
+
+    /// grep keeps the path obligation glob has; the new variant must not have
+    /// quietly dropped it.
+    #[test]
+    fn grep_derives_path_allowed_like_glob() {
+        let grep = make_term(
+            PrimitiveAction::GrepSearch {
+                pattern: "hello".to_string(),
+            },
+            Operation::GrepSearch,
+        );
+        assert!(grep
+            .derive_obligations()
+            .contains(&ProofObligation::FsPathAllowed));
     }
 }
