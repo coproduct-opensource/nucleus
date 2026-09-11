@@ -161,6 +161,22 @@ enum Command {
         #[arg(long)]
         badge: bool,
     },
+    /// One card, one row per defect family, and a badge naming the WEAKEST —
+    /// not an average, which would let a family at zero hide behind one at a
+    /// hundred (ADR 0007 I-1).
+    ///
+    /// Each family reports population (obligations the tree declares),
+    /// discharged (those a mechanism that can fail covers) and undeclared
+    /// (sites with the family's shape that are outside the population). Pinned
+    /// per family in `.scorecard-ratchet.toml`, two floors each: on the ratio,
+    /// so it cannot fall, and on the population, because deleting an obligation
+    /// raises the ratio without discharging anything.
+    Scorecard {
+        #[arg(long)]
+        measure: bool,
+        #[arg(long)]
+        badge: bool,
+    },
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
     /// catch feature-unification-masked breakages — crates that compile in a
     /// full `--workspace` build but fail standalone (and on `cargo publish`)
@@ -342,6 +358,7 @@ mod push_auth;
 mod rerun_plan;
 mod schedule_liveness;
 mod scoreboard;
+mod scorecard;
 mod self_pin;
 
 fn main() -> Result<()> {
@@ -406,6 +423,10 @@ fn main() -> Result<()> {
             code => std::process::exit(code),
         },
         Command::Bound { measure, badge } => match bound::run(measure, badge)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
+        Command::Scorecard { measure, badge } => match scorecard::run(measure, badge)? {
             0 => Ok(()),
             code => std::process::exit(code),
         },
