@@ -478,8 +478,29 @@ line above read "six exist today", which counts crates rather than coverage and 
 membership-versus-enforcement confusion ADR 0006 is about, inside this ADR's own
 enforcement table. `observed` is the source-side dual of `mediated` — it asks whether
 every path that ingests external bytes reaches `FlowTracker::observe*` — so the gap it
-leaves is an antecedent the IFC theorems assume and nothing checks. Wiring it is its own
-change; recorded here so the number is coverage, not inventory.
+leaves is an antecedent the IFC theorems assume and nothing checks.
+
+**Why it is unwired, measured 2026-09-11 rather than assumed.** It builds and runs —
+`cargo dylint --lib nucleus_observed_lint -- -p nucleus-tool-proxy` completes on macOS, so
+the SIP constraint recorded in `dylint-separation.yml:20-25` binds `compiletest` (UI tests)
+and not the pass itself. It reports **85** ingests-without-observe findings over that crate,
+so a gate at zero is not available today. Two distinct causes, both in the lint:
+
+1. **The observe-set names the wrong API.** `OBSERVE_MARKERS` is
+   `["ifc_api::FlowTracker::observe", "FlowTracker::observe"]`, but `nucleus-tool-proxy`
+   observes through `FlowGraph::observe_with_content_hash` — a different type. `read_file`
+   and `run_command` both call `ingest::http_observe_*`, which reaches `FlowGraph::observe*`,
+   and both are reported as unobserved. Adding `FlowGraph::observe` to the set was measured:
+   85 → **80**. Real, and small.
+2. **There is no crate scope.** The remaining 80 are the host runtime's own infrastructure
+   I/O reached through the dependency closure — `build_mtls_config`, `load_last_hash`,
+   `require_node_identity`, `build_audit_log` — which is not agent-attributed ingest. This is
+   exactly what `mediated` faced and answered with `MEDIATED_CRATES` in C6 phase 1b, and
+   `observed` has no equivalent.
+
+So wiring it is not "add a workflow block": it needs the observe-set extended and a crate
+scope decided, each with its own probe. Recorded here with numbers so the next person starts
+from the measurement rather than from the assumption that a built lint is a cheap gate.
 
 ### A-19 applies to every lint in this ADR
 
