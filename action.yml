@@ -9,6 +9,29 @@ inputs:
   issue-number:
     description: 'GitHub issue number to fix'
     required: true
+  goal:
+    description: |
+      State the outcome you want, and nucleus compiles the minimum authority
+      it needs — met with `ceiling`, which is the only knob that widens.
+      The compiled grant is sealed, shown in the job summary as Can / Cannot /
+      Limits / Risk, and the run executes under it, enforced per effect.
+
+      Leave empty to use `profile` instead. A profile is a fixed authority
+      chosen before anyone knew what the task was; a goal is compiled from
+      this issue, so the same Action grants less for a smaller issue.
+    default: ''
+  ceiling:
+    description: |
+      The profile a compiled grant may never exceed. Only meaningful with
+      `goal`. Widening this is the one decision that widens authority, and
+      it is deliberately a separate, named input rather than a side effect
+      of the goal text.
+    default: 'codegen'
+  explain:
+    description: |
+      How much of the grant to put in the job summary: plain | technical |
+      policy-trace. Only meaningful with `goal`.
+    default: 'plain'
   model:
     description: 'LLM model to use'
     default: 'claude-sonnet-4-20250514'
@@ -16,7 +39,7 @@ inputs:
     description: 'LLM API key (e.g., ANTHROPIC_API_KEY)'
     required: true
   profile:
-    description: 'Nucleus permission profile'
+    description: 'Nucleus permission profile. Ignored when `goal` is set.'
     default: 'safe_pr_fixer'
   timeout:
     description: 'Timeout in seconds'
@@ -29,6 +52,9 @@ inputs:
     default: ''
 
 outputs:
+  grant:
+    description: 'Path to the sealed grant the run executed under (empty unless `goal` was set)'
+    value: ${{ steps.fix.outputs.grant }}
   branch:
     description: 'Branch name created for the fix'
     value: ${{ steps.fix.outputs.branch }}
@@ -84,6 +110,9 @@ runs:
       shell: bash
       env:
         NUCLEUS_PROFILE: ${{ inputs.profile }}
+        NUCLEUS_GOAL: ${{ inputs.goal }}
+        NUCLEUS_CEILING: ${{ inputs.ceiling }}
+        NUCLEUS_EXPLAIN: ${{ inputs.explain }}
         ISSUE_NUMBER: ${{ inputs.issue-number }}
         LLM_API_TOKEN: ${{ inputs.api-key }}
         NUCLEUS_TIMEOUT: ${{ inputs.timeout }}

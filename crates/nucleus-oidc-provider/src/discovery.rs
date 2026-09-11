@@ -172,6 +172,7 @@ mod tests {
             issuer_url: Arc::from(issuer_url),
             issuer: jwt_issuer,
             jti_cache: Arc::new(nucleus_oidc_core::JtiCache::new()),
+            cert_root_pubkey: None,
             federation: Arc::new(crate::federation::FederationRegistry::empty()),
             bundle_provider: Arc::new(crate::spire::StaticBundleProvider::new()),
         })

@@ -71,6 +71,31 @@ async fn main() -> Result<()> {
          subject_tokens until upstream verifying keys are registered."
     );
 
+    // The root a presented pod certificate must chain to. Absent by default:
+    // an OP that has not been told which root to trust refuses certificates
+    // outright rather than accepting whatever chain a caller minted.
+    let cert_root_pubkey: Option<Vec<u8>> = match std::env::var("NUCLEUS_OIDC_CERT_ROOT_PUBKEY") {
+        Ok(hex_key) if !hex_key.trim().is_empty() => {
+            let raw =
+                hex_decode(hex_key.trim()).context("NUCLEUS_OIDC_CERT_ROOT_PUBKEY must be hex")?;
+            if raw.len() != 32 {
+                anyhow::bail!(
+                    "NUCLEUS_OIDC_CERT_ROOT_PUBKEY must be 32 bytes (Ed25519), got {}",
+                    raw.len()
+                );
+            }
+            tracing::info!("pod certificates will be verified against the pinned root");
+            Some(raw)
+        }
+        _ => {
+            tracing::info!(
+                "no NUCLEUS_OIDC_CERT_ROOT_PUBKEY: federation rules using `scope_requires` \
+                 will refuse, because an unpinned certificate proves nothing"
+            );
+            None
+        }
+    };
+
     let state = AppState {
         keystore,
         issuer_url: Arc::from(cli.issuer_url.as_str()),
@@ -80,6 +105,7 @@ async fn main() -> Result<()> {
         // `--federation-rules-path` flag / SIGHUP reload.
         federation: Arc::new(FederationRegistry::empty()),
         bundle_provider,
+        cert_root_pubkey: cert_root_pubkey.map(Arc::new),
     };
     let app = build_app(state);
     let listener = tokio::net::TcpListener::bind(&cli.bind)
@@ -114,4 +140,20 @@ async fn shutdown_signal() {
         _ = terminate => {}
     }
     tracing::info!("shutdown signal received");
+}
+
+/// Decode a lowercase-or-uppercase hex string. Local rather than a dependency:
+/// one call site, sixteen lines, and no reason to widen the OP's supply chain
+/// for it.
+fn hex_decode(s: &str) -> anyhow::Result<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        anyhow::bail!("hex string has an odd number of digits");
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| anyhow::anyhow!("invalid hex at byte {}: {e}", i / 2))
+        })
+        .collect()
 }

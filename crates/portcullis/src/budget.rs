@@ -30,6 +30,17 @@ pub struct BudgetLattice {
     pub max_input_tokens: u64,
     /// Maximum output tokens
     pub max_output_tokens: u64,
+    /// Input tokens consumed so far.
+    ///
+    /// Carried in the lattice, and signature-covered, for the same reason
+    /// `consumed_usd` is: a delegation hop that carries a token budget forward
+    /// must carry what has already been spent against it, or a child resets the
+    /// count to zero (SECURITY_TODO #20).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub consumed_input_tokens: u64,
+    /// Output tokens consumed so far. See [`Self::consumed_input_tokens`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub consumed_output_tokens: u64,
 }
 
 impl Default for BudgetLattice {
@@ -39,6 +50,8 @@ impl Default for BudgetLattice {
             consumed_usd: Decimal::ZERO,
             max_input_tokens: 100_000,
             max_output_tokens: 10_000,
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         }
     }
 }
@@ -81,6 +94,10 @@ impl BudgetLattice {
             consumed_usd: self.consumed_usd.max(other.consumed_usd),
             max_input_tokens: self.max_input_tokens.min(other.max_input_tokens),
             max_output_tokens: self.max_output_tokens.min(other.max_output_tokens),
+            consumed_input_tokens: self.consumed_input_tokens.max(other.consumed_input_tokens),
+            consumed_output_tokens: self
+                .consumed_output_tokens
+                .max(other.consumed_output_tokens),
         }
     }
 
@@ -93,6 +110,10 @@ impl BudgetLattice {
             consumed_usd: self.consumed_usd.min(other.consumed_usd),
             max_input_tokens: self.max_input_tokens.max(other.max_input_tokens),
             max_output_tokens: self.max_output_tokens.max(other.max_output_tokens),
+            consumed_input_tokens: self.consumed_input_tokens.min(other.consumed_input_tokens),
+            consumed_output_tokens: self
+                .consumed_output_tokens
+                .min(other.consumed_output_tokens),
         }
     }
 
@@ -109,6 +130,8 @@ impl BudgetLattice {
             && self.consumed_usd >= other.consumed_usd
             && self.max_input_tokens <= other.max_input_tokens
             && self.max_output_tokens <= other.max_output_tokens
+            && self.consumed_input_tokens >= other.consumed_input_tokens
+            && self.consumed_output_tokens >= other.consumed_output_tokens
     }
 }
 
@@ -185,11 +208,57 @@ impl BudgetLattice {
         self.charge(decimal)
     }
 
-    /// Record token usage against the budget.
+    /// Remaining input tokens.
+    pub fn remaining_input_tokens(&self) -> u64 {
+        self.max_input_tokens
+            .saturating_sub(self.consumed_input_tokens)
+    }
+
+    /// Remaining output tokens.
+    pub fn remaining_output_tokens(&self) -> u64 {
+        self.max_output_tokens
+            .saturating_sub(self.consumed_output_tokens)
+    }
+
+    /// Record token usage against the budget, consuming it.
     ///
-    /// Returns true if usage is within limits.
-    pub fn record_tokens(&self, input_tokens: u64, output_tokens: u64) -> bool {
-        input_tokens <= self.max_input_tokens && output_tokens <= self.max_output_tokens
+    /// Returns `true` if the usage fit and was recorded, `false` if it would
+    /// exceed either limit.
+    ///
+    /// # Security
+    ///
+    /// This took `&self` and compared against the *maximum* rather than the
+    /// remainder — a ceiling check on a method named "record" (SECURITY_TODO
+    /// #20). Nothing was ever consumed, so a 100k-token budget admitted 100k
+    /// tokens an unbounded number of times, and N children of one parent each
+    /// received the parent's full allowance. It is the same defect
+    /// `budget_ledger::LedgerCore` exists to close for USD, two struct fields
+    /// above the budget that ledger guards.
+    ///
+    /// Mirrors [`Self::charge`]:
+    /// - **Atomic across BOTH dimensions**: if either would overflow its limit,
+    ///   neither is recorded. A partial charge would let a caller spend the
+    ///   input allowance by submitting an over-large output count.
+    /// - Rejects a wholly empty record (no-op, matching `charge`'s rejection of
+    ///   zero); an input-only or output-only record is legitimate.
+    /// - `checked_add`, so an attacker-supplied count near `u64::MAX` refuses
+    ///   rather than wrapping into a small consumed value.
+    pub fn record_tokens(&mut self, input_tokens: u64, output_tokens: u64) -> bool {
+        if input_tokens == 0 && output_tokens == 0 {
+            return false;
+        }
+        let Some(new_input) = self.consumed_input_tokens.checked_add(input_tokens) else {
+            return false;
+        };
+        let Some(new_output) = self.consumed_output_tokens.checked_add(output_tokens) else {
+            return false;
+        };
+        if new_input > self.max_input_tokens || new_output > self.max_output_tokens {
+            return false; // no mutation on failure — same monoid action property as `charge`
+        }
+        self.consumed_input_tokens = new_input;
+        self.consumed_output_tokens = new_output;
+        true
     }
 }
 

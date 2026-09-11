@@ -33,7 +33,7 @@ echo "prepush against $BASE — $(printf '%s\n' "$changed" | grep -c .) file(s) 
 
 # ── cheap tier ────────────────────────────────────────────────────────────
 echo "gate scripts:"
-for s in check-declassify-governor-keys-sealed check-dep-ceiling check-extracted-callsites \
+for s in check-declassify-governor-keys-sealed check-dep-ceiling check-extracted-callsites check-law-mechanisms \
          check-failclosed-verifiers check-ingest-hashed check-mediation check-no-hmac-auth \
          check-north-star-ledger check-sandbox-trusted-base check-sealed-home \
          check-test-helpers-not-in-production check-verify-strict check-wasm-closure \

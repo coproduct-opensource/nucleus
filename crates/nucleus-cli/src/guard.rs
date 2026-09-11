@@ -19,6 +19,12 @@ use std::path::{Path, PathBuf};
 /// `claude_desktop_config.json`). These are detection targets the scanner must
 /// match verbatim, not nucleus-owned names. Single source of truth so the
 /// `guard audit` scan and its "not found" help output can never drift apart.
+/// The same set of facts as `portcullis::AGENT_HARNESS_CONFIG`, in the other
+/// shape: relative paths for a scanner to open, where the floor holds globs for
+/// a path lattice to refuse. #2782 is why both exist — these files were
+/// security-relevant enough to audit here and, until that floor, writable by
+/// the agent they configure. `agent_harness_config_blocked.rs` pins that every
+/// entry below is covered by the floor, so the two cannot drift apart.
 const MCP_CONFIG_CANDIDATES: &[&str] = &[
     ".claude/settings.json",
     ".mcp.json",

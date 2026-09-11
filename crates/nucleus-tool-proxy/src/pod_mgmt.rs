@@ -548,6 +548,8 @@ pub(crate) async fn serve_vsock(_app: Router, _bound: BoundVsock) -> Result<(), 
     ))
 }
 
+/// OS assumption: KB-VSOCK-PEER-CID (docs/assumptions/kernel-behaviour.md).
+///
 /// `VMADDR_CID_HOST` — the well-known vsock context id of the host.
 ///
 /// The kernel sets the peer CID on an accepted AF_VSOCK connection; a process

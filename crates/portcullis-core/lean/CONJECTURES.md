@@ -80,7 +80,7 @@ carries a `CONJECTURE` banner at its head.
 | `CompositionalAlignment` | 1 | Mayer-Vietoris-analog for spec composition |
 | `UniversalityTheorem` | 2 | rank H¹ as a complete invariant |
 | `PACVCBridge` | 1 | PAC / VC-dimension equivalence |
-| **Total** | **27** | across **10** files |
+| **Total** | **23** | across **10** files |
 
 **Machine-readable allowlist** (the CI gate parses exactly the lines between the
 markers below — these are the only files permitted to contain a proof hole):

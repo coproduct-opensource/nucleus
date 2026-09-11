@@ -52,7 +52,7 @@
 //! ));
 //!
 //! // Verify the chain is valid
-//! assert!(chain.verify());
+//! assert!(chain.is_structurally_valid());
 //!
 //! // Compute the ceiling
 //! let ceiling = chain.ceiling();
@@ -248,13 +248,33 @@ impl SpiffeTraceChain {
         Some(result)
     }
 
-    /// Verify the chain is valid.
+    /// Check the chain's **structure** — and nothing about its authenticity.
     ///
-    /// A chain is valid if:
-    /// 1. Each link's permissions are ≤ the parent's permissions
-    /// 2. No links have expired
-    /// 3. The chain is non-empty
-    pub fn verify(&self) -> bool {
+    /// Returns `true` when the chain is non-empty, no link has expired, and
+    /// each link's permissions are ≤ its parent's.
+    ///
+    /// # This is not authentication (SECURITY_TODO #22)
+    ///
+    /// It was named `verify`, and three call sites read it as "this delegation
+    /// chain is genuine". It never checked that. Specifically, it does **not**:
+    ///
+    /// - check any signature. [`SpiffeTraceLink::attestation`] is carried, and
+    ///   the only thing ever asked of it is [`SpiffeTraceLink::has_attestation`],
+    ///   which tests that the byte vector is non-empty;
+    /// - bind a link to its parent. The doc on `attestation` describes a message
+    ///   covering `{parent_spiffe_id}|{child_spiffe_id}|{drand_round}|
+    ///   {permissions_hash}`, but [`SpiffeTraceLink::canonical_attestation_message`]
+    ///   emits `{spiffe_id}|{drand_round}|{permissions.description}` — no parent,
+    ///   and a free-text field where the permission hash should be. That function
+    ///   has no callers;
+    /// - authenticate the `spiffe_id` strings at all. A caller may name any
+    ///   identity as an approver.
+    ///
+    /// So a structurally well-formed chain naming arbitrary approvers passes.
+    /// The name is now `is_structurally_valid` so a reader cannot mistake the
+    /// one property for the other; closing the gap needs a real attestation
+    /// scheme, which is an owner decision recorded in SECURITY_TODO #22.
+    pub fn is_structurally_valid(&self) -> bool {
         if self.links.is_empty() {
             return false;
         }
@@ -495,7 +515,7 @@ impl EscalationRequest {
             return Err(EscalationError::RequestExpired);
         }
 
-        if !self.requestor_chain.verify() {
+        if !self.requestor_chain.is_structurally_valid() {
             return Err(EscalationError::InvalidRequestorChain);
         }
 
@@ -545,7 +565,7 @@ impl EscalationGrant {
         request.validate()?;
 
         // Validate approver chain
-        if !approver_chain.verify() {
+        if !approver_chain.is_structurally_valid() {
             return Err(EscalationError::InvalidApproverChain);
         }
 
@@ -599,7 +619,7 @@ impl EscalationGrant {
 
     /// Check if this grant is currently valid.
     pub fn is_valid(&self) -> bool {
-        !self.is_expired() && self.escalated_chain.verify()
+        !self.is_expired() && self.escalated_chain.is_structurally_valid()
     }
 }
 
@@ -1049,6 +1069,54 @@ mod tests {
         chain
     }
 
+    // ── SECURITY_TODO #22: the gap, pinned as a fact rather than prose ──────
+
+    /// `is_structurally_valid` is not authentication, and this test exists so
+    /// that stays true or the ledger gets updated.
+    ///
+    /// A chain naming an arbitrary identity as approver, carrying no
+    /// attestation whatsoever, is structurally valid. That is the gap. Pinning
+    /// it means a future change that adds real signature checking will RED this
+    /// test — which is the point: closing the gap must also close
+    /// SECURITY_TODO #22, not silently reword it.
+    #[test]
+    fn structural_validity_is_not_authentication() {
+        let chain = make_chain(
+            &[
+                "spiffe://nucleus.local/human/alice",
+                // Nothing authenticates this. Any caller may name any approver.
+                "spiffe://nucleus.local/human/someone-who-never-approved-anything",
+            ],
+            PermissionLattice::restrictive(),
+        );
+
+        assert!(
+            chain.is_structurally_valid(),
+            "structural validity checks shape, expiry and monotonicity only"
+        );
+        assert!(
+            chain.links.iter().all(|l| !l.has_attestation()),
+            "no link carries an attestation, and structural validity did not care"
+        );
+
+        // And the one thing that IS checked, so the test is not vacuous: a
+        // chain that widens permissions on a hop must fail.
+        let mut widening = SpiffeTraceChain::new_root(
+            "spiffe://nucleus.local/human/alice",
+            PermissionLattice::restrictive(),
+            1000,
+        );
+        widening.links.push(SpiffeTraceLink::new(
+            "spiffe://nucleus.local/agent/bob",
+            PermissionLattice::permissive(),
+            1001,
+        ));
+        assert!(
+            !widening.is_structurally_valid(),
+            "monotonicity IS enforced — the structural half of the check is real"
+        );
+    }
+
     #[test]
     fn test_trace_chain_creation() {
         let chain = SpiffeTraceChain::new_root(
@@ -1062,7 +1130,7 @@ mod tests {
             chain.current_spiffe_id(),
             Some("spiffe://nucleus.local/human/alice")
         );
-        assert!(chain.verify());
+        assert!(chain.is_structurally_valid());
     }
 
     #[test]
@@ -1094,7 +1162,7 @@ mod tests {
             chain.current_spiffe_id(),
             Some("spiffe://nucleus.local/agent/coder-042")
         );
-        assert!(chain.verify());
+        assert!(chain.is_structurally_valid());
     }
 
     #[test]
@@ -1141,7 +1209,7 @@ mod tests {
 
         chain.links.push(expired_link);
 
-        assert!(!chain.verify());
+        assert!(!chain.is_structurally_valid());
 
         let result = chain.verify_detailed();
         assert!(!result.is_valid());

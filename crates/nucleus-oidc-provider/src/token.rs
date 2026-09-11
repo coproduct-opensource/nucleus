@@ -32,7 +32,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use nucleus_lineage::CallSpiffeId;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq as _;
 
 use crate::app::AppState;
 use crate::error::OidcApiError;
@@ -46,6 +48,15 @@ pub const TOKEN_TYPE_JWT: &str = "urn:ietf:params:oauth:token-type:jwt";
 
 /// RFC 8693 token-type URI for issued access tokens.
 pub const TOKEN_TYPE_ACCESS_TOKEN: &str = "urn:ietf:params:oauth:token-type:access_token";
+
+/// `actor_token_type` for a nucleus pod certificate presented as the acting
+/// party's authority.
+///
+/// RFC 8693 §2.1 lets a token type be any URI, and `actor_token` is the slot
+/// for "the party acting on the subject's behalf" — which is exactly what a
+/// pod certificate is: the signed, attenuating record of what a person
+/// delegated to this workload. It is not a JWT, and it does not need to be.
+pub const TOKEN_TYPE_POD_CERTIFICATE: &str = "urn:nucleus:params:oauth:token-type:pod-certificate";
 
 /// RFC 8693 §2.1 request fields. Optional fields are `Option<String>`;
 /// missing required fields surface as `InvalidRequest` per RFC 8693
@@ -125,6 +136,212 @@ struct SubjectClaims {
     iss: Option<String>,
     #[serde(default)]
     jti: Option<String>,
+}
+
+/// The effects a presented pod certificate grants, if one was presented.
+///
+/// `None` means no certificate came with the request — not "no effects". The
+/// two are different answers and the caller has to keep them apart: a rule that
+/// requires delegated authority must refuse the first, not treat it as an empty
+/// grant that happens to satisfy nothing.
+///
+/// # What makes this trustworthy
+///
+/// `AttenuationToken::verify` walks the chain against the root key **the token
+/// itself carries**, which proves the chain is internally consistent and
+/// nothing more — anyone can generate a root and mint a certificate under it.
+/// So the pinned `cert_root_pubkey` is checked FIRST, in constant time, and a
+/// token rooted anywhere else is refused before its chain is even walked. That
+/// comparison is the whole security of this function.
+fn granted_effects(
+    state: &AppState,
+    req: &TokenExchangeRequest,
+) -> Result<Option<BTreeSet<String>>, OidcApiError> {
+    let Some(actor_token) = req.actor_token.as_deref().filter(|t| !t.trim().is_empty()) else {
+        return Ok(None);
+    };
+    match req.actor_token_type.as_deref() {
+        Some(TOKEN_TYPE_POD_CERTIFICATE) => {}
+        other => {
+            return Err(OidcApiError::InvalidGrant(format!(
+                "actor_token_type must be {TOKEN_TYPE_POD_CERTIFICATE:?} for a pod certificate, \
+                 got {other:?}"
+            )));
+        }
+    }
+
+    let Some(pinned) = state.cert_root_pubkey.as_deref() else {
+        tracing::warn!(
+            "a pod certificate was presented but the OP has no pinned certificate root \
+             (NUCLEUS_OIDC_CERT_ROOT_PUBKEY) — refusing, because an unpinned chain proves \
+             only that whoever minted it was consistent with themselves"
+        );
+        return Err(OidcApiError::InvalidGrant(
+            "this OP does not accept pod certificates (no pinned certificate root)".into(),
+        ));
+    };
+
+    let token = portcullis::AttenuationToken::from_base64(actor_token).map_err(|e| {
+        tracing::warn!(error = %e, "actor_token is not a decodable pod certificate");
+        OidcApiError::InvalidGrant("actor_token is not a decodable pod certificate".into())
+    })?;
+
+    // THE check. Constant-time so a wrong root cannot be recovered a byte at a
+    // time by timing the refusal.
+    let presented = token.root_public_key();
+    let rooted_here =
+        presented.len() == pinned.len() && bool::from(presented.ct_eq(pinned.as_slice()));
+    if !rooted_here {
+        tracing::warn!(
+            "actor_token certificate is rooted in a key this OP does not trust — refusing \
+             before verifying the chain"
+        );
+        return Err(OidcApiError::InvalidGrant(
+            "actor_token certificate is not rooted in this OP's trusted root".into(),
+        ));
+    }
+
+    let verified = token.verify_default(chrono::Utc::now()).map_err(|e| {
+        tracing::warn!(error = %e, "actor_token certificate failed verification");
+        OidcApiError::InvalidGrant("actor_token certificate failed verification".into())
+    })?;
+
+    // An unmarked effect dimension is "this certificate says nothing about
+    // effects", which is NOT the same as "it grants none" — the marker exists
+    // precisely to keep those apart. Either way a rule that requires an effect
+    // is not satisfied, so both map to an empty set here and the requirement
+    // check refuses; the log says which.
+    let caps = &verified.effective().capabilities;
+    let effects = portcullis::effect_surface::granted_effects(caps).unwrap_or_default();
+    if effects.is_empty() {
+        tracing::info!(
+            "presented pod certificate grants no effects (or carries no effect dimension)"
+        );
+    }
+    Ok(Some(effects))
+}
+
+/// Bound a requested scope by the rule's ceiling.
+///
+/// Narrowing only, and refusing rather than silently trimming: a caller that
+/// asks for `read write` under a rule admitting only `read` gets an error,
+/// rather than a token that quietly does half of what they asked. A credential
+/// that silently means less than its holder believes is its own class of
+/// incident — the holder proceeds, the call fails somewhere downstream, and
+/// nothing points at the scope.
+///
+/// The refusal reaches the CALLER as a bare `invalid_target`, and the detail —
+/// which scopes were refused, and what the rule admits — goes to the log. That
+/// asymmetry is deliberate and matches what the OP already does for federation
+/// denials: answering "which scopes would you accept?" would make this endpoint
+/// a policy oracle a caller could enumerate. The operator has the log.
+///
+/// The three states of `ceiling` are [`FederationRule::max_scope`]'s:
+/// `None` bounds nothing and therefore admits nothing but an absent request;
+/// `Some([])` admits nothing at all; `Some(list)` admits any subset.
+///
+/// [`FederationRule::max_scope`]: crate::federation::FederationRule::max_scope
+fn clamp_scope(
+    requested: Option<&str>,
+    ceiling: Option<&[String]>,
+    requires: Option<&BTreeMap<String, Vec<String>>>,
+    granted: Option<&BTreeSet<String>>,
+) -> Result<Option<String>, OidcApiError> {
+    // Scope is optional in RFC 8693; asking for none is always fine, whatever
+    // the rule says. This is what keeps the change from breaking every caller
+    // that never wanted one.
+    let Some(requested) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+
+    // Scope is a space-delimited list (RFC 6749 §3.3).
+    let asked: Vec<&str> = requested.split_whitespace().collect();
+
+    let Some(ceiling) = ceiling else {
+        tracing::warn!(
+            requested,
+            "token exchange requested a scope under a rule that bounds none — refusing; \
+             set `max_scope` on the federation rule to admit it"
+        );
+        return Err(OidcApiError::InvalidTarget(format!(
+            "federation rule bounds no scope, so none may be requested (asked for {requested:?});              set `max_scope` on the rule"
+        )));
+    };
+
+    let refused: Vec<&str> = asked
+        .iter()
+        .copied()
+        .filter(|a| !ceiling.iter().any(|c| c == a))
+        .collect();
+    if !refused.is_empty() {
+        tracing::warn!(
+            requested,
+            ?refused,
+            ?ceiling,
+            "token exchange requested a scope outside the federation rule's ceiling"
+        );
+        return Err(OidcApiError::InvalidTarget(format!(
+            "requested scope is outside the federation rule's ceiling: {refused:?} not in \
+             {ceiling:?}"
+        )));
+    }
+
+    // The PRINCIPAL's ceiling, on top of the operator's.
+    //
+    // `max_scope` says what this rule is willing to issue. `scope_requires`
+    // says what a person actually delegated to this workload, and the two are
+    // different questions: an operator can be entirely happy for pods to reach
+    // an audience with `logs:write` while THIS pod's grant never included the
+    // effect that backs it. Both have to hold.
+    //
+    // This is the step that makes the federated credential carry the
+    // attenuation rather than just the identity. SPIFFE says who the workload
+    // is; the certificate says what its principal allowed; the token that
+    // leaves here is bounded by both.
+    if let Some(requires) = requires {
+        let mut unbacked: Vec<&str> = Vec::new();
+        let mut missing: Vec<String> = Vec::new();
+        for token in &asked {
+            let Some(needed) = requires.get(*token) else {
+                continue; // no claim about what backs it; `max_scope` alone bounds it
+            };
+            let Some(granted) = granted else {
+                unbacked.push(token);
+                continue;
+            };
+            for effect in needed {
+                if !granted.contains(effect) {
+                    missing.push(format!("{token} needs {effect}"));
+                }
+            }
+        }
+        if !unbacked.is_empty() {
+            tracing::warn!(
+                ?unbacked,
+                "scope requires delegated authority but no pod certificate was presented"
+            );
+            return Err(OidcApiError::InvalidTarget(
+                "requested scope requires a pod certificate (actor_token) and none was presented"
+                    .into(),
+            ));
+        }
+        if !missing.is_empty() {
+            tracing::warn!(
+                ?missing,
+                ?granted,
+                "requested scope is not backed by the effects this certificate grants"
+            );
+            return Err(OidcApiError::InvalidTarget(
+                "requested scope is not backed by the presented certificate's granted effects"
+                    .into(),
+            ));
+        }
+    }
+
+    // Echo what was asked for, not the ceiling: the token grants what the
+    // caller requested, bounded by the rule — never the rule's whole ceiling
+    // just because the caller asked for part of it.
+    Ok(Some(asked.join(" ")))
 }
 
 pub async fn handler(
@@ -300,10 +517,12 @@ pub async fn handler(
     let decision = state
         .federation
         .evaluate(sub_spiffe.as_str(), &audience, TOKEN_EXCHANGE_GRANT);
-    let rule_max_lifetime = match decision {
+    let (rule_max_lifetime, rule_max_scope, rule_scope_requires) = match decision {
         crate::federation::Decision::Allow {
             matched_rule_id,
             max_lifetime,
+            max_scope,
+            scope_requires,
         } => {
             tracing::info!(
                 sub = %sub_spiffe,
@@ -311,7 +530,7 @@ pub async fn handler(
                 matched_rule = %matched_rule_id,
                 "federation: ALLOW"
             );
-            max_lifetime
+            (max_lifetime, max_scope, scope_requires)
         }
         crate::federation::Decision::Deny(reason) => {
             tracing::warn!(
@@ -325,6 +544,23 @@ pub async fn handler(
             )));
         }
     };
+
+    // 5b. Scope ceiling. The federation rule bounds WHICH audience this
+    //     subject may reach and FOR HOW LONG; this bounds WHAT the issued
+    //     token may do when it gets there.
+    //
+    //     Before this, `scope` was echoed from the request verbatim — a
+    //     workload asked and the OP minted. The delegation ceiling that the
+    //     kernel, the certificate and the effect gate all enforce inside the
+    //     boundary simply stopped at it, which is the one place a federated
+    //     credential most needs to carry it.
+    let cert_effects = granted_effects(&state, &req)?;
+    let granted_scope = clamp_scope(
+        req.scope.as_deref(),
+        rule_max_scope.as_deref(),
+        rule_scope_requires.as_ref(),
+        cert_effects.as_ref(),
+    )?;
 
     // 6. Mint response token. `act` claim attests the upstream actor
     //    per RFC 8693 §4.1.
@@ -340,7 +576,14 @@ pub async fn handler(
             subject: sub_spiffe,
             audience: audience.clone(),
             client_id,
-            scope: req.scope.clone(),
+            scope: granted_scope.clone(),
+            // The attenuation, carried. An RP that understands nucleus can
+            // enforce per-effect from the token alone rather than being handed
+            // the certificate as well; one that does not ignores a namespaced
+            // claim it has never heard of.
+            effects: cert_effects
+                .as_ref()
+                .map(|e| e.iter().cloned().collect::<Vec<_>>()),
             act,
             kind: Some("token_exchange".to_string()),
         })
@@ -351,7 +594,7 @@ pub async fn handler(
         issued_token_type: TOKEN_TYPE_ACCESS_TOKEN,
         token_type: "Bearer",
         expires_in: mint_lifetime.as_secs(),
-        scope: req.scope,
+        scope: granted_scope,
     };
     Ok((StatusCode::OK, Json(body)).into_response())
 }
@@ -430,6 +673,20 @@ mod tests {
     }
 
     fn app() -> axum::Router {
+        app_with_scope(None)
+    }
+
+    /// The same fixture, with a scope ceiling on the rule.
+    fn app_with_scope(max_scope: Option<Vec<String>>) -> axum::Router {
+        app_full(max_scope, None, None)
+    }
+
+    /// The fixture with every ceiling dial exposed.
+    fn app_full(
+        max_scope: Option<Vec<String>>,
+        scope_requires: Option<std::collections::BTreeMap<String, Vec<String>>>,
+        cert_root_pubkey: Option<Vec<u8>>,
+    ) -> axum::Router {
         let store: Arc<dyn JwtKeyStore> = Arc::new(InMemoryKeyStore::new());
         let issuer = Arc::new(
             JwtIssuer::new(
@@ -446,6 +703,8 @@ mod tests {
                 audience: "https://rp-a.example/api".to_string(),
                 allowed_grants: vec![TOKEN_EXCHANGE_GRANT.to_string()],
                 max_token_lifetime_secs: 3600,
+                max_scope,
+                scope_requires,
             }],
         };
         let federation = Arc::new(crate::federation::FederationRegistry::new(rules));
@@ -461,6 +720,7 @@ mod tests {
             issuer_url: Arc::from("https://oidc.nucleus.example/"),
             issuer,
             jti_cache: Arc::new(JtiCache::new()),
+            cert_root_pubkey: cert_root_pubkey.map(Arc::new),
             federation,
             bundle_provider: Arc::new(bundle),
         })
@@ -621,6 +881,8 @@ mod tests {
                 audience: "https://rp-a.example/api".to_string(),
                 allowed_grants: vec![TOKEN_EXCHANGE_GRANT.to_string()],
                 max_token_lifetime_secs: 3600,
+                max_scope: None,
+                scope_requires: None,
             }],
         };
         let federation = Arc::new(crate::federation::FederationRegistry::new(rules));
@@ -631,6 +893,7 @@ mod tests {
             issuer_url: Arc::from("https://oidc.nucleus.example/"),
             issuer,
             jti_cache: Arc::new(JtiCache::new()),
+            cert_root_pubkey: None,
             federation,
             bundle_provider: Arc::new(bundle),
         });
@@ -878,19 +1141,350 @@ mod tests {
         assert_eq!(v["error"], "invalid_grant");
     }
 
-    #[tokio::test]
-    async fn scope_round_trips_to_response() {
+    // ── The scope ceiling ───────────────────────────────────────────────────
+    //
+    // `scope` used to be echoed from the request verbatim: a workload asked,
+    // the OP minted. The federation rule bounded which audience a subject could
+    // reach and for how long, and nothing bounded what the token could DO when
+    // it got there — so the delegation ceiling the kernel, the certificate and
+    // the effect gate all enforce inside the boundary stopped at the one place
+    // a federated credential most needs to carry it.
+
+    async fn exchange_with_scope(
+        app: axum::Router,
+        scope: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
         let subject = make_subject_jwt("spiffe://prod.example.com/ns/x/sa/y", 300, None);
-        let body = form_body(&[
+        let mut fields = vec![
             ("grant_type", TOKEN_EXCHANGE_GRANT),
-            ("subject_token", &subject),
+            ("subject_token", subject.as_str()),
             ("subject_token_type", TOKEN_TYPE_JWT),
             ("audience", "https://rp-a.example/api"),
-            ("scope", "read:bundles write:bundles"),
-        ]);
-        let resp = post_token(app(), body).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let v = body_to_value(resp.into_body()).await;
+        ];
+        if let Some(s) = scope {
+            fields.push(("scope", s));
+        }
+        let resp = post_token(app, form_body(&fields)).await;
+        let status = resp.status();
+        (status, body_to_value(resp.into_body()).await)
+    }
+
+    fn ceiling(scopes: &[&str]) -> Option<Vec<String>> {
+        Some(scopes.iter().map(|s| (*s).to_string()).collect())
+    }
+
+    #[tokio::test]
+    async fn a_scope_within_the_ceiling_round_trips() {
+        let app = app_with_scope(ceiling(&["read:bundles", "write:bundles"]));
+        let (status, v) = exchange_with_scope(app, Some("read:bundles write:bundles")).await;
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(v["scope"], "read:bundles write:bundles");
+    }
+
+    /// Narrowing is fine, and the token grants what was ASKED for rather than
+    /// the rule's whole ceiling — a caller that wants read does not silently
+    /// receive write as well.
+    #[tokio::test]
+    async fn asking_for_less_than_the_ceiling_grants_less() {
+        let app = app_with_scope(ceiling(&["read:bundles", "write:bundles"]));
+        let (status, v) = exchange_with_scope(app, Some("read:bundles")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["scope"], "read:bundles");
+    }
+
+    /// THE defect. A scope outside the ceiling is refused, not trimmed: a
+    /// credential that silently means less than its holder believes is its own
+    /// class of incident.
+    #[tokio::test]
+    async fn a_scope_outside_the_ceiling_is_refused() {
+        let app = app_with_scope(ceiling(&["read:bundles"]));
+        let (status, v) = exchange_with_scope(app, Some("read:bundles write:bundles")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error"], "invalid_target");
+        // The body says only that it was denied. WHICH scopes a rule admits is
+        // operator information, and answering it here would make the token
+        // endpoint a policy oracle a caller could enumerate — the OP already
+        // makes that call for federation denials, and a scope denial is the
+        // same class. The refused scopes and the ceiling go to the log.
+        assert!(
+            !v.to_string().contains("write:bundles"),
+            "the response must not enumerate the ceiling: {v}"
+        );
+    }
+
+    /// A rule that bounds no scope admits no scope. Fail-closed on the hazard.
+    #[tokio::test]
+    async fn a_rule_that_bounds_no_scope_refuses_a_requested_one() {
+        let (status, v) = exchange_with_scope(app_with_scope(None), Some("read:bundles")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error"], "invalid_target");
+    }
+
+    /// `max_scope = []` is "constrained to nothing", and is distinct from an
+    /// absent ceiling the same way an empty effect surface is distinct from an
+    /// unmarked one.
+    #[tokio::test]
+    async fn an_empty_ceiling_admits_nothing() {
+        let (status, _) = exchange_with_scope(app_with_scope(ceiling(&[])), Some("read")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// What keeps this from breaking every existing caller: asking for no scope
+    /// is fine under any rule, including one that bounds none. Scope is
+    /// optional in RFC 8693, and the hazard is an unbounded scope being minted
+    /// — not the absence of one.
+    #[tokio::test]
+    async fn asking_for_no_scope_is_unaffected_by_the_ceiling() {
+        for rule in [None, ceiling(&[]), ceiling(&["read:bundles"])] {
+            let (status, v) = exchange_with_scope(app_with_scope(rule), None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(v.get("scope").is_none() || v["scope"].is_null(), "{v}");
+        }
+    }
+
+    // ── The principal's ceiling ─────────────────────────────────────────────
+    //
+    // `max_scope` is what the OPERATOR is willing to issue. `scope_requires` is
+    // what a PERSON delegated to this particular workload, read off the pod
+    // certificate the request presents. Both have to hold, and the second is
+    // what makes the federated credential carry the attenuation rather than
+    // only the identity: SPIFFE says who the workload is, the certificate says
+    // what its principal allowed.
+
+    /// Mint a real pod certificate granting `effects`, and return it with the
+    /// root key it is rooted in — the two halves the OP has to be given
+    /// separately, since a token verified against its own embedded root proves
+    /// only self-consistency.
+    fn pod_certificate(effects: &[&str]) -> (String, Vec<u8>) {
+        use portcullis::{
+            AttenuationToken, CapabilityLevel, LatticeCertificate, PermissionLattice,
+        };
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+        let mut perms = PermissionLattice::restrictive();
+        portcullis::effect_surface::mark_effects(&mut perms.capabilities);
+        for e in effects {
+            portcullis::effect_surface::grant_effect(&mut perms.capabilities, e);
+        }
+        perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
+
+        let cert = LatticeCertificate::mint_with_holder_key(
+            perms,
+            "test-approver".to_string(),
+            chrono::Utc::now() + chrono::Duration::hours(1),
+            None,
+            &key,
+            &key,
+        );
+        let root = key.public_key().as_ref().to_vec();
+        let token = AttenuationToken::seal(cert, root.clone());
+        (token.to_base64().unwrap(), root)
+    }
+
+    fn app_requiring(
+        max_scope: Option<Vec<String>>,
+        requires: &[(&str, &[&str])],
+        root: Option<Vec<u8>>,
+    ) -> axum::Router {
+        let map: std::collections::BTreeMap<String, Vec<String>> = requires
+            .iter()
+            .map(|(k, v)| {
+                (
+                    (*k).to_string(),
+                    v.iter().map(|e| (*e).to_string()).collect(),
+                )
+            })
+            .collect();
+        app_full(max_scope, Some(map), root)
+    }
+
+    async fn exchange_full(
+        app: axum::Router,
+        scope: Option<&str>,
+        cert: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let subject = make_subject_jwt("spiffe://prod.example.com/ns/x/sa/y", 300, None);
+        let mut fields = vec![
+            ("grant_type", TOKEN_EXCHANGE_GRANT),
+            ("subject_token", subject.as_str()),
+            ("subject_token_type", TOKEN_TYPE_JWT),
+            ("audience", "https://rp-a.example/api"),
+        ];
+        if let Some(s) = scope {
+            fields.push(("scope", s));
+        }
+        if let Some(c) = cert {
+            fields.push(("actor_token", c));
+            fields.push(("actor_token_type", TOKEN_TYPE_POD_CERTIFICATE));
+        }
+        let resp = post_token(app, form_body(&fields)).await;
+        let status = resp.status();
+        (status, body_to_value(resp.into_body()).await)
+    }
+
+    #[tokio::test]
+    async fn a_scope_backed_by_a_granted_effect_is_issued() {
+        let (cert, root) = pod_certificate(&["aws/read-logs"]);
+        let app = app_requiring(
+            ceiling(&["logs:read"]),
+            &[("logs:read", &["aws/read-logs"])],
+            Some(root),
+        );
+        let (status, v) = exchange_full(app, Some("logs:read"), Some(&cert)).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["scope"], "logs:read");
+    }
+
+    /// THE property. The operator's rule admits `logs:write`; this pod's grant
+    /// does not include the effect that backs it, so the token cannot carry it.
+    /// The delegation ceiling now survives the boundary.
+    #[tokio::test]
+    async fn a_scope_the_certificate_does_not_back_is_refused() {
+        let (cert, root) = pod_certificate(&["aws/read-logs"]);
+        let app = app_requiring(
+            ceiling(&["logs:read", "logs:write"]),
+            &[
+                ("logs:read", &["aws/read-logs"]),
+                ("logs:write", &["aws/write-object"]),
+            ],
+            Some(root),
+        );
+        let (status, v) = exchange_full(app, Some("logs:write"), Some(&cert)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert!(
+            !v.to_string().contains("aws/write-object"),
+            "the response must not enumerate what would have satisfied it: {v}"
+        );
+    }
+
+    /// A rule that says a scope needs delegated authority refuses when none is
+    /// shown — rather than falling through to the operator ceiling alone.
+    #[tokio::test]
+    async fn a_backed_scope_needs_a_certificate() {
+        let (_, root) = pod_certificate(&["aws/read-logs"]);
+        let app = app_requiring(
+            ceiling(&["logs:read"]),
+            &[("logs:read", &["aws/read-logs"])],
+            Some(root),
+        );
+        let (status, _) = exchange_full(app, Some("logs:read"), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// The whole security of reading effects off a certificate. `verify` walks
+    /// the chain against the root the TOKEN carries, so a caller can always
+    /// mint a self-consistent certificate granting itself anything. The pinned
+    /// root is what makes it mean something, and this is that check.
+    #[tokio::test]
+    async fn a_certificate_rooted_elsewhere_is_refused() {
+        let (attacker_cert, _attacker_root) = pod_certificate(&["aws/mutate-iam", "aws/read-logs"]);
+        let (_, real_root) = pod_certificate(&["aws/read-logs"]);
+        let app = app_requiring(
+            ceiling(&["logs:read"]),
+            &[("logs:read", &["aws/read-logs"])],
+            Some(real_root),
+        );
+        let (status, v) = exchange_full(app, Some("logs:read"), Some(&attacker_cert)).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a certificate minted under the caller's own root must not satisfy anything: {v}"
+        );
+    }
+
+    /// An OP with no pinned root cannot judge a certificate at all, so it
+    /// refuses rather than accepting one on the token's own say-so.
+    #[tokio::test]
+    async fn without_a_pinned_root_certificates_are_refused() {
+        let (cert, _) = pod_certificate(&["aws/read-logs"]);
+        let app = app_requiring(
+            ceiling(&["logs:read"]),
+            &[("logs:read", &["aws/read-logs"])],
+            None,
+        );
+        let (status, _) = exchange_full(app, Some("logs:read"), Some(&cert)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Decode a JWT's payload without verifying — the signature is covered
+    /// elsewhere; here the question is only what claims ride on the wire.
+    fn payload_of(jwt: &str) -> serde_json::Value {
+        let part = jwt.split('.').nth(1).expect("a JWT has three parts");
+        let raw = URL_SAFE_NO_PAD
+            .decode(part.as_bytes())
+            .expect("b64 payload");
+        serde_json::from_slice(&raw).expect("json payload")
+    }
+
+    /// The attenuation rides ON the token, so a relying party can re-check it
+    /// without being handed the certificate as well. A namespaced private claim
+    /// (RFC 7519 §4.3) an RP that has never heard of nucleus simply ignores.
+    #[tokio::test]
+    async fn the_issued_token_carries_the_granted_effects() {
+        let (cert, root) = pod_certificate(&["aws/read-logs", "aws/read-inventory"]);
+        let app = app_requiring(
+            ceiling(&["logs:read"]),
+            &[("logs:read", &["aws/read-logs"])],
+            Some(root),
+        );
+        let (status, v) = exchange_full(app, Some("logs:read"), Some(&cert)).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let claims = payload_of(v["access_token"].as_str().expect("access_token"));
+        let effects = claims["urn:nucleus:effects"]
+            .as_array()
+            .unwrap_or_else(|| panic!("effects claim missing: {claims}"));
+        let mut got: Vec<&str> = effects.iter().filter_map(|e| e.as_str()).collect();
+        got.sort_unstable();
+        assert_eq!(got, vec!["aws/read-inventory", "aws/read-logs"]);
+    }
+
+    /// Absent means "not established", never "none". An exchange with no
+    /// certificate must omit the claim rather than assert an empty grant — an
+    /// RP reading the first as the second would conclude a workload had been
+    /// delegated nothing when in fact nobody had said.
+    #[tokio::test]
+    async fn no_certificate_means_no_effects_claim_not_an_empty_one() {
+        let (status, v) =
+            exchange_with_scope(app_with_scope(ceiling(&["plain"])), Some("plain")).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let claims = payload_of(v["access_token"].as_str().expect("access_token"));
+        assert!(
+            claims.get("urn:nucleus:effects").is_none(),
+            "the claim must be absent, not empty: {claims}"
+        );
+    }
+
+    /// A scope with no `scope_requires` entry is bounded by `max_scope` alone —
+    /// the rule asserts nothing about what backs it, so presenting a
+    /// certificate is not required. Keeps the feature opt-in per scope.
+    #[tokio::test]
+    async fn a_scope_with_no_backing_requirement_is_unaffected() {
+        let app = app_requiring(
+            ceiling(&["plain:scope"]),
+            &[("logs:read", &["aws/read-logs"])],
+            None,
+        );
+        let (status, v) = exchange_full(app, Some("plain:scope"), None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["scope"], "plain:scope");
+    }
+
+    /// Whitespace is not a way past the ceiling: an all-blank scope is an
+    /// absent one, and a padded token is the token.
+    #[tokio::test]
+    async fn whitespace_does_not_defeat_the_ceiling() {
+        let app = app_with_scope(ceiling(&["read:bundles"]));
+        let (status, v) = exchange_with_scope(app, Some("   ")).await;
+        assert_eq!(status, StatusCode::OK, "an all-blank scope is no scope");
+
+        let app = app_with_scope(ceiling(&["read:bundles"]));
+        let (status, v2) = exchange_with_scope(app, Some("  read:bundles  ")).await;
+        assert_eq!(status, StatusCode::OK, "{v2}");
+        assert_eq!(v2["scope"], "read:bundles");
+        let _ = v;
     }
 }

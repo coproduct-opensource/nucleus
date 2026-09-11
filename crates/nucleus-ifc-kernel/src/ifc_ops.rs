@@ -7,7 +7,7 @@
 //! `portcullis_core::{Operation, SinkClass, ...}` is unchanged for all consumers,
 //! and brought under the kernel-boundary ratchet.
 
-use crate::{AuthorityLevel, IntegLevel};
+use crate::{AuthorityLevel, ConfLevel, IntegLevel};
 
 /// Operations that can be gated by approval.
 ///
@@ -316,14 +316,32 @@ impl SinkClass {
         match self {
             // Read-only / append-only — no authority needed
             SinkClass::SecretRead | SinkClass::AuditLogAppend => AuthorityLevel::NoAuthority,
-            // Write/exec/publish — require Suggestive
-            SinkClass::WorkspaceWrite
+            // Write/exec/publish — require Suggestive.
+            //
+            // The git-publish trio sat here at `Suggestive` and at `Directive`
+            // in the duplicate `flow_algebra::sink_required_authority`. #24
+            // merged the tables at the pointwise-strictest value and took
+            // `Directive`. That was WRONG, and `portcullis-core`'s
+            // `flow_red_team` suite is what said so: requiring `Directive`
+            // denies `Deterministic` and `HumanPromoted` data at a git sink,
+            // and those are precisely the derivation classes a verified sink
+            // exists to accept. `Directive` means "can steer the agent" — a
+            // user prompt or system config. Build output is not that, so the
+            // floor would have admitted nothing but user prompts.
+            //
+            // The merge to one decider stands; only this value is restored.
+            // Note what is NOT reverted: deleting the duplicate removed its
+            // `_ => NoAuthority` fallthrough, which is what floored
+            // `AgentSpawn` and `CloudMutation` at `Suggestive` and closed the
+            // last two attack-corpus gaps. That win came from the deletion,
+            // not from this trio.
+            SinkClass::GitCommit
+            | SinkClass::GitPush
+            | SinkClass::PRCommentWrite
+            | SinkClass::WorkspaceWrite
             | SinkClass::SystemWrite
             | SinkClass::BashExec
             | SinkClass::HTTPEgress
-            | SinkClass::GitCommit
-            | SinkClass::GitPush
-            | SinkClass::PRCommentWrite
             | SinkClass::EmailSend
             | SinkClass::MemoryPersist
             | SinkClass::AgentSpawn
@@ -369,6 +387,45 @@ impl SinkClass {
             SinkClass::MemoryPersist => IntegLevel::Untrusted,
             // Read-only / append-only — no integrity requirement
             SinkClass::SecretRead | SinkClass::AuditLogAppend => IntegLevel::Adversarial,
+        }
+    }
+
+    /// The maximum confidentiality this sink may emit.
+    ///
+    /// A CEILING, not a floor — so unlike [`Self::required_integrity`] and
+    /// [`Self::required_authority`], tightening this means moving it DOWN.
+    ///
+    /// True egress (the data crosses the trust boundary) caps at `Internal`, so
+    /// a `Secret`-confidentiality session cannot flow there. Local sinks keep
+    /// the data inside the sandbox and impose no restriction.
+    ///
+    /// Moved here from `portcullis_core::flow_algebra` (SECURITY_TODO #24) so
+    /// all three sink requirements have ONE decider. `flow_algebra` had this
+    /// table and `ifc_ops` did not, which is how the crates drifted: each
+    /// carried a partial copy and neither was authoritative.
+    pub fn max_confidentiality(self) -> ConfLevel {
+        match self {
+            // True egress: data crosses the boundary. Block Secret.
+            SinkClass::HTTPEgress
+            | SinkClass::GitPush
+            | SinkClass::PRCommentWrite
+            | SinkClass::EmailSend
+            | SinkClass::MCPWrite
+            | SinkClass::CloudMutation
+            | SinkClass::AgentSpawn
+            | SinkClass::SearchIndexWrite => ConfLevel::Internal,
+            // Local sinks: the data stays in the sandbox.
+            SinkClass::WorkspaceWrite
+            | SinkClass::SystemWrite
+            | SinkClass::BashExec
+            | SinkClass::GitCommit
+            | SinkClass::MemoryPersist
+            | SinkClass::ProposedTableWrite
+            | SinkClass::VerifiedTableWrite
+            | SinkClass::CacheWrite
+            | SinkClass::TicketWrite
+            | SinkClass::SecretRead
+            | SinkClass::AuditLogAppend => ConfLevel::Secret,
         }
     }
 

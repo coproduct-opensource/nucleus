@@ -399,8 +399,7 @@ pub fn narrow(grant: &TaskGrant, usage: &UsageReport, name: &str) -> Narrowed {
     }
 
     let restrictive = PermissionLattice::restrictive();
-    let gap = WeakeningCostConfig::default().compute_gap(&restrictive, &lattice);
-    let risk = summarise_risk(&lattice, gap);
+    let risk = summarise_risk(&restrictive, &lattice, &WeakeningCostConfig::default());
 
     let mut provenance = grant.provenance.clone();
     provenance

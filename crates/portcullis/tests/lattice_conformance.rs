@@ -3494,6 +3494,8 @@ mod budget_monotonicity {
                     consumed_usd: Decimal::from(consumed),
                     max_input_tokens: 100_000,
                     max_output_tokens: 10_000,
+                    consumed_input_tokens: 0,
+                    consumed_output_tokens: 0,
                 };
                 let before = budget.consumed_usd;
                 let ok = budget.charge(Decimal::from(amount));
@@ -3517,6 +3519,8 @@ mod budget_monotonicity {
                     consumed_usd: Decimal::from(consumed),
                     max_input_tokens: 100_000,
                     max_output_tokens: 10_000,
+                    consumed_input_tokens: 0,
+                    consumed_output_tokens: 0,
                 };
                 let before_remaining = budget.remaining();
                 budget.charge(Decimal::from(amount));
@@ -3586,12 +3590,16 @@ mod budget_monotonicity {
             consumed_usd: Decimal::from(2),
             max_input_tokens: 100_000,
             max_output_tokens: 10_000,
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         };
         let b = BudgetLattice {
             max_cost_usd: Decimal::from(5),
             consumed_usd: Decimal::from(1),
             max_input_tokens: 50_000,
             max_output_tokens: 20_000,
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         };
         let met = a.meet(&b);
         assert!(met.max_cost_usd <= a.max_cost_usd);
