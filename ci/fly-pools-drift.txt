@@ -23,4 +23,19 @@
 # and that is what this pin is for.
 #
 # Lower it in the change that reconciles a number, and say which side moved and why.
-DRIFT=4
+#
+# 4 -> 5, 2026-09-11, and the direction needs its reason stated because this pin is SHRINK-ONLY.
+# Nothing got worse. The gate began comparing a field it had always ignored: the third conjunct of
+# its own specification — "size, standby AND VOLUME COUNT" — which #2814 did not implement
+# (gatehouse FINDINGS.md F-79). The README says the build pool has one volume each,
+# 8 × 40 GB + 8 × 20 GB, so sixteen; POOLS declares `volumes: []`, so zero. That disagreement has
+# been there the whole time, unmeasured.
+#
+#   nucleus-fly-build  volumes  README 16   manager.toml 0
+#
+# The gate pool agrees: the README says "no volume" and POOLS declares none, so it contributes no
+# row. Raising a shrink-only pin to admit a newly-measured field is the same act as
+# check-gates-can-fail.sh's UNCOVERED_CEILING going 2 -> 10 when ten xtask gates entered its
+# domain — not a relaxation, a widening of what is looked at. A rise for any other reason is not
+# this, and should be refused.
+DRIFT=5

@@ -136,6 +136,53 @@ fn readme_agrees(root: &Path, pools: &[ci_fly_runner::PoolSpec]) -> Result<()> {
             );
         };
         rows += 1;
+        // The third conjunct of this gate's specification — "size, standby AND VOLUME COUNT" —
+        // which #2814 did not implement. `FINDINGS.md` F-79 records that omission and the reason it
+        // is a mechanism rather than forgetfulness: a spec with three conjuncts yields a gate that
+        // is green when two hold, and the green output cannot say which.
+        //
+        // The README states volumes as prose, two ways: "no volume", or "one volume each
+        // (8 × 40 GB + 8 × 20 GB)" — a sum of counts, not a single number. Both are read here; a
+        // row saying neither is an error rather than a zero, because a pool whose volume prose
+        // stopped parsing is a pool this gate has silently stopped checking.
+        let claimed_volumes = if row.contains("no volume") {
+            Some(0usize)
+        } else if let Some(inner) = row
+            .split("volume each (")
+            .nth(1)
+            .and_then(|r| r.split(')').next())
+        {
+            // "8 × 40 GB + 8 × 20 GB" — the count is the first number of each `N × …` term.
+            let n: usize = inner
+                .split('+')
+                .filter_map(|term| {
+                    term.trim()
+                        .split(|c: char| !c.is_ascii_digit())
+                        .find(|t| !t.is_empty())
+                        .and_then(|t| t.parse::<usize>().ok())
+                })
+                .sum();
+            Some(n)
+        } else {
+            None
+        };
+        match claimed_volumes {
+            None => bail!(
+                "{README}'s row for {:?} states its volumes in neither form this reads \
+                 (\"no volume\", or \"volume each (N × … + M × …)\") — a row that stopped parsing is a \
+                 pool this gate stopped checking",
+                p.label
+            ),
+            Some(c) if c != p.volumes.len() => {
+                drift.push(format!(
+                    "{} volumes: README {c}, {MANAGER_TOML} {}",
+                    p.label,
+                    p.volumes.len()
+                ));
+            }
+            Some(_) => {}
+        }
+
         for (field, declared) in [("size", p.size), ("standby", p.standby)] {
             let claimed = row
                 .split(&format!("{field} "))
