@@ -235,7 +235,9 @@ fn test_path_traversal_blocked() {
     let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
 
-    // Absolute path — rejected by policy (check_policy rejects absolute paths)
+    // Absolute path outside the sandbox root — rejected. (An absolute path
+    // *under* the root is accepted as the same file as its relative
+    // spelling since #2787; this one is a genuine escape.)
     let tok = dt(&mut kernel, Operation::ReadFiles, "/etc/passwd");
     let result = sandbox.read_to_string(
         "/etc/passwd",
@@ -371,7 +373,7 @@ fn test_credential_isolation() {
 
     // The env var LLM_API_TOKEN should NOT be readable via file tools.
     // Even if an attacker tries to read /proc/self/environ (Linux) or
-    // similar, the sandbox blocks absolute paths.
+    // similar, the sandbox blocks paths outside its root.
     let tok = dt(&mut kernel, Operation::ReadFiles, "/proc/self/environ");
     let result = sandbox.read_to_string(
         "/proc/self/environ",
