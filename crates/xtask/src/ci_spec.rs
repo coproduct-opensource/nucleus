@@ -459,6 +459,20 @@ pub fn trace_check(github: &str, since_hours: u64, json: bool) -> Result<()> {
         for v in &r.violations {
             println!("  VIOLATION: {v}");
         }
+        // Separated on purpose. A transition the model has no RULE for is a different fact from a
+        // transition it FORBIDS, and a report that conflates them is one its readers learn to
+        // ignore — which is what happened here for 23 hours. See gatehouse FINDINGS F-47.
+        for u in &r.unmodelled {
+            println!("  UNMODELLED: {u}");
+        }
+        if !r.unmodelled.is_empty() {
+            println!(
+                "  note: {} transition(s) the model has no rule for (re-enqueue after ejection). \
+                 The queue did not break an invariant; CiSpec.Queue cannot express this yet, and \
+                 T4_merge_order is proved where a PR enters enqLog at most once.",
+                r.unmodelled.len()
+            );
+        }
         if let Some(v) = &r.vacuous {
             println!("  UNDECIDED: {v}");
         }

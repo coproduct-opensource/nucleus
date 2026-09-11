@@ -150,6 +150,22 @@ impl State {
         self.checks[i] = b;
     }
 
+    /// **Not a transition of the model.** The replay harness calls this to continue past a
+    /// re-enqueue-after-ejection, which GitHub performs routinely and `step` has no rule for:
+    /// `CiSpec.Queue.step` acts on `.enqueue p` only when `loc p = .waiting`, and nothing returns
+    /// `.ejected` to `.waiting` (`push` does exactly that for `.queued`, so the omission is
+    /// specific). PR #2755 was ejected and re-enqueued TWICE on 2026-09-10 before merging.
+    ///
+    /// This exists so the harness can distinguish "the model has no rule for this" from "the queue
+    /// broke the invariant" and keep checking the rest of the trace. It deliberately does NOT
+    /// widen the spec: `step` is unchanged, the Lean side is unchanged, and every use is counted
+    /// and reported. Widening the model means re-proving T4/T5/T6/T7 over a state space where a PR
+    /// can enter `enqLog` more than once — and T4, "merges in enqueue order", is the one that may
+    /// genuinely fail. See gatehouse `FINDINGS.md` F-47.
+    pub fn unmodelled_requeue(&mut self, p: u32) {
+        self.set_loc(p, Loc::Waiting);
+    }
+
     /// `eject s p`.
     fn eject(&mut self, p: u32) {
         self.set_loc(p, Loc::Ejected);
