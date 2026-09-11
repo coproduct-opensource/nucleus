@@ -2707,8 +2707,12 @@ async fn read_file(
             Ok(contents) => contents,
             Err(NucleusError::ApprovalRequired { operation: op }) => {
                 // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
+                // PEEK. The spend is the sandbox approver reached through
+                // `request_approval` on the next line, and this guard used to
+                // consume as well — two spends per attempt, so a grant of
+                // `count: 1` never sufficed (#2406).
                 if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
-                    || state.approvals.consume(&op)
+                    || state.approvals.is_granted(&op)
                 {
                     let approval = state.runtime.sandbox().request_approval(op.clone())?;
                     let approved_dt = {
@@ -2802,7 +2806,14 @@ async fn write_file(
     Json(req): Json<WriteRequest>,
 ) -> Result<Json<WriteResponse>, ApiError> {
     let sink = &state.verdict_sink;
-    let operation = Operation::WriteFiles;
+    // Which capability this write is actually checked against — `EditFiles`
+    // when the path exists, `WriteFiles` when it does not — asked of the
+    // sandbox that will enforce it rather than assumed here. Assuming
+    // `WriteFiles` meant the kernel decided about one operation and the
+    // sandbox enforced another, so an approval the caller was told to get did
+    // not satisfy the retry, and every overwrite was recorded in the audit
+    // trail as a create.
+    let operation = state.runtime.sandbox().write_operation_for(&req.path);
     let auth_ctx = auth.map(|e| e.0);
     let actor = actor_from_auth(auth_ctx.as_ref());
 
@@ -2846,15 +2857,9 @@ async fn write_file(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let fs_ceiling = state.ceiling(Operation::WriteFiles, certified.as_ref());
+        let fs_ceiling = state.ceiling(operation, certified.as_ref());
         let flow = state.flow_graph.lock().await;
-        let result = run_gate::preflight_fs(
-            Operation::WriteFiles,
-            verified_scope,
-            fs_ceiling,
-            &path,
-            &flow,
-        );
+        let result = run_gate::preflight_fs(operation, verified_scope, fs_ceiling, &path, &flow);
         drop(flow);
         match result {
             PreflightResult::Allowed(bundle) => bundle,
@@ -2940,15 +2945,10 @@ async fn write_file(
                 let retry_bundle = {
                     use nucleus_ifc_kernel::discharge::PreflightResult;
                     let verified_scope = state.session_task_token.verified_scope();
-                    let fs_ceiling = state.ceiling(Operation::WriteFiles, certified.as_ref());
+                    let fs_ceiling = state.ceiling(operation, certified.as_ref());
                     let flow = state.flow_graph.lock().await;
-                    let r = run_gate::preflight_fs(
-                        Operation::WriteFiles,
-                        verified_scope,
-                        fs_ceiling,
-                        &path,
-                        &flow,
-                    );
+                    let r =
+                        run_gate::preflight_fs(operation, verified_scope, fs_ceiling, &path, &flow);
                     drop(flow);
                     match r {
                         PreflightResult::Allowed(b) => b,
@@ -3181,11 +3181,16 @@ async fn run_command(
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
+            // PEEK, for the same reason as the read and write paths: the
+            // executor's own approver spends it on the next line. Measured on
+            // a live pod after the naming was unified — the gate then asked by
+            // the right name (`RunBash echo ...`) and still refused, because
+            // the grant had already been spent here.
             if check_identity_policy(
                 &state,
                 auth_ctx.as_ref(),
                 &format!("execute {}", display_command),
-            ) || state.approvals.consume(&op)
+            ) || state.approvals.is_granted(&op)
             {
                 let approval = executor.request_approval(&op)?;
                 let approved_dt = {

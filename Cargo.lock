@@ -7233,14 +7233,22 @@ name = "nucleus-perf"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "ed25519-dalek 3.0.0",
  "hex",
+ "hmac 0.13.0",
  "nucleus-client",
+ "nucleus-provenance-memory",
+ "nucleus-spec",
+ "nucleus-task-compiler",
  "portcullis",
+ "ring",
  "serde_json",
  "serde_yaml",
+ "sha2 0.11.0",
  "ureq",
+ "uuid",
 ]
 
 [[package]]

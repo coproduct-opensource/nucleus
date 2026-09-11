@@ -43,6 +43,10 @@ pub const BUILTIN_CATALOG: &[(&str, &str)] = &[
     ("git", include_str!("../effects/git.toml")),
     ("web", include_str!("../effects/web.toml")),
     ("github", include_str!("../effects/github.toml")),
+    ("aws", include_str!("../effects/aws.toml")),
+    ("kubernetes", include_str!("../effects/kubernetes.toml")),
+    ("database", include_str!("../effects/database.toml")),
+    ("slack", include_str!("../effects/slack.toml")),
 ];
 
 /// A fully-qualified effect name: `<plugin>/<id>`, both segments
@@ -581,25 +585,70 @@ pub fn raise(caps: &mut CapabilityLattice, op: Operation, level: CapabilityLevel
     }
 }
 
+/// A host pattern is a dot-separated sequence of labels in which a label may
+/// be the single character `*`.
+///
+/// `api.github.com`, `*.amazonaws.com`, `logs.*.amazonaws.com`. A `*` is a
+/// whole label or nothing: `*foo.example` and `fo*o.example` are rejected, so
+/// a pattern can never match a fragment of a name.
 fn is_host_pattern(s: &str) -> bool {
-    let body = s.strip_prefix("*.").unwrap_or(s);
-    !body.is_empty()
-        && body
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-        && !body.starts_with('.')
-        && !body.ends_with('.')
+    if s.is_empty() || s.starts_with('.') || s.ends_with('.') {
+        return false;
+    }
+    s.split('.').all(|label| {
+        !label.is_empty()
+            && (label == "*"
+                || label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    })
 }
 
-/// Exact match, or `*.example` matching any subdomain of `example`.
+/// Does `pattern` match `host`?
+///
+/// A `*` label matches **one or more** whole labels, which is what
+/// `*.amazonaws.com` has always meant here (it matches
+/// `bucket.s3.amazonaws.com`, not only `s3.amazonaws.com`). Allowing that same
+/// `*` in the middle — `logs.*.amazonaws.com` — is what lets a cloud pack name
+/// one regional service apart from another.
+///
+/// It is worth saying why that mattered enough to generalise a matcher the
+/// egress gate also uses. With leading-`*.` only, every AWS effect had to
+/// claim `*.amazonaws.com`, and an effect with a host list and no
+/// discriminating HTTP shape vouches for its hosts — so a grant of "list cloud
+/// resources" admitted a POST to `iam.amazonaws.com`, which is the one call
+/// that can rewrite the boundary itself. The pack's own conformance test
+/// caught it. A basis vector you cannot state precisely is not a basis vector.
+///
+/// The anchors are the safety property, and they are what the tests pin:
+/// matching is over whole labels from both ends, so `*.amazonaws.com` admits
+/// neither `evil-amazonaws.com` (no label boundary before `amazonaws`) nor
+/// `amazonaws.com.evil.example` (the pattern must reach the end), and a `*`
+/// never matches zero labels, so `*.amazonaws.com` does not admit the bare
+/// `amazonaws.com`.
+#[must_use]
 pub fn host_matches(pattern: &str, host: &str) -> bool {
-    let host = host.to_ascii_lowercase();
-    let pattern = pattern.to_ascii_lowercase();
-    match pattern.strip_prefix("*.") {
-        Some(suffix) => host
-            .strip_suffix(suffix)
-            .is_some_and(|rest| rest.ends_with('.') && rest.len() > 1),
-        None => host == pattern,
+    let host = host.trim().to_ascii_lowercase();
+    let pattern = pattern.trim().to_ascii_lowercase();
+    let h: Vec<&str> = host.split('.').collect();
+    let p: Vec<&str> = pattern.split('.').collect();
+    labels_match(&p, &h)
+}
+
+/// Anchored label match with `*` standing for one or more labels.
+fn labels_match(pattern: &[&str], host: &[&str]) -> bool {
+    match pattern.split_first() {
+        // Both exhausted together, or neither: the match is anchored at the end.
+        None => host.is_empty(),
+        Some((&"*", rest)) => {
+            // One or more: consume at least one label, then try every split.
+            // Host lists are a handful of labels, so the search is trivial.
+            (1..=host.len()).any(|take| labels_match(rest, &host[take..]))
+        }
+        Some((&literal, rest)) => match host.split_first() {
+            Some((&first, host_rest)) if first == literal => labels_match(rest, host_rest),
+            _ => false,
+        },
     }
 }
 
@@ -1014,5 +1063,315 @@ operations = ["web_fetch"]
         let back: EffectId = serde_json::from_str(&json).unwrap();
         assert_eq!(back, e);
         assert!(serde_json::from_str::<EffectId>("\"nope\"").is_err());
+    }
+}
+
+// ── Pack conformance ────────────────────────────────────────────────────────
+//
+// Every pack states, as a table, requests it admits and requests it does not.
+// A pack is a claim about what a grant MEANS, and a claim with no counterexample
+// beside it is a claim nobody checked: it is trivially easy to write an effect
+// whose `matches` index is so broad it vouches for the next effect along, and
+// the symptom is not a test failure but a grant that quietly means more than
+// the person who approved it thought.
+//
+// So each row here is a pair. `aws/read-object` admits a GET to the object
+// store and must NOT admit the PUT that `aws/write-object` covers; the denial
+// must NAME the effect that would have admitted it, because that name is what
+// an escalation proposal is built from.
+// ── The host matcher ────────────────────────────────────────────────────────
+//
+// `host_matches` is the effect catalog's matcher AND the egress gate's, so a
+// pattern that matched one label too many would widen every grant that used it.
+// The anchors are the property; these are the ways an attacker would try to
+// slip past them.
+#[cfg(test)]
+mod host_matching {
+    use super::host_matches;
+
+    #[test]
+    fn a_star_label_spans_one_or_more_whole_labels() {
+        assert!(host_matches("*.amazonaws.com", "s3.amazonaws.com"));
+        assert!(host_matches("*.amazonaws.com", "bucket.s3.amazonaws.com"));
+        assert!(host_matches(
+            "logs.*.amazonaws.com",
+            "logs.eu-west-1.amazonaws.com"
+        ));
+        assert!(host_matches(
+            "ec2.*.amazonaws.com",
+            "ec2.us-east-1.amazonaws.com"
+        ));
+        assert!(host_matches("api.github.com", "api.github.com"));
+        assert!(
+            host_matches("API.GitHub.com", "api.github.com"),
+            "case-insensitive"
+        );
+    }
+
+    /// A `*` never matches zero labels, so a pattern is always strictly more
+    /// specific than the bare suffix it is built from.
+    #[test]
+    fn a_star_does_not_match_nothing() {
+        assert!(!host_matches("*.amazonaws.com", "amazonaws.com"));
+        assert!(!host_matches("logs.*.amazonaws.com", "logs.amazonaws.com"));
+    }
+
+    /// The anchors, from both ends. Each of these is a real shape an attacker
+    /// registers: a name that CONTAINS the target, and a name that is PREFIXED
+    /// by it.
+    #[test]
+    fn matching_is_anchored_at_both_ends_and_at_label_boundaries() {
+        assert!(!host_matches("*.amazonaws.com", "evil-amazonaws.com"));
+        assert!(!host_matches("*.amazonaws.com", "notamazonaws.com"));
+        assert!(!host_matches(
+            "*.amazonaws.com",
+            "s3.amazonaws.com.evil.example"
+        ));
+        assert!(!host_matches(
+            "api.github.com",
+            "api.github.com.evil.example"
+        ));
+        assert!(!host_matches("api.github.com", "evil.api.github.com"));
+        assert!(!host_matches(
+            "logs.*.amazonaws.com",
+            "logs.eu-west-1.amazonaws.com.evil"
+        ));
+        assert!(!host_matches(
+            "logs.*.amazonaws.com",
+            "evil.logs.eu-west-1.amazonaws.com"
+        ));
+    }
+
+    /// The pins the AWS pack leans on: one service host must not admit
+    /// another's, or "read the logs" would carry "rewrite IAM".
+    #[test]
+    fn one_service_host_does_not_admit_another() {
+        assert!(!host_matches("logs.*.amazonaws.com", "iam.amazonaws.com"));
+        assert!(!host_matches(
+            "ec2.*.amazonaws.com",
+            "logs.eu-west-1.amazonaws.com"
+        ));
+        assert!(!host_matches(
+            "iam.amazonaws.com",
+            "iam.us-east-1.amazonaws.com"
+        ));
+        assert!(!host_matches(
+            "*.s3.amazonaws.com",
+            "ec2.us-east-1.amazonaws.com"
+        ));
+    }
+
+    /// Grammar: a `*` is a whole label or it is not a wildcard at all, so no
+    /// pattern can match a fragment of a name.
+    #[test]
+    fn a_star_must_be_a_whole_label() {
+        assert!(super::is_host_pattern("*.amazonaws.com"));
+        assert!(super::is_host_pattern("logs.*.amazonaws.com"));
+        assert!(super::is_host_pattern("api.github.com"));
+        assert!(!super::is_host_pattern("*foo.example"));
+        assert!(!super::is_host_pattern("fo*o.example"));
+        assert!(!super::is_host_pattern(".example.com"));
+        assert!(!super::is_host_pattern("example.com."));
+        assert!(!super::is_host_pattern(""));
+        assert!(!super::is_host_pattern("a..b"));
+    }
+}
+
+#[cfg(test)]
+mod pack_conformance {
+    use super::*;
+
+    fn granted(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// Admitted, and by the effect we meant.
+    fn admits(catalog: &EffectCatalog, g: &BTreeSet<String>, m: &str, h: &str, p: &str, by: &str) {
+        match catalog.admits_http(Some(g), m, h, p) {
+            EffectAdmission::Admitted(id) => assert_eq!(
+                id.to_string(),
+                by,
+                "{m} {h}{p} was admitted by {id}, expected {by}"
+            ),
+            other => panic!("{m} {h}{p} should be admitted by {by}, got {other:?}"),
+        }
+    }
+
+    /// Refused, and the refusal names what a person would have to grant.
+    fn refuses(
+        catalog: &EffectCatalog,
+        g: &BTreeSet<String>,
+        m: &str,
+        h: &str,
+        p: &str,
+        would: &str,
+    ) {
+        match catalog.admits_http(Some(g), m, h, p) {
+            EffectAdmission::NotAdmitted { would_admit } => assert!(
+                would_admit.iter().any(|e| e.to_string() == would),
+                "{m} {h}{p} was refused, but the refusal did not name {would}: {would_admit:?}"
+            ),
+            other => panic!("{m} {h}{p} should be refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aws_object_reads_do_not_carry_object_writes() {
+        let catalog = EffectCatalog::builtin().unwrap();
+        let g = granted(&["aws/read-object"]);
+        admits(
+            &catalog,
+            &g,
+            "GET",
+            "bucket.s3.amazonaws.com",
+            "/reports/q3.csv",
+            "aws/read-object",
+        );
+        refuses(
+            &catalog,
+            &g,
+            "PUT",
+            "bucket.s3.amazonaws.com",
+            "/reports/q3.csv",
+            "aws/write-object",
+        );
+        refuses(
+            &catalog,
+            &g,
+            "DELETE",
+            "bucket.s3.amazonaws.com",
+            "/reports/q3.csv",
+            "aws/delete-object",
+        );
+    }
+
+    /// The effect a grant of everything-but-IAM must still refuse. `mutate-iam`
+    /// is the one that can rewrite the boundary itself, so it is pinned to its
+    /// own host and graded `destructive`.
+    #[test]
+    fn iam_is_reachable_only_by_the_effect_that_names_it() {
+        let catalog = EffectCatalog::builtin().unwrap();
+        let g = granted(&["aws/read-inventory", "aws/read-object", "aws/start-compute"]);
+        refuses(
+            &catalog,
+            &g,
+            "POST",
+            "iam.amazonaws.com",
+            "/",
+            "aws/mutate-iam",
+        );
+        let with_iam = granted(&["aws/mutate-iam"]);
+        admits(
+            &catalog,
+            &with_iam,
+            "POST",
+            "iam.amazonaws.com",
+            "/",
+            "aws/mutate-iam",
+        );
+    }
+
+    #[test]
+    fn slack_reading_does_not_carry_posting() {
+        let catalog = EffectCatalog::builtin().unwrap();
+        let g = granted(&["slack/read-channel"]);
+        admits(
+            &catalog,
+            &g,
+            "GET",
+            "slack.com",
+            "/api/conversations.history",
+            "slack/read-channel",
+        );
+        refuses(
+            &catalog,
+            &g,
+            "POST",
+            "slack.com",
+            "/api/chat.postMessage",
+            "slack/post-message",
+        );
+    }
+
+    /// The command-recognised packs. Kubernetes and the database have no
+    /// discriminating `http` index (see the header of each file), so their
+    /// claim is about tool names and command prefixes, and that is what gets
+    /// checked.
+    #[test]
+    fn kubernetes_reading_does_not_carry_mutating() {
+        let catalog = EffectCatalog::builtin().unwrap();
+        let g = granted(&["kubernetes/read-workloads", "kubernetes/read-logs"]);
+        assert_eq!(
+            catalog.admits_tool(Some(&g), "k8s_logs"),
+            EffectAdmission::Admitted("kubernetes/read-logs".parse().unwrap())
+        );
+        for blocked in ["k8s_apply", "k8s_exec", "k8s_delete"] {
+            assert!(
+                matches!(
+                    catalog.admits_tool(Some(&g), blocked),
+                    EffectAdmission::NotAdmitted { .. }
+                ),
+                "{blocked} must not be admitted by a read-only kubernetes grant"
+            );
+        }
+    }
+
+    #[test]
+    fn a_query_grant_does_not_carry_a_migration_or_a_drop() {
+        let catalog = EffectCatalog::builtin().unwrap();
+        let g = granted(&["database/read-rows", "database/read-schema"]);
+        assert_eq!(
+            catalog.admits_tool(Some(&g), "db_query"),
+            EffectAdmission::Admitted("database/read-rows".parse().unwrap())
+        );
+        for blocked in ["db_migrate", "db_drop", "db_execute"] {
+            assert!(
+                matches!(
+                    catalog.admits_tool(Some(&g), blocked),
+                    EffectAdmission::NotAdmitted { .. }
+                ),
+                "{blocked} must not be admitted by a read-only database grant"
+            );
+        }
+    }
+
+    /// Non-vacuity for every pack at once. If an effect's recognition index
+    /// were empty, each "refuses" above would pass for the wrong reason — the
+    /// request would be refused because NOTHING names it, not because the
+    /// granted effect does not. So: every effect in every built-in pack is
+    /// named by at least one tool, command or HTTP shape.
+    #[test]
+    fn no_builtin_effect_is_unrecognisable() {
+        let catalog = EffectCatalog::builtin().unwrap();
+        for spec in catalog.iter() {
+            assert!(
+                !spec.mcp_tools.is_empty() || !spec.commands.is_empty() || !spec.http.is_empty(),
+                "{} has an empty recognition index: nothing can ever be attributed \
+                 to it, so granting it grants nothing and denying it denies nothing",
+                spec.id
+            );
+        }
+    }
+
+    /// Two effects in the same pack must not be named by the same tool, or a
+    /// grant of the narrower one silently admits the wider one's work.
+    #[test]
+    fn no_tool_name_is_claimed_by_two_effects_of_different_risk() {
+        let catalog = EffectCatalog::builtin().unwrap();
+        let mut by_tool: BTreeMap<&str, Vec<&EffectSpec>> = BTreeMap::new();
+        for spec in catalog.iter() {
+            for tool in &spec.mcp_tools {
+                by_tool.entry(tool.as_str()).or_default().push(spec);
+            }
+        }
+        for (tool, specs) in by_tool {
+            let risks: BTreeSet<&str> = specs.iter().map(|s| s.risk.as_str()).collect();
+            assert!(
+                risks.len() <= 1,
+                "tool '{tool}' is claimed by effects of differing risk ({risks:?}); a grant \
+                 of the lower one would admit the higher one's work: {:?}",
+                specs.iter().map(|s| s.id.to_string()).collect::<Vec<_>>()
+            );
+        }
     }
 }

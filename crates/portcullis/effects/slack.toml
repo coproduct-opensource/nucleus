@@ -1,0 +1,68 @@
+# Built-in semantic effects: a team chat workspace.
+#
+# Chat is where an agent's mistakes become other people's problems, and it is
+# the one surface here where the damage is social rather than technical: a
+# wrong `kubectl delete` can be restored from a backup, a wrong message to the
+# whole company cannot be unsent. That is why `post-message` is `publish` and
+# sits a grade above anything in the read half, and why reading and posting are
+# separate effects at all — "summarise what the team said about the outage" and
+# "tell the team about the outage" are different asks and should be different
+# grants.
+#
+# Named for the vendor whose host it pins, in the same way `github.toml` is:
+# `CLAUDE.md`'s neutrality rule is about LLM vendors, and a host→meaning table
+# is what an effect catalog IS. A different chat system is a different pack,
+# and a repository can add one under `.nucleus/effects/`.
+
+[plugin]
+name = "slack"
+version = 1
+
+[[effect]]
+id = "read-channel"
+title = "Read messages in a channel"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["slack.com"]
+[effect.matches]
+mcp_tools = ["slack_read", "conversations_history", "get_channel_history", "slack_search"]
+commands = []
+http = [
+  { method = "GET", host = "slack.com", path = "/api/conversations.history" },
+  { method = "GET", host = "slack.com", path = "/api/conversations.replies" },
+  { method = "GET", host = "slack.com", path = "/api/search.messages" },
+]
+
+[[effect]]
+id = "read-directory"
+title = "Look up who is who"
+risk = "read"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress"]
+hosts = ["slack.com"]
+[effect.matches]
+mcp_tools = ["slack_users", "users_list", "users_info", "conversations_list"]
+commands = []
+http = [
+  { method = "GET", host = "slack.com", path = "/api/users.*" },
+  { method = "GET", host = "slack.com", path = "/api/conversations.list" },
+]
+
+[[effect]]
+id = "post-message"
+title = "Post a message"
+risk = "publish"
+[effect.lowers]
+operations = ["web_fetch"]
+sinks = ["http_egress", "mcp_write"]
+hosts = ["slack.com"]
+[effect.matches]
+mcp_tools = ["slack_post", "chat_postMessage", "send_message", "post_message"]
+commands = []
+http = [
+  { method = "POST", host = "slack.com", path = "/api/chat.postMessage" },
+  { method = "POST", host = "slack.com", path = "/api/chat.postEphemeral" },
+]

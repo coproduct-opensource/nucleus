@@ -860,18 +860,23 @@ impl<'a> Executor<'a> {
         }
 
         if self.obligations.requires(operation) {
+            // The command executor used to key approvals on the RAW COMMAND
+            // (`echo hello`) — no operation at all, and so a third vocabulary
+            // beside the kernel's and the sandbox's. Measured on a live pod:
+            // the kernel deferred `RunBash echo nucleus-agency`, a person
+            // approved exactly that, and this gate then asked for
+            // `echo nucleus-agency` and refused the retry as unapproved. Same
+            // defect as #2406, one layer over. One name, from
+            // `approval::approval_key`.
+            let key = crate::approval::approval_key(operation, command);
             if let Some(token) = approval {
-                if token.matches(command) {
+                if token.matches(&key) {
                     Ok(())
                 } else {
-                    Err(NucleusError::InvalidApproval {
-                        operation: command.to_string(),
-                    })
+                    Err(NucleusError::InvalidApproval { operation: key })
                 }
             } else {
-                Err(NucleusError::ApprovalRequired {
-                    operation: command.to_string(),
-                })
+                Err(NucleusError::ApprovalRequired { operation: key })
             }
         } else {
             Ok(())
@@ -1221,7 +1226,15 @@ mod tests {
         kernel.grant_approval(Operation::RunBash, 1);
         let dt = run_token(&mut kernel, "echo hello");
 
-        let approval = executor.request_approval("echo hello").unwrap();
+        // Derived from the rule, not spelled out: a test that hardcoded this
+        // gate's own wording is how three vocabularies drifted apart without
+        // any suite going red (#2406).
+        let approval = executor
+            .request_approval(&crate::approval::approval_key(
+                Operation::RunBash,
+                "echo hello",
+            ))
+            .unwrap();
         let result = executor.run_with_approval(
             "echo hello",
             &dt,

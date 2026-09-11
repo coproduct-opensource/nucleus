@@ -1,0 +1,81 @@
+# Built-in semantic effects: a SQL database.
+#
+# The split that matters to a person is not read-versus-write, it is
+# **reversible versus not**. A `SELECT` and an `INSERT` are both routine; a
+# migration and a `DROP` are the two things nobody wants an agent doing while
+# they are at lunch. So `run-migration` is graded apart from `write-rows` even
+# though both mutate, and `drop-data` is `destructive` and expected to sit above
+# every shipped ceiling.
+#
+# WHAT THIS PACK DOES NOT DO — and this is the honest limitation, stated here
+# rather than discovered later. Recognition is by COMMAND PREFIX and MCP tool
+# name, not by parsing SQL. `psql -c "SELECT ..."` is recognised as a read; a
+# `SELECT` that a script builds at runtime, or a statement sent over a
+# connection this pack never sees, is not recognised at all. That is a
+# recognition gap, not an enforcement hole: an unrecognised database call is
+# still bounded by the command lattice and by the pod's egress allowlist, and an
+# effect that vouches for nothing grants nothing. But a grant of
+# `database/read-rows` should not be read as "this agent can only SELECT" — it
+# should be read as "the calls this catalog can name are narrowed to reads".
+#
+# Closing that gap means mediating the driver rather than the command line,
+# which is a different piece of work than a catalog entry.
+
+[plugin]
+name = "database"
+version = 1
+
+[[effect]]
+id = "read-schema"
+title = "Look at the database schema"
+risk = "read"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec"]
+[effect.matches]
+mcp_tools = ["db_describe", "list_tables", "describe_table", "get_schema"]
+commands = ["psql -c \\d", "psql --command=\\d", "mysql -e SHOW", "sqlite3 .schema", "pg_dump --schema-only"]
+
+[[effect]]
+id = "read-rows"
+title = "Query data"
+risk = "read"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec"]
+[effect.matches]
+mcp_tools = ["db_query", "sql_select", "run_query", "read_query"]
+commands = ["psql -c SELECT", "psql --command=SELECT", "mysql -e SELECT", "sqlite3 SELECT", "duckdb -c SELECT"]
+
+[[effect]]
+id = "write-rows"
+title = "Insert and update data"
+risk = "mutate_remote"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec", "proposed_table_write"]
+[effect.matches]
+mcp_tools = ["db_execute", "sql_insert", "sql_update", "write_query"]
+commands = ["psql -c INSERT", "psql -c UPDATE", "mysql -e INSERT", "mysql -e UPDATE", "sqlite3 INSERT", "sqlite3 UPDATE"]
+
+[[effect]]
+id = "run-migration"
+title = "Run a schema migration"
+risk = "mutate_remote"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec", "verified_table_write"]
+[effect.matches]
+mcp_tools = ["db_migrate", "run_migration"]
+commands = ["sqlx migrate run", "diesel migration run", "alembic upgrade", "flyway migrate", "rails db:migrate", "npx prisma migrate deploy", "goose up"]
+
+[[effect]]
+id = "drop-data"
+title = "Delete data or drop tables"
+risk = "destructive"
+[effect.lowers]
+operations = ["run_bash"]
+sinks = ["bash_exec", "verified_table_write"]
+[effect.matches]
+mcp_tools = ["db_drop", "sql_delete", "drop_table", "truncate_table"]
+commands = ["psql -c DROP", "psql -c TRUNCATE", "psql -c DELETE", "mysql -e DROP", "mysql -e TRUNCATE", "sqlite3 DROP", "sqlx database drop", "rails db:drop"]
