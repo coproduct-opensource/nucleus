@@ -524,11 +524,53 @@ pub fn export_vectors() -> String {
             })
         })
         .collect();
-    serde_json::to_string_pretty(&serde_json::json!({
+    serde_json::to_string_pretty(&with_sorted_keys(serde_json::json!({
         "version": 1,
         "cases": cases,
-    }))
+    })))
     .expect("corpus serialization is infallible")
+}
+
+/// Rebuild a `Value` with every object's keys in sorted order.
+///
+/// # Why the bytes need this
+///
+/// `serde_json::Value`'s map type is chosen at COMPILE time: `BTreeMap`
+/// (sorted) normally, `IndexMap` (insertion order) under
+/// `serde_json/preserve_order`. Cedar, via `nucleus-trust-registry`, unifies
+/// that feature ON in full-workspace builds and leaves it OFF in standalone
+/// ones — so two people running the documented regeneration command could
+/// commit different bytes for the same 16 cases, and the whole-file reorder
+/// would read as a corpus change (#2751).
+///
+/// That is not hypothetical here: `nucleus-receipt/Cargo.toml` records the
+/// same hazard one crate over, where the bytes were being SIGNED and the
+/// answer was RFC 8785. These bytes are published and diffed rather than
+/// signed, which is a weaker requirement — so this sorts rather than
+/// canonicalizes, keeping the artifact pretty-printed and readable instead of
+/// collapsing 625 lines into one. Sorting is what the committed file already
+/// is, so this changes no bytes today; it makes that state reproducible
+/// instead of incidental.
+///
+/// Arrays keep their order: `cases` is ordered data from `corpus()`, and
+/// reordering it would be a corpus change rather than a normalization.
+fn with_sorted_keys(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k, with_sorted_keys(v)))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(with_sorted_keys).collect())
+        }
+        scalar => scalar,
+    }
 }
 
 /// Does every property carry cases in **both** directions?
@@ -549,4 +591,113 @@ pub fn corpus_covers_both_directions() -> Vec<(Property, Expect)> {
         }
     }
     missing
+}
+
+#[cfg(test)]
+mod export_determinism {
+    use super::*;
+
+    /// Key names in order of appearance, grouped by indentation depth, as they
+    /// appear in the PRETTY-PRINTED bytes — which is the thing that gets
+    /// committed and diffed, and the thing `preserve_order` changes.
+    ///
+    /// Reading the string rather than the parsed `Value` is deliberate: a
+    /// parse hands back whichever map type this build compiled, so asserting
+    /// on it would assert on the very thing under test.
+    fn key_runs_by_depth(json: &str) -> Vec<(usize, Vec<String>)> {
+        let mut runs: Vec<(usize, Vec<String>)> = Vec::new();
+        let mut current: Option<(usize, Vec<String>)> = None;
+        for line in json.lines() {
+            let indent = line.len() - line.trim_start().len();
+            let trimmed = line.trim_start();
+
+            // A brace or bracket ends the object whose keys we were collecting.
+            // Without this, sibling objects in an array — each internally
+            // sorted — merge into one run that looks unsorted (the corpus has
+            // three `{amount_micro, destination}` objects in a row).
+            if trimmed.starts_with('}') || trimmed.starts_with(']') || trimmed.starts_with('{') {
+                if let Some(run) = current.take() {
+                    runs.push(run);
+                }
+                continue;
+            }
+
+            let Some(rest) = trimmed.strip_prefix('"') else {
+                continue;
+            };
+            let Some(end) = rest.find("\":") else {
+                continue;
+            };
+            let key = rest[..end].to_string();
+            match current {
+                Some((d, ref mut keys)) if d == indent => keys.push(key),
+                _ => {
+                    if let Some(run) = current.take() {
+                        runs.push(run);
+                    }
+                    current = Some((indent, vec![key]));
+                }
+            }
+        }
+        if let Some(run) = current {
+            runs.push(run);
+        }
+        runs
+    }
+
+    /// The property #2751 is about: the emitted bytes must not depend on which
+    /// map type `serde_json::Value` was compiled with.
+    ///
+    /// Run this BOTH ways, or it means nothing — with the feature off it
+    /// passes on a `BTreeMap` that was already sorted:
+    ///
+    /// ```text
+    /// cargo test -p nucleus-commerce-conformance
+    /// cargo test -p nucleus-commerce-conformance --features serde_json/preserve_order
+    /// ```
+    ///
+    /// The explicit `--features` is the reliable way to reproduce it. Merely
+    /// selecting a cedar-bearing package alongside this one
+    /// (`-p nucleus-trust-registry --all-features`) does NOT turn the feature
+    /// on — measured, by checking that the pre-fix code still passed under
+    /// that selection and failed under this one. It is a full-workspace build
+    /// that unifies it in practice, which is why CI saw the drift (#2747) and
+    /// a standalone `cargo test -p ...` did not.
+    #[test]
+    fn exported_keys_are_sorted_whatever_the_build_graph_says() {
+        let json = export_vectors();
+        let runs = key_runs_by_depth(&json);
+
+        // Non-vacuity: a scan that found no keys would pass silently.
+        assert!(
+            runs.len() > 10,
+            "only {} key runs found — the scan is not reading the document",
+            runs.len()
+        );
+
+        for (depth, keys) in &runs {
+            let mut sorted = keys.clone();
+            sorted.sort();
+            assert_eq!(
+                keys, &sorted,
+                "keys at indent {depth} are emitted in insertion order rather than sorted, \
+                 so these bytes depend on whether `serde_json/preserve_order` is in this \
+                 build's feature graph: {keys:?}"
+            );
+        }
+    }
+
+    /// The artifact in the repo must be what the generator emits, or the
+    /// documented regeneration command produces a diff that is not a corpus
+    /// change.
+    #[test]
+    fn the_committed_artifact_is_what_the_generator_emits() {
+        let committed = include_str!("../../../examples/independent-conformance/vectors.json");
+        assert_eq!(
+            export_vectors().trim_end(),
+            committed.trim_end(),
+            "examples/independent-conformance/vectors.json is stale — regenerate it with \
+             `cargo run -p nucleus-commerce-conformance --example vectors`"
+        );
+    }
 }

@@ -208,65 +208,14 @@ fn candidates<'c>(
     all
 }
 
+/// [`DenyReason::describe`] with the operation this proposal is about.
+///
+/// A forward, not a copy. The body used to live here and was the best rendering
+/// in the workspace — and it was unreachable from any live denial path, so the
+/// proxy shipped `{:?}` and the MCP server shipped its own phrases. One
+/// producer now; see `crate::deny_reason`.
 fn describe(reason: &DenyReason, op: Operation) -> String {
-    let name = operation_name(op);
-    match reason {
-        DenyReason::InsufficientCapability => format!("the grant holds {name} at never"),
-        DenyReason::BudgetExhausted { remaining_usd } => {
-            format!("the grant's budget is exhausted (${remaining_usd} left)")
-        }
-        DenyReason::TimeExpired { expired_at } => {
-            format!(
-                "the grant expired at {}",
-                expired_at.format("%Y-%m-%d %H:%M UTC")
-            )
-        }
-        DenyReason::PathBlocked { path, denial } => match denial {
-            Some(d) => format!("the path {path} is blocked ({d})"),
-            None => format!("the path {path} is blocked"),
-        },
-        DenyReason::CommandBlocked { command } => {
-            format!("no granted effect vouches for the command `{command}`")
-        }
-        DenyReason::IsolationInsufficient { required, actual } => {
-            format!("the runtime isolation is {actual}, the policy requires {required}")
-        }
-        DenyReason::IsolationGated { dimension } => {
-            format!("the runtime's {dimension} isolation makes {name} impossible")
-        }
-        DenyReason::EgressBlocked {
-            host,
-            policy_reason,
-        } => format!("no granted effect admits egress to {host} ({policy_reason})"),
-        DenyReason::DlcAdmissionDenied { detail } => {
-            format!("no signed admission credential covers it ({detail})")
-        }
-        DenyReason::PolicyDenied {
-            rule_name,
-            sink_class,
-        } => format!("admissibility rule '{rule_name}' denies sink {sink_class}"),
-        DenyReason::EnterpriseBlocked { detail } => format!("enterprise policy: {detail}"),
-        DenyReason::DelegationDenied { detail } => format!("delegation constraint: {detail}"),
-        DenyReason::FlowViolation { rule, .. } => {
-            format!("information-flow rule {rule}: the session's inputs would flow out")
-        }
-        DenyReason::InvalidDeclassification { detail } => {
-            format!("declassification rejected: {detail}")
-        }
-        DenyReason::DeclassificationReplayed { target_node } => {
-            format!("the declassification token for {target_node} was already used")
-        }
-        DenyReason::SinkScopeDenied { dimension, detail } => {
-            format!("the certificate's {dimension} scope excludes it ({detail})")
-        }
-        DenyReason::ActionTermRejected { detail } => {
-            format!("preflight obligation failed: {detail}")
-        }
-        DenyReason::IfcUnsafe { detail } => {
-            format!("information-flow control: {detail}")
-        }
-        DenyReason::CedarDenied { detail } => format!("no Cedar permit covers it ({detail})"),
-    }
+    reason.describe(Some(op))
 }
 
 /// Where the answer is not more authority.

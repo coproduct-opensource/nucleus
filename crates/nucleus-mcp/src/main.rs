@@ -514,71 +514,19 @@ fn extract_subject(tool_name: &str, arguments: &Value) -> String {
 }
 
 /// Format a DenyReason for human-readable error messages.
+/// [`DenyReason::describe`] — the workspace's one rendering.
+///
+/// This used to be a third, terser table, so the same refusal read three ways
+/// depending on which surface a person happened to be looking at, and this
+/// one's `InsufficientCapability` arm answered "why not" with the words
+/// "insufficient capability". There is one producer now; see
+/// `portcullis::deny_reason`.
+///
+/// No operation is passed: the MCP path formats the tool name alongside this
+/// string already, so the two operation-dependent arms say "this operation"
+/// rather than repeating it.
 fn format_deny_reason(reason: &DenyReason) -> String {
-    match reason {
-        DenyReason::InsufficientCapability => "insufficient capability".to_string(),
-        DenyReason::BudgetExhausted { remaining_usd } => {
-            format!("budget exhausted (remaining: ${remaining_usd})")
-        }
-        DenyReason::TimeExpired { expired_at } => format!("session expired at {expired_at}"),
-        DenyReason::PathBlocked { path, denial } => match denial {
-            Some(d) => format!("path blocked: {path} -- {d}"),
-            None => format!("path blocked: {path}"),
-        },
-        DenyReason::CommandBlocked { command } => format!("command blocked: {command}"),
-        DenyReason::IsolationInsufficient { required, actual } => {
-            format!("isolation insufficient: required {required}, got {actual}")
-        }
-        DenyReason::IsolationGated { dimension } => {
-            format!("isolation gated: {dimension}")
-        }
-        DenyReason::FlowViolation { rule, .. } => {
-            format!("flow violation: {rule}")
-        }
-        DenyReason::EgressBlocked {
-            host,
-            policy_reason,
-        } => {
-            format!("egress blocked: {host} — {policy_reason}")
-        }
-        DenyReason::PolicyDenied {
-            rule_name,
-            sink_class,
-        } => {
-            format!("policy denied: rule '{rule_name}' blocked sink {sink_class}")
-        }
-        DenyReason::EnterpriseBlocked { detail } => {
-            format!("enterprise policy blocked: {detail}")
-        }
-        DenyReason::DelegationDenied { detail } => {
-            format!("delegation denied: {detail}")
-        }
-        DenyReason::InvalidDeclassification { detail } => {
-            format!("declassification rejected: {detail}")
-        }
-        DenyReason::DeclassificationReplayed { target_node } => {
-            format!(
-                "declassification token already used (one-shot) for node {target_node} — mint a                  new token to declassify again"
-            )
-        }
-        DenyReason::ActionTermRejected { detail } => {
-            format!("action term rejected: {detail}")
-        }
-        DenyReason::SinkScopeDenied {
-            dimension, detail, ..
-        } => {
-            format!("sink scope denied ({dimension}): {detail}")
-        }
-        DenyReason::IfcUnsafe { detail } => {
-            format!("information-flow unsafe: {detail}")
-        }
-        DenyReason::CedarDenied { detail } => {
-            format!("cedar policy denied: {detail}")
-        }
-        DenyReason::DlcAdmissionDenied { detail } => {
-            format!("verified admission denied: {detail}")
-        }
-    }
+    reason.describe(None)
 }
 
 /// Per-operation cost estimates for budget tracking.

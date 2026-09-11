@@ -117,6 +117,24 @@ probe() {
 
     "$@" "$target"
 
+    # Did the perturbation DO anything? A perturbation whose pattern no longer
+    # matches the file is a no-op, the gate then passes on an unchanged tree,
+    # and the probe reports "the gate cannot detect the thing it is named for" —
+    # which sends whoever reads it to debug a gate that is working correctly.
+    # #2582 moved the Lean builds from a bare `lake build` step to a pinned
+    # action, and `perturb_default_target_unbuilt` went on deleting a line that
+    # no longer existed. A probe whose perturbation changes nothing is not a
+    # probe, exactly as a gate that cannot fail is not a gate.
+    if cmp -s "$target" "$RESTORE_FROM"; then
+        echo "  FAIL  $gate — the perturbation for '$desc' changed $target not at all"
+        echo "        It is a no-op, so this probe tests nothing. The file moved"
+        echo "        under it: update the perturbation to match what is there now."
+        restore
+        RESTORE_FROM=""
+        failures=$((failures + 1))
+        return
+    fi
+
     local perturbed_rc=0
     # shellcheck disable=SC2086 — ci_flags is a deliberate word-split.
     bash "scripts/$gate" $ci_flags >/dev/null 2>&1 || perturbed_rc=$?
@@ -248,13 +266,17 @@ LEAN
 }
 
 perturb_default_target_unbuilt() {
-    # A package whose libs are `@[default_target]` but which NO workflow
-    # bare-builds: delete the bare `lake build` step from the one workflow that
-    # builds nucleus-ifc-kernel/lean. Before #2564 the coverage gate counted
-    # `@[default_target]` alone as "built" and this package read as covered
-    # while its 19 theorems were never elaborated in CI.
+    # A package whose libs are `@[default_target]` but which NO workflow builds.
+    # The one workflow that builds nucleus-ifc-kernel/lean now does it through
+    # leanprover/lean-action with `build: "true"`; before #2582 it was a bare
+    # `lake build` step. Both forms are turned off here, so the probe keeps
+    # working whichever the workflow uses. Before #2564 the coverage gate
+    # counted `@[default_target]` alone as "built" and this package read as
+    # covered while its 19 theorems were never elaborated in CI.
     local tmp; tmp="$(mktemp)"
-    grep -v 'run: LEAN_NUM_THREADS=4 lake build$' "$1" > "$tmp"; cat "$tmp" > "$1"; rm -f "$tmp"
+    sed -e '/run: LEAN_NUM_THREADS=4 lake build$/d' \
+        -e 's/^\([[:space:]]*\)build: "true"$/\1build: "false"/' "$1" > "$tmp"
+    cat "$tmp" > "$1"; rm -f "$tmp"
 }
 
 perturb_kani_harness_deleted() {

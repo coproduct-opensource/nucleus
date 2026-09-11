@@ -88,7 +88,16 @@ path = "crates/nucleus-node/src/main.rs"
 # still has the request to reject. Reseeded at the measured value again rather
 # than restoring the old 4045 that main carries: this branch earned 3992 by
 # moving 155 lines out, and taking main's slack back would spend that.
-ceiling = 3996
+# Bumped 3996 -> 4007 2026-09-11, merging main into this branch a third time.
+# All eleven lines are main's #2789 scratch work, none of them this branch's: a
+# three-line comment, the five-line `scratch_for_pod` call that decides the
+# writable `/work` BEFORE the config that declares the drive, the one-line
+# `let image = &effective_image;` rebind, and the `scratch_is_node_provisioned`
+# argument threaded into `prepare_jail`. The call cannot be extracted -- it sits
+# on the pod-creation path in THIS file because that is where the jail layout and
+# the jailer uid/gid are both in scope. Re-seeded at the measured value, as every
+# move of this entry has been.
+ceiling = 4007
 target = 2000
 step = 1
 
@@ -161,6 +170,18 @@ path = "crates/nucleus-node/src/firecracker_config.rs"
 # branch's code, still not the production half growing on its own. The two
 # tests #2786 added to this module went into the extracted sibling
 # (`firecracker_config_tests.rs`), which is swept against the 2500 default.
-ceiling = 1203
+#
+# Bumped 1203 -> 1335 2026-09-11, merging main into this branch a third time.
+# The 132 lines are main's #2789 scratch work and are the first move of this
+# entry that IS production half growing: three new functions --
+# `provision_pod_scratch`, `build_scratch_image`, `scratch_for_pod` -- plus the
+# `scratch_is_node_provisioned` parameter threaded through `jail_resources` and
+# `prepare_jail`. Still not this branch's code. The note above says a non-zero
+# step is justified when the production half starts growing on its own; it now
+# has, but raising `step` in the same commit that absorbs someone else's feature
+# would ratchet this branch against work it did not write. Left at 0, and flagged
+# here so the next person to touch the production half decides it deliberately.
+# The five tests #2789 added to this module went into the extracted sibling.
+ceiling = 1335
 target = 2500
 step = 0

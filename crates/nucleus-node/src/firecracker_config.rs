@@ -111,6 +111,13 @@ pub(crate) struct JailLayout {
 
 /// In-jail names. Fixed, not derived from the host path: a jailed Firecracker
 /// sees `/kernel`, never `/var/lib/nucleus/images/<sha>/vmlinux`.
+/// Default size of a node-provisioned scratch disk. Sparse, so this is a
+/// ceiling on what the guest may write to `/work`, not an upfront cost. Four
+/// GiB is what the #2789 report used by hand to confirm `/work` became
+/// writable. Sizing from the pod's `resources` is the obvious follow-up.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const DEFAULT_SCRATCH_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) mod in_jail {
     pub const KERNEL: &str = "/kernel";
@@ -198,7 +205,11 @@ pub(crate) struct JailResource {
 /// The config file and the log file are NOT here: they are produced rather than
 /// relocated, so `prepare_jail` writes them directly.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn jail_resources(image: &nucleus_spec::ImageSpec, spec: &PodSpec) -> Vec<JailResource> {
+pub(crate) fn jail_resources(
+    image: &nucleus_spec::ImageSpec,
+    spec: &PodSpec,
+    scratch_is_node_provisioned: bool,
+) -> Vec<JailResource> {
     let mut resources = vec![
         JailResource {
             host_source: image.kernel_path.clone(),
@@ -230,13 +241,20 @@ pub(crate) fn jail_resources(image: &nucleus_spec::ImageSpec, spec: &PodSpec) ->
         },
     ];
 
+    // A NODE-PROVISIONED scratch disk is created at its in-jail path already
+    // (see `provision_pod_scratch`), so there is nothing to bring inside and a
+    // `JailResource` for it would try to hard-link the file onto itself. Only a
+    // caller-supplied `scratch_path` names a file that lives elsewhere on the
+    // host and has to be placed.
     if let Some(ref scratch) = image.scratch_path {
-        resources.push(JailResource {
-            host_source: scratch.clone(),
-            in_jail: in_jail::SCRATCH,
-            // `lower_drives` gives scratch `is_read_only: false` unconditionally.
-            placement: Placement::HardLinkOnly,
-        });
+        if !scratch_is_node_provisioned {
+            resources.push(JailResource {
+                host_source: scratch.clone(),
+                in_jail: in_jail::SCRATCH,
+                // `lower_drives` gives scratch `is_read_only: false` unconditionally.
+                placement: Placement::HardLinkOnly,
+            });
+        }
     }
 
     if let Some(ref data) = image.data_path {
@@ -305,6 +323,119 @@ fn place_resource(resource: &JailResource, dest: &Path) -> Result<(), String> {
     }
 }
 
+/// The per-pod scratch disk that makes `/work` writable (#2789).
+///
+/// `/work` mounts `/dev/vdb`, which exists only when a scratch drive is
+/// attached — and nothing created one, so a `codegen` pod met `EROFS` on its
+/// first write. The other route to a writable guest, `read_only: false`, is the
+/// one #2784 closed: it writes through the shared rootfs artifact.
+///
+/// BORN INSIDE THE JAIL. Under the jailer `lower_drives` gives the drive a
+/// `path_on_host` of `in_jail::SCRATCH`, resolved after `chroot`, so the file
+/// must exist at `jail_root/scratch.ext4`. Creating it there leaves no
+/// host-side source to bring in — no hard link, so none of the cross-device
+/// failure modes `Placement` exists to reason about. `jail_resources` skips it
+/// for that reason.
+///
+/// FAIL-SAFE. `None`, not an error, when the disk cannot be made (no
+/// `mkfs.ext4`, no space): the caller then boots with no scratch drive, exactly
+/// today's behaviour. This can add a writable `/work`; it cannot turn a pod
+/// that boots into one that does not. The reason is logged, because a silently
+/// read-only `/work` is the bug being fixed. The image is sparse, so 4 GiB
+/// costs what the guest writes, and it is removed with the jail.
+/// Decide what image the pod boots with, and whether its scratch disk is the
+/// node's. Unchanged when the spec names a `scratch_path`, when there is no
+/// jail to make one in, or when making one failed — the last being the fallback
+/// that keeps this unable to break a boot. Here, not at the call site, so the
+/// decision is testable without a node.
+#[cfg(target_os = "linux")]
+pub(crate) fn scratch_for_pod(
+    image: &nucleus_spec::ImageSpec,
+    jail_layout: Option<&JailLayout>,
+    uid: u32,
+    gid: u32,
+) -> (nucleus_spec::ImageSpec, bool) {
+    let mut effective = image.clone();
+    if effective.scratch_path.is_some() {
+        return (effective, false);
+    }
+    let Some(jail) = jail_layout else {
+        return (effective, false);
+    };
+    match provision_pod_scratch(&jail.jail_root, DEFAULT_SCRATCH_BYTES, uid, gid) {
+        Some(path) => {
+            effective.scratch_path = Some(path);
+            (effective, true)
+        }
+        None => (effective, false),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn provision_pod_scratch(
+    jail_root: &Path,
+    size_bytes: u64,
+    uid: u32,
+    gid: u32,
+) -> Option<std::path::PathBuf> {
+    let path = jail_root.join(in_jail::SCRATCH.trim_start_matches('/'));
+
+    match build_scratch_image(jail_root, &path, size_bytes, uid, gid) {
+        Ok(()) => Some(path),
+        Err(err) => {
+            tracing::warn!(
+                scratch = %path.display(),
+                error = %err,
+                "could not provision a scratch disk; /work will be read-only in this pod.                  Install e2fsprogs (mkfs.ext4) on the node host, or give the spec its own                  image.scratch_path."
+            );
+            // Leave nothing half-made behind for the next boot to trip over.
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn build_scratch_image(
+    jail_root: &Path,
+    path: &Path,
+    size_bytes: u64,
+    uid: u32,
+    gid: u32,
+) -> Result<(), String> {
+    use std::os::unix::fs::chown;
+
+    // `prepare_jail` also does this and the jailer tolerates an existing root;
+    // doing it here lets the disk be made BEFORE the config that declares the
+    // drive is written, which is what keeps the fallback honest.
+    std::fs::create_dir_all(jail_root)
+        .map_err(|e| format!("creating {}: {e}", jail_root.display()))?;
+
+    let file =
+        std::fs::File::create(path).map_err(|e| format!("creating {}: {e}", path.display()))?;
+    file.set_len(size_bytes)
+        .map_err(|e| format!("sizing {} to {size_bytes} bytes: {e}", path.display()))?;
+    drop(file);
+
+    let out = std::process::Command::new("mkfs.ext4")
+        .args(["-q", "-F", &path.display().to_string()])
+        .output()
+        .map_err(|e| format!("running mkfs.ext4: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "mkfs.ext4 failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    // Firecracker runs unprivileged after the jailer's drop, and the guest
+    // writes through this disk — a root-owned image would leave `/work`
+    // read-only for the very workload it exists to serve. Same reasoning, and
+    // the same uid/gid, as every other file `prepare_jail` chowns.
+    chown(path, Some(uid), Some(gid)).map_err(|e| format!("chown {}: {e}", path.display()))?;
+    Ok(())
+}
+
 /// Build the jail's contents so the jailer has something to chroot into.
 ///
 /// ORDERING. This runs BEFORE the jailer is spawned, which is safe because the
@@ -326,6 +457,7 @@ pub(crate) fn prepare_jail(
     config_json: &[u8],
     uid: u32,
     gid: u32,
+    scratch_is_node_provisioned: bool,
 ) -> Result<(), String> {
     use std::os::unix::fs::chown;
 
@@ -338,7 +470,7 @@ pub(crate) fn prepare_jail(
 
     let mut placed: Vec<std::path::PathBuf> = Vec::new();
 
-    for resource in jail_resources(image, spec) {
+    for resource in jail_resources(image, spec, scratch_is_node_provisioned) {
         let dest = layout.host_path(resource.in_jail);
         place_resource(&resource, &dest)?;
         placed.push(dest);

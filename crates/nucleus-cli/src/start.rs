@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
+use std::net::{SocketAddr, TcpStream};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
@@ -239,45 +240,91 @@ fn start_nucleus_node_service(vm_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The node's address, and the health route on it.
+///
+/// The node's HTTP listener requires mTLS unconditionally -- there is no
+/// plaintext mode left to default to (`nucleus node --help`, `--url`). A plain
+/// `GET /health` is therefore not a health check of it; it is a corrupt TLS
+/// record. This probe used to send one every 500 ms for 60 s, the node logged
+/// an `InvalidContentType` handshake failure for each, and the command then
+/// reported the *node* unhealthy and pointed the user at those 120 lines
+/// (#2788). The route is `/v1/health`, not `/health`.
+const NODE_ADDR: &str = "127.0.0.1:8080";
+const HEALTH_URL: &str = "https://127.0.0.1:8080/v1/health";
+
+/// How the probe talks to the node.
+enum Probe {
+    /// A real `GET /v1/health` over mTLS, presenting the identity
+    /// `nucleus setup` provisioned. Proves the node is *serving*.
+    Mtls(Box<reqwest::blocking::Client>),
+    /// No provisioned CLI identity to present, so the strongest honest signal
+    /// left is that the listener accepts a connection. Weaker, but it can
+    /// never report a healthy node unhealthy because of something on this
+    /// side -- which is the failure this probe is being fixed for.
+    Listening,
+}
+
+impl Probe {
+    /// `Ok(true)` when the node answered, `Ok(false)` when it is not ready
+    /// yet. Failures of the probe's own making are not the node's verdict.
+    fn poll(&self) -> Result<bool, String> {
+        match self {
+            Probe::Mtls(client) => match client.get(HEALTH_URL).send() {
+                Ok(response) if response.status().is_success() => Ok(true),
+                Ok(response) => Err(format!("status {}", response.status().as_u16())),
+                Err(_) => Ok(false),
+            },
+            Probe::Listening => {
+                let addr: SocketAddr = NODE_ADDR
+                    .parse()
+                    .expect("NODE_ADDR is a literal socket address");
+                Ok(TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok())
+            }
+        }
+    }
+}
+
 fn wait_for_health_check(args: &StartArgs) -> Result<()> {
     println!("Waiting for nucleus-node to be ready...");
 
-    let endpoint = "http://127.0.0.1:8080/health";
+    let probe = match crate::provision::mtls_blocking_client_from_provisioned_identity() {
+        Ok(client) => Probe::Mtls(Box::new(client)),
+        Err(_) => {
+            println!(
+                "  (no provisioned CLI identity found -- checking that the node's\n   \
+                 listener is accepting connections. For an authenticated check,\n   \
+                 run `nucleus setup`, then `nucleus node health`.)"
+            );
+            Probe::Listening
+        }
+    };
+
     let timeout = Duration::from_secs(u64::from(args.timeout));
     let start = std::time::Instant::now();
     let poll_interval = Duration::from_millis(500);
 
-    // Create agent with timeout
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(2)))
-        .build();
-    let agent: ureq::Agent = config.into();
-
     loop {
         if start.elapsed() > timeout {
             bail!(
-                "Health check timed out after {} seconds. Check: limactl shell {} -- journalctl -u nucleus-node",
+                "nucleus-node did not become ready within {} seconds.\n  \
+                 Check the node: limactl shell {} -- journalctl -u nucleus-node\n  \
+                 Check it directly: nucleus node health",
                 args.timeout,
                 args.vm_name
             );
         }
 
-        match agent.get(endpoint).call() {
-            Ok(response) if response.status().as_u16() == 200 => {
+        match probe.poll() {
+            Ok(true) => {
                 println!("\nnucleus-node is ready!");
                 return Ok(());
             }
-            Ok(response) => {
-                // Non-200 response, keep waiting
-                eprintln!(
-                    "  Health check returned status {}, retrying...",
-                    response.status().as_u16()
-                );
-            }
-            Err(_) => {
-                // Connection failed, keep waiting
+            Ok(false) => {
                 print!(".");
                 std::io::Write::flush(&mut std::io::stdout()).ok();
+            }
+            Err(detail) => {
+                eprintln!("  Health check returned {detail}, retrying...");
             }
         }
 
@@ -285,24 +332,36 @@ fn wait_for_health_check(args: &StartArgs) -> Result<()> {
     }
 }
 
+/// The banner printed on success.
+///
+/// Built as a string so it can be asserted on: every line here used to name
+/// something a user could not reach -- `http://` on an mTLS-only listener, a
+/// metrics port nothing in `nucleus-node` binds, and a `curl` that could only
+/// ever produce the same handshake failure the health probe did (#2788).
+fn success_message() -> String {
+    let mut out = String::new();
+    out.push_str("\nNucleus is running!\n");
+    out.push_str("===================\n\n");
+    out.push_str("Endpoints:\n");
+    out.push_str(&format!(
+        "  HTTP API: https://{NODE_ADDR}  (mTLS -- a client certificate is required)\n"
+    ));
+    out.push_str("  gRPC:     https://127.0.0.1:9180\n\n");
+    out.push_str("Commands:\n");
+    out.push_str("  nucleus run \"Your task here\"    # Run a task\n");
+    out.push_str("  nucleus node health             # Ask the node how it is\n");
+    out.push_str("  nucleus node pods               # List pods\n");
+    out.push_str("  nucleus stop                    # Stop nucleus\n");
+    out.push_str("  nucleus doctor                  # Check status\n\n");
+    out.push_str("API Example:\n");
+    out.push_str(
+        "  nucleus node health             # a raw curl needs the provisioned client cert\n\n",
+    );
+    out
+}
+
 fn print_success_message() {
-    println!();
-    println!("Nucleus is running!");
-    println!("===================");
-    println!();
-    println!("Endpoints:");
-    println!("  HTTP API: http://127.0.0.1:8080");
-    println!("  Metrics:  http://127.0.0.1:9080");
-    println!("  gRPC:     http://127.0.0.1:9180");
-    println!();
-    println!("Commands:");
-    println!("  nucleus run \"Your task here\"    # Run a task");
-    println!("  nucleus stop                    # Stop nucleus");
-    println!("  nucleus doctor                  # Check status");
-    println!();
-    println!("API Example:");
-    println!("  curl http://127.0.0.1:8080/v1/pods");
-    println!();
+    print!("{}", success_message());
 }
 
 #[cfg(test)]
@@ -320,5 +379,47 @@ mod tests {
         assert_eq!(args.vm_name, "nucleus");
         assert!(!args.no_wait);
         assert!(args.auto_start_vm);
+    }
+
+    /// The probe must speak the protocol the node speaks. It sent plaintext
+    /// `GET /health` to an mTLS-only listener, so it timed out on every
+    /// healthy node (#2788).
+    #[test]
+    fn the_health_probe_addresses_the_listener_the_node_actually_has() {
+        assert!(
+            HEALTH_URL.starts_with("https://"),
+            "the node's listener requires mTLS; a plaintext probe is a corrupt \
+             TLS record, not a health check: {HEALTH_URL}"
+        );
+        assert!(
+            HEALTH_URL.ends_with("/v1/health"),
+            "the health route is /v1/health, not /health: {HEALTH_URL}"
+        );
+        assert!(
+            NODE_ADDR.parse::<SocketAddr>().is_ok(),
+            "the listening probe parses this as a socket address: {NODE_ADDR}"
+        );
+    }
+
+    /// Every endpoint the banner names must be one a user can reach.
+    #[test]
+    fn the_banner_advertises_nothing_unreachable() {
+        let banner = success_message();
+        assert!(
+            !banner.contains("http://"),
+            "no plaintext endpoint is served; banner was:\n{banner}"
+        );
+        assert!(
+            !banner.contains("9080"),
+            "nothing in nucleus-node binds 9080; banner was:\n{banner}"
+        );
+        assert!(
+            !banner.contains("curl http"),
+            "a bare curl cannot complete the mTLS handshake; banner was:\n{banner}"
+        );
+        assert!(
+            banner.contains("nucleus node health"),
+            "the banner should name a command that works; banner was:\n{banner}"
+        );
     }
 }

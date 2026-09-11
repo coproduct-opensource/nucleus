@@ -809,7 +809,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
     );
     let config_json = serde_json::to_vec_pretty(&config).expect("serialize");
 
-    prepare_jail(&layout, &img, &spec, &config_json, uid, gid).expect("prepare_jail");
+    prepare_jail(&layout, &img, &spec, &config_json, uid, gid, false).expect("prepare_jail");
 
     // Every path the config names, except the vsock socket, which Firecracker
     // creates itself at boot — so what must exist for it is the writable jail
@@ -841,7 +841,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
     );
 
     // Re-running must be idempotent: pods get relaunched.
-    prepare_jail(&layout, &img, &spec, &config_json, uid, gid)
+    prepare_jail(&layout, &img, &spec, &config_json, uid, gid, false)
         .expect("prepare_jail must be idempotent");
 
     cleanup_jail(&layout);
@@ -894,7 +894,7 @@ fn a_drive_the_guest_can_write_is_never_copyable() {
     for (read_only, scratch) in [(true, true), (true, false), (false, true), (false, false)] {
         let img = image(read_only, scratch);
         let spec = base_spec();
-        let resources = jail_resources(&img, &spec);
+        let resources = jail_resources(&img, &spec, false);
         let drives = lower_drives(&img, true);
 
         for drive in &drives {
@@ -962,7 +962,7 @@ fn every_jailed_config_path_is_brought_into_the_jail() {
         )),
     );
 
-    let resources = jail_resources(&img, &spec);
+    let resources = jail_resources(&img, &spec, false);
     // Produced inside the jail rather than relocated into it.
     let produced = [in_jail::CONFIG, in_jail::LOG, in_jail::VSOCK];
     let mut known: Vec<&str> = resources.iter().map(|r| r.in_jail).collect();
@@ -1453,7 +1453,7 @@ fn enforcing_pci_off_is_idempotent() {
 /// A read-only rootfs may be copied, because nothing writes through it.
 #[test]
 fn rw_rootfs_is_hard_link_only() {
-    let rw = jail_resources(&image(false, false), &base_spec());
+    let rw = jail_resources(&image(false, false), &base_spec(), false);
     let rootfs = rw
         .iter()
         .find(|r| r.in_jail == in_jail::ROOTFS)
@@ -1465,7 +1465,7 @@ fn rw_rootfs_is_hard_link_only() {
          jail is torn down"
     );
 
-    let ro = jail_resources(&image(true, false), &base_spec());
+    let ro = jail_resources(&image(true, false), &base_spec(), false);
     let rootfs = ro
         .iter()
         .find(|r| r.in_jail == in_jail::ROOTFS)
@@ -1486,7 +1486,7 @@ fn rw_rootfs_is_hard_link_only() {
 /// jail entry shared the artifact's inode with `links=2`.
 #[test]
 fn a_writable_rootfs_is_the_artifact_itself_not_a_copy() {
-    let rw = jail_resources(&image(false, false), &base_spec());
+    let rw = jail_resources(&image(false, false), &base_spec(), false);
     let rootfs = rw
         .iter()
         .find(|r| r.in_jail == in_jail::ROOTFS)
@@ -1498,4 +1498,81 @@ fn a_writable_rootfs_is_the_artifact_itself_not_a_copy() {
          shared mutable state between pods — the reason the spec default is \
          now read_only: true"
     );
+}
+
+// ── Node-provisioned scratch disk (#2789) ────────────────────────────────
+
+/// Born at its in-jail path already, so placing it would hard-link the file
+/// onto itself — and having no host-side source is the whole point.
+#[test]
+fn a_node_provisioned_scratch_is_not_placed_into_the_jail() {
+    let mut img = image(true, true);
+    img.scratch_path = Some(PathBuf::from("/srv/jailer/.../root/scratch.ext4"));
+
+    let placed = jail_resources(&img, &base_spec(), true);
+    assert!(
+        !placed.iter().any(|r| r.in_jail == in_jail::SCRATCH),
+        "the node already made this file inside the jail; placing it would \
+         hard-link it onto itself: {placed:?}"
+    );
+}
+
+/// ...but a CALLER's `scratch_path` lives elsewhere and must still come in by
+/// hard link: a copy would discard the guest's writes at teardown.
+#[test]
+fn a_caller_supplied_scratch_is_still_placed_hard_link_only() {
+    let placed = jail_resources(&image(true, true), &base_spec(), false);
+    let scratch = placed
+        .iter()
+        .find(|r| r.in_jail == in_jail::SCRATCH)
+        .expect("a caller-supplied scratch must be jailed");
+    assert_eq!(
+        scratch.placement,
+        Placement::HardLinkOnly,
+        "a copied scratch loses every guest write when the jail is torn down"
+    );
+}
+
+/// Whoever made it, the drive must reach the guest — that is what puts a
+/// block device behind `/work`, at the in-jail path resolved after `chroot`.
+#[test]
+fn a_provisioned_scratch_still_reaches_the_guest_as_a_writable_drive() {
+    let drives = lower_drives(&image(true, true), true);
+    let scratch = drives
+        .iter()
+        .find(|d| d.drive_id == "scratch")
+        .expect("the scratch drive is what /work is mounted from");
+    assert_eq!(scratch.path_on_host, in_jail::SCRATCH);
+    assert!(
+        !scratch.is_read_only,
+        "a read-only scratch is the bug, not the fix"
+    );
+    assert!(!scratch.is_root_device);
+}
+
+/// No jail means nowhere to put one; a spec that names one keeps it. Both
+/// report "not node-provisioned", so a caller's file is still placed.
+#[test]
+fn scratch_for_pod_leaves_a_caller_supplied_or_jailless_image_alone() {
+    let declared = image(true, true);
+    let (out, provisioned) = scratch_for_pod(&declared, None, 123, 100);
+    assert_eq!(out.scratch_path, declared.scratch_path);
+    assert!(!provisioned, "the caller's file is not the node's to skip");
+
+    let plain = image(true, false);
+    let (out, provisioned) = scratch_for_pod(&plain, None, 123, 100);
+    assert_eq!(out.scratch_path, None, "no jail, so nothing was made");
+    assert!(!provisioned);
+}
+
+/// The fallback IS the safety property: no scratch means no scratch DRIVE, so
+/// the pod boots as before rather than dying on a drive it cannot open.
+#[test]
+fn no_scratch_means_no_drive_rather_than_a_broken_one() {
+    let drives = lower_drives(&image(true, false), true);
+    assert!(
+        !drives.iter().any(|d| d.drive_id == "scratch"),
+        "a declared drive with no file behind it would fail the boot"
+    );
+    assert_eq!(drives.len(), 1, "only the rootfs remains: {drives:?}");
 }

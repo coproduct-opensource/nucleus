@@ -170,6 +170,7 @@ impl Sandbox {
     }
 
     fn open_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<File> {
+        let path = &self.root_relative(path)?;
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -225,6 +226,7 @@ impl Sandbox {
         options: &OpenOptions,
         approval: Option<&ApprovalToken>,
     ) -> Result<File> {
+        let path = &self.root_relative(path)?;
         // OpenOptions can include write or truncation; conservatively treat as edit.
         self.check_edit_capability(path, approval)?;
         self.check_policy(path)?;
@@ -270,6 +272,7 @@ impl Sandbox {
     }
 
     fn create_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<File> {
+        let path = &self.root_relative(path)?;
         self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -312,6 +315,7 @@ impl Sandbox {
     }
 
     fn read_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<Vec<u8>> {
+        let path = &self.root_relative(path)?;
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -358,6 +362,7 @@ impl Sandbox {
         path: &Path,
         approval: Option<&ApprovalToken>,
     ) -> Result<String> {
+        let path = &self.root_relative(path)?;
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -467,6 +472,7 @@ impl Sandbox {
         contents: impl AsRef<[u8]>,
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
+        let path = &self.root_relative(path)?;
         self.check_policy(path)?;
         self.check_write_or_edit_capability(path, approval)?;
 
@@ -509,6 +515,7 @@ impl Sandbox {
     }
 
     fn create_dir_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
+        let path = &self.root_relative(path)?;
         self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -551,6 +558,7 @@ impl Sandbox {
     }
 
     fn create_dir_all_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
+        let path = &self.root_relative(path)?;
         self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -593,6 +601,7 @@ impl Sandbox {
     }
 
     fn remove_file_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
+        let path = &self.root_relative(path)?;
         self.check_edit_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -635,6 +644,7 @@ impl Sandbox {
     }
 
     fn remove_dir_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
+        let path = &self.root_relative(path)?;
         self.check_edit_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -669,6 +679,10 @@ impl Sandbox {
     }
 
     fn exists_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> bool {
+        let Ok(path) = self.root_relative(path) else {
+            return false;
+        };
+        let path = &path;
         if self.check_read_capability(path, approval).is_err() {
             return false;
         }
@@ -726,6 +740,7 @@ impl Sandbox {
     ///
     /// Returns `Err` for paths outside the sandbox or unreadable files.
     pub fn read_to_string_for_search(&self, path: &Path, authority: Authority) -> Result<String> {
+        let path = &self.root_relative(path)?;
         self.spend_as(authority, Operation::GrepSearch, SinkClass::AuditLogAppend)?;
         self.check_policy(path)?;
         self.root
@@ -733,23 +748,44 @@ impl Sandbox {
             .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
+    /// Interpret a caller-supplied path against the sandbox root.
+    ///
+    /// A relative path is returned unchanged. An absolute path that is
+    /// lexically under the root is returned with the root stripped, so the two
+    /// spellings of the same file behave identically -- which is what every
+    /// agent harness fronting this sandbox assumes, and what `/work/hello.txt`
+    /// vs `hello.txt` used to disagree about (#2787). An absolute path that is
+    /// *not* under the root keeps its refusal, and only now is the error's own
+    /// claim ("resolves outside sandbox root") true: before this, the root was
+    /// never consulted.
+    ///
+    /// Stripping cannot widen what is reachable. The result is fed through
+    /// exactly the checks a relative path already faced -- the path policy
+    /// here, and `cap-std`'s containment on the `Dir` handle at the point of
+    /// I/O, which is what actually refuses `..` traversal and symlinks out.
+    pub fn root_relative(&self, path: &Path) -> Result<PathBuf> {
+        if !path.is_absolute() {
+            return Ok(path.to_path_buf());
+        }
+        path.strip_prefix(&self.root_path)
+            .map(Path::to_path_buf)
+            .map_err(|_| NucleusError::SandboxEscape {
+                path: path.to_path_buf(),
+            })
+    }
+
     /// Check if a path is allowed by the policy.
     fn check_policy(&self, path: &Path) -> Result<()> {
-        // First, check for obvious escapes
+        // Absolute paths are interpreted against the root first; what survives
+        // is relative, or a genuine escape.
+        let path = self.root_relative(path)?;
         let path_str = path.to_string_lossy();
-
-        // Reject absolute paths
-        if path.is_absolute() {
-            return Err(NucleusError::SandboxEscape {
-                path: path.to_path_buf(),
-            });
-        }
 
         // Check against portcullis policy
         // Note: We pass the relative path to the policy checker
-        if !self.policy.can_access(path) {
+        if !self.policy.can_access(&path) {
             return Err(NucleusError::PathDenied {
-                path: path.to_path_buf(),
+                path: path.clone(),
                 reason: format!("blocked by path policy: {}", path_str),
             });
         }
@@ -882,6 +918,7 @@ impl Sandbox {
     }
 
     fn open_dir_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<Sandbox> {
+        let path = &self.root_relative(path)?;
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -1308,6 +1345,128 @@ mod tests {
             )
             .unwrap();
         assert_eq!(contents, "nested");
+    }
+
+    // ── Absolute paths under the root (#2787) ────────────────────────────
+
+    /// The measured symptom: the same file, refused by its absolute spelling
+    /// and accepted by its relative one.
+    #[test]
+    fn an_absolute_path_under_the_root_is_the_same_file_as_the_relative_one() {
+        let tmp = tempdir().unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let wt = token(&mut kernel, Operation::WriteFiles, "hello.txt");
+        sandbox
+            .write(
+                "hello.txt",
+                b"hello from the host",
+                &wt,
+                Authority::new(allowed_bundle()),
+            )
+            .unwrap();
+
+        // Read it back by the absolute spelling an agent harness would use.
+        let absolute = sandbox.root_path().join("hello.txt");
+        let rt = token(&mut kernel, Operation::ReadFiles, "hello.txt");
+        let contents = sandbox
+            .read_to_string(
+                &absolute,
+                &rt,
+                Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend)),
+            )
+            .expect("an absolute path under the root is not an escape");
+        assert_eq!(contents, "hello from the host");
+    }
+
+    /// Writing by absolute path lands in the same place as writing by relative.
+    #[test]
+    fn an_absolute_write_lands_at_the_relative_path() {
+        let tmp = tempdir().unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let absolute = sandbox.root_path().join("written.txt");
+        let wt = token(&mut kernel, Operation::WriteFiles, "written.txt");
+        sandbox
+            .write(&absolute, b"body", &wt, Authority::new(allowed_bundle()))
+            .expect("absolute write under the root should be accepted");
+
+        let rt = token(&mut kernel, Operation::ReadFiles, "written.txt");
+        let via_relative = sandbox
+            .read_to_string(
+                "written.txt",
+                &rt,
+                Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend)),
+            )
+            .unwrap();
+        assert_eq!(via_relative, "body");
+    }
+
+    /// Accepting absolute paths must not accept absolute paths that leave the
+    /// root -- including one spelled as a traversal *through* the root, which
+    /// strips to a relative `..` and must still be refused at the `Dir`.
+    #[test]
+    fn an_absolute_path_outside_the_root_is_still_refused() {
+        let tmp = tempdir().unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        // Plainly outside.
+        let rt = token(&mut kernel, Operation::ReadFiles, "/etc/passwd");
+        assert!(
+            sandbox
+                .read_to_string(
+                    "/etc/passwd",
+                    &rt,
+                    Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend)),
+                )
+                .is_err(),
+            "an absolute path outside the root must stay refused"
+        );
+
+        // Traversal that passes through the root on its way out.
+        let escaping = sandbox.root_path().join("../etc/passwd");
+        let rt2 = token(&mut kernel, Operation::ReadFiles, "../etc/passwd");
+        assert!(
+            sandbox
+                .read_to_string(
+                    &escaping,
+                    &rt2,
+                    Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend)),
+                )
+                .is_err(),
+            "stripping the root must not turn a traversal into an accepted read"
+        );
+    }
+
+    /// `root_relative` is the whole rule, and is idempotent on relative input.
+    #[test]
+    fn root_relative_strips_the_root_and_leaves_relative_paths_alone() {
+        let tmp = tempdir().unwrap();
+        let policy = permissive_policy();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        assert_eq!(
+            sandbox.root_relative(Path::new("a/b.txt")).unwrap(),
+            Path::new("a/b.txt")
+        );
+        assert_eq!(
+            sandbox
+                .root_relative(&sandbox.root_path().join("a/b.txt"))
+                .unwrap(),
+            Path::new("a/b.txt")
+        );
+        // The root itself is the empty relative path, not an escape.
+        assert_eq!(
+            sandbox.root_relative(sandbox.root_path()).unwrap(),
+            Path::new("")
+        );
+        assert!(sandbox.root_relative(Path::new("/etc/passwd")).is_err());
     }
 }
 

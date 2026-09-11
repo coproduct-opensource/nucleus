@@ -35,6 +35,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Emit explicit Lean-action targets for the library coverage gate.
+    LeanActionBuilds {
+        /// Limit output to one workflow, for its per-theorem audit.
+        #[arg(long)]
+        workflow: Option<std::path::PathBuf>,
+    },
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
     /// The two pins naming gatehouse must agree: `.gatehouse/pipeline.writ`'s import
@@ -70,6 +76,15 @@ enum Command {
     /// The committed `POOLS` default in ci/fly-runner/manager.toml must be a
     /// configuration the manager accepts, checked with the manager's own validator.
     FlyPools,
+    /// The scan-vs-allowlist family, decided once instead of by five copies of the same
+    /// `#[cfg(test)]`-stripping awk program. Adds what the copies cannot say: a pattern that
+    /// matches nothing has stopped watching, and an allowlist may only shrink.
+    AllowlistGates {
+        /// Compare this harness with the shell gate it replaces, script by script. The port is
+        /// only worth having if it decides the same thing.
+        #[arg(long)]
+        parity: bool,
+    },
     /// Every source Kani harness must have a CI lane or a named documented exception.
     KaniCoverage,
     /// A mechanism declared dead in `scripts/law-mechanisms-manifest.txt` must
@@ -240,6 +255,7 @@ enum CiSpecCmd {
     },
 }
 
+mod allowlist_gates;
 mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
@@ -249,6 +265,7 @@ mod gatehouse_pin;
 mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
+mod lean_action_builds;
 mod line_ratchet;
 mod pin_parity;
 mod rerun_plan;
@@ -258,6 +275,7 @@ mod self_pin;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {
             base,
@@ -275,6 +293,14 @@ fn main() -> Result<()> {
         },
         Command::PinParity => pin_parity::check(&std::env::current_dir()?),
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
+        Command::AllowlistGates { parity } => {
+            let root = std::env::current_dir()?;
+            if parity {
+                allowlist_gates::parity(&root)
+            } else {
+                allowlist_gates::check(&root)
+            }
+        }
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
         // Exit code mapped here rather than inside the check, so a unit test
         // calling `run()` survives — the SelfPin arm's reasoning.
