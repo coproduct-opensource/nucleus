@@ -34,3 +34,7 @@ toml = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 regex = { workspace = true }
+
+[dev-dependencies]
+# `clippy-config` builds throwaway trees to drive its own gate red.
+tempfile = { workspace = true }

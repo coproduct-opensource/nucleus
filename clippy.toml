@@ -29,4 +29,19 @@ disallowed-methods = [
     # every consumer, which is the affine discipline of C-4 defeated by other
     # means. Measured 2026-09-11: 0 occurrences.
     { path = "std::vec::Vec::leak", reason = "ADR 0007 C-5: defeats the consuming discipline; pass the value" },
+
+    # H-1 — no `std::env::set_var` or `std::env::remove_var`.
+    # `7caaa1a8`: a value intended for one scope written into ambient global
+    # state, so every later reader in the process tree inherits authority nobody
+    # granted them. `nucleus-guest-init/src/main.rs:88` records that 28 values
+    # used to be `set_var` before that crate did this migration.
+    #
+    # Production is already clean -- measured 2026-09-11 and re-measured here,
+    # 0 production call sites. Every remaining site is inside `#[cfg(test)]`,
+    # where process-global mutation is the subject under test rather than an
+    # ambient grant, and each carries an `#[expect]` naming this rule. Because
+    # CI runs `--all-targets`, those `#[expect]`s are what let this entry be
+    # wired at all.
+    { path = "std::env::set_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },
+    { path = "std::env::remove_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },
 ]
