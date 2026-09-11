@@ -236,6 +236,18 @@ impl std::fmt::Display for WrongPod {
 
 impl std::error::Error for WrongPod {}
 
+/// Using another pod's capability is a driver refusal, at every call site.
+///
+/// Here rather than at each `?`, so a new consumer of these tokens gets the
+/// refusal without writing a `map_err` — and so `main.rs`, which sits exactly
+/// at its line ceiling, does not pay three lines for a conversion that belongs
+/// to the error's own module.
+impl From<WrongPod> for crate::ApiError {
+    fn from(e: WrongPod) -> Self {
+        Self::Driver(format!("not this pod's broker capability: {e}"))
+    }
+}
+
 impl ServeToken {
     /// Consume the token, yielding the value served to the guest exactly once.
     ///
@@ -441,9 +453,7 @@ pub fn start_broker_for_pod(
             // Refused rather than started with the wrong pod's capability: a
             // verifier holding another pod's secret would authenticate that
             // pod's proxy against this pod's broker.
-            broker_secret: capability.into_verifier(id).map_err(|e| {
-                crate::ApiError::Driver(format!("broker capability is not this pod's: {e}"))
-            })?,
+            broker_secret: capability.into_verifier(id)?,
         },
         jail_owner,
     ) {
