@@ -46,7 +46,7 @@
 
 use crate::{Error, Result, oid};
 use chrono::{DateTime, Utc};
-use ring::digest::{SHA256, digest};
+use ring::digest::{Context, SHA256, digest};
 use std::path::Path;
 
 /// SHA-256 hash (32 bytes).
@@ -597,15 +597,37 @@ pub async fn measure_artifact(path: &Path) -> Result<Hash256> {
     hash_file(path).await
 }
 
-/// Computes SHA-256 hash of a file.
+/// Computes SHA-256 hash of a file, a chunk at a time.
+///
+/// Streamed rather than read whole, because what this measures are microVM images. A 1 GiB
+/// rootfs through `tokio::fs::read` is a 1 GiB allocation on the launch path — and on a pod that
+/// carries a posture claim it happened TWICE, once for the posture gate and once for the launch
+/// attestation, neither knowing the other had just read the same file. The digest is identical
+/// either way; only the peak differs.
 async fn hash_file(path: &Path) -> Result<Hash256> {
-    let contents = tokio::fs::read(path).await.map_err(|e| {
+    use tokio::io::AsyncReadExt as _;
+
+    let io = |e: std::io::Error| {
         Error::Io(std::io::Error::new(
             e.kind(),
             format!("failed to read {}: {}", path.display(), e),
         ))
-    })?;
-    Ok(hash_bytes(&contents))
+    };
+    let mut file = tokio::fs::File::open(path).await.map_err(io)?;
+    let mut ctx = Context::new(&SHA256);
+    // A mebibyte: big enough that the read syscalls disappear against the hashing, small enough
+    // that the buffer is not itself the allocation this exists to avoid.
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf).await.map_err(io)?;
+        if n == 0 {
+            break;
+        }
+        ctx.update(&buf[..n]);
+    }
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(ctx.finish().as_ref());
+    Ok(hash)
 }
 
 /// Computes SHA-256 hash of bytes.
@@ -800,6 +822,41 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    /// Streaming must not change the answer, including across chunk boundaries.
+    ///
+    /// `hash_file` reads a mebibyte at a time. A digest that were computed per chunk instead of
+    /// over the concatenation would agree with the one-shot answer for every file smaller than
+    /// the buffer and disagree for every file larger than it — which is to say it would pass a
+    /// careless test and mismeasure every real rootfs.
+    #[tokio::test]
+    async fn streaming_a_file_hashes_it_exactly_as_reading_it_whole_does() {
+        for len in [
+            0usize,
+            1,
+            4096,
+            (1 << 20) - 1, // one byte short of the buffer
+            1 << 20,       // exactly the buffer
+            (1 << 20) + 1, // one byte over: the first file that needs a second read
+            (3 << 20) + 7, // several reads, last one partial
+        ] {
+            // Deterministic, non-repeating: a buffer bug that dropped or reordered a chunk
+            // could hide behind uniform bytes.
+            // `i % 251` is 0..=250, so the cast is lossless by construction; 251 is prime, which
+            // is what makes the pattern non-repeating across the buffer boundary above.
+            #[allow(clippy::cast_possible_truncation)]
+            let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let mut f = NamedTempFile::new().unwrap();
+            f.write_all(&bytes).unwrap();
+            f.flush().unwrap();
+
+            assert_eq!(
+                hash_file(f.path()).await.unwrap(),
+                hash_bytes(&bytes),
+                "streamed and one-shot digests differ at {len} bytes"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_attestation_compute() {

@@ -35,8 +35,24 @@ ROOTFS="${ROOTFS:-$FC_DIR/rootfs.ext4}"
 NODE_BIN="${NODE_BIN:-$FC_DIR/nucleus-node}"
 STATE_DIR="${STATE_DIR:-$FC_DIR/state}"
 NODE_ADDR="${NODE_ADDR:-127.0.0.1:9900}"
-AUTH_SECRET="${AUTH_SECRET:-harness-node-secret}"
 PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET:-harness-proxy-secret}"
+
+# The node's API is mTLS with SPIFFE, and this harness has to speak it.
+#
+# It used to sign requests with HMAC and pass the node `--auth-secret`. Move B
+# deleted that tier — `crates/nucleus-node/src/auth.rs` says so plainly: "mTLS
+# with SPIFFE is the only authentication method left" — and this script was not
+# updated, so it has been failing at its first step ever since, on an argument
+# the node no longer accepts. Nothing noticed because no workflow runs it; it is
+# named only in `docs/production-delta.md`, which still lists it Done and
+# Verified. A harness that exists to stop defects hiding behind a green suite
+# spent that time being one.
+#
+# The fix needs no new trust: the node mints its own CA into the state dir at
+# startup, so the harness signs itself a client certificate with it and presents
+# the `ns/system/sa/cli` identity — the same one `nucleus setup` provisions, and
+# an EXACT match in `auth.rs`, not a prefix.
+CLI_SPIFFE="${CLI_SPIFFE:-spiffe://nucleus.local/ns/system/sa/cli}"
 
 die() { echo "boot-harness: $*" >&2; exit 1; }
 
@@ -65,10 +81,10 @@ sudo -b env RUST_LOG="${RUST_LOG:-info}" \
     NUCLEUS_FIRECRACKER_PATH="$(command -v firecracker)" \
     NUCLEUS_FIRECRACKER_NETNS=false \
     NUCLEUS_FIRECRACKER_JAILER=false \
+    NUCLEUS_FIRECRACKER_API_BOOT="${NUCLEUS_FIRECRACKER_API_BOOT:-false}" \
     "$NODE_BIN" \
     --listen "$NODE_ADDR" \
     --state-dir "$STATE_DIR" \
-    --auth-secret "$AUTH_SECRET" \
     --proxy-auth-secret "$PROXY_AUTH_SECRET" \
     --proxy-approval-secret harness-approval-secret \
     --identity-workload-api-socket "$FC_DIR/wapi.sock" \
@@ -85,23 +101,44 @@ cat > "$FC_DIR/harness-pod.json" <<JSON
    "vsock":{"guest_cid":3,"port":5005}}}
 JSON
 
+# Sign the harness a client identity with the node's own CA.
+#
+# The node writes `ca/ca-{cert,key}.pem` into the state dir as it starts, so this
+# has to come after the node is up, not before. The SAN is what matters: the node
+# reads the SPIFFE ID out of the URI SAN, not the subject.
+echo "boot-harness: minting a client identity"
+CA_DIR="$STATE_DIR/ca"
+sudo test -s "$CA_DIR/ca-key.pem" || die "the node did not write a CA into $CA_DIR"
+sudo cp "$CA_DIR/ca-cert.pem" "$CA_DIR/ca-key.pem" "$FC_DIR/"
+sudo chown "$(id -u)" "$FC_DIR/ca-cert.pem" "$FC_DIR/ca-key.pem"
+cat > "$FC_DIR/san.cnf" <<CNF
+[req]
+distinguished_name=dn
+[dn]
+[v3]
+subjectAltName=URI:$CLI_SPIFFE
+extendedKeyUsage=clientAuth
+CNF
+openssl genrsa -out "$FC_DIR/client-key.pem" 2048 2>/dev/null
+openssl req -new -key "$FC_DIR/client-key.pem" -subj "/CN=cli/OU=system" \
+    -out "$FC_DIR/client.csr" 2>/dev/null
+openssl x509 -req -in "$FC_DIR/client.csr" -CA "$FC_DIR/ca-cert.pem" \
+    -CAkey "$FC_DIR/ca-key.pem" -CAcreateserial -days 1 \
+    -extfile "$FC_DIR/san.cnf" -extensions v3 -out "$FC_DIR/client-cert.pem" 2>/dev/null
+[ -s "$FC_DIR/client-cert.pem" ] || die "could not sign a client certificate"
+
 echo "boot-harness: creating a pod"
-python3 - "$FC_DIR/harness-pod.json" "$AUTH_SECRET" "$NODE_ADDR" <<'PY'
-import hmac, hashlib, sys, time, urllib.request, urllib.error
-spec, secret, addr = sys.argv[1], sys.argv[2].encode(), sys.argv[3]
-body = open(spec, "rb").read()
-ts, actor = str(int(time.time())), "boot-harness"
-# The node signs HMAC(secret, "{timestamp}.{actor}.{body}") — see nucleus_node::auth.
-sig = hmac.new(secret, ts.encode() + b"." + actor.encode() + b"." + body, hashlib.sha256).hexdigest()
-req = urllib.request.Request(
-    f"http://{addr}/v1/pods", data=body, method="POST",
-    headers={"content-type": "application/json", "x-nucleus-timestamp": ts,
-             "x-nucleus-actor": actor, "x-nucleus-signature": sig})
-try:
-    print("boot-harness: CREATE", urllib.request.urlopen(req, timeout=120).status)
-except urllib.error.HTTPError as e:
-    print("boot-harness: CREATE", e.code, e.read().decode()[:400]); sys.exit(1)
-PY
+# `-k` skips verifying the SERVER, whose certificate is a SPIFFE URI SAN with no
+# `127.0.0.1` in it — correct for SPIFFE and unverifiable by hostname. The client
+# half is real: without `--cert`/`--key` the node closes the connection.
+CODE=$(curl -sk --cert "$FC_DIR/client-cert.pem" --key "$FC_DIR/client-key.pem" \
+    -X POST "https://$NODE_ADDR/v1/pods" -H "content-type: application/json" \
+    --data-binary @"$FC_DIR/harness-pod.json" \
+    -o "$FC_DIR/create.out" -w "%{http_code}" --max-time 120) || true
+echo "boot-harness: CREATE $CODE"
+if [ "$CODE" != "200" ] && [ "$CODE" != "201" ]; then
+    head -c 400 "$FC_DIR/create.out"; echo; die "pod creation failed"
+fi
 
 echo
 echo "boot-harness: what the guest did"

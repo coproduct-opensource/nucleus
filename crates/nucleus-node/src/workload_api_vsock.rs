@@ -67,6 +67,14 @@ pub struct WorkloadApiVsockBridge {
     /// The pod ID this bridge serves (used for unique identity per pod).
     #[allow(dead_code)]
     pod_id: uuid::Uuid,
+    /// The material this bridge serves, kept so the HOST can read what it has served.
+    ///
+    /// Specifically `at_snapshot_barrier` and `personalized`: both are recorded here as a side
+    /// effect of answering the guest, and `snapshot::clone_safety` needs both to say whether this
+    /// microVM may be a base. Without this field the flags exist only inside the accept loop's
+    /// closure — set correctly, readable by nobody, which is how a safety gate ends up with no
+    /// production caller.
+    material: std::sync::Arc<PodMaterial>,
 }
 
 /// The pod-scoped DLC-D admission provisioning served over `FETCH_DLC_ADMISSION`
@@ -195,6 +203,24 @@ pub struct PodMaterial {
     /// The mediator SPIFFE id carried in emitted receipts. `None` disables the
     /// signer even if a key is present.
     pub mediation_spiffe_id: Option<String>,
+    /// Whether the guest has announced it is at its snapshot barrier — booted, and having asked
+    /// for nothing that would make it one pod.
+    ///
+    /// Paired with `personalized`, these answer the two halves a snapshot base needs: far enough
+    /// along to be useful, not far enough along to be somebody. Neither alone is sufficient, and
+    /// the host cannot infer the first on its own.
+    pub at_snapshot_barrier: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether this VM has been made one particular pod.
+    ///
+    /// Set the first time a command that serves per-pod material is answered — see
+    /// [`crate::workload_api_protocol::WorkloadApiCommand::personalizes_the_vm`]. Shared across
+    /// connections, like the one-shot flags, because personalisation is a property of the VM and
+    /// not of a socket.
+    ///
+    /// It exists so a snapshot can be REFUSED without asking the guest anything. The guest is
+    /// the thing being contained; a barrier it declares is a claim, whereas this is the host's
+    /// own record of what it handed over.
+    pub personalized: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Whether the mediation key has been served — one flag across connections,
     /// for the same reason as `broker_secret_served`.
     pub mediation_key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -251,6 +277,9 @@ impl WorkloadApiVsockBridge {
         // fields are read-only anyway — the one-shot flags inside are already
         // their own `Arc<AtomicBool>`s, so sharing the bundle shares them.
         let material = std::sync::Arc::new(material);
+        // Kept out of the accept loop's capture: the loop OWNS its clone, and the bridge needs
+        // one that outlives a shutdown of the loop.
+        let material_for_bridge = std::sync::Arc::clone(&material);
         // Cloned before the accept loop takes ownership.
         let identity_manager_for_spiffe = identity_manager.clone();
         // Firecracker naming convention: {uds_path}_{port}
@@ -368,6 +397,7 @@ impl WorkloadApiVsockBridge {
             socket_path,
             pod_id,
             spiffe,
+            material: material_for_bridge,
         })
     }
 
@@ -456,6 +486,16 @@ impl WorkloadApiVsockBridge {
     #[allow(dead_code)]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    /// What this bridge has served, as the host recorded it.
+    ///
+    /// The two facts a snapshot decision needs — did the guest reach its barrier, and has anything
+    /// per-pod been handed over since — are answered from the HOST's own record of what it sent,
+    /// never from a guest declaration. The guest is the thing being contained.
+    #[allow(dead_code)]
+    pub fn material(&self) -> &std::sync::Arc<PodMaterial> {
+        &self.material
     }
 
     /// Shuts down the bridge.
@@ -669,7 +709,18 @@ async fn handle_connection(
         // ALL interpretation of guest-supplied bytes happens in the pure,
         // fuzz- and property-tested `parse_command`. The host never branches on
         // raw guest input directly.
-        let response = match parse_command(&frame) {
+        let parsed = parse_command(&frame);
+        // Record personalisation BEFORE answering: if serving it panics or the connection dies
+        // mid-reply, the guest may still have received enough to be this pod, and a snapshot
+        // must not be able to slip through that window.
+        if let Ok(cmd) = &parsed
+            && cmd.personalizes_the_vm()
+        {
+            material
+                .personalized
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let response = match parsed {
             Ok(WorkloadApiCommand::FetchSvid) => {
                 debug!("workload API FETCH_SVID for pod {}", pod_id);
                 handle_fetch_svid(&manager, pod_id).await
@@ -730,6 +781,16 @@ async fn handle_connection(
                     material.mediation_spiffe_id.as_deref(),
                     &material.mediation_key_served,
                 )
+            }
+            Ok(WorkloadApiCommand::SnapshotReady) => {
+                debug!("workload API SNAPSHOT_READY for pod {}", pod_id);
+                // Recorded, not acted on. Taking the snapshot here would make every boot wait on
+                // a decision only the operator has, so the guest is told to carry on and the
+                // host keeps the fact for whoever asks to snapshot later.
+                material
+                    .at_snapshot_barrier
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                r#"{"status":"ok"}"#.to_string()
             }
             Ok(WorkloadApiCommand::PodList) => {
                 debug!("workload API POD_LIST for pod {}", pod_id);
