@@ -38,6 +38,8 @@ const MANAGER_TOML: &str = "ci/fly-runner/manager.toml";
 const README: &str = "ci/fly-runner/README.md";
 /// How many `(pool, field)` pairs the README and the TOML may still disagree on. Shrink-only.
 const DRIFT: &str = "ci/fly-pools-drift.txt";
+/// The other config the same README restates numbers from.
+const QUEUE_TOML: &str = "ci/merge-queue.toml";
 
 /// The `POOLS = '...'` value, as the manager would receive it.
 pub fn pools_json(manager_toml: &str) -> Result<String> {
@@ -173,6 +175,61 @@ fn readme_agrees(root: &Path, pools: &[ci_fly_runner::PoolSpec]) -> Result<()> {
         "OK: {rows} pool(s) compared against {README}; {} still disagree (pin {pin})",
         drift.len()
     );
+    readme_queue_constants(root, &text)
+}
+
+/// The same README also restates merge-queue constants, and nothing compared those either.
+///
+/// `ci/fly-runner/README.md` explains the queue's throughput by quoting `max_entries_to_build = 1`
+/// from `ci/merge-queue.toml`. `ci-spec live-parity` compares that TOML against the LIVE ruleset; no
+/// gate reads this README at all. So raising the constant — which was tried and reverted earlier,
+/// per merge-queue.toml's own note — would leave the prose saying 1 with nothing to notice.
+///
+/// **This half is preventive, and that is worth saying plainly.** The pool comparison above found
+/// four live disagreements; these two values agree today. A gate half that has never been red on a
+/// real defect is a weaker thing than one that has, and the honest place to record which is which is
+/// here rather than in a commit message nobody re-reads.
+///
+/// The value is quoted across a LINE WRAP — `max_entries_to_build` ending one line and `= 1`
+/// starting the next — which is why a naive grep misses it and why this class of drift survives.
+/// The scan normalises whitespace before matching, deliberately.
+fn readme_queue_constants(root: &Path, readme: &str) -> Result<()> {
+    let toml = fs::read_to_string(root.join(QUEUE_TOML))
+        .with_context(|| format!("reading {QUEUE_TOML}"))?;
+    let joined: String = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut checked = 0usize;
+    for key in ["max_entries_to_build"] {
+        let Some(declared) = toml
+            .lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix(key))
+            .and_then(|r| r.trim_start().strip_prefix('='))
+            .and_then(|r| r.trim().parse::<usize>().ok())
+        else {
+            bail!("{QUEUE_TOML} states no {key} — the constant this README quotes is gone");
+        };
+        let Some(after) = joined.split(key).nth(1) else {
+            bail!("{README} no longer quotes {key}; drop this check or restore the sentence");
+        };
+        let claimed = after
+            .trim_start()
+            .strip_prefix('=')
+            .map(str::trim_start)
+            .and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|n| n.parse::<usize>().ok());
+        match claimed {
+            None => bail!("{README} quotes {key} without a value"),
+            Some(c) if c != declared => bail!(
+                "{README} says {key} = {c}, {QUEUE_TOML} says {declared} — the prose explaining the \
+                 queue's throughput disagrees with the queue's configuration"
+            ),
+            Some(_) => checked += 1,
+        }
+    }
+    if checked == 0 {
+        bail!("no merge-queue constant was compared — the check examined nothing");
+    }
+    println!("OK: {checked} merge-queue constant(s) in {README} agree with {QUEUE_TOML}");
     Ok(())
 }
 
