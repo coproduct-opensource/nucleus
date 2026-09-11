@@ -562,6 +562,147 @@ mod tests {
         );
     }
 
+    // ── The census over a corpus ──────────────────────────────────────
+
+    fn corpus(src: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([("crates/demo/src/lib.rs".to_string(), src.to_string())])
+    }
+
+    #[test]
+    fn the_census_counts_bound_and_dropped_sites_per_file() {
+        let c = census(
+            &corpus(
+                "fn a(authority: Authority) {}\n\
+                 fn b(_authority: Authority) {}\n\
+                 fn c(x: String) {}\n",
+            ),
+            &witness(),
+        );
+        let file = &c["crates/demo/src/lib.rs"];
+        assert_eq!(file.bound, 1);
+        assert_eq!(file.dropped, 1);
+        assert_eq!(file.declared(), 2, "a non-witness parameter is not a site");
+    }
+
+    #[test]
+    fn the_census_skips_the_test_region() {
+        // A witness dropped inside `#[cfg(test)]` is not a production gate that
+        // decides nothing; counting it would make every crate look worse for
+        // having tests.
+        let c = census(
+            &corpus(
+                "fn a(authority: Authority) {}\n\
+                 #[cfg(test)]\n\
+                 mod tests {\n    fn t(_authority: Authority) {}\n}\n",
+            ),
+            &witness(),
+        );
+        let file = &c["crates/demo/src/lib.rs"];
+        assert_eq!(file.dropped, 0, "the test-only drop is out of scope");
+        assert_eq!(file.bound, 1);
+    }
+
+    #[test]
+    fn total_sums_every_file() {
+        let per_file = BTreeMap::from([
+            (
+                "a.rs".to_string(),
+                Census {
+                    bound: 3,
+                    dropped: 1,
+                },
+            ),
+            (
+                "b.rs".to_string(),
+                Census {
+                    bound: 5,
+                    dropped: 2,
+                },
+            ),
+        ]);
+        let t = total(&per_file);
+        assert_eq!(t.bound, 8);
+        assert_eq!(t.dropped, 3);
+        assert_eq!(t.declared(), 11);
+    }
+
+    // ── The report, and the cross-check that ties it to INERT_TOTAL ───
+
+    fn manifest_of(text: &str) -> crate::inert_authority::Manifest {
+        crate::inert_authority::parse(text).expect("the fixture manifest parses")
+    }
+
+    #[test]
+    fn the_report_excuses_class_n_sites_from_both_terms() {
+        let m = manifest_of(
+            "WITNESS = [\n\"Authority\",\n]\n\
+             N | crates/demo/src/lib.rs | <free> | 1 | a double, no act performed\n\
+             INERT_TOTAL=1\n",
+        );
+        let (rep, _) = report(
+            &corpus("fn a(authority: Authority) {}\nfn b(_authority: Authority) {}\n"),
+            &m,
+        )
+        .expect("the census agrees with the pin");
+        assert_eq!(rep.raw.declared(), 2);
+        assert_eq!(rep.excused, 1);
+        // The excused site leaves BOTH terms: 1 of 1, not 1 of 2.
+        assert_eq!(rep.net().declared(), 1);
+        assert_eq!(rep.net().dropped, 0);
+        assert_eq!(rep.net().basis_points(), 10_000);
+    }
+
+    #[test]
+    fn a_census_disagreeing_with_inert_total_is_refused_not_reported() {
+        // Two scans over one population that disagree means at least one is
+        // wrong, and the ratio would come from the wrong denominator either way.
+        let m = manifest_of("WITNESS = [\n\"Authority\",\n]\nINERT_TOTAL=0\n");
+        let err = report(&corpus("fn b(_authority: Authority) {}\n"), &m)
+            .expect_err("1 dropped against a pin of 0")
+            .to_string();
+        assert!(err.contains("INERT_TOTAL"), "{err}");
+        assert!(
+            err.contains("bind the witness"),
+            "says how to fix it: {err}"
+        );
+    }
+
+    // ── Every finding says what to do about it ────────────────────────
+
+    #[test]
+    fn fell_names_both_ratios() {
+        let m = Finding::Fell {
+            found_bp: 9_883,
+            floor_bp: 9_941,
+        }
+        .to_string();
+        assert!(m.contains("98.83%") && m.contains("99.41%"), "{m}");
+    }
+
+    #[test]
+    fn shrank_says_the_deletion_may_be_deliberate() {
+        let m = Finding::Shrank {
+            found: 171,
+            floor: 172,
+        }
+        .to_string();
+        assert!(m.contains("declared_floor"), "names the pin to lower: {m}");
+        assert!(m.contains("dated note"), "{m}");
+    }
+
+    #[test]
+    fn slack_cites_the_rule_it_enforces() {
+        let m = Finding::Slack {
+            found_bp: 9_942,
+            floor_bp: 9_941,
+        }
+        .to_string();
+        assert!(
+            m.contains("I-1"),
+            "a floor with slack has stopped gating: {m}"
+        );
+    }
+
     #[test]
     fn the_committed_ratchet_parses_and_pins_both_terms() {
         // The gate's own configuration is a subject, not an assumption: a
