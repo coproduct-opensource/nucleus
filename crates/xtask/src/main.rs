@@ -97,6 +97,10 @@ enum Command {
     /// The committed `POOLS` default in ci/fly-runner/manager.toml must be a
     /// configuration the manager accepts, checked with the manager's own validator.
     FlyPools,
+    /// A workflow step that runs `git push` must carry its own credential, rather than
+    /// the one `actions/checkout` left behind — that one is wired with `includeIf.gitdir`
+    /// and depends on the runner's filesystem layout. Decided from the workflows alone.
+    PushAuth,
     /// A claim's falsifier must produce a REQUIRED context. A gate CI runs, that goes red, and
     /// that the merge queue merges past anyway enforces nothing — it is a red light beside an
     /// open gate. Ratcheted, not driven to zero: whether a given check should be required is a
@@ -305,6 +309,7 @@ mod law_mechanisms;
 mod lean_action_builds;
 mod line_ratchet;
 mod pin_parity;
+mod push_auth;
 mod rerun_plan;
 mod schedule_liveness;
 mod scoreboard;
@@ -343,6 +348,7 @@ fn main() -> Result<()> {
             code => std::process::exit(code),
         },
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
+        Command::PushAuth => push_auth::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;

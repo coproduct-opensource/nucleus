@@ -607,6 +607,14 @@ perturb_allowlist_pin() {
     awk '{ if ($0 ~ /^mediation\/net=/) print "mediation/net=255"; else print }' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
 }
 
+perturb_push_auth_strip() {
+    # Take the push's own credential away, leaving it to rely on whatever actions/checkout
+    # left behind -- the live 2026-09-11 state. Deletes by matching the COMMAND, never the
+    # token expression: a probe keyed on a literal value stops perturbing silently when its
+    # subject moves, which is the 2026-09-07 incident this file already records.
+    sed -i.bak '/git remote set-url origin/d' "$1" && rm -f "$1.bak"
+}
+
 perturb_fly_pool_volumes() {
     # The exact configuration the manager refuses, and the one that was committed:
     # requires_volume with no volumes for eight machines, so the machines past the
@@ -624,6 +632,8 @@ probe_xtask allowlist-gates ci/allowlist-gates.txt \
     "an allowlist grown past its pinned size" perturb_allowlist_pin
 probe_xtask fly-pools ci/fly-runner/manager.toml \
     "the committed POOLS default the manager refuses" perturb_fly_pool_volumes
+probe_xtask push-auth .github/workflows/clippy-ratchet.yml \
+    "a CI push relying on the checkout's ambient credential" perturb_push_auth_strip
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet

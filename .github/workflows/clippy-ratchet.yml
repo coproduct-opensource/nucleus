@@ -145,6 +145,13 @@ jobs:
           # branch outlives the PR and a plain push is rejected with "fetch
           # first" on EVERY later push to main — which is how this job was red
           # for a full day with four orphaned chore/clippy-ratchet-* branches.
+          # Authenticate the push explicitly instead of relying on the credential
+          # actions/checkout left behind. That one is wired with `includeIf.gitdir`, which
+          # matches on the PATH the git directory is reached by -- and entrypoint.sh
+          # symlinks /home/runner/_work onto the mounted volume, so the workspace has two
+          # names and the push resolved the one the credential was not written for:
+          # `fatal: could not read Username for 'https://github.com'`, 34 runs in a row.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push -f -u origin "$BRANCH"
 
           gh pr create \

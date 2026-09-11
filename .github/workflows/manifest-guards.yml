@@ -109,6 +109,14 @@ jobs:
       - name: The committed runner-pool default is one the manager accepts
         run: cargo run -q -p xtask -- fly-pools
 
+      # `actions/checkout` leaves a credential wired with `includeIf.gitdir`, which matches on
+      # the PATH the git directory is reached by. entrypoint.sh symlinks /home/runner/_work onto
+      # the mounted volume, so the workspace has two names and a push can resolve the one the
+      # credential was not written for. The clippy ratchet failed that way 34 runs in a row --
+      # green on every PR the whole time, because the pushing job only runs on `push` to main.
+      - name: Every `git push` in CI carries its own credential
+        run: cargo run -q -p xtask -- push-auth
+
       # Seven scan-vs-allowlist gates lived in four shell scripts, each with its own copy
       # of the same `#[cfg(test)]`-stripping awk program -- five copies, four of them
       # differing byte-for-byte, one carrying a false negative its own comment names. This
