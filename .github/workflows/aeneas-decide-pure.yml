@@ -226,6 +226,8 @@ jobs:
       # --- Auto-commit the regenerated Lean back to the branch ---
       # [skip ci] prevents a regenerate->push->regenerate loop.
       - name: Commit regenerated decide_pure extraction
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -248,5 +250,8 @@ jobs:
           # GITHUB_TOKEN-created PR would never trigger the required
           # checks. So: push a bot branch and surface a notice; a human
           # (or operator tooling with user credentials) opens the PR.
+          # Own credential, not the checkout's: see clippy-ratchet.yml for the
+          # `includeIf.gitdir` / symlinked-workspace failure this avoids.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force origin "HEAD:refs/heads/bot/decide-pure-extraction"
           echo "::notice::decide_pure extraction drifted — pushed to bot/decide-pure-extraction; open a PR from that branch to land it (direct push to ${GITHUB_REF_NAME} is blocked by branch protection)."

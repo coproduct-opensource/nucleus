@@ -516,8 +516,15 @@ jobs:
         if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         env:
           VERSION: ${{ steps.shas.outputs.version }}
+          TAP: ${{ secrets.HOMEBREW_TAP }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
         run: |
           cd tap
           git add Formula/nucleus-node.rb
           git commit -m "nucleus-node ${VERSION}"
+          # Own credential, not the checkout's -- see clippy-ratchet.yml. This job runs
+          # GitHub-hosted today, where the checkout credential does apply; the rule is
+          # unconditional because `runs-on` elsewhere is a repository VARIABLE, changeable
+          # with no commit, so "which runner" is not a fact the tree can rely on.
+          git remote set-url origin "https://x-access-token:${TAP_TOKEN}@github.com/${TAP}.git"
           git push
