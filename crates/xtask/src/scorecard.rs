@@ -161,6 +161,7 @@ pub fn families() -> Vec<Box<dyn Family>> {
         Box::new(Bound),
         Box::new(crate::alg::Alg),
         Box::new(crate::tot::Tot),
+        Box::new(crate::life::Life),
     ]
 }
 
@@ -174,6 +175,20 @@ pub struct Pin {
     pub floor_bp: u32,
     /// Minimum `population`. A shrinking surface is a decision, not a win.
     pub population_floor: usize,
+    /// This family measures zero and `floor_bp = 0` records that, rather than
+    /// leaving the ratio unpinned.
+    ///
+    /// A zero floor normally means a gate that passes for every tree, and it is
+    /// refused. It is admissible here for one reason: **a zero in this schema is
+    /// still gated from both sides.** `population_floor` keeps the denominator
+    /// from shrinking, and `Slack` fires the moment the ratio rises above the
+    /// pin — so the first obligation a family discharges turns the gate red and
+    /// demands the pin be raised to meet it. A measured zero cannot sit quietly
+    /// at zero while work happens.
+    ///
+    /// Requiring the key makes it a deliberate sentence in the ratchet rather
+    /// than a value someone left out.
+    pub measured_zero: bool,
 }
 
 /// Parse `.scorecard-ratchet.toml`: `[family.<name>]` sections, two keys each.
@@ -185,6 +200,7 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
     let mut current: Option<String> = None;
     let mut floor_bp: Option<u32> = None;
     let mut population_floor: Option<usize> = None;
+    let mut measured_zero = false;
 
     // Close the section under construction, if any.
     fn close(
@@ -192,6 +208,7 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
         name: &Option<String>,
         floor_bp: Option<u32>,
         population_floor: Option<usize>,
+        measured_zero: bool,
     ) -> Result<()> {
         let Some(name) = name else { return Ok(()) };
         let floor_bp = floor_bp.with_context(|| {
@@ -204,8 +221,19 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
                  while the ratio rises."
             )
         })?;
-        if floor_bp == 0 {
-            bail!("[family.{name}] floor_bp=0 passes for every tree, including an empty one");
+        if floor_bp == 0 && !measured_zero {
+            bail!(
+                "[family.{name}] floor_bp=0 leaves the ratio unpinned. If the family genuinely \
+                 measures zero, say so with `measured_zero = true`: the zero is still gated from \
+                 both sides — population_floor keeps the denominator honest, and the first \
+                 obligation discharged trips the slack check and forces the pin up."
+            );
+        }
+        if floor_bp > 0 && measured_zero {
+            bail!(
+                "[family.{name}] carries measured_zero = true with floor_bp={floor_bp}. The \
+                 acknowledgement is stale: the family is no longer at zero, so delete the key."
+            );
         }
         if floor_bp > 10_000 {
             bail!("[family.{name}] floor_bp={floor_bp} exceeds 10000bp; the gate could never pass");
@@ -219,6 +247,7 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
                 Pin {
                     floor_bp,
                     population_floor,
+                    measured_zero,
                 },
             )
             .is_some()
@@ -234,9 +263,16 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
             continue;
         }
         if let Some(header) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            close(&mut out, &current, floor_bp, population_floor)?;
+            close(
+                &mut out,
+                &current,
+                floor_bp,
+                population_floor,
+                measured_zero,
+            )?;
             floor_bp = None;
             population_floor = None;
+            measured_zero = false;
             let name = header.strip_prefix("family.").with_context(|| {
                 format!(
                     "line {}: only [family.<name>] sections are allowed",
@@ -272,10 +308,24 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
                     format!("line {}: population_floor is not a number", lineno + 1)
                 })?);
             }
+            "measured_zero" => {
+                measured_zero = value.parse().with_context(|| {
+                    format!(
+                        "line {}: measured_zero is not `true` or `false`",
+                        lineno + 1
+                    )
+                })?;
+            }
             other => bail!("line {}: unknown key `{other}`", lineno + 1),
         }
     }
-    close(&mut out, &current, floor_bp, population_floor)?;
+    close(
+        &mut out,
+        &current,
+        floor_bp,
+        population_floor,
+        measured_zero,
+    )?;
 
     if out.is_empty() {
         bail!("{RATCHET} declares no families; the card would be empty and the gate vacuous");
@@ -619,6 +669,7 @@ mod tests {
             Pin {
                 floor_bp: 9_941,
                 population_floor: 172,
+                measured_zero: false,
             },
         )]);
         let card = vec![("bound".to_string(), c(172, 170))];
@@ -635,6 +686,7 @@ mod tests {
             Pin {
                 floor_bp: 5_000,
                 population_floor: 172,
+                measured_zero: false,
             },
         )]);
         let card = vec![("bound".to_string(), c(172, 171))];
@@ -652,6 +704,7 @@ mod tests {
             Pin {
                 floor_bp: 9_941,
                 population_floor: 172,
+                measured_zero: false,
             },
         )]);
         let card = vec![("bound".to_string(), c(100, 100))];
@@ -675,6 +728,7 @@ mod tests {
             Pin {
                 floor_bp: 1,
                 population_floor: 1,
+                measured_zero: false,
             },
         )]);
         assert!(matches!(
@@ -702,13 +756,70 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_floor_is_rejected_rather_than_passing_vacuously() {
+    fn an_unacknowledged_zero_floor_is_rejected_rather_than_passing_vacuously() {
+        // Superseded in wording, not in force: a bare zero is still refused. The
+        // difference is that it can now be ADMITTED with `measured_zero = true`,
+        // which the next test pins.
         let text = "[family.bound]\nfloor_bp = 0\npopulation_floor = 1\n";
         assert!(
             parse_ratchet(text)
                 .unwrap_err()
                 .to_string()
-                .contains("every tree")
+                .contains("unpinned")
+        );
+    }
+
+    #[test]
+    fn a_measured_zero_must_be_acknowledged_not_merely_left_at_zero() {
+        let bare = "[family.life]\nfloor_bp = 0\npopulation_floor = 7\n";
+        assert!(
+            parse_ratchet(bare)
+                .unwrap_err()
+                .to_string()
+                .contains("measured_zero"),
+            "a zero floor needs a deliberate sentence, not an omission"
+        );
+        let acked = "[family.life]\nfloor_bp = 0\npopulation_floor = 7\nmeasured_zero = true\n";
+        let pins = parse_ratchet(acked).expect("an acknowledged zero parses");
+        assert_eq!(pins["life"].floor_bp, 0);
+        assert!(pins["life"].measured_zero);
+    }
+
+    #[test]
+    fn the_acknowledgement_cannot_go_stale() {
+        // Once the family rises above zero the key is a lie, and the parser says
+        // so rather than carrying it forward.
+        let stale = "[family.life]\nfloor_bp = 1428\npopulation_floor = 7\nmeasured_zero = true\n";
+        assert!(
+            parse_ratchet(stale)
+                .unwrap_err()
+                .to_string()
+                .contains("stale"),
+            "a measured_zero beside a non-zero floor is stale"
+        );
+    }
+
+    #[test]
+    fn a_family_at_zero_still_reds_on_its_first_discharge() {
+        // The whole defence of `measured_zero`: the slack check turns the first
+        // obligation discharged into a red that demands the pin be raised.
+        let pins = BTreeMap::from([(
+            "life".to_string(),
+            Pin {
+                floor_bp: 0,
+                population_floor: 7,
+                measured_zero: true,
+            },
+        )]);
+        assert!(matches!(
+            decide(&pins, &[("life".to_string(), c(7, 1))]).as_slice(),
+            [Finding::Slack { .. }]
+        ));
+        // …and on a shrinking denominator.
+        assert!(
+            decide(&pins, &[("life".to_string(), c(6, 0))])
+                .iter()
+                .any(|f| matches!(f, Finding::Shrank { .. }))
         );
     }
 

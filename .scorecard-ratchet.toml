@@ -144,3 +144,48 @@ population_floor = 278
 # arithmetic and indexing sites are a program, not a gate.
 floor_bp = 1625
 population_floor = 80
+
+[family.life]
+# 7 affine rights, 0 with a validity interval.
+#
+# Every one-shot right in nucleus is affine and enforced as such. `Authority`
+# carries #[must_use = "an Authority that is never spent is an action that was
+# authorised and not taken"], is consumed by value in spend_on, and has two
+# compile_fail doctests proving replay (E0382) and clone (E0599) are rejected.
+# DecisionToken, CheckProof, DischargedBundle, PodRuntime, ServeToken and
+# VerifyToken are the same shape.
+#
+# NOT ONE OF THEM EXPIRES. A token minted at t=0 authorises at t=infinity, so the
+# window between time-of-check and time-of-use is unbounded on every right in the
+# system. The affine half of the discipline is done; the temporal half was never
+# started. 14 of the 120 audit-and-bug issues are lifecycle defects.
+#
+# WHY THIS SUB-CENSUS AND NOT THE OTHER TWO. Unbounded carriers have a real
+# defect behind them -- Kernel.trace is a Vec<Decision> appended once per allowed
+# operation with no cap, and FlowTracker never compacts while its capped mirror
+# FlowGraph carries four named ceilings -- but the population is "a collection in
+# a LONG-LIVED struct", and long-lived is a judgement. The measurement that
+# exists (902 collection fields, 328 grown and never bounded, 69 in structs whose
+# NAMES suggest they persist) rests on a regex over struct names, and a
+# denominator decided that way is the metric equivalent of a gate that cannot
+# fail. Transition totality has almost no population: three transition functions
+# in the whole repo, one of them on a mock whose trait declares no transition law
+# at all. Both are ADRs, not ratchets, and both become countable once their
+# design question is answered. convergence made the same call for two of its four
+# arrows and named them rather than averaging them in.
+#
+# WHY floor_bp = 0 IS PINNED AND NOT MISSING. A zero floor normally means a gate
+# that passes for every tree. Here the zero is still gated from both sides:
+# population_floor keeps the denominator from shrinking, and the slack check
+# fires the moment the first right gains an interval -- turning the gate red and
+# forcing the pin up to meet it. measured_zero = true makes that a deliberate
+# sentence rather than a value someone left out, and the parser refuses the key
+# once floor_bp rises above zero, so the acknowledgement cannot go stale.
+#
+# 2026-09-11: seeded at the measurement. Giving a right an expiry is a behaviour
+# change on a security boundary -- a clock at the mint site, a check at the
+# consume site, and a decision about what expiry means for an operation already
+# in flight. This gate states the debt exactly; it does not pay it.
+floor_bp = 0
+population_floor = 7
+measured_zero = true
