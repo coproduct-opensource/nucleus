@@ -579,6 +579,13 @@ pub fn gate_of_gates_unlisted_divergence_probe() -> bool {
 RUST
 }
 
+perturb_assurance_required_pin() {
+    # The count of claims whose falsifier produces no required context, moved past any honest
+    # value. 255 by KEY, never by editing the number in place: only eight non-NOT-YET claims
+    # exist, so no real pin can reach it and it can never equal what it replaces.
+    awk '{ if ($0 ~ /^UNREQUIRED_FALSIFIERS=/) print "UNREQUIRED_FALSIFIERS=255"; else print }' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+
 perturb_lean_toolchain_split() {
     # Two first-party Lean versions. The gate's own stake line says why it matters: "two Lean
     # versions cannot share a .lake cache, and the second one rebuilds everything."
@@ -607,6 +614,8 @@ perturb_fly_pool_volumes() {
     sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
 }
 
+probe_xtask assurance-required ci/assurance-required-ratchet.txt \
+    "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask pin-parity ci/lean/lean-toolchain \
     "two first-party Lean versions in one tree" perturb_lean_toolchain_split
 probe_xtask self-pin .github/workflows/scan.yml \

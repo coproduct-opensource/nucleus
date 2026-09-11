@@ -81,6 +81,11 @@ enum Command {
     /// The committed `POOLS` default in ci/fly-runner/manager.toml must be a
     /// configuration the manager accepts, checked with the manager's own validator.
     FlyPools,
+    /// A claim's falsifier must produce a REQUIRED context. A gate CI runs, that goes red, and
+    /// that the merge queue merges past anyway enforces nothing — it is a red light beside an
+    /// open gate. Ratcheted, not driven to zero: whether a given check should be required is a
+    /// judgement about cost, and this only makes the gap visible and un-growable.
+    AssuranceRequired,
     /// The scan-vs-allowlist family, decided once instead of by five copies of the same
     /// `#[cfg(test)]`-stripping awk program. Adds what the copies cannot say: a pattern that
     /// matches nothing has stopped watching, and an allowlist may only shrink.
@@ -270,6 +275,7 @@ enum CiSpecCmd {
 }
 
 mod allowlist_gates;
+mod assurance_required;
 mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
@@ -312,6 +318,7 @@ fn main() -> Result<()> {
             code => std::process::exit(code),
         },
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
+        Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;
             if parity {
