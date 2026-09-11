@@ -148,6 +148,22 @@ unconditional*.
 `661606a9`: a total function from an open domain (strings) to a closed one
 (operations), whose fallthrough arm was chosen permissive. Close the domain — parse
 to an enum at the boundary — and the arm disappears.
+
+**Baseline measured 2026-09-11**, because "once the baseline is walked down" was
+written here without a number and a rule nobody can cost is a rule nobody starts:
+
+| crate | wildcard arms | audit result |
+|---|---|---|
+| `nucleus-ifc-kernel` | **9** | **one live grant**, fixed — `required_integrity` returned `IntegLevel::Adversarial`, the bottom of the lattice, for `SpawnAgent`, under a comment reading "Read/web operations". The other eight are accessors and test-helper panics. |
+| `portcullis-core` | **26** | clean. `operation_to_node_kind`'s fallthrough is `NodeKind::OutboundAction` — the most scrutinized kind, so it denies as this rule asks. `promote`'s `_ => {}` is vacuous today: all five `DerivationClass` variants are handled above it. |
+| `portcullis` | **83** | clean. Overwhelmingly test-helper `panic!`, `None`, and no-ops. The `_ => false` predicates (`subject_matches` ×2, `labels_match`) fail closed — no match means not granted. |
+
+So the rule found exactly one live defect in 118 arms, and the cost of turning the
+lint on is dominated by `portcullis`'s 83 — almost none of which are policy
+matches. A scoped lint (policy crates, non-test targets) is therefore much cheaper
+than the raw count suggests, and is the proposed next step rather than a
+workspace-wide deny.
+
 *Enforcement: clippy `wildcard_enum_match_arm`, once the baseline is walked down;
 see §Enforcement for why it is not on today.*
 
