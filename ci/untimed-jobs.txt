@@ -1,0 +1,44 @@
+# Jobs that declare no `timeout-minutes`, and therefore inherit GitHub's default of
+# 360 minutes — six hours of a runner for a job that has hung.
+#
+# This list may only SHRINK. `cargo xtask gate-budget` reads it: a job here without a
+# timeout is tolerated, a job here that has since gained one is a stale entry to delete,
+# and a job NOT here without a timeout is a violation. Adding a name is an owner decision.
+#
+# It is a ratchet rather than a repair because the repair is 23 separate judgements — the
+# right timeout for a release build is not the right timeout for a gate — and a wrong
+# number here fails honest jobs. What the ratchet buys immediately is that the population
+# cannot grow while those judgements are made.
+#
+# Measured 2026-09-11: 147 jobs across the workflows, 124 declaring a timeout, 23 not.
+# None of the 23 produces a required context, checked against ci/required-checks.txt — so
+# a hang here cannot block the merge queue on a required check. It can still hold a
+# self-hosted runner for six hours, which on a pool that has been measured starving
+# (gatehouse F-79) is the cost that matters.
+#
+# Changes:
+#   2026-09-11 — pinned at the 23 in force, nothing moved.
+
+action-smoke-test.yml:dry-run
+action-smoke-test.yml:live-test
+dependabot-automerge.yml:dependabot
+exemplar-scoreboard.yml:scoreboard
+oidc-gates.yml:vendor-neutrality
+oidc-gates.yml:algorithm-pin
+oidc-keyless-prototype.yml:keyless-oidc-e2e
+quickstart-boot.yml:egress-probe-falsifier
+quickstart-boot.yml:pins-resolve
+quickstart-boot.yml:boot-a-real-pod-aarch64
+quickstart-boot.yml:boot-a-real-pod
+release.yml:build
+release.yml:build-musl
+release.yml:build-rootfs
+release.yml:upload-lima-templates
+release.yml:dry-run-assert
+release.yml:release
+release.yml:publish
+release.yml:homebrew
+scan-attest.yml:scan-and-attest
+scan.yml:scan-action
+scorecard.yml:analysis
+trust-registry.yml:enrollment-gate

@@ -44,11 +44,25 @@
 //! the failure this family of gates exists to refuse; `fly_pools.rs` calls the manager's own
 //! validator for the same reason.
 //!
+//! # The second conjunct: a job with no budget at all
+//!
+//! `timeout-minutes` is optional, and a job that omits it inherits GitHub's default of
+//! **360 minutes** — six hours of a runner held by a job that has hung. On a self-hosted
+//! pool already measured starving (gatehouse F-79), that is the cost that matters.
+//!
+//! Measured 2026-09-11: **147 jobs, 124 declaring a timeout, 23 not.** None of the 23
+//! produces a required context, so a hang there cannot block the merge queue on a required
+//! check — which is why this is a ratchet (`ci/untimed-jobs.txt`, shrink-only) rather than a
+//! repair. The repair is 23 separate judgements about the right timeout for each job, and a
+//! wrong number fails honest jobs. The ratchet buys the thing that is urgent: the population
+//! cannot GROW while those judgements are made.
+//!
 //! # What decides this
 //!
 //! Two committed YAML files. No source tree, no toolchain, no network, and the same verdict
 //! against an empty checkout of nucleus. See gatehouse `docs/tiering.md`.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -66,6 +80,11 @@ const USES: &str = "./.github/actions/gatehouse";
 /// up. This is an allowance, not a ceiling — a job that fits only because setup was fast is
 /// the shape this gate refuses.
 const SETUP_ALLOWANCE_S: u64 = 60;
+
+/// Jobs allowed to declare no `timeout-minutes`. Shrink-only.
+const UNTIMED_PIN: &str = "ci/untimed-jobs.txt";
+/// What GitHub gives a job that declares none.
+const GITHUB_DEFAULT_MINUTES: u64 = 360;
 
 /// One `uses: ./.github/actions/gatehouse` step, with the job budget around it.
 #[derive(Debug, PartialEq, Eq)]
@@ -239,6 +258,108 @@ fn unlisted_users(root: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// Every job in one workflow that declares no job-level `timeout-minutes`.
+///
+/// A job key sits at indent 2 under a column-0 `jobs:`; its own keys are at indent 4. A
+/// `timeout-minutes` deeper than that belongs to a STEP, and a step's timeout does not bound
+/// the job — so the match is anchored to indent 4 exactly.
+pub fn jobs_without_timeout(workflow_src: &str) -> Vec<String> {
+    let lines: Vec<&str> = workflow_src.lines().collect();
+    let Some(start) = lines.iter().position(|l| l.trim_end() == "jobs:") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut current: Option<(String, bool)> = None;
+    for l in &lines[start + 1..] {
+        if !l.is_empty() && !l.starts_with(' ') && !l.starts_with('#') {
+            break;
+        }
+        let job_key = l
+            .strip_prefix("  ")
+            .filter(|r| !r.starts_with(' ') && !r.starts_with('#'))
+            .and_then(|r| r.strip_suffix(':'))
+            .filter(|n| !n.is_empty());
+        if let Some(name) = job_key {
+            if let Some((n, seen)) = current.take()
+                && !seen
+            {
+                out.push(n);
+            }
+            current = Some((name.to_string(), false));
+        } else if l.starts_with("    timeout-minutes:")
+            && let Some((_, seen)) = current.as_mut()
+        {
+            *seen = true;
+        }
+    }
+    if let Some((n, seen)) = current
+        && !seen
+    {
+        out.push(n);
+    }
+    out
+}
+
+/// `file.yml:job` lines, `#` comments ignored.
+pub fn untimed_pin(src: &str) -> Vec<String> {
+    src.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The second conjunct. Returns failure messages; empty when it holds.
+fn check_untimed(root: &Path) -> Result<Vec<String>> {
+    let pin_src = fs::read_to_string(root.join(UNTIMED_PIN))
+        .with_context(|| format!("reading {UNTIMED_PIN}"))?;
+    let allowed: BTreeSet<String> = untimed_pin(&pin_src).into_iter().collect();
+    // An empty pin is NOT refused: it is where a shrink-only ratchet is trying to get, and
+    // a gate that reds on its own success state teaches people to keep a spare entry. The
+    // non-vacuity that matters is the file existing at all, which `read_to_string` enforces
+    // above, plus the stale-entry direction below.
+
+    let dir = root.join(".github/workflows");
+    let mut files: Vec<_> = fs::read_dir(&dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "yml"))
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        bail!(".github/workflows: no workflows read — a sweep of nothing allows everything");
+    }
+
+    let mut found = BTreeSet::new();
+    for f in &files {
+        let name = f.file_name().unwrap().to_string_lossy().to_string();
+        for job in jobs_without_timeout(&fs::read_to_string(f)?) {
+            found.insert(format!("{name}:{job}"));
+        }
+    }
+
+    let mut out = Vec::new();
+    for j in found.difference(&allowed) {
+        out.push(format!(
+            "{j} declares no `timeout-minutes`, so it inherits GitHub's {GITHUB_DEFAULT_MINUTES}-minute default — six hours of a runner for a job that has hung. Give it a timeout; if it genuinely needs none, add it to {UNTIMED_PIN} and say why, dated."
+        ));
+    }
+    for j in allowed.difference(&found) {
+        out.push(format!(
+            "{UNTIMED_PIN} lists {j}, which now declares a timeout or no longer exists. Delete the line — this list may only shrink, and a stale entry is slack the next job inherits."
+        ));
+    }
+    // Only when it HOLDS. Printing "all pinned" beside a failure is a gate reporting the
+    // opposite of its own verdict, which is the shape this whole family exists to refuse.
+    if out.is_empty() {
+        println!(
+            "  ok   {} job(s) without a timeout, all pinned",
+            found.len()
+        );
+    }
+    Ok(out)
+}
+
 pub fn check(root: &Path) -> Result<()> {
     let action =
         fs::read_to_string(root.join(ACTION)).with_context(|| format!("reading {ACTION}"))?;
@@ -305,12 +426,10 @@ pub fn check(root: &Path) -> Result<()> {
         }
     }
 
+    bad.extend(check_untimed(root)?);
+
     if !bad.is_empty() {
-        bail!(
-            "{} gate budget(s) cannot fire:\n{}",
-            bad.len(),
-            bad.join("\n")
-        );
+        bail!("{} budget problem(s):\n{}", bad.len(), bad.join("\n"));
     }
     println!("ok: all {total} gate budget(s) leave room for the runner to report first");
     Ok(())
@@ -433,10 +552,13 @@ inputs:
     fn tree(dir: &Path, action: &str, workflows: &[(&str, &str)]) {
         fs::create_dir_all(dir.join(".github/actions/gatehouse")).unwrap();
         fs::create_dir_all(dir.join(".github/workflows")).unwrap();
+        fs::create_dir_all(dir.join("ci")).unwrap();
         fs::write(dir.join(ACTION), action).unwrap();
         for (name, body) in workflows {
             fs::write(dir.join(".github/workflows").join(name), body).unwrap();
         }
+        // Every job in these fixtures declares a timeout, so the pin is legitimately empty.
+        fs::write(dir.join(UNTIMED_PIN), "# no untimed jobs in this fixture\n").unwrap();
     }
 
     fn tmp(tag: &str) -> std::path::PathBuf {
@@ -474,7 +596,10 @@ inputs:
         );
         let e = check(&d).expect_err("2700 x2 cannot fit a 2700s job");
         let msg = e.to_string();
-        assert!(msg.contains("cannot fire"), "{msg}");
+        // Assert on the per-site explanation, not the summary line: the summary counts
+        // problems from both conjuncts and its wording is not this conjunct's claim.
+        assert!(msg.contains("can never fire first"), "{msg}");
+        assert!(msg.contains("5460s"), "the arithmetic must be shown: {msg}");
     }
 
     /// The action's own default applies when the step omits `timeout`, and 3600 twice
@@ -531,6 +656,57 @@ inputs:
         assert!(
             check(&d).is_err(),
             "an absent action definition is not a pass"
+        );
+    }
+
+    // ---- the second conjunct: jobs with no budget at all ---------------------------
+
+    #[test]
+    fn a_job_without_a_timeout_is_found() {
+        let wf = "jobs:\n  a:\n    runs-on: x\n  b:\n    timeout-minutes: 5\n    runs-on: x\n";
+        assert_eq!(jobs_without_timeout(wf), vec!["a".to_string()]);
+    }
+
+    /// A STEP's timeout does not bound the job, so it must not count as one.
+    #[test]
+    fn a_step_level_timeout_does_not_count_for_the_job() {
+        let wf = "jobs:\n  a:\n    runs-on: x\n    steps:\n      - run: echo\n        timeout-minutes: 5\n";
+        assert_eq!(jobs_without_timeout(wf), vec!["a".to_string()]);
+    }
+
+    /// The `jobs:` mapping ends at the next column-0 key; nothing after it is a job.
+    #[test]
+    fn keys_after_the_jobs_mapping_are_not_jobs() {
+        let wf = "jobs:\n  a:\n    timeout-minutes: 5\n    runs-on: x\nconcurrency:\n  group: g\n";
+        assert!(jobs_without_timeout(wf).is_empty());
+    }
+
+    #[test]
+    fn a_workflow_with_no_jobs_key_yields_nothing() {
+        assert!(jobs_without_timeout("name: x\non: push\n").is_empty());
+    }
+
+    #[test]
+    fn the_last_job_is_not_dropped() {
+        let wf = "jobs:\n  a:\n    timeout-minutes: 5\n  b:\n    runs-on: x\n";
+        assert_eq!(jobs_without_timeout(wf), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn the_pin_ignores_comments_and_blanks() {
+        let p = untimed_pin("# note\n\na.yml:one\nb.yml:two\n");
+        assert_eq!(p, vec!["a.yml:one".to_string(), "b.yml:two".to_string()]);
+    }
+
+    /// The shipped tree: the pin and the sweep agree, in both directions.
+    #[test]
+    fn the_shipped_pin_matches_the_shipped_workflows() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let problems = check_untimed(&root).expect("the pin must be readable");
+        assert!(
+            problems.is_empty(),
+            "the shipped pin and the shipped workflows disagree:\n  {}",
+            problems.join("\n  ")
         );
     }
 
