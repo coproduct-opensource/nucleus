@@ -216,3 +216,51 @@ population_floor = 81
 # (E0382). That is an ADR and a call-site refactor, not a ratchet.
 floor_bp = 1428
 population_floor = 7
+
+[family.typed]
+# 2 of 23 runtime flow kinds are distinguished at COMPILE time.
+#
+# portcullis_core::labeled encodes a Denning-style security lattice in the trait
+# system -- Labeled<T, I: IntegTag, C: ConfTag>, with Trusted/Untrusted/
+# Adversarial crossed with Public/Internal/Secret -- and its own compile_fail
+# doctest proves the thing that matters: Secret data cannot reach a function
+# requiring ConfAtMost<Public>. That is a compile error, not a check anyone has
+# to reach. It is the construction the 2026 literature calls Denning-style IFC in
+# Rust's type system, and it is already here.
+#
+# It is applied to TWO kinds: FileRead (Trusted, Internal) and WebContent
+# (Adversarial, Public). The other twenty-one are tracked by FlowTracker at
+# runtime, which is sound and is also a CHECK -- so it has to be reached.
+# nucleus-observed-lint exists precisely because an ingest path can forget to
+# call observe, and its doc names the defect it was built from: /v1/run returned
+# arbitrary subprocess stdout and observed nothing. A kind that is LIFTED cannot
+# forget. That is the whole difference, and this ratio is the fraction.
+#
+# A LINT AND A TYPE SYSTEM ARE NOT THE SAME TOOL, and this family is where the
+# difference is visible. A dylint pass can decide ADOPTION -- does every function
+# in the ingest closure return a labelled type -- which is a typeck question over
+# a bounded set of paths, and nucleus-observed-lint already answers the runtime
+# equivalent. It cannot decide THE INVARIANT: "no Secret value reaches a Public
+# sink, through any composition anyone writes later" is not a bounded search, it
+# is what parametric polymorphism gives for free once the data is inside the
+# typed region. The lint guards the frontier; the types guard the interior.
+#
+# So this family and `observed` should move in OPPOSITE directions. Every kind
+# lifted here is a path the lint no longer has to police, and .observed-ratchet
+# .toml's ceiling should fall as this ratio rises. If it does not, one of the two
+# is measuring something other than what it says.
+#
+# Custom is excluded by name: it carries a caller-supplied string and cannot take
+# a fixed pair of tags, so counting it would put an undischargeable obligation in
+# the denominator forever. convergence excludes its two unmeasurable arrows the
+# same way.
+#
+# A row of LIFTED_TO_TYPES cannot over-claim: the gate checks the named type
+# exists and carries a `Labeled<` field, and refuses a row naming a NodeKind that
+# is not a variant. Both halves are tested.
+#
+# 2026-09-11: seeded at the measurement. The next lifts are the ones with an
+# obvious tag pair -- McpToolResult and ToolResponse are adversarial, EnvVar and
+# Secret are confidential -- and each is a struct plus a registry row.
+floor_bp = 869
+population_floor = 23

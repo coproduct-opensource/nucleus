@@ -363,6 +363,7 @@ mod scoreboard;
 mod scorecard;
 mod self_pin;
 mod tot;
+mod typed;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
