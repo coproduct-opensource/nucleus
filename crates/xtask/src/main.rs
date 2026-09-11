@@ -332,6 +332,7 @@ enum CiSpecCmd {
     },
 }
 
+mod alg;
 mod allowlist_gates;
 mod assurance_required;
 mod bound;
