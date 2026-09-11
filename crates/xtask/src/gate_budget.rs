@@ -34,11 +34,19 @@
 //! For every step using the gatehouse action:
 //!
 //! ```text
-//! runs * timeout_s + SETUP_ALLOWANCE_S  <  timeout-minutes * 60
+//! runs * timeout_s + OUTER_SLACK_S + SETUP_ALLOWANCE_S  <  timeout-minutes * 60
 //! ```
 //!
 //! where `runs` is 2 when `compare` is on and 1 otherwise. Strict: equality is the defect
 //! above, not the boundary case that just fits.
+//!
+//! `OUTER_SLACK_S` is not decoration. The action does not bound the runner at `timeout_s`; it
+//! bounds it at `timeout_s + 120`, deliberately, so the runner can hit its OWN deadline first
+//! and write an honest `errored` receipt instead of being killed mid-write. That slack is real
+//! wall time and the job must hold it, so the arithmetic that claims to describe a bound has to
+//! contain it. Counting `runs * timeout_s` alone described a bound 120 seconds tighter than the
+//! one the action actually enforces — the same shape of error, one level down, as declaring a
+//! budget the runner never honoured.
 //!
 //! Both defaults — `timeout` and `compare` — are read from `.github/actions/gatehouse/action.yml`
 //! rather than repeated here. A second copy of a default is a second thing to drift, which is
@@ -101,6 +109,13 @@ const USES: &str = "./.github/actions/gatehouse";
 /// the shape this gate refuses.
 const SETUP_ALLOWANCE_S: u64 = 60;
 
+/// The action's outer deadline sits this far above the gate's own `timeout`, so the runner gets
+/// to fire first and report. `.github/actions/gatehouse/gatehouse.sh`, the `timeout --kill-after`
+/// around `$RUNNER`: `$(( GH_TIMEOUT + 120 ))`. Applied once, not per run — only the gatehouse
+/// run carries it; the plain `compare` run is bounded at `GH_TIMEOUT` exactly, because it has no
+/// receipt to write and nothing to wait for.
+const OUTER_SLACK_S: u64 = 120;
+
 /// Jobs allowed to declare no `timeout-minutes`. Shrink-only.
 const UNTIMED_PIN: &str = "ci/untimed-jobs.txt";
 /// What GitHub gives a job that declares none.
@@ -121,7 +136,7 @@ impl Site {
         if self.compare { 2 } else { 1 }
     }
     pub fn need_s(&self) -> u64 {
-        self.runs() * self.timeout_s + SETUP_ALLOWANCE_S
+        self.runs() * self.timeout_s + OUTER_SLACK_S + SETUP_ALLOWANCE_S
     }
     pub fn fits(&self) -> bool {
         self.need_s() < self.job_budget_s
@@ -415,7 +430,7 @@ pub fn check(root: &Path) -> Result<()> {
             total += 1;
             let verdict = if s.fits() { "ok  " } else { "FAIL" };
             println!(
-                "  {verdict} {wf}:{}  job {}s, gate {}s x{} + {SETUP_ALLOWANCE_S}s setup = {}s",
+                "  {verdict} {wf}:{}  job {}s, gate {}s x{} + {OUTER_SLACK_S}s slack + {SETUP_ALLOWANCE_S}s setup = {}s",
                 s.line,
                 s.job_budget_s,
                 s.timeout_s,
@@ -495,7 +510,7 @@ mod tests {
             line: 1,
         };
         assert_eq!(s.runs(), 2);
-        assert_eq!(s.need_s(), 5460);
+        assert_eq!(s.need_s(), 5580);
         assert!(!s.fits());
     }
 
@@ -519,14 +534,31 @@ mod tests {
             compare: true,
             line: 1,
         };
-        assert_eq!(s.need_s(), 2460);
+        assert_eq!(s.need_s(), 2580);
         assert!(s.fits());
+    }
+
+    /// The outer slack has to change a verdict somewhere, or it is a constant that costs nothing
+    /// and proves nothing. 1300s twice is 2600s, and 2660s with setup — inside a 2700s job. The
+    /// action's deadline is 1420s, not 1300s, so the real worst case is 2780s and the job kills
+    /// it. Without `OUTER_SLACK_S` this site passes, and the pass is wrong.
+    #[test]
+    fn the_outer_slack_is_what_decides_this_site() {
+        let s = Site {
+            job_budget_s: 2700,
+            timeout_s: 1300,
+            compare: true,
+            line: 1,
+        };
+        assert_eq!(s.runs() * s.timeout_s + SETUP_ALLOWANCE_S, 2660);
+        assert_eq!(s.need_s(), 2780);
+        assert!(!s.fits());
     }
 
     /// `compare: false` halves the need, and the parser must see it.
     #[test]
     fn compare_false_is_read_from_the_step() {
-        let wf = "jobs:\n  j:\n    timeout-minutes: 10\n    steps:\n      - uses: ./.github/actions/gatehouse\n        with:\n          timeout: \"500\"\n          compare: \"false\"\n";
+        let wf = "jobs:\n  j:\n    timeout-minutes: 15\n    steps:\n      - uses: ./.github/actions/gatehouse\n        with:\n          timeout: \"500\"\n          compare: \"false\"\n";
         let s = sites(wf, 3600, true);
         assert_eq!(s.len(), 1);
         assert!(!s[0].compare);
@@ -619,7 +651,7 @@ inputs:
         // Assert on the per-site explanation, not the summary line: the summary counts
         // problems from both conjuncts and its wording is not this conjunct's claim.
         assert!(msg.contains("can never fire first"), "{msg}");
-        assert!(msg.contains("5460s"), "the arithmetic must be shown: {msg}");
+        assert!(msg.contains("5580s"), "the arithmetic must be shown: {msg}");
     }
 
     /// The action's own default applies when the step omits `timeout`, and 3600 twice
