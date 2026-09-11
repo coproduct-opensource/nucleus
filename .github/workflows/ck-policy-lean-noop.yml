@@ -12,6 +12,8 @@ name: CK Policy Lean Proofs
 on:
   pull_request:
     paths-ignore:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/ck-policy/lean/**"
       - ".github/workflows/ck-policy-lean.yml"
       - "crates/ck-policy/src/lib.rs"

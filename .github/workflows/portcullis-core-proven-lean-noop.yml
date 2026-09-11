@@ -12,6 +12,8 @@ name: Portcullis-Core Proven Lean
 on:
   pull_request:
     paths-ignore:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/portcullis-core/lean/**"
       - ".github/workflows/portcullis-core-proven-lean.yml"
 
