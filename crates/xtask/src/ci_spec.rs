@@ -83,25 +83,121 @@ fn repo_root(repo: Option<String>) -> Result<PathBuf> {
     }
 }
 
+/// Why `live-parity` could not look.
+///
+/// Four causes with four DIFFERENT repairs. They used to be one `String`, and
+/// the exit-2 handler printed one hardcoded guess -- "set CI_ASSURANCE_TOKEN"
+/// -- for all of them. On 2026-09-09 the real cause was `gh` missing from a new
+/// runner image (`No such file or directory (os error 2)`); the token had been
+/// correct the whole time, and the message sent the diagnosis at the wrong half.
+///
+/// ADR 0007 A-8: split a rejection type when its halves carry different
+/// consequences. Here the consequence is which thing a person goes and fixes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CouldNotLook {
+    /// The tool is not on `PATH`. The runner image is the repair, not the token.
+    ToolMissing { tool: String, detail: String },
+    /// The API rejected the credential. The token is the repair.
+    Unauthorized { path: String, detail: String },
+    /// The API answered, with something that is neither success nor a refusal
+    /// of the credential.
+    ApiFailed { path: String, detail: String },
+    /// A response arrived and could not be read as what it claims to be.
+    Unparseable { path: String, detail: String },
+}
+
+impl CouldNotLook {
+    /// What to actually go and do. One line, naming the thing to change.
+    pub fn repair(&self) -> String {
+        match self {
+            CouldNotLook::ToolMissing { tool, .. } => format!(
+                "install `{tool}` in the runner image -- this is NOT a token problem. \
+                 docker/Dockerfile.runner installs the GitHub CLI with `gh --version` as \
+                 a build-time assertion, so an image missing it cannot build."
+            ),
+            CouldNotLook::Unauthorized { .. } => {
+                "reading branch protection needs a token with repository Administration: \
+                 read -- set CI_ASSURANCE_TOKEN; GITHUB_TOKEN cannot"
+                    .to_string()
+            }
+            CouldNotLook::ApiFailed { path, .. } => format!(
+                "the API answered but not with success: check whether `{path}` still \
+                 exists and that the repository name is right"
+            ),
+            CouldNotLook::Unparseable { path, .. } => format!(
+                "`{path}` returned a shape this build does not understand -- GitHub may \
+                 have changed the response, which is a code change here, not a config one"
+            ),
+        }
+    }
+
+    /// Classify a failed `gh` invocation. `gh` reports a refused credential on
+    /// stderr rather than by exit status, so the text is what distinguishes it.
+    pub fn from_gh_failure(path: &str, stderr: &str) -> Self {
+        let lowered = stderr.to_ascii_lowercase();
+        if lowered.contains("http 401")
+            || lowered.contains("http 403")
+            || lowered.contains("not accessible by integration")
+            || lowered.contains("bad credentials")
+            || lowered.contains("requires authentication")
+        {
+            return CouldNotLook::Unauthorized {
+                path: path.to_string(),
+                detail: stderr.trim().to_string(),
+            };
+        }
+        CouldNotLook::ApiFailed {
+            path: path.to_string(),
+            detail: stderr.trim().to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for CouldNotLook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CouldNotLook::ToolMissing { tool, detail } => {
+                write!(f, "`{tool}` could not be run: {detail}")
+            }
+            CouldNotLook::Unauthorized { path, detail } => {
+                write!(f, "{path} refused the credential: {detail}")
+            }
+            CouldNotLook::ApiFailed { path, detail } => {
+                write!(f, "{path} failed: {detail}")
+            }
+            CouldNotLook::Unparseable { path, detail } => {
+                write!(f, "{path} could not be parsed: {detail}")
+            }
+        }
+    }
+}
+
 /// `ci-spec live-parity`: the ledgers against GitHub. Exit 0 in lockstep,
 /// 1 drift, 2 could not look (no token, API error, partial response).
 pub fn live_parity(repo: Option<String>, github: &str, json: bool) -> Result<()> {
     let root = repo_root(repo)?;
     let model = ci_spec::loader::from_repo(&root)?;
 
-    let fetch = |path: &str| -> Result<String, String> {
+    let fetch = |path: &str| -> Result<String, CouldNotLook> {
         let out = std::process::Command::new("gh")
             .args(["api", path])
             .output()
-            .map_err(|e| format!("run gh api {path}: {e}"))?;
+            // A spawn failure is the tool, never the credential. This is the
+            // case that was misreported as a missing token in #2652.
+            .map_err(|e| CouldNotLook::ToolMissing {
+                tool: "gh".to_string(),
+                detail: e.to_string(),
+            })?;
         if !out.status.success() {
-            return Err(format!(
-                "gh api {path} failed ({}): {}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
+            return Err(CouldNotLook::from_gh_failure(
+                path,
+                &String::from_utf8_lossy(&out.stderr),
             ));
         }
-        String::from_utf8(out.stdout).map_err(|e| e.to_string())
+        String::from_utf8(out.stdout).map_err(|e| CouldNotLook::Unparseable {
+            path: path.to_string(),
+            detail: e.to_string(),
+        })
     };
 
     let looked = (|| -> Result<
@@ -109,20 +205,43 @@ pub fn live_parity(repo: Option<String>, github: &str, json: bool) -> Result<()>
             ci_spec::live::LiveProtection,
             Option<ci_spec::live::LiveQueue>,
         ),
-        String,
+        CouldNotLook,
     > {
         let prot = fetch(&format!("repos/{github}/branches/main/protection"))?;
-        let protection = ci_spec::live::parse_protection(&prot)?;
+        let protection = ci_spec::live::parse_protection(&prot).map_err(|e| {
+            CouldNotLook::Unparseable {
+                path: format!("repos/{github}/branches/main/protection"),
+                detail: e,
+            }
+        })?;
         if model.queue.owner == "gatehouse" {
             // The claim is about EVERY ruleset, not one pinned id: a queue re-enabled under a
             // new ruleset would merge this branch while gatehouse thought it owned the merge.
             let listing = fetch(&format!("repos/{github}/rulesets"))?;
-            for id in ci_spec::live::parse_ruleset_ids(&listing)? {
+            for id in ci_spec::live::parse_ruleset_ids(&listing).map_err(|e| {
+                CouldNotLook::Unparseable {
+                    path: format!("repos/{github}/rulesets"),
+                    detail: e,
+                }
+            })? {
                 let rs = fetch(&format!("repos/{github}/rulesets/{id}"))?;
-                if ci_spec::live::ruleset_has_merge_queue(&rs)? {
+                if ci_spec::live::ruleset_has_merge_queue(&rs).map_err(|e| {
+                    CouldNotLook::Unparseable {
+                        path: format!("repos/{github}/rulesets/{id}"),
+                        detail: e,
+                    }
+                })? {
                     // Parsed as GitHub's queue so parity reports the owner conflict with the
                     // ruleset's own numbers rather than a bare "it exists".
-                    return Ok((protection, Some(ci_spec::live::parse_ruleset(&rs, id)?)));
+                    return Ok((
+                        protection,
+                        Some(ci_spec::live::parse_ruleset(&rs, id).map_err(|e| {
+                            CouldNotLook::Unparseable {
+                                path: format!("repos/{github}/rulesets/{id}"),
+                                detail: e,
+                            }
+                        })?),
+                    ));
                 }
             }
             return Ok((protection, None));
@@ -133,7 +252,14 @@ pub fn live_parity(repo: Option<String>, github: &str, json: bool) -> Result<()>
         ))?;
         Ok((
             protection,
-            Some(ci_spec::live::parse_ruleset(&rs, model.queue.ruleset_id)?),
+            Some(
+                ci_spec::live::parse_ruleset(&rs, model.queue.ruleset_id).map_err(|e| {
+                    CouldNotLook::Unparseable {
+                        path: format!("repos/{github}/rulesets/{}", model.queue.ruleset_id),
+                        detail: e,
+                    }
+                })?,
+            ),
         ))
     })();
 
@@ -143,10 +269,7 @@ pub fn live_parity(repo: Option<String>, github: &str, json: bool) -> Result<()>
             // "Could not look" is exit 2 and a red job — reporting it as a
             // pass would be the exact vacuity the parity check exists to find.
             eprintln!("::error::live-parity could not look: {e}");
-            eprintln!(
-                "  (reading branch protection needs a token with repository Administration: \
-                 read — set CI_ASSURANCE_TOKEN; GITHUB_TOKEN cannot)"
-            );
+            eprintln!("  fix: {}", e.repair());
             std::process::exit(2);
         }
     };
@@ -300,4 +423,97 @@ fn ci_timings_rfc3339(secs: u64) -> String {
         (rem % 3600) / 60,
         rem % 60
     )
+}
+
+#[cfg(test)]
+mod could_not_look_tests {
+    use super::CouldNotLook;
+
+    /// THE regression, from #2652. On 2026-09-09 `gh` was missing from a new
+    /// runner image and the exit-2 handler printed "Is CI_ASSURANCE_TOKEN set?".
+    /// The token was correct the whole time. A missing tool must never be
+    /// reported as a credential problem: the repairs are in different places
+    /// (a Dockerfile vs a repository secret).
+    #[test]
+    fn a_missing_tool_is_not_reported_as_a_token_problem() {
+        let e = CouldNotLook::ToolMissing {
+            tool: "gh".to_string(),
+            detail: "No such file or directory (os error 2)".to_string(),
+        };
+        let repair = e.repair();
+        assert!(
+            repair.contains("runner image"),
+            "must send the reader to the image: {repair}"
+        );
+        assert!(
+            !repair.contains("CI_ASSURANCE_TOKEN"),
+            "must NOT name the token -- that is the defect: {repair}"
+        );
+    }
+
+    /// The complement, so the test above is not satisfied by a repair that
+    /// never mentions the token at all.
+    #[test]
+    fn a_refused_credential_does_name_the_token() {
+        let e = CouldNotLook::Unauthorized {
+            path: "repos/o/r/branches/main/protection".to_string(),
+            detail: "gh: Resource not accessible by integration (HTTP 403)".to_string(),
+        };
+        assert!(e.repair().contains("CI_ASSURANCE_TOKEN"), "{}", e.repair());
+    }
+
+    /// Classification is decided by what `gh` actually printed. These are the
+    /// real strings from the issue and from `gh`'s own error vocabulary.
+    #[test]
+    fn the_403_that_filed_2652_classifies_as_unauthorized() {
+        let e = CouldNotLook::from_gh_failure(
+            "repos/o/r/branches/main/protection",
+            "gh: Resource not accessible by integration (HTTP 403)",
+        );
+        assert!(matches!(e, CouldNotLook::Unauthorized { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn an_api_error_that_is_not_about_credentials_stays_api_failed() {
+        let e = CouldNotLook::from_gh_failure("repos/o/r/rulesets/9", "HTTP 404: Not Found");
+        assert!(matches!(e, CouldNotLook::ApiFailed { .. }), "{e:?}");
+        assert!(
+            !e.repair().contains("CI_ASSURANCE_TOKEN"),
+            "a 404 is not a token problem: {}",
+            e.repair()
+        );
+    }
+
+    /// Non-vacuity: four causes must give four DIFFERENT repairs, or splitting
+    /// the type bought nothing. This is the property the single `String` failed.
+    #[test]
+    fn every_cause_has_its_own_repair() {
+        let all = [
+            CouldNotLook::ToolMissing {
+                tool: "gh".into(),
+                detail: "x".into(),
+            },
+            CouldNotLook::Unauthorized {
+                path: "p".into(),
+                detail: "x".into(),
+            },
+            CouldNotLook::ApiFailed {
+                path: "p".into(),
+                detail: "x".into(),
+            },
+            CouldNotLook::Unparseable {
+                path: "p".into(),
+                detail: "x".into(),
+            },
+        ];
+        let mut repairs: Vec<String> = all.iter().map(CouldNotLook::repair).collect();
+        let before = repairs.len();
+        repairs.sort();
+        repairs.dedup();
+        assert_eq!(
+            before,
+            repairs.len(),
+            "two causes share a repair: {repairs:?}"
+        );
+    }
 }
