@@ -570,12 +570,24 @@ mod store_population {
         // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
         // reader. Sound here because this runs before any thread that reads the
         // environment is spawned.
-        unsafe { std::env::set_var(var, "node-side-token") };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::set_var(var, "node-side-token")
+        };
         let store = store_from_node_environment(&[upstream("model-api", var)]);
         // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
         // reader. Sound here because this runs before any thread that reads the
         // environment is spawned.
-        unsafe { std::env::remove_var(var) };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::remove_var(var)
+        };
 
         assert_eq!(
             brokered(&store, "model-api").as_deref(),
@@ -603,12 +615,24 @@ mod store_population {
         // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
         // reader. Sound here because this runs before any thread that reads the
         // environment is spawned.
-        unsafe { std::env::set_var(var, "") };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::set_var(var, "")
+        };
         let store = store_from_node_environment(&[upstream("model-api", var)]);
         // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
         // reader. Sound here because this runs before any thread that reads the
         // environment is spawned.
-        unsafe { std::env::remove_var(var) };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::remove_var(var)
+        };
         assert_eq!(
             brokered(&store, "model-api"),
             None,
@@ -624,7 +648,13 @@ mod store_population {
         // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
         // reader. Sound here because this runs before any thread that reads the
         // environment is spawned.
-        unsafe { std::env::set_var(var, "present") };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::set_var(var, "present")
+        };
         let store = store_from_node_environment(&[
             upstream("has-one", var),
             upstream("has-none", "NUCLEUS_TEST_STORE_POP_PARTIAL_MISSING"),
@@ -632,7 +662,13 @@ mod store_population {
         // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent
         // reader. Sound here because this runs before any thread that reads the
         // environment is spawned.
-        unsafe { std::env::remove_var(var) };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 H-1: test-only process-global mutation"
+        )]
+        unsafe {
+            std::env::remove_var(var)
+        };
 
         assert_eq!(brokered(&store, "has-one").as_deref(), Some("present"));
         assert_eq!(brokered(&store, "has-none"), None);

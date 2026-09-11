@@ -1,3 +1,18 @@
+# Clippy reads ONE configuration file -- the nearest -- and does not merge.
+#
+# So this file does not *extend* the workspace-root `clippy.toml`; it REPLACES it for
+# this crate. Every root entry has to be restated here or it is simply not enforced,
+# and nothing about a green run says which happened.
+#
+# That is not a warning written in advance. Measured 2026-09-11: the two entries
+# ADR 0007 wired -- C-1 `std::mem::transmute` and C-5 `std::vec::Vec::leak` -- were
+# never enforced in this crate, which holds the entire HTTP and MCP effect boundary.
+# Both measured zero occurrences tree-wide, so their green was indistinguishable from
+# never having been asked. ADR 0007 I-1, firing against ADR 0007.
+#
+# `cargo xtask clippy-config` now compares this file against the root's and REDs on any
+# root entry missing here. Add an entry there, add it here.
+
 # Enforcement completeness (#1216): all I/O must go through portcullis-effects.
 disallowed-types = [
     { path = "std::fs::File", reason = "use portcullis_effects::FileEffect" },
@@ -5,4 +20,15 @@ disallowed-types = [
     { path = "std::process::Command", reason = "use portcullis_effects::ShellEffect" },
     { path = "tokio::process::Command", reason = "use portcullis_effects::ShellEffect" },
     { path = "reqwest::Client", reason = "use portcullis_effects::WebEffect" },
+]
+
+# Restated from the workspace root. Kept equal by `cargo xtask clippy-config`.
+disallowed-methods = [
+    # C-1 -- a type that names evidence has a private constructor.
+    { path = "std::mem::transmute", reason = "ADR 0007 C-1: fabricates a sealed witness; use the minting constructor" },
+    # C-5 -- capability and authority types are !Clone, !Copy, #[must_use].
+    { path = "std::vec::Vec::leak", reason = "ADR 0007 C-5: defeats the consuming discipline; pass the value" },
+    # H-1 -- no ambient process-global mutation.
+    { path = "std::env::set_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },
+    { path = "std::env::remove_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },
 ]
