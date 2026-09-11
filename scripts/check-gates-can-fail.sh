@@ -643,8 +643,18 @@ perturb_convergence_linearity() {
     append_line "$1" 'fn _gate_of_gates_affine(_a: &portcullis_effects::Authority) {}'
 }
 
+# A new parameter accepts a witness and drops it: a gate that is present and
+# decides nothing, which is the 60% defect class the 2026-09-11 issue census
+# found. `Authority` because it is the witness with the most live sites, so the
+# perturbation lands in the same population the ratio is computed over.
+perturb_bound_dropped_witness() {
+    append_line "$1" 'fn _gate_of_gates_dropped(_authority: portcullis_effects::Authority) {}'
+}
+
 probe_xtask convergence crates/nucleus-tool-proxy/src/run_gate.rs \
     "one more affine type taken by reference" perturb_convergence_linearity
+probe_xtask bound crates/nucleus-tool-proxy/src/run_gate.rs \
+    "one more witness accepted and dropped" perturb_bound_dropped_witness
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask pin-parity ci/lean/lean-toolchain \
