@@ -1510,7 +1510,10 @@ mod tests {
             !matches!(&ok, Err(EffectError::PolicyDenied(m)) if m.contains("scope")),
             "a correctly-scoped write must not be refused on scope: {ok:?}"
         );
-        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: best-effort cleanup; the path need not exist")]
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "ADR 0007 C-5: best-effort cleanup; the path need not exist"
+        )]
         let _ = std::fs::remove_file("/tmp/nucleus-scope-test-ok");
     }
 
@@ -1761,7 +1764,10 @@ mod tests {
         // scope here, and this test passed under `cargo test` — which shares a
         // process — while failing under the runner CI actually uses.
         // Idempotent; the already-set Err is the expected second answer.
-        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: idempotent process-global init; Err means another test installed it first")]
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "ADR 0007 C-5: idempotent process-global init; Err means another test installed it first"
+        )]
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let fx = PolicyEnforced {
@@ -1807,7 +1813,10 @@ mod tests {
         // This passed until now only because a full-workspace build unified
         // reqwest's `rustls` feature in from nucleus-control-plane-server; a
         // run scoped to a crate set that excludes it has no provider at all.
-        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: idempotent process-global init; Err means another test installed it first")]
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "ADR 0007 C-5: idempotent process-global init; Err means another test installed it first"
+        )]
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         NetEffect::fetch(
@@ -1859,7 +1868,10 @@ mod tests {
             receipts: Arc::new(crate::receipt::ReceiptLog::new()),
             policy: CapabilityLattice::bottom(),
         };
-        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts")]
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts"
+        )]
         let _ = denied_by_policy.push("origin", "main", push_auth("origin"));
         assert_eq!(
             denied_by_policy.receipts().entries()[0].outcome,
@@ -1875,7 +1887,10 @@ mod tests {
                 ..CapabilityLattice::bottom()
             },
         };
-        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts")]
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts"
+        )]
         let _ = denied_by_scope.push("origin", "main", commit_auth("origin"));
         let e = &denied_by_scope.receipts().entries()[0];
         assert_eq!(e.outcome, EffectOutcome::DeniedByScope);
@@ -1957,14 +1972,23 @@ mod tests {
     #[test]
     fn recording_records_calls_in_order() {
         let fx = RecordingEffects::new();
-        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts")]
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts"
+        )]
         let _ = fx.read(Path::new("a.rs"), read_auth());
-        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts")]
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts"
+        )]
         let _ = fx.write(Path::new("b.rs"), b"hi", write_auth());
         // `run` spends now, and a spend with no log attached refuses. Used
         // bare here, without the `PolicyEnforced` wrapper that normally
         // attaches one, so the test attaches it.
-        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts")]
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "ADR 0007 C-5: the discarded outcome is not what this test asserts"
+        )]
         let _ = fx.run("echo hello", witnessed(shell_auth("echo hello")));
         let calls = fx.calls();
         assert_eq!(calls.len(), 3);
@@ -2365,7 +2389,10 @@ mod tests {
 
         // The workspace reqwest uses `rustls-no-provider`; install a provider so
         // `Client::new()` can build (idempotent — ignore the already-set Err).
-        #[expect(clippy::let_underscore_must_use, reason = "ADR 0007 C-5: idempotent process-global init; Err means another test installed it first")]
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "ADR 0007 C-5: idempotent process-global init; Err means another test installed it first"
+        )]
         let _ = rustls::crypto::ring::default_provider().install_default();
         let fx = production_effects_concrete(CapabilityLattice::bottom());
         let client = reqwest::Client::new();

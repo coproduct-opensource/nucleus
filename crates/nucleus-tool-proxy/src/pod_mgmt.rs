@@ -235,27 +235,27 @@ pub(crate) async fn create_sub_pod(
     // removal. The two mechanisms catch opposite failures; both are kept.
     let nucleus_spec::PodSpecInner {
         // ── Decided above ───────────────────────────────────────────────────
-        policy: _policy,                           // 4  narrowed to this pod's ceiling
-        workload: _workload,                       // 4b stripped
+        policy: _policy,     // 4  narrowed to this pod's ceiling
+        workload: _workload, // 4b stripped
         credentialed_egress: _credentialed_egress, // 4c clamped to the parent's upstreams
-        credentials: _credentials,                 // 5  orchestrator env merged in
+        credentials: _credentials, // 5  orchestrator env merged in
 
         // ── Forwarded as the requester wrote them ───────────────────────────
         // Each line is a standing decision to delegate that field unclamped.
         // None is an oversight and none is an endorsement: this is the backlog
         // C4.2 exists to work through, in severity order, one change each.
-        work_dir: _work_dir,               // the child names its own working directory
+        work_dir: _work_dir, // the child names its own working directory
         timeout_seconds: _timeout_seconds, // becomes the session-token TTL, uncapped
-                                           // (nucleus-node/src/pod_authority.rs:738)
-        budget_model: _budget_model,       // pricing shape; the AMOUNT is reserved at 5b
-        resources: _resources,             // cpu/memory the child asks the node for
-        network: _network,                 // egress shape; `credentialed_egress` is the
-                                           // separate field clamped at 4c, not this one
-        image: _image,                     // the child names its own kernel and rootfs
-        vsock: _vsock,                     // guest-host socket configuration
-        seccomp: _seccomp,                 // syscall filter — a child may ask for a weaker one
-        cgroup: _cgroup,                   // cgroup limits
-        audit_sink: _audit_sink,           // where the child's audit record is written
+        // (nucleus-node/src/pod_authority.rs:738)
+        budget_model: _budget_model, // pricing shape; the AMOUNT is reserved at 5b
+        resources: _resources,       // cpu/memory the child asks the node for
+        network: _network,           // egress shape; `credentialed_egress` is the
+        // separate field clamped at 4c, not this one
+        image: _image,           // the child names its own kernel and rootfs
+        vsock: _vsock,           // guest-host socket configuration
+        seccomp: _seccomp,       // syscall filter — a child may ask for a weaker one
+        cgroup: _cgroup,         // cgroup limits
+        audit_sink: _audit_sink, // where the child's audit record is written
     } = &spec.spec;
 
     // `metadata` is a sibling of `spec` on `PodSpec`, so the destructure above

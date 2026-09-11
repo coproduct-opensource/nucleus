@@ -193,9 +193,9 @@ pub(crate) mod stub_vmm;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stub_vmm::{Seen, StubVmm};
     #[cfg(target_os = "linux")]
     use stub_vmm::sample_config;
+    use stub_vmm::{Seen, StubVmm};
 
     /// A socket that never appears fails by naming the path, not by hanging.
     ///

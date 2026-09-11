@@ -2548,7 +2548,10 @@ mod tests {
             .flow_tracker_mut()
             .observe(portcullis_core::flow::NodeKind::WebContent)
             .expect("a parent observes web content");
-        assert!(parent.is_tainted(), "the parent is tainted after observing web content");
+        assert!(
+            parent.is_tainted(),
+            "the parent is tainted after observing web content"
+        );
 
         let child = parent
             .spawn_child(PolicyProfile::ReadOnly, "review")
