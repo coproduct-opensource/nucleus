@@ -165,6 +165,26 @@ treat this as a broken measurement, not a clean tree."
       exit 1
     fi
     CEILING=$(grep '^ceiling' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
+    # Establish the operand before comparing on it. A `ceiling` line that exists but is
+    # empty or non-numeric leaves CEILING unusable, and `[ "$COUNT" -gt "" ]` does not
+    # evaluate false -- it ERRORS with "integer expression expected", an `if` CONDITION is
+    # exempt from `set -e`, and the ratchet PASSES. Reproduced: with `ceiling = ` and 500
+    # violations the comparison printed `[: : integer expected` and the script exited 0.
+    #
+    # An ABSENT ceiling line is already safe by accident: grep fails, pipefail propagates,
+    # and `set -e` aborts the assignment. That accident does not cover the malformed case,
+    # which is the likelier one -- a hand-edited or half-written ratchet file.
+    #
+    # Same shape and same remedy as $FLOOR_FILE in check-kani-proof-count.sh, which has
+    # validated its operand all along.
+    case "$CEILING" in
+      ''|*[!0-9]*)
+        echo "::error::$RATCHET_FILE has no usable 'ceiling' (read: '$CEILING'). The ratchet \
+compares the violation count against it numerically, and an unusable value makes the \
+comparison error and the gate pass."
+        exit 2
+        ;;
+    esac
     echo "ratcheted clippy violations: $COUNT (ceiling $CEILING)"
     if [ "$COUNT" -gt "$CEILING" ]; then
       echo "::error::clippy ratchet exceeded: $COUNT > $CEILING."
