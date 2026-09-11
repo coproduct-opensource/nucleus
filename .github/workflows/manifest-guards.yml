@@ -124,8 +124,10 @@ jobs:
       - name: A coverage floor may not move without saying so
         run: cargo run -q -p xtask -- coverage-floor
       # Two clocks run over the same work: the gatehouse action's `timeout`, which the runner
-      # enforces and reports, and the job's `timeout-minutes`, which GitHub enforces and does
-      # not. When GitHub's is first the runner never reports -- the job ends `cancelled`, the
+      # is SUPPOSED to enforce and report, and the job's `timeout-minutes`, which GitHub
+      # enforces and does not report. (Measured 2026-09-11: the runner does not in fact
+      # enforce its own -- see gatehouse-shadow.yml. That is a defect one level below this
+      # gate, and it does not make the declaration arithmetic any less wrong.) When GitHub's is first the runner never reports -- the job ends `cancelled`, the
       # same conclusion an infrastructure fault gives, and the overrun carries no verdict. The
       # shadow lane was in exactly that state: a 2700s gate, run twice for the agreement line,
       # inside a 2700s job. 304 runs over two days produced no verdict at all.

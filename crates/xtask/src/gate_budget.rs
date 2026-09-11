@@ -2,7 +2,8 @@
 //! running it is killed.
 //!
 //! `.github/workflows/gatehouse-shadow.yml` runs each gate through the one-step gatehouse
-//! action, which takes a `timeout` (seconds the command may take) and enforces it. The job
+//! action, which takes a `timeout` (seconds the command may take) and is supposed to enforce
+//! it. The job
 //! around it carries GitHub's `timeout-minutes`. Those are two clocks over the same work,
 //! and only one of them can be first.
 //!
@@ -43,6 +44,25 @@
 //! rather than repeated here. A second copy of a default is a second thing to drift, which is
 //! the failure this family of gates exists to refuse; `fly_pools.rs` calls the manager's own
 //! validator for the same reason.
+//!
+//! # What this gate does NOT fix, measured
+//!
+//! Lowering the declared timeout so it fits is necessary and **not sufficient**. Measured
+//! 2026-09-11 on run `34637222980`, with `timeout: "1200"` confirmed reaching the runner as
+//! `GH_TIMEOUT: 1200`: the gate step ran **44m35s** and was killed by the job's 45-minute cap
+//! with no verdict — `duration_ms=2675520`, against `2676029` for the original 2700s run.
+//! **Half a second apart.** The runner produced nothing after its tenant line in either case,
+//! and the only occurrences of "timeout" in 998 log lines are the input and env echoes.
+//!
+//! So the runner does not enforce its own declared timeout, and no value of `timeout` makes it
+//! report first. That is a defect one level below this gate, in gatehouse's runner rather than
+//! in nucleus's declarations.
+//!
+//! This gate is still right, and the distinction matters: it decides whether the DECLARATIONS
+//! are coherent, and a budget that cannot fit inside the job running it is incoherent whether
+//! or not the runner would have honoured it. What must not be claimed is that fixing the
+//! arithmetic makes an overrun report — it did not, and the first version of this module said
+//! it would.
 //!
 //! # The second conjunct: a job with no budget at all
 //!
