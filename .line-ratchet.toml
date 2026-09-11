@@ -142,6 +142,14 @@ path = "crates/nucleus-node/src/firecracker_config.rs"
 # a non-zero step here would ratchet against test coverage, which is the one
 # thing this file should not be pressured to drop. Raise it if the production
 # half starts growing on its own.
-ceiling = 1190
+#
+# Bumped 1190 -> 1193 2026-09-11, merging main into this branch. The three lines
+# are main's #2690, which annotates the OS boundary: one
+# `// OS assumption: KB-VSOCK-PEER-CID` above the kernel-command-line block and a
+# two-line `KB-PROCFS-STATUS` doc above `verify_seccomp_active`. None of them is
+# this branch's code and none is production half growing on its own, which is the
+# condition the note above says would justify a non-zero step. Re-seeded at the
+# measured value, as every move of these entries is.
+ceiling = 1193
 target = 2500
 step = 0
