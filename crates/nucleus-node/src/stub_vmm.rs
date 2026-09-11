@@ -117,6 +117,7 @@ impl StubVmm {
 
 /// A configuration built the way production builds one, so `configure`
 /// drives the real lowering rather than a hand-made request list.
+#[cfg(target_os = "linux")]
 pub(crate) fn sample_config() -> crate::firecracker_config::FirecrackerConfig {
     let spec: nucleus_spec::PodSpec =
         serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)

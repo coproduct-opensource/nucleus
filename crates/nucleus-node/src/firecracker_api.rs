@@ -193,7 +193,9 @@ pub(crate) mod stub_vmm;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stub_vmm::{Seen, StubVmm, sample_config};
+    use stub_vmm::{Seen, StubVmm};
+    #[cfg(target_os = "linux")]
+    use stub_vmm::sample_config;
 
     /// A socket that never appears fails by naming the path, not by hanging.
     ///
@@ -471,6 +473,7 @@ mod tests {
 
     /// `configure` drives the lowering and leaves the machine NOT started —
     /// which is the property the snapshot path depends on.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn configure_builds_the_machine_without_starting_it() {
         let vmm = StubVmm::start(vec![]).await;

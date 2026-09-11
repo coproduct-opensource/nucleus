@@ -1552,6 +1552,7 @@ fn a_provisioned_scratch_still_reaches_the_guest_as_a_writable_drive() {
 
 /// No jail means nowhere to put one; a spec that names one keeps it. Both
 /// report "not node-provisioned", so a caller's file is still placed.
+#[cfg(target_os = "linux")]
 #[test]
 fn scratch_for_pod_leaves_a_caller_supplied_or_jailless_image_alone() {
     let declared = image(true, true);
