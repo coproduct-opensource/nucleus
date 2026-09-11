@@ -16,10 +16,9 @@ name: Portcullis-Core Proven Lean
 #   3. runs a `#print axioms` audit on the enforcement core to catch any
 #      `sorryAx` that a textual grep would miss via the proof dependency graph.
 #
-# `native_decide` is NOT banned here (unlike the Mathlib-free ck-policy/rubric/
-# econ trees): it is load-bearing in FlowGraphProofs.lean. It is instead
-# DISCLOSED — the #print axioms step surfaces `Lean.ofReduceBool` (native-
-# compiler TCB) so the trust boundary is visible, not hidden.
+# Native evaluation is admitted only by the per-theorem exception list.
+# FlowGraphProofs uses kernel-checked decide; owned compiler overrides are
+# rejected before any build or axiom audit.
 
 on:
   push:
@@ -54,6 +53,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       # WHY THIS EXISTS: `paths:` under `merge_group:` is accepted by the YAML
       # schema and then IGNORED by GitHub — path filtering is not supported for
       # merge_group events. So the scoping declared above holds on pull_request

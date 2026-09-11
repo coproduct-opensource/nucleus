@@ -83,6 +83,7 @@ jobs:
         with:
           # Full history + persisted credentials so we can push the regen back.
           fetch-depth: 0
+          filter: blob:none
 
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon
@@ -167,6 +168,14 @@ jobs:
       - name: Charon scoped MIR extraction
         working-directory: crates/nucleus-ifc-kernel
         run: |
+          # `charon cargo` exits 0 and emits NOTHING when cargo has nothing to
+          # recompile: on a warm target directory this extracts nothing, the
+          # regenerate-then-diff downstream finds no diff, and the gate goes
+          # GREEN having checked nothing. The only thing that forced a rebuild
+          # was `rm -rf /data/work` in ci/fly-runner/entrypoint.sh wiping the
+          # target dir every boot — a runner detail, in another file, that this
+          # gate's correctness depended on without saying so.
+          cargo clean -p nucleus-ifc-kernel
           STARTS=""
           IFS=',' read -ra ROOTS <<< "$EXTRACT_ROOTS"
           for r in "${ROOTS[@]}"; do

@@ -64,8 +64,8 @@ fn lean_columns(rubric: &Rubric, sc: &Scorecard) -> Vec<(Provenance, u128, u128)
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let g = sc.grades.get(i).copied().unwrap_or(0) as u128;
-            (c.provenance, c.weight as u128, g)
+            let g = u128::from(sc.grades.get(i).copied().unwrap_or(0));
+            (c.provenance, u128::from(c.weight), g)
         })
         .collect()
 }

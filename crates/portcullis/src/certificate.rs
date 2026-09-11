@@ -599,6 +599,12 @@ pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
     hasher.update([0]);
     hasher.update(perms.budget.max_input_tokens.to_le_bytes());
     hasher.update(perms.budget.max_output_tokens.to_le_bytes());
+    // Consumed tokens, for the same reason as `consumed_usd` above and by the
+    // same argument (SECURITY_TODO #20). `leq` alone does not close this: an
+    // unsigned field can be edited on BOTH blocks, and the monotone check then
+    // compares tampered against tampered and passes.
+    hasher.update(perms.budget.consumed_input_tokens.to_le_bytes());
+    hasher.update(perms.budget.consumed_output_tokens.to_le_bytes());
 
     // Commands (sorted for determinism)
     let mut allowed_cmds: Vec<&str> = perms.commands.allowed.iter().map(|s| s.as_str()).collect();
@@ -621,7 +627,7 @@ pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
     hasher.update(perms.time.valid_until.timestamp().to_le_bytes());
 
     //  UninhabitableState constraint
-    hasher.update([perms.uninhabitable_constraint as u8]);
+    hasher.update([u8::from(perms.uninhabitable_constraint)]);
 
     hasher.finalize().to_vec()
 }
@@ -631,10 +637,13 @@ impl AuthorityBlock {
     #[cfg(feature = "crypto")]
     pub(crate) fn signing_payload(&self) -> Vec<u8> {
         let mut payload = Vec::new();
-        // v2: canonical hash now covers spawn_agent/extensions/consumed_usd,
-        // and the payload carries `provenance`. Tokens issued under v1 do not
-        // verify — none exist outside this tree.
-        payload.extend_from_slice(b"lattice-cert-authority-v2:");
+        // v3: canonical hash now also covers consumed_input_tokens /
+        // consumed_output_tokens (SECURITY_TODO #20). v2 added
+        // spawn_agent/extensions/consumed_usd and the `provenance` payload.
+        // Certificates issued under an earlier version do not verify; they are
+        // minted per pod-create and expire at `not_after`, so none outlive the
+        // deploy that carries this change.
+        payload.extend_from_slice(b"lattice-cert-authority-v3:");
         payload.extend_from_slice(self.root_identity.as_bytes());
         payload.push(0); // separator
         payload.extend_from_slice(&self.not_after.timestamp().to_le_bytes());
@@ -667,8 +676,10 @@ impl DelegationBlock {
     #[cfg(feature = "crypto")]
     pub(crate) fn signing_payload(&self) -> Vec<u8> {
         let mut payload = Vec::new();
-        // v3: canonical hash now covers spawn_agent/extensions/consumed_usd.
-        payload.extend_from_slice(b"lattice-cert-delegation-v3:");
+        // v4: canonical hash now also covers consumed_input_tokens /
+        // consumed_output_tokens (SECURITY_TODO #20). v3 covered
+        // spawn_agent/extensions/consumed_usd.
+        payload.extend_from_slice(b"lattice-cert-delegation-v4:");
         payload.extend_from_slice(self.from_identity.as_bytes());
         payload.push(0);
         payload.extend_from_slice(self.to_identity.as_bytes());

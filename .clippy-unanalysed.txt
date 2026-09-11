@@ -1,0 +1,33 @@
+# Crates clippy could not analyse, so whose ratcheted cast sites are NOT in the
+# count that .clippy-ratchet.toml pins.
+#
+# WHY THIS FILE EXISTS. `scripts/check-clippy-ratchet.sh` says "Never report a
+# partial count as if it were whole" and then does exactly that: it emits a
+# `::warning::` naming the crates that failed to compile, prints the count
+# anyway, and `--strict` passes. A warning nobody fails on is a comment.
+#
+# This has already cost the number its meaning once. The ceiling comment in
+# .clippy-ratchet.toml records it: nucleus-verifier-service `include_*!`d a
+# wasm-pack artifact that only exists after `wasm-pack build`, so on a bare
+# checkout it did not compile and was silently dropped -- "455 was never the
+# workspace's real count; it was the count of the crates that happened to
+# build." Seven cast sites appeared the moment it compiled again.
+#
+# So the set is DECLARED here and checked in both directions:
+#   * a crate that fails to compile and is NOT listed is an error -- the count
+#     just shrank for a reason nobody chose;
+#   * a listed crate that now COMPILES is also an error -- remove it, and expect
+#     the count to RISE, which is coverage going up rather than a regression.
+#     Same convention as ci/gate-integrity-allowlist.txt, where a finding that
+#     no longer fires is itself a finding.
+#
+# PINNED may only SHRINK. Adding a crate here is a deliberate, dated act.
+# PINNED = 1
+
+# portcullis-core's TEST targets do not compile on a default-feature checkout:
+# `unresolved import portcullis_core::witness`, `cannot find prov_export`, and a
+# missing serde_json in a test module. The lib builds; the test targets do not,
+# and --all-targets is what the measurement uses. Its cast sites are therefore
+# absent from the count. Observed 2026-09-10 while grinding the ratchet
+# 462 -> 341; not introduced by that change (verified against a clean main).
+portcullis-core

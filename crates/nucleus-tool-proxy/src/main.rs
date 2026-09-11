@@ -27,6 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+mod api_error;
 mod art12;
 mod art12_shipper;
 mod art12_sink;
@@ -38,6 +39,7 @@ mod cert_bridge;
 mod declassify;
 mod dlc_admission;
 mod drand_setup;
+mod effect_gate;
 mod egress;
 mod escalate;
 mod exit_report;
@@ -63,12 +65,14 @@ mod telemetry;
 mod unicode_audit;
 mod url_allow;
 mod validation;
+
+use crate::api_error::ApiError;
 mod verdict_sink;
 mod web_fetch_policy;
 mod workload;
 
 use attestation::AttestationVerifier;
-use auth::{AuthConfig, AuthError};
+use auth::AuthConfig;
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
 use nucleus_identity::approval_bundle::{ApprovalBundleVerifier, compute_manifest_hash};
 use nucleus_identity::mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
@@ -422,6 +426,9 @@ pub(crate) struct AppState {
     /// (`pod_cert.rs`). `None` only for a pod created before its node issued
     /// certificates.
     pod_cert: Option<Arc<pod_cert::PodCertificate>>,
+    /// The certificate's granted effects, read with the catalog: per-effect
+    /// egress enforcement (ADR 0004, `effect_gate.rs`).
+    effect_gate: Arc<effect_gate::EffectGate>,
     /// Credentials loaded from orchestrator environment for injection into sub-pods.
     orchestrator_credentials: std::collections::BTreeMap<String, String>,
     /// Permission market for Lagrangian pricing of capability dimensions.
@@ -731,6 +738,42 @@ impl ApprovalRegistry {
             }
         }
         false
+    }
+
+    /// Whether a live grant exists for `operation`, WITHOUT spending it.
+    ///
+    /// One human approval must buy exactly one operation, and an operation
+    /// crosses two independent approval gates on its way through: the kernel's
+    /// `RequiresApproval` verdict at the HTTP chokepoint, and the sandbox's own
+    /// capability guard. Both used to want to `consume`, which is #2406's other
+    /// half — a grant of `count: 1` was spent by whichever gate read it first
+    /// and the next gate found nothing, so the caller had to grant more than
+    /// they meant to approve for the write to land at all.
+    ///
+    /// So the gates split the two questions. Every gate before the last asks
+    /// *is this approved* (here); the sandbox approver, which is the last thing
+    /// between the request and the bytes, is the single site that spends it.
+    /// A peek that reports a live grant is therefore always followed by exactly
+    /// one `consume`, or by a refusal further down that spends nothing.
+    ///
+    /// Expiry is evaluated and purged here exactly as in [`Self::consume`], so
+    /// a peek cannot report a grant that a spend would then reject.
+    fn is_granted(&self, operation: &str) -> bool {
+        let mut guard = self.approvals.lock().unwrap();
+        match guard.get(operation) {
+            Some(entry) if is_expired(entry.expires_at_unix) => {
+                guard.remove(operation);
+                false
+            }
+            Some(entry) => entry.count > 0,
+            None => false,
+        }
+    }
+}
+
+impl mediation::ApprovalGrants for ApprovalRegistry {
+    fn is_granted(&self, operation: &str) -> bool {
+        ApprovalRegistry::is_granted(self, operation)
     }
 }
 
@@ -1135,212 +1178,6 @@ pub(crate) struct EscalateResponse {
     /// Error message (if denied).
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorBody {
-    error: String,
-    kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    operation: Option<String>,
-    /// Payment metadata for 402 responses (vendor-agnostic).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    payment: Option<nucleus_spec::PaymentRequiredInfo>,
-}
-
-#[derive(Debug, thiserror::Error)]
-enum ApiError {
-    #[error("spec error: {0}")]
-    Spec(String),
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("serde error: {0}")]
-    Serde(#[from] serde_yaml::Error),
-    #[error("nucleus error: {0}")]
-    Nucleus(#[from] NucleusError),
-    #[error("auth error: {0}")]
-    Auth(#[from] AuthError),
-    #[error("request body error: {0}")]
-    Body(String),
-    #[error("rate limited: too many approval requests")]
-    RateLimited,
-    #[error("web fetch error: {0}")]
-    WebFetch(String),
-    #[error("url not in dns_allow list: {0}")]
-    DnsNotAllowed(String),
-    #[error("attestation verification failed: {0}")]
-    AttestationFailed(String),
-    /// A request-borne delegation certificate was presented and cannot be
-    /// honoured (unbound tier, malformed, unverifiable, wrong leaf). Never a
-    /// downgrade to the unsigned bid — see `pod_cert::evaluate_request_cert`.
-    #[error("delegation certificate rejected: {0}")]
-    DelegationCert(String),
-    #[error("escalation error: {0}")]
-    Escalation(String),
-    /// The permission kernel refused, for a reason that is not a capability
-    /// level. Carries the kernel's own reason rather than flattening every
-    /// refusal into "capability is Never".
-    #[error("kernel denied: {0}")]
-    KernelDenied(String),
-    #[error("validation error: {0}")]
-    Validation(#[from] validation::ValidationError),
-    #[error("permission bid denied: insufficient value")]
-    PermissionDenied(#[allow(unused)] nucleus_spec::PaymentRequiredInfo),
-    /// Operation denied by the information-flow control monitor: the session has
-    /// ingested adversarial (untrusted/web) content and this is an outbound
-    /// action that could exfiltrate or act on it (the lethal-trifecta guard,
-    /// #1633). Wired into the HTTP path so it has parity with the MCP server.
-    #[error("ifc denied: {0}")]
-    IfcDenied(String),
-    /// A governor declassification token was rejected (bad/absent signature,
-    /// no trusted keys, expired, precondition unmet, or node not found).
-    #[error("declassification denied: {0}")]
-    Declassification(String),
-    /// A governor declassification token was well-formed and signed but cannot
-    /// take effect because its one-shot authority is spent or the node is
-    /// already declassified. Distinct from a rejection so a governor can tell
-    /// "already done" from "refused".
-    #[error("declassification conflict: {0}")]
-    DeclassificationConflict(String),
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let (status, kind, operation, payment) = match &self {
-            ApiError::Nucleus(NucleusError::ApprovalRequired { operation }) => (
-                StatusCode::FORBIDDEN,
-                "approval_required",
-                Some(operation.clone()),
-                None,
-            ),
-            ApiError::Nucleus(NucleusError::BudgetExhausted {
-                requested,
-                remaining,
-            }) => {
-                let payment_info = nucleus_spec::PaymentRequiredInfo {
-                    amount_usd: *requested,
-                    reason: format!(
-                        "budget exhausted: requested ${requested:.4}, remaining ${remaining:.4}"
-                    ),
-                    kind: nucleus_spec::PaymentRequiredKind::BudgetExhausted {
-                        requested: *requested,
-                        remaining: *remaining,
-                    },
-                    recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
-                    resource: None,
-                };
-                (
-                    StatusCode::PAYMENT_REQUIRED,
-                    "budget_exhausted",
-                    None,
-                    Some(payment_info),
-                )
-            }
-            ApiError::Nucleus(NucleusError::CommandDenied { .. }) => {
-                (StatusCode::FORBIDDEN, "command_denied", None, None)
-            }
-            // An authority earned for a different action was presented. FORBIDDEN
-            // rather than 400: the request was well-formed, the authority was not
-            // valid for it.
-            ApiError::Nucleus(NucleusError::ScopeMismatch { .. }) => {
-                (StatusCode::FORBIDDEN, "scope_mismatch", None, None)
-            }
-            ApiError::Nucleus(NucleusError::PathDenied { .. }) => {
-                (StatusCode::FORBIDDEN, "path_denied", None, None)
-            }
-            // Filesystem facts, NOT authorization outcomes. 404/400 rather than
-            // 403 so a caller can tell "the policy refused you" from "that file
-            // is not there" and "that is a directory". Reported as 403
-            // `path_denied`, an absent file sends the reader to a policy that
-            // had no part in it -- measured on a live pod, where the sandbox's
-            // only entry was a directory and reading it said "access denied".
-            ApiError::Nucleus(NucleusError::PathNotFound { .. }) => {
-                (StatusCode::NOT_FOUND, "path_not_found", None, None)
-            }
-            ApiError::Nucleus(NucleusError::PathUnusable { .. }) => {
-                (StatusCode::BAD_REQUEST, "path_unusable", None, None)
-            }
-            ApiError::Nucleus(NucleusError::SandboxEscape { .. }) => {
-                (StatusCode::FORBIDDEN, "sandbox_escape", None, None)
-            }
-            ApiError::KernelDenied(_) => (StatusCode::FORBIDDEN, "kernel_denied", None, None),
-            ApiError::Nucleus(NucleusError::Io(_)) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None)
-            }
-            ApiError::Nucleus(NucleusError::TimeViolation { .. }) => {
-                (StatusCode::REQUEST_TIMEOUT, "time_violation", None, None)
-            }
-            ApiError::Nucleus(NucleusError::StateBlocked { .. }) => {
-                (StatusCode::FORBIDDEN, "uninhabitable_blocked", None, None)
-            }
-            ApiError::Nucleus(NucleusError::InsufficientCapability { .. }) => {
-                (StatusCode::FORBIDDEN, "insufficient_capability", None, None)
-            }
-            ApiError::Nucleus(NucleusError::IsolationNotConfigured)
-            | ApiError::Nucleus(NucleusError::IsolationInsufficient { .. })
-            | ApiError::Nucleus(NucleusError::HardeningUnavailable { .. }) => {
-                (StatusCode::FORBIDDEN, "isolation_denied", None, None)
-            }
-            ApiError::Nucleus(NucleusError::ProvenanceUnverified { .. }) => {
-                (StatusCode::FORBIDDEN, "provenance_unverified", None, None)
-            }
-            ApiError::Nucleus(NucleusError::InvalidApproval { operation }) => (
-                StatusCode::FORBIDDEN,
-                "invalid_approval",
-                Some(operation.clone()),
-                None,
-            ),
-            ApiError::Nucleus(NucleusError::InvalidCharge { .. }) => {
-                (StatusCode::BAD_REQUEST, "invalid_charge", None, None)
-            }
-            ApiError::Spec(_) => (StatusCode::BAD_REQUEST, "spec_error", None, None),
-            ApiError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None),
-            ApiError::Serde(_) => (StatusCode::BAD_REQUEST, "serde_error", None, None),
-            ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None, None),
-            ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None, None),
-            ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None, None),
-            ApiError::WebFetch(_) => (StatusCode::BAD_GATEWAY, "web_fetch_error", None, None),
-            ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None, None),
-            ApiError::AttestationFailed(_) => {
-                (StatusCode::FORBIDDEN, "attestation_failed", None, None)
-            }
-            ApiError::DelegationCert(_) => (
-                StatusCode::FORBIDDEN,
-                "delegation_cert_rejected",
-                None,
-                None,
-            ),
-            ApiError::Escalation(_) => (StatusCode::FORBIDDEN, "escalation_denied", None, None),
-            ApiError::Validation(_) => (StatusCode::BAD_REQUEST, "validation_error", None, None),
-            ApiError::PermissionDenied(info) => (
-                StatusCode::PAYMENT_REQUIRED,
-                "permission_denied",
-                None,
-                Some(info.clone()),
-            ),
-            ApiError::IfcDenied(_) => (StatusCode::FORBIDDEN, "ifc_denied", None, None),
-            ApiError::Declassification(_) => {
-                (StatusCode::FORBIDDEN, "declassification_denied", None, None)
-            }
-            ApiError::DeclassificationConflict(_) => (
-                StatusCode::CONFLICT,
-                "declassification_conflict",
-                None,
-                None,
-            ),
-        };
-
-        // Sanitize error message to prevent information disclosure
-        let sanitized_error = validation::sanitize_error_message(&self.to_string(), None);
-
-        let body = Json(ErrorBody {
-            error: sanitized_error,
-            kind: kind.to_string(),
-            operation,
-            payment,
-        });
-        (status, body).into_response()
-    }
 }
 
 /// Write one line to the guest console log (`firecracker.log`), the sink
@@ -1979,6 +1816,7 @@ async fn main() -> Result<(), ApiError> {
             .as_deref()
             .and_then(|hex_str| hex::decode(hex_str).ok())
             .map(Arc::new),
+        effect_gate: effect_gate::EffectGate::new(pod_cert.as_deref(), &spec.spec.work_dir),
         pod_cert,
         exposure_guard,
         file_lockdown,
@@ -2772,13 +2610,16 @@ async fn http_kernel_decide(
     // records do; it used to hardcode `Unknown` while the sibling record in
     // the same handler carried the SPIFFE ID.
     mediation::decide_and_record(
-        state.verdict_sink.as_ref(),
+        mediation::MediationEnv {
+            sink: state.verdict_sink.as_ref(),
+            actor: actor_from_auth(auth_ctx),
+            transport: "http",
+            grants: state.approvals.as_ref(),
+        },
         &mut kernel,
         &graph,
         operation,
         subject,
-        actor_from_auth(auth_ctx),
-        "http",
     )
 }
 
@@ -3053,19 +2894,28 @@ async fn write_file(
             // `ApprovalRequired` with the same operation string. That ambiguity
             // cost four wrong diagnoses of #2406, so the distinction is logged.
             //
-            // Worth knowing what this arm does NOT cover. `http_kernel_decide`
-            // runs earlier and can return `requires_approval` from mediation,
-            // which propagates before `sandbox.write` is ever called — so a
-            // grant made through `/v1/approve` never reaches this registry at
-            // all. That is #2406, and it is why adding the log here proved the
-            // point by staying silent.
+            // `http_kernel_decide` runs earlier and can also return
+            // `requires_approval`. It used to propagate before `sandbox.write`
+            // was ever called, so a grant made through `/v1/approve` never
+            // reached this registry at all — that was #2406, and it is why
+            // adding the log here first proved the point by staying silent.
+            // That gate now consults the same registry, so an operation can
+            // reach this arm with a grant already on file.
             //
-            // Note also the grant is consumed TWICE per attempt when this arm IS
-            // reached: once here, and again inside `request_approval`, whose
-            // approver is `move |req| approvals.consume(req.operation())`.
+            // Which makes it load-bearing that this guard PEEKS. The grant is
+            // spent exactly once per attempt, inside `request_approval`, whose
+            // approver is `move |req| approvals.consume(req.operation())`. This
+            // used to `consume` as well — two spends per attempt, so `count: 1`
+            // never sufficed and the caller had to approve twice what they meant
+            // to approve once.
             let policy_ok =
                 check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path));
-            let pre_granted = !policy_ok && state.approvals.consume(&op);
+            // `op` is the same string the kernel gate refused with and the
+            // caller posted to `/v1/approve`: both gates name an approval
+            // `{Operation:?} {subject}` (`Sandbox::approval_key`). One human
+            // decision, one name, so one grant carries the operation through
+            // every gate that asks about it.
+            let pre_granted = !policy_ok && state.approvals.is_granted(&op);
             if policy_ok || pre_granted {
                 let approval = match state.runtime.sandbox().request_approval(op.clone()) {
                     Ok(a) => a,
@@ -3074,8 +2924,7 @@ async fn write_file(
                             operation = %op,
                             policy_ok,
                             pre_granted,
-                            "a grant was accepted here but the sandbox approver then refused; \
-                             the grant is consumed twice per attempt"
+                            "a grant was accepted here but the sandbox approver then refused"
                         );
                         return Err(e.into());
                     }
@@ -3542,6 +3391,11 @@ async fn web_fetch(
     let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| ApiError::WebFetch(format!("invalid method: {}", method)))?;
+    // Per-effect gate (ADR 0004): a sealed grant's effects vouch for method +
+    // host + path, not just the host. Refused before any discharge is minted.
+    state
+        .effect_gate
+        .admit_http_recorded(method.as_str(), &url, sink.as_ref(), actor.clone())?;
     let headers: Vec<(String, String)> = req.headers.unwrap_or_default().into_iter().collect();
     let body: Option<Vec<u8>> = req.body.map(|b| b.into_bytes());
 

@@ -275,7 +275,7 @@ fn authorize_release_value_binding_matches_the_extracted_decision() {
         a[0] = b;
         a
     };
-    let tag = |a: &[u8; 32]| a[0] as u64;
+    let tag = |a: &[u8; 32]| u64::from(a[0]);
 
     // committed == recorded (both non-zero) ⇒ Authorized AND value_authorized true.
     for (committed, recorded) in [(v(7), v(7)), (v(7), v(9)), (v(9), v(7))] {
@@ -334,7 +334,7 @@ fn four_run_released_value_is_not_attacker_steerable() {
         a[0] = b;
         a
     };
-    let tag = |a: &[u8; 32]| a[0] as u64;
+    let tag = |a: &[u8; 32]| u64::from(a[0]);
 
     // Governor-signed commitment — fixed across all runs (attacker-independent).
     let committed = v(7);

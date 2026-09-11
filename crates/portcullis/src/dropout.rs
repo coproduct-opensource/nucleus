@@ -285,6 +285,9 @@ pub fn project(perms: &PermissionLattice, config: &DropoutConfig) -> PermissionL
             consumed_usd: Decimal::ZERO,
             max_input_tokens: u64::MAX,
             max_output_tokens: u64::MAX,
+            // ⊤ = least consumed, matching consumed_usd: ZERO above.
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         }
     };
 
@@ -499,7 +502,7 @@ pub fn dropout_pipeline(
         stages_skipped,
         load_bearing_dimensions: load_bearing,
         trivial_dimensions: trivial,
-        evaluation_fraction: active_stages as f64 / total_stages as f64,
+        evaluation_fraction: f64::from(active_stages) / f64::from(total_stages),
     };
 
     (trace, report)

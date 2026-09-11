@@ -603,6 +603,119 @@ pub fn host_matches(pattern: &str, host: &str) -> bool {
     }
 }
 
+/// Does a path glob match `path`? `*` matches any run of characters, and
+/// the pattern is anchored at both ends: `/repos/*/pulls` admits
+/// `/repos/o/r/pulls` and not `/repos/o/r/pulls/7/merge`.
+#[must_use]
+pub fn path_matches(pattern: &str, path: &str) -> bool {
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut rest = path;
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(pos) = rest.find(part) else {
+            return false;
+        };
+        if i == 0 && pos != 0 {
+            return false;
+        }
+        rest = &rest[pos + part.len()..];
+    }
+    parts.last().is_some_and(|l| l.is_empty()) || rest.is_empty()
+}
+
+/// What the granted effect set says about one attempt (ADR 0004, milestone 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectAdmission {
+    /// The certificate carries no effect dimension: nothing to check against.
+    Unconstrained,
+    /// A granted effect vouches for the attempt.
+    Admitted(EffectId),
+    /// The dimension is in use and no granted effect vouches for the attempt;
+    /// `would_admit` names the catalog effects that would, for the proposal.
+    NotAdmitted {
+        /// Effects (granted or not) whose vocabulary covers the attempt.
+        would_admit: Vec<EffectId>,
+    },
+}
+
+impl EffectSpec {
+    /// Does this effect vouch for an HTTP request? A declared `http` shape
+    /// must match method, host and path; an effect with no `http` shapes but
+    /// a host list vouches for any request to one of its hosts (a host-level
+    /// effect such as `git/push-branch`).
+    #[must_use]
+    pub fn admits_http(&self, method: &str, host: &str, path: &str) -> bool {
+        if self.http.is_empty() {
+            return self.hosts.iter().any(|p| host_matches(p, host));
+        }
+        self.http.iter().any(|m| {
+            m.method.eq_ignore_ascii_case(method.trim())
+                && host_matches(&m.host, host)
+                && path_matches(&m.path, path)
+        })
+    }
+
+    /// Does this effect vouch for an MCP tool by name (`server__tool` or bare)?
+    #[must_use]
+    pub fn admits_tool(&self, tool: &str) -> bool {
+        let bare = tool.rsplit("__").next().unwrap_or(tool);
+        self.mcp_tools.iter().any(|t| t == tool || t == bare)
+    }
+}
+
+impl EffectCatalog {
+    /// Is an HTTP request admitted under `granted` (the certificate's effect
+    /// set, `None` when the dimension is unset)?
+    #[must_use]
+    pub fn admits_http(
+        &self,
+        granted: Option<&BTreeSet<String>>,
+        method: &str,
+        host: &str,
+        path: &str,
+    ) -> EffectAdmission {
+        let Some(granted) = granted else {
+            return EffectAdmission::Unconstrained;
+        };
+        let host = host.trim().to_ascii_lowercase();
+        let mut would_admit = Vec::new();
+        for e in self.iter() {
+            if !e.admits_http(method, &host, path) {
+                continue;
+            }
+            if granted.contains(&e.id.to_string()) {
+                return EffectAdmission::Admitted(e.id.clone());
+            }
+            would_admit.push(e.id.clone());
+        }
+        would_admit.sort();
+        EffectAdmission::NotAdmitted { would_admit }
+    }
+
+    /// Is an MCP tool call admitted under `granted`?
+    #[must_use]
+    pub fn admits_tool(&self, granted: Option<&BTreeSet<String>>, tool: &str) -> EffectAdmission {
+        let Some(granted) = granted else {
+            return EffectAdmission::Unconstrained;
+        };
+        let mut would_admit = Vec::new();
+        for e in self.iter() {
+            if !e.admits_tool(tool) {
+                continue;
+            }
+            if granted.contains(&e.id.to_string()) {
+                return EffectAdmission::Admitted(e.id.clone());
+            }
+            would_admit.push(e.id.clone());
+        }
+        would_admit.sort();
+        EffectAdmission::NotAdmitted { would_admit }
+    }
+}
+
 /// A prefix match on whole words: `git push` matches `git push origin x` and
 /// `git push`, not `git pushx`. A `*` inside a word matches any run of
 /// characters, and because the pattern is a prefix its last literal may end
@@ -797,6 +910,78 @@ operations = ["web_fetch"]
         assert!(matches!(
             catalog.load_toml(dup, "test"),
             Err(EffectCatalogError::Duplicate(_))
+        ));
+    }
+
+    #[test]
+    fn http_and_tool_admission_follow_the_granted_effects() {
+        let catalog = EffectCatalog::builtin().unwrap();
+        let granted: BTreeSet<String> = ["github/read-ci-logs", "fs/read-workspace"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let g = Some(&granted);
+        assert!(matches!(
+            catalog.admits_http(g, "GET", "api.github.com", "/repos/o/r/actions/runs/1/logs"),
+            EffectAdmission::Admitted(ref id) if id.to_string() == "github/read-ci-logs"
+        ));
+        // Same host, a method and path only github/open-pr covers.
+        match catalog.admits_http(g, "POST", "api.github.com", "/repos/o/r/pulls") {
+            EffectAdmission::NotAdmitted { would_admit } => {
+                assert!(would_admit
+                    .iter()
+                    .any(|e| e.to_string() == "github/open-pr"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Query strings do not defeat the path glob.
+        assert!(matches!(
+            catalog.admits_http(
+                g,
+                "get",
+                "API.github.com",
+                "/repos/o/r/actions/runs?per_page=5"
+            ),
+            EffectAdmission::Admitted(_)
+        ));
+        // A host no effect names at all.
+        match catalog.admits_http(g, "GET", "evil.example", "/") {
+            EffectAdmission::NotAdmitted { would_admit } => assert!(would_admit.is_empty()),
+            other => panic!("{other:?}"),
+        }
+        // No effect dimension: unconstrained.
+        assert_eq!(
+            catalog.admits_http(None, "POST", "anywhere.example", "/"),
+            EffectAdmission::Unconstrained
+        );
+        // Tools.
+        assert!(matches!(
+            catalog.admits_tool(g, "github__get_job_logs"),
+            EffectAdmission::Admitted(_)
+        ));
+        assert!(matches!(
+            catalog.admits_tool(g, "read_file"),
+            EffectAdmission::Admitted(ref id) if id.to_string() == "fs/read-workspace"
+        ));
+        match catalog.admits_tool(g, "create_pull_request") {
+            EffectAdmission::NotAdmitted { would_admit } => {
+                assert_eq!(would_admit.len(), 1);
+                assert_eq!(would_admit[0].to_string(), "github/open-pr");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn path_globs_are_anchored_and_star_spans_segments() {
+        assert!(path_matches("/repos/*/pulls", "/repos/o/r/pulls"));
+        assert!(!path_matches("/repos/*/pulls", "/repos/o/r/pulls/7/merge"));
+        assert!(path_matches("/repos/*/pulls*", "/repos/o/r/pulls/7/merge"));
+        assert!(path_matches("/*", "/anything/at/all"));
+        assert!(!path_matches("/repos/*/pulls", "/other/o/r/pulls"));
+        assert!(path_matches(
+            "/repos/*/actions/*",
+            "/repos/o/r/actions/runs?x=1"
         ));
     }
 

@@ -407,10 +407,25 @@ anything runs, when:
 A certificate delegated from a sealed grant can drop effects but never add one:
 the `effect/` keys follow the tool-surface rule (`min(absent, Always) = Never`), a
 silent child inherits the parent's set, and a child that sheds the dimension is
-refused. What the `effect/` keys enforce at run time is unchanged in this
-milestone (the lattice, the host list and the command prefixes); attributing
-receipts to effects and enforcing per effect at the credential boundary are the
-milestones after this one.
+refused.
+
+**What the `effect/` keys enforce.** A `--goal` or `--grant` run hands the sealed
+certificate to the tool proxy (`--pod-cert`), and a pod whose certificate carries
+the effect dimension is bounded per effect, not just per host:
+
+- `web_fetch` and credentialed egress: the request's method, host and path must be
+  vouched for by a granted effect's `http` shapes (or its host list, for host-level
+  effects such as `git/push-branch`). A grant of `github/read-ci-logs` admits
+  `GET api.github.com/repos/*/actions/*` and refuses `POST …/pulls` with
+  `EFFECT_NOT_GRANTED`, naming the effect that would admit it.
+- MCP tools (`mcp-guard`): a served tool no granted effect names is blocked with
+  `MCP_TOOL_OUTSIDE_EFFECTS`, above the tool surface and the signed manifests.
+- Shell commands stay bounded by the command lattice; the effects' command prefixes
+  are what attributes them afterwards.
+
+A pod whose certificate carries no effect dimension (one that did not run under a
+grant) is unconstrained by this layer and bounded by everything else as before:
+the gate adds refusals, never allowances.
 
 ### Two numbers every run reports: ρ and C(T)
 

@@ -245,9 +245,10 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
     // tool-proxy. That gap let setup report "Tier 2 works on this host" on a VM
     // with no nucleus-node and no nucleus rootfs — measured 2026-07-29.
     let host = tier2_host_for(&args, &platform);
+    let verification;
     if let (Some(host), false) = (host, args.skip_verify) {
         if let Err(e) = crate::verify::verify_tier2(&host, &args.vm_name).await {
-            print_setup_summary(&args, &platform, false);
+            print_setup_summary(&args, &platform, Verification::Failed);
             // Do NOT name a cause here. This runs for ANY verification failure,
             // and asserting "the pod could not boot" was wrong on a run where the
             // pod booted in 2.7 s and passed 16 checks before a later assertion
@@ -259,14 +260,17 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
                  To skip it: nucleus setup --skip-verify"
             );
         }
+        verification = Verification::Passed;
     } else if !args.skip_verify {
         println!("\nNo Tier 2 host to verify against on this platform.");
+        verification = Verification::NotRun("no Tier 2 host on this platform");
     } else {
         println!("\nSkipping verification (--skip-verify) — Tier 2 is unverified.");
+        verification = Verification::NotRun("you passed --skip-verify");
     }
 
     // Step 7: Print summary
-    print_setup_summary(&args, &platform, true);
+    print_setup_summary(&args, &platform, verification);
 
     Ok(())
 }
@@ -839,57 +843,154 @@ timeout_seconds = 3600
 /// The old next-steps list told the user to cross-compile binaries and run
 /// `build-rootfs.sh` at a path printed as a literal `/host/.../`. Those steps are
 /// what `setup` now does; leaving them here would be instructions for the bug.
-fn print_setup_summary(args: &SetupArgs, platform: &Platform, succeeded: bool) {
-    println!();
-    if succeeded {
-        println!("Setup complete");
-        println!("==============");
+/// What setup is entitled to CLAIM at the end, which is not the same as whether it finished.
+///
+/// It used to be one `bool` meaning "setup finished", and the Tier 2 claim hung off it. That is
+/// how `nucleus setup --skip-verify` came to print "A real nucleus pod booted ... Tier 2 works
+/// here" three lines under "Skipping verification (--skip-verify) — Tier 2 is unverified"
+/// (#2714). Both lines were produced by the same run; one of them was false. Three paths reach a
+/// successful finish and only ONE of them proved anything, so the state has to distinguish them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verification {
+    /// A real pod booted, proved itself, and served and refused the operations it should.
+    Passed,
+    /// Nothing was verified. Carries why, because the reason is what the reader needs.
+    NotRun(&'static str),
+    /// Verification ran and refused.
+    Failed,
+}
+
+/// The end-of-setup summary as TEXT, so what it claims can be asserted in a test rather than
+/// read off a terminal.
+fn setup_summary(args: &SetupArgs, platform: &Platform, verification: Verification) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    out.push('\n');
+    if verification == Verification::Failed {
+        out.push_str("Setup did not finish\n====================\n");
     } else {
-        println!("Setup did not finish");
-        println!("====================");
+        out.push_str("Setup complete\n==============\n");
     }
-    println!();
+    out.push('\n');
 
     match platform {
         Platform::MacOS { chip, version } => {
             let arch = chip.linux_arch();
             if chip.supports_nested_virt() && version.supports_nested_virt() {
-                println!(
+                let _ = writeln!(
+                    out,
                     "Lima VM '{}' has nested virtualization ({arch}).",
                     args.vm_name
                 );
             } else {
                 // No "emulation mode" line. There is no emulation mode: without
                 // /dev/kvm, Firecracker does not start.
-                println!(
+                let _ = writeln!(
+                    out,
                     "Lima VM '{}' has NO nested virtualization, so no /dev/kvm and no Tier 2.",
                     args.vm_name
                 );
             }
         }
-        Platform::Linux => println!("This host has KVM."),
+        Platform::Linux => out.push_str("This host has KVM.\n"),
         _ => {}
     }
 
-    println!();
-    if succeeded {
-        println!("A real nucleus pod booted, proved its identity to its own tool-proxy,");
-        println!("served an allowed operation and refused a forbidden one. Tier 2 works here.");
-        println!();
-        println!("Next:");
-        println!("  nucleus verify --tier2    re-run that proof any time");
-        println!("  nucleus doctor            check the components are still installed");
-        println!("  nucleus start             run the node as a service");
-    } else {
-        println!("Next:");
-        println!("  nucleus doctor            which component is missing");
-        println!("  nucleus verify --tier2    re-run the boot check on its own");
+    out.push('\n');
+    match verification {
+        Verification::Passed => {
+            out.push_str(
+                "A real nucleus pod booted, proved its identity to its own tool-proxy,\n\
+                 served an allowed operation and refused a forbidden one. Tier 2 works here.\n\
+                 \n\
+                 Next:\n  \
+                 nucleus verify --tier2    re-run that proof any time\n  \
+                 nucleus doctor            check the components are still installed\n  \
+                 nucleus start             run the node as a service\n",
+            );
+        }
+        Verification::NotRun(why) => {
+            let _ = writeln!(out, "Tier 2 is UNVERIFIED on this host: {why}.");
+            out.push_str(
+                "Nothing booted a pod, so nothing here says whether Tier 2 works.\n\
+                 \n\
+                 Next:\n  \
+                 nucleus verify --tier2    prove it, or find out what is missing\n  \
+                 nucleus doctor            check the components are installed\n",
+            );
+        }
+        Verification::Failed => {
+            out.push_str(
+                "Next:\n  \
+                 nucleus doctor            which component is missing\n  \
+                 nucleus verify --tier2    re-run the boot check on its own\n",
+            );
+        }
     }
+    out
+}
+
+fn print_setup_summary(args: &SetupArgs, platform: &Platform, verification: Verification) {
+    print!("{}", setup_summary(args, platform, verification));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The summary only reads `vm_name`, and clap owns the rest; parsing an empty argv is the
+    /// honest way to get the defaults a real run would have.
+    fn summary_args() -> SetupArgs {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Only {
+            #[command(flatten)]
+            args: SetupArgs,
+        }
+        Only::parse_from(["setup"]).args
+    }
+
+    /// **The claim may only appear when something was actually verified.**
+    ///
+    /// `nucleus setup --skip-verify` printed "Skipping verification (--skip-verify) — Tier 2 is
+    /// unverified." and then, three lines later, "A real nucleus pod booted ... Tier 2 works
+    /// here." No pod booted. One `bool` carried both "setup finished" and "Tier 2 was proved",
+    /// and the second is not implied by the first — three paths reach a successful finish and
+    /// only one of them proves anything (#2714).
+    #[test]
+    fn setup_claims_tier2_works_only_when_tier2_was_verified() {
+        let args = summary_args();
+        let platform = Platform::Linux;
+        const CLAIM: &str = "A real nucleus pod booted";
+
+        let passed = setup_summary(&args, &platform, Verification::Passed);
+        assert!(
+            passed.contains(CLAIM),
+            "a verified run must still make the claim:\n{passed}"
+        );
+
+        for why in [
+            "you passed --skip-verify",
+            "no Tier 2 host on this platform",
+        ] {
+            let text = setup_summary(&args, &platform, Verification::NotRun(why));
+            assert!(
+                !text.contains(CLAIM),
+                "unverified setup claimed a pod booted:\n{text}"
+            );
+            assert!(
+                text.contains("UNVERIFIED") && text.contains(why),
+                "an unverified run must say so, and why:\n{text}"
+            );
+        }
+
+        let failed = setup_summary(&args, &platform, Verification::Failed);
+        assert!(
+            !failed.contains(CLAIM),
+            "a failed run claimed a pod booted:\n{failed}"
+        );
+        assert!(failed.contains("Setup did not finish"), "{failed}");
+    }
 
     /// The template must carry the VM's SHAPE and name no artifact versions.
     ///

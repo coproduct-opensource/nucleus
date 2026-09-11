@@ -113,7 +113,7 @@ pub(crate) async fn escalate_permissions(
     }
 
     // SECURITY: Verify the approver chain is valid (non-expired, monotonic)
-    if !approver_chain.verify() {
+    if !approver_chain.is_structurally_valid() {
         let result = approver_chain.verify_detailed();
         let reason = match result {
             portcullis::escalation::ChainVerificationResult::Invalid { reason, .. } => reason,

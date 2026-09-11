@@ -39,6 +39,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
 
       # GitHub ignores `paths:` for merge_group events, so the scope is
       # re-implemented here as a regex over the group's diff (ci/merge-group-

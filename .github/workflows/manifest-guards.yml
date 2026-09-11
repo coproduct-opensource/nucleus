@@ -37,7 +37,9 @@ jobs:
   manifest-guards:
     name: Manifest Guards
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    # 15 since this job began building xtask for `pin-parity`, matching every other
+    # job that runs `cargo run -p xtask` (ci-assurance, ck-admit, line-ratchet).
+    timeout-minutes: 15
     env:
       CARGO_TERM_COLOR: never
     steps:
@@ -83,6 +85,43 @@ jobs:
       - name: Docker Rust base >= workspace MSRV
         run: bash ci/docker-rust-matches-msrv.sh
 
+      # scan.yml runs THIS repo's own composite action by SHA. Pinning is right, but a
+      # pin to yourself can drift from the tree it lives in, and when it does the
+      # integration test exercises a copy of the action nobody ships -- and passes.
+      # The pin is currently 404 commits old and matches; nothing was keeping it that way.
+      - name: A SHA of this repo pinned by this repo still matches the tree
+        run: cargo run -q -p xtask -- self-pin
+      # The same shape as the two guards above, applied to the pins that had no guard.
+      # The elan release and its SHA-256 are copied into 13 workflow steps; AENEAS_RELEASE
+      # and CHARON_NIGHTLY into 6 each; the first-party lean-toolchain into 9 files. All
+      # agree today, which is when a gate is cheapest to add and hardest to justify --
+      # so: a partial bump of the elan pair leaves a checksum next to the wrong version,
+      # a partial bump of aeneas/charon makes half the fleet generate different Lean from
+      # the same Rust, and two Lean versions cannot share a .lake cache. `.lake/packages`
+      # is excluded on purpose: those are upstream packages' own pins and differ legitimately.
+      - name: One fact, one value (elan, aeneas/charon, lean-toolchain)
+        run: cargo run -q -p xtask -- pin-parity
+      # The manager validates POOLS at startup and nothing validated the COMMITTED
+      # default, so it had drifted into a config the manager refuses: requires_volume
+      # with zero volumes for eight machines. That is the value a fresh deployment
+      # falls back to before `fly secrets set POOLS=...`, so it was a default that
+      # could not start. Runs the manager's own validator, not a copy of the rule.
+      - name: The committed runner-pool default is one the manager accepts
+        run: cargo run -q -p xtask -- fly-pools
+
+      # A 2026-09-09 audit found that most of nucleus's algebraic unifications
+      # are already built, several machine-proved, and not wired to the
+      # enforcement path: ProductLattice had zero uses, Lean-proved MeetCap had
+      # zero production call sites, and PathLattice::with_work_dir — the
+      # filesystem sandbox root — is built by eleven callers, every one a test,
+      # three of them the adversarial suites that prove path-traversal
+      # containment of a configuration production never builds.
+      # C8 (check-extracted-callsites.sh) gates that class for the Aeneas
+      # predicates only. This is the general case: a mechanism declared dead
+      # must still be dead, and the list may only shrink.
+      - name: A mechanism declared dead is still dead
+        run: scripts/check-law-mechanisms.sh
+
       # `.gitignore` said `/target/` — anchored to the root, so every nested
       # target/ escaped it, and tools/nucleus-mediation-lint/target was
       # committed: 2664 files, 1269 MB, 98% of the HEAD tree. The same mistake
@@ -118,6 +157,14 @@ jobs:
       # `spiffe://` SAN, which the X.509-SVID standard requires be rejected.
       - name: One X.509-SVID validator
         run: bash ci/one-svid-validator.sh
+      # The independent implementation behind the open-commerce claim was never
+      # run by anything (#2736) — the only references to it in the repo were
+      # prose. It is the check that found the truncating-payout defect in #2359.
+      # Tree-only: python3 over a checked-in corpus, no cargo. The other half of
+      # #2736, that the corpus matches what the generator emits, is a Rust test
+      # next to the generator.
+      - name: Independent conformance implementation agrees
+        run: bash ci/independent-conformance.sh
       # `wait_for_proxy_health` moved modules and its boot.stage attribute stayed
       # behind, silently reattaching to `serve_grpc` — so the largest span in a
       # pod launch had no instrumentation and 92% of the boot trace was
@@ -145,3 +192,8 @@ jobs:
       # cancelled check-run turns the PR's rollup FAILURE with nothing broken.
       - name: twin workflows have distinct concurrency groups
         run: bash ci/twin-workflows-have-distinct-concurrency.sh
+
+      # zizmor audits workflow STRUCTURE at --min-severity high; it does not read
+      # shell content inside a `run:` block, which is where `curl … | sh` lives.
+      - name: no workflow pipes a downloaded script into an interpreter
+        run: bash ci/no-piped-installers.sh

@@ -17,6 +17,19 @@ use crate::exposure_core::EgressAggregates;
 use crate::ActionTerm;
 use crate::Operation;
 
+/// Clock-free verdict used by the live gate. Environment policy is an explicit
+/// input; decision recording remains in `Kernel::ifc_flow_gate`.
+fn ifc_flow_gate<F: EgressAggregates + ?Sized>(
+    flow: &F,
+    operation: Operation,
+    graded: bool,
+) -> exposure_core::EgressDisposition {
+    if flow.is_poisoned() {
+        return exposure_core::EgressDisposition::Poisoned;
+    }
+    exposure_core::ifc_egress_disposition(flow, operation, Kernel::node_kind_for(operation), graded)
+}
+
 impl Kernel {
     /// Extract source and artifact labels for policy rule evaluation.
     ///
@@ -70,37 +83,13 @@ impl Kernel {
         let flow = flow?;
         let operation = term.operation();
 
-        // Fail-closed poison gate (#3): a dropped observation makes the taint
-        // state unprovable, so deny EVERY operation (not just outbound).
-        if flow.is_poisoned() {
-            tracing::warn!(
-                ?operation,
-                subject = term.subject(),
-                "IFC denied: session poisoned (a flow observation was dropped)"
-            );
-            return Some(
-                self.ifc_deny(
-                    term.clone(),
-                    "session poisoned: an information-flow observation was dropped; \
-                 failing closed to prevent untracked taint"
-                        .to_string(),
-                ),
-            );
-        }
-
-        // Egress gate (#1633 / most-paranoid #4): deny outbound operations when
-        // the session is integrity-tainted OR its confidentiality ceiling exceeds
-        // what the sink may emit (secret exfiltration). The combined
-        // integrity+confidentiality check lives in `exposure_core`.
-        let kind = Kernel::node_kind_for(operation);
-        match exposure_core::ifc_egress_verdict(flow, operation, kind, Self::graded_taint_enabled())
-        {
+        match ifc_flow_gate(flow, operation, Self::graded_taint_enabled()).render(operation) {
             exposure_core::EgressVerdict::Deny(detail) => {
                 tracing::warn!(
                     ?operation,
                     subject = term.subject(),
                     %detail,
-                    "IFC denied outbound action"
+                    "IFC denied action"
                 );
                 Some(self.ifc_deny(term.clone(), detail))
             }
@@ -186,5 +175,93 @@ impl Kernel {
             last.action_term = Some(term);
         }
         (decision, token)
+    }
+}
+
+#[cfg(kani)]
+mod flow_gate_proofs {
+    use super::*;
+    use portcullis_core::{ifc_api::SafetyCheck, ConfLevel};
+
+    struct Labels {
+        poisoned: bool,
+        tainted: bool,
+        confidentiality: ConfLevel,
+    }
+
+    impl EgressAggregates for Labels {
+        fn is_poisoned(&self) -> bool {
+            self.poisoned
+        }
+        fn is_tainted(&self) -> bool {
+            self.tainted
+        }
+        fn session_exfiltration_check(&self, cap: ConfLevel) -> SafetyCheck {
+            if self.confidentiality > cap {
+                SafetyCheck::ConfidentialityViolation {
+                    data_conf: self.confidentiality,
+                    sink_max_conf: cap,
+                }
+            } else {
+                SafetyCheck::Safe
+            }
+        }
+    }
+
+    /// Default (ungraded) IFC policy: poison always rejects, outbound taint
+    /// rejects, and external sinks cannot carry a secret session ceiling.
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn proof_ifc_flow_gate_rejects_iff_forbidden() {
+        let index: u8 = kani::any();
+        kani::assume((index as usize) < Operation::ALL.len());
+        let op = Operation::ALL[index as usize];
+        let conf: u8 = kani::any();
+        kani::assume(conf < 3);
+        let labels = Labels {
+            poisoned: kani::any(),
+            tainted: kani::any(),
+            confidentiality: match conf {
+                0 => ConfLevel::Public,
+                1 => ConfLevel::Internal,
+                _ => ConfLevel::Secret,
+            },
+        };
+        let outbound = !matches!(
+            op,
+            Operation::ReadFiles
+                | Operation::GlobSearch
+                | Operation::GrepSearch
+                | Operation::WebFetch
+                | Operation::WebSearch
+        );
+        let external = matches!(
+            op,
+            Operation::GitPush
+                | Operation::CreatePr
+                | Operation::SpawnAgent
+                | Operation::ManagePods
+                | Operation::WebFetch
+                | Operation::WebSearch
+        );
+        let forbidden = labels.poisoned
+            || (outbound && labels.tainted)
+            || (external && labels.confidentiality == ConfLevel::Secret);
+        let verdict = ifc_flow_gate(&labels, op, false);
+        assert_eq!(
+            matches!(
+                verdict,
+                exposure_core::EgressDisposition::Poisoned
+                    | exposure_core::EgressDisposition::Tainted
+                    | exposure_core::EgressDisposition::Confidentiality
+            ),
+            forbidden
+        );
+        assert!(!matches!(
+            verdict,
+            exposure_core::EgressDisposition::TaintedApproval
+        ));
+        kani::cover!(forbidden, "forbidden labels reach denial");
+        kani::cover!(!forbidden, "permitted labels reach fallthrough");
     }
 }

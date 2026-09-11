@@ -45,6 +45,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       # `paths:` under `merge_group:` is accepted by the YAML schema and then
       # IGNORED by GitHub, so the scoping above holds on pull_request and is
       # dropped in the queue. This restores it for merge_group only; on every

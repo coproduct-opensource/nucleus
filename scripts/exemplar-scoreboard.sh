@@ -88,11 +88,6 @@ done
 disallow_sites=$(( bypass_sites - mediation_drift ))
 effect_stubs=$(grep -rhcE 'NotImplemented|NotWired' "${RS[@]}" crates/portcullis-effects crates/portcullis-core 2>/dev/null | awk '{s+=$1} END{print s+0}')
 
-# ── Hygiene ──────────────────────────────────────────────────────────────────
-# Count only TRACKED .verus paths (untracked local toolchain cruft — e.g. a
-# downloaded verus binary — isn't a repo gap and CI never sees it).
-stale_verus=$(git ls-files 2>/dev/null | grep -cE '(^|/)\.verus/' || true)
-
 # clean axiom footprint (from axiom-audit.sh badge if present)
 axiom_badge="badges/axiom-footprint.json"
 clean_axioms="$( [ -f "$axiom_badge" ] && grep -oE '"message":"[^"]*"' "$axiom_badge" | sed 's/.*:"//;s/"//' || echo 'n/a' )"
@@ -114,8 +109,7 @@ cat > "$OUT" <<JSON
   "sandboxing": {
     "mediation_drift": $mediation_drift, "bypass_sites": $bypass_sites,
     "disallow_sites": $disallow_sites, "effect_stubs": $effect_stubs
-  },
-  "hygiene": { "stale_verus_dirs": $stale_verus }
+  }
 }
 JSON
 
@@ -123,5 +117,4 @@ echo "exemplar scoreboard — $(basename "$(pwd)")"
 echo "  FV : extraction ${extracted}/$((extracted+handmodel)) | sorry/admit $sorry_admit | vacuous-lean $vacuous_lean (of $lean_theorems thm) | clean-axioms $clean_axioms"
 echo "  RUST: permissive .verify $permissive_verify (of $verify_calls) | unsafe $unsafe_blocks | lints.workspace $crates_lints_ws/$crates_total"
 echo "  SANDBOX: mediation-drift $mediation_drift (bypass $bypass_sites / disallow $disallow_sites) | effect-stubs $effect_stubs"
-echo "  HYGIENE: stale .verus dirs $stale_verus"
 echo "  -> $OUT"

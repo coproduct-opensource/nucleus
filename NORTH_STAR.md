@@ -1,5 +1,50 @@
 # Nucleus North Star
 
+> **This file is canonical.** `docs/north-star.md` is the long form and carries the
+> CI-parsed mediation and confidentiality ledgers; `docs/adr/0005-delegatable-agency.md`
+> is the reasoning behind the objective below.
+
+## The Objective
+
+**Nucleus continuously expands the frontier of safely delegatable machine agency: any
+agent should be able to do as much useful real-world work as its principal is willing
+to authorize, while being structurally incapable of exceeding that authorization.**
+
+The quantity every workstream is trying to move:
+
+```
+             useful autonomous work completed
+    ℐ  =  ───────────────────────────────────────────────────────
+          authority risk + human friction + integration cost
+```
+
+The denominator is not decoration. A perfectly secure system nobody can use has
+ℐ ≈ 0, and so does a system that finishes every task by granting `*`. Two of the
+denominator's terms are already instrumented, in
+`crates/portcullis/src/authority_metrics.rs`: the over-grant ratio
+ρ = authority granted ÷ authority observably required, which should approach 1, and
+C(T), the authorization decisions a task costs a person — one for a new task, zero
+for one already approved.
+
+**The numerator is not yet measured.** See `docs/perf/RUBRIC-LEDGER.md` rows 2/2b.
+No claim about it ships until a committed harness run produces it
+(`docs/PROOFS.md` tiers, extended by MEASURED).
+
+**The product test**, for any proposed change: *does this let someone safely delegate
+more agency, more precisely, more easily, or with greater confidence?*
+
+## The Constraint Surface
+
+```
+    exercised authority  ≼  delegated authority
+```
+
+Everything below this line — the flagship claim, the lattice, the proofs, the
+receipts — exists to make that `≼` hold and to make it checkable by someone who does
+not trust us. It is what makes raising ℐ's numerator *safe*, and it is not
+negotiable against ℐ: a change that improves ℐ by widening what an agent may do
+without its principal saying so is a different product, not an improvement.
+
 **Nucleus makes "agent jailbreak to silent damage" provably impossible by construction, while remaining frictionless enough that small dev teams adopt it like a linter.**
 
 > **Assume the agent is compromised. Constrain what it can do anyway. Prove the constraints hold.**
@@ -93,16 +138,24 @@ for months; the numbers below are recomputed from the tree
 
 | Metric | Count | Where |
 |---|---|---|
-| Kani BMC harnesses | 119 | portcullis 69, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1 (`scripts/formal-numbers.sh`) |
+| Kani BMC harnesses | 120 | portcullis 70, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1 (`scripts/formal-numbers.sh`) |
 | Lean 4 theorems over **extracted** Rust | ~280 in the security core | IFC noninterference family, `decide_pure`, ck-policy gate, `chain_effective_authority`, certificate-chain monotonicity (`chain_attenuates`, #2451) |
 | Open `sorry` holes | 23 across 10 files | research tier only (`CONJECTURES.md`); the proven tier is `sorry`-free and CI-gated |
 | Budget conservation | Kani E1/E2 over the shipped `LedgerCore` | `Σ child allocations + consumed ≤ max` |
+
+**A harness is not a result.** The first row counts harnesses *defined*, and for
+`ck-kernel` only 5 of its 17 have ever completed: every harness that constructs a
+`BTreeSet<String>` fails to terminate, and that set includes
+`proof_refinement_bitmask_agrees_with_btreeset` — the bridge that would let the 5
+that do verify stand in for the production `BTreeSet` path. `KANI-STATUS.md` is the
+record. Cite it wherever the 17 is cited; "greater confidence" is a term of the
+objective, and it is worth exactly what the claims behind it are worth.
 
 ### Targets
 
 | Milestone | Kani harnesses | Extracted Lean | What |
 |---|---|---|---|
-| **Current** | 116 | ~277 theorems | Lattice laws, BMC safety, IFC noninterference, budget conservation |
+| **Current** | 120 | ~277 theorems | Lattice laws, BMC safety, IFC noninterference, budget conservation |
 | **T1** | 150 | verify_certificate extracted (#2451) | Prove the certificate chain's monotonicity soundness over the real code |
 | **T2** | 200 | identity/card verification extracted (#2452) | Reconciler convergence, executor pool fairness |
 | **T3: verify-rust-std density** | — | — | Proof-to-code ratio ≥ AWS std lib effort |

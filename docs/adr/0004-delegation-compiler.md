@@ -29,14 +29,54 @@ exercised, and an observer that synthesizes a narrower profile from a trace.
 
 The DX north star this ADR serves:
 
-> Make least-privilege delegation feel easier than unrestricted execution.
+> Minimize the distance between human intent and safely executing that intent
+> through an agent — that is, **make least-privilege delegation feel easier than
+> unrestricted execution**.
 
-with two invariants DX work may not violate:
+Stated as a quantity, so it can be argued about:
+
+```text
+                   successful delegated work
+    D  =  ────────────────────────────────────────────────────────────────
+          human decisions + configuration + security knowledge + recovery friction
+```
+
+**The invariant: `D` may never improve by widening authority.** This is the same
+shape as ADR 0005's "ℐ may never be raised by weakening ≼", and it is what
+separates this from the field's answer to the same usability cost. Every term in
+the denominator has a cheap fix that consists of granting more, and every one of
+those fixes is forbidden. A DX change that lowers the denominator by raising
+`A_granted` has not improved `D`; it has changed which quantity is being measured.
+
+Two of the denominator's terms were instrumented from the start:
 
 - **Authority overhead** ρ = A_granted / A_observably-required → 1. Usability never
   improves by granting more.
 - **Delegation clicks** C(T) = 1 for a new safe task, 0 for a previously approved one.
   The consequential decision stays intentional; everything else is derived.
+
+`C(T)` counts decisions on the path where the grant was right the first time.
+**Recovery friction** is the term that decides whether a delegation survives being
+wrong — an agent refused something it needed, and how far it is from there back to
+working — and it is measured in `nucleus-perf agency --recovery-goal`. Security
+knowledge is the term nucleus does not yet measure; the proxy for it is whether a
+person ever has to read a lattice dimension to get unstuck.
+
+### The five moments
+
+`D` is spent in five places, and every DX decision in this ADR belongs to one:
+
+| moment | the question | where it is answered |
+|---|---|---|
+| **intent** | how does a person say what they want? | `--goal`, compiled — decision 1 |
+| **grant** | what are they agreeing to? | five lines, rendered by meaning — decision 3 |
+| **friction** | how many decisions does it cost? | C(T) = 1, then 0 — `--save-grant` / `--grant` |
+| **explanation** | when it refuses, what do they learn? | the escalation proposal — milestone 4 |
+| **reuse** | does the second time cost less than the first? | sealed grants, narrowing-only — decision 6 |
+
+The moments are not independent, and the ordering matters: an explanation that
+arrives after the run has ended is not an explanation, it is a post-mortem. That
+distinction is what milestone 7 is about.
 
 ## Decision
 
@@ -82,6 +122,25 @@ with two invariants DX work may not violate:
    and offer a profile with unused authority removed. None of those steps may
    introduce a path that widens authority outside `POST /v1/escalate` and the
    existing approval counters.
+7. **A denial is told to the agent as well as to the person.** The escalation
+   proposal — what was attempted, why it was stopped, the least authority that
+   would have allowed it, the new risk that adds, and the command that grants
+   exactly that — goes to both audiences, in band, on the refusal itself.
+
+   This widens what an agent is told, and the justification is its **trust
+   position**: the agent is *inside* the boundary and holds its own certificate,
+   so it can enumerate its own grant regardless. Telling it what it is missing
+   reveals nothing it could not compute, and withholding it only guarantees that
+   a recoverable refusal is spent thrashing.
+
+   **This is deliberately asymmetric with the token endpoint (#2756), and the two
+   must not be harmonised.** There, the caller is a *remote workload* whose
+   authority is still being decided; a refusal that named the scope it fell short
+   of would be an oracle for probing the ceiling, so it names nothing. The rule is
+   not "explain more" or "explain less" — it is that a refusal may enumerate
+   authority to a principal already inside the boundary, and may not to one still
+   outside it. Anyone reading only one of these two decisions will conclude the
+   other is a bug.
 
 ## Consequences
 
@@ -90,13 +149,22 @@ with two invariants DX work may not violate:
   policy-trace` deepens it; `--save-grant` writes it.
 - The 13-dimension verified core does not change. Effects are catalog data now and
   `extensions` keys on the certificate later, following the `tool_surface` pattern.
-- Enforcement of a semantic effect is, in this milestone, the lattice it lowers to
-  plus the host list plus the command prefixes it vouches for. An agent that reaches
-  GitHub with `curl` rather than an MCP tool is bounded by host, not by method+path;
-  per-effect enforcement at the credential boundary is a later milestone and the
-  docs say so.
+- Enforcement of a semantic effect was, through milestone 5, the lattice it lowers
+  to plus the host list plus the command prefixes it vouches for. From milestone 6 a
+  pod whose certificate carries the effect dimension is also bounded per effect at
+  the egress boundary (method + host + path on `web_fetch` and credentialed egress)
+  and at the MCP boundary (tool names), so `github/read-ci-logs` cannot be spent on
+  opening a pull request. Shell commands remain bounded by the command lattice.
 - Two metrics become product surfaces: ρ (authority granted ÷ authority used, from
-  receipts) and C(T) (authorization decisions per task).
+  receipts) and C(T) (authorization decisions per task). Recovery friction joins
+  them as a third, measured in the agency harness rather than at runtime, because
+  it is a property of the loop and not of a single run.
+- Effect packs are the lever on both halves at once. A pack that names one effect
+  covering what a person actually meant lowers ρ *and* removes a decision; a pack
+  full of broad effects raises ρ while looking like better DX. **Plugin quality is
+  semantic compression of authority**, and the two ways to measure a pack — ρ over
+  its effects, and how often granting one of them requires a second decision —
+  are the ways to tell the two apart.
 - A new CI gate, "The task compiler is offline by construction", is probed by the
   gate-of-gates like every other script gate.
 
@@ -107,6 +175,7 @@ with two invariants DX work may not violate:
 | 1 | Effect catalog, `TaskGrant` + renderer, `nucleus-task-compiler`, `nucleus run --goal` preview and single confirmation, offline gate | #2675 |
 | 2 | `effect/` certificate keys (`effect_surface`), `SealedTaskGrant` (grant + signed certificate, binding keys), `nucleus run --save-grant` / `--grant`, `nucleus grant seal|show` (C(T)=0) | this PR |
 | 3 | Trace → effect attribution (`grant_usage`), ρ over dimensions and effects, post-run usage lines and "save a narrower profile", `nucleus observe --grant --narrow --save`, user profiles in `~/.config/nucleus/profiles` (never wider than a canonical name) | this PR |
-| 4 | `EscalationProposal` (`escalation_proposal`): attempt, reason, minimum effect and raised dimensions, risk delta, scopes (always / this run), outside-ceiling and repair outcomes; `denials_in_trace`; post-run proposals; `nucleus grant propose\|widen`. Carriage inside MCP / tool-proxy / hook / SDK denial payloads is the next step | this PR |
+| 4 | `EscalationProposal` (`escalation_proposal`): attempt, reason, minimum effect and raised dimensions, risk delta, scopes (always / this run), outside-ceiling and repair outcomes; `denials_in_trace`; post-run proposals; `nucleus grant propose\|widen`. Carriage inside the denial payloads themselves lands in milestone 7 | this PR |
 | 5 | `AuthoritySummary` (`authority_metrics`, feature-free): ρ over dimensions, C(T) = confirmations + approvals, decision counts; in `ExitReport.authority`, the MCP `session_summary`, and the run's closing line; `PodSpec.metadata.task_grant_id` | this PR |
-| 6 | Per-effect enforcement at the credential boundary (method+path) | |
+| 6 | Per-effect enforcement from the certificate's `effect/` keys: `EffectCatalog::admits_http` / `admits_tool`; the tool-proxy refuses a `web_fetch` or credentialed-egress request no granted effect vouches for (method + host + path); mcp-guard blocks tools no granted effect names; `--goal` / `--grant` runs hand the sealed certificate to the proxy in local mode | this PR |
+| 7 | The explanation arrives in time to be used: `DenyReason` gets one rendering for all nineteen variants and every surface calls it; a refusal carries its escalation proposal in band (`ApiError::Refused`, `ErrorBody.proposal`, `Error::AccessDenied.proposal`); the risk line says what the combination *permits* rather than counting legs; `action.yml` takes a `goal:`; recovery friction becomes a measured row | #2758, #2762, #2763, #2764, #2765 |
