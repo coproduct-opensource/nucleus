@@ -14,19 +14,25 @@
 #   ENOSPC / ld signal 7             build machines had no volume, an 8 GB rootfs filled
 #   Scoped Aeneas, charon drift      the image had no aeneas/charon
 # gatehouse states this as A-10 and now enforces it at admission; nucleus is not a tenant yet.
+#
+# 2026-09-11 — seven entries removed, all `*-lean`: ci-spec-lean, ck-policy-lean, econ-lean,
+# ifc-lean, portcullis-core-proven-lean, research-lean-build, rubric-lean. `CI-I10-STALE` had
+# been reporting all seven, and they are genuinely stale: each of those workflows mentions
+# `runner.environment == 'github-hosted'` exactly once, as a `with:` INPUT selecting a cache
+# (`use-github-cache:`), never as an `if:` guard on an install step. A cache is deliberately not
+# a contract with the image — a miss costs time, not a verdict — so these jobs assume nothing of
+# it. Checked per job: 0 `if:` guards, 1 `with:` input, each.
+#
+# Worth recording because the check nearly went the other way. A grep for the STRING
+# `github-hosted` inside each job body returns 1 for all seven and reads as "still
+# image-dependent, the advisory is a false positive". It is the `if:`/`with:` distinction that
+# decides, and only the invariant's own predicate makes it.
 aeneas-certchain/aeneas-certchain
 aeneas-decide-pure/aeneas-decide-pure
 aeneas-ifc-scoped/aeneas-ifc-scoped
 aeneas-oidc-spiffe/aeneas-oidc-spiffe
 aeneas/aeneas-translate
-ci-spec-lean/ci-spec-lean
 ci/musl-check
 ci/workspace-tests
 ck-policy-aeneas/ck-policy-aeneas
-ck-policy-lean/ck-policy-lean
 deny/deny
-econ-lean/econ-lean
-ifc-lean/ifc-lean
-portcullis-core-proven-lean/portcullis-core-proven-lean
-research-lean-build/research-lean-build
-rubric-lean/rubric-lean
