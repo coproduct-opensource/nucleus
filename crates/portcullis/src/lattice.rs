@@ -627,12 +627,32 @@ impl PermissionLattice {
         self.time.is_expired()
     }
 
-    /// Compute a checksum for integrity verification.
-    #[cfg(feature = "serde")]
+    /// Compute a checksum over WHAT IS PERMITTED, not over how it was made.
+    ///
+    /// Coherent with [`PartialEq`], which is the law this previously broke:
+    /// two values that compare equal must hash equal, and they did not. The old
+    /// implementation serialized the whole struct — `id`, `description` and
+    /// `derived_from` included — so a `meet` that produced the same policy under
+    /// a new label produced a different checksum, and the audit chain recorded
+    /// `pre_permissions_hash != post_permissions_hash`: a permission change that
+    /// had not happened.
+    ///
+    /// The non-serde variant used to hash `format!("{:?}", self)`. Derived
+    /// `Debug` is not a stability contract — a field rename or reorder silently
+    /// rewrites every hash — which is the defect #747 records for the receipt
+    /// chain, here on the permission checksum itself. Both variants now hash the
+    /// same projection, so the two builds agree on what a policy hashes to.
+    #[must_use]
     pub fn checksum(&self) -> String {
-        let data = serde_json::to_string(self).unwrap_or_default();
         let mut hasher = Sha256::new();
-        hasher.update(data.as_bytes());
+        // Field-tagged and length-prefixed: without the tags, moving a byte from
+        // one field to the next would leave the digest unchanged.
+        for (tag, part) in self.digest_parts() {
+            hasher.update(tag.as_bytes());
+            hasher.update(b"\x00");
+            hasher.update((part.len() as u64).to_be_bytes());
+            hasher.update(part.as_bytes());
+        }
         hasher
             .finalize()
             .iter()
@@ -640,17 +660,62 @@ impl PermissionLattice {
             .collect::<String>()
     }
 
-    /// Compute a checksum for integrity verification (non-serde version).
+    /// The policy fields, in a fixed order, each as a stable string.
+    ///
+    /// Exactly the fields [`PartialEq`] compares — the two must not drift apart,
+    /// and `checksum_agrees_with_equality` pins that they do not.
+    #[cfg(feature = "serde")]
+    fn digest_parts(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "capabilities",
+                serde_json::to_string(&self.capabilities).unwrap_or_default(),
+            ),
+            (
+                "obligations",
+                serde_json::to_string(&self.obligations).unwrap_or_default(),
+            ),
+            (
+                "paths",
+                serde_json::to_string(&self.paths).unwrap_or_default(),
+            ),
+            (
+                "budget",
+                serde_json::to_string(&self.budget).unwrap_or_default(),
+            ),
+            (
+                "commands",
+                serde_json::to_string(&self.commands).unwrap_or_default(),
+            ),
+            (
+                "time",
+                serde_json::to_string(&self.time).unwrap_or_default(),
+            ),
+            (
+                "minimum_isolation",
+                serde_json::to_string(&self.minimum_isolation).unwrap_or_default(),
+            ),
+            ("uninhabitable", self.uninhabitable_constraint.to_string()),
+        ]
+    }
+
+    /// Debug-based fallback for builds without `serde`.
+    ///
+    /// Still not a stability contract across compiler versions, but now over the
+    /// same eight fields as the serde path rather than over the whole struct, so
+    /// the two agree about which values are the same policy.
     #[cfg(not(feature = "serde"))]
-    pub fn checksum(&self) -> String {
-        let data = format!("{:?}", self);
-        let mut hasher = Sha256::new();
-        hasher.update(data.as_bytes());
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
+    fn digest_parts(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("capabilities", format!("{:?}", self.capabilities)),
+            ("obligations", format!("{:?}", self.obligations)),
+            ("paths", format!("{:?}", self.paths)),
+            ("budget", format!("{:?}", self.budget)),
+            ("commands", format!("{:?}", self.commands)),
+            ("time", format!("{:?}", self.time)),
+            ("minimum_isolation", format!("{:?}", self.minimum_isolation)),
+            ("uninhabitable", self.uninhabitable_constraint.to_string()),
+        ]
     }
 
     /// Create a permissive permission set (for trusted contexts).
@@ -1441,12 +1506,49 @@ impl EffectivePermissions {
     /// Create effective permissions from a lattice.
     pub fn new(lattice: PermissionLattice) -> Self {
         let lattice = lattice.normalize();
-        let checksum = lattice.checksum();
+        let checksum = Self::seal(&lattice);
         Self {
             lattice,
             budget_reservation_id: None,
             checksum,
         }
+    }
+
+    /// The tamper seal: a digest over the WHOLE value, provenance included.
+    ///
+    /// Deliberately not [`PermissionLattice::checksum`], which answers a
+    /// different question. That one asks *what is permitted*, and is coherent
+    /// with `PartialEq`: two policies that permit the same things hash the same,
+    /// so relabelling one does not read as a permission change in the audit
+    /// chain.
+    ///
+    /// This one asks *is this exact value the one I sealed*, and the answer must
+    /// be no if `description` or `derived_from` moved — an audit label a
+    /// reviewer reads is worth sealing even though it grants nothing.
+    /// `effective_permissions_detect_tampering` is the test that says so, and it
+    /// is right: a sealed structure seals everything it carries.
+    ///
+    /// Two questions, two digests. Collapsing them is what made the permission
+    /// checksum incoherent with equality in the first place.
+    fn seal(lattice: &PermissionLattice) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"portcullis-effective-permissions-seal-v1\x00");
+        hasher.update(lattice.checksum().as_bytes());
+        hasher.update(b"\x00");
+        hasher.update(lattice.id.as_bytes());
+        hasher.update(b"\x00");
+        hasher.update((lattice.description.len() as u64).to_be_bytes());
+        hasher.update(lattice.description.as_bytes());
+        hasher.update(b"\x00");
+        match lattice.derived_from {
+            Some(from) => hasher.update(from.as_bytes()),
+            None => hasher.update(b"none"),
+        }
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 
     /// Create effective permissions with a budget reservation.
@@ -1456,8 +1558,12 @@ impl EffectivePermissions {
     }
 
     /// Verify the integrity of the permissions.
+    ///
+    /// Detects any mutation of the sealed value, including a changed
+    /// `description` or `derived_from` — see [`Self::seal`] for why that is a
+    /// different question from "what is permitted".
     pub fn verify_integrity(&self) -> bool {
-        self.lattice.checksum() == self.checksum
+        Self::seal(&self.lattice) == self.checksum
     }
 
     /// Check if permissions have expired.
@@ -1541,6 +1647,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn checksum_agrees_with_equality() {
+        // The `Hash`/`Eq` coherence law, which the old checksum broke: it
+        // serialized the whole struct, so a `meet` producing the same policy
+        // under a new label produced a different digest and the audit chain
+        // recorded `pre_permissions_hash != post_permissions_hash` — a
+        // permission change that had not happened.
+        let a = PermissionLattice::restrictive();
+        let mut b = a.clone();
+        b.id = Uuid::new_v4();
+        b.description = "a different label".to_string();
+        b.derived_from = Some(Uuid::new_v4());
+        assert_eq!(a, b, "same policy");
+        assert_eq!(a.checksum(), b.checksum(), "so the same checksum");
+
+        // …and it still separates policies that differ.
+        let c = PermissionLattice::permissive();
+        assert_ne!(a, c);
+        assert_ne!(a.checksum(), c.checksum());
+    }
+
+    #[test]
+    fn the_seal_asks_a_different_question_from_the_checksum() {
+        // Relabelling does not change what is permitted, so the checksum holds;
+        // it DOES change the sealed value, so integrity fails. Two questions,
+        // two digests — collapsing them is what made the checksum incoherent
+        // with equality in the first place.
+        let sealed = EffectivePermissions::new(PermissionLattice::restrictive());
+        assert!(sealed.verify_integrity());
+
+        let mut tampered = sealed.clone();
+        tampered.lattice.description = "tampered".to_string();
+        assert_eq!(
+            tampered.lattice.checksum(),
+            sealed.lattice.checksum(),
+            "relabelling permits nothing new"
+        );
+        assert!(
+            !tampered.verify_integrity(),
+            "but the seal covers the label a reviewer reads"
+        );
     }
 
     #[test]
