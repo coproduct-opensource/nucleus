@@ -116,6 +116,13 @@ jobs:
       # green on every PR the whole time, because the pushing job only runs on `push` to main.
       - name: Every `git push` in CI carries its own credential
         run: cargo run -q -p xtask -- push-auth
+      # A coverage floor lives inside a `run:` block, where it is a digit in the middle of a
+      # shell command. The workspace floor has moved 85 -> 83 -> 82.5; every move was
+      # deliberate and the last said so in its own title, which is the practice working -- but
+      # it was a convention, and nothing required the NEXT lowering to be recorded at all.
+      # Pinning it makes the reason a line of prose in review instead of a digit in a command.
+      - name: A coverage floor may not move without saying so
+        run: cargo run -q -p xtask -- coverage-floor
 
       # Seven scan-vs-allowlist gates lived in four shell scripts, each with its own copy
       # of the same `#[cfg(test)]`-stripping awk program -- five copies, four of them

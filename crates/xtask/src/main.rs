@@ -101,6 +101,10 @@ enum Command {
     /// the one `actions/checkout` left behind — that one is wired with `includeIf.gitdir`
     /// and depends on the runner's filesystem layout. Decided from the workflows alone.
     PushAuth,
+    /// Every `--fail-under-lines` in coverage-matrix.yml must equal the value pinned in
+    /// ci/coverage-floor.txt, so moving a coverage floor has to be written down. Decided
+    /// from two committed files; measures no coverage.
+    CoverageFloor,
     /// A claim's falsifier must produce a REQUIRED context. A gate CI runs, that goes red, and
     /// that the merge queue merges past anyway enforces nothing — it is a red light beside an
     /// open gate. Ratcheted, not driven to zero: whether a given check should be required is a
@@ -301,6 +305,7 @@ mod ci_otel;
 mod ci_spec;
 mod ci_timings;
 mod clippy_config;
+mod coverage_floor;
 mod fly_pools;
 mod gatehouse_pin;
 mod inert_authority;
@@ -349,6 +354,7 @@ fn main() -> Result<()> {
         },
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
         Command::PushAuth => push_auth::check(&std::env::current_dir()?),
+        Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;
