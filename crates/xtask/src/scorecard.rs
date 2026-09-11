@@ -453,13 +453,26 @@ fn render(card: &[(String, Census)], families: &[Box<dyn Family>]) -> String {
     out
 }
 
-pub fn run(measure: bool, badge: bool) -> Result<i32> {
-    let corpus = crate::law_mechanisms::tracked(crate::law_mechanisms::is_production_path)?;
-    let families = families();
+/// Build the card by asking every family to count itself.
+///
+/// Pure over the corpus, so the whole of it is reachable from a test with a
+/// synthetic tree — the same reason `decide` is pure. `run` below is the I/O
+/// shell: read the tree, call this, print.
+///
+/// # Errors
+///
+/// If a family's census fails, or reports more discharged than its population.
+/// The second is not a formality: a census that discharges more than it declares
+/// is counting two different things, and the ratio would be meaningless rather
+/// than merely wrong.
+pub fn card_of(
+    families: &[Box<dyn Family>],
+    corpus: &BTreeMap<String, String>,
+) -> Result<Vec<(String, Census)>> {
     let mut card: Vec<(String, Census)> = Vec::new();
-    for family in &families {
+    for family in families {
         let census = family
-            .census(&corpus)
+            .census(corpus)
             .with_context(|| format!("counting the `{}` family", family.name()))?;
         if census.discharged > census.population {
             bail!(
@@ -473,24 +486,42 @@ pub fn run(measure: bool, badge: bool) -> Result<i32> {
         }
         card.push((family.name().to_string(), census));
     }
+    Ok(card)
+}
+
+/// The shields.io endpoint object for a card, naming its weakest family.
+///
+/// Thresholds are deliberately far apart: a family under three quarters is
+/// orange, because the badge's job is to be uncomfortable while a family is
+/// genuinely undischarged.
+pub fn badge_json(card: &[(String, Census)]) -> Result<String> {
+    let Some((name, weak)) = weakest(card) else {
+        bail!("no families on the card; the badge would name nothing");
+    };
+    let colour = if weak.basis_points() >= 9_900 {
+        "brightgreen"
+    } else if weak.basis_points() >= 7_500 {
+        "yellow"
+    } else {
+        "orange"
+    };
+    Ok(format!(
+        r#"{{"schemaVersion":1,"label":"scorecard","message":"{name} {}","color":"{colour}"}}"#,
+        pct(weak.basis_points())
+    ))
+}
+
+pub fn run(measure: bool, badge: bool) -> Result<i32> {
+    let corpus = crate::law_mechanisms::tracked(crate::law_mechanisms::is_production_path)?;
+    let families = families();
+    let card = card_of(&families, &corpus)?;
 
     let Some((weak_name, weak)) = weakest(&card) else {
         bail!("no families on the card; the gate would pass vacuously");
     };
 
     if badge {
-        println!(
-            r#"{{"schemaVersion":1,"label":"scorecard","message":"{} {}","color":"{}"}}"#,
-            weak_name,
-            pct(weak.basis_points()),
-            if weak.basis_points() >= 9_900 {
-                "brightgreen"
-            } else if weak.basis_points() >= 7_500 {
-                "yellow"
-            } else {
-                "orange"
-            }
-        );
+        println!("{}", badge_json(&card)?);
         return Ok(0);
     }
 
@@ -712,6 +743,197 @@ population_floor = 250
                 .to_string()
                 .contains("before any")
         );
+    }
+
+    // ── The card a human reads ────────────────────────────────────────
+    //
+    // `render` is the gate's only output on a green tree, so an unreadable or
+    // silently-truncated card is a defect that no other test would catch.
+
+    struct Fake(&'static str, &'static str);
+    impl Family for Fake {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn unit(&self) -> &'static str {
+            self.1
+        }
+        fn census(&self, _: &BTreeMap<String, String>) -> Result<Census> {
+            Ok(Census::default())
+        }
+    }
+
+    #[test]
+    fn the_card_names_every_family_its_unit_and_its_numbers() {
+        let families: Vec<Box<dyn Family>> = vec![
+            Box::new(Fake("bound", "witness-accepting parameter site")),
+            Box::new(Fake("alg", "(lattice type, law) obligation")),
+        ];
+        let card = vec![
+            ("bound".to_string(), c(172, 171)),
+            (
+                "alg".to_string(),
+                Census {
+                    population: 278,
+                    discharged: 110,
+                    undeclared: 9,
+                },
+            ),
+        ];
+        let out = render(&card, &families);
+        assert!(out.contains("witness-accepting parameter site"));
+        assert!(out.contains("(lattice type, law) obligation"));
+        assert!(out.contains("99.41%"), "bound's ratio: {out}");
+        assert!(out.contains("39.56%"), "alg's ratio: {out}");
+        assert!(out.contains("278") && out.contains("110") && out.contains('9'));
+        assert_eq!(out.lines().count(), 3, "a header and one line per family");
+    }
+
+    #[test]
+    fn a_family_with_no_matching_unit_still_renders_its_row() {
+        // The card must not drop a row because the unit lookup missed: a
+        // silently shorter card is the shape of a gate that stopped looking.
+        let out = render(&[("ghost".to_string(), c(4, 2))], &[]);
+        assert!(out.contains("ghost"));
+        assert!(out.contains("50.00%"));
+    }
+
+    // ── Every finding says what to do about it ────────────────────────
+
+    #[test]
+    fn fell_names_both_numbers() {
+        let m = Finding::Fell {
+            family: "alg".into(),
+            found_bp: 3_928,
+            floor_bp: 3_956,
+        }
+        .to_string();
+        assert!(
+            m.contains("alg") && m.contains("39.28%") && m.contains("39.56%"),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn shrank_says_the_deletion_may_be_intended() {
+        let m = Finding::Shrank {
+            family: "bound".into(),
+            found: 171,
+            floor: 172,
+        }
+        .to_string();
+        assert!(
+            m.contains("population_floor"),
+            "names the pin to lower: {m}"
+        );
+        assert!(m.contains("dated note"), "{m}");
+    }
+
+    #[test]
+    fn slack_cites_the_rule_it_enforces() {
+        let m = Finding::Slack {
+            family: "bound".into(),
+            found_bp: 9_942,
+            floor_bp: 9_941,
+        }
+        .to_string();
+        assert!(
+            m.contains("I-1"),
+            "a pin with slack has stopped gating: {m}"
+        );
+    }
+
+    #[test]
+    fn unpinned_and_stale_each_name_the_family_and_the_file() {
+        let u = Finding::Unpinned {
+            family: "alg".into(),
+        }
+        .to_string();
+        assert!(u.contains("alg") && u.contains(RATCHET), "{u}");
+        let s = Finding::Stale {
+            family: "ghost".into(),
+        }
+        .to_string();
+        assert!(s.contains("ghost") && s.contains(RATCHET), "{s}");
+    }
+
+    #[test]
+    fn outstanding_is_the_undischarged_remainder() {
+        assert_eq!(c(278, 110).outstanding(), 168);
+        // Saturating, so a clamped census never underflows into a huge number.
+        assert_eq!(c(5, 9).outstanding(), 0);
+    }
+
+    // ── The card, built from families ─────────────────────────────────
+
+    struct Counting(&'static str, Census);
+    impl Family for Counting {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn unit(&self) -> &'static str {
+            "unit"
+        }
+        fn census(&self, _: &BTreeMap<String, String>) -> Result<Census> {
+            Ok(self.1)
+        }
+    }
+
+    #[test]
+    fn every_family_contributes_one_row_in_order() {
+        let families: Vec<Box<dyn Family>> = vec![
+            Box::new(Counting("bound", c(172, 171))),
+            Box::new(Counting("alg", c(278, 110))),
+        ];
+        let card = card_of(&families, &BTreeMap::new()).expect("both families count");
+        assert_eq!(
+            card,
+            vec![
+                ("bound".to_string(), c(172, 171)),
+                ("alg".to_string(), c(278, 110))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_census_discharging_more_than_it_declares_is_refused() {
+        // Not a formality: the ratio would exceed 100% and mean nothing.
+        let families: Vec<Box<dyn Family>> = vec![Box::new(Counting("bad", c(10, 11)))];
+        let err = card_of(&families, &BTreeMap::new())
+            .expect_err("11 of 10 is not a ratio")
+            .to_string();
+        assert!(err.contains("two different things"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_card_has_no_badge_rather_than_a_green_one() {
+        let err = badge_json(&[]).expect_err("nothing to name").to_string();
+        assert!(err.contains("name nothing"), "{err}");
+    }
+
+    #[test]
+    fn the_badge_names_the_weakest_and_colours_by_it() {
+        let orange = badge_json(&[
+            ("bound".to_string(), c(172, 171)),
+            ("alg".to_string(), c(278, 110)),
+        ])
+        .expect("a card with rows has a badge");
+        assert!(orange.contains(r#""message":"alg 39.56%""#), "{orange}");
+        assert!(orange.contains("orange"), "under three quarters: {orange}");
+
+        let green = badge_json(&[("bound".to_string(), c(172, 171))]).expect("one row");
+        assert!(green.contains("brightgreen"), "{green}");
+
+        let yellow = badge_json(&[("x".to_string(), c(100, 80))]).expect("one row");
+        assert!(yellow.contains("yellow"), "{yellow}");
+    }
+
+    #[test]
+    fn the_badge_is_well_formed_json() {
+        let b = badge_json(&[("alg".to_string(), c(278, 110))]).expect("one row");
+        assert!(b.starts_with('{') && b.ends_with('}'), "{b}");
+        assert_eq!(b.matches('"').count() % 2, 0, "balanced quotes: {b}");
+        assert!(b.contains(r#""schemaVersion":1"#), "{b}");
     }
 
     #[test]
