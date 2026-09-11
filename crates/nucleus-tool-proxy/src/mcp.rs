@@ -586,7 +586,7 @@ impl NucleusMcpServer {
             tokio::task::block_in_place(|| {
                 self.state.runtime.sandbox().read_to_string(
                     &checked,
-                    &decision_token,
+                    decision_token,
                     read_authority,
                 )
             })
@@ -713,7 +713,7 @@ impl NucleusMcpServer {
                 self.state.runtime.sandbox().write(
                     &checked,
                     params.contents.as_bytes(),
-                    &decision_token,
+                    decision_token,
                     portcullis_effects::authority::Authority::new(discharge_bundle),
                 )
             })
@@ -866,7 +866,7 @@ impl NucleusMcpServer {
                     &params.args,
                     params.stdin.as_deref(),
                     params.directory.as_deref(),
-                    &decision_token,
+                    decision_token,
                     // Executor-proof gate (#2038 → PR-2): the sealed bundle minted
                     // by `preflight_runbash` above is the type-level authorization.
                     // Reaching this spawn requires it, so no un-preflighted spawn
