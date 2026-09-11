@@ -385,7 +385,16 @@ impl ProfileSpec {
             obligations.insert(Operation::from(ob));
         }
 
-        let paths = match &self.paths {
+        // The agent-harness floor is unioned in for EVERY profile, including a
+        // profile with no `paths:` section at all (which otherwise yields an
+        // empty blocked set). A profile cannot opt out of it, which is the
+        // point: the files that decide what an agent may do must not be
+        // writable by that agent, and eleven per-profile copies of that rule
+        // had already drifted once. See `AGENT_HARNESS_CONFIG`.
+        //
+        // Union only ever tightens -- `PathLattice::meet` is itself a union of
+        // blocked -- so this can add a refusal and never remove one.
+        let mut paths = match &self.paths {
             Some(spec) => PathLattice {
                 allowed: spec.allowed.iter().cloned().collect::<HashSet<_>>(),
                 blocked: spec.blocked.iter().cloned().collect::<HashSet<_>>(),
@@ -393,6 +402,9 @@ impl ProfileSpec {
             },
             None => PathLattice::default(),
         };
+        paths
+            .blocked
+            .extend(crate::AGENT_HARNESS_CONFIG.iter().map(|p| (*p).to_string()));
 
         let budget = match &self.budget {
             Some(spec) => {
@@ -403,6 +415,8 @@ impl ProfileSpec {
                     consumed_usd: rust_decimal::Decimal::ZERO,
                     max_input_tokens: spec.max_input_tokens,
                     max_output_tokens: spec.max_output_tokens,
+                    consumed_input_tokens: 0,
+                    consumed_output_tokens: 0,
                 }
             }
             None => BudgetLattice::default(),

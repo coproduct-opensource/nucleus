@@ -105,6 +105,26 @@ pub struct AccessTokenClaims {
         rename = "urn:nucleus:kind"
     )]
     pub nucleus_kind: Option<String>,
+    /// The semantic effects the presenting workload's principal delegated to
+    /// it, read off a verified pod certificate.
+    ///
+    /// This is what makes the credential **self-describing across the
+    /// boundary**. Without it a relying party can be told what scope it was
+    /// granted but has no way to re-check the attenuation behind it — the
+    /// certificate stays on our side of the exchange. With it, an RP that
+    /// understands nucleus can enforce per-effect from the token alone, and one
+    /// that does not ignores an unrecognised claim, which is what a namespaced
+    /// private claim is for (RFC 7519 §4.3).
+    ///
+    /// Present only when a certificate was verified against the pinned root.
+    /// **Absent means "not established", never "none"** — the two are different
+    /// answers and an RP must not read the first as the second.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "urn:nucleus:effects"
+    )]
+    pub nucleus_effects: Option<Vec<String>>,
 }
 
 /// Caller-supplied mint inputs. Variant claims (scope, act, kind,
@@ -121,6 +141,9 @@ pub struct MintRequest {
     pub act: Option<DelegatedActor>,
     /// Maps to `urn:nucleus:kind` per RFC 7519 §4.3.
     pub kind: Option<String>,
+    /// Maps to `urn:nucleus:effects`. `None` = no certificate was verified,
+    /// which is not the same as an empty grant.
+    pub effects: Option<Vec<String>>,
 }
 
 /// Boundary kind for [`JwtIssuer::mint_boundary_svid`] — distinguishes
@@ -306,6 +329,7 @@ impl JwtIssuer {
                 act: None,
             }),
             kind: Some(request.kind.claim_kind()),
+            effects: None,
         })?;
 
         Ok(MintedBoundarySvid {
@@ -360,6 +384,7 @@ impl JwtIssuer {
             scope: request.scope,
             act: request.act.map(Box::new),
             nucleus_kind: request.kind,
+            nucleus_effects: request.effects,
         };
         let payload_json =
             serde_json::to_string(&claims).map_err(|e| JwtIssuerError::Encoding(e.to_string()))?;
@@ -444,6 +469,7 @@ mod tests {
             scope: None,
             act: None,
             kind: None,
+            effects: None,
         })
         .unwrap()
     }
@@ -564,6 +590,7 @@ mod tests {
                     act: None,
                 }),
                 kind: Some("llm_call".into()),
+                effects: None,
             })
             .unwrap();
         let (_, claims, _) = decode_unverified(&token).unwrap();
@@ -586,6 +613,7 @@ mod tests {
                 scope: None,
                 act: None,
                 kind: Some("test-kind".into()),
+                effects: None,
             })
             .unwrap();
         let payload_b64 = token.split('.').nth(1).unwrap();
@@ -608,6 +636,7 @@ mod tests {
                 scope: None,
                 act: None,
                 kind: None,
+                effects: None,
             })
             .unwrap_err();
         assert!(matches!(err, JwtIssuerError::EmptyAudience));
@@ -624,6 +653,7 @@ mod tests {
                 scope: None,
                 act: None,
                 kind: None,
+                effects: None,
             })
             .unwrap_err();
         assert!(matches!(err, JwtIssuerError::EmptyClientId));

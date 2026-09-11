@@ -262,6 +262,8 @@ mod tests {
             consumed_usd: Decimal::ZERO,
             max_input_tokens: 100_000,
             max_output_tokens: 10_000,
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         }
     }
 

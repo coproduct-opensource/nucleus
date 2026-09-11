@@ -39,7 +39,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// error text, never in the identity of the decision.
 ///
 /// The rule is only worth anything if it is applied everywhere, so gates call
-/// this function rather than formatting their own; `both_gates_name_an_approval_the_same_way`
+/// this function rather than formatting their own; `every_gate_names_an_approval_the_same_way`
 /// compares the producers against each other.
 #[must_use]
 pub fn approval_key(operation: portcullis::Operation, subject: &str) -> String {

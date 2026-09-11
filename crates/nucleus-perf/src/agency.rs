@@ -606,9 +606,17 @@ fn usage_from(
 /// The uninhabitable-state analysis of the lattice the pod ran under,
 /// measured against the restrictive floor the grant compiler measures against.
 fn risk_of(lattice: &portcullis::PermissionLattice) -> portcullis::task_grant::RiskSummary {
-    let gap = portcullis::WeakeningCostConfig::default()
-        .compute_gap(&portcullis::PermissionLattice::restrictive(), lattice);
-    portcullis::task_grant::summarise_risk(lattice, gap)
+    // Takes both lattices and the cost config rather than a pre-computed gap:
+    // `summarise_risk` derives the gap AND both grades from the same pair, so
+    // the trace cannot describe a weakening from one floor while grading
+    // another. The floor is the same `restrictive()` this call always passed
+    // to `compute_gap`; what changes is that `before` is now computed from it
+    // instead of being the literal `Safe` the old signature assumed.
+    portcullis::task_grant::summarise_risk(
+        &portcullis::PermissionLattice::restrictive(),
+        lattice,
+        &portcullis::WeakeningCostConfig::default(),
+    )
 }
 
 fn profile_shaped_grant(
