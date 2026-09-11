@@ -95,7 +95,16 @@ jobs:
           PAT='^[[:space:]]*(sorry|admit)\b'
           count=$(grep -rhcE "$PAT" --include='*.lean' \
                     --exclude-dir=.lake . 2>/dev/null | awk '{s+=$1} END{print s+0}')
-          baseline=$(cat .research-sorry-baseline)
+          # Establish the operand before comparing on it. `[ "$count" -gt "" ]` does not
+          # evaluate false -- it ERRORS with "integer expression expected", and an `if`
+          # condition is exempt from `set -e`, so the error is swallowed and the gate
+          # PASSES. An empty or missing .research-sorry-baseline would therefore retire this
+          # ratchet silently, which is the one failure a ratchet must not have.
+          baseline=$(cat .research-sorry-baseline 2>/dev/null || true)
+          if ! [[ "$baseline" =~ ^[0-9]+$ ]]; then
+            echo "::error::.research-sorry-baseline is not a non-negative integer (read: '$baseline'). The research-tier sorry ratchet compares against it numerically, and an unusable value makes the comparison error and the gate pass."
+            exit 1
+          fi
           echo "research-tier sorries: $count (baseline $baseline)"
           echo "per-file:"
           grep -rlE "$PAT" --include='*.lean' --exclude-dir=.lake . 2>/dev/null \
