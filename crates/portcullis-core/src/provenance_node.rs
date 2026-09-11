@@ -48,11 +48,56 @@ pub enum ProvenanceNodeKind {
     FlowObservation(NodeKind),
 }
 
+impl ProvenanceNodeKind {
+    /// The kind as a stable digest tag.
+    ///
+    /// An exhaustive match with no wildcard arm, so a new variant is a compile
+    /// error until someone says how it commits — rather than a `Debug`
+    /// rendering that changes with the compiler and says nothing when a
+    /// variant's shape changes.
+    ///
+    /// `FlowObservation` carries the wrapped kind's `name()`, which is already
+    /// its serde wire form, behind a fixed prefix no other tag shares. That
+    /// keeps the encoding injective even for `NodeKind::Custom`, whose name is
+    /// integrator-supplied text.
+    pub fn digest_tag(&self) -> String {
+        match self {
+            Self::SessionStart => "session_start".to_string(),
+            Self::SchemaLoad => "schema_load".to_string(),
+            Self::SourceFetch => "source_fetch".to_string(),
+            Self::ParserExec => "parser_exec".to_string(),
+            Self::DeterministicBind => "deterministic_bind".to_string(),
+            Self::AiDerivedOutput => "ai_derived_output".to_string(),
+            Self::Clearance => "clearance".to_string(),
+            Self::FlowObservation(kind) => format!("flow_observation:{}", kind.name()),
+        }
+    }
+}
+
 impl ProvenanceNode {
     /// Compute the content-address hash from the node's data.
     ///
-    /// The hash covers kind, payload, parents, and timestamp —
-    /// changing any field changes the hash.
+    /// The hash covers kind, payload, parents, and timestamp — changing any
+    /// field changes the hash.
+    ///
+    /// ## Why each part is tagged and length-prefixed
+    ///
+    /// This absorbed `format!("{kind:?}")` and then the raw payload bytes, and
+    /// both halves of that were wrong.
+    ///
+    /// `Debug` is not a stability contract. It is derived here, so the same
+    /// node hashed differently under a different rustc, and a field added to a
+    /// variant would have silently rewritten every historical id — for an
+    /// identifier whose entire job is to be the same bytes forever.
+    ///
+    /// Concatenating unframed parts is not injective either, and the old code
+    /// was saved from that only by accident: `Debug`'s own quotes and
+    /// parentheses framed the kind, so `Custom("x")` + payload `yz` did not in
+    /// fact collide with `Custom("xy")` + `z`. Nobody chose that framing and
+    /// nothing kept it. Replacing the rendering with a plain tag would have
+    /// removed it silently, which is why the length prefixes go in with the
+    /// tag rather than after someone notices. Now the preimage determines the
+    /// parts, not just the other way round.
     #[cfg(any(feature = "artifact", feature = "wasm-sandbox"))]
     pub fn compute_id(
         kind: &ProvenanceNodeKind,
@@ -62,12 +107,19 @@ impl ProvenanceNode {
     ) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(format!("{kind:?}").as_bytes());
-        hasher.update(payload.as_bytes());
+        let mut absorb = |tag: &str, bytes: &[u8]| {
+            hasher.update(tag.as_bytes());
+            hasher.update(b"\x00");
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
+        };
+        absorb("kind", kind.digest_tag().as_bytes());
+        absorb("payload", payload.as_bytes());
+        absorb("parent_count", &(parents.len() as u64).to_be_bytes());
         for parent in parents {
-            hasher.update(parent);
+            absorb("parent", parent);
         }
-        hasher.update(timestamp.to_le_bytes());
+        absorb("timestamp", &timestamp.to_be_bytes());
         let result = hasher.finalize();
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&result);
@@ -227,5 +279,117 @@ mod tests {
         });
         assert!(dag.get(&id).is_some());
         assert!(dag.get(&[0xCC; 32]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod preimage_tests {
+    use super::*;
+
+    /// **Every kind must commit to a different tag.** Two kinds sharing one is
+    /// two different provenance claims sharing one content address.
+    #[test]
+    fn every_kind_has_a_distinct_digest_tag() {
+        use nucleus_ifc_kernel::flow::NodeKind;
+        let kinds = [
+            ProvenanceNodeKind::SessionStart,
+            ProvenanceNodeKind::SchemaLoad,
+            ProvenanceNodeKind::SourceFetch,
+            ProvenanceNodeKind::ParserExec,
+            ProvenanceNodeKind::DeterministicBind,
+            ProvenanceNodeKind::AiDerivedOutput,
+            ProvenanceNodeKind::Clearance,
+            ProvenanceNodeKind::FlowObservation(NodeKind::UserPrompt),
+            ProvenanceNodeKind::FlowObservation(NodeKind::WebContent),
+        ];
+        let mut tags: Vec<String> = kinds.iter().map(ProvenanceNodeKind::digest_tag).collect();
+        let before = tags.len();
+        tags.sort();
+        tags.dedup();
+        assert_eq!(tags.len(), before, "two kinds share a digest tag: {tags:?}");
+    }
+
+    /// The tag must not collide with `DeterministicBind`'s own tag by way of a
+    /// `Custom` flow-observation name, which is integrator-supplied text.
+    #[test]
+    fn a_custom_flow_name_cannot_impersonate_another_kind() {
+        use nucleus_ifc_kernel::flow::NodeKind;
+        let impersonator =
+            ProvenanceNodeKind::FlowObservation(NodeKind::Custom("deterministic_bind"));
+        assert_ne!(
+            impersonator.digest_tag(),
+            ProvenanceNodeKind::DeterministicBind.digest_tag()
+        );
+    }
+
+    /// **The framing must be injective.** Without the length prefixes the kind
+    /// tag and the payload run together, so a longer `Custom` name with a
+    /// shorter payload gives the same bytes as a shorter name with a longer
+    /// payload — two distinct nodes, one content address.
+    ///
+    /// This is the exact pair, and removing the framing from `compute_id` does
+    /// make it fail. The old `format!("{kind:?}")` escaped it only because
+    /// `Debug` happened to wrap the name in quotes; this pins the property
+    /// rather than leaving it to a rendering nobody chose.
+    #[cfg(any(feature = "artifact", feature = "wasm-sandbox"))]
+    #[test]
+    fn a_longer_kind_name_cannot_borrow_from_the_payload() {
+        use nucleus_ifc_kernel::flow::NodeKind;
+        let short = ProvenanceNode::compute_id(
+            &ProvenanceNodeKind::FlowObservation(NodeKind::Custom("x")),
+            "yz",
+            &[],
+            7,
+        );
+        let long = ProvenanceNode::compute_id(
+            &ProvenanceNodeKind::FlowObservation(NodeKind::Custom("xy")),
+            "z",
+            &[],
+            7,
+        );
+        assert_ne!(
+            short, long,
+            "`flow_observation:x` + `yz` and `flow_observation:xy` + `z` share a content address"
+        );
+    }
+
+    /// Every input to `compute_id` must move the hash. A field the id does not
+    /// cover is one an attacker can rewrite while the address still validates.
+    #[cfg(any(feature = "artifact", feature = "wasm-sandbox"))]
+    #[test]
+    fn every_input_changes_the_content_address() {
+        let kind = ProvenanceNodeKind::SourceFetch;
+        let base = ProvenanceNode::compute_id(&kind, "payload", &[[1u8; 32]], 42);
+
+        assert_ne!(
+            base,
+            ProvenanceNode::compute_id(
+                &ProvenanceNodeKind::ParserExec,
+                "payload",
+                &[[1u8; 32]],
+                42
+            ),
+            "kind"
+        );
+        assert_ne!(
+            base,
+            ProvenanceNode::compute_id(&kind, "other", &[[1u8; 32]], 42),
+            "payload"
+        );
+        assert_ne!(
+            base,
+            ProvenanceNode::compute_id(&kind, "payload", &[[2u8; 32]], 42),
+            "parent"
+        );
+        assert_ne!(
+            base,
+            ProvenanceNode::compute_id(&kind, "payload", &[[1u8; 32], [1u8; 32]], 42),
+            "parent count"
+        );
+        assert_ne!(
+            base,
+            ProvenanceNode::compute_id(&kind, "payload", &[[1u8; 32]], 43),
+            "timestamp"
+        );
     }
 }

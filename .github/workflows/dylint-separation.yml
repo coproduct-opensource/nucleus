@@ -62,6 +62,8 @@ on:
       - "scripts/check-observed-dylint.sh"
       - "tools/nucleus-rest-pattern-lint/**"
       - "scripts/check-rest-pattern-dylint.sh"
+      - "tools/nucleus-preimage-lint/**"
+      - "scripts/check-preimage-dylint.sh"
       - ".github/workflows/dylint-separation.yml"
   pull_request:
     paths:
@@ -77,6 +79,8 @@ on:
       - "scripts/check-observed-dylint.sh"
       - "tools/nucleus-rest-pattern-lint/**"
       - "scripts/check-rest-pattern-dylint.sh"
+      - "tools/nucleus-preimage-lint/**"
+      - "scripts/check-preimage-dylint.sh"
       - ".github/workflows/dylint-separation.yml"
   workflow_dispatch:
 
@@ -452,3 +456,44 @@ jobs:
         env:
           DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-rest-pattern-lint/target/debug
         run: scripts/check-rest-pattern-dylint.sh
+
+      # ── debug_format_in_preimage (ADR 0007) ─────────────────────────────
+      #
+      # A value formatted for humans must not reach a hash or signature
+      # preimage. `AuditEntry::content_hash` hashed `format!("{:?}", event)` —
+      # the link in the audit chain `executor_sig` signs — and
+      # `ProvenanceNode::compute_id` did the same inside a content address.
+      # `Debug` is not a stability contract and it is derived, so those chains
+      # were verifiable only inside one build and would have stopped committing
+      # a field the moment someone removed one, with nothing failing.
+      #
+      # Gates at ZERO. Both sites now build their preimage from an exhaustive
+      # match over an explicit encoding, absorbed tagged and length-prefixed.
+      #
+      # The gate lives in scripts/check-preimage-dylint.sh (one source of
+      # truth). On an all-zero gate the self-test is not a nicety: it is the
+      # only thing separating "clean" from "the pass never loaded", so it runs
+      # first, every time.
+      - name: Build the pass
+        working-directory: tools/nucleus-preimage-lint
+        run: cargo build
+
+      - name: Name the dylib the way dylint resolves it
+        run: |
+          cd tools/nucleus-preimage-lint/target/debug
+          host=$(rustc -vV | sed -n 's/host: //p')
+          cp libnucleus_preimage_lint.so \
+             "libnucleus_preimage_lint@nightly-2026-04-16-${host}.so"
+
+      # REDS-ON-REVERT, before the enforcing run. Puts `content_hash`'s
+      # `format!("{:?}", self.event)` back — the original defect, on the real
+      # subject — and asserts the count goes non-zero.
+      - name: The preimage gate reds when the audit chain hashes `Debug` again
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-preimage-lint/target/debug
+        run: scripts/check-preimage-dylint.sh --self-test
+
+      - name: No formatted value reaches a digest or signature preimage
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-preimage-lint/target/debug
+        run: scripts/check-preimage-dylint.sh
