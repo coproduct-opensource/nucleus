@@ -226,7 +226,7 @@ impl Sandbox {
         approval: Option<&ApprovalToken>,
     ) -> Result<File> {
         // OpenOptions can include write or truncation; conservatively treat as edit.
-        self.check_edit_capability(path, "open_with", approval)?;
+        self.check_edit_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -270,7 +270,7 @@ impl Sandbox {
     }
 
     fn create_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<File> {
-        self.check_write_capability(path, "create", approval)?;
+        self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -462,7 +462,7 @@ impl Sandbox {
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
         self.check_policy(path)?;
-        self.check_write_or_edit_capability(path, "write", approval)?;
+        self.check_write_or_edit_capability(path, approval)?;
 
         self.root
             .write(path, contents)
@@ -503,7 +503,7 @@ impl Sandbox {
     }
 
     fn create_dir_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
-        self.check_write_capability(path, "create_dir", approval)?;
+        self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -545,7 +545,7 @@ impl Sandbox {
     }
 
     fn create_dir_all_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
-        self.check_write_capability(path, "create_dir_all", approval)?;
+        self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -587,7 +587,7 @@ impl Sandbox {
     }
 
     fn remove_file_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
-        self.check_edit_capability(path, "remove_file", approval)?;
+        self.check_edit_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -629,7 +629,7 @@ impl Sandbox {
     }
 
     fn remove_dir_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
-        self.check_edit_capability(path, "remove_dir", approval)?;
+        self.check_edit_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -726,37 +726,27 @@ impl Sandbox {
             Operation::ReadFiles,
             "read_files",
             self.capabilities.read_files,
-            &format!("read {}", path.display()),
+            path,
             approval,
         )
     }
 
-    fn check_write_capability(
-        &self,
-        path: &Path,
-        op: &str,
-        approval: Option<&ApprovalToken>,
-    ) -> Result<()> {
+    fn check_write_capability(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
         self.check_capability(
             Operation::WriteFiles,
             "write_files",
             self.capabilities.write_files,
-            &format!("{} {}", op, path.display()),
+            path,
             approval,
         )
     }
 
-    fn check_edit_capability(
-        &self,
-        path: &Path,
-        op: &str,
-        approval: Option<&ApprovalToken>,
-    ) -> Result<()> {
+    fn check_edit_capability(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
         self.check_capability(
             Operation::EditFiles,
             "edit_files",
             self.capabilities.edit_files,
-            &format!("{} {}", op, path.display()),
+            path,
             approval,
         )
     }
@@ -764,14 +754,37 @@ impl Sandbox {
     fn check_write_or_edit_capability(
         &self,
         path: &Path,
-        op: &str,
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
         if self.root.exists(path) {
-            self.check_edit_capability(path, op, approval)
+            self.check_edit_capability(path, approval)
         } else {
-            self.check_write_capability(path, op, approval)
+            self.check_write_capability(path, approval)
         }
+    }
+
+    /// The name an approval is asked for, granted under, and matched by.
+    ///
+    /// There is exactly ONE spelling in the system, and it is the kernel's:
+    /// `{Operation:?} {subject}`. It has to be one, because the same human
+    /// decision crosses more than one gate — the kernel's reference monitor
+    /// refuses first with this name, the caller posts that name to
+    /// `/v1/approve`, and this sandbox is the next gate to ask. When the two
+    /// disagreed, an approval that a person had already given did not satisfy
+    /// the retry it was granted for: the sandbox composed its key from the
+    /// *method* being called (`write`, `create`, `create_dir`, `open_with`),
+    /// which is an implementation detail, not a unit of authority, so
+    /// `WriteFiles notes.txt` and `write notes.txt` named the same act and
+    /// neither gate recognised the other's grant. That was #2406, measured on a
+    /// live pod.
+    ///
+    /// `Operation` is the authority vocabulary — it is what the lattice, the
+    /// certificate, the receipts and the audit trail are all keyed on — so it
+    /// is the vocabulary an approval is named in too. The method verb survives
+    /// where it belongs: in the error's own text, not in the identity of the
+    /// decision.
+    pub fn approval_key(op: Operation, subject: &Path) -> String {
+        format!("{:?} {}", op, subject.display())
     }
 
     fn check_capability(
@@ -779,9 +792,10 @@ impl Sandbox {
         op: Operation,
         capability_name: &str,
         level: CapabilityLevel,
-        operation: &str,
+        subject: &Path,
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
+        let operation = &Self::approval_key(op, subject);
         if level == CapabilityLevel::Never {
             return Err(NucleusError::InsufficientCapability {
                 capability: capability_name.into(),
@@ -1191,7 +1205,15 @@ mod tests {
         let approved = Sandbox::new(&policy, tmp.path())
             .unwrap()
             .with_approval_callback(|_| true);
-        let approval_token = approved.request_approval("create approved.txt").unwrap();
+        // Derived, not spelled out: an approval is named `{Operation:?} {subject}`
+        // everywhere (`Sandbox::approval_key`), and a test that hardcoded one
+        // gate's wording is how the two vocabularies drifted apart in #2406.
+        let approval_token = approved
+            .request_approval(Sandbox::approval_key(
+                Operation::WriteFiles,
+                std::path::Path::new("approved.txt"),
+            ))
+            .unwrap();
         let result = approved.create_approved(
             "approved.txt",
             &decision_token,

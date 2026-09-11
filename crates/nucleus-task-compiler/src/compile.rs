@@ -121,6 +121,8 @@ pub fn compile(input: CompileInput<'_>) -> Result<TaskGrant, CompileError> {
         consumed_usd: Decimal::ZERO,
         max_input_tokens: input.ceiling.budget.max_input_tokens,
         max_output_tokens: input.ceiling.budget.max_output_tokens,
+        consumed_input_tokens: 0,
+        consumed_output_tokens: 0,
     };
     let time = match input.limits.duration_hours {
         Some(h) => TimeLattice::hours(i64::from(h)),
@@ -189,10 +191,11 @@ pub fn compile(input: CompileInput<'_>) -> Result<TaskGrant, CompileError> {
         .delegate_to(&lattice, "task grant")
         .map_err(|e| CompileError::NotWithinCeiling(e.to_string()))?;
 
-    let gap = input
-        .cost_config
-        .compute_gap(&PermissionLattice::restrictive(), &lattice);
-    let risk = summarise_risk(&lattice, gap);
+    let risk = summarise_risk(
+        &PermissionLattice::restrictive(),
+        &lattice,
+        input.cost_config,
+    );
 
     let created_at = Utc::now();
     let not_after = lattice.time.valid_until;

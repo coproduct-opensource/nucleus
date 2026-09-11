@@ -21,7 +21,10 @@
 > (and "thousands of sorries") — those are Mathlib's, **not ours**; never cite
 > them. Honest first-party snapshot (census, 2026-06-25): **nucleus 84 files /
 > 891 thm+lemma / 35 `sorry` (11 files) / 1 decorative**; platform 44 / 152 / 1;
-> olog 156 / 465 / 46 `sorry`. A theorem count is not a strength claim — a file
+> olog 156 / 465 / 46 `sorry`. That snapshot is dated: the live proof-hole count
+> is whatever `scripts/formal-numbers.sh` reports (23 across 10 files today),
+> enumerated per file in `crates/portcullis-core/lean/CONJECTURES.md` — cite
+> those, not the snapshot. A theorem count is not a strength claim — a file
 > can be load-bearing, `sorry`-fenced research, or a `:= by trivial` stub; the
 > tiers below are what actually distinguish them.
 
@@ -80,7 +83,7 @@ These do not produce a theorem. They produce *evidence* that re-running the code
 |-----------|-------|-----------------|
 | **Golden-vector seal (G3)** | `crates/nucleus-econ-kernels/tests/golden/*.json` + readers | One JSON single-source pins settlement / commons / VCG outputs across implementations: Lean `decide`-checks (`Nucleus/Golden.lean`, **settlement + commons**), the **Rust** kernel reader (`tests/golden.rs`, settlement + commons + VCG), the **WASM** reader (`sdks/verifier-js/test/golden.test.mjs`, settlement + commons — run per-PR in `ci.yml`), and the **Solidity** reader (`examples/marketplace-live/contracts/test/SettlementGolden.t.sol`, settlement via `vm.readFile` — gated by `contracts.yml`). So settlement is now sealed across **all four** languages; commons across Lean + Rust + WASM; VCG across Rust + WASM (VCG's Lean is property-level, not per-vector). Editing any implementation so it diverges from the bytes turns CI red. |
 | **Econ-Lean CI** | `.github/workflows/econ-lean.yml` | Builds the whole econ Lean tree (fails on any `sorry` / failing `decide`), **bans `sorry` and `native_decide`** by regex, and asserts `Golden.lean` is regenerable from the JSON (no drift). |
-| **Kani bounded model checking** | 114 `#[kani::proof]` harnesses across crates | Overflow/panic-freedom and bounded functional properties on the real Rust (e.g. welfare-overflow). Bounded, not unbounded — see §4. |
+| **Kani bounded model checking** | 120 `#[kani::proof]` harnesses across crates (census: `scripts/formal-numbers.sh`) | Overflow/panic-freedom and bounded functional properties on the real Rust (e.g. welfare-overflow). Bounded, not unbounded — see §4. |
 | **Property tests** | 21 `proptest!` modules | Randomized differential/invariant checks on the real Rust kernels. Sampled, not exhaustive. |
 | **On-chain completeness (G5)** | `examples/marketplace-live/contracts` (Foundry, gated by `.github/workflows/contracts.yml`) | `CommitSet.root` over the revealed sealed-bid set is recomputed in `CredibleSettlement.postClearing` and must equal the `commitmentSetRoot` anchored at `openRound`: an **OMIT**ted, **FABRICATE**d, or altered bid changes the root and reverts on-chain. **MISPRICE** (cleared price ≠ recompute) stays optimistic — bond + `challenge()` → reverse. Each is covered by a Foundry test. The on-chain split is intentional: completeness is cheap keccak (enforced); VCG is too expensive on-chain (optimistic). |
 | **Receipt recompute (G4)** | `crates/nucleus-recompute` (`verify_receipt`) + the WASM `recomputeReceipt` binding (`sdks/verifier-js`) | The keystone "verify, don't trust" check: a `ClearingReceipt` (declared inputs + claimed outputs for a settlement / commons / VCG outcome) is re-derived by calling the **proven kernels** on the inputs and compared field-by-field → `match` / `mismatch{field}` / `invalid`. A relying party who never saw the auction catches a MISPRICE, a skimmed split, or a fabricated payment by recomputing it — in Rust or in-browser (WASM). It checks the *arithmetic is the proven function of the declared inputs*; input **truthfulness** (PoTE delivery; set-completeness, handled by the on-chain `CommitSet` row above) is out of scope by design. |

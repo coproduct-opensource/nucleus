@@ -448,9 +448,15 @@ jobs:
           echo "CANONICAL-FUNS-END"
 
       # --- Build the theorem + capture the REAL axiom set ---
-      - name: Install elan (Lean toolchain)
-        if: steps.scope.outputs.relevant == 'true' && runner.environment == 'github-hosted'
+      - name: Install elan (Lean toolchain) unless the runner already has it
+        if: steps.scope.outputs.relevant == 'true'
+        shell: bash
         run: |
+          if command -v lake >/dev/null 2>&1; then
+            echo "lake already present: $(command -v lake)"
+            exit 0
+          fi
+          echo "lake not on PATH; installing elan"
           # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
           # script is handed to an interpreter (Scorecard Pinned-Dependencies).
           curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
@@ -469,7 +475,13 @@ jobs:
       - name: "Mathlib cache (self-hosted: baked elan, persistent ~/.cache/mathlib)"
         if: steps.scope.outputs.relevant == 'true' && runner.environment != 'github-hosted'
         working-directory: crates/portcullis-core/lean
-        run: lake exe cache get || true
+        run: |
+          # NOT `|| true`. A Mathlib cache miss and a cache FAILURE are different
+          # events, and swallowing the exit code made them indistinguishable: the
+          # build fell back to compiling Mathlib from source, silently, for minutes
+          # on the build pool. That is what #2685 found. `lake exe cache get`
+          # returns non-zero when it could not fetch, so let it.
+          lake exe cache get
 
       - name: lake build (extracted core + theorem)
         if: steps.scope.outputs.relevant == 'true'

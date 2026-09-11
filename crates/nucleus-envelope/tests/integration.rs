@@ -1825,3 +1825,74 @@ fn v2_3c_crit3_rejects_oversized_inclusion_proof_audit_path() {
         "got {err:?}",
     );
 }
+
+/// SECURITY_TODO #30 dual-accept, at the envelope verifier.
+///
+/// A Nucleus-kind cosignature produced BEFORE the domain separator was added
+/// must still count toward the quorum, because a cosignature carries no version
+/// and cannot say which preimage produced it. Without the fallback in
+/// `verify_bundle`, every pre-#30 cosignature silently stops counting and a
+/// federation that was meeting its threshold drops below it — a liveness break
+/// that looks exactly like witness misconfiguration.
+#[test]
+fn a_legacy_preimage_cosignature_still_counts_during_the_dual_accept_window() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([90u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let mut bundle = BundleBuilder::new(p)
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+
+    let anchor = bundle.envelope.merkle_anchor.as_mut().unwrap();
+    let root: [u8; 32] = hex::decode(&anchor.sth.root_hash_hex)
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+    // Cosign the PRE-#30 bytes deliberately, as an old witness would have.
+    let seed = [213u8; 32];
+    let signer = Ed25519Witness::from_seed(seed);
+    let witness = InProcessWitness::from_witness(Ed25519Witness::from_seed(seed));
+    let legacy = nucleus_lineage::canonical_sth_bytes_legacy(
+        anchor.sth.tree_size,
+        anchor.sth.timestamp_ms,
+        &root,
+    );
+    anchor.sth.cosignatures.push(nucleus_lineage::Cosignature {
+        witness_kid: witness.kid().to_string(),
+        signature: signer.sign_message(&legacy).to_vec(),
+        timestamp_ms: 1_700_000_000_000,
+        kind: nucleus_lineage::CosignatureKind::Nucleus,
+    });
+
+    let witness_pub = witness.verifying_key_bytes();
+    let trust = TrustAnchor::from_jwks(jwks)
+        .with_witness_pubkey(producer_pub)
+        .with_trusted_witness(witness_pub)
+        .cosignature_threshold(1);
+
+    let report = verify_bundle(&bundle, &trust)
+        .expect("a legacy-preimage cosignature must still count during the dual-accept window");
+    assert_eq!(report.cosignatures_verified, 1);
+}

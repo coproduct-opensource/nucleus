@@ -203,7 +203,17 @@ pub(crate) fn jail_resources(image: &nucleus_spec::ImageSpec, spec: &PodSpec) ->
             in_jail: in_jail::ROOTFS,
             // Mirrors `lower_drives`' `is_read_only: image.read_only` exactly. If
             // these two ever disagree, a writable rootfs gets copied and the
-            // guest's writes vanish — hence the `rw_rootfs_is_hard_link_only` pin.
+            // guest's writes vanish — hence the `rw_rootfs_is_hard_link_only`
+            // pin, which until #2784 was named here and never written.
+            //
+            // The agreement is necessary and NOT sufficient. A hard link means
+            // the guest writes through to `image.rootfs_path` itself, so
+            // `read_only: false` against the shared installed artifact gives
+            // every later pod the previous pod's writes and lets concurrent
+            // pods share one writable block device. That is why
+            // `ImageSpec::read_only` now defaults to TRUE: the placement below
+            // is correct for a private image and unsafe for a shared one, and
+            // nothing here can tell which it was handed.
             placement: if image.read_only {
                 Placement::CopyableIfCrossDevice
             } else {
@@ -607,6 +617,7 @@ impl FirecrackerConfig {
         // without it. See `enforce_pci_off`.
         boot_args = boot_args.map(|args| enforce_pci_off(&args));
 
+        // OS assumption: KB-VSOCK-PEER-CID; docs/assumptions/kernel-behaviour.md.
         // `nucleus.auth_secret` is NO LONGER EMITTED.
         //
         // The kernel command line is world-readable inside the guest
@@ -891,6 +902,8 @@ fn seccomp_args(spec: &PodSpec, jailed: bool) -> Vec<std::ffi::OsString> {
     }
 }
 
+/// OS assumption: KB-PROCFS-STATUS (docs/assumptions/kernel-behaviour.md).
+///
 /// Verify that seccomp is active on a Firecracker process by reading /proc/{pid}/status.
 /// Returns Ok(()) if seccomp mode is 2 (SECCOMP_MODE_FILTER).
 #[cfg(target_os = "linux")]
@@ -1013,6 +1026,63 @@ mod tests {
     fn base_spec() -> PodSpec {
         serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
             .expect("base PodSpec must deserialize")
+    }
+
+    /// The pin `jail_resources` has named since it was written, and which
+    /// #2784 found did not exist: `grep -rn rw_rootfs_is_hard_link_only`
+    /// returned exactly one hit, the comment claiming it.
+    ///
+    /// A writable rootfs MUST be hard-linked. Copying it would put the guest's
+    /// writes in a jail-local copy that is discarded when the jail is torn
+    /// down — the writes would vanish silently, which is worse than refusing.
+    /// A read-only rootfs may be copied, because nothing writes through it.
+    #[test]
+    fn rw_rootfs_is_hard_link_only() {
+        let rw = jail_resources(&image(false, false), &base_spec());
+        let rootfs = rw
+            .iter()
+            .find(|r| r.in_jail == in_jail::ROOTFS)
+            .expect("a rootfs resource must be jailed");
+        assert_eq!(
+            rootfs.placement,
+            Placement::HardLinkOnly,
+            "a writable rootfs that gets copied loses every guest write when the \
+             jail is torn down"
+        );
+
+        let ro = jail_resources(&image(true, false), &base_spec());
+        let rootfs = ro
+            .iter()
+            .find(|r| r.in_jail == in_jail::ROOTFS)
+            .expect("a rootfs resource must be jailed");
+        assert_eq!(
+            rootfs.placement,
+            Placement::CopyableIfCrossDevice,
+            "a read-only rootfs is safe to copy, and copying is what lets the \
+             artifact live on a different device from the jail"
+        );
+    }
+
+    /// The consequence the placement above cannot avoid, stated so it is not
+    /// rediscovered: a hard link is the SAME FILE. `read_only: false` therefore
+    /// means the guest writes through to the artifact every other pod boots
+    /// from. Measured in #2784 — the installed rootfs digest changed from
+    /// `7739f5cd…` to `b7c40744…` after `verify --tier2` pod boots, and the
+    /// jail entry shared the artifact's inode with `links=2`.
+    #[test]
+    fn a_writable_rootfs_is_the_artifact_itself_not_a_copy() {
+        let rw = jail_resources(&image(false, false), &base_spec());
+        let rootfs = rw
+            .iter()
+            .find(|r| r.in_jail == in_jail::ROOTFS)
+            .expect("a rootfs resource must be jailed");
+        assert_eq!(
+            rootfs.host_source,
+            PathBuf::from("/var/lib/nucleus/rootfs.ext4"),
+            "the jail entry links the shared artifact, so a writable rootfs is \
+             shared mutable state between pods — the reason the spec default is \
+             now read_only: true"
+        );
     }
 
     fn image(read_only: bool, scratch: bool) -> ImageSpec {

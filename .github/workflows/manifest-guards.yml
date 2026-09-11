@@ -122,6 +122,28 @@ jobs:
       # also driven RED together with the harness in scripts/check-gates-can-fail.sh.
       - name: ...and agrees with the shell gates it replaces
         run: cargo run -q -p xtask -- allowlist-gates --parity
+      # A 2026-09-09 audit found that most of nucleus's algebraic unifications
+      # are already built, several machine-proved, and not wired to the
+      # enforcement path: ProductLattice had zero uses, Lean-proved MeetCap had
+      # zero production call sites, and PathLattice::with_work_dir — the
+      # filesystem sandbox root — is built by eleven callers, every one a test,
+      # three of them the adversarial suites that prove path-traversal
+      # containment of a configuration production never builds.
+      # C8 (check-extracted-callsites.sh) gates that class for the Aeneas
+      # predicates only. This is the general case: a mechanism declared dead
+      # must still be dead, and the list may only shrink.
+      - name: A mechanism declared dead is still dead
+        run: scripts/check-law-mechanisms.sh
+
+      # The dual of the gate above. That one finds a mechanism with no call
+      # site; this finds one that IS called, IS handed its authorising witness,
+      # and drops it -- `fn run(&self, cmd: &str, _authority: Authority)` that
+      # goes on to spawn the command. Because no witness in this tree carries
+      # the target of the act it authorises, an Authority obtained for one
+      # command discharges the gate for any other. Closing that is ADR 0006's
+      # C2; this keeps the count from growing until it lands.
+      - name: A witness accepted is a witness read
+        run: scripts/check-inert-authority.sh
 
       # `.gitignore` said `/target/` — anchored to the root, so every nested
       # target/ escaped it, and tools/nucleus-mediation-lint/target was

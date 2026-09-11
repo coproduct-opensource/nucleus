@@ -175,6 +175,7 @@ mod tests {
             jti_cache: std::sync::Arc::new(nucleus_oidc_core::JtiCache::new()),
             federation: std::sync::Arc::new(crate::federation::FederationRegistry::empty()),
             bundle_provider: std::sync::Arc::new(crate::spire::StaticBundleProvider::new()),
+            cert_root_pubkey: None,
         })
     }
 

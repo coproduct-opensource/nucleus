@@ -149,6 +149,42 @@ probe() {
 
 append_line() { printf '%s\n' "$2" >> "$1"; }
 
+perturb_law_mechanism_wired() {
+    # A mechanism the manifest declares dead gains a production call site.
+    # `ProvenanceDAG` is a complete content-addressed Merkle DAG that nothing
+    # constructs; one production mention is the whole failure.
+    #
+    # Appending to a .rs file does not trigger a crate build here: the gate is
+    # `cargo run -p xtask`, which compiles xtask and then greps the tree.
+    append_line "$1" 'fn _gate_of_gates() { let _: Option<ProvenanceDAG> = None; }'
+}
+
+perturb_inert_authority_added() {
+    # A new witness is accepted and dropped. `Authority` is in the manifest's
+    # WITNESS vocabulary and this file has no row, so the site is undeclared --
+    # which is the growth the gate exists to refuse.
+    #
+    # Appending to a .rs file does not trigger a crate build here: the gate is
+    # `cargo run -p xtask`, which compiles xtask and then greps the tree.
+    append_line "$1" 'fn _gate_of_gates_inert(_authority: Authority) {}'
+}
+
+perturb_inert_authority_paid() {
+    # The OTHER direction, and it needs its own probe: a declared site is fixed
+    # (the binding is named, so the body may read it) and the row is left
+    # behind. The pin is exact in both directions, so a stale row is a finding
+    # too -- without this probe, only growth would be proven detectable.
+    sed -i 's/_verified: &VerifiedGrant/verified: \&VerifiedGrant/' "$1"
+}
+
+perturb_dead_code_ratchet() {
+    # One more tolerated allowance than the crate's ceiling permits. The gate
+    # covers two properties, so it needs a perturbation for each — a probe on
+    # only the manifest half would leave the ratchet half unproven.
+    append_line "$1" '#[allow(dead_code)]'
+    append_line "$1" 'fn _gate_of_gates_unused() {}'
+}
+
 perturb_line_ratchet() {
     # The ratchet caps file length. Push a monitored file past its ceiling.
     for _ in $(seq 1 400); do echo "// gate-of-gates padding" >> "$1"; done
@@ -450,6 +486,14 @@ RUST
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
+probe check-law-mechanisms.sh "" crates/portcullis/src/lattice.rs \
+      "a declared-dead mechanism gains a production call site" perturb_law_mechanism_wired
+probe check-law-mechanisms.sh "" crates/portcullis/src/budget.rs \
+      "one allowance past the crate's dead-code ceiling" perturb_dead_code_ratchet
+probe check-inert-authority.sh "" crates/portcullis/src/lattice.rs \
+      "a new witness accepted and dropped"    perturb_inert_authority_added
+probe check-inert-authority.sh "" crates/nucleus-cli/src/grant.rs \
+      "a declared site fixed, its row left behind" perturb_inert_authority_paid
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
       "a raw Command::new on the agent path"  perturb_mediation
 probe check-sealed-home.sh    "" crates/portcullis-effects/src/lib.rs \

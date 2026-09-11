@@ -994,7 +994,6 @@ mod tests {
     // Sanctioned cross-crate test-only bundle: runs a real `preflight_action` on a
     // known-good term. This is the only supported way for out-of-module tests to
     // obtain a sealed `DischargedBundle` (the constructor is private to discharge).
-    use nucleus_ifc_kernel::discharge::test_helpers::bundle_for;
     use nucleus_ifc_kernel::{Operation, SinkClass};
 
     /// Every test in this module drives the SHELL executor, so its bundle must be
@@ -1005,8 +1004,34 @@ mod tests {
     /// RunBash/BashExec, and `require_scope` refuses it. Before the check existed
     /// these tests passed with a bundle earned for a different action entirely,
     /// which is exactly the confused-deputy shape the check closes.
-    fn allowed_bundle() -> nucleus_ifc_kernel::discharge::DischargedBundle {
-        bundle_for(Operation::RunBash, SinkClass::BashExec)
+    /// The bundle `Executor::run(cmd)` needs.
+    ///
+    /// `run` splits the command string and the spawn boundary rejoins it, so
+    /// the subject the spend sees is `shell_words::split(cmd).join(" ")` — not
+    /// `cmd`. The two differ whenever the command carries quoting
+    /// (`bash -c "echo hi"` becomes `bash -c echo hi`), so a test that used the
+    /// literal would be minting for a target the spend never sees.
+    fn run_bundle(cmd: &str) -> nucleus_ifc_kernel::discharge::DischargedBundle {
+        allowed_bundle(
+            &shell_words::split(cmd)
+                .expect("test command parses")
+                .join(" "),
+        )
+    }
+
+    /// A shell bundle earned for a SPECIFIC command.
+    ///
+    /// The spend in `RealEffects::run_argv` binds the target, and the target it
+    /// renders is `args.join(" ")` with the program first — the same string
+    /// `run_args_internal` builds as `display_command`. So a test authorising
+    /// `echo hello` must mint for `"echo hello"`; a bundle for anything else is
+    /// refused, which is the property.
+    fn allowed_bundle(subject: &str) -> nucleus_ifc_kernel::discharge::DischargedBundle {
+        nucleus_ifc_kernel::discharge::test_helpers::bundle_for_subject(
+            Operation::RunBash,
+            SinkClass::BashExec,
+            subject,
+        )
     }
     use portcullis::BudgetLattice;
     use portcullis::kernel::Kernel;
@@ -1030,6 +1055,8 @@ mod tests {
             consumed_usd: Decimal::ZERO,
             max_input_tokens: 100_000,
             max_output_tokens: 10_000,
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         }
     }
 
@@ -1039,6 +1066,8 @@ mod tests {
             consumed_usd: Decimal::ZERO,
             max_input_tokens: 100_000,
             max_output_tokens: 10_000,
+            consumed_input_tokens: 0,
+            consumed_output_tokens: 0,
         }
     }
 
@@ -1065,7 +1094,7 @@ mod tests {
 
         let dt = run_token(&mut kernel, "echo hello");
         let output = executor
-            .run("echo hello", &dt, Authority::new(allowed_bundle()))
+            .run("echo hello", &dt, Authority::new(run_bundle("echo hello")))
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
@@ -1086,7 +1115,7 @@ mod tests {
             .allow_unsandboxed_local();
 
         let dt = run_token(&mut kernel, "echo hello");
-        let result = executor.run("echo hello", &dt, Authority::new(allowed_bundle()));
+        let result = executor.run("echo hello", &dt, Authority::new(run_bundle("echo hello")));
         assert!(matches!(result, Err(NucleusError::BudgetExhausted { .. })));
     }
 
@@ -1111,7 +1140,7 @@ mod tests {
             Operation::RunBash,
             "test: bypass kernel for executor blocklist test",
         );
-        let result = executor.run("rm -rf /", &dt, Authority::new(allowed_bundle()));
+        let result = executor.run("rm -rf /", &dt, Authority::new(run_bundle("rm -rf /")));
         assert!(result.is_err());
     }
 
@@ -1136,7 +1165,11 @@ mod tests {
         assert!(tok.is_none(), "kernel should deny Never capability");
 
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force token");
-        let result = executor.run("echo hello", &forced, Authority::new(allowed_bundle()));
+        let result = executor.run(
+            "echo hello",
+            &forced,
+            Authority::new(run_bundle("echo hello")),
+        );
         assert!(matches!(
             result,
             Err(NucleusError::InsufficientCapability { .. })
@@ -1160,7 +1193,11 @@ mod tests {
 
         // Kernel requires approval — force a token via issue_approved_token to test executor layer
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force token");
-        let result = executor.run("echo hello", &forced, Authority::new(allowed_bundle()));
+        let result = executor.run(
+            "echo hello",
+            &forced,
+            Authority::new(run_bundle("echo hello")),
+        );
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
@@ -1189,7 +1226,7 @@ mod tests {
             "echo hello",
             &dt,
             &approval,
-            Authority::new(allowed_bundle()),
+            Authority::new(run_bundle("echo hello")),
         );
         assert!(result.is_ok());
     }
@@ -1220,7 +1257,7 @@ mod tests {
         let result = executor.run(
             "curl http://example.com",
             &forced,
-            Authority::new(allowed_bundle()),
+            Authority::new(run_bundle("curl http://example.com")),
         );
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
@@ -1249,7 +1286,7 @@ mod tests {
         let result = executor.run(
             "bash -c \"echo hi\"",
             &forced,
-            Authority::new(allowed_bundle()),
+            Authority::new(run_bundle("bash -c \"echo hi\"")),
         );
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
@@ -1271,7 +1308,13 @@ mod tests {
         let args = vec!["echo".to_string(), "hello".to_string(), "world".to_string()];
         let dt = run_token(&mut kernel, "echo hello world");
         let output = executor
-            .run_args(&args, None, None, &dt, Authority::new(allowed_bundle()))
+            .run_args(
+                &args,
+                None,
+                None,
+                &dt,
+                Authority::new(allowed_bundle(&args.join(" "))),
+            )
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello world"));
@@ -1295,7 +1338,13 @@ mod tests {
         let args = vec!["echo".to_string(), "$(whoami)".to_string()];
         let dt = run_token(&mut kernel, "echo $(whoami)");
         let output = executor
-            .run_args(&args, None, None, &dt, Authority::new(allowed_bundle()))
+            .run_args(
+                &args,
+                None,
+                None,
+                &dt,
+                Authority::new(allowed_bundle(&args.join(" "))),
+            )
             .unwrap();
         // Should print the literal string, not execute whoami
         assert!(String::from_utf8_lossy(&output.stdout).contains("$(whoami)"));
@@ -1323,7 +1372,7 @@ mod tests {
                 Some("hello from stdin"),
                 None,
                 &dt,
-                Authority::new(allowed_bundle()),
+                Authority::new(allowed_bundle(&args.join(" "))),
             )
             .unwrap();
         assert!(output.status.success());
@@ -1347,7 +1396,13 @@ mod tests {
         let args: Vec<String> = vec![];
         // Kernel also blocks empty commands, so force a token to test executor layer
         let dt = kernel.issue_approved_token(Operation::RunBash, "test: empty command");
-        let result = executor.run_args(&args, None, None, &dt, Authority::new(allowed_bundle()));
+        let result = executor.run_args(
+            &args,
+            None,
+            None,
+            &dt,
+            Authority::new(allowed_bundle(&args.join(" "))),
+        );
         assert!(matches!(result, Err(NucleusError::CommandDenied { .. })));
     }
 
@@ -1373,7 +1428,7 @@ mod tests {
             None,
             Some("/etc"),
             &dt,
-            Authority::new(allowed_bundle()),
+            Authority::new(allowed_bundle(&args.join(" "))),
         );
         assert!(matches!(result, Err(NucleusError::SandboxEscape { .. })));
     }
@@ -1405,7 +1460,7 @@ mod tests {
             .run(
                 "printenv TEST_PARENT_SECRET",
                 &dt,
-                Authority::new(allowed_bundle()),
+                Authority::new(run_bundle("printenv TEST_PARENT_SECRET")),
             )
             .unwrap();
 
@@ -1444,7 +1499,7 @@ mod tests {
             .run(
                 "printenv ALLOWED_TOKEN",
                 &dt,
-                Authority::new(allowed_bundle()),
+                Authority::new(run_bundle("printenv ALLOWED_TOKEN")),
             )
             .unwrap();
         assert!(output.status.success());
@@ -1474,14 +1529,22 @@ mod tests {
         // Both vars should be visible
         let dt_a = run_token(&mut kernel, "printenv VAR_A");
         let output_a = executor
-            .run("printenv VAR_A", &dt_a, Authority::new(allowed_bundle()))
+            .run(
+                "printenv VAR_A",
+                &dt_a,
+                Authority::new(run_bundle("printenv VAR_A")),
+            )
             .unwrap();
         assert!(output_a.status.success());
         assert!(String::from_utf8_lossy(&output_a.stdout).contains("value_a"));
 
         let dt_b = run_token(&mut kernel, "printenv VAR_B");
         let output_b = executor
-            .run("printenv VAR_B", &dt_b, Authority::new(allowed_bundle()))
+            .run(
+                "printenv VAR_B",
+                &dt_b,
+                Authority::new(run_bundle("printenv VAR_B")),
+            )
             .unwrap();
         assert!(output_b.status.success());
         assert!(String::from_utf8_lossy(&output_b.stdout).contains("value_b"));
@@ -1513,7 +1576,13 @@ mod tests {
         let args = vec!["printenv".to_string(), "TEST_RUN_ARGS_SECRET".to_string()];
         let dt1 = run_token(&mut kernel, "printenv TEST_RUN_ARGS_SECRET");
         let output = executor
-            .run_args(&args, None, None, &dt1, Authority::new(allowed_bundle()))
+            .run_args(
+                &args,
+                None,
+                None,
+                &dt1,
+                Authority::new(allowed_bundle(&args.join(" "))),
+            )
             .unwrap();
         assert!(
             !output.status.success(),
@@ -1524,7 +1593,13 @@ mod tests {
         let args = vec!["printenv".to_string(), "ALLOWED_VAR".to_string()];
         let dt2 = run_token(&mut kernel, "printenv ALLOWED_VAR");
         let output = executor
-            .run_args(&args, None, None, &dt2, Authority::new(allowed_bundle()))
+            .run_args(
+                &args,
+                None,
+                None,
+                &dt2,
+                Authority::new(allowed_bundle(&args.join(" "))),
+            )
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("allowed-value"));
@@ -1558,7 +1633,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let err = executor
-                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
                 .unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationNotConfigured),
@@ -1580,7 +1655,13 @@ mod tests {
             let args = vec!["echo".to_string(), "hi".to_string()];
             let dt = run_token(&mut kernel, "echo hi");
             let err = executor
-                .run_args(&args, None, None, &dt, Authority::new(allowed_bundle()))
+                .run_args(
+                    &args,
+                    None,
+                    None,
+                    &dt,
+                    Authority::new(allowed_bundle(&args.join(" "))),
+                )
                 .unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationNotConfigured),
@@ -1604,7 +1685,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let output = executor
-                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
                 .unwrap();
             assert!(output.status.success());
         }
@@ -1629,7 +1710,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let err = executor
-                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
                 .unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationInsufficient { .. }),
@@ -1653,7 +1734,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let output = executor
-                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
                 .unwrap();
             assert!(output.status.success());
         }
@@ -1676,7 +1757,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let err = executor
-                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
                 .unwrap_err();
             assert!(
                 matches!(err, NucleusError::HardeningUnavailable { .. }),
@@ -1705,7 +1786,7 @@ mod tests {
                 .run(
                     "cat /proc/self/status",
                     &dt,
-                    Authority::new(allowed_bundle()),
+                    Authority::new(run_bundle("cat /proc/self/status")),
                 )
                 .unwrap();
             let status = String::from_utf8_lossy(&output.stdout);
@@ -1749,7 +1830,7 @@ mod tests {
                     "echo hello",
                     Duration::from_secs(5),
                     &dt,
-                    Authority::new(allowed_bundle()),
+                    Authority::new(run_bundle("echo hello")),
                 )
                 .await
                 .unwrap();
@@ -1777,7 +1858,7 @@ mod tests {
                     "sleep 30",
                     Duration::from_millis(100),
                     &dt,
-                    Authority::new(allowed_bundle()),
+                    Authority::new(run_bundle("sleep 30")),
                 )
                 .await
                 .unwrap_err();
@@ -1815,7 +1896,7 @@ mod tests {
                     "printenv TEST_ASYNC_PARENT_SECRET",
                     Duration::from_secs(5),
                     &dt1,
-                    Authority::new(allowed_bundle()),
+                    Authority::new(run_bundle("printenv TEST_ASYNC_PARENT_SECRET")),
                 )
                 .await
                 .unwrap();
@@ -1828,7 +1909,7 @@ mod tests {
                     "printenv ALLOWED_ASYNC_VAR",
                     Duration::from_secs(5),
                     &dt2,
-                    Authority::new(allowed_bundle()),
+                    Authority::new(run_bundle("printenv ALLOWED_ASYNC_VAR")),
                 )
                 .await
                 .unwrap();
@@ -1896,7 +1977,7 @@ mod tests {
                     .with_time_guard(&guard)
                     .allow_unsandboxed_local();
                 let dt = run_token(&mut kernel, "argv-parity");
-                let exec = executor.run_args(&argv, None, None, &dt, Authority::new(allowed_bundle()));
+                let exec = executor.run_args(&argv, None, None, &dt, Authority::new(allowed_bundle(&argv.join(" "))));
                 let exec_refused = matches!(
                     &exec,
                     Err(NucleusError::CommandDenied { reason, .. }) if reason.starts_with(ARGV_REFUSED_PREFIX)
@@ -1917,7 +1998,7 @@ mod tests {
                         None,
                         &BTreeMap::new(),
                         None,
-                        Authority::new(allowed_bundle()),
+                        Authority::new(allowed_bundle(&args.join(" "))),
                     );
                     let home_refused = matches!(
                         &r,

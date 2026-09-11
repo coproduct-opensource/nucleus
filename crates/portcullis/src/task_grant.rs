@@ -245,51 +245,13 @@ fn render_plain(out: &mut String, grant: &TaskGrant, catalog: &EffectCatalog) {
     }
     let _ = writeln!(out, "Limits:  {}", join_dot(limits));
 
-    // Risk.
-    let legs = grant.risk.exposure_legs.len();
-    let names: Vec<&str> = grant
-        .risk
-        .exposure_legs
-        .iter()
-        .map(|l| leg_name(*l))
-        .collect();
-    let risk_line = if legs == 3 {
-        let gated: Vec<String> = grant
-            .risk
-            .approval_gated
-            .iter()
-            .map(|o| o.to_string())
-            .collect();
-        if gated.is_empty() {
-            "all 3 exposure legs present (private data + untrusted content + exfiltration)"
-                .to_string()
-        } else {
-            format!(
-                "all 3 exposure legs present → the kernel asks for approval before {}",
-                gated.join(", ")
-            )
-        }
-    } else {
-        let missing: Vec<&str> = [
-            ExposureLabel::PrivateData,
-            ExposureLabel::UntrustedContent,
-            ExposureLabel::ExfilVector,
-        ]
-        .iter()
-        .filter(|l| !grant.risk.exposure_legs.contains(l))
-        .map(|l| leg_name(*l))
-        .collect();
-        let present = if names.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", names.join(" + "))
-        };
-        format!(
-            "{legs} of 3 exposure legs{present}; {} absent → no approval prompts expected",
-            missing.join(" and ")
-        )
-    };
-    let _ = writeln!(out, "Risk:    {risk_line}");
+    // Risk. One producer, in `exposure_mechanism`: which legs, what the
+    // combination permits, and whether the kernel will stop to ask.
+    let _ = writeln!(
+        out,
+        "Risk:    {}",
+        crate::exposure_mechanism::risk_line(&grant.risk)
+    );
 }
 
 fn render_technical(out: &mut String, grant: &TaskGrant) {
@@ -436,14 +398,6 @@ fn structural_absences(grant: &TaskGrant) -> Vec<String> {
     v
 }
 
-fn leg_name(l: ExposureLabel) -> &'static str {
-    match l {
-        ExposureLabel::PrivateData => "private data",
-        ExposureLabel::UntrustedContent => "untrusted content",
-        ExposureLabel::ExfilVector => "exfiltration",
-    }
-}
-
 fn level_name(l: CapabilityLevel) -> &'static str {
     match l {
         CapabilityLevel::Never => "never",
@@ -507,20 +461,36 @@ pub fn exposure_legs(caps: &crate::CapabilityLattice) -> Vec<ExposureLabel> {
     legs
 }
 
-/// Build the risk summary for a lattice.
-pub fn summarise_risk(lattice: &PermissionLattice, gap: WeakeningGap) -> RiskSummary {
+/// Build the risk summary for a weakening from `from` to `to`.
+///
+/// `before` is computed from `from`, not assumed. It used to be the literal
+/// `StateRisk::Safe` — a claim about the starting point that nothing checked,
+/// and one that was wrong for every caller in the tree. Both weaken from
+/// `PermissionLattice::restrictive()`, which holds the three read capabilities
+/// at `Always`: one exposure leg, `StateRisk::Low`. So every policy trace ever
+/// printed opened with `risk Safe → X` about a run that started from Low.
+///
+/// Taking both lattices and the cost config, rather than a pre-computed gap,
+/// is what makes it checked: the same pair of lattices produces the gap and
+/// both grades, so the trace cannot describe a weakening from one floor while
+/// grading a different one.
+pub fn summarise_risk(
+    from: &PermissionLattice,
+    to: &PermissionLattice,
+    cost: &crate::WeakeningCostConfig,
+) -> RiskSummary {
     let constraint = IncompatibilityConstraint::enforcing();
     let approval_gated: Vec<Operation> = Operation::ALL
         .iter()
         .copied()
-        .filter(|op| lattice.obligations.requires(*op))
+        .filter(|op| to.obligations.requires(*op))
         .collect();
     RiskSummary {
-        before: StateRisk::Safe,
-        after: constraint.state_risk(&lattice.capabilities),
-        exposure_legs: exposure_legs(&lattice.capabilities),
+        before: constraint.state_risk(&from.capabilities),
+        after: constraint.state_risk(&to.capabilities),
+        exposure_legs: exposure_legs(&to.capabilities),
         approval_gated,
-        gap,
+        gap: cost.compute_gap(from, to),
     }
 }
 
@@ -530,8 +500,7 @@ mod tests {
     use crate::effect_catalog::EffectCatalog;
 
     fn grant_for(lattice: PermissionLattice, can: &[&str], hosts: &[&str]) -> TaskGrant {
-        let gap = crate::WeakeningCostConfig::default()
-            .compute_gap(&PermissionLattice::restrictive(), &lattice);
+        let cost = crate::WeakeningCostConfig::default();
         TaskGrant {
             version: TaskGrant::VERSION,
             id: Uuid::nil(),
@@ -550,7 +519,7 @@ mod tests {
                 blocked_paths: vec!["**/.ssh/**".into(), "**/.aws/**".into(), "**/.env".into()],
                 commands: vec!["cargo test".into()],
             },
-            risk: summarise_risk(&lattice, gap),
+            risk: summarise_risk(&PermissionLattice::restrictive(), &lattice, &cost),
             lattice,
             provenance: CompilerProvenance {
                 compiler: "test/0".into(),
@@ -589,7 +558,67 @@ mod tests {
             lines[3].starts_with("Limits:  $5.00 · 2h · api.github.com only · no .aws, .env, .ssh")
         );
         assert!(lines[4].starts_with("Risk:    "));
+        // The Risk line must say what the combination *permits*, not only how
+        // many legs it has. This grant reads the workspace and runs tests with
+        // no network reachable by an effect that carries data out, so the
+        // sentence is the one for private data without a path out. Asserted
+        // through the renderer rather than against a literal: the words live
+        // in `exposure_mechanism`, and this pins that the plain level reaches
+        // them at all.
+        assert_eq!(
+            lines[4],
+            format!(
+                "Risk:    {}",
+                crate::exposure_mechanism::risk_line(&grant.risk)
+            )
+        );
+        assert!(
+            lines[4].contains(crate::exposure_mechanism::mechanism(
+                &grant.risk.exposure_legs
+            )),
+            "the plain grant lost the mechanism sentence: {}",
+            lines[4]
+        );
         assert_eq!(lines.len(), 5, "plain is exactly five lines");
+    }
+
+    /// `before` is read from the lattice the weakening starts at.
+    ///
+    /// The literal it replaced was not merely unchecked, it was **wrong for
+    /// every caller in the tree**: both weaken from `PermissionLattice::
+    /// restrictive()`, and that floor holds `read_files`, `glob_search` and
+    /// `grep_search` at `Always` — one exposure leg, so `StateRisk::Low`. Every
+    /// policy trace ever printed said `risk Safe → X` about a run that started
+    /// from Low. The name "restrictive" is about what it withholds, not about
+    /// the floor being harmless, and the literal quietly assumed otherwise.
+    #[test]
+    fn before_is_computed_from_the_starting_lattice_not_assumed() {
+        let cost = crate::WeakeningCostConfig::default();
+        let floor = PermissionLattice::restrictive();
+        let wide = PermissionLattice::permissive();
+
+        let from_floor = summarise_risk(&floor, &wide, &cost);
+        assert_eq!(
+            from_floor.before,
+            StateRisk::Low,
+            "the restrictive floor can read the workspace; it is not Safe"
+        );
+
+        // The same destination, reached from somewhere that is already exposed.
+        let from_wide = summarise_risk(&wide, &wide, &cost);
+        assert_ne!(
+            from_wide.before,
+            StateRisk::Safe,
+            "a weakening that starts from an exposed lattice must not report Safe"
+        );
+        assert_eq!(
+            from_wide.before, from_wide.after,
+            "weakening a lattice to itself moves no risk"
+        );
+        assert_eq!(
+            from_floor.after, from_wide.after,
+            "`after` depends on the destination alone"
+        );
     }
 
     #[test]
