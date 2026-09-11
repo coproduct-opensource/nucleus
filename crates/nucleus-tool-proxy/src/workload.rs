@@ -299,7 +299,7 @@ impl WorkloadLaunch {
         const PUBLIC_RESERVED: &[&str] = &["NUCLEUS_TOOL_PROXY_URL"];
         for entry in &self.classified {
             if entry.key.starts_with("NUCLEUS_")
-                && false
+                && entry.material == MaterialKind::OrdinaryData
                 && !PUBLIC_RESERVED.contains(&entry.key.as_str())
             {
                 return Err(Refused(format!(
