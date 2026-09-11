@@ -32,8 +32,6 @@
 //! caller cannot present a decision about one act while spending an authority
 //! for another.
 
-use portcullis::Operation;
-
 use crate::error::NucleusError;
 
 /// Refuse a decision that was made about a different operation.
@@ -42,82 +40,65 @@ use crate::error::NucleusError;
 /// uses for "earned for a different action", because that is what this is.
 ///
 /// Checked in every profile. That is the whole point; see the module docs.
-pub(crate) fn require_decision_for(
-    decision_op: Operation,
-    performing: Operation,
-) -> Result<(), NucleusError> {
-    if decision_op == performing {
-        return Ok(());
+/// A refused redeem becomes a scope mismatch.
+///
+/// Both variants are the same kind of failure to a caller — the decision does
+/// not authorise this effect — and the message says which kind it was.
+///
+/// # Why this module is now three lines
+///
+/// It used to hold `require_decision_for`, which compared two `Operation`s and
+/// consulted no state, and callers were trusted to also compare permissions.
+/// They mostly did not: 24 of the 30 redeem sites in this crate checked the
+/// operation and nothing else, so a decision taken under one policy was
+/// redeemable under any other at every one of them.
+///
+/// The check now lives on the token as [`portcullis::kernel::DecisionToken::redeem`],
+/// which takes `self` by value and requires both the operation and the
+/// permissions in force. `DecisionToken::operation` is `pub(crate)` to
+/// portcullis, so there is no other way to read what a token authorises — a new
+/// effect method cannot forget, because there is nothing else to call.
+impl From<portcullis::kernel::RedeemError> for NucleusError {
+    fn from(e: portcullis::kernel::RedeemError) -> Self {
+        Self::ScopeMismatch {
+            reason: e.to_string(),
+        }
     }
-    Err(NucleusError::ScopeMismatch {
-        reason: format!("decision authorises {decision_op:?}, this effect is {performing:?}"),
-    })
-}
-
-/// A decision may only be redeemed under the permissions it was taken against.
-///
-/// The affine discipline on `DecisionToken` proves it cannot be used TWICE — two
-/// `compile_fail` doctests on `Authority` next door prove the same for replay
-/// (E0382) and clone (E0599). It proves nothing about whether the token is still
-/// TRUE, and until now nothing else did either: [`require_decision_for`] above
-/// compares two `Operation`s and consults no state, so a token decided under one
-/// policy was redeemable under any other.
-///
-/// The token carries the checksum of the effective permissions at decision time;
-/// the executor carries the checksum of the permissions it is about to act
-/// under. Equal or refuse.
-///
-/// This is the first step of a validity interval, and the honest statement of
-/// what it bounds: **not elapsed time, but whether the thing the decision
-/// depended on is the thing being executed under.** It does not yet catch a
-/// budget spent or an approval consumed between decision and effect — those are
-/// kernel state the executor does not hold — and it does not re-read the kernel,
-/// so a policy attenuated after this executor was built is not seen. Both are
-/// the next steps, and both are cheap once the fingerprint is on the token.
-pub(crate) fn require_permissions_match(
-    decided_under: &str,
-    executing_under: &str,
-) -> Result<(), NucleusError> {
-    if decided_under == executing_under {
-        return Ok(());
-    }
-    Err(NucleusError::ScopeMismatch {
-        reason: format!(
-            "decision was taken against permissions {} but this effect runs under {}: \
-             a decision does not carry across a change of policy",
-            short(decided_under),
-            short(executing_under)
-        ),
-    })
-}
-
-/// First eight hex characters, or the whole string when it is shorter.
-///
-/// Enough to tell two checksums apart in a message; the full digest belongs in
-/// the trace, not in an error a human reads.
-fn short(digest: &str) -> &str {
-    digest.get(..8).unwrap_or(digest)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portcullis::Operation;
+    use portcullis::kernel::RedeemError;
 
+    /// THE regression, preserved. This check used to be
+    /// `debug_assert_eq!(decision.operation(), op, ..)`, which compiles to
+    /// nothing when `debug_assertions` is off — every release build — so a
+    /// `DecisionToken` minted for `ReadFiles` and handed to a `RunBash` entry
+    /// point was accepted exactly as readily as the right one.
+    ///
+    /// It is now a refusal in both profiles, and it is no longer a call site's
+    /// job to remember: `DecisionToken::redeem` is the only way to read a token.
+    /// The property lives with `redeem` in portcullis; this pins that the
+    /// refusal still arrives here as a `ScopeMismatch` rather than being
+    /// swallowed.
     #[test]
-    fn permissions_that_match_are_accepted() {
-        assert!(require_permissions_match("abc123", "abc123").is_ok());
-    }
+    fn a_refused_redeem_arrives_as_a_scope_mismatch() {
+        let scope = NucleusError::from(RedeemError::ScopeMismatch {
+            authorised: Operation::ReadFiles,
+            performing: Operation::RunBash,
+        });
+        assert!(matches!(scope, NucleusError::ScopeMismatch { .. }));
+        assert!(scope.to_string().contains("ReadFiles"), "{scope}");
+        assert!(scope.to_string().contains("RunBash"), "{scope}");
 
-    #[test]
-    fn a_decision_taken_under_other_permissions_is_refused() {
-        // THE property. Before this, the redeem side compared two `Operation`s
-        // and consulted no state at all, so a token decided under one policy was
-        // redeemable under any other. The affine discipline proved the token
-        // could not be used twice; nothing proved it was still true.
-        let err = require_permissions_match("aaaaaaaabbbb", "ccccccccdddd")
-            .expect_err("a decision does not carry across a change of policy");
-        assert!(matches!(err, NucleusError::ScopeMismatch { .. }));
-        let msg = err.to_string();
+        let stale = NucleusError::from(RedeemError::StalePermissions {
+            decided_under: "aaaaaaaabbbb".to_string(),
+            executing_under: "ccccccccdddd".to_string(),
+        });
+        assert!(matches!(stale, NucleusError::ScopeMismatch { .. }));
+        let msg = stale.to_string();
         assert!(
             msg.contains("aaaaaaaa"),
             "names what it was decided under: {msg}"
@@ -126,54 +107,6 @@ mod tests {
             msg.contains("cccccccc"),
             "and what it would run under: {msg}"
         );
-    }
-
-    #[test]
-    fn the_message_shortens_a_digest_without_losing_a_short_one() {
-        // Eight hex characters is enough to tell two checksums apart; the full
-        // digest belongs in the trace, not in an error a human reads.
-        assert_eq!(short("0123456789abcdef"), "01234567");
-        assert_eq!(short("tiny"), "tiny");
-    }
-
-    #[test]
-    fn a_matching_decision_is_accepted() {
-        assert!(require_decision_for(Operation::RunBash, Operation::RunBash).is_ok());
-    }
-
-    /// THE regression. Under `debug_assert_eq!` this case PANICKED in a debug
-    /// build and was SILENTLY ACCEPTED in a release one. It is now a refusal in
-    /// both.
-    #[test]
-    fn a_decision_about_another_operation_is_refused() {
-        let err = require_decision_for(Operation::ReadFiles, Operation::RunBash)
-            .expect_err("a decision about ReadFiles must not authorise RunBash");
-        assert!(
-            matches!(err, NucleusError::ScopeMismatch { .. }),
-            "a decision for the wrong operation is a scope mismatch, got {err:?}"
-        );
-    }
-
-    /// The message has to name BOTH sides, or it sends the reader to inspect
-    /// the wrong one. `15e3530f`'s lesson (ADR 0007 A-4) in a smaller place.
-    #[test]
-    fn the_refusal_names_what_was_held_and_what_was_attempted() {
-        let err = require_decision_for(Operation::ReadFiles, Operation::RunBash)
-            .expect_err("must refuse");
-        let msg = err.to_string();
-        assert!(msg.contains("ReadFiles"), "{msg}");
-        assert!(msg.contains("RunBash"), "{msg}");
-    }
-
-    /// Non-vacuity: the refusal test above would pass against a function that
-    /// refused everything. Every operation must authorise itself.
-    #[test]
-    fn every_operation_authorises_itself() {
-        for op in Operation::ALL {
-            assert!(
-                require_decision_for(op, op).is_ok(),
-                "{op:?} must authorise itself"
-            );
-        }
+        assert!(msg.contains("change of policy"), "{msg}");
     }
 }

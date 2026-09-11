@@ -1725,7 +1725,7 @@ fn proof_issue_approved_token_is_audited() {
     let token = kernel.issue_approved_token(op, "external-approval");
 
     // Token carries the correct operation
-    assert!(token.operation() == op);
+    assert!(token.operation == op);
     // Trace grew — the operation is auditable
     assert!(kernel.trace().len() > trace_len_before);
     // Exposure is monotonic — never decreases
@@ -1755,7 +1755,7 @@ fn proof_approved_token_bypass_is_audited() {
     let token = kernel.issue_approved_token(Operation::RunBash, "external-override");
 
     // But the bypass is audited
-    assert!(token.operation() == Operation::RunBash);
+    assert!(token.operation == Operation::RunBash);
     assert!(kernel.trace().len() > trace_len_before);
 }
 

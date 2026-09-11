@@ -370,6 +370,56 @@ pub enum ApprovalSource {
     },
 }
 
+/// Why a [`DecisionToken`] could not be redeemed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedeemError {
+    /// The decision authorises a different operation than the one being done.
+    ScopeMismatch {
+        /// What the decision authorises.
+        authorised: Operation,
+        /// What the effect is.
+        performing: Operation,
+    },
+    /// The decision was taken against permissions other than the ones in force.
+    StalePermissions {
+        /// Checksum of the permissions the decision was taken against.
+        decided_under: String,
+        /// Checksum of the permissions the effect would run under.
+        executing_under: String,
+    },
+}
+
+impl std::fmt::Display for RedeemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// First eight hex characters: enough to tell two digests apart in a
+        /// message a human reads. The full digest belongs in the trace.
+        fn short(d: &str) -> &str {
+            d.get(..8).unwrap_or(d)
+        }
+        match self {
+            Self::ScopeMismatch {
+                authorised,
+                performing,
+            } => write!(
+                f,
+                "decision authorises {authorised:?}, this effect is {performing:?}"
+            ),
+            Self::StalePermissions {
+                decided_under,
+                executing_under,
+            } => write!(
+                f,
+                "decision was taken against permissions {} but this effect runs under {}: \
+                 a decision does not carry across a change of policy",
+                short(decided_under),
+                short(executing_under)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RedeemError {}
+
 /// Proof that Kernel::decide() returned Allow.
 ///
 /// This token is:
@@ -379,6 +429,10 @@ pub enum ApprovalSource {
 ///
 /// Only Kernel::decide() can create this token. Kani proof
 /// `proof_decision_token_unforgeable` verifies no other construction path exists.
+///
+/// The only way to USE one is [`DecisionToken::redeem`], which checks both
+/// that the decision authorises this operation and that it was taken against
+/// the permissions now in force.
 #[must_use = "DecisionToken must be consumed by executing the authorized operation"]
 pub struct DecisionToken {
     /// The operation this token authorizes.
@@ -403,9 +457,39 @@ pub struct DecisionToken {
 }
 
 impl DecisionToken {
-    /// The operation this token authorizes.
-    pub fn operation(&self) -> Operation {
-        self.operation
+    /// Consume this token to perform `performing` under `executing_under`.
+    ///
+    /// The only public way to use a `DecisionToken`, and it checks both things a
+    /// redeemer must check:
+    ///
+    /// * **scope** — the decision authorises the operation being performed;
+    /// * **currency** — the decision was taken against the very permissions the
+    ///   effect is about to run under.
+    ///
+    /// Taking `self` by value makes this the token's single use, so the affine
+    /// discipline and the two checks are one event rather than three things a
+    /// call site is trusted to do in order. A new effect method cannot read the
+    /// token without performing them: there is nothing else to call.
+    ///
+    /// # Errors
+    ///
+    /// [`RedeemError::ScopeMismatch`] when the decision authorises a different
+    /// operation; [`RedeemError::StalePermissions`] when it was taken against a
+    /// different policy.
+    pub fn redeem(self, executing_under: &str, performing: Operation) -> Result<(), RedeemError> {
+        if self.operation != performing {
+            return Err(RedeemError::ScopeMismatch {
+                authorised: self.operation,
+                performing,
+            });
+        }
+        if self.permissions != executing_under {
+            return Err(RedeemError::StalePermissions {
+                decided_under: self.permissions,
+                executing_under: executing_under.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// The decision sequence number for audit correlation.

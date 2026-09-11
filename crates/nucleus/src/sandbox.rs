@@ -57,6 +57,12 @@ pub struct Sandbox {
     obligations: Obligations,
     /// Approver for approval-gated operations
     approver: Option<Arc<dyn Approver>>,
+    /// Checksum of the permissions this sandbox enforces.
+    ///
+    /// `DecisionToken::redeem` requires it, so every redeem site here names what
+    /// it is executing under. Before `redeem` existed, all 24 of this file's
+    /// redeem sites checked the operation and nothing else.
+    permissions: String,
     /// The log every authority spent through this sandbox is recorded against.
     ///
     /// Sandbox writes spend their authority DIRECTLY, in `spend_as`, rather than
@@ -82,6 +88,7 @@ impl Sandbox {
     pub fn new(policy: &PermissionLattice, root: impl AsRef<Path>) -> Result<Self> {
         let root_path = root.as_ref().to_path_buf();
         let normalized = policy.clone().normalize();
+        let permissions = normalized.checksum();
 
         // Open the root directory - this is our capability handle
         let root_dir = Dir::open_ambient_dir(&root_path, cap_std::ambient_authority())?;
@@ -94,6 +101,7 @@ impl Sandbox {
             capabilities: normalized.capabilities,
             obligations: normalized.obligations,
             approver: None,
+            permissions,
         })
     }
 
@@ -143,7 +151,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<File> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_internal(path.as_ref(), None)
     }
@@ -156,7 +164,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<File> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_internal(path.as_ref(), Some(approval))
     }
@@ -185,7 +193,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<File> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
+        decision.redeem(&self.permissions, Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.open_with_internal(path.as_ref(), options, None)
     }
@@ -199,7 +207,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<File> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
+        decision.redeem(&self.permissions, Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.open_with_internal(path.as_ref(), options, Some(approval))
     }
@@ -229,7 +237,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<File> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
+        decision.redeem(&self.permissions, Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_internal(path.as_ref(), None)
     }
@@ -242,7 +250,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<File> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
+        decision.redeem(&self.permissions, Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_internal(path.as_ref(), Some(approval))
     }
@@ -264,7 +272,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<Vec<u8>> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_internal(path.as_ref(), None)
     }
@@ -277,7 +285,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Vec<u8>> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_internal(path.as_ref(), Some(approval))
     }
@@ -299,7 +307,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<String> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_to_string_internal(path.as_ref(), None)
     }
@@ -312,7 +320,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<String> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_to_string_internal(path.as_ref(), Some(approval))
     }
@@ -374,7 +382,7 @@ impl Sandbox {
         // minted — "bundle authorises EditFiles/WorkspaceWrite, this effect is
         // WriteFiles/WorkspaceWrite" — measured on a live pod.
         let op = self.write_operation_for(path.as_ref());
-        crate::decision_scope::require_decision_for(decision.operation(), op)?;
+        decision.redeem(&self.permissions, op)?;
         self.spend_as(authority, op, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, None)
     }
@@ -400,7 +408,7 @@ impl Sandbox {
         // minted — "bundle authorises EditFiles/WorkspaceWrite, this effect is
         // WriteFiles/WorkspaceWrite" — measured on a live pod.
         let op = self.write_operation_for(path.as_ref());
-        crate::decision_scope::require_decision_for(decision.operation(), op)?;
+        decision.redeem(&self.permissions, op)?;
         self.spend_as(authority, op, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, Some(approval))
     }
@@ -448,7 +456,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
+        decision.redeem(&self.permissions, Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_internal(path.as_ref(), None)
     }
@@ -461,7 +469,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
+        decision.redeem(&self.permissions, Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_internal(path.as_ref(), Some(approval))
     }
@@ -483,7 +491,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
+        decision.redeem(&self.permissions, Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_all_internal(path.as_ref(), None)
     }
@@ -496,7 +504,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
+        decision.redeem(&self.permissions, Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_all_internal(path.as_ref(), Some(approval))
     }
@@ -518,7 +526,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
+        decision.redeem(&self.permissions, Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_file_internal(path.as_ref(), None)
     }
@@ -531,7 +539,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
+        decision.redeem(&self.permissions, Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_file_internal(path.as_ref(), Some(approval))
     }
@@ -553,7 +561,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
+        decision.redeem(&self.permissions, Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_dir_internal(path.as_ref(), None)
     }
@@ -566,7 +574,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
+        decision.redeem(&self.permissions, Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_dir_internal(path.as_ref(), Some(approval))
     }
@@ -588,7 +596,7 @@ impl Sandbox {
     /// not there" (ADR 0007 A-2). Before the scope check was enforced there was
     /// no third answer to return, so there was no reason for the `Result`.
     pub fn exists(&self, path: impl AsRef<Path>, decision: DecisionToken) -> Result<bool> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         Ok(self.exists_internal(path.as_ref(), None))
     }
 
@@ -599,7 +607,7 @@ impl Sandbox {
         decision: DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<bool> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         Ok(self.exists_internal(path.as_ref(), Some(approval)))
     }
 
@@ -816,7 +824,7 @@ impl Sandbox {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<Sandbox> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_dir_internal(path.as_ref(), None)
     }
@@ -829,7 +837,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Sandbox> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_dir_internal(path.as_ref(), Some(approval))
     }
@@ -852,6 +860,10 @@ impl Sandbox {
             capabilities: self.capabilities.clone(),
             obligations: self.obligations.clone(),
             approver: self.approver.clone(),
+            // A subdirectory enforces the SAME permissions as its parent — the
+            // path narrows, the policy does not — so a token redeemable here is
+            // redeemable there.
+            permissions: self.permissions.clone(),
         })
     }
 }
