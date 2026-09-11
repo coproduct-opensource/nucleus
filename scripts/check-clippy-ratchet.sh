@@ -14,6 +14,46 @@ RATCHET_FILE=".clippy-ratchet.toml"
 LINTS=$(sed -n '/^lints = \[/,/^]/p' "$RATCHET_FILE" | grep -oE '"[^"]+"' | tr -d '"')
 [ -n "$LINTS" ] || { echo "::error::no lints parsed from $RATCHET_FILE"; exit 1; }
 
+# The unanalysed declaration's OWN pin, checked before anything expensive runs.
+#
+# `.clippy-unanalysed.txt` says "PINNED may only SHRINK. Adding a crate here is a
+# deliberate, dated act", and the two errors below tell a reader to "raise PINNED"
+# and "lower PINNED" -- while nothing in the tree read that number. Verified
+# 2026-09-11: no script, gate or workflow parsed it. So a crate could be added to
+# the list, the count would shrink by its cast sites, and the pin would sit there
+# saying 1 with nothing comparing it to anything. That is the shape gatehouse F-52
+# records in its own CLAUDE.md: a file asserting a control that does not exist,
+# and the assertion is what makes it dangerous, because a reader checks the pin
+# and stops looking.
+#
+# The set checks further down need a full clippy run to know what FAILED. This one
+# needs neither a build nor a toolchain -- it compares two numbers in one committed
+# file -- so it runs first and fails fast.
+UNANALYSED_FILE=".clippy-unanalysed.txt"
+[ -f "$UNANALYSED_FILE" ] || { echo "::error::$UNANALYSED_FILE missing"; exit 1; }
+PIN=$(grep -oE '^#[[:space:]]*PINNED[[:space:]]*=[[:space:]]*[0-9]+' "$UNANALYSED_FILE" | grep -oE '[0-9]+$' || true)
+if [ -z "$PIN" ]; then
+  echo "::error::$UNANALYSED_FILE carries no '# PINNED = <n>' line." >&2
+  echo "The file's own header promises one, and the errors below tell a reader to" >&2
+  echo "raise and lower it. A pin that is not there is worse than no pin: it reads" >&2
+  echo "as a control while being prose." >&2
+  exit 1
+fi
+ENTRIES=$(grep -vE '^\s*(#|$)' "$UNANALYSED_FILE" | sort -u | grep -c . || true)
+if [ "$ENTRIES" != "$PIN" ]; then
+  echo "::error::$UNANALYSED_FILE lists $ENTRIES crate(s) but PINNED = $PIN." >&2
+  if [ "$ENTRIES" -gt "$PIN" ]; then
+    echo "A crate was added and the pin was not raised. Every crate here is cast" >&2
+    echo "sites MISSING from the ratcheted count, so growing this list lowers the" >&2
+    echo "number without touching the ceiling. Raise PINNED in the same change and" >&2
+    echo "say why, dated." >&2
+  else
+    echo "A crate was removed and the pin was not lowered. Lower PINNED in the same" >&2
+    echo "change -- an un-lowered pin is slack the next addition inherits silently." >&2
+  fi
+  exit 1
+fi
+
 # Cargo caches per crate, and clippy re-emits warnings ONLY for crates it
 # actually recompiles. Measured directly, three consecutive runs of this script
 # returned 379, 306 and 351 for an unchanged tree — the number tracked cache
@@ -83,7 +123,6 @@ rm -f "$RAW"
 # ceiling comment in .clippy-ratchet.toml records what that cost:
 # "455 was never the workspace's real count; it was the count of the crates that
 # happened to build."
-UNANALYSED_FILE=".clippy-unanalysed.txt"
 DECLARED=$(grep -vE '^\s*(#|$)' "$UNANALYSED_FILE" 2>/dev/null | sort -u || true)
 UNDECLARED=$(comm -23 <(printf '%s\n' "$FAILED" | grep -v '^$' | sort -u) <(printf '%s\n' "$DECLARED"))
 STALE=$(comm -13 <(printf '%s\n' "$FAILED" | grep -v '^$' | sort -u) <(printf '%s\n' "$DECLARED"))
