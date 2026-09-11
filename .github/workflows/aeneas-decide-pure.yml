@@ -83,6 +83,7 @@ jobs:
         with:
           # Full history + persisted credentials so we can push the regen back.
           fetch-depth: 0
+          filter: blob:none
 
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon
@@ -124,14 +125,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Add Aeneas to PATH
-        # Self-hosted: the runner image bakes the same release at /opt/aeneas
-        # (docker/Dockerfile.runner AENEAS_RELEASE) — no download, no cache.
+        # Self-hosted: use the baked copy when the image has one, and otherwise
+        # install to the machine's persistent volume.
         run: |
-          if [ -x /opt/aeneas/aeneas ] && [ "${{ runner.environment }}" != "github-hosted" ]; then
+          set -euo pipefail
+          if [ "${{ runner.environment }}" = "github-hosted" ]; then
+            echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+          elif [ -x /opt/aeneas/aeneas ]; then
             echo "/opt/aeneas" >> "$GITHUB_PATH"
           else
-            echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+            # Not baked, and on the Fly pool it cannot be: Charon + Aeneas do not
+            # fit under Fly's 8 GB uncompressed rootfs cap, which is why the
+            # image that tried took the pool down (#2719, #2721). The machine's
+            # 40 GB volume has room, so this downloads once per MACHINE rather
+            # than once per job, and falls back to scratch where there is no
+            # volume so the lane never depends on one existing.
+            dir="${AENEAS_CACHE:-/data/cache/aeneas}/$AENEAS_RELEASE"
+            mkdir -p "$dir" 2>/dev/null || dir="${RUNNER_TEMP:-/tmp}/aeneas/$AENEAS_RELEASE"
+            mkdir -p "$dir"
+            if [ ! -x "$dir/aeneas" ]; then
+              tmp="$(mktemp -d)"
+              gh release download "$AENEAS_RELEASE" \
+                --repo AeneasVerif/aeneas \
+                --pattern "aeneas-linux-$(uname -m).tar.gz" \
+                --dir "$tmp"
+              tar xzf "$tmp/aeneas-linux-$(uname -m).tar.gz" -C "$dir"
+              rm -rf "$tmp"
+            fi
+            echo "$dir" >> "$GITHUB_PATH"
           fi
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Verify tools
         run: |
@@ -144,6 +168,14 @@ jobs:
       - name: Charon scoped MIR extraction
         working-directory: crates/nucleus-ifc-kernel
         run: |
+          # `charon cargo` exits 0 and emits NOTHING when cargo has nothing to
+          # recompile: on a warm target directory this extracts nothing, the
+          # regenerate-then-diff downstream finds no diff, and the gate goes
+          # GREEN having checked nothing. The only thing that forced a rebuild
+          # was `rm -rf /data/work` in ci/fly-runner/entrypoint.sh wiping the
+          # target dir every boot — a runner detail, in another file, that this
+          # gate's correctness depended on without saying so.
+          cargo clean -p nucleus-ifc-kernel
           STARTS=""
           IFS=',' read -ra ROOTS <<< "$EXTRACT_ROOTS"
           for r in "${ROOTS[@]}"; do

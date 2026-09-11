@@ -124,7 +124,7 @@ fn task_hash_of(text: &str) -> [u8; 32] {
     for (round, &seed) in SEEDS.iter().enumerate() {
         let mut h = FNV_BASIS.wrapping_add(seed);
         for &b in bytes {
-            h ^= b as u64;
+            h ^= u64::from(b);
             h = h.wrapping_mul(FNV_PRIME);
         }
         // Also mix in the seed to ensure round independence

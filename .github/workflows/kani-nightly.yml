@@ -7,6 +7,9 @@ on:
       - "crates/portcullis/src/**"
       - "crates/ck-*/src/**"
       - "crates/nucleus-ifc-kernel/src/**"
+      - "crates/portcullis-core/**"
+      - "crates/nucleus-econ-kernels/**"
+      - "scripts/kani-bounded.sh"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   pull_request:
@@ -14,6 +17,9 @@ on:
       - "crates/portcullis/src/**"
       - "crates/ck-*/src/**"
       - "crates/nucleus-ifc-kernel/src/**"
+      - "crates/portcullis-core/**"
+      - "crates/nucleus-econ-kernels/**"
+      - "scripts/kani-bounded.sh"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   # Bare, unfiltered: the merge queue's own re-validation of the fast-tier
@@ -69,6 +75,7 @@ jobs:
           # upgrading Kani.
           key: kani-toolchain-${{ runner.os }}-kani-0.67.0
       - name: Run Kani (fast harnesses)
+        id: verify
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
           # Pin the verifier version for reproducible proofs (default is
@@ -78,33 +85,33 @@ jobs:
           args: >-
             -p portcullis
             --solver cadical
+            --harness proof_request_ceiling_leq_verified
             --harness proof_capability_distributive
             --harness proof_exposureset_monoid_identity
             --harness proof_exposureset_uninhabitable_iff_count_three
             --harness proof_operation_exposure_completeness
             --harness proof_clinejection_blocked
+            --harness proof_ifc_flow_gate_rejects_iff_forbidden
       - name: Proof count regression gate
         run: |
           # One census, counted by scripts/check-kani-proof-count.sh (#2561): the
           # inlined grep -rc on a DIRECTORY printed per-file lines, the arithmetic
           # errored, PROOF_COUNT was never set, and the gate passed on "".
-          PROOF_COUNT=$(scripts/check-kani-proof-count.sh --count)
-          MINIMUM=$(tr -d '[:space:]' < .kani-minimum-proofs)
           scripts/check-kani-proof-count.sh --strict
       - name: Summary
         if: always()
+        env:
+          KANI_OUTCOME: ${{ steps.verify.outcome }}
         run: |
-          # One census, counted by scripts/check-kani-proof-count.sh (#2561): the
-          # inlined grep -rc on a DIRECTORY printed per-file lines, the arithmetic
-          # errored, PROOF_COUNT was never set, and the gate passed on "".
-          PROOF_COUNT=$(scripts/check-kani-proof-count.sh --count)
-          MINIMUM=$(tr -d '[:space:]' < .kani-minimum-proofs)
-          echo "## Kani BMC Results (fast tier)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Harnesses verified:** 5 / $PROOF_COUNT (fast tier)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Solver:** CaDiCaL" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Full suite:** nightly + workflow_dispatch" >> "$GITHUB_STEP_SUMMARY"
+          # Report the verifier step, even after failure or cancellation. A
+          # source census is not evidence that any harness actually verified.
+          {
+            echo "## Kani BMC Results (portcullis fast tier)"
+            echo ""
+            echo "- **Verification step outcome:** ${KANI_OUTCOME:-not run}"
+            echo "- **Per-harness results:** see the Run Kani step log."
+            echo "- **Solver:** CaDiCaL"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Constitutional Kernel (fast): 5 bitmask / lattice proofs. These touch no
   # BTreeSet<String> and never call Kernel::admit, which is why they finish in
@@ -182,6 +189,7 @@ jobs:
           # upgrading Kani.
           key: kani-toolchain-${{ runner.os }}-kani-0.67.0
       - name: Run Kani (constitutional kernel — fast tier)
+        id: verify
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
           # Pin the verifier version for reproducible proofs (default is
@@ -198,13 +206,18 @@ jobs:
             --harness proof_capability_subset_transitive
       - name: Summary
         if: always()
+        env:
+          KANI_OUTCOME: ${{ steps.verify.outcome }}
         run: |
-          TOTAL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
-          echo "## Kani BMC — Constitutional Kernel (fast tier)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Harnesses verified:** 5 / $TOTAL (fast tier — pure bitmask)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Proved:** budget escalation, capability non-escalation, I/O confinement, combined monotonicity, lattice transitivity" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Nightly:** 11 admission-path harnesses, one job each (see KANI-STATUS.md)" >> "$GITHUB_STEP_SUMMARY"
+          # Report the verifier step, even after failure or cancellation. A
+          # source census is not evidence that any harness actually verified.
+          {
+            echo "## Kani BMC Results (ck-kernel fast tier)"
+            echo ""
+            echo "- **Verification step outcome:** ${KANI_OUTCOME:-not run}"
+            echo "- **Per-harness results:** see the Run Kani step log."
+            echo "- **Solver:** CaDiCaL"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Constitutional Kernel (full): every harness, ONE JOB EACH.
   #
@@ -280,6 +293,7 @@ jobs:
   # harnesses actually verified, so the nightly summary reports what was proved
   # rather than what was attempted.
   kani-constitutional-full-summary:
+    timeout-minutes: 5
     name: Kani (constitutional kernel full)
     runs-on: ubuntu-24.04
     needs: kani-constitutional-full
@@ -332,6 +346,7 @@ jobs:
           # upgrading Kani.
           key: kani-toolchain-${{ runner.os }}-kani-0.67.0
       - name: Run Kani (all harnesses)
+        id: verify
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
           # Pin the verifier version for reproducible proofs (default is
@@ -344,19 +359,115 @@ jobs:
           # One census, counted by scripts/check-kani-proof-count.sh (#2561): the
           # inlined grep -rc on a DIRECTORY printed per-file lines, the arithmetic
           # errored, PROOF_COUNT was never set, and the gate passed on "".
-          PROOF_COUNT=$(scripts/check-kani-proof-count.sh --count)
-          MINIMUM=$(tr -d '[:space:]' < .kani-minimum-proofs)
           scripts/check-kani-proof-count.sh --strict
       - name: Summary
         if: always()
+        env:
+          KANI_OUTCOME: ${{ steps.verify.outcome }}
         run: |
-          # One census, counted by scripts/check-kani-proof-count.sh (#2561): the
-          # inlined grep -rc on a DIRECTORY printed per-file lines, the arithmetic
-          # errored, PROOF_COUNT was never set, and the gate passed on "".
-          PROOF_COUNT=$(scripts/check-kani-proof-count.sh --count)
-          MINIMUM=$(tr -d '[:space:]' < .kani-minimum-proofs)
-          echo "## Kani BMC Results (full suite)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Harnesses verified:** $PROOF_COUNT / $PROOF_COUNT (all)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Solver:** CaDiCaL" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"
+          # Report the verifier step, even after failure or cancellation. A
+          # source census is not evidence that any harness actually verified.
+          {
+            echo "## Kani BMC Results (portcullis full tier)"
+            echo ""
+            echo "- **Verification step outcome:** ${KANI_OUTCOME:-not run}"
+            echo "- **Per-harness results:** see the Run Kani step log."
+            echo "- **Solver:** CaDiCaL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  kani-core-fast:
+    name: Kani (portcullis-core fast)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
+      - name: Verify named harnesses within memory and time budgets
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          kani-version: "0.67.0"
+          command: bash scripts/kani-bounded.sh
+          args: >-
+            -p portcullis-core --solver cadical
+            -Z unstable-options --harness-timeout 120s
+            --harness proof_ifc_join_commutative
+            --harness proof_ifc_join_associative
+            --harness proof_ifc_join_idempotent
+            --harness proof_ifc_meet_commutative
+            --harness proof_ifc_meet_idempotent
+
+  kani-core-full:
+    name: "Core full: ${{ matrix.harness }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        harness:
+          - proof_declassification_only_weakens_restrictions
+          - proof_delegation_chain_monotone
+          - proof_narrow_idempotent
+          - proof_narrow_monotone
+          - proof_ai_derived_never_verified_ready_without_witness
+          - proof_verified_lane_implies_witness_or_deterministic
+          - proof_verified_write_requires_witness
+          - proof_derivation_join_monotone
+          - proof_derivation_no_silent_cleansing
+          - proof_ifc_absorption_join_meet
+          - proof_ifc_absorption_meet_join
+          - proof_ifc_bottom_join_identity
+          - proof_ifc_join_associative
+          - proof_ifc_join_commutative
+          - proof_ifc_join_idempotent
+          - proof_ifc_leq_consistent_with_join
+          - proof_ifc_meet_associative
+          - proof_ifc_meet_commutative
+          - proof_ifc_meet_idempotent
+          - proof_ifc_top_meet_identity
+          - proof_directive_from_transitive_rejected
+          - proof_empty_capabilities_rejected
+          - proof_remote_unlabeled_rejected
+          - proof_safe_local_admitted
+          - proof_trusted_from_remote_rejected
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
+      - name: Verify named harnesses within memory and time budgets
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          kani-version: "0.67.0"
+          command: bash scripts/kani-bounded.sh
+          args: >-
+            -p portcullis-core --features envelope --solver cadical
+            -Z unstable-options --harness-timeout 600s
+            --harness ${{ matrix.harness }}
+
+  kani-econ-full:
+    name: Kani (welfare sum overflow)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
+      - name: Verify named harnesses within memory and time budgets
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          kani-version: "0.67.0"
+          command: bash scripts/kani-bounded.sh
+          args: >-
+            -p nucleus-econ-kernels --solver cadical
+            -Z unstable-options --harness-timeout 600s
+            --harness welfare_sum_bounded

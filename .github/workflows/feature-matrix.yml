@@ -37,6 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
@@ -92,6 +93,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           # Must match [workspace.package] rust-version. Set by wasmtime 48
@@ -153,4 +155,4 @@ jobs:
           toolchain: "1.93"
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: Check the Kani-verified crates on Kani's toolchain
-        run: cargo +1.93 check -p ck-kernel -p portcullis -p portcullis-core --locked
+        run: cargo +1.93 check -p ck-kernel -p portcullis -p portcullis-core -p nucleus-econ-kernels --locked

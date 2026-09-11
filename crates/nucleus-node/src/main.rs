@@ -43,6 +43,7 @@ mod oidc;
 mod pod_api;
 mod pod_authority;
 mod pod_caller_identity;
+mod production_confinement;
 mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthError, AuthorizationError};
@@ -158,11 +159,12 @@ struct Args {
     /// for a window before its cpu/memory limits exist. The jailer cannot be late
     /// — it writes the cgroup and drops privileges before `exec()`.
     ///
-    /// Set false to fall back to the direct-spawn path. That is an OPERATIONAL
+    /// Production builds reject false. With the development-only local-driver
+    /// feature, set false to fall back to the direct-spawn path. That is an OPERATIONAL
     /// off-switch for an environment where the jailer is unavailable or the jail
     /// cannot be co-located with the images (see `--jailer-chroot-base`), not a
     /// recommendation: turning it off reopens the pre-exec cgroup window.
-    #[arg(long, env = "NUCLEUS_FIRECRACKER_JAILER", default_value_t = true)]
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_JAILER", default_value_t = true, action = clap::ArgAction::Set, value_parser = production_confinement::parse_jailer_enabled)]
     firecracker_jailer: bool,
     /// Path to the Firecracker `jailer` binary.
     #[arg(long, env = "NUCLEUS_JAILER_PATH", default_value = "jailer")]
@@ -181,8 +183,8 @@ struct Args {
     )]
     jailer_chroot_base: PathBuf,
     /// Unprivileged uid the jailed VMM drops to.
-    #[arg(long, env = "NUCLEUS_JAILER_UID", default_value_t = 123)]
-    jailer_uid: u32,
+    #[arg(long, env = "NUCLEUS_JAILER_UID", default_value = "123")]
+    jailer_uid: production_confinement::NonRootUid,
     /// Unprivileged gid the jailed VMM drops to.
     #[arg(long, env = "NUCLEUS_JAILER_GID", default_value_t = 100)]
     jailer_gid: u32,
@@ -344,7 +346,7 @@ struct NodeState {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     jailer_chroot_base: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    jailer_uid: u32,
+    jailer_uid: production_confinement::NonRootUid,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     jailer_gid: u32,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -1159,13 +1161,15 @@ async fn create_pod_internal(
     raw_yaml: Option<String>,
     admission: pod_authority::Admission,
 ) -> Result<(Uuid, Option<String>), ApiError> {
+    production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
+        .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
 
     // ── Backend clamp, then the trust gate. Since #2438 the gate only OBSERVES
     // reputation; what the pod MAY do comes from the certificate below. ──────
-    driver::clamp_isolation_to_backend(&mut spec);
+    driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
     if state.trust_gate.is_enabled() {
         trust_gate::observe(&state.trust_gate, &mut spec, &state.http_client).await;
     }
@@ -2423,7 +2427,7 @@ async fn spawn_firecracker_pod(
                 image,
                 spec,
                 &jail_config_json,
-                state.jailer_uid,
+                state.jailer_uid.get(),
                 state.jailer_gid,
             ) {
                 cleanup_net_resources(
@@ -2891,7 +2895,7 @@ async fn spawn_firecracker_pod(
                 // own socket away for no reason.
                 jail_layout
                     .as_ref()
-                    .map(|_| (state.jailer_uid, state.jailer_gid)),
+                    .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
             )
             .await
             {
@@ -3005,7 +3009,7 @@ async fn spawn_firecracker_pod(
             // reached the broker under the jailer.
             jail_layout
                 .as_ref()
-                .map(|_| (state.jailer_uid, state.jailer_gid)),
+                .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
         )?;
 
         let handle = FirecrackerPod {

@@ -65,10 +65,36 @@ COUNT=$(jq -r 'select(.reason=="compiler-message") | .message
   | sort -u | wc -l | tr -d ' ')
 rm -f "$RAW"
 
+# Never report a partial count as if it were whole. The set of crates clippy
+# could not analyse is DECLARED in .clippy-unanalysed.txt and checked both ways:
+# an undeclared failure means the count silently shrank, and a declared crate
+# that now compiles means the declaration is stale and the count is about to
+# rise. Before this, both were a `::warning::` that nothing failed on -- and the
+# ceiling comment in .clippy-ratchet.toml records what that cost:
+# "455 was never the workspace's real count; it was the count of the crates that
+# happened to build."
+UNANALYSED_FILE=".clippy-unanalysed.txt"
+DECLARED=$(grep -vE '^\s*(#|$)' "$UNANALYSED_FILE" 2>/dev/null | sort -u || true)
+UNDECLARED=$(comm -23 <(printf '%s\n' "$FAILED" | grep -v '^$' | sort -u) <(printf '%s\n' "$DECLARED"))
+STALE=$(comm -13 <(printf '%s\n' "$FAILED" | grep -v '^$' | sort -u) <(printf '%s\n' "$DECLARED"))
+
 if [ -n "$FAILED" ]; then
-  # Never report a partial count as if it were whole.
-  echo "::warning::crates that did NOT compile, so were NOT analysed:" >&2
+  echo "::notice::crates not analysed (declared in $UNANALYSED_FILE):" >&2
   echo "$FAILED" | sed 's/^/  /' >&2
+fi
+if [ -n "$UNDECLARED" ]; then
+  echo "::error::these crates did not compile and are NOT declared in $UNANALYSED_FILE:" >&2
+  echo "$UNDECLARED" | sed 's/^/  /' >&2
+  echo "The count below is missing their cast sites. Fix the crate, or declare it" >&2
+  echo "with a dated reason and raise PINNED." >&2
+  exit 1
+fi
+if [ -n "$STALE" ]; then
+  echo "::error::these crates are declared unanalysable in $UNANALYSED_FILE but COMPILE now:" >&2
+  echo "$STALE" | sed 's/^/  /' >&2
+  echo "Remove them and lower PINNED. Expect the count to RISE: that is coverage" >&2
+  echo "going up, not a regression." >&2
+  exit 1
 fi
 
 case "${1:---count}" in

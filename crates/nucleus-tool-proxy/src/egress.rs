@@ -242,6 +242,7 @@ pub(crate) fn reject_egress_without_a_broker(
 pub(crate) async fn credentialed_egress(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     axum::extract::Path((name, path)): axum::extract::Path<(String, String)>,
+    certified: Option<axum::Extension<crate::pod_cert::CertifiedPermissions>>,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response, crate::ApiError> {
     use crate::ApiError;
@@ -266,6 +267,17 @@ pub(crate) async fn credentialed_egress(
         ));
     };
 
+    // Per-effect gate (ADR 0004): the host performs credentialed calls as
+    // `POST`, so that is the shape a granted effect must vouch for.
+    if let Ok(parsed) = url::Url::parse(&url) {
+        state.effect_gate.admit_http_recorded(
+            "POST",
+            &parsed,
+            state.verdict_sink.as_ref(),
+            crate::actor_from_auth(None),
+        )?;
+    }
+
     // The same gate a tool call gets. A tainted session calling its model API is
     // exfiltration by the same definition that governs `web_fetch`, and treating
     // it differently would be the hole this whole module exists to close.
@@ -286,7 +298,11 @@ pub(crate) async fn credentialed_egress(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let level = crate::run_gate::levels_for(&state, Operation::WebFetch);
+        let level = crate::run_gate::levels_for(
+            &state,
+            Operation::WebFetch,
+            certified.as_ref().map(|e| &e.0),
+        );
         let flow = state.flow_graph.lock().await;
         let result =
             crate::run_gate::preflight_web(Operation::WebFetch, verified_scope, level, &url, &flow);

@@ -74,7 +74,6 @@ econ-lean.yml::econ-lean::Ban sorry / native_decide in econ Lean | UNCOVERED: no
 econ-lean.yml::econ-lean::Golden-vector sync (regenerate Golden.lean from JSON, assert no drift) | UNCOVERED: no falsifier yet
 kani-nightly.yml::kani-ifc::All six flow.rs harnesses are still declared | UNCOVERED: no falsifier yet
 kani-spawn-boundary.yml::kani-argv::The harness and both call sites are still there | UNCOVERED: no falsifier yet
-lean-build.yml::lean-build-core::Reject sorry (proof holes) | UNCOVERED: no falsifier yet
 line-ratchet.yml::ratchet-down::Ratchet down | UNCOVERED: no falsifier yet
 manifest-guards.yml::manifest-guards::Cargo metadata smoke (whole workspace parses, empty stderr) | UNCOVERED: no falsifier yet
 oidc-keyless-prototype.yml::keyless-oidc-e2e::Confirm the OIDC request env vars are present | UNCOVERED: no falsifier yet
@@ -94,7 +93,7 @@ quickstart-boot.yml::boot-a-real-pod::Delivery conformance (observed inventory v
 red-team-agent.yml::live-adversary::Anti-vacuity — the lane resolved to a known state (never silent-green) | UNCOVERED: no falsifier yet
 release.yml::dry-run-assert::Every build job must have succeeded | UNCOVERED: no falsifier yet
 release.yml::dry-run-assert::A rootfs image exists for every architecture | UNCOVERED: no falsifier yet
-research-lean-build.yml::research-lean-build::Sorry ratchet (must not exceed baseline) | UNCOVERED: no falsifier yet
+research-lean-build.yml::research-sorry-ratchet::Sorry ratchet (must not exceed baseline) | UNCOVERED: no falsifier yet
 rubric-lean.yml::rubric-lean::Ban sorry / admit / native_decide / sorryAx in rubric Lean | UNCOVERED: no falsifier yet
 scan.yml::scan::Scan example PodSpecs | UNCOVERED: no falsifier yet
 scan.yml::scan-action::Verify verdict | UNCOVERED: no falsifier yet

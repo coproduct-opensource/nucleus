@@ -2118,6 +2118,15 @@ mod tests {
         use crate::receipt::EffectOutcome;
         use portcullis_core::{Operation as Op, SinkClass as Sink};
 
+        // The workspace reqwest uses `rustls-no-provider`, so `Client::new()`
+        // panics unless a provider is installed first. Every test that builds
+        // one must do this ITSELF: nextest runs each test in its own process,
+        // so the install in `net_fetch_denied_when_policy_never` is not in
+        // scope here, and this test passed under `cargo test` — which shares a
+        // process — while failing under the runner CI actually uses.
+        // Idempotent; the already-set Err is the expected second answer.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let fx = PolicyEnforced {
             inner: RecordingEffects::new(),
             receipts: Arc::new(crate::receipt::ReceiptLog::new()),
@@ -2144,6 +2153,16 @@ mod tests {
         )
         .await
         .expect("run_argv_async");
+
+        // Same reason as `net_fetch_denied_when_policy_never`: the workspace
+        // reqwest is `rustls-no-provider`, so `Client::new()` panics unless a
+        // provider is installed first (idempotent — ignore the already-set Err).
+        // It has to be done HERE too, not only in that test: nextest runs each
+        // test in its own process, so an install over there does not carry.
+        // This passed until now only because a full-workspace build unified
+        // reqwest's `rustls` feature in from nucleus-control-plane-server; a
+        // run scoped to a crate set that excludes it has no provider at all.
+        let _ = rustls::crypto::ring::default_provider().install_default();
 
         NetEffect::fetch(
             &fx,

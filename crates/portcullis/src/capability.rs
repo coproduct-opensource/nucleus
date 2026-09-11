@@ -269,7 +269,7 @@ impl IncompatibilityConstraint {
             || caps.create_pr >= CapabilityLevel::LowRisk
             || caps.run_bash >= CapabilityLevel::LowRisk;
 
-        let count = has_private_access as u8 + has_untrusted as u8 + has_exfil as u8;
+        let count = u8::from(has_private_access) + u8::from(has_untrusted) + u8::from(has_exfil);
         match count {
             0 => StateRisk::Safe,
             1 => StateRisk::Low,
@@ -347,6 +347,20 @@ impl CapabilityLattice {
             Operation::ManagePods => self.manage_pods,
             Operation::SpawnAgent => self.spawn_agent,
         }
+    }
+
+    /// Bound a core operation by both request-effective and verified authority.
+    /// Rechecking the verified ceiling keeps this safe even if an effective
+    /// capability is accidentally widened by a future market transformation.
+    pub fn request_ceiling(
+        &self,
+        op: Operation,
+        effective: &Self,
+        verified: &Self,
+    ) -> CapabilityLevel {
+        self.level_for(op)
+            .min(effective.level_for(op))
+            .min(verified.level_for(op))
     }
 
     /// Get the capability level for an extension operation.
@@ -930,6 +944,55 @@ mod tests {
         let mut set = std::collections::BTreeSet::new();
         for op in Operation::ALL {
             assert!(set.insert(op), "duplicate in ALL: {op:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod request_ceiling_tests {
+    use super::*;
+
+    #[test]
+    fn every_operation_observes_its_request_ceiling() {
+        for op in Operation::ALL {
+            let boot = CapabilityLattice::permissive();
+            let mut narrowed = boot.clone();
+            let field = match op {
+                Operation::ReadFiles => &mut narrowed.read_files,
+                Operation::WriteFiles => &mut narrowed.write_files,
+                Operation::EditFiles => &mut narrowed.edit_files,
+                Operation::RunBash => &mut narrowed.run_bash,
+                Operation::GlobSearch => &mut narrowed.glob_search,
+                Operation::GrepSearch => &mut narrowed.grep_search,
+                Operation::WebSearch => &mut narrowed.web_search,
+                Operation::WebFetch => &mut narrowed.web_fetch,
+                Operation::GitCommit => &mut narrowed.git_commit,
+                Operation::GitPush => &mut narrowed.git_push,
+                Operation::CreatePr => &mut narrowed.create_pr,
+                Operation::ManagePods => &mut narrowed.manage_pods,
+                Operation::SpawnAgent => &mut narrowed.spawn_agent,
+            };
+            *field = CapabilityLevel::Never;
+            assert_eq!(
+                boot.request_ceiling(op, &boot, &boot),
+                CapabilityLevel::Always
+            );
+            assert_eq!(
+                boot.request_ceiling(op, &narrowed, &boot),
+                CapabilityLevel::Never
+            );
+            assert_eq!(
+                boot.request_ceiling(op, &boot, &narrowed),
+                CapabilityLevel::Never
+            );
+            for other in Operation::ALL {
+                if other != op {
+                    assert_eq!(
+                        boot.request_ceiling(other, &narrowed, &boot),
+                        CapabilityLevel::Always
+                    );
+                }
+            }
         }
     }
 }

@@ -7,9 +7,9 @@ name: research-lean-build
 # unnoticed, and the local build is too heavy to verify against (Mathlib closure
 # replay times out >900s). This workflow gives the keystone effort a real
 # verification path on the cloud's warm Mathlib cache:
-#   1. lake-builds the cluster libs — a proof attempt that fails to type-check
+#   1. Nightly/manual only: lake-builds the cluster libs — a proof attempt that fails to type-check
 #      FAILS here (the check the keystone loop needs).
-#   2. counts cluster `sorry`s and RATCHETS: must not exceed the committed
+#   2. Every PR/push and nightly/manual run: counts cluster `sorry`s and RATCHETS: must not exceed the committed
 #      baseline (.research-sorry-baseline). Closing a sorry lowers it (update the
 #      baseline down); a regression / new hole fails.
 
@@ -23,6 +23,8 @@ on:
     paths:
       - 'crates/portcullis-core/lean/**'
       - '.github/workflows/research-lean-build.yml'
+  schedule:
+    - cron: '43 3 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -38,15 +40,23 @@ permissions:
 
 jobs:
   research-lean-build:
-    name: lake build + sorry-ratchet (research tier)
+    name: lake build (research tier)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 90
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install elan (Lean toolchain)
-        # Hosted only: the runner image bakes elan + the pinned Lean toolchain.
-        if: ${{ runner.environment == 'github-hosted' }}
+      - name: Install elan (Lean toolchain) unless the runner already has it
+        # Runs everywhere and no-ops where lake is already baked in: the self-hosted
+        # pool is not uniformly carrying elan.
+        shell: bash
         run: |
+          if command -v lake >/dev/null 2>&1; then
+            echo "lake already present: $(command -v lake)"
+            exit 0
+          fi
+          echo "lake not on PATH; installing elan"
           # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
           # script is handed to an interpreter (Scorecard Pinned-Dependencies).
           curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
@@ -72,7 +82,13 @@ jobs:
 
       - name: Fetch Mathlib cache (prebuilt oleans)
         working-directory: crates/portcullis-core/lean
-        run: lake exe cache get || true
+        run: |
+          # NOT `|| true`. A Mathlib cache miss and a cache FAILURE are different
+          # events, and swallowing the exit code made them indistinguishable: the
+          # build fell back to compiling Mathlib from source, silently, for minutes
+          # on the build pool. That is what #2685 found. `lake exe cache get`
+          # returns non-zero when it could not fetch, so let it.
+          lake exe cache get
 
       - name: lake build (research cluster — type-check; a broken proof FAILS here)
         working-directory: crates/portcullis-core/lean
@@ -90,6 +106,13 @@ jobs:
             PACVCBridge \
             UniversalityTheorem \
             CechCohomology
+
+  research-sorry-ratchet:
+    name: sorry-ratchet (research tier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Sorry ratchet (must not exceed baseline)
         working-directory: crates/portcullis-core/lean

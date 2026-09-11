@@ -8,6 +8,7 @@ pub mod gates;
 pub mod merge_group;
 pub mod producers;
 pub mod scope;
+pub mod self_hosted_tools;
 pub mod timeouts;
 pub mod twins;
 pub mod vacuity;

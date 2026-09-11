@@ -275,7 +275,7 @@ impl VaultCtfMcp {
         }
 
         let max_possible_score = 500 + 6 * 100;
-        let pct = (total_score as f64 / max_possible_score as f64 * 100.0) as u32;
+        let pct = (f64::from(total_score) / f64::from(max_possible_score) * 100.0) as u32;
         let defenses_vec: Vec<String> = all_defenses.into_iter().collect();
         let what_you_learned = build_takeaways(&defenses_vec);
 

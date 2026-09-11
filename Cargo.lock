@@ -2054,6 +2054,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ci-fly-runner"
+version = "1.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "ci-spec"
 version = "1.0.0"
 dependencies = [
@@ -7149,6 +7159,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.23.1",
+ "chrono",
  "clap",
  "ed25519-dalek 3.0.0",
  "hex",
@@ -7156,8 +7167,10 @@ dependencies = [
  "nucleus-lineage",
  "nucleus-oidc-core",
  "nucleus-otel-bootstrap",
+ "portcullis",
  "proptest",
  "rand 0.10.2",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -13709,12 +13722,18 @@ name = "xtask"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "ci-fly-runner",
  "ci-spec",
  "ck-kernel",
  "ck-types",
  "clap",
+ "hex",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "sha2 0.11.0",
+ "syn 2.0.117",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]

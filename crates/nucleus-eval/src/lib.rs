@@ -239,7 +239,7 @@ fn scaled_weight(declared_magnitude_micro: u64, passed: u64, total: u64) -> u64 
     if total == 0 {
         return 0;
     }
-    let scaled = (declared_magnitude_micro as u128 * passed as u128) / total as u128;
+    let scaled = (u128::from(declared_magnitude_micro) * u128::from(passed)) / u128::from(total);
     // passed <= total ⇒ scaled <= declared_magnitude_micro <= u64::MAX.
     scaled as u64
 }

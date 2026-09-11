@@ -409,7 +409,7 @@ pub(crate) struct JailerPlan<'a> {
     /// Base under which the jailer builds `<base>/<exec>/<id>/root`.
     pub chroot_base: &'a str,
     /// Unprivileged uid the VMM drops to.
-    pub uid: u32,
+    pub uid: crate::production_confinement::NonRootUid,
     /// Unprivileged gid the VMM drops to.
     pub gid: u32,
     /// Network namespace path, replacing the `ip netns exec` wrapper.
@@ -607,6 +607,7 @@ impl FirecrackerConfig {
         // without it. See `enforce_pci_off`.
         boot_args = boot_args.map(|args| enforce_pci_off(&args));
 
+        // OS assumption: KB-VSOCK-PEER-CID; docs/assumptions/kernel-behaviour.md.
         // `nucleus.auth_secret` is NO LONGER EMITTED.
         //
         // The kernel command line is world-readable inside the guest
@@ -891,6 +892,8 @@ fn seccomp_args(spec: &PodSpec, jailed: bool) -> Vec<std::ffi::OsString> {
     }
 }
 
+/// OS assumption: KB-PROCFS-STATUS (docs/assumptions/kernel-behaviour.md).
+///
 /// Verify that seccomp is active on a Firecracker process by reading /proc/{pid}/status.
 /// Returns Ok(()) if seccomp mode is 2 (SECCOMP_MODE_FILTER).
 #[cfg(target_os = "linux")]
@@ -1855,7 +1858,7 @@ mod tests {
             firecracker_path: "/usr/bin/firecracker",
             pod_id: "pod-1",
             chroot_base: "/srv/jailer",
-            uid: 123,
+            uid: crate::production_confinement::NonRootUid::new(123).unwrap(),
             gid: 100,
             netns: None,
             cgroup: Some(&spec),
@@ -1886,7 +1889,7 @@ mod tests {
             firecracker_path: "/usr/bin/firecracker",
             pod_id: "pod-1",
             chroot_base: "/srv/jailer",
-            uid: 123,
+            uid: crate::production_confinement::NonRootUid::new(123).unwrap(),
             gid: 100,
             netns: None,
             cgroup: None,
@@ -1903,7 +1906,7 @@ mod tests {
             firecracker_path: "/usr/bin/firecracker",
             pod_id: "pod-1",
             chroot_base: "/srv/jail",
-            uid: 1000,
+            uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
             gid: 1000,
             netns: Some("/var/run/netns/ns-pod-1"),
             cgroup: Some(&cg),
@@ -1939,7 +1942,7 @@ mod tests {
             firecracker_path: "/usr/bin/firecracker",
             pod_id: "pod-1",
             chroot_base: "/srv/jail",
-            uid: 1000,
+            uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
             gid: 1000,
             netns: Some("/var/run/netns/ns-pod-1"),
             cgroup: None,
@@ -1972,7 +1975,7 @@ mod tests {
             firecracker_path: "/usr/bin/firecracker",
             pod_id: "pod-1",
             chroot_base: "/srv/jail",
-            uid: 1000,
+            uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
             gid: 1000,
             netns: None,
             cgroup: Some(&sample_cgroup()),
@@ -2156,7 +2159,7 @@ mod tests {
                     firecracker_path: "/usr/bin/firecracker",
                     pod_id: "pod-1",
                     chroot_base: "/srv/jailer",
-                    uid: 123,
+                    uid: crate::production_confinement::NonRootUid::new(123).unwrap(),
                     gid: 100,
                     netns,
                     cgroup,

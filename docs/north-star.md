@@ -1,5 +1,31 @@
 # Nucleus North Star
 
+> This is the long form, and it carries the claim ledgers CI parses. The canonical
+> short statement is [`NORTH_STAR.md`](../NORTH_STAR.md); the reasoning behind the
+> objective is [ADR 0005](adr/0005-delegatable-agency.md).
+
+## The Objective
+
+**Nucleus continuously expands the frontier of safely delegatable machine agency:
+any agent should be able to do as much useful real-world work as its principal is
+willing to authorize, while being structurally incapable of exceeding that
+authorization.**
+
+```
+             useful autonomous work completed
+    ℐ  =  ───────────────────────────────────────────────────────
+          authority risk + human friction + integration cost
+```
+
+subject to the invariant that everything below this section exists to hold:
+
+```
+    exercised authority  ≼  delegated authority
+```
+
+The constraint does not compete with the objective; it is what makes raising the
+objective's numerator safe. ℐ may never be raised by weakening `≼`.
+
 ## Vision
 
 **Nucleus makes "agent jailbreak → silent damage" provably impossible by
@@ -467,7 +493,7 @@ Proofs are first-class artifacts, not academic exercises:
   Heyting algebra, IFC semilattice, taint monotonicity, exposure monoid,
   delegation); the Aeneas pipeline mechanically translates the core capability
   types from Rust to Lean so proofs run over generated code. CI-gated via
-  `lean-build.yml` / `aeneas-ifc-scoped.yml`.
+  `portcullis-core-proven-lean.yml` / `aeneas-ifc-scoped.yml`.
 - **Differential testing** (planned) — Cedar pattern: millions of random inputs
   compared between Rust engine and Lean model.
 - **Public Verified Claims page** — each claim maps to a proof artifact and

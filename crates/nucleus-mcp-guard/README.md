@@ -56,9 +56,20 @@ Egress points flagged: 1
       reason: ...
 ```
 
-`mcp-guard analyze` (and the proxy) exit **non-zero** when exfiltration is
-possible — drop it into CI as an agent-safety gate. Add `--json` for a
-machine-readable report.
+`mcp-guard analyze` (and the proxy) exit **non-zero** on a finding — drop it
+into CI as an agent-safety gate. Add `--json` for a machine-readable report.
+
+| exit | meaning |
+|-----:|---------|
+| `0` | clean: no egress under the trifecta, and no tool metadata refused |
+| `1` | **exfiltration possible** — an egress sink was reached while holding the lethal trifecta |
+| `2` | **the server misbehaved** — its tool metadata failed an integrity check: a rug-pull, an unapproved or out-of-compartment tool, or a call outside the pinned catalogue |
+
+`1` outranks `2` when both hold, so anything already gating on `!= 0` or on
+`== 1` keeps its meaning. The refusals appear in `--json` as
+`metadata_refusals[]`, each with a `tool`, a `kind`
+(`schema_mutated`, `new_tool_after_pinning`, `unapproved`, `wrong_compartment`,
+`stale_catalogue`, `unadvertised`) and the operator-facing `reason`.
 
 ## Customising the tool→risk mapping
 

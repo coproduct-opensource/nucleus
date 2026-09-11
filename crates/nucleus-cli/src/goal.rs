@@ -1,5 +1,6 @@
 //! `nucleus run --goal "…"`: intent → proposed minimum authority → one
-//! confirmation → execution.
+//! confirmation → execution. And `nucleus run --grant FILE`: a previously
+//! sealed grant → verification → execution with no confirmation at all.
 //!
 //! The person states the outcome. The compiler (`nucleus-task-compiler`)
 //! derives the semantic effects the goal needs from the repository it is
@@ -18,27 +19,71 @@
 //! One decision, then the existing run path executes under the compiled
 //! lattice. Without a TTY the command refuses to run unless `--yes` names
 //! the decision explicitly: an unattended run must not acquire authority by
-//! default. `--dry-run` prints the grant and stops.
+//! default. `--dry-run` prints the grant and stops. `--save-grant PATH`
+//! seals the accepted grant (signed with the host's grant key) so the same
+//! task can be run again with `--grant PATH` and zero prompts (ADR 0004,
+//! `C(T) = 0`).
 
 use std::collections::BTreeSet;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use nucleus_task_compiler::{
     CompileInput, EffectProposer, ExternalCommandProposer, LimitOverrides, RuleProposer, compile,
 };
 use portcullis::{
-    Disclosure, EffectCatalog, EffectId, TaskGrant, WeakeningCostConfig, render_grant,
+    Disclosure, EffectCatalog, EffectId, SealedTaskGrant, TaskGrant, WeakeningCostConfig,
+    render_grant,
 };
 use rust_decimal::Decimal;
 
 use crate::config::Config;
+use crate::grant::{
+    load_or_create_grant_key, read_sealed, verified_line, verify_sealed, write_sealed,
+};
 use crate::profiles;
 use crate::run::{self, RunArgs};
 
 /// Exit status when a confirmation is required but no TTY can give one.
 pub const EXIT_NEEDS_CONFIRMATION: i32 = 2;
+
+/// What the compiler is asked for, independent of which command asks.
+pub struct GoalRequest {
+    /// The outcome, as stated.
+    pub goal: String,
+    /// The ceiling profile.
+    pub ceiling: String,
+    /// Effects to grant in addition to what the goal implies.
+    pub effects: Vec<String>,
+    /// An external proposer program.
+    pub proposer: Option<PathBuf>,
+    /// Spend ceiling override (only tightens).
+    pub max_cost: Option<f64>,
+}
+
+impl GoalRequest {
+    fn from_run(args: &RunArgs, goal: String) -> Self {
+        Self {
+            goal,
+            ceiling: args.ceiling.clone(),
+            effects: args.effects.clone(),
+            proposer: args.proposer.clone(),
+            max_cost: args.max_cost,
+        }
+    }
+}
+
+/// The outcome of the one confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// Run (or seal) as shown.
+    Accept,
+    /// Seal without running (only offered when a save path is set).
+    SaveOnly,
+    /// Nothing happens.
+    Abort,
+}
 
 /// Entry point, reached from `run::execute` when `--goal` is set.
 pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
@@ -50,87 +95,303 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         .ok_or_else(|| anyhow!("--goal cannot be empty"))?
         .to_string();
 
-    let work_dir = shellexpand::tilde(&args.dir).to_string();
-    let work_dir = PathBuf::from(&work_dir)
-        .canonicalize()
-        .with_context(|| format!("working directory {}", args.dir))?;
-
-    let grant = compile_goal(&args, &goal, &work_dir)?;
+    let work_dir = canonical_work_dir(&args.dir)?;
+    let request = GoalRequest::from_run(&args, goal.clone());
+    let grant = compile_goal(&request, &work_dir)?;
     let catalog = load_catalog(&work_dir)?;
-    let mut level: Disclosure = args.explain.parse().map_err(|e: String| anyhow!(e))?;
-
-    if let Some(path) = &args.save_grant {
-        let json = serde_json::to_string_pretty(&grant)?;
-        std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))?;
-        eprintln!("grant written to {}", path.display());
-    }
+    let level: Disclosure = args.explain.parse().map_err(|e: String| anyhow!(e))?;
 
     if args.dry_run {
+        if args.save_grant.is_some() {
+            bail!("--save-grant seals an ACCEPTED grant; drop --dry-run (or pass --yes)");
+        }
         print!("{}", render_grant(&grant, &catalog, level));
         return Ok(());
     }
 
-    if args.yes {
-        print!("{}", render_grant(&grant, &catalog, level));
+    let decision = if args.save_grant.is_some() {
+        confirm(&grant, &catalog, level, args.yes, "[R]un · [s]eal only")?
     } else {
-        if !io::stdin().is_terminal() {
-            eprint!("{}", render_grant(&grant, &catalog, level));
-            eprintln!();
-            eprintln!(
-                "nucleus: this grant needs a confirmation and there is no terminal to give one."
-            );
-            eprintln!("         Re-run with --yes to accept it, or --dry-run to only show it.");
-            std::process::exit(EXIT_NEEDS_CONFIRMATION);
-        }
-        loop {
-            print!("{}", render_grant(&grant, &catalog, level));
-            print!("\n[R]un · [d]etails · [a]bort: ");
-            io::stdout().flush()?;
-            let mut line = String::new();
-            io::stdin().lock().read_line(&mut line)?;
-            match line.trim().to_ascii_lowercase().as_str() {
-                "r" | "run" | "y" | "yes" => break,
-                "d" | "details" => {
-                    level = match level {
-                        Disclosure::Plain => Disclosure::Technical,
-                        Disclosure::Technical => Disclosure::PolicyTrace,
-                        Disclosure::PolicyTrace => Disclosure::Plain,
-                    };
-                    println!();
-                }
-                _ => bail!("aborted: the grant was not accepted"),
-            }
+        confirm(&grant, &catalog, level, args.yes, "[R]un")?
+    };
+    match decision {
+        Decision::Abort => bail!("aborted: the grant was not accepted"),
+        Decision::Accept | Decision::SaveOnly => {}
+    }
+
+    // The acceptance is the approval: seal it, before anything runs. The
+    // seal is what the tool-proxy enforces per effect (its certificate
+    // carries the `effect/` keys); `--save-grant` also keeps it for reuse.
+    let key = load_or_create_grant_key(args.grant_key.as_deref())?;
+    let sealed = SealedTaskGrant::seal(grant.clone(), crate::grant::approver_identity(), &key);
+    if let Some(path) = &args.save_grant {
+        write_sealed(&sealed, path)?;
+        if decision == Decision::SaveOnly {
+            return Ok(());
         }
     }
 
-    // Everything from here is the ordinary run path with the compiled
-    // lattice in place of a profile: same modes, same enforcement.
-    let global_config = Config::load(global_config_path)?;
-    let resolved = run::resolve_config(&args, &global_config)?;
-    run::dispatch(&args, resolved, &grant.lattice, &work_dir, &goal).await
+    let mut args = args;
+    args.task_grant_id = Some(grant.id.to_string());
+    attach_seal(&mut args, &sealed)?;
+    let trace = default_trace(&mut args, grant.id)?;
+    run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await?;
+    // One confirmation: the person decided, at the prompt or with --yes.
+    learn_from_run(&args, &grant, &catalog, trace.as_deref(), 1)
 }
 
-fn load_catalog(work_dir: &std::path::Path) -> Result<EffectCatalog> {
+/// Entry point, reached from `run::execute` when `--grant` is set: verify
+/// the sealed grant against this host's trusted signers and this
+/// repository, then run with no confirmation.
+pub async fn execute_grant(args: RunArgs, global_config_path: &str) -> Result<()> {
+    let path = args
+        .grant
+        .as_ref()
+        .ok_or_else(|| anyhow!("--grant needs a path"))?;
+    if args.prompt.as_deref().is_some_and(|p| !p.is_empty()) {
+        bail!("--grant carries its own goal; a prompt cannot be combined with it");
+    }
+    let work_dir = canonical_work_dir(&args.dir)?;
+    let sealed = read_sealed(path)?;
+    let ctx = nucleus_task_compiler::probe(&work_dir)
+        .with_context(|| format!("probing {}", work_dir.display()))?;
+    let verified = verify_sealed(
+        &sealed,
+        args.grant_key.as_deref(),
+        &args.grant_signers,
+        Some(&ctx.digest),
+    )?;
+    let grant = verified.grant();
+    let catalog = load_catalog(&work_dir)?;
+    let level: Disclosure = args.explain.parse().map_err(|e: String| anyhow!(e))?;
+
+    println!("{}", verified_line(&verified));
+    print!("{}", render_grant(grant, &catalog, level));
+    if args.dry_run {
+        return Ok(());
+    }
+    let goal = grant.goal.clone();
+    let grant = grant.clone();
+    let mut args = args;
+    args.task_grant_id = Some(grant.id.to_string());
+    attach_seal(&mut args, &sealed)?;
+    let trace = default_trace(&mut args, grant.id)?;
+    run_under(&args, global_config_path, &grant.lattice, &work_dir, &goal).await?;
+    // Zero confirmations: the decision was sealed earlier (C(T) = 0).
+    learn_from_run(&args, &grant, &catalog, trace.as_deref(), 0)
+}
+
+/// Hand the sealed certificate to the run path so the tool-proxy enforces
+/// the grant's effects per method + host + path and per MCP tool.
+fn attach_seal(args: &mut RunArgs, sealed: &SealedTaskGrant) -> Result<()> {
+    args.pod_cert_b64 = Some(
+        sealed
+            .token
+            .to_base64()
+            .map_err(|e| anyhow!("encoding the grant certificate: {e}"))?,
+    );
+    args.cert_root_pubkey_hex = Some(sealed.signer_hex());
+    Ok(())
+}
+
+/// A goal or grant run always leaves a trace to learn from: unless
+/// `--kernel-trace` named one, `~/.config/nucleus/traces/<grant id>.jsonl`.
+/// Only the MCP-mediated modes write it (hook mode has no kernel trace).
+fn default_trace(args: &mut RunArgs, grant_id: uuid::Uuid) -> Result<Option<PathBuf>> {
+    if args.hook {
+        return Ok(args.kernel_trace.clone());
+    }
+    if args.kernel_trace.is_none() {
+        let dir = crate::config::nucleus_dir()?.join("traces");
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        args.kernel_trace = Some(dir.join(format!("{grant_id}.jsonl")));
+    }
+    Ok(args.kernel_trace.clone())
+}
+
+/// After a run: attribute its trace to the grant, print the usage lines,
+/// and (at a terminal) offer to keep a profile with the unused authority
+/// removed. Learning only narrows; nothing here can widen the grant.
+fn learn_from_run(
+    args: &RunArgs,
+    grant: &TaskGrant,
+    catalog: &EffectCatalog,
+    trace: Option<&Path>,
+    confirmations: u64,
+) -> Result<()> {
+    let Some(trace) = trace else {
+        return Ok(());
+    };
+    let Ok(text) = std::fs::read_to_string(trace) else {
+        return Ok(());
+    };
+    let observations = portcullis::observe::parse_jsonl_observations(&text);
+    if observations.is_empty() {
+        return Ok(());
+    }
+    let usage = portcullis::attribute_usage(grant, catalog, &observations);
+    println!();
+    print!("{}", portcullis::render_usage(&usage, catalog));
+
+    // ρ over dimensions and C(T) (ADR 0004): the same numbers the exit
+    // report and the MCP session summary carry, from the same trace.
+    let decisions = portcullis::decisions_in_trace(&text);
+    if !decisions.is_empty() {
+        let mut summary = portcullis::summarise_authority(&grant.lattice, &decisions);
+        summary.confirmations = confirmations;
+        summary.task_grant_id = Some(grant.id.to_string());
+        println!("  {}", summary.render());
+    }
+    println!("  trace:   {}", trace.display());
+
+    // Every denial, as a proposal: what would have allowed it, and what it
+    // would cost. The grant file is named when there is one to widen.
+    let grant_ref = args
+        .save_grant
+        .as_ref()
+        .or(args.grant.as_ref())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<grant>".to_string());
+    if let Ok(proposals) = crate::grant::proposals_for(grant, catalog, &text) {
+        for p in &proposals {
+            println!();
+            print!("{}", portcullis::render_proposal(p, catalog, &grant_ref));
+        }
+    }
+
+    let nothing_to_drop = usage.unused.is_empty()
+        && usage
+            .operations_granted
+            .iter()
+            .all(|op| usage.operations_used.contains(op));
+    if nothing_to_drop || args.yes || !io::stdin().is_terminal() {
+        if !nothing_to_drop {
+            println!(
+                "  narrower profile: nucleus observe --grant <grant> --input {} --narrow NAME --save",
+                trace.display()
+            );
+        }
+        return Ok(());
+    }
+
+    print!(
+        "
+Save a profile with the unused authority removed? name (empty to skip): "
+    );
+    io::stdout().flush()?;
+    let mut line = String::new();
+    io::stdin().lock().read_line(&mut line)?;
+    let name = line.trim();
+    if name.is_empty() {
+        return Ok(());
+    }
+    if !crate::profiles::is_valid_profile_name(name) {
+        bail!("{name}: {}", crate::profiles::PROFILE_NAME_HELP);
+    }
+    let narrowed = portcullis::narrow_grant(grant, &usage, name);
+    let yaml = narrowed.profile.to_yaml().map_err(|e| anyhow!("{e}"))?;
+    let path = crate::observe::install_profile(name, &yaml)?;
+    println!(
+        "profile '{name}' installed at {} ({} effects and {} dimensions removed); \
+         next time: nucleus run --profile {name} … or --ceiling {name}",
+        path.display(),
+        narrowed.dropped_effects.len(),
+        narrowed.dropped_operations.len()
+    );
+    Ok(())
+}
+
+/// Everything from here is the ordinary run path with a compiled lattice in
+/// place of a profile: same modes, same enforcement.
+async fn run_under(
+    args: &RunArgs,
+    global_config_path: &str,
+    lattice: &portcullis::PermissionLattice,
+    work_dir: &Path,
+    goal: &str,
+) -> Result<()> {
+    let global_config = Config::load(global_config_path)?;
+    let resolved = run::resolve_config(args, &global_config)?;
+    run::dispatch(args, resolved, lattice, work_dir, goal).await
+}
+
+fn canonical_work_dir(dir: &str) -> Result<PathBuf> {
+    let expanded = shellexpand::tilde(dir).to_string();
+    PathBuf::from(&expanded)
+        .canonicalize()
+        .with_context(|| format!("working directory {dir}"))
+}
+
+/// Show the grant and take the one decision. `accept_label` names the
+/// accepting choice(s), e.g. `[R]un` or `[S]eal`; `[d]etails` cycles the
+/// disclosure and `[a]bort` is always offered. With `yes` the grant is
+/// printed and accepted. Without a TTY and without `yes` the process exits
+/// with [`EXIT_NEEDS_CONFIRMATION`] after printing the grant to stderr.
+pub fn confirm(
+    grant: &TaskGrant,
+    catalog: &EffectCatalog,
+    mut level: Disclosure,
+    yes: bool,
+    accept_label: &str,
+) -> Result<Decision> {
+    if yes {
+        print!("{}", render_grant(grant, catalog, level));
+        return Ok(Decision::Accept);
+    }
+    if !io::stdin().is_terminal() {
+        eprint!("{}", render_grant(grant, catalog, level));
+        eprintln!();
+        eprintln!("nucleus: this grant needs a confirmation and there is no terminal to give one.");
+        eprintln!("         Re-run with --yes to accept it, or --dry-run to only show it.");
+        std::process::exit(EXIT_NEEDS_CONFIRMATION);
+    }
+    let offers_save = accept_label.contains("[s]");
+    loop {
+        print!("{}", render_grant(grant, catalog, level));
+        print!("\n{accept_label} · [d]etails · [a]bort: ");
+        io::stdout().flush()?;
+        let mut line = String::new();
+        io::stdin().lock().read_line(&mut line)?;
+        match line.trim().to_ascii_lowercase().as_str() {
+            "r" | "run" | "y" | "yes" => return Ok(Decision::Accept),
+            "s" | "seal" | "save" if offers_save => return Ok(Decision::SaveOnly),
+            "s" | "seal" if accept_label.starts_with("[S]") => return Ok(Decision::Accept),
+            "d" | "details" => {
+                level = match level {
+                    Disclosure::Plain => Disclosure::Technical,
+                    Disclosure::Technical => Disclosure::PolicyTrace,
+                    Disclosure::PolicyTrace => Disclosure::Plain,
+                };
+                println!();
+            }
+            _ => return Ok(Decision::Abort),
+        }
+    }
+}
+
+/// The catalog a repository sees: the built-in effects plus its own under
+/// `.nucleus/effects`.
+pub fn load_catalog(work_dir: &Path) -> Result<EffectCatalog> {
     let mut catalog = EffectCatalog::builtin()?;
     catalog.load_from_dir(&work_dir.join(".nucleus/effects"))?;
     Ok(catalog)
 }
 
-/// Compile the goal under the ceiling named by the args.
-fn compile_goal(args: &RunArgs, goal: &str, work_dir: &std::path::Path) -> Result<TaskGrant> {
+/// Compile the goal under the ceiling named by the request.
+pub fn compile_goal(request: &GoalRequest, work_dir: &Path) -> Result<TaskGrant> {
     let ctx = nucleus_task_compiler::probe(work_dir)
         .with_context(|| format!("probing {}", work_dir.display()))?;
     let catalog = load_catalog(work_dir)?;
 
-    let ceiling = profiles::resolve(&args.ceiling).ok_or_else(|| {
+    let ceiling = profiles::resolve(&request.ceiling).ok_or_else(|| {
         anyhow!(
             "unknown ceiling profile '{}' (see `nucleus profiles`)",
-            args.ceiling
+            request.ceiling
         )
     })?;
 
     let mut explicit = BTreeSet::new();
-    for raw in &args.effects {
+    for raw in &request.effects {
         let raw = raw.trim();
         if raw.is_empty() {
             continue;
@@ -143,7 +404,7 @@ fn compile_goal(args: &RunArgs, goal: &str, work_dir: &std::path::Path) -> Resul
     }
 
     let rules = RuleProposer;
-    let external = args
+    let external = request
         .proposer
         .clone()
         .map(|program| ExternalCommandProposer { program });
@@ -153,7 +414,7 @@ fn compile_goal(args: &RunArgs, goal: &str, work_dir: &std::path::Path) -> Resul
     }
 
     let limits = LimitOverrides {
-        max_cost_usd: args
+        max_cost_usd: request
             .max_cost
             .map(|c| Decimal::try_from(c).map_err(|e| anyhow!("--max-cost: {e}")))
             .transpose()?,
@@ -161,10 +422,10 @@ fn compile_goal(args: &RunArgs, goal: &str, work_dir: &std::path::Path) -> Resul
     };
 
     let grant = compile(CompileInput {
-        goal,
+        goal: &request.goal,
         ctx: &ctx,
         catalog: &catalog,
-        ceiling_profile: &args.ceiling,
+        ceiling_profile: &request.ceiling,
         ceiling: &ceiling,
         proposers: &proposers,
         explicit: &explicit,

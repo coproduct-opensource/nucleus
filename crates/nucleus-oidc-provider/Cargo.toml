@@ -19,6 +19,15 @@ path = "src/main.rs"
 nucleus-lineage = { path = "../nucleus-lineage" }
 # Public OIDC primitives — JtiCache, federation traits, key resolution.
 nucleus-oidc-core = { path = "../nucleus-oidc-core" }
+# Certificate verification + the effect dimension, so a federated token can be
+# bounded by the authority a person actually delegated rather than only by the
+# operator's rule. Lean on purpose: `serde` + `crypto` gives `verify_certificate`
+# and `effect_surface` without pulling Cedar or the YAML/TOML policy loader into
+# the OP's TCB. `effect_surface` is built for exactly this consumer — its module
+# docs note it stays independent of the catalog so an outside verifier can read
+# which effects a certificate grants.
+chrono = { workspace = true }
+portcullis = { path = "../portcullis", default-features = false, features = ["serde", "crypto"] }
 
 # Web framework — mirrors nucleus-verifier-service stack so the
 # concurrency-limit / body-limit / timeout / CORS hardening (audit MED-5)
@@ -80,6 +89,8 @@ uuid = { workspace = true }
 subtle = "2"
 
 [dev-dependencies]
+# Minting a real pod certificate in tests — the OP itself never signs one.
+ring = { workspace = true }
 tower = { version = "0.5", features = ["util", "limit"] }
 http-body-util = "0.1"
 tempfile = { workspace = true }

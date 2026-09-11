@@ -42,6 +42,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       # WHY THIS EXISTS: `paths:` under `merge_group:` is accepted by the YAML
       # schema and then IGNORED by GitHub — path filtering is not supported for
       # merge_group events. So the scoping declared above holds on pull_request
@@ -85,9 +86,15 @@ jobs:
           fi
 
 
-      - name: Install elan (Lean toolchain)
+      - name: Install elan (Lean toolchain) unless the runner already has it
         if: steps.scope.outputs.relevant == 'true'
+        shell: bash
         run: |
+          if command -v lake >/dev/null 2>&1; then
+            echo "lake already present: $(command -v lake)"
+            exit 0
+          fi
+          echo "lake not on PATH; installing elan"
           # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
           # script is handed to an interpreter (Scorecard Pinned-Dependencies).
           curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz

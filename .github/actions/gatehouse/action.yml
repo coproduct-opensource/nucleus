@@ -1,0 +1,96 @@
+name: gatehouse
+description: >-
+  Run a CI command the gatehouse way: the scope materialized from the commit, the declared
+  environment, the command under its timeout, a receipt signed by a key this run alone holds,
+  included in a hosted transparency log with a proof, and verified on this runner. Informational
+  until you make it required; the step fails only when it could not look.
+author: coproduct
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  run:
+    description: "The command to run (a shell line)."
+    required: true
+  name:
+    description: "The gate's name. Default: the job id."
+    required: false
+    default: ""
+  scope:
+    description: "Newline-separated globs of what the command may read (materialized from the commit; nothing else exists). Default `**`."
+    required: false
+    default: "**"
+  timeout:
+    description: "Seconds the command may take."
+    required: false
+    default: "3600"
+  env:
+    description: "Newline-separated KEY=VALUE lines the command sees (declared, hashed into the environment digest). PATH and HOME are always set; RUSTUP_HOME and CARGO_HOME are declared when present."
+    required: false
+    default: ""
+  git-history:
+    description: "Whether the command may read git history (keys the receipt on the commit, not the tree)."
+    required: false
+    default: "false"
+  compare:
+    description: "Also run the command plainly on this runner and report whether the two verdicts agree."
+    required: false
+    default: "true"
+  control-url:
+    description: "The gatehouse control plane."
+    required: false
+    default: "https://gatehouse-controld.fly.dev"
+  version:
+    description: "The gatehouse release to run (a tag of the binaries repository)."
+    required: false
+    default: "v0.1.0"
+  binaries:
+    description: "The public repository whose releases carry the binaries."
+    required: false
+    default: "coproduct-opensource/gatehouse-action"
+  bin-dir:
+    description: "A directory holding gate and gatehouse-runner already (a build from source); when set, nothing is downloaded."
+    required: false
+    default: ""
+
+outputs:
+  verdict:
+    description: "held | failed | errored"
+    value: ${{ steps.gate.outputs.verdict }}
+  verified:
+    description: "true when the receipt verified against the hosted log on this runner"
+    value: ${{ steps.gate.outputs.verified }}
+  receipt_index:
+    description: "The receipt's index in the tenant's log"
+    value: ${{ steps.gate.outputs.receipt_index }}
+  agree:
+    description: "true | false | skipped — whether the plain run agreed"
+    value: ${{ steps.gate.outputs.agree }}
+  tenant:
+    description: "The tenant the receipt landed in"
+    value: ${{ steps.gate.outputs.tenant }}
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        GH_RUN: ${{ inputs.run }}
+        GH_NAME: ${{ inputs.name }}
+        GH_SCOPE: ${{ inputs.scope }}
+        GH_TIMEOUT: ${{ inputs.timeout }}
+        GH_ENV: ${{ inputs.env }}
+        GH_GIT_HISTORY: ${{ inputs.git-history }}
+        GH_COMPARE: ${{ inputs.compare }}
+        GH_CONTROL: ${{ inputs.control-url }}
+        GH_VERSION: ${{ inputs.version }}
+        GH_BINARIES: ${{ inputs.binaries }}
+        GH_BIN_DIR: ${{ inputs.bin-dir }}
+        GH_JOB: ${{ github.job }}
+        GH_PR: ${{ github.event.pull_request.number || 0 }}
+        GH_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+        GH_REPOSITORY: ${{ github.repository }}
+      run: bash "${{ github.action_path }}/gatehouse.sh"

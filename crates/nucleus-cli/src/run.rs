@@ -128,8 +128,8 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
 /// to run the tool-proxy as a local subprocess instead (suitable for CI).
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Task prompt (use - for stdin). Not needed with --goal.
-    #[arg(required_unless_present = "goal")]
+    /// Task prompt (use - for stdin). Not needed with --goal or --grant.
+    #[arg(required_unless_present_any = ["goal", "grant"])]
     pub prompt: Option<String>,
 
     /// State the outcome you want instead of a profile: nucleus compiles the
@@ -161,9 +161,38 @@ pub struct RunArgs {
     #[arg(long, value_name = "PROGRAM")]
     pub proposer: Option<PathBuf>,
 
-    /// Write the compiled grant as JSON (with --goal).
+    /// Seal the accepted grant to PATH, signed with this host's grant key,
+    /// so the same task can run again with --grant and no confirmation.
     #[arg(long, value_name = "PATH")]
     pub save_grant: Option<PathBuf>,
+
+    /// Run a previously sealed grant (see --save-grant, `nucleus grant seal`).
+    /// Verified against this host's trusted signers and this repository; no
+    /// confirmation is asked because one was already given.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["goal", "config"])]
+    pub grant: Option<PathBuf>,
+
+    /// Ed25519 key (PKCS#8 PEM) that seals grants and whose public half is
+    /// trusted when verifying one. Created on first use.
+    #[arg(long, env = "NUCLEUS_GRANT_KEY", value_name = "PATH")]
+    pub grant_key: Option<PathBuf>,
+
+    /// Additional trusted grant signers (hex Ed25519 public keys). Repeatable.
+    #[arg(long = "grant-signer", value_name = "HEX")]
+    pub grant_signers: Vec<String>,
+
+    /// The task grant this run executes under (set by --goal / --grant, not a
+    /// flag): carried in the pod spec so the exit report names it.
+    #[arg(skip)]
+    pub task_grant_id: Option<String>,
+
+    /// The sealed grant's certificate (base64 attenuation token) and the key
+    /// that signed it, handed to the tool-proxy in local mode so the run is
+    /// enforced per effect (set by --goal / --grant, not flags).
+    #[arg(skip)]
+    pub pod_cert_b64: Option<String>,
+    #[arg(skip)]
+    pub cert_root_pubkey_hex: Option<String>,
 
     /// Working directory (default: current directory)
     #[arg(short = 'd', long, default_value = ".")]
@@ -274,6 +303,9 @@ pub struct RunArgs {
 pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     if args.goal.is_some() {
         return crate::goal::execute(args, global_config_path).await;
+    }
+    if args.grant.is_some() {
+        return crate::goal::execute_grant(args, global_config_path).await;
     }
 
     // Load global config
@@ -579,6 +611,7 @@ async fn run_local(
         .arg(&approval_secret)
         .arg("--audit-log")
         .arg(&audit_path)
+        .args(pod_cert_args(args))
         .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
         .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .kill_on_drop(true)
@@ -645,6 +678,21 @@ async fn run_local(
     render_output(&output, duration, args.output.as_str())
 }
 
+/// `--pod-cert` / `--cert-root-pubkey` for the tool-proxy when this run is
+/// under a sealed grant: the certificate carries the grant's `effect/` keys,
+/// which the proxy enforces per method + host + path (ADR 0004).
+fn pod_cert_args(args: &RunArgs) -> Vec<String> {
+    match (&args.pod_cert_b64, &args.cert_root_pubkey_hex) {
+        (Some(cert), Some(key)) => vec![
+            "--pod-cert".into(),
+            cert.clone(),
+            "--cert-root-pubkey".into(),
+            key.clone(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// Poll the announce_path file until the proxy writes its bound address.
 async fn wait_for_proxy_ready(announce_path: &Path, timeout: Duration) -> Result<String> {
     let start = Instant::now();
@@ -692,7 +740,7 @@ fn build_local_pod_spec(
         })
     };
 
-    Ok(SpecPodSpec::new(PodSpecInner {
+    let mut spec = SpecPodSpec::new(PodSpecInner {
         work_dir: work_dir.to_path_buf(),
         timeout_seconds: args.timeout,
         policy: PolicySpec::Inline {
@@ -709,7 +757,9 @@ fn build_local_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials,
-    }))
+    });
+    spec.metadata.task_grant_id = args.task_grant_id.clone();
+    Ok(spec)
 }
 
 async fn run_enforced(
@@ -803,7 +853,7 @@ fn build_pod_spec(
     kernel_path: &str,
     rootfs_path: &str,
 ) -> Result<SpecPodSpec> {
-    Ok(SpecPodSpec::new(PodSpecInner {
+    let mut spec = SpecPodSpec::new(PodSpecInner {
         work_dir: work_dir.to_path_buf(),
         timeout_seconds: args.timeout,
         policy: PolicySpec::Inline {
@@ -829,7 +879,9 @@ fn build_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials: None,
-    }))
+    });
+    spec.metadata.task_grant_id = args.task_grant_id.clone();
+    Ok(spec)
 }
 
 fn write_pod_spec(spec_path: &Path, spec: &SpecPodSpec) -> Result<()> {

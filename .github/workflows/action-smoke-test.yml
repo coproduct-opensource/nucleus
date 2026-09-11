@@ -78,6 +78,47 @@ jobs:
           echo "$OUTPUT" | grep -q "read_files: Always" || { echo "::error::read_files should be Always"; exit 1; }
           echo "PASS: safe_pr_fixer profile validates correctly"
 
+      - name: 'Dry-run: a goal compiles into a grant, and the ceiling clips it'
+        run: |
+          set -euo pipefail
+          # The goal path the Action now offers. Nothing here needs an LLM key:
+          # compiling, sealing and rendering a grant is the part that decides
+          # authority, and it happens before any agent runs.
+          export NUCLEUS_GRANT_KEY="${RUNNER_TEMP}/smoke-grant-key.pem"
+          GRANT="${RUNNER_TEMP}/smoke-grant.json"
+
+          nucleus grant seal \
+            --goal 'Fix the failing CI build and open a pull request with the fix' \
+            --ceiling codegen --explain plain --yes \
+            --approver 'github-actions[smoke]' \
+            -o "$GRANT"
+
+          RENDER=$(nucleus grant show "$GRANT" --explain plain)
+          echo "$RENDER"
+
+          # The five lines a person reviews.
+          for LINE in 'Goal:' 'Can:' 'Cannot:' 'Limits:' 'Risk:'; do
+            echo "$RENDER" | grep -q "^${LINE}" || { echo "::error::grant render is missing the ${LINE} line"; exit 1; }
+          done
+
+          # Non-vacuity, and the property that matters: the ceiling is what
+          # bounds a compiled grant, so a goal that asks to open a pull request
+          # under the codegen ceiling must be REFUSED that effect, not granted
+          # it. A render whose Cannot line said nothing would pass the check
+          # above while proving nothing.
+          echo "$RENDER" | grep -q 'outside ceiling codegen' \
+            || { echo "::error::the ceiling clipped nothing — a goal asking for more than codegen allows was not bounded"; exit 1; }
+
+          # The grant, in the job summary, exactly as the Action puts it there.
+          {
+            echo '### Smoke-test grant'
+            echo
+            echo '```'
+            echo "$RENDER"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'PASS: a goal compiles, seals, renders, and is bounded by its ceiling'
+
       - name: 'Dry-run: all profiles'
         run: |
           PROFILES="restrictive read-only code-review edit-only local-dev fix-issue safe_pr_fixer release demo full"

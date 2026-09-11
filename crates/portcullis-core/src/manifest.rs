@@ -156,7 +156,7 @@ impl ToolManifest {
         }
 
         // remote_fetch
-        buf.push(self.remote_fetch as u8);
+        buf.push(u8::from(self.remote_fetch));
 
         // instruction_sources (count + discriminants)
         buf.extend_from_slice(&(self.instruction_sources.len() as u32).to_le_bytes());
@@ -187,7 +187,7 @@ impl ToolManifest {
         }
 
         // authority_to_instruct
-        buf.push(self.authority_to_instruct as u8);
+        buf.push(u8::from(self.authority_to_instruct));
 
         // memory_behavior
         buf.push(self.memory_behavior as u8);
@@ -446,6 +446,7 @@ mod kani_proofs {
 
     /// **M1 — Empty capabilities always rejected.**
     #[kani::proof]
+    #[kani::unwind(16)]
     fn proof_empty_capabilities_rejected() {
         let manifest = ToolManifest {
             name: ToolName::new("test"),

@@ -103,14 +103,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Add Aeneas to PATH
-        # Self-hosted: the runner image bakes the same release at /opt/aeneas
-        # (docker/Dockerfile.runner AENEAS_RELEASE) — no download, no cache.
+        # Self-hosted: use the baked copy when the image has one, and otherwise
+        # install to the machine's persistent volume.
         run: |
-          if [ -x /opt/aeneas/aeneas ] && [ "${{ runner.environment }}" != "github-hosted" ]; then
+          set -euo pipefail
+          if [ "${{ runner.environment }}" = "github-hosted" ]; then
+            echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+          elif [ -x /opt/aeneas/aeneas ]; then
             echo "/opt/aeneas" >> "$GITHUB_PATH"
           else
-            echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+            # Not baked, and on the Fly pool it cannot be: Charon + Aeneas do not
+            # fit under Fly's 8 GB uncompressed rootfs cap, which is why the
+            # image that tried took the pool down (#2719, #2721). The machine's
+            # 40 GB volume has room, so this downloads once per MACHINE rather
+            # than once per job, and falls back to scratch where there is no
+            # volume so the lane never depends on one existing.
+            dir="${AENEAS_CACHE:-/data/cache/aeneas}/$AENEAS_RELEASE"
+            mkdir -p "$dir" 2>/dev/null || dir="${RUNNER_TEMP:-/tmp}/aeneas/$AENEAS_RELEASE"
+            mkdir -p "$dir"
+            if [ ! -x "$dir/aeneas" ]; then
+              tmp="$(mktemp -d)"
+              gh release download "$AENEAS_RELEASE" \
+                --repo AeneasVerif/aeneas \
+                --pattern "aeneas-linux-$(uname -m).tar.gz" \
+                --dir "$tmp"
+              tar xzf "$tmp/aeneas-linux-$(uname -m).tar.gz" -C "$dir"
+              rm -rf "$tmp"
+            fi
+            echo "$dir" >> "$GITHUB_PATH"
           fi
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Verify tools
         run: |
@@ -150,9 +173,14 @@ jobs:
           done
           echo "generated-certchain/ canonicalized from the fresh extraction; theorem builds against it."
 
-      - name: Install elan (Lean toolchain)
-        if: runner.environment == 'github-hosted'
+      - name: Install elan (Lean toolchain) unless the runner already has it
+        shell: bash
         run: |
+          if command -v lake >/dev/null 2>&1; then
+            echo "lake already present: $(command -v lake)"
+            exit 0
+          fi
+          echo "lake not on PATH; installing elan"
           # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
           # script is handed to an interpreter (Scorecard Pinned-Dependencies).
           curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
@@ -171,7 +199,13 @@ jobs:
       - name: "Mathlib cache (self-hosted: baked elan, persistent ~/.cache/mathlib)"
         if: ${{ runner.environment != 'github-hosted' }}
         working-directory: crates/portcullis-core/lean
-        run: lake exe cache get || true
+        run: |
+          # NOT `|| true`. A Mathlib cache miss and a cache FAILURE are different
+          # events, and swallowing the exit code made them indistinguishable: the
+          # build fell back to compiling Mathlib from source, silently, for minutes
+          # on the build pool. That is what #2685 found. `lake exe cache get`
+          # returns non-zero when it could not fetch, so let it.
+          lake exe cache get
 
       - name: lake build (extracted core + theorem)
         working-directory: crates/portcullis-core/lean

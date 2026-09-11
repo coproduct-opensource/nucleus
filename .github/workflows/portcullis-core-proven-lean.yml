@@ -16,10 +16,9 @@ name: Portcullis-Core Proven Lean
 #   3. runs a `#print axioms` audit on the enforcement core to catch any
 #      `sorryAx` that a textual grep would miss via the proof dependency graph.
 #
-# `native_decide` is NOT banned here (unlike the Mathlib-free ck-policy/rubric/
-# econ trees): it is load-bearing in FlowGraphProofs.lean. It is instead
-# DISCLOSED — the #print axioms step surfaces `Lean.ofReduceBool` (native-
-# compiler TCB) so the trust boundary is visible, not hidden.
+# Native evaluation is admitted only by the per-theorem exception list.
+# FlowGraphProofs uses kernel-checked decide; owned compiler overrides are
+# rejected before any build or axiom audit.
 
 on:
   push:
@@ -58,6 +57,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
       # WHY THIS EXISTS: `paths:` under `merge_group:` is accepted by the YAML
       # schema and then IGNORED by GitHub — path filtering is not supported for
       # merge_group events. So the scoping declared above holds on pull_request
@@ -101,9 +101,21 @@ jobs:
           fi
 
 
-      - name: Install elan (Lean toolchain)
-        if: runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true')
+      - name: Reject compiler overrides (with planted-override falsifiers)
+        if: steps.scope.outputs.relevant == 'true'
         run: |
+          python3 crates/portcullis-core/lean/check_compiler_overrides.py --self-test
+          python3 crates/portcullis-core/lean/check_compiler_overrides.py
+
+      - name: Install elan (Lean toolchain) unless the runner already has it
+        if: (steps.scope.outputs.relevant == 'true')
+        shell: bash
+        run: |
+          if command -v lake >/dev/null 2>&1; then
+            echo "lake already present: $(command -v lake)"
+            exit 0
+          fi
+          echo "lake not on PATH; installing elan"
           # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
           # script is handed to an interpreter (Scorecard Pinned-Dependencies).
           curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
@@ -129,7 +141,13 @@ jobs:
       - name: Fetch Mathlib cache (prebuilt oleans)
         if: steps.scope.outputs.relevant == 'true'
         working-directory: crates/portcullis-core/lean
-        run: lake exe cache get || true
+        run: |
+          # NOT `|| true`. A Mathlib cache miss and a cache FAILURE are different
+          # events, and swallowing the exit code made them indistinguishable: the
+          # build fell back to compiling Mathlib from source, silently, for minutes
+          # on the build pool. That is what #2685 found. `lake exe cache get`
+          # returns non-zero when it could not fetch, so let it.
+          lake exe cache get
 
       - name: lake build (proven tier — type-check all kernel-checked libs)
         if: steps.scope.outputs.relevant == 'true'

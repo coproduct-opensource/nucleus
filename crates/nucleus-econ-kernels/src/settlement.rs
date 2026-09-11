@@ -49,8 +49,8 @@ pub fn classify(delivered_bps: u64) -> Verdict {
 /// The seller's payout for a cleared `price_micro` at `delivered_bps` (clamped to
 /// 100%). Mirrors Lean `sellerGross`; `u128` math avoids overflow.
 pub fn seller_gross(price_micro: u64, delivered_bps: u64) -> u64 {
-    let bps = delivered_bps.min(BPS_SCALE) as u128;
-    ((price_micro as u128 * bps) / BPS_SCALE as u128) as u64
+    let bps = u128::from(delivered_bps.min(BPS_SCALE));
+    ((u128::from(price_micro) * bps) / u128::from(BPS_SCALE)) as u64
 }
 
 /// The bidder's refund: the residual after the seller's payout. Defined as

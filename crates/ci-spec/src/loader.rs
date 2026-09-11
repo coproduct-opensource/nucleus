@@ -342,6 +342,27 @@ pub fn from_parts(
     allowlist: &str,
     gate_scripts: Vec<String>,
 ) -> Result<Model> {
+    from_parts_with_pins(
+        workflows,
+        ledger,
+        queue_toml,
+        inline_gates,
+        allowlist,
+        gate_scripts,
+        "",
+    )
+}
+
+/// [`from_parts`] with the I8 population pin, for tests that exercise it.
+pub fn from_parts_with_pins(
+    workflows: &[(String, String)],
+    ledger: &str,
+    queue_toml: &str,
+    inline_gates: &str,
+    allowlist: &str,
+    gate_scripts: Vec<String>,
+    image_dependent: &str,
+) -> Result<Model> {
     let mut wfs = Vec::new();
     for (p, t) in workflows {
         wfs.push(parse_workflow(p, t)?);
@@ -354,7 +375,17 @@ pub fn from_parts(
         inline_gates: parse_inline_gates(inline_gates),
         allowlist: parse_allowlist(allowlist),
         gate_scripts,
+        image_dependent_pinned: parse_pin_list(image_dependent),
     })
+}
+
+/// One entry per line; blanks and `#` comments ignored.
+fn parse_pin_list(text: &str) -> std::collections::BTreeSet<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Build the model from a repository checkout.
@@ -383,6 +414,7 @@ pub fn from_repo(root: &Path) -> Result<Model> {
     let queue = read("ci/merge-queue.toml")?;
     let inline = read("ci/inline-gates.txt")?;
     let allow = read("ci/gate-integrity-allowlist.txt").unwrap_or_default();
+    let image_dependent = read("ci/image-dependent-jobs.txt").unwrap_or_default();
 
     let mut gate_scripts = Vec::new();
     for (dir, prefix) in [("scripts", "check-"), ("ci", "")] {
@@ -399,5 +431,13 @@ pub fn from_repo(root: &Path) -> Result<Model> {
         }
     }
     gate_scripts.sort();
-    from_parts(&workflows, &ledger, &queue, &inline, &allow, gate_scripts)
+    from_parts_with_pins(
+        &workflows,
+        &ledger,
+        &queue,
+        &inline,
+        &allow,
+        gate_scripts,
+        &image_dependent,
+    )
 }

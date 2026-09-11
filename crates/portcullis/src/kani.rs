@@ -2304,3 +2304,22 @@ fn proof_budget_ledger_release_conserves() {
     assert!(ledger.conserves());
     assert!(ledger.allocation_of(1).is_none(), "released child is gone");
 }
+
+/// Every core operation remains bounded by the verified request certificate,
+/// even when the market-effective input is arbitrary (including widened).
+#[kani::proof]
+#[kani::unwind(16)]
+fn proof_request_ceiling_leq_verified() {
+    let boot = arbitrary_caps();
+    let effective = arbitrary_caps();
+    let verified = arbitrary_caps();
+    let index: usize = kani::any();
+    kani::assume(index < Operation::ALL.len());
+    let op = Operation::ALL[index];
+    let ceiling = boot.request_ceiling(op, &effective, &verified);
+    assert!(ceiling <= verified.level_for(op));
+    assert!(ceiling <= effective.level_for(op));
+    assert!(ceiling <= boot.level_for(op));
+    kani::cover!(ceiling == CapabilityLevel::Never);
+    kani::cover!(ceiling == CapabilityLevel::Always);
+}

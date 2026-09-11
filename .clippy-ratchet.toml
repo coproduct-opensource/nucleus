@@ -27,6 +27,45 @@ lints = [
 # push to main snaps this down to the real count (457 measured here, three
 # identical consecutive runs), so an over-generous seed
 # self-corrects within one commit rather than hiding a regression forever.
-ceiling = 455
+# Raised 455 -> 462 2026-09-09, and this is COVERAGE going up, not debt.
+# `nucleus-verifier-service` unconditionally `include_*!`d a wasm-pack artifact
+# that only exists after `wasm-pack build`, so on a bare checkout it failed to
+# compile and the script's own "crates that did NOT compile, so were NOT
+# analysed" warning quietly dropped it from the count. Putting that embed behind
+# a feature (#2730) makes the crate compile by default, and the gate now sees
+# seven cast sites in it that were always there and never counted:
+#
+#   log.rs:232 (test)   merkle.rs:80        routes.rs:594
+#   witness.rs:166      witness.rs:240      integration.rs:176 (x2, test)
+#
+# None are new code and none look dangerous — merkle.rs:80 is u64 -> usize,
+# lossless on any 64-bit target, and three of the seven are in tests. They are
+# left for `step` to grind down rather than reworked in a change about the wasm
+# embed. The number to remember is that 455 was never the workspace's real
+# count; it was the count of the crates that happened to build.
+# Ground 462 -> 341 on 2026-09-10 by applying clippy's own machine-applicable
+# `cast_lossless` fixes across the workspace: `x as u64` becomes `u64::from(x)`,
+# which is the same value by definition of the lint. 43 files, 117 sites. The
+# workspace was at 458 against a ceiling of 462 -- four of headroom -- so any PR
+# adding a handful of casts red the gate, and two open PRs were failing on it for
+# that reason rather than for anything wrong with them.
+#
+# Four files clippy offered to fix were REVERTED and are not in this change:
+# nucleus-econ-kernels/src/extracted/{commons,pigou,settlement}_aeneas.rs and
+# nucleus-ifc-kernel/src/extracted/egress.rs. Those feed the charon+aeneas
+# extraction, so editing the Rust drifts the committed Lean, and a cast cleanup
+# is not the change that should carry an extraction regeneration.
+#
+# Only `cast_lossless` was touched -- the class where the fix is provably
+# value-preserving. The other four lints (truncation 352, wrap 68, precision 57,
+# sign_loss 55 raw sites) each need a decision per site about what the right
+# behaviour IS, and are left for `step` and for changes that can reason about them.
+# Pinned from CI's count, not the local one. First attempt set this to 341, which
+# was measured on macOS; CI (linux) counted 345 and red the gate on this very PR.
+# The seeding comment above already said why -- "clippy counts can differ by
+# platform and feature resolution, and CI (linux) is the authority" -- and it was
+# not followed. The four-site gap is platform/feature resolution, not a regression:
+# the same 117 cast_lossless fixes are in the tree either way.
+ceiling = 345
 target = 0
 step = 5

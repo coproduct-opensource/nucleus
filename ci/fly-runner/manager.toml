@@ -1,0 +1,44 @@
+app = "nucleus-fly-runner-manager"
+primary_region = "iad"
+# Deployed from the repository root, so the build context holds the workspace the manager is a
+# member of: `fly deploy . --config ci/fly-runner/manager.toml --remote-only --ha=false --yes`.
+[build]
+  dockerfile = "Dockerfile.manager"
+[env]
+  GITHUB_REPO = "coproduct-opensource/nucleus"
+  RUNNER_APP = "nucleus-fly-build"
+  FLY_REGION = "iad"
+  # 30s, not 20: a pass costs 2 + LOOKBACK_RUNS + 1 calls, and 30 runs every 20s is 5940/hour
+  # against a 5000/hour limit. Conditional requests only pay for themselves while nothing
+  # changes, which under a backlog is never.
+  POLL_SECONDS = "30"
+  # Every machine is standby, so nothing is ever retired and this is inert. It is kept because
+  # a pool whose standby is lowered needs it again. Why standby = size: a stopped machine is
+  # billed for its root filesystem only, $0.15/GB-month — about $0.40 a month each for this
+  # image — while a machine that has to be created and warmed on demand costs a job two passes
+  # and an image pull. Warm capacity is the cheapest thing in this system; the volumes are what
+  # cost money ($48/month for the build pool's eight), which is why the build pool's size is
+  # pinned to its volume count until the compile cache is shared rather than per machine.
+  IDLE_MINUTES = "30"
+  LOOKBACK_RUNS = "25"
+  # The pools. `build` takes every job on the CI_BUILD_RUNNER label (cargo test, clippy, hack,
+  # llvm-cov, dylint: the six-to-twelve-minute jobs that hold a hosted slot for the whole
+  # time); `gate` is the other 52 sites on CI_RUNNER — mostly seconds-long script gates, but the
+  # Lean builds (ci-spec-lean, ck-policy-lean, econ-lean, ifc-lean, rubric-lean), `ci/test`,
+  # `doctests`, `owasp-gauntlet` and `gates-can-fail` are on that label too, which is why it is
+  # shared-cpu-8x with 16 GB and not the 2x/4 GB a pure script pool would want. Volumes are
+  # per build Machine and set with `fly secrets set POOLS=...` when the ids are known.
+  # This tracked default has none, and therefore declares `requires_volume: false`:
+  # with `true` and no ids the manager REFUSES the config outright -- "requires_volume,
+  # but 0 volumes for 8 machines" -- so the default a fresh deployment falls back to was
+  # one that could not start. The comment here used to claim the opposite. Corrected
+  # 2026-09-10 and now gated by `cargo xtask fly-pools`, which runs the manager's own
+  # validator over this value. The DEPLOYED POOLS secret carries `requires_volume: true`
+  # alongside the real ids, which is where that safety property belongs: it caps `size`
+  # at the volume count, and a compile pool without a volume fills the 8 GB rootfs
+  # (`ld terminated with signal 7`, then ENOSPC, then four ejected required checks).
+  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":8,"standby":8,"requires_volume":false,"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":8,"memory_mb":16384},"size":16,"standby":16}]'
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"

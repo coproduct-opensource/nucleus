@@ -49,7 +49,12 @@ MODE=${2:?root list or --self-test}
 cd "$PROJECT"
 PROJECT_ABS=$(pwd)
 
-# Source lint runs even when Lake restores cached elaboration output.
+# Native proofs must not run compiler-substituted owned definitions.
+python3 "$SCRIPT_DIR/../crates/portcullis-core/lean/check_compiler_overrides.py" .
+
+# Source lint runs even when Lake restores cached elaboration output. Both
+# pre-checks stay: main added the compiler-override check while this branch
+# added the external-state lint, and they answer different questions.
 if [ "$MODE" = "--self-test" ]; then
     python3 "$SCRIPT_DIR/check-lean-external-state.py" --self-test
 else
