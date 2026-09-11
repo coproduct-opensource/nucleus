@@ -1194,6 +1194,10 @@ pub(crate) struct EscalateResponse {
 /// separate log record, and the run-4 boot showed `writeln!`'s per-fragment
 /// writes splitting a single message across three records. A sentinel the host
 /// greps for must arrive as one record.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "#1216: writes the operator console device, not agent-directed I/O"
+)]
 fn console_line(msg: &str) {
     use std::io::Write;
     let line = format!("{msg}\n");
@@ -3695,6 +3699,10 @@ async fn glob_search(
 }
 
 /// Grep (regex content search) within the sandbox.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "#1216 OPEN (see #2806): agent-directed read still on raw File::open, not FileEffect -- annotated so a NEW raw read is still caught, not to bless this one"
+)]
 async fn grep_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -4638,6 +4646,10 @@ pub(crate) fn now_unix() -> u64 {
         .as_secs()
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "#1216: reads the proxy's own audit hash chain, not agent-directed I/O"
+)]
 fn load_last_hash(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let metadata = file.metadata().ok()?;
@@ -4673,6 +4685,10 @@ mod read_body_capped_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "#1216: test harness; not the mediated agent path"
+    )]
     async fn stops_at_cap_on_oversize_body() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let cap = 64 * 1024;
@@ -4700,6 +4716,10 @@ mod read_body_capped_tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "#1216: test harness; not the mediated agent path"
+    )]
     async fn returns_full_small_body_untruncated() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let server = MockServer::start().await;

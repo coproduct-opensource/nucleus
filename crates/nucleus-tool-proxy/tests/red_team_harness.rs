@@ -491,6 +491,10 @@ impl ToolDispatcher {
         }
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "#1216: test harness; not the mediated agent path"
+    )]
     fn dispatch_run(&self, args: &serde_json::Value) -> (String, bool) {
         let cmd_args: Vec<String> = match args.get("args").and_then(|v| v.as_array()) {
             Some(arr) => arr
@@ -795,6 +799,10 @@ enum ContentBlock {
 }
 
 impl LlmClient {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "#1216: test harness; not the mediated agent path"
+    )]
     fn new(config: &LlmConfig) -> Self {
         Self {
             client: reqwest::Client::new(),
