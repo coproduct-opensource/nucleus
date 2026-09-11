@@ -663,59 +663,45 @@ impl PermissionLattice {
     /// The policy fields, in a fixed order, each as a stable string.
     ///
     /// Exactly the fields [`PartialEq`] compares — the two must not drift apart,
-    /// and `checksum_agrees_with_equality` pins that they do not.
-    #[cfg(feature = "serde")]
+    /// and `every_policy_field_reaches_the_digest` pins that each one actually
+    /// arrives.
+    ///
+    /// ONE function, with the feature split pushed down into [`Self::encode`].
+    /// It was two — a `#[cfg(feature = "serde")]` body and a `#[cfg(not(..))]`
+    /// one — and mutation testing reported five survivors against the second.
+    /// They survived because `--all-features` does not compile it: mutating code
+    /// that is `cfg`-ed out changes nothing, so every mutant passed. A function
+    /// no build in CI compiles is a function no test can defend, and splitting
+    /// on the feature at the top of a body is how that happens.
     fn digest_parts(&self) -> Vec<(&'static str, String)> {
         vec![
-            (
-                "capabilities",
-                serde_json::to_string(&self.capabilities).unwrap_or_default(),
-            ),
-            (
-                "obligations",
-                serde_json::to_string(&self.obligations).unwrap_or_default(),
-            ),
-            (
-                "paths",
-                serde_json::to_string(&self.paths).unwrap_or_default(),
-            ),
-            (
-                "budget",
-                serde_json::to_string(&self.budget).unwrap_or_default(),
-            ),
-            (
-                "commands",
-                serde_json::to_string(&self.commands).unwrap_or_default(),
-            ),
-            (
-                "time",
-                serde_json::to_string(&self.time).unwrap_or_default(),
-            ),
-            (
-                "minimum_isolation",
-                serde_json::to_string(&self.minimum_isolation).unwrap_or_default(),
-            ),
+            ("capabilities", Self::encode(&self.capabilities)),
+            ("obligations", Self::encode(&self.obligations)),
+            ("paths", Self::encode(&self.paths)),
+            ("budget", Self::encode(&self.budget)),
+            ("commands", Self::encode(&self.commands)),
+            ("time", Self::encode(&self.time)),
+            ("minimum_isolation", Self::encode(&self.minimum_isolation)),
             ("uninhabitable", self.uninhabitable_constraint.to_string()),
         ]
     }
 
-    /// Debug-based fallback for builds without `serde`.
+    /// One field as a stable string.
     ///
-    /// Still not a stability contract across compiler versions, but now over the
-    /// same eight fields as the serde path rather than over the whole struct, so
-    /// the two agree about which values are the same policy.
+    /// The only thing the `serde` feature changes about the digest. `Debug` is
+    /// not a stability contract across compiler versions — the defect #747
+    /// records for the receipt chain — so the serde build is the one whose
+    /// digest is durable, and the fallback exists for the WASM consumers that
+    /// build with `default-features = false`.
+    #[cfg(feature = "serde")]
+    fn encode<T: serde::Serialize>(field: &T) -> String {
+        serde_json::to_string(field).unwrap_or_default()
+    }
+
+    /// See the serde variant above.
     #[cfg(not(feature = "serde"))]
-    fn digest_parts(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("capabilities", format!("{:?}", self.capabilities)),
-            ("obligations", format!("{:?}", self.obligations)),
-            ("paths", format!("{:?}", self.paths)),
-            ("budget", format!("{:?}", self.budget)),
-            ("commands", format!("{:?}", self.commands)),
-            ("time", format!("{:?}", self.time)),
-            ("minimum_isolation", format!("{:?}", self.minimum_isolation)),
-            ("uninhabitable", self.uninhabitable_constraint.to_string()),
-        ]
+    fn encode<T: std::fmt::Debug>(field: &T) -> String {
+        format!("{field:?}")
     }
 
     /// Create a permissive permission set (for trusted contexts).
@@ -1646,6 +1632,62 @@ mod tests {
                     b.description
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_policy_field_reaches_the_digest() {
+        // The mutation-killing test. `cargo mutants` replaced `digest_parts`
+        // with constants and every one survived, because the variant it mutated
+        // was `cfg`-ed out under `--all-features`. With one function there is
+        // nowhere to hide — but a constant projection would still satisfy
+        // `checksum_agrees_with_equality`, which only compares digests to each
+        // other. This pins the stronger property: perturbing ANY of the eight
+        // fields moves the digest, so a field cannot silently drop out of it.
+        //
+        // That silent drop is #747's defect class, and the one this checksum was
+        // rewritten to avoid.
+        let base = PermissionLattice::restrictive();
+        let d = base.checksum();
+
+        let mut caps = base.clone();
+        caps.capabilities = PermissionLattice::permissive().capabilities;
+        assert_ne!(caps.checksum(), d, "capabilities");
+
+        let mut obl = base.clone();
+        obl.obligations = PermissionLattice::permissive().obligations;
+        assert_ne!(obl.checksum(), d, "obligations");
+
+        // A distinct value, not `permissive()`'s — the two constructors share
+        // their `paths`, so borrowing one perturbs nothing and the assertion
+        // would pass for the wrong reason. This test caught that on its first
+        // run, which is the argument for writing it field by field.
+        let mut paths = base.clone();
+        paths.paths.allowed.insert("src/only-here/**".to_string());
+        assert_ne!(paths.checksum(), d, "paths");
+
+        let mut budget = base.clone();
+        budget.budget = PermissionLattice::permissive().budget;
+        assert_ne!(budget.checksum(), d, "budget");
+
+        let mut commands = base.clone();
+        commands.commands = PermissionLattice::permissive().commands;
+        assert_ne!(commands.checksum(), d, "commands");
+
+        let mut time = base.clone();
+        time.time = PermissionLattice::permissive().time;
+        assert_ne!(time.checksum(), d, "time");
+
+        let mut iso = base.clone();
+        iso.minimum_isolation = Some(IsolationLattice::localhost());
+        assert_ne!(iso.checksum(), d, "minimum_isolation");
+
+        // `uninhabitable_constraint` is private; `normalize` is the supported
+        // way it differs, and a normalized policy must not hash as its input
+        // when normalization changed it.
+        let normalized = base.clone().normalize();
+        if normalized != base {
+            assert_ne!(normalized.checksum(), d, "uninhabitable/normalize");
         }
     }
 
