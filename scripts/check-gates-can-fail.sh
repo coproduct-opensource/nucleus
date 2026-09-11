@@ -96,7 +96,7 @@ probe() {
     # two ways — `--count` inside a $(...) and `--strict` as the gate — is
     # probed as the gate, so ANY invocation may match the probe's flags.
     local invocations in_ci
-    invocations="$(grep -rhE "scripts/$gate" .github/workflows/ 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -oE "scripts/$gate[^\"'\`)]*" | sed "s|scripts/$gate||" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+    invocations="$(grep -rhE "scripts/$gate" .github/workflows/ 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -oE "scripts/${gate}[^\"'\`)]*" | sed "s|scripts/$gate||" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
     if ! printf '%s\n' "$invocations" | grep -qxF -- "$ci_flags"; then
         in_ci="$(printf '%s\n' "$invocations" | head -1)"
         echo "  FAIL  $gate — CI invokes it as '$gate $in_ci' but this probe uses '$gate $ci_flags'"
@@ -136,7 +136,11 @@ probe() {
     fi
 
     local perturbed_rc=0
-    # shellcheck disable=SC2086 — ci_flags is a deliberate word-split.
+    # ci_flags is a deliberate word-split. The directive below carries no trailing
+    # prose: shellcheck parses the rest of the line as more key=value pairs, so an
+    # em-dash and a sentence made it emit SC1125 and IGNORE the disable entirely --
+    # a suppression that suppressed nothing.
+    # shellcheck disable=SC2086
     bash "scripts/$gate" $ci_flags >/dev/null 2>&1 || perturbed_rc=$?
 
     restore
@@ -173,7 +177,7 @@ probe_xtask() {
     local invocations
     invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
         | grep -vE '^[[:space:]]*#' \
-        | grep -oE "xtask -- $sub[^\"'\`|]*" \
+        | grep -oE "xtask -- ${sub}[^\"'\`|]*" \
         | sed -E "s/xtask -- $sub//; s/^[[:space:]]+//; s/[[:space:]]+\$//")"
     if [[ -z "$(printf '%s' "$invocations")" ]] && ! grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null | grep -qvE '^[[:space:]]*#'; then
         echo "  FAIL  xtask $sub — no workflow invokes it"
@@ -901,8 +905,8 @@ for path in scripts/check-*.sh; do
     fi
 
     grep -qE "^probe[[:space:]]+$gate([[:space:]]|$)" "$0" && continue
-    printf '%s\n' "${UNCOVERED[@]}" | grep -q "^$gate[[:space:]]" && continue
-    printf '%s\n' "${SELF_FALSIFIED[@]}" | grep -q "^$gate[[:space:]]" && continue
+    printf '%s\n' "${UNCOVERED[@]}" | grep -q "^${gate}[[:space:]]" && continue
+    printf '%s\n' "${SELF_FALSIFIED[@]}" | grep -q "^${gate}[[:space:]]" && continue
     UNACCOUNTED+=("$gate")
 done
 
@@ -939,7 +943,7 @@ done < <(
 for sub in "${XTASK_GATES[@]}"; do
     gate="xtask $sub"
     grep -qE "^probe_xtask[[:space:]]+$sub([[:space:]]|$)" "$0" && continue
-    printf '%s\n' "${UNCOVERED[@]}" | grep -q "^$gate[[:space:]]" && continue
+    printf '%s\n' "${UNCOVERED[@]}" | grep -q "^${gate}[[:space:]]" && continue
     UNACCOUNTED+=("$gate")
 done
 
