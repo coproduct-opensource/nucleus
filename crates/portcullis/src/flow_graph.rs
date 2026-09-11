@@ -944,11 +944,66 @@ impl FlowGraph {
     ///   UNTOUCHED — `FlowTracker::reset_session_ceiling` touches neither, so
     ///   mirroring it must not either (widening the cleanse would be a silent
     ///   behavior change, not parity).
+    ///
+    /// The token is taken **by value** and consumed. It used to be `&token`,
+    /// which is the whole guarantee defeated by the calling convention: a sealed,
+    /// unforgeable, human-authorized token that survives its own use is not
+    /// single-use, and one authorization could lower the ceiling any number of
+    /// times. That is ADR 0007 C-4 — "a one-shot right is taken by value; a `&`
+    /// on a consuming parameter is the bug" — and `f7f9719b`, its load-bearing
+    /// example, is the same defect on `DischargedBundle`.
+    ///
+    /// It also discharges a hypothesis the Lean carries.
+    /// `portcullis-core/lean/SessionCeilingProofs.lean` proves `reset_re_enables`:
+    /// an explicit reset is the ONLY move that re-enables a denied session. That
+    /// theorem is about a reset that happens once. A replayable token is a model
+    /// mismatch, not just untidy code.
+    /// A token authorizes exactly one cleanse:
+    ///
+    /// ```compile_fail
+    /// use portcullis::flow_graph::FlowGraph;
+    /// use portcullis_core::discharge::test_helpers::allowed_bundle;
+    /// use portcullis_core::ifc_api::SessionCleanseToken;
+    /// use portcullis_core::DerivationClass;
+    ///
+    /// let bundle = allowed_bundle();
+    /// let token = SessionCleanseToken::authorize("audited cleanse", &bundle);
+    /// let mut g = FlowGraph::new();
+    /// g.reset_session_ceiling(DerivationClass::Deterministic, token);
+    ///
+    /// // Everything above this line is proven to compile by the block below.
+    /// // This is the only line that can be failing, and it fails because the
+    /// // token was moved into the call above:
+    /// g.reset_session_ceiling(DerivationClass::Deterministic, token);
+    /// ```
+    ///
+    /// The block below is that one character-for-character, minus the last
+    /// statement, and it must pass:
+    ///
+    /// ```
+    /// use portcullis::flow_graph::FlowGraph;
+    /// use portcullis_core::discharge::test_helpers::allowed_bundle;
+    /// use portcullis_core::ifc_api::SessionCleanseToken;
+    /// use portcullis_core::DerivationClass;
+    ///
+    /// let bundle = allowed_bundle();
+    /// let token = SessionCleanseToken::authorize("audited cleanse", &bundle);
+    /// let mut g = FlowGraph::new();
+    /// g.reset_session_ceiling(DerivationClass::Deterministic, token);
+    /// ```
+    ///
+    /// The pairing is what makes the first block mean something, and this
+    /// repository has already been bitten by the alternative: `run_args`'s
+    /// `compile_fail` doctest fails on ARITY, so it pins nothing. Pinning the
+    /// error code does not help — rustdoc accepts `compile_fail,E0382` and does
+    /// not enforce it on stable. The shared preamble does the work: break an
+    /// import and the second block reds.
     pub fn reset_session_ceiling(
         &mut self,
         new_ceiling: DerivationClass,
-        _token: &portcullis_core::ifc_api::SessionCleanseToken,
+        token: portcullis_core::ifc_api::SessionCleanseToken,
     ) {
+        let _consumed = token;
         self.session_taint_ceiling = new_ceiling;
         // The human-authorized cleanse is also the only way to clear the
         // fail-closed poison flag (most-paranoid #3) — same as FlowTracker.
