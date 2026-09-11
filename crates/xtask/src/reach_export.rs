@@ -699,6 +699,127 @@ pub fn build(corpus: &BTreeMap<String, String>, witnesses: &[String]) -> Graph {
     g
 }
 
+/// A publicly reachable function in a mediated crate that can reach a raw I/O
+/// primitive without any function on the path demanding an `Authority` by value.
+///
+/// This is `mediated`'s finding, at `mediated`'s granularity (the offending
+/// FUNCTION, not the path), recomputed over the exported graph so the claim
+/// "there are none" becomes a row count rather than a lint's exit status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnmediatedPath {
+    /// The public entry point that should not have been able to get there.
+    pub entry: String,
+    /// The function on the far end that performs the I/O.
+    pub via: String,
+    /// Which class of primitive it reaches.
+    pub sink: String,
+    /// `precise` when the witnessing path uses only unique-callee edges;
+    /// `ambiguous` when it needs a name-resolved guess. A finding in the
+    /// `precise` class is worth a human look; one that exists only in the
+    /// `ambiguous` class is probably this index's imprecision, and separating
+    /// them is the difference between a report and a pile.
+    pub class: &'static str,
+    /// Edges from `entry` to `via`. Zero means `entry` performs the I/O itself.
+    pub depth: usize,
+}
+
+/// Does this function discharge the mediation obligation?
+///
+/// `mediated`'s rule exactly: an `Authority` demanded BY VALUE. A by-reference
+/// binding does not count (the lint keys on the type appearing by value in the
+/// signature), and neither does any other witness type — `Authority` is the one
+/// the Lean mediation theorem is stated over.
+fn is_mediating(demands: &[WitnessDemand], fn_id: &str) -> bool {
+    demands
+        .iter()
+        .any(|d| d.fn_id == fn_id && d.witness == "Authority" && d.binding == "by_value")
+}
+
+/// Compute the unmediated-path witnesses.
+///
+/// The traversal never enters a mediating node, which is what "some function on
+/// the path demands an authority" means operationally: once the obligation is
+/// discharged, everything downstream is inside the boundary and is not this
+/// question's business. A sink performer that is itself mediating is therefore
+/// unreachable here, correctly.
+///
+/// Seeds are PUBLIC functions in a crate `mediated` enforces. That scope is not
+/// a softening — it is the lint's own: "'Mediated crates' is a defined set,
+/// listed in the CI invocation, not 'everything'". Widening it means adding a
+/// crate, in the open, in both places.
+pub fn unmediated_paths(g: &Graph) -> Vec<UnmediatedPath> {
+    let sink_of: BTreeMap<&str, &str> = g
+        .sink_uses
+        .iter()
+        .map(|s| (s.fn_id.as_str(), s.sink.as_str()))
+        .collect();
+
+    let mut out = Vec::new();
+    // `precise` first, so a finding that exists in both classes is reported as
+    // precise: the stronger statement wins, and the dedup below keeps one row.
+    for (class, precise_only) in [("precise", true), ("ambiguous", false)] {
+        let mut adj: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for e in &g.edges {
+            if precise_only && !e.resolution.is_precise() {
+                continue;
+            }
+            // Never traverse INTO a mediating node.
+            if is_mediating(&g.demands, &e.callee) {
+                continue;
+            }
+            adj.entry(e.caller.as_str())
+                .or_default()
+                .push(e.callee.as_str());
+        }
+
+        for f in &g.fns {
+            if !f.public || !MEDIATED_CRATES.contains(&f.krate.as_str()) {
+                continue;
+            }
+            if is_mediating(&g.demands, &f.id) {
+                continue;
+            }
+            // BFS to saturation, recording the first (shortest) witness per sink.
+            let mut seen: BTreeSet<&str> = [f.id.as_str()].into_iter().collect();
+            let mut frontier: Vec<&str> = vec![f.id.as_str()];
+            let mut depth = 0usize;
+            let mut hit: BTreeMap<&str, (&str, usize)> = BTreeMap::new();
+            while !frontier.is_empty() {
+                for n in &frontier {
+                    if let Some(sink) = sink_of.get(*n) {
+                        hit.entry(sink).or_insert((*n, depth));
+                    }
+                }
+                let mut next = Vec::new();
+                for n in &frontier {
+                    for c in adj.get(*n).map(Vec::as_slice).unwrap_or(&[]) {
+                        if seen.insert(c) {
+                            next.push(*c);
+                        }
+                    }
+                }
+                frontier = next;
+                depth += 1;
+            }
+            for (sink, (via, d)) in hit {
+                out.push(UnmediatedPath {
+                    entry: f.id.clone(),
+                    via: via.to_string(),
+                    sink: sink.to_string(),
+                    class,
+                    depth: d,
+                });
+            }
+        }
+    }
+
+    // One row per (entry, sink); the precise pass ran first, so it wins.
+    let mut keep: BTreeSet<(String, String)> = BTreeSet::new();
+    out.retain(|u| keep.insert((u.entry.clone(), u.sink.clone())));
+    out.sort_by(|a, b| (a.class, &a.entry, &a.sink).cmp(&(b.class, &b.entry, &b.sink)));
+    out
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Reach
 // ═══════════════════════════════════════════════════════════════════════════
@@ -960,6 +1081,63 @@ pub fn emit(g: &Graph, mechanisms: &[MechanismRow], out: &Path) -> Result<Vec<(S
         g.unresolved.len(),
     )?;
 
+    // The mediation witnesses, split by class into TWO files, because they are
+    // two different claims and merging them would destroy both.
+    //
+    //   unmediated_paths.csv  precise class — every edge on the witnessing path
+    //                         has a unique callee. The olog declares this object
+    //                         INITIAL: a row here is a finding worth stopping
+    //                         for. Empty is a RATCHET over a known-incomplete
+    //                         index, never a proof of mediation: the precise
+    //                         sub-quiver UNDER-approximates reach, so an empty
+    //                         precise class cannot establish that no path
+    //                         exists. `mediated` makes that claim; this does not.
+    //
+    //   mediation_suspicions.csv  ambiguous class — the witness needs a
+    //                         name-resolved guess somewhere. A work queue, not a
+    //                         verdict, and emphatically NOT declared initial.
+    //
+    // Putting the 159 ambiguous rows into the initial object would make the
+    // invariant permanently red and teach everyone to ignore it, which is the
+    // failure mode this whole exercise is about.
+    let witnesses = unmediated_paths(g);
+    let (precise, suspicions): (Vec<_>, Vec<_>) =
+        witnesses.iter().partition(|u| u.class == "precise");
+
+    let emit_witnesses = |rows: &[&UnmediatedPath]| -> String {
+        let mut body = String::new();
+        for (i, u) in rows.iter().enumerate() {
+            body.push_str(&row(&[
+                &(i + 1).to_string(),
+                &format!("{} \u{2192} {} ({})", u.entry, u.via, u.sink),
+                &fk(&fn_id, &u.entry),
+                &fk(&fn_id, &u.via),
+                &fk(&sink_id, &u.sink),
+                u.class,
+                &u.depth.to_string(),
+            ]));
+        }
+        body
+    };
+
+    // unmediated_paths.csv — 0:id 1:name 2:fn_id 3:via_fn_id 4:sink_id 5:class 6:depth
+    let body = emit_witnesses(&precise);
+    write(
+        "unmediated_paths.csv",
+        "id,name,fn_id,via_fn_id,sink_id,class,depth",
+        body,
+        precise.len(),
+    )?;
+
+    // mediation_suspicions.csv — same columns, deliberately a separate table.
+    let body = emit_witnesses(&suspicions);
+    write(
+        "mediation_suspicions.csv",
+        "id,name,fn_id,via_fn_id,sink_id,class,depth",
+        body,
+        suspicions.len(),
+    )?;
+
     // mechanisms.csv — 0:id 1:name 2:law 3:class 4:file 5:decl_anchor 6:use_anchor 7:manifest 8:note
     let mut body = String::new();
     for (i, m) in mechanisms.iter().enumerate() {
@@ -1179,6 +1357,41 @@ fn print_report(g: &Graph, mechs: &[MechanismRow]) {
          N > {hi_rounds}, or it under-reports reach — which for a containment question \
          is a false clean."
     );
+
+    println!("\n── complete mediation, as a row count ──");
+    let um = unmediated_paths(g);
+    let mediating = g
+        .demands
+        .iter()
+        .filter(|d| d.witness == "Authority" && d.binding == "by_value")
+        .count();
+    println!(
+        "  {} by-value Authority demand(s) discharge the obligation; seeds are public fns in {:?}",
+        mediating, MEDIATED_CRATES
+    );
+    if um.is_empty() {
+        println!(
+            "  0 unmediated witnesses. That is THIS INDEX finding none, not a proof: `mediated` \
+             has the types and this does not."
+        );
+    } else {
+        let precise = um.iter().filter(|u| u.class == "precise").count();
+        println!(
+            "  {} unmediated witness(es) — {precise} in the precise class, {} only via \
+             ambiguous name resolution:",
+            um.len(),
+            um.len() - precise
+        );
+        for u in um.iter().take(12) {
+            println!(
+                "    [{}] {} → {} ({}, depth {})",
+                u.class, u.entry, u.via, u.sink, u.depth
+            );
+        }
+        if um.len() > 12 {
+            println!("    .. and {} more", um.len() - 12);
+        }
+    }
 
     println!("\n── the hand-maintained ledgers, as queries ──");
 
@@ -1690,6 +1903,248 @@ mod tests {
         for line in fns.lines().skip(1).filter(|l| !l.is_empty()) {
             let c: Vec<&str> = line.split(',').collect();
             assert_eq!(c[0], c[2], "self_ref must equal id");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── Complete mediation, as a row count ────────────────────────
+    //
+    // These pin `mediated`'s rule as this index reimplements it. Where the two
+    // disagree, `mediated` is right — it has the types — but a silent
+    // disagreement is worthless, so each rule gets a test.
+
+    fn effects(src: &str) -> BTreeMap<String, String> {
+        corpus(&[("crates/portcullis-effects/src/lib.rs", src)])
+    }
+
+    #[test]
+    fn a_public_fn_reaching_a_sink_with_no_authority_is_a_witness() {
+        let g = build(
+            &effects(
+                r#"
+                use std::process::Command;
+                pub fn run() { let _ = Command::new("sh"); }
+                "#,
+            ),
+            &ws(),
+        );
+        let um = unmediated_paths(&g);
+        assert_eq!(um.len(), 1, "got {um:?}");
+        assert_eq!(um[0].sink, "process");
+        assert_eq!(um[0].depth, 0, "the entry performs the I/O itself");
+        assert_eq!(um[0].class, "precise");
+    }
+
+    #[test]
+    fn a_by_value_authority_discharges_the_obligation() {
+        let g = build(
+            &effects(
+                r#"
+                use std::process::Command;
+                pub fn run(a: Authority) { let _ = a; let _ = Command::new("sh"); }
+                "#,
+            ),
+            &ws(),
+        );
+        assert!(
+            unmediated_paths(&g).is_empty(),
+            "an Authority demanded by value is exactly what mediation means"
+        );
+    }
+
+    #[test]
+    fn a_by_reference_authority_does_not_discharge_it() {
+        // `mediated` keys on the type appearing BY VALUE. A reference is not a
+        // spent witness, and the inert-authority gate exists because that
+        // distinction has already cost this tree a real defect.
+        let g = build(
+            &effects(
+                r#"
+                use std::process::Command;
+                pub fn run(a: &Authority) { let _ = a; let _ = Command::new("sh"); }
+                "#,
+            ),
+            &ws(),
+        );
+        assert_eq!(
+            unmediated_paths(&g).len(),
+            1,
+            "a by-ref Authority must NOT count as mediation"
+        );
+    }
+
+    #[test]
+    fn a_mediating_node_on_the_path_blocks_the_witness() {
+        // `do_io` is deliberately PRIVATE. A public function that performs I/O
+        // is its own seed and its own witness at depth 0 — which is correct, and
+        // which would mask what this test is actually about.
+        let g = build(
+            &effects(
+                r#"
+                use std::process::Command;
+                pub fn entry() { gate(make()); }
+                pub fn make() -> Authority { todo!() }
+                pub fn gate(a: Authority) { let _ = a; do_io(); }
+                fn do_io() { let _ = Command::new("sh"); }
+                "#,
+            ),
+            &ws(),
+        );
+        assert!(
+            unmediated_paths(&g).is_empty(),
+            "traversal must not pass THROUGH a node that demands an authority; got {:?}",
+            unmediated_paths(&g)
+        );
+    }
+
+    #[test]
+    fn a_public_sink_performer_is_its_own_witness_even_behind_a_gate() {
+        // The companion to the test above, because the reason that fixture had
+        // to use a private function is itself a rule worth asserting: `mediated`
+        // reports a PUBLICLY REACHABLE function that reaches a sink, and a
+        // public one reaches itself. Gating its only caller does not help.
+        let g = build(
+            &effects(
+                r#"
+                use std::process::Command;
+                pub fn entry() { gate(); }
+                pub fn gate(a: Authority) { let _ = a; do_io(); }
+                pub fn do_io() { let _ = Command::new("sh"); }
+                "#,
+            ),
+            &ws(),
+        );
+        let um = unmediated_paths(&g);
+        assert_eq!(um.len(), 1, "got {um:?}");
+        assert!(um[0].entry.ends_with("::do_io"));
+        assert_eq!(um[0].depth, 0);
+    }
+
+    #[test]
+    fn a_non_mediating_hop_does_not_block_it() {
+        // The mirror of the test above: same shape, no Authority, so the
+        // witness must appear. Without this, the blocking test would pass on a
+        // function that simply never finds anything.
+        let g = build(
+            &effects(
+                r#"
+                use std::process::Command;
+                pub fn entry() { hop(); }
+                fn hop() { do_io(); }
+                fn do_io() { let _ = Command::new("sh"); }
+                "#,
+            ),
+            &ws(),
+        );
+        let um = unmediated_paths(&g);
+        assert!(
+            um.iter()
+                .any(|u| u.entry.ends_with("::entry") && u.depth == 2),
+            "expected an entry→hop→sink witness at depth 2, got {um:?}"
+        );
+    }
+
+    #[test]
+    fn the_seed_scope_is_public_fns_in_a_mediated_crate() {
+        // Two halves of one rule, so neither can be dropped silently.
+        let private = build(
+            &effects(
+                r#"
+                use std::process::Command;
+                fn run() { let _ = Command::new("sh"); }
+                "#,
+            ),
+            &ws(),
+        );
+        assert!(
+            unmediated_paths(&private).is_empty(),
+            "a private fn is not a public entry point"
+        );
+
+        let elsewhere = build(
+            &corpus(&[(
+                "crates/nucleus-audit/src/lib.rs",
+                r#"
+                use std::process::Command;
+                pub fn run() { let _ = Command::new("sh"); }
+                "#,
+            )]),
+            &ws(),
+        );
+        assert!(
+            unmediated_paths(&elsewhere).is_empty(),
+            "`mediated` enforces a DEFINED crate set; widening it means adding a \
+             crate in the open, in both places, not finding one here"
+        );
+    }
+
+    #[test]
+    fn each_entry_and_sink_pair_yields_one_row_and_precise_wins() {
+        // The precise pass runs first so a witness present in both classes is
+        // reported as precise. Reporting it twice, or as ambiguous, would make
+        // the initial object red for a finding the strict graph already has.
+        let g = build(
+            &effects(
+                r#"
+                use std::process::Command;
+                pub fn entry() { sink(); }
+                pub fn sink() { let _ = Command::new("sh"); let _ = Command::new("ls"); }
+                "#,
+            ),
+            &ws(),
+        );
+        let um = unmediated_paths(&g);
+        let procs: Vec<_> = um
+            .iter()
+            .filter(|u| u.entry.ends_with("::entry") && u.sink == "process")
+            .collect();
+        assert_eq!(procs.len(), 1, "one row per (entry, sink), got {procs:?}");
+        assert_eq!(procs[0].class, "precise");
+    }
+
+    #[test]
+    fn the_two_witness_files_are_disjoint_and_the_initial_one_holds_only_precise() {
+        // The whole split. Merging them would make the invariant permanently
+        // red and teach everyone to ignore it.
+        let g = build(
+            &effects(
+                r#"
+                use std::process::Command;
+                pub fn entry() { let _ = Command::new("sh"); }
+                "#,
+            ),
+            &ws(),
+        );
+        let dir = std::env::temp_dir().join(format!("reach-med-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        emit(&g, &[], &dir).expect("emit");
+
+        let read = |f: &str| -> Vec<String> {
+            std::fs::read_to_string(dir.join(f))
+                .unwrap()
+                .lines()
+                .skip(1)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let init = read("unmediated_paths.csv");
+        let susp = read("mediation_suspicions.csv");
+        assert!(
+            !init.is_empty(),
+            "the fixture must produce a precise witness"
+        );
+        for line in &init {
+            assert!(
+                line.contains(",precise,"),
+                "the initial object may hold ONLY precise-class rows: {line}"
+            );
+        }
+        for line in &susp {
+            assert!(
+                line.contains(",ambiguous,"),
+                "the suspicion queue may hold ONLY ambiguous-class rows: {line}"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
