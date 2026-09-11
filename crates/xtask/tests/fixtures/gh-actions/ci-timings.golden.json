@@ -1,0 +1,120 @@
+[
+  {
+    "completed": "2026-09-10T10:21:40Z",
+    "conclusion": "success",
+    "created": "2026-09-10T10:00:00Z",
+    "job": "build",
+    "labels": [
+      "self-hosted",
+      "nucleus-fly-build"
+    ],
+    "started": "2026-09-10T10:03:25Z",
+    "status": "completed",
+    "steps": [
+      {
+        "completed": "2026-09-10T10:03:30Z",
+        "conclusion": "success",
+        "name": "Set up job",
+        "started": "2026-09-10T10:03:25Z"
+      },
+      {
+        "completed": "2026-09-10T10:05:10Z",
+        "conclusion": "success",
+        "name": "Run actions/checkout@v7",
+        "started": "2026-09-10T10:03:30Z"
+      },
+      {
+        "completed": "2026-09-10T10:21:35Z",
+        "conclusion": "success",
+        "name": "cargo build --workspace",
+        "started": "2026-09-10T10:05:10Z"
+      },
+      {
+        "completed": "2026-09-10T10:21:40Z",
+        "conclusion": "success",
+        "name": "Complete job",
+        "started": "2026-09-10T10:21:35Z"
+      }
+    ],
+    "workflow": "CI"
+  },
+  {
+    "completed": "2026-09-10T10:02:10Z",
+    "conclusion": "success",
+    "created": "2026-09-10T10:00:00Z",
+    "job": "fmt",
+    "labels": [
+      "self-hosted",
+      "nucleus-fly-gate"
+    ],
+    "started": "2026-09-10T10:00:50Z",
+    "status": "completed",
+    "steps": [
+      {
+        "completed": "2026-09-10T10:00:55Z",
+        "conclusion": "success",
+        "name": "Set up job",
+        "started": "2026-09-10T10:00:50Z"
+      },
+      {
+        "completed": "2026-09-10T10:02:05Z",
+        "conclusion": "success",
+        "name": "cargo fmt --check",
+        "started": "2026-09-10T10:00:55Z"
+      },
+      {
+        "completed": "2026-09-10T10:02:10Z",
+        "conclusion": "success",
+        "name": "Complete job",
+        "started": "2026-09-10T10:02:05Z"
+      }
+    ],
+    "workflow": "CI"
+  },
+  {
+    "completed": null,
+    "conclusion": null,
+    "created": "2026-09-10T10:00:00Z",
+    "job": "deploy",
+    "labels": [
+      "self-hosted",
+      "nucleus-fly-build"
+    ],
+    "started": null,
+    "status": "in_progress",
+    "steps": [],
+    "workflow": "CI"
+  },
+  {
+    "completed": "2026-09-10T10:09:00Z",
+    "conclusion": "failure",
+    "created": "2026-09-10T10:00:05Z",
+    "job": "ledger",
+    "labels": [
+      "ubuntu-latest"
+    ],
+    "started": "2026-09-10T10:00:20Z",
+    "status": "completed",
+    "steps": [
+      {
+        "completed": "2026-09-10T10:00:26Z",
+        "conclusion": "success",
+        "name": "Set up job",
+        "started": "2026-09-10T10:00:20Z"
+      },
+      {
+        "completed": "2026-09-10T10:08:55Z",
+        "conclusion": "failure",
+        "name": "cargo xtask assure ledger",
+        "started": "2026-09-10T10:00:26Z"
+      },
+      {
+        "completed": "2026-09-10T10:09:00Z",
+        "conclusion": "success",
+        "name": "Complete job",
+        "started": "2026-09-10T10:08:55Z"
+      }
+    ],
+    "workflow": "Assurance"
+  }
+]

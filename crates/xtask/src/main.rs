@@ -213,6 +213,7 @@ mod ci_spec;
 mod ci_timings;
 mod fly_pools;
 mod gatehouse_pin;
+mod gh_actions;
 mod kani_coverage;
 mod line_ratchet;
 mod pin_parity;

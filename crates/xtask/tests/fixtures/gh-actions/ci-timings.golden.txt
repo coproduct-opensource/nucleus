@@ -1,0 +1,22 @@
+# CI timings for aaaa111
+runs: 2 (merge_group=1, pull_request=1), jobs: 4
+conclusions: failure=1, in_progress=1, success=2
+wall: 21.7m (first job created → last job completed); still pending: 1
+critical path: CI / build [self-hosted,nucleus-fly-build] — created +0.0m, queued 3.4m, ran 18.2m
+
+## per runner label (successful jobs)
+| label | jobs | run median | run p90 | run max | run sum | queue median | queue p90 | queue max |
+|---|---|---|---|---|---|---|---|---|
+| self-hosted,nucleus-fly-build | 1 | 18.2m | 18.2m | 18.2m | 18.2m | 3.4m | 3.4m | 3.4m |
+| self-hosted,nucleus-fly-gate | 1 | 1.3m | 1.3m | 1.3m | 1.3m | 0.8m | 0.8m | 0.8m |
+
+## longest 15 jobs (run time; two longest steps)
+- 18.2m [self-hosted,nucleus-fly-build] CI / build :: cargo build --workspace 16.4m; Run actions/checkout@v7 1.7m
+- 8.7m [ubuntu-latest] Assurance / ledger :: cargo xtask assure ledger 8.5m; Set up job 0.1m
+- 1.3m [self-hosted,nucleus-fly-gate] CI / fmt :: cargo fmt --check 1.2m; Set up job 0.1m
+
+## setup vs work over 2 successful jobs
+setup: median 10s, total 2.0m; work: median 70s, total 17.6m
+
+## failed
+- Assurance / ledger

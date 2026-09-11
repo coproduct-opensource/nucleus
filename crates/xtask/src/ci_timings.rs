@@ -11,91 +11,15 @@
 //! move. Run it before and after, on the same kind of commit.
 //!
 //! Usage: `cargo xtask ci-timings [--sha <sha>] [--top N] [--json]`
-//! (default sha = HEAD; needs `gh` authenticated for the repo).
+//! (default sha = HEAD; needs `gh` authenticated for the repo, or
+//! `GH_API_FIXTURES` pointing at recorded responses — see `crate::gh_actions`,
+//! which owns the API shapes this and `ci_otel` both read).
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::process::Command;
 
-const REPO: &str = "coproduct-opensource/nucleus";
-
-#[derive(Deserialize)]
-struct RunList {
-    workflow_runs: Vec<Run>,
-}
-
-#[derive(Deserialize, Clone)]
-struct Run {
-    id: u64,
-    name: Option<String>,
-    event: String,
-}
-
-#[derive(Deserialize)]
-struct JobList {
-    jobs: Vec<Job>,
-}
-
-#[derive(Deserialize, Clone)]
-struct Job {
-    name: String,
-    status: String,
-    conclusion: Option<String>,
-    labels: Vec<String>,
-    created_at: String,
-    started_at: Option<String>,
-    completed_at: Option<String>,
-    steps: Vec<Step>,
-    #[serde(default)]
-    workflow_name: String,
-}
-
-#[derive(Deserialize, Clone)]
-struct Step {
-    name: String,
-    conclusion: Option<String>,
-    started_at: Option<String>,
-    completed_at: Option<String>,
-}
-
-/// Seconds since the Unix epoch for an RFC 3339 UTC timestamp (`…Z`).
-/// Hand-rolled to keep xtask dependency-free of a time crate.
-pub(crate) fn epoch(ts: &str) -> Option<i64> {
-    let ts = ts.strip_suffix('Z')?;
-    let (date, time) = ts.split_once('T')?;
-    let mut d = date.split('-').map(|s| s.parse::<i64>());
-    let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
-    let mut t = time.split(':');
-    let (h, mi) = (
-        t.next()?.parse::<i64>().ok()?,
-        t.next()?.parse::<i64>().ok()?,
-    );
-    // Whole seconds only: the fraction is noise at the minute granularity reported.
-    let s = t.next()?.split('.').next()?.parse::<i64>().ok()?;
-    // Days from civil (Howard Hinnant's algorithm).
-    let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * m + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + h * 3600 + mi * 60 + s)
-}
-
-fn gh_api(path: &str) -> Result<String> {
-    let out = Command::new("gh")
-        .args(["api", path])
-        .output()
-        .context("run gh api (is the GitHub CLI installed and authenticated?)")?;
-    if !out.status.success() {
-        bail!(
-            "gh api {path} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8(out.stdout)?)
-}
+use crate::gh_actions::{Job, JobList, REPO, RunList, Step, epoch, gh_api};
 
 fn head_sha() -> Result<String> {
     let out = Command::new("git").args(["rev-parse", "HEAD"]).output()?;

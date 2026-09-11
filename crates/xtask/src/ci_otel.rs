@@ -32,15 +32,19 @@
 //! collector `http://otel-collector.ci-metrics.svc.cluster.local:4318`.
 //! No OTel SDK: the OTLP/HTTP JSON encoding is small enough to write by hand,
 //! and xtask stays a `gh`+`curl` tool with no network crates.
+//!
+//! The Actions API shapes, `gh api` and the RFC 3339 pair live in
+//! `crate::gh_actions`, shared with `ci_timings` — two parsers are two answers
+//! to "what is a job's queue wait".
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const REPO: &str = "coproduct-opensource/nucleus";
+use crate::gh_actions::{JobList, REPO, RunList, epoch, gh_api, rfc3339};
+
 const DEFAULT_ENDPOINT: &str = "http://otel-collector.ci-metrics.svc.cluster.local:4318";
 
 /// Seconds boundaries shared by every duration histogram: 5 s to 2 h.
@@ -48,51 +52,6 @@ const BOUNDS: &[f64] = &[
     5.0, 10.0, 20.0, 30.0, 60.0, 120.0, 180.0, 300.0, 600.0, 900.0, 1200.0, 1800.0, 2700.0, 3600.0,
     5400.0, 7200.0,
 ];
-
-#[derive(Deserialize)]
-struct RunList {
-    workflow_runs: Vec<Run>,
-}
-
-#[derive(Deserialize, Clone)]
-struct Run {
-    id: u64,
-    name: Option<String>,
-    event: String,
-    status: String,
-    created_at: String,
-    updated_at: String,
-}
-
-#[derive(Deserialize)]
-struct JobList {
-    jobs: Vec<Job>,
-}
-
-#[derive(Deserialize, Clone)]
-struct Job {
-    name: String,
-    status: String,
-    conclusion: Option<String>,
-    labels: Vec<String>,
-    created_at: String,
-    started_at: Option<String>,
-    completed_at: Option<String>,
-}
-
-fn gh_api(path: &str) -> Result<String> {
-    let out = Command::new("gh")
-        .args(["api", path])
-        .output()
-        .context("run gh api (is the GitHub CLI installed and authenticated?)")?;
-    if !out.status.success() {
-        bail!(
-            "gh api {path} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8(out.stdout)?)
-}
 
 fn now_secs() -> i64 {
     i64::try_from(
@@ -102,29 +61,6 @@ fn now_secs() -> i64 {
             .unwrap_or(0),
     )
     .unwrap_or(i64::MAX)
-}
-
-/// RFC 3339 `…Z` for a Unix time, whole seconds. Inverse of
-/// [`crate::ci_timings::epoch`] (civil-from-days, Howard Hinnant).
-fn rfc3339(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        (rem % 3600) / 60,
-        rem % 60
-    )
 }
 
 /// One histogram series: delta counts per bucket for one attribute set.
@@ -206,10 +142,8 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
         }
         let wf = run.name.clone().unwrap_or_default();
         if run.status == "completed" {
-            if let (Some(c), Some(u)) = (
-                crate::ci_timings::epoch(&run.created_at),
-                crate::ci_timings::epoch(&run.updated_at),
-            ) && u > window_start
+            if let (Some(c), Some(u)) = (epoch(&run.created_at), epoch(&run.updated_at))
+                && u > window_start
                 && u <= now
             {
                 wf_duration
@@ -228,9 +162,9 @@ pub fn ci_otel(since_min: u64, endpoint: Option<String>, dry_run: bool) -> Resul
                 continue;
             }
             let (Some(created), Some(started), Some(done)) = (
-                crate::ci_timings::epoch(&j.created_at),
-                j.started_at.as_deref().and_then(crate::ci_timings::epoch),
-                j.completed_at.as_deref().and_then(crate::ci_timings::epoch),
+                epoch(&j.created_at),
+                j.started_at.as_deref().and_then(epoch),
+                j.completed_at.as_deref().and_then(epoch),
             ) else {
                 continue;
             };
