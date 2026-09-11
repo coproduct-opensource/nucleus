@@ -161,6 +161,61 @@ probe() {
     fi
 }
 
+# One probe for a gate that is a `cargo xtask` subcommand rather than a shell
+# script. Same contract as probe(): perturb a REAL subject, the gate must go red,
+# restore it, the gate must go green. The wiring check is the same question asked
+# of the workflows, and comment lines are stripped for the reason the derivation
+# above explains.
+probe_xtask() {
+    local sub="$1" target="$2" desc="$3"
+    shift 3
+
+    if [[ "$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null | grep -cvE '^[[:space:]]*#')" -eq 0 ]]; then
+        echo "  FAIL  xtask $sub — no workflow invokes it"
+        failures=$((failures + 1))
+        return
+    fi
+    if [[ ! -f "$target" ]]; then
+        echo "  ERROR: $target does not exist"
+        failures=$((failures + 1))
+        return
+    fi
+
+    RESTORE_TO="$target"
+    RESTORE_FROM="$(mktemp)"
+    cp "$target" "$RESTORE_FROM"
+
+    "$@" "$target"
+
+    # A perturbation that changed nothing is not a probe — same argument, and the
+    # same failure mode, as the shell half records.
+    if cmp -s "$target" "$RESTORE_FROM"; then
+        echo "  FAIL  xtask $sub — the perturbation for '$desc' changed $target not at all"
+        restore
+        RESTORE_FROM=""
+        failures=$((failures + 1))
+        return
+    fi
+
+    local perturbed_rc=0
+    cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || perturbed_rc=$?
+    restore
+    RESTORE_FROM=""
+    local restored_rc=0
+    cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || restored_rc=$?
+
+    covered=$((covered + 1))
+    if [[ "$perturbed_rc" -eq 0 ]]; then
+        echo "  FAIL  xtask $sub — $desc did NOT fail the gate (exit 0)"
+        failures=$((failures + 1))
+    elif [[ "$restored_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub — still failing (exit $restored_rc) after restore"
+        failures=$((failures + 1))
+    else
+        echo "  ok    xtask $sub — RED on $desc, GREEN when restored"
+    fi
+}
+
 # ── Perturbations ─────────────────────────────────────────────────────────
 # Each introduces a real violation of the gate's OWN stated property, not a
 # syntax error that would fail any check.
@@ -506,6 +561,26 @@ pub fn gate_of_gates_unlisted_divergence_probe() -> bool {
 RUST
 }
 
+perturb_allowlist_pin() {
+    # An allowlist grows past its pinned size. 255 rather than a literal edit of
+    # the current value: there are only a handful of entries, so no honest pin can
+    # reach it, and it can never accidentally equal the value it replaces — which
+    # is how a value-matched perturbation goes vacuous.
+    awk '{ if ($0 ~ /^mediation\/net=/) print "mediation/net=255"; else print }' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+
+perturb_fly_pool_volumes() {
+    # The exact configuration the manager refuses, and the one that was committed:
+    # requires_volume with no volumes for eight machines, so the machines past the
+    # end of the list compile onto the root filesystem and run out of disk.
+    sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
+}
+
+probe_xtask allowlist-gates ci/allowlist-gates.txt \
+    "an allowlist grown past its pinned size" perturb_allowlist_pin
+probe_xtask fly-pools ci/fly-runner/manager.toml \
+    "the committed POOLS default the manager refuses" perturb_fly_pool_volumes
+
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-law-mechanisms.sh "" crates/portcullis/src/lattice.rs \
@@ -607,10 +682,25 @@ probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
 UNCOVERED=(
     "check-dep-ceiling.sh          needs a real duplicate crate version"
     "check-wasm-closure.sh         needs a non-wasm dependency added"
+    # 2026-09-11: the xtask half of the domain became VISIBLE today. These eight
+    # were never exempted by decision — they were outside the glob, so nothing
+    # asked. Listing them is the point: each now owes a perturbation or a reason,
+    # and the ceiling below only shrinks. Two of the ten are probed already.
+    "xtask ci-spec                 reads live branch protection; a perturbation needs the GitHub API, not a file"
+    "xtask gatehouse-pin           takes --gatehouse <path>; the probe needs a gatehouse checkout this script does not have"
+    "xtask lean-action-builds      needs a Lean toolchain to reach its verdict"
+    "xtask line-ratchet            probed through scripts/check-line-ratchet.sh, which is the same decision procedure"
+    "xtask pin-parity              perturbation not yet written; reads several declaration files and one is enough"
+    "xtask policy-gate             runs ck-kernel admission on a manifest amendment; needs a real amendment"
+    "xtask scoreboard-ratchet      perturbation not yet written"
+    "xtask self-pin                perturbs the repo SHA pinned by the repo; needs care not to leave the tree claiming a wrong SHA"
 )
 # Was 5. Three were paid down once their detection was read rather than guessed
 # at. The remaining two need a Cargo.lock change, which this script will not make.
-UNCOVERED_CEILING=2
+# 2 -> 10 on 2026-09-11, and the direction is the honest part: this is not a
+# relaxation, it is ten gates entering the domain at once. Eight of them are
+# listed above and owe a perturbation; it may only shrink from here.
+UNCOVERED_CEILING=10
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #
@@ -709,6 +799,53 @@ for path in scripts/check-*.sh; do
     printf '%s\n' "${SELF_FALSIFIED[@]}" | grep -q "^$gate[[:space:]]" && continue
     UNACCOUNTED+=("$gate")
 done
+
+# The SECOND half of the domain, and it was missing entirely until 2026-09-11.
+#
+# The loop above globs `scripts/check-*.sh`, so a gate that is not a shell script
+# is not in the domain being searched -- which is the very sentence this section
+# opens with, applied to itself. nucleus now runs TEN gates as `cargo xtask`
+# subcommands, and not one of them had a perturbation: allowlist-gates, ci-spec,
+# fly-pools, gatehouse-pin, lean-action-builds, line-ratchet, pin-parity,
+# policy-gate, scoreboard-ratchet, self-pin. They were not exempted by decision;
+# they were invisible. gatehouse's port of this script already derives its domain
+# from the subcommand list for exactly this reason.
+#
+# Derived from the WORKFLOWS rather than from a list here, on the same argument
+# the shell half uses: a hand-kept list is a membership test and cannot say that
+# everything run is listed. Comment lines are stripped first, because
+# coverage-matrix.yml contains the prose "added to xtask -- so including the lock
+# left the 46 minutes", which a naive match reads as a gate named `so`. That is
+# the identical trap probe() already records for shell gates ("a comment that
+# merely mentions the script is not an invocation"), and it is live in this repo
+# today rather than hypothetical.
+declare -a XTASK_GATES=()
+while IFS= read -r sub; do
+    [[ -z "$sub" ]] && continue
+    XTASK_GATES+=("$sub")
+done < <(
+    grep -rhoE '^[^#]*xtask -- [a-z][a-z-]*' .github/workflows/*.yml 2>/dev/null \
+        | grep -oE 'xtask -- [a-z][a-z-]*' \
+        | sed 's/xtask -- //' \
+        | sort -u
+)
+
+for sub in "${XTASK_GATES[@]}"; do
+    gate="xtask $sub"
+    grep -qE "^probe_xtask[[:space:]]+$sub([[:space:]]|$)" "$0" && continue
+    printf '%s\n' "${UNCOVERED[@]}" | grep -q "^$gate[[:space:]]" && continue
+    UNACCOUNTED+=("$gate")
+done
+
+# NON-VACUITY of the half just added: if the derivation matched nothing, every
+# xtask gate would be accounted for by having vanished from the domain.
+if [[ "${#XTASK_GATES[@]}" -lt 5 ]]; then
+    echo
+    echo "ERROR: derived only ${#XTASK_GATES[@]} xtask gate(s) from the workflows."
+    echo "The derivation is wrong, so the accounting below exempted every gate it"
+    echo "failed to see -- which is the failure this script exists to catch."
+    exit 2
+fi
 
 if [[ "${#UNWIRED[@]}" -gt 0 ]]; then
     echo
