@@ -462,6 +462,10 @@ pub(crate) struct AppState {
     cert_root_pubkey: Option<Arc<Vec<u8>>>,
     /// Session exposure guard for exit report (set when MCP server starts).
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>>,
+    /// Mirror of the kernel's accumulated `ExposureSet`, updated at the one site
+    /// that holds the kernel lock. The sink and the exit report read this when
+    /// `exposure_guard` is `None`, which on an HTTP pod is always.
+    kernel_exposure: Arc<std::sync::RwLock<portcullis::guard::ExposureSet>>,
     /// File-based lockdown flag. Set by the signal file watcher.
     file_lockdown: Arc<std::sync::atomic::AtomicBool>,
     /// gRPC stream-based lockdown flag. Set by the lockdown streaming client.
@@ -1655,6 +1659,15 @@ async fn main() -> Result<(), ApiError> {
     let stream_lockdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>> =
         Arc::new(std::sync::RwLock::new(None));
+    // The kernel's accumulated exposure, mirrored out of `decide_and_record`
+    // while it holds the kernel lock. `exposure_guard` above is written only by
+    // `NucleusMcpServer::new`, and the transports are mutually exclusive, so on
+    // an HTTP pod it stays `None` and the telemetry read four false flags. The
+    // kernel is the thing that actually accumulates exposure and gates on it;
+    // this is how the reporting side gets to see the same set.
+    let kernel_exposure: Arc<std::sync::RwLock<portcullis::guard::ExposureSet>> = Arc::new(
+        std::sync::RwLock::new(portcullis::guard::ExposureSet::empty()),
+    );
 
     // DLC-D verified admission: provisioned from NUCLEUS_DLC_* env (inert when
     // unset). The SAME provisioning is applied to both transports' kernels, and
@@ -1721,6 +1734,7 @@ async fn main() -> Result<(), ApiError> {
         policy_checksum.clone(),
         session_id.clone(),
         dlc_provisioned,
+        kernel_exposure.clone(),
         art12_log.clone(),
         art12_shipper.clone(),
         art12_sink::mediation_receipt_log_path(args.art12_log.as_deref(), &spec.spec.work_dir),
@@ -1865,6 +1879,7 @@ async fn main() -> Result<(), ApiError> {
         pod_cert,
         proposals,
         exposure_guard,
+        kernel_exposure: kernel_exposure.clone(),
         file_lockdown,
         stream_lockdown,
         policy_checksum,
@@ -2658,6 +2673,16 @@ async fn http_kernel_decide(
     // The kernel-decision record names the same actor the handler's own
     // records do; it used to hardcode `Unknown` while the sibling record in
     // the same handler carried the SPIFFE ID.
+    // Mirror the kernel's exposure out for the reporting side. PRE-state first:
+    // the verdict `decide_and_record` is about to write should carry the exposure
+    // the decision was made AGAINST, which is what `exposure_transition`'s
+    // `pre_count` in the same record means. POST-state after, so the exit report
+    // and the next verdict see this decision's own contribution. Two writes
+    // rather than one because those are two different questions and a single
+    // mirror would answer the wrong one for whichever consumer read it.
+    if let Ok(mut cell) = state.kernel_exposure.write() {
+        *cell = kernel.exposure().clone();
+    }
     let decided = mediation::decide_and_record(
         mediation::MediationEnv {
             sink: state.verdict_sink.as_ref(),
@@ -2670,6 +2695,12 @@ async fn http_kernel_decide(
         operation,
         subject,
     );
+
+    // POST-state. The kernel has applied this operation's contribution, so the
+    // exit report and the next verdict see it.
+    if let Ok(mut cell) = state.kernel_exposure.write() {
+        *cell = kernel.exposure().clone();
+    }
 
     // The moment of denial is the only moment the affordance is useful. The
     // proposal used to be rebuilt after the run, from a trace file, at the CLI
