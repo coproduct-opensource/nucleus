@@ -148,6 +148,22 @@ unconditional*.
 `661606a9`: a total function from an open domain (strings) to a closed one
 (operations), whose fallthrough arm was chosen permissive. Close the domain — parse
 to an enum at the boundary — and the arm disappears.
+
+**Baseline measured 2026-09-11**, because "once the baseline is walked down" was
+written here without a number and a rule nobody can cost is a rule nobody starts:
+
+| crate | wildcard arms | audit result |
+|---|---|---|
+| `nucleus-ifc-kernel` | **9** | **one live grant**, fixed — `required_integrity` returned `IntegLevel::Adversarial`, the bottom of the lattice, for `SpawnAgent`, under a comment reading "Read/web operations". The other eight are accessors and test-helper panics. |
+| `portcullis-core` | **26** | clean. `operation_to_node_kind`'s fallthrough is `NodeKind::OutboundAction` — the most scrutinized kind, so it denies as this rule asks. `promote`'s `_ => {}` is vacuous today: all five `DerivationClass` variants are handled above it. |
+| `portcullis` | **83** | clean. Overwhelmingly test-helper `panic!`, `None`, and no-ops. The `_ => false` predicates (`subject_matches` ×2, `labels_match`) fail closed — no match means not granted. |
+
+So the rule found exactly one live defect in 118 arms, and the cost of turning the
+lint on is dominated by `portcullis`'s 83 — almost none of which are policy
+matches. A scoped lint (policy crates, non-test targets) is therefore much cheaper
+than the raw count suggests, and is the proposed next step rather than a
+workspace-wide deny.
+
 *Enforcement: clippy `wildcard_enum_match_arm`, once the baseline is walked down;
 see §Enforcement for why it is not on today.*
 
@@ -205,8 +221,28 @@ The single most instructive record in the corpus, and the origin of this ADR.
 `f7f9719b`: `DischargedBundle` was `!Clone`, `!Copy`, `#[must_use]`, and replayable,
 because three methods took it by reference. Affine intent expressed with a non-affine
 calling convention.
-*Enforcement: dylint (proposed `authority_by_reference`) over the types in
-`portcullis-effects` that carry `#[must_use]` and lack `Clone`.*
+*Enforcement: **dylint, already wired — not proposed.** Corrected 2026-09-11; the
+line below used to read "proposed `authority_by_reference`", which understated what
+exists and would have had someone build a second pass beside a working one.*
+
+`tools/nucleus-mediation-lint` enforces the by-value half of this rule today. It
+closes a call graph and flags a publicly reachable path that reaches raw I/O
+without demanding an `Authority` **by value** — `&Authority` is explicitly not a
+boundary, and the pass carries a UI fixture named
+`borrowed_authority_is_not_a_boundary` for exactly that case.
+
+What it covers, precisely, because "dylint" alone reads as more than it is:
+
+| | |
+|---|---|
+| gates on | `MEDIATED_CRATES = ["portcullis_effects"]` — the sealed effect boundary, and the crate the Lean Tier-A mediation theorem is stated over |
+| advisory elsewhere | by design: outside that set a higher-order call is "a call-graph observation, not an unmediated sink", and the job deliberately does not gate on it |
+| not covered | a `&` on an affine type away from an effect boundary. That is the residue a narrower `authority_by_reference` would close, and it is the only part still proposed |
+| CI context | `Dylint passes (one pod)` — **not in `ci/required-checks.txt`.** So even the gating half reports through a context the merge rollup does not consult |
+
+Measured 2026-09-11: **0** `&Authority` in production code across `crates/`. The
+only occurrence in the tree is the lint's own UI fixture. C-4 holds today; what is
+missing is not compliance but a gate that would notice if it stopped holding.
 
 **C-5 — Capability and authority types are `!Clone`, `!Copy`, `#[must_use]`.**
 Necessary and — per C-4 — not sufficient. Stated separately so the derive list is

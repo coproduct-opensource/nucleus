@@ -224,6 +224,15 @@ enum CiSpecCmd {
         json: bool,
     },
     /// Print the inline-gate inventory (ci/inline-gates.txt shape).
+    /// Every check context a workflow produces that ci/required-checks.txt does
+    /// NOT list. Advisory contexts block nothing, so one can be red on main
+    /// indefinitely -- which happened on 2026-09-11. Prints the set so
+    /// advisory-by-accident can be told from advisory-by-decision.
+    Advisory {
+        /// Repository root (defaults to the current directory).
+        #[arg(long)]
+        repo: Option<String>,
+    },
     InlineGates {
         #[arg(long)]
         repo: Option<String>,
@@ -336,6 +345,7 @@ fn main() -> Result<()> {
         }
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
+            CiSpecCmd::Advisory { repo } => ci_spec::advisory(repo),
             CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
             CiSpecCmd::LiveParity { repo, github, json } => {
                 ci_spec::live_parity(repo, &github, json)

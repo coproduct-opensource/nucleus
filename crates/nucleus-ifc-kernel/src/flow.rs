@@ -671,18 +671,51 @@ pub fn required_authority(op: Operation) -> AuthorityLevel {
 }
 
 /// Minimum integrity required for an operation to proceed.
+///
+/// Exhaustive on purpose, and it did not used to be. The final arm was
+/// `_ => IntegLevel::Adversarial` under a comment reading "Read/web operations
+/// have no integrity requirement" -- but `SpawnAgent` is neither read nor web,
+/// and it landed there too. `Adversarial` is `0`, the BOTTOM of the lattice, so
+/// the wildcard handed the weakest possible requirement to anything its own
+/// comment did not describe: spawning an agent was permitted on adversarially
+/// controlled data.
+///
+/// That was the only classifier in the tree that disagreed. `SpawnAgent` is
+/// `is_exfiltration_vector()`, is `is_exfil_operation()`, takes
+/// `AuthorityLevel::Suggestive` from [`required_authority`] directly above --
+/// which is exhaustive and has no wildcard to fall into -- and lowers to
+/// `SinkClass::AgentSpawn`. Every other operation in `is_exfil_operation` has an
+/// explicit arm here. `SpawnAgent` was the one that did not.
+///
+/// ADR 0007 B-3 (a `_ =>` arm in a policy match denies; prefer no fallthrough at
+/// all) and E-2 (a policy enum is matched exhaustively -- a new variant must
+/// break the build). With the wildcard gone, a fourteenth `Operation` is a
+/// compile error here rather than a silent grant.
 pub fn required_integrity(op: Operation) -> IntegLevel {
     match op {
         // Exfil operations require trusted integrity
         Operation::GitPush | Operation::CreatePr => IntegLevel::Trusted,
-        // Write operations require at least untrusted
+        // Write, exec and spawn operations require at least untrusted.
+        //
+        // `SpawnAgent` sits with `ManagePods`: both create an execution context,
+        // and [`required_authority`] already groups them. `Untrusted` rather
+        // than `Trusted` keeps this to the smallest change that closes the hole
+        // -- it refuses adversarial input, which is the defect. Whether spawning
+        // deserves `Trusted` alongside GitPush is a separate policy judgement and
+        // is deliberately not made here.
         Operation::WriteFiles
         | Operation::EditFiles
         | Operation::RunBash
         | Operation::GitCommit
-        | Operation::ManagePods => IntegLevel::Untrusted,
-        // Read/web operations have no integrity requirement
-        _ => IntegLevel::Adversarial,
+        | Operation::ManagePods
+        | Operation::SpawnAgent => IntegLevel::Untrusted,
+        // Read and web operations have no integrity requirement. Listed rather
+        // than defaulted: this is the set the old comment claimed, now stated.
+        Operation::ReadFiles
+        | Operation::GlobSearch
+        | Operation::GrepSearch
+        | Operation::WebSearch
+        | Operation::WebFetch => IntegLevel::Adversarial,
     }
 }
 
@@ -1355,6 +1388,70 @@ pub fn verify_noninterference(input: &ZkFlowInput) -> VerificationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE regression. `SpawnAgent` used to fall into a `_ => Adversarial`
+    /// wildcard whose own comment said "Read/web operations", so spawning an
+    /// agent was permitted on adversarially controlled data -- the weakest
+    /// requirement in the lattice, handed out by a default.
+    ///
+    /// The property, not the constant: anything the tree already calls an
+    /// exfiltration operation must require MORE than the bottom. Pinning
+    /// `SpawnAgent => Untrusted` would pass just as happily if a fourteenth
+    /// operation appeared and fell into a new wildcard.
+    #[test]
+    fn no_exfil_operation_may_run_on_adversarial_input() {
+        for op in Operation::ALL {
+            if !crate::ifc_ops::is_exfil_operation(op) {
+                continue;
+            }
+            assert!(
+                required_integrity(op) > IntegLevel::Adversarial,
+                "{op:?} is an exfil operation and requires only {:?}, the bottom of the \
+                 lattice -- it can be performed on adversarially controlled data",
+                required_integrity(op)
+            );
+        }
+    }
+
+    /// Non-vacuity: the test above would pass against a function that demanded
+    /// `Trusted` for everything. Pure observation must stay unrestricted, or the
+    /// fix would have closed the hole by breaking reads.
+    #[test]
+    fn pure_observation_keeps_no_integrity_requirement() {
+        for op in [
+            Operation::ReadFiles,
+            Operation::GlobSearch,
+            Operation::GrepSearch,
+            Operation::WebSearch,
+        ] {
+            assert_eq!(
+                required_integrity(op),
+                IntegLevel::Adversarial,
+                "{op:?} is observation and must not acquire an integrity floor"
+            );
+        }
+    }
+
+    /// The two sibling classifiers must agree about which operations are
+    /// privileged. They disagreed about exactly one, and only because this one
+    /// had a wildcard to fall into and the other did not.
+    #[test]
+    fn required_integrity_and_required_authority_agree_on_what_is_privileged() {
+        for op in Operation::ALL {
+            let privileged_by_authority = required_authority(op) != AuthorityLevel::NoAuthority;
+            let privileged_by_integrity = required_integrity(op) > IntegLevel::Adversarial;
+            if privileged_by_authority && !privileged_by_integrity {
+                assert_eq!(
+                    op,
+                    Operation::WebFetch,
+                    "{op:?} needs authority to instruct but no integrity of input; \
+                     WebFetch is the one documented exception (it can exfiltrate via \
+                     URL params yet reads adversarial content by design)"
+                );
+            }
+        }
+    }
+
     use crate::Freshness;
 
     fn make_node(kind: NodeKind, label: IFCLabel, op: Option<Operation>) -> FlowNode {
