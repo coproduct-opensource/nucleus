@@ -28,6 +28,17 @@ pub struct ToolProxyVerdictSink {
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
     policy_checksum: String,
     session_id: String,
+    /// The KERNEL's accumulated exposure, mirrored by `decide_and_record`.
+    ///
+    /// `exposure_guard` above is populated only by `NucleusMcpServer::new`, and
+    /// the two transports are mutually exclusive (`main.rs`: `if args.mcp {
+    /// return ... }`). On an HTTP pod that slot is `None` for the pod's whole
+    /// life, so `read_exposure` reported four false flags — not because nothing
+    /// was measured, but because it read the wrong object. The decision is made
+    /// by `portcullis::kernel::Kernel`, which accumulates its own `ExposureSet`
+    /// and gates on it (kernel step 7). This mirrors that set so the telemetry
+    /// reports the exposure the decision was actually made against.
+    kernel_exposure: Arc<std::sync::RwLock<portcullis::guard::ExposureSet>>,
     /// Whether DLC-D verified admission is provisioned on this pod's kernels.
     /// When true, every `Allow` this sink records has — by kernel construction
     /// (the dlc gate is consulted before any Allow can emerge from
@@ -87,6 +98,7 @@ pub fn build_monitored_sink(
     policy_checksum: String,
     session_id: String,
     dlc_provisioned: bool,
+    kernel_exposure: Arc<std::sync::RwLock<portcullis::guard::ExposureSet>>,
     art12_log: Option<Arc<crate::art12::Art12Log>>,
     art12_shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
     mediation_receipt_log: Option<std::path::PathBuf>,
@@ -100,6 +112,7 @@ pub fn build_monitored_sink(
         policy_checksum.clone(),
         session_id.clone(),
         dlc_provisioned,
+        kernel_exposure,
     ));
 
     // Article 12 record-keeping, when configured. INSIDE the monitor, so the
@@ -144,8 +157,10 @@ impl ToolProxyVerdictSink {
         policy_checksum: String,
         session_id: String,
         dlc_provisioned: bool,
+        kernel_exposure: Arc<std::sync::RwLock<portcullis::guard::ExposureSet>>,
     ) -> Self {
         Self {
+            kernel_exposure,
             consecutive_denials: AtomicU32::new(0),
             denial_budget: denial_budget_from_env(),
             file_lockdown,
@@ -261,7 +276,11 @@ impl ToolProxyVerdictSink {
                     is_uninhabitable: exp.is_uninhabitable(),
                 }
             } else {
-                telemetry::VerdictExposure::default()
+                // No MCP guard: this is an HTTP pod. Report the KERNEL's
+                // exposure — the set the decision was actually made against —
+                // rather than `default()`, four false flags that read as
+                // "measured, and clean".
+                self.read_kernel_exposure()
             }
         } else {
             tracing::error!("exposure_guard RwLock poisoned — reporting uninhabitable");
@@ -271,6 +290,29 @@ impl ToolProxyVerdictSink {
                 exfil_vector: true,
                 is_uninhabitable: true,
             }
+        }
+    }
+
+    /// The kernel's accumulated exposure, as telemetry.
+    ///
+    /// Fails CLOSED on a poisoned lock for the reason `read_exposure` does: a
+    /// torn set could under-report taint, and under-reporting is the direction
+    /// that makes a session look safer than it is.
+    fn read_kernel_exposure(&self) -> telemetry::VerdictExposure {
+        let Ok(exp) = self.kernel_exposure.read() else {
+            tracing::error!("kernel_exposure RwLock poisoned — reporting uninhabitable");
+            return telemetry::VerdictExposure {
+                private_data: true,
+                untrusted_content: true,
+                exfil_vector: true,
+                is_uninhabitable: true,
+            };
+        };
+        telemetry::VerdictExposure {
+            private_data: exp.contains(portcullis::guard::ExposureLabel::PrivateData),
+            untrusted_content: exp.contains(portcullis::guard::ExposureLabel::UntrustedContent),
+            exfil_vector: exp.contains(portcullis::guard::ExposureLabel::ExfilVector),
+            is_uninhabitable: exp.is_uninhabitable(),
         }
     }
 }
@@ -420,6 +462,7 @@ pub(crate) fn record_kernel_decision(
     subject: &str,
     actor: ActorIdentity,
     transport: &str,
+    kernel_session_id: uuid::Uuid,
 ) {
     use portcullis::gate_class;
     use portcullis::kernel::Verdict;
@@ -427,6 +470,25 @@ pub(crate) fn record_kernel_decision(
 
     let mut extensions = BTreeMap::new();
     extensions.insert("transport".to_string(), transport.to_string());
+    // The KERNEL's session id, which is not the one this sink carries.
+    //
+    // `ToolProxyVerdictSink.session_id` is `runtime.policy().id` — the
+    // PermissionLattice's uuid, whose own doc calls it "unique identifier for
+    // this permission set". `Kernel.session_id` is a separate `Uuid::new_v4()`,
+    // and it is the one the policy engine sees: `kernel.rs` passes it to Cedar
+    // as the principal. Two fresh uuids, both called a session id, written by
+    // the two objects that record the same decision — so a verdict could not be
+    // correlated with the kernel audit entry for the same call.
+    //
+    // Recorded rather than reconciled. Making one of them adopt the other means
+    // choosing which is the session, and the kernel is constructed AFTER this
+    // sink, so it is not a rename — it is a reordering with its own risk. This
+    // puts both in one record so the join is possible now, and names the
+    // choice for whoever makes it.
+    extensions.insert(
+        "kernel_session_id".to_string(),
+        kernel_session_id.to_string(),
+    );
     extensions.insert(
         "decision_sequence".to_string(),
         decision.sequence.to_string(),
@@ -497,6 +559,9 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            Arc::new(std::sync::RwLock::new(
+                portcullis::guard::ExposureSet::empty(),
+            )),
         )
     }
 
@@ -615,6 +680,9 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            Arc::new(std::sync::RwLock::new(
+                portcullis::guard::ExposureSet::empty(),
+            )),
             None,
             None,
             None,
@@ -670,6 +738,9 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            Arc::new(std::sync::RwLock::new(
+                portcullis::guard::ExposureSet::empty(),
+            )),
             None,
             None,
             None,
@@ -723,6 +794,10 @@ mod tests {
     /// reframed this chokepoint: a verdict (allow or refusal) must reach the sink,
     /// never just a log line. `record_kernel_decision` is the same call the live
     /// HTTP and MCP paths make.
+    /// A fixed kernel session id, so the assertion below is about the value
+    /// travelling rather than about two `new_v4()`s happening to differ.
+    const KERNEL_SESSION: uuid::Uuid = uuid::uuid!("11111111-2222-3333-4444-555555555555");
+
     #[test]
     fn the_kernel_decision_reaches_the_record() {
         let sink = CapturingSink::default();
@@ -733,6 +808,7 @@ mod tests {
             "s",
             ActorIdentity::Unknown,
             "http",
+            KERNEL_SESSION,
         );
         let recorded = sink.0.lock().unwrap();
         assert_eq!(
@@ -746,6 +822,22 @@ mod tests {
         assert!(
             ext.contains_key("gate_class"),
             "the verdict's gate class must be in the evidence"
+        );
+
+        // The kernel's session id, which is NOT the one this sink carries.
+        //
+        // `ToolProxyVerdictSink.session_id` is the PermissionLattice's uuid;
+        // `Kernel.session_id` is a separate `Uuid::new_v4()` and is what the
+        // policy engine sees as the principal. Both are fresh uuids called a
+        // session id, written by the two objects that record one decision. Until
+        // this, a verdict could not be joined to the kernel audit entry for the
+        // same call. Asserting the exact value is what makes this about the id
+        // TRAVELLING rather than about a key existing.
+        assert_eq!(
+            ext.get("kernel_session_id").map(String::as_str),
+            Some("11111111-2222-3333-4444-555555555555"),
+            "the kernel's session id must reach the record, or a verdict cannot be \
+             correlated with the kernel audit entry for the same decision"
         );
     }
 

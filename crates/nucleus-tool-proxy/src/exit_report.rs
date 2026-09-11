@@ -177,17 +177,27 @@ pub fn apply_art12(report: &mut ExitReport, log: Option<&std::sync::Arc<crate::a
 /// strings the trust gate scores on is testable, and so main.rs stays under its
 /// line ratchet. The guard is read here rather than passed pre-extracted: the
 /// point of the field is what the guard actually held at shutdown.
+/// `kernel_exposure` is the fallback, and on an HTTP pod it is the ONLY source.
+/// `exposure_guard` is written by `NucleusMcpServer::new` alone, and the two
+/// transports are mutually exclusive, so an HTTP pod reached both `return`s
+/// below and shipped an exit report with `observed_exposure_labels` empty — for
+/// its entire life, and indistinguishable from a session that was never exposed
+/// to anything. The kernel is what actually accumulates exposure and gates on
+/// it, so its set is the honest answer when the MCP guard is absent.
 pub fn apply_exposure(
     report: &mut ExitReport,
     exposure_guard: &std::sync::RwLock<Option<std::sync::Arc<portcullis::GradedExposureGuard>>>,
+    kernel_exposure: &portcullis::guard::ExposureSet,
 ) {
-    let Ok(guard_opt) = exposure_guard.read() else {
-        return;
+    let exposure = match exposure_guard.read() {
+        Ok(guard_opt) => match guard_opt.as_ref() {
+            Some(guard) => guard.exposure(),
+            None => kernel_exposure.clone(),
+        },
+        // A poisoned lock is not "clean": fall back to the kernel rather than
+        // returning, which would report no exposure at all.
+        Err(_) => kernel_exposure.clone(),
     };
-    let Some(guard) = guard_opt.as_ref() else {
-        return;
-    };
-    let exposure = guard.exposure();
     for (label, name) in [
         (portcullis::guard::ExposureLabel::PrivateData, "PrivateData"),
         (
@@ -247,11 +257,14 @@ pub async fn write_exit_report(
         );
     }
 
-    apply_exposure(&mut report, exposure_guard);
     apply_art12(&mut report, art12_log);
     {
         let kernel = kernel.lock().await;
         apply_authority(&mut report, &kernel, task_grant_id);
+        // Moved inside this block so the kernel's own exposure is available as
+        // the fallback. It is read at shutdown either way, which is the point of
+        // the field.
+        apply_exposure(&mut report, exposure_guard, kernel.exposure());
     }
 
     let report_path = work_dir_path.join(".nucleus-exit-report.json");
@@ -439,6 +452,94 @@ mod tests {
             dirty.monitor_violations,
             vec!["OutcomeWithoutDecision", "OutcomeWithoutDecision"],
             "the report must carry the violations the monitor observed"
+        );
+    }
+
+    /// **An HTTP pod's exit report records the exposure it actually accumulated.**
+    ///
+    /// `exposure_guard` is written by `NucleusMcpServer::new` alone, and the two
+    /// transports are mutually exclusive (`main.rs`: `if args.mcp { return … }`),
+    /// so on an HTTP pod the slot is `None` for the pod's whole life. Before this,
+    /// `apply_exposure` returned early on that `None` and the report shipped with
+    /// `observed_exposure_labels` empty — indistinguishable from a session that
+    /// touched nothing, for every HTTP pod ever run.
+    ///
+    /// The kernel is what accumulates exposure and gates on it, so it is the
+    /// honest source when the MCP guard is absent.
+    #[test]
+    fn an_http_pod_reports_the_kernels_exposure_not_an_empty_set() {
+        use portcullis::guard::{ExposureLabel, ExposureSet};
+
+        let no_mcp_guard = std::sync::RwLock::new(None);
+
+        // The control: nothing accumulated anywhere is still an empty report, so
+        // the assertion below is about the SOURCE and not about the mapping.
+        let mut clean = build_exit_report("w".into(), "t".into(), 1, None, &clean_monitor());
+        apply_exposure(&mut clean, &no_mcp_guard, &ExposureSet::empty());
+        assert!(
+            clean.observed_exposure_labels.is_empty(),
+            "an unexposed session must file an empty report, or the assertion below proves nothing"
+        );
+
+        // The kernel saw private data and untrusted content. With no MCP guard,
+        // that is what the report must carry.
+        let kernel_exposure = ExposureSet::singleton(ExposureLabel::PrivateData)
+            .union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
+        let mut report = build_exit_report("w".into(), "t".into(), 1, None, &clean_monitor());
+        apply_exposure(&mut report, &no_mcp_guard, &kernel_exposure);
+
+        assert!(
+            report
+                .observed_exposure_labels
+                .contains(&"PrivateData".to_string()),
+            "the kernel's PrivateData exposure must reach the exit report: {:?}",
+            report.observed_exposure_labels
+        );
+        assert!(
+            report
+                .observed_exposure_labels
+                .contains(&"UntrustedContent".to_string()),
+            "the kernel's UntrustedContent exposure must reach the exit report: {:?}",
+            report.observed_exposure_labels
+        );
+        assert!(
+            !report
+                .observed_exposure_labels
+                .contains(&"ExfilVector".to_string()),
+            "a leg the kernel did not record must not appear: {:?}",
+            report.observed_exposure_labels
+        );
+    }
+
+    /// A poisoned guard lock is not "clean" either.
+    ///
+    /// The early `return` on a failed read had the same shape as the `None` arm:
+    /// it filed a report saying no exposure was observed. Under-reporting taint
+    /// is the direction that makes a session look safer than it was.
+    #[test]
+    fn a_poisoned_guard_still_reports_the_kernels_exposure() {
+        use portcullis::guard::{ExposureLabel, ExposureSet};
+
+        let poisoned = std::sync::RwLock::new(None);
+        let _ = std::panic::catch_unwind(|| {
+            let _g = poisoned.write().expect("lock");
+            panic!("poison it");
+        });
+        assert!(
+            poisoned.read().is_err(),
+            "the lock must actually be poisoned"
+        );
+
+        let kernel_exposure = ExposureSet::singleton(ExposureLabel::ExfilVector);
+        let mut report = build_exit_report("w".into(), "t".into(), 1, None, &clean_monitor());
+        apply_exposure(&mut report, &poisoned, &kernel_exposure);
+
+        assert!(
+            report
+                .observed_exposure_labels
+                .contains(&"ExfilVector".to_string()),
+            "a poisoned MCP guard must fall back to the kernel, not to silence: {:?}",
+            report.observed_exposure_labels
         );
     }
 

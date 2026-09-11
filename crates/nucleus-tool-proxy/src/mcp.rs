@@ -397,6 +397,10 @@ impl NucleusMcpServer {
         // decision path.
         let graph = self.flow_graph.lock().await;
         let (decision, token) = kernel.decide_term_with_flow(term, Some(&*graph));
+        // Read before the lock goes: the record below names the session the
+        // KERNEL decided under, which is not the sink's own `session_id` (that
+        // one is the PermissionLattice's uuid).
+        let kernel_session_id = kernel.session_id();
         drop(graph);
         drop(kernel);
 
@@ -411,6 +415,7 @@ impl NucleusMcpServer {
             subject,
             ActorIdentity::StdioGuest,
             "mcp",
+            kernel_session_id,
         );
 
         match decision.verdict {
