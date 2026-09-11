@@ -225,6 +225,75 @@ mod tests {
         assert!(pushes(wf).is_empty());
     }
 
+    // ---- `check` end to end, against a temp tree -------------------------------------
+    //
+    // `check` takes its root as an argument, so the verdict can be exercised without the
+    // real repository — including the empty-directory and no-push refusals, which have no
+    // live subject a probe could perturb. Written because the module would otherwise ship
+    // with its decision procedure as the uncovered part.
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("xtask-push-auth-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join(".github/workflows")).unwrap();
+        d
+    }
+
+    fn wf(dir: &Path, name: &str, body: &str) {
+        fs::write(dir.join(".github/workflows").join(name), body).unwrap();
+    }
+
+    const AUTHED: &str = "jobs:\n  j:\n    steps:\n      - run: |\n          git remote set-url origin \"https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git\"\n          git push origin HEAD\n";
+    const BARE: &str = "jobs:\n  j:\n    steps:\n      - run: |\n          git push origin HEAD\n";
+
+    #[test]
+    fn check_passes_when_every_push_authenticates() {
+        let d = tmp("ok");
+        wf(&d, "a.yml", AUTHED);
+        check(&d).expect("an authenticated push is fine");
+    }
+
+    #[test]
+    fn check_fails_on_a_bare_push_and_names_the_site() {
+        let d = tmp("bare");
+        wf(&d, "a.yml", AUTHED);
+        wf(&d, "b.yml", BARE);
+        let e = check(&d).expect_err("a bare push must red");
+        let m = e.to_string();
+        assert!(m.contains("b.yml"), "{m}");
+        assert!(
+            !m.contains("a.yml:"),
+            "the authenticated one must not be named: {m}"
+        );
+    }
+
+    /// This repository pushes from CI, so a sweep that finds none has stopped looking.
+    #[test]
+    fn check_refuses_a_tree_with_no_push_at_all() {
+        let d = tmp("nopush");
+        wf(
+            &d,
+            "a.yml",
+            "jobs:\n  j:\n    steps:\n      - run: echo hi\n",
+        );
+        let e = check(&d).expect_err("finding no push is not a pass");
+        assert!(e.to_string().contains("no `git push`"), "{e}");
+    }
+
+    #[test]
+    fn check_refuses_a_directory_with_no_workflows() {
+        let d = tmp("empty");
+        let e = check(&d).expect_err("an empty sweep is not a pass");
+        assert!(e.to_string().contains("no workflows"), "{e}");
+    }
+
+    #[test]
+    fn check_errors_when_the_directory_is_absent() {
+        let d = std::env::temp_dir().join(format!("xtask-push-auth-absent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        assert!(check(&d).is_err());
+    }
+
     #[test]
     fn the_real_workflows_contain_pushes() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
