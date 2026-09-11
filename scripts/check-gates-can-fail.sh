@@ -615,6 +615,13 @@ perturb_push_auth_strip() {
     sed -i.bak '/git remote set-url origin/d' "$1" && rm -f "$1.bak"
 }
 
+perturb_coverage_floor() {
+    # Lower the floor rather than write the tests -- the live temptation: on 2026-09-11 a PR
+    # missed this floor by 0.02 points and the one-character fix was right here. Matches the
+    # FLAG and rewrites whatever value follows, never matching the value itself.
+    sed -i.bak -E 's/(--fail-under-lines )[0-9.]+/\182.4/' "$1" && rm -f "$1.bak"
+}
+
 perturb_fly_pool_volumes() {
     # The exact configuration the manager refuses, and the one that was committed:
     # requires_volume with no volumes for eight machines, so the machines past the
@@ -634,6 +641,8 @@ probe_xtask fly-pools ci/fly-runner/manager.toml \
     "the committed POOLS default the manager refuses" perturb_fly_pool_volumes
 probe_xtask push-auth .github/workflows/clippy-ratchet.yml \
     "a CI push relying on the checkout's ambient credential" perturb_push_auth_strip
+probe_xtask coverage-floor .github/workflows/coverage-matrix.yml \
+    "a coverage floor lowered without moving its pin" perturb_coverage_floor
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet

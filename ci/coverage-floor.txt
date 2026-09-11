@@ -1,0 +1,30 @@
+# The coverage thresholds `coverage-matrix.yml` enforces — the in-repo copy of a
+# number that otherwise lives only inside a `run:` block.
+#
+# One fact, one value, written twice and compared: `cargo xtask coverage-floor`
+# requires each `--fail-under-lines` in the workflow to EQUAL the value pinned
+# here, in both directions. Changing a threshold therefore means changing this
+# file in the same commit, where the reason is visible in review as a line of
+# text rather than as a digit inside a shell command.
+#
+# Why it exists. The workspace floor has moved 85 -> 83 -> 82.5 (2026-03-05
+# bb459c502, 2026-09-06 f1c74241b, 2026-09-10 ebda64aad). Every one of those was
+# deliberate, and the last says so in its own title — "give the workspace
+# coverage floor headroom, deliberately and downward" (#2777). That is the
+# practice working. But it was a CONVENTION: nothing required the next lowering
+# to be recorded at all, and the pressure to take it is real and ordinary. On
+# 2026-09-11 a PR of mine missed this floor by 0.02 points (82.48 vs 82.5) and
+# the one-character fix was sitting right there in the workflow. The right
+# answer was to test the new module; a gate is what makes that the EASY answer
+# rather than the virtuous one.
+#
+# LOWERING a floor is an owner decision. Lower the value here in the same change,
+# and record why, dated, below — the two-direction convention the north-star
+# ledger and ci/required-checks.txt already use. Raising one needs no ceremony
+# beyond moving both numbers together.
+#
+# Changes:
+#   2026-09-11 — pinned at the values in force, nothing moved.
+
+workspace = 82.5
+portcullis = 87
