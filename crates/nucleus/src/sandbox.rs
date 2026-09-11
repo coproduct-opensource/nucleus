@@ -143,11 +143,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<File> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_internal(path.as_ref(), None)
     }
@@ -160,11 +156,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<File> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_internal(path.as_ref(), Some(approval))
     }
@@ -193,11 +185,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<File> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::EditFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.open_with_internal(path.as_ref(), options, None)
     }
@@ -211,11 +199,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<File> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::EditFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.open_with_internal(path.as_ref(), options, Some(approval))
     }
@@ -245,11 +229,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<File> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_internal(path.as_ref(), None)
     }
@@ -262,11 +242,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<File> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_internal(path.as_ref(), Some(approval))
     }
@@ -288,11 +264,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<Vec<u8>> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_internal(path.as_ref(), None)
     }
@@ -305,11 +277,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Vec<u8>> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_internal(path.as_ref(), Some(approval))
     }
@@ -331,11 +299,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<String> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_to_string_internal(path.as_ref(), None)
     }
@@ -348,11 +312,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<String> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_to_string_internal(path.as_ref(), Some(approval))
     }
@@ -414,7 +374,7 @@ impl Sandbox {
         // minted — "bundle authorises EditFiles/WorkspaceWrite, this effect is
         // WriteFiles/WorkspaceWrite" — measured on a live pod.
         let op = self.write_operation_for(path.as_ref());
-        debug_assert_eq!(decision.operation(), op, "DecisionToken operation mismatch");
+        crate::decision_scope::require_decision_for(decision.operation(), op)?;
         self.spend_as(authority, op, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, None)
     }
@@ -440,7 +400,7 @@ impl Sandbox {
         // minted — "bundle authorises EditFiles/WorkspaceWrite, this effect is
         // WriteFiles/WorkspaceWrite" — measured on a live pod.
         let op = self.write_operation_for(path.as_ref());
-        debug_assert_eq!(decision.operation(), op, "DecisionToken operation mismatch");
+        crate::decision_scope::require_decision_for(decision.operation(), op)?;
         self.spend_as(authority, op, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, Some(approval))
     }
@@ -488,11 +448,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_internal(path.as_ref(), None)
     }
@@ -505,11 +461,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_internal(path.as_ref(), Some(approval))
     }
@@ -531,11 +483,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_all_internal(path.as_ref(), None)
     }
@@ -548,11 +496,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::WriteFiles)?;
         self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_all_internal(path.as_ref(), Some(approval))
     }
@@ -574,11 +518,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::EditFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_file_internal(path.as_ref(), None)
     }
@@ -591,11 +531,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::EditFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_file_internal(path.as_ref(), Some(approval))
     }
@@ -617,11 +553,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::EditFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_dir_internal(path.as_ref(), None)
     }
@@ -634,11 +566,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::EditFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::EditFiles)?;
         self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_dir_internal(path.as_ref(), Some(approval))
     }
@@ -654,13 +582,14 @@ impl Sandbox {
     }
 
     /// Check if a path exists within the sandbox.
-    pub fn exists(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> bool {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
-        self.exists_internal(path.as_ref(), None)
+    ///
+    /// `Result<bool>`, not `bool`: a decision minted for another operation means
+    /// this cannot answer, and "I did not look" must not be returned as "it is
+    /// not there" (ADR 0007 A-2). Before the scope check was enforced there was
+    /// no third answer to return, so there was no reason for the `Result`.
+    pub fn exists(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> Result<bool> {
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        Ok(self.exists_internal(path.as_ref(), None))
     }
 
     /// Check if a path exists within the sandbox with an approval token.
@@ -669,13 +598,9 @@ impl Sandbox {
         path: impl AsRef<Path>,
         decision: &DecisionToken,
         approval: &ApprovalToken,
-    ) -> bool {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
-        self.exists_internal(path.as_ref(), Some(approval))
+    ) -> Result<bool> {
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
+        Ok(self.exists_internal(path.as_ref(), Some(approval)))
     }
 
     fn exists_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> bool {
@@ -891,11 +816,7 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<Sandbox> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_dir_internal(path.as_ref(), None)
     }
@@ -908,11 +829,7 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Sandbox> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::ReadFiles,
-            "DecisionToken operation mismatch"
-        );
+        crate::decision_scope::require_decision_for(decision.operation(), Operation::ReadFiles)?;
         self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_dir_internal(path.as_ref(), Some(approval))
     }
@@ -1097,6 +1014,45 @@ mod tests {
     /// effect and recorded nothing. `Authority::spend` now refuses an
     /// unwitnessed spend outright, and these six write tests failing is what
     /// surfaced it.
+    /// A decision minted for one operation must not authorise another, AND the
+    /// refusal has to survive `--release`.
+    ///
+    /// This check used to be `debug_assert_eq!` at thirty call sites. That
+    /// compiles to nothing when `debug_assertions` is off, so in every shipped
+    /// build a `ReadFiles` decision handed to the write path was accepted
+    /// exactly as readily as the right one — the allow path and the error path
+    /// were the same path (ADR 0007 I-3). In a debug build it PANICKED rather
+    /// than refusing, which is not a refusal either.
+    ///
+    /// Run this with `cargo test --release -p nucleus` as well as without. That
+    /// is the falsifier: on the old code the release run let the write through.
+    #[test]
+    fn a_decision_for_another_operation_cannot_authorise_a_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        // A decision about READING, presented to the WRITE entry point.
+        let read_token = token(&mut kernel, Operation::ReadFiles, "ok.txt");
+        let err = sandbox
+            .write(
+                "ok.txt",
+                b"nope",
+                &read_token,
+                Authority::new(allowed_bundle()),
+            )
+            .expect_err("a ReadFiles decision must not authorise a write");
+        assert!(
+            matches!(err, NucleusError::ScopeMismatch { .. }),
+            "expected a scope mismatch, got {err:?}"
+        );
+        assert!(
+            !tmp.path().join("ok.txt").exists(),
+            "the refusal must happen BEFORE the bytes land"
+        );
+    }
+
     #[test]
     fn a_sandbox_write_leaves_a_receipt() {
         let tmp = tempfile::tempdir().unwrap();
