@@ -101,6 +101,24 @@ jobs:
           STEP=$(grep '^step' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
           ACTUAL=$(scripts/check-clippy-ratchet.sh --count)
 
+          # Establish all four operands before doing arithmetic on them. `$(( ))` is the
+          # dangerous half: unlike `[ -gt ]`, which at least ERRORS on a non-integer, it
+          # treats an empty value as 0 SILENTLY -- `CEILING="" STEP=""` gives `NEW=0`. The
+          # clamps below then snap NEW to ACTUAL and this job opens a PR rewriting the
+          # ceiling to whatever the tree currently measures, which does not fail the
+          # ratchet, it DELETES it. A half-written or hand-edited .clippy-ratchet.toml is
+          # the likely way in.
+          for v in CEILING TARGET STEP ACTUAL; do
+            case "${!v}" in
+              ''|*[!0-9]*)
+                echo "::error::$v is not a non-negative integer (read: '${!v}'). Refusing \
+                  to compute a new ceiling from it -- bad arithmetic here rewrites \
+                  $RATCHET_FILE and retires the ratchet silently."
+                exit 1
+                ;;
+            esac
+          done
+
           # Step down, snap to actual when the code is already better than the
           # step, NEVER below actual, and never below target.
           #
