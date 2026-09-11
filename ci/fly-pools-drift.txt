@@ -1,0 +1,26 @@
+# How many (pool, field) pairs ci/fly-runner/README.md and ci/fly-runner/manager.toml still
+# disagree on. Checked by `cargo xtask fly-pools`. Shrink-only.
+#
+# The README is how anyone learns what the pools ARE — it is the first file a reader opens — and
+# the gate referenced it ZERO times until 2026-09-11, checking only that the TOML parses and that
+# the manager accepts it. So the two could drift silently, and had.
+#
+# 2026-09-11, first measurement. All four numbers disagree:
+#
+#   nucleus-fly-build  size     README 16   manager.toml 8
+#   nucleus-fly-build  standby  README 16   manager.toml 8
+#   nucleus-fly-gate   size     README 40   manager.toml 16
+#   nucleus-fly-gate   standby  README 40   manager.toml 16
+#
+# NOT driven to zero, because neither side is obviously right and guessing would be worse than
+# recording. manager.toml's POOLS is the DEFAULT a fresh deployment uses until
+# `fly secrets set POOLS=...` replaces it (the file says so at line 36), so the README may be
+# describing the deployed secret truthfully while the tracked default describes a bootstrap.
+#
+# The live runner count settles nothing either: FINDINGS.md F-75 measured one to two build
+# machines on 2026-09-11, which matches neither 8 nor 16. Deciding this needs the deployed secret,
+# which is not readable from a checkout. Making the disagreement visible and un-growable does not,
+# and that is what this pin is for.
+#
+# Lower it in the change that reconciles a number, and say which side moved and why.
+DRIFT=4
