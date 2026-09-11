@@ -228,6 +228,76 @@ const OBSERVE_MARKERS: &[&str] = &[
     "FlowGraph::observe",
 ];
 
+/// The agent-facing entry points. A finding is ENFORCED only if the ingesting
+/// function is reachable from one of these.
+///
+/// Same move `cb4a_separation` makes with `PDP_ROOTS` / `CDP_ROOTS`, and for the
+/// same reason: the interesting property is not "does this crate do I/O" but
+/// "can the AGENT reach it". Scoping by crate could not express that, because
+/// `nucleus-tool-proxy` is both the agent's tool surface and the pod's own
+/// infrastructure — config loads, the node client, exit-report hashing, Article
+/// 12 shipping — and those share a crate with the handlers.
+///
+/// Measured 2026-09-11 before this split: 28 findings over the crate, of which
+/// exactly ONE was on an agent-reachable path that a reader would call a
+/// defect. The rest were boot and shutdown I/O that the IFC theorems do not
+/// quantify over. A number that counts both is not a number anyone can act on.
+///
+/// THE LIST IS THE ROUTE TABLE. Every HTTP entry is a handler named in
+/// `main.rs`'s `Router`, and every MCP entry is a `#[tool]` method — so "what
+/// the agent can reach" has a definition in the tree rather than in someone's
+/// memory. `health` is deliberately absent: it ingests nothing and returns no
+/// external bytes.
+///
+/// Getting this list WRONG is a silent failure in the safe direction for
+/// additions (a new handler not listed means its ingest reads as advisory —
+/// under-enforcement, visible in the advisory count) and in the dangerous
+/// direction for removals. Adding a handler to the router without adding it
+/// here is the failure mode to watch.
+const AGENT_ROOTS: &[&str] = &[
+    // HTTP — `main.rs`'s route table, in its order.
+    "::read_file",
+    "::write_file",
+    "::run_command",
+    "::web_fetch",
+    "::glob_search",
+    "::grep_search",
+    "::web_search",
+    "::memory_write",
+    "::memory_recall",
+    "::approve_operation",
+    "::escalate_permissions",
+    "::apply_declassification",
+    "::create_sub_pod",
+    "::list_sub_pods",
+    "::get_pod_status",
+    "::get_pod_logs",
+    "::cancel_sub_pod",
+    // MCP — the `#[tool]` methods on `NucleusMcpServer`.
+    "::read",
+    "::write",
+    "::run",
+    "::glob",
+    "::grep",
+];
+
+/// Does `path` name the root `root` (written as `::name`)?
+///
+/// A `::`-suffix match alone is WRONG here and the self-test caught it. The HTTP
+/// handlers are free functions at the CRATE ROOT of a binary, so `def_path_str`
+/// renders `run_command` with no module qualifier at all — and
+/// `"run_command".ends_with("::run_command")` is false. Every `main.rs` handler
+/// silently failed to seed the closure, so deleting `run_command`'s observe
+/// moved the enforced count not at all and the reds-on-revert probe failed.
+///
+/// The sibling `cb4a_separation` gets away with a bare suffix match because its
+/// roots happen to live in modules. Copying the shape without checking the
+/// shape of THIS crate's paths is what produced the bug.
+fn is_root(path: &str, root: &str) -> bool {
+    let bare = root.trim_start_matches(':');
+    path == bare || path.ends_with(root)
+}
+
 /// Crates whose unobserved-ingest finding is ENFORCED.
 ///
 /// The same move `mediated` makes with `MEDIATED_CRATES`, and for the same
@@ -456,6 +526,38 @@ impl<'tcx> LateLintPass<'tcx> for Observed {
             OBSERVED_CRATES.contains(&name.as_str())
         };
 
+        // Forward closure of "the agent can reach this". Same fixpoint shape as
+        // `cb4a_separation`'s PDP/CDP reachability; the direction is the same
+        // and only the roots differ.
+        //
+        // Seeded from the route table (see [`AGENT_ROOTS`]). An empty seed means
+        // this crate has no agent surface, and then NOTHING is enforced — which
+        // is correct and is also why a wrong root list fails quietly.
+        let agent_reachable: FxHashSet<LocalDefId> = {
+            let mut set: FxHashSet<LocalDefId> = facts
+                .iter()
+                .filter(|(_, f)| AGENT_ROOTS.iter().any(|r| is_root(&f.path, r)))
+                .map(|(d, _)| *d)
+                .collect();
+            loop {
+                let frontier: Vec<LocalDefId> = set
+                    .iter()
+                    .filter_map(|d| facts.get(d))
+                    .flat_map(|f| f.callees.iter().copied())
+                    .collect();
+                let mut grew = false;
+                for callee in frontier {
+                    if set.insert(callee) {
+                        grew = true;
+                    }
+                }
+                if !grew {
+                    break;
+                }
+            }
+            set
+        };
+
         // Least fixpoint of "ingests external bytes without reaching an observe".
         //
         // Seed: functions ingesting directly that do not themselves observe.
@@ -527,7 +629,30 @@ impl<'tcx> LateLintPass<'tcx> for Observed {
             // Reporting at the ingesting function is also the better location for
             // this lint regardless — the observation belongs next to the ingest,
             // not at some exported ancestor.
-            if crate_is_observed && unobserved.contains(did) {
+            // ENFORCED only when the agent can reach it. An unobserved ingest
+            // on the boot or shutdown path is real, and it is reported below as
+            // ADVISORY — but it is not what the IFC antecedent quantifies over,
+            // and counting it is what kept this pass at 28 and unwireable at
+            // zero.
+            if crate_is_observed && unobserved.contains(did) && !agent_reachable.contains(did) {
+                let detail = match &f.direct_ingest {
+                    Some(hit) => format!("ingests external bytes: {hit}"),
+                    None => "ingests external bytes transitively through its callees".to_string(),
+                };
+                span_lint_and_help(
+                    cx,
+                    OBSERVED,
+                    f.span,
+                    format!(
+                        "`{}` {detail} without observing — advisory: not reachable from an \
+                         agent-facing handler",
+                        f.path
+                    ),
+                    None,
+                    "boot and shutdown I/O is outside what the IFC theorems quantify over, so \
+                     this does not gate. Observe it anyway if the bytes can reach the model.",
+                );
+            } else if crate_is_observed && unobserved.contains(did) {
                 let detail = match &f.direct_ingest {
                     Some(hit) => format!("ingests external bytes: {hit}"),
                     None => "ingests external bytes transitively through its callees".to_string(),
