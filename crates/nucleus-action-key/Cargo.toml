@@ -1,0 +1,21 @@
+[package]
+name = "nucleus-action-key"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The key a CI gate's receipt is stored under: what the gate reads, what it is, and what it runs on — or a refusal saying why it has none"
+publish = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+ci-spec = { path = "../ci-spec" }
+
+[dependencies]
+anyhow = { workspace = true }
+ci-spec = { path = "../ci-spec" }
+sha2 = { workspace = true }
+hex = { workspace = true }

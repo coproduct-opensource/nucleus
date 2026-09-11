@@ -6532,6 +6532,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-action-key"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "ci-spec",
+ "hex",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "nucleus-adversary-probe"
 version = "1.0.0"
 
