@@ -575,9 +575,32 @@ mod tests {
 
     // ── helpers ────────────────────────────────────────────────────
 
+    /// A directory no other test shares.
+    ///
+    /// This used to key on `SystemTime::now().as_nanos()` alone, which is not unique: the
+    /// name says nanoseconds but the clock does not supply them. Measured 2026-09-11 on
+    /// macOS, 196,175 of 200,000 consecutive calls returned an IDENTICAL value and the
+    /// smallest non-zero delta was 1000 ns — it is a microsecond counter wearing a
+    /// nanosecond type. Two tests starting in the same microsecond therefore got the same
+    /// directory, and one pulled the other's manifest:
+    ///
+    /// ```text
+    /// assertion `left == right` failed
+    ///   left: Some("{\"data\":\"value\"}")            <- pull_by_digest's manifest
+    ///  right: Some("{\"schema_version\":\"1\",\"layers\":[]}")
+    /// ```
+    ///
+    /// Three components, because no one of them is sufficient: the PID separates nextest's
+    /// one-process-per-test (where an in-process counter cannot help), the counter separates
+    /// tests sharing a process under plain `cargo test` (where the PID cannot help), and the
+    /// timestamp separates runs. Uniqueness is now by construction rather than by hoping two
+    /// threads never land on the same tick.
     fn tempdir() -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "nucleus-registry-test-{}",
+            "nucleus-registry-test-{}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -585,5 +608,14 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// The property the old helper lacked: two calls never collide, even when the clock
+    /// does not move between them.
+    #[test]
+    fn tempdir_is_unique_within_a_process() {
+        let n = 64;
+        let dirs: std::collections::BTreeSet<PathBuf> = (0..n).map(|_| tempdir()).collect();
+        assert_eq!(dirs.len(), n, "tempdir() handed out a duplicate path");
     }
 }
