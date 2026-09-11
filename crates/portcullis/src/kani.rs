@@ -1663,7 +1663,7 @@ fn proof_decision_token_unforgeable() {
     if matches!(decision.verdict, Verdict::Allow) {
         assert!(token.is_some());
         let t = token.unwrap();
-        assert!(t.operation() == op);
+        assert!(t.operation == op);
         assert!(t.sequence() == decision.sequence);
     } else {
         assert!(token.is_none());
@@ -1689,7 +1689,7 @@ fn proof_denied_ops_have_no_token() {
 
 /// **E3 — Token operation matches decision operation.**
 ///
-/// For any operation, when a token is produced, its `operation()` and
+/// For any operation, when a token is produced, its `operation` field and
 /// `sequence()` must match the decision's fields exactly.
 #[kani::proof]
 #[kani::solver(cadical)]
@@ -1700,7 +1700,7 @@ fn proof_token_operation_matches_decision() {
     let op = arbitrary_operation();
     let (decision, token) = kernel.decide(op, "subject");
     if let Some(t) = token {
-        assert!(t.operation() == decision.operation);
+        assert!(t.operation == decision.operation);
         assert!(t.sequence() == decision.sequence);
     }
 }
