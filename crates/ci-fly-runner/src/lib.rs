@@ -31,6 +31,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub mod api;
+pub mod facts;
 pub mod reconcile;
 
 /// Written into every machine this manager owns, so a machine created by hand in the same app is

@@ -873,3 +873,87 @@ fn only_so_many_machines_may_pull_an_image_at_once() {
         "two already pulling against a limit of three: {alongside:#?}"
     );
 }
+
+/// **The pool's occupancy, reported because the log is not a history.**
+///
+/// `ci/fly-runner/README.md` says this manager's log shows every start, warm-up and retirement,
+/// and it does — but `fly logs` is a TAIL. It keeps the recent past, its lines carry no timestamp
+/// of their own, and its per-machine lines say what the manager DID rather than what the pool
+/// WAS. A plan to answer "why does a pool of sixteen deliver two concurrent jobs" by parsing that
+/// log would have built a brittle reader of an unversioned format over a window already gone.
+///
+/// The manager reads the whole machine list every pass anyway, to plan over it. The census is
+/// that same observation carried out — taken from the snapshot the pass PLANNED over, so the
+/// numbers and the decisions they explain cannot disagree.
+#[test]
+fn every_pass_reports_the_state_the_substrate_had_every_machine_in() {
+    let substrate = FakeSubstrate {
+        machines: Mutex::new(vec![
+            pooled("build", 0, "stopped", 60),
+            pooled("build", 1, "stopped", 60),
+            pooled("build", 2, "stopped", 60),
+        ]),
+        ..FakeSubstrate::default()
+    };
+    let m = manager(one_queued("build"), substrate, vec![pool("build", 4, 0)]);
+    let report = m.tick(NOW).unwrap();
+
+    let mut seen: Vec<(String, String)> = report
+        .workers
+        .iter()
+        .map(|w| (w.machine.clone(), w.state.clone()))
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec![
+            ("id-build-0".to_string(), "stopped".to_string()),
+            ("id-build-1".to_string(), "stopped".to_string()),
+            ("id-build-2".to_string(), "stopped".to_string()),
+        ],
+        "one row per managed machine, in the substrate's own words"
+    );
+    assert!(
+        report.workers.iter().all(|w| w.pool == "build"),
+        "and each says which pool it answers for: {:?}",
+        report.workers
+    );
+    // The census is of the world the pass PLANNED over, so it does NOT show the effect of the
+    // pass's own launch: `id-build-0` is still `stopped` here and started by the time the pass
+    // returns. That is deliberate — a census read afterwards would be a second observation of
+    // the substrate, and nothing could line it up against what this pass decided.
+    assert_eq!(
+        *m.substrate.started.lock().unwrap(),
+        vec!["id-build-0".to_string()],
+        "the pass started a machine the census still calls stopped"
+    );
+    assert_eq!(report.workers.len(), 3);
+}
+
+/// **Fly's own state strings, unmapped — added because the test above did not hold this.**
+/// That fleet is all `stopped`, so renaming `started` to `busy` in the census changed nothing
+/// and the claim was carried by a comment. A pool with a machine the substrate calls `started`
+/// is the case, and it is the whole question: why is a pool whose machines are STARTED not
+/// running jobs? Mapping the word here would put this manager's vocabulary between a reader and
+/// the API that decides.
+#[test]
+fn the_census_uses_the_substrates_word_for_a_state_and_never_its_own() {
+    let substrate = FakeSubstrate {
+        machines: Mutex::new(vec![
+            pooled("build", 0, "started", 60),
+            pooled("build", 1, "starting", 60),
+            pooled("build", 2, "stopped", 60),
+        ]),
+        ..FakeSubstrate::default()
+    };
+    let m = manager(FakeForge::default(), substrate, vec![pool("build", 4, 0)]);
+    let mut states: Vec<String> = m
+        .tick(NOW)
+        .unwrap()
+        .workers
+        .iter()
+        .map(|w| w.state.clone())
+        .collect();
+    states.sort();
+    assert_eq!(states, vec!["started", "starting", "stopped"]);
+}

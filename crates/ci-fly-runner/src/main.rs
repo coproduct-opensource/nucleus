@@ -108,6 +108,18 @@ fn run() -> Result<(), String> {
         },
     );
 
+    // The census reporter, or nothing. Off unless both GATEHOUSE_URL and GATEHOUSE_TOKEN are
+    // set, because a manager that will not reconcile without a metrics endpoint has turned
+    // observability into an outage.
+    let reporter = ci_fly_runner::facts::Reporter::from_env();
+    let reporting = Ureq::default();
+    if reporter.is_none() {
+        println!(
+            "no GATEHOUSE_URL/GATEHOUSE_TOKEN: this pool's occupancy is going nowhere, and \
+             `fly logs` is a tail rather than a history — the window is gone when it rotates"
+        );
+    }
+
     let once = std::env::args().any(|a| a == "--once");
     for pool in &manager.pools {
         println!(
@@ -137,6 +149,12 @@ fn run() -> Result<(), String> {
                 );
                 for failure in &report.failures {
                     println!("failed: {failure}");
+                }
+                // Reported AFTER the pass, and never in a way that can fail it.
+                if let Some(r) = &reporter
+                    && let Err(why) = r.report(&reporting, &report.workers, now_secs())
+                {
+                    println!("census not reported: {why}");
                 }
             }
             // A pass that could not read the world changes nothing and is retried; the substrate

@@ -32,6 +32,12 @@ pub const DEFAULT_LAUNCH_CONCURRENCY: usize = 6;
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
     pub demand: Vec<(String, usize)>,
+    /// **A census of every managed machine and the state the substrate reported it in, as this
+    /// pass saw it.** Not a transition log: a sample, once per poll interval, which is the shape
+    /// `cicd.worker.count by cicd.worker.state` names and the shape a "peak concurrency" answer
+    /// needs. The manager already reads all of this to plan; carrying it out costs one clone and
+    /// is the only place it exists, because `fly logs` is a TAIL and not a history.
+    pub workers: Vec<Worker>,
     pub launched: usize,
     pub created: usize,
     pub warmed: usize,
@@ -39,6 +45,18 @@ pub struct Report {
     pub runners_removed: usize,
     /// What did not happen, and why. Never a response body.
     pub failures: Vec<String>,
+}
+
+/// One machine as one pass saw it: which pool it belongs to, which machine it is, and the state
+/// the substrate reported. The state string is FLY'S, unmapped — `started`, `stopped`,
+/// `starting`, `created`. Renaming it here would put this manager's vocabulary between a reader
+/// and the API that decides, and the one question these rows exist to answer is why a pool with
+/// sixteen machines delivers two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worker {
+    pub pool: String,
+    pub machine: String,
+    pub state: String,
 }
 
 /// Everything about a deployment that is not the pools or the two APIs.
@@ -208,6 +226,20 @@ impl<F: Forge + Sync, S: Substrate + Sync> Manager<F, S> {
                 .0
                 .iter()
                 .map(|(l, n)| (l.clone(), *n))
+                .collect(),
+            // Taken from the snapshot the pass PLANS over, so the census and the decisions it
+            // explains are the same observation. Reading the substrate a second time would give
+            // a different world and an answer nobody could line up with what happened.
+            workers: snapshot
+                .machines
+                .iter()
+                .filter_map(|m| {
+                    Some(Worker {
+                        pool: m.pool()?.to_string(),
+                        machine: m.id.clone(),
+                        state: m.state.clone(),
+                    })
+                })
                 .collect(),
             ..Report::default()
         };
