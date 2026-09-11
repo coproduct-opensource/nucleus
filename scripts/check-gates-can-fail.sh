@@ -654,10 +654,25 @@ perturb_bound_dropped_witness() {
     append_line "$1" 'fn _gate_of_gates_dropped(_authority: Authority) {}'
 }
 
+# One more witness accepted under a CONSULTABLE name. The `bound` family rises to
+# 172/173, above its pinned floor, and the scorecard refuses: a floor with slack
+# under it has already stopped gating (ADR 0007 I-1), so the pin must be raised in
+# the same edit that earned it.
+#
+# Deliberately the opposite perturbation to the one above. A dropped witness would
+# red the scorecard too, but through `bound`'s INERT_TOTAL cross-check -- an error,
+# not a verdict, and it would prove the scorecard reds when a DEPENDENCY errors
+# rather than when its own decision procedure fires.
+perturb_scorecard_slack() {
+    append_line "$1" 'fn _gate_of_gates_scorecard(authority: Authority) {}'
+}
+
 probe_xtask convergence crates/nucleus-tool-proxy/src/run_gate.rs \
     "one more affine type taken by reference" perturb_convergence_linearity
 probe_xtask bound crates/nucleus-tool-proxy/src/run_gate.rs \
     "one more witness accepted and dropped" perturb_bound_dropped_witness
+probe_xtask scorecard crates/nucleus-tool-proxy/src/run_gate.rs \
+    "a family's pin gone slack under it" perturb_scorecard_slack
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask pin-parity ci/lean/lean-toolchain \

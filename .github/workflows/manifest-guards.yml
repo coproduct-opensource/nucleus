@@ -137,6 +137,11 @@ jobs:
       # surface, because a floor alone rewards deleting enforcement points.
       - name: Declared enforcement stays bound to the live path
         run: cargo run -q -p xtask -- bound
+      # One card over the four families the 2026-09-11 issue census found, with a
+      # badge naming the WEAKEST rather than an average -- an average lets a family
+      # at zero hide behind one at a hundred, which is ADR 0007 I-1 exactly.
+      - name: Every defect family's obligations, on one card
+        run: cargo run -q -p xtask -- scorecard
       - name: The scan-vs-allowlist family, decided once
         run: cargo run -q -p xtask -- allowlist-gates
       # The port is only worth having if it decides the same thing the scripts do. Agreement
