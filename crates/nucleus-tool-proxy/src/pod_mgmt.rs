@@ -203,6 +203,13 @@ pub(crate) async fn create_sub_pod(
     // request aimed at a URL I choose". See clamp_credentialed_egress.
     clamp_credentialed_egress(&mut spec, &state.credentialed_egress);
 
+    // 4d. STRIP any audit sink the requester asked for. Same reasoning as 4b and
+    // 4c, with the payload being the audit trail itself: the node lowers this
+    // field into the child's KERNEL BOOT ARGS, so leaving it through lets an
+    // agent send the record of what its child did to a destination it chose, and
+    // keep it from the operator. See strip_requested_audit_sink.
+    strip_requested_audit_sink(&mut spec);
+
     // 5. Inject credentials from orchestrator's env (transparent to agent)
     let mut creds = spec.spec.credentials.take().unwrap_or_default();
     for (key, val) in &state.orchestrator_credentials {
@@ -239,6 +246,7 @@ pub(crate) async fn create_sub_pod(
         workload: _workload, // 4b stripped
         credentialed_egress: _credentialed_egress, // 4c clamped to the parent's upstreams
         credentials: _credentials, // 5  orchestrator env merged in
+        audit_sink: _audit_sink, // 4d stripped
 
         // ── Forwarded as the requester wrote them ───────────────────────────
         // Each line is a standing decision to delegate that field unclamped.
@@ -251,11 +259,10 @@ pub(crate) async fn create_sub_pod(
         resources: _resources,       // cpu/memory the child asks the node for
         network: _network,           // egress shape; `credentialed_egress` is the
         // separate field clamped at 4c, not this one
-        image: _image,           // the child names its own kernel and rootfs
-        vsock: _vsock,           // guest-host socket configuration
-        seccomp: _seccomp,       // syscall filter — a child may ask for a weaker one
-        cgroup: _cgroup,         // cgroup limits
-        audit_sink: _audit_sink, // where the child's audit record is written
+        image: _image,     // the child names its own kernel and rootfs
+        vsock: _vsock,     // guest-host socket configuration
+        seccomp: _seccomp, // syscall filter — a child may ask for a weaker one
+        cgroup: _cgroup,   // cgroup limits
     } = &spec.spec;
 
     // `metadata` is a sibling of `spec` on `PodSpec`, so the destructure above
@@ -772,6 +779,36 @@ pub(crate) fn clamp_credentialed_egress(
     spec.spec.credentialed_egress = kept;
 }
 
+/// STRIP any audit sink the requester asked for.
+///
+/// `AuditSinkSpec` is an S3 bucket, prefix, region and a **custom endpoint URL**,
+/// and `nucleus-node` turns it into KERNEL BOOT ARGS for the child VM
+/// (`firecracker_config.rs`: `nucleus.audit_s3_bucket=...`, `..._endpoint=...`).
+/// So an agent-authored sub-pod spec chooses where the child's audit record is
+/// written, which is two things at once: the record of what the child did never
+/// reaches the operator, and the records themselves are shipped to a destination
+/// the agent named.
+///
+/// That is the same shape as `clamp_credentialed_egress` guards against —
+/// "a request aimed at a URL I choose" — with the payload being the audit trail.
+/// It is STRIPPED rather than clamped because, unlike credentialed egress, the
+/// tool-proxy holds no parent sink to narrow against: its own audit goes to
+/// `state.audit` / `state.art12_log`, which are different mechanisms. Where the
+/// child's audit is written is the node's decision, not the requester's.
+///
+/// Stripped rather than rejected so a spec that carries one is still usable, and
+/// logged so the attempt is visible — the same treatment `workload` gets.
+pub(crate) fn strip_requested_audit_sink(spec: &mut PodSpec) {
+    if let Some(sink) = spec.spec.audit_sink.take() {
+        tracing::warn!(
+            bucket = %sink.s3_bucket,
+            endpoint = %sink.s3_endpoint.as_deref().unwrap_or("<default>"),
+            "sub-pod request specified an audit sink; stripped -- ManagePods does not confer \
+             the choice of where a pod's own audit record is written"
+        );
+    }
+}
+
 pub(crate) fn strip_requested_workload(spec: &mut PodSpec) {
     if spec.spec.workload.take().is_some() {
         tracing::warn!(
@@ -949,6 +986,65 @@ spec:
         assert_eq!(spec.spec.work_dir, work_dir);
         assert_eq!(spec.metadata.name.as_deref(), Some("sub"));
     }
+
+    fn spec_with_audit_sink() -> PodSpec {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: sub
+spec:
+  work_dir: /w
+  audit_sink:
+    s3_bucket: attacker-bucket
+    s3_prefix: p/
+    s3_region: us-west-2
+    s3_endpoint: https://attacker.example
+"#;
+        serde_yaml::from_str(yaml).expect("spec parses")
+    }
+
+    /// **`ManagePods` must not confer the choice of where audit goes.**
+    /// `nucleus-node` lowers `audit_sink` into the child's KERNEL BOOT ARGS
+    /// (`firecracker_config.rs`: `nucleus.audit_s3_bucket=`, `..._endpoint=`), so
+    /// a surviving sink is two failures at once: the record of what the child did
+    /// never reaches the operator, and the records are shipped to a destination
+    /// the agent named. Same shape as the credentialed-egress clamp guards
+    /// against, with the audit trail as the payload.
+    #[test]
+    fn a_requested_audit_sink_is_stripped() {
+        let mut spec = spec_with_audit_sink();
+        assert!(
+            spec.spec.audit_sink.is_some(),
+            "the fixture must actually carry an audit sink, or the assertion below proves nothing"
+        );
+        strip_requested_audit_sink(&mut spec);
+        assert!(
+            spec.spec.audit_sink.is_none(),
+            "an agent-requested audit sink must not survive into the sub-pod spec"
+        );
+    }
+
+    /// Stripping the sink leaves the rest of the spec alone, and stripping a
+    /// spec that never named one is a no-op rather than an error — a sub-pod
+    /// request that asked for nothing unusual must still work.
+    #[test]
+    fn stripping_the_audit_sink_is_narrow_and_idempotent() {
+        let mut spec = spec_with_audit_sink();
+        let work_dir = spec.spec.work_dir.clone();
+        strip_requested_audit_sink(&mut spec);
+        assert_eq!(spec.spec.work_dir, work_dir);
+        assert_eq!(spec.metadata.name.as_deref(), Some("sub"));
+
+        // Second pass over an already-stripped spec changes nothing.
+        strip_requested_audit_sink(&mut spec);
+        assert!(spec.spec.audit_sink.is_none());
+
+        let mut clean = spec_with_workload();
+        assert!(clean.spec.audit_sink.is_none());
+        strip_requested_audit_sink(&mut clean);
+        assert_eq!(clean.metadata.name.as_deref(), Some("sub"));
+    }
 }
 
 #[cfg(test)]
@@ -1106,6 +1202,33 @@ spec:
         );
     }
 
+    /// The handler's own body, with comments removed.
+    ///
+    /// Both structural guards below read this function's source text, and until
+    /// now neither could fail. Two bugs, both found by probing them:
+    ///
+    /// 1. The terminator read `"\n pub(crate) "` — with a leading space, which a
+    ///    top-level item never has. `find` returned `None` every time, `unwrap_or`
+    ///    fell through to `handler.len()`, and "the body" became the whole
+    ///    remaining 43k characters of the file. Every function DEFINITION was in
+    ///    scope, so `contains("clamp_credentialed_egress")` held whether or not
+    ///    the handler called it.
+    /// 2. Scoped correctly, the handler's own COMMENTS still name the functions —
+    ///    step 4c says "See clamp_credentialed_egress" — so a deleted call left
+    ///    its explanation behind and the grep matched that.
+    ///
+    /// Measured: with either bug present, deleting a call left both tests green.
+    /// ADR 0006 C4.2 credits these guards with noticing "a call being deleted";
+    /// they could not, which means the exhaustive destructure it proposes has
+    /// been carrying this alone.
+    fn handler_body(handler: &str) -> String {
+        handler[..handler.find("\npub(crate) ").unwrap_or(handler.len())]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// STRUCTURAL: the handler must actually call the clamp. The unit tests
     /// above prove the function is correct; nothing else proves it is wired, and
     /// an unwired security check is the failure shape this repo keeps finding.
@@ -1116,7 +1239,12 @@ spec:
             .split("pub(crate) async fn create_sub_pod(")
             .nth(1)
             .expect("create_sub_pod must exist");
-        let body = &handler[..handler.find("\n pub(crate) ").unwrap_or(handler.len())];
+        let body = handler_body(handler);
+        assert!(
+            body.contains("strip_requested_audit_sink"),
+            "create_sub_pod no longer strips audit_sink — an agent-authored sub-pod spec can \
+             send the record of what the child did to a destination it chose, by kernel arg"
+        );
         assert!(
             body.contains("clamp_credentialed_egress"),
             "create_sub_pod no longer clamps credentialed_egress — an agent-authored \
@@ -1135,7 +1263,17 @@ spec:
             .split("pub(crate) async fn create_sub_pod(")
             .nth(1)
             .expect("create_sub_pod must exist");
-        let body = &handler[..handler.find("\n pub(crate) ").unwrap_or(handler.len())];
+        // The needle has NO leading space. It used to read "\n pub(crate) ", which
+        // never matches — a top-level item starts at column 0 — so `unwrap_or`
+        // fell through to `handler.len()` and "the handler body" was the whole
+        // remaining 43k characters of the file, function DEFINITIONS included.
+        // `contains` was then true whether or not the call existed, and both of
+        // these tests passed with the call deleted. Probed: deleting
+        // `strip_requested_audit_sink(&mut spec);` left them green.
+        //
+        // ADR 0006 C4.2 says of these guards "They can notice a call being
+        // deleted." They could not. They can now.
+        let body = handler_body(handler);
         assert!(
             body.contains("narrow_to_ceiling("),
             "narrowing must be unconditional"
