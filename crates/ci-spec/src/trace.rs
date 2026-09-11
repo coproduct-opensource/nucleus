@@ -58,6 +58,10 @@ pub struct Replay {
     pub ejections: usize,
     /// Transitions the model rejected, with the event and the reason.
     pub violations: Vec<String>,
+    /// Transitions GitHub performed that the model has no rule for, as opposed to transitions it
+    /// forbids. Counted and reported, never silently dropped: a harness that cannot tell the two
+    /// apart trains its readers to ignore it, which is exactly what happened for 23 hours.
+    pub unmodelled: Vec<String>,
     /// The window contained too little to check anything.
     pub vacuous: Option<String>,
 }
@@ -120,6 +124,7 @@ pub fn replay(events: &[TraceEvent]) -> Replay {
     let model = to_model_events(events);
     let mut s = State::init();
     let mut r = Replay {
+        unmodelled: Vec::new(),
         events: events.len(),
         enqueues: 0,
         merges: 0,
@@ -147,6 +152,23 @@ pub fn replay(events: &[TraceEvent]) -> Replay {
                 ) || matches!(why, Illegal::EmptyQueue) && s.enq_log.is_empty();
                 if truncated {
                     s = same;
+                    continue;
+                }
+                // Re-enqueue after ejection: the model has no rule for it, GitHub does it
+                // routinely. Record it as unmodelled, apply it anyway, and keep checking the rest
+                // of the trace — otherwise one missing rule cascades into every later event for
+                // that PR and fifteen reports share one cause. See gatehouse FINDINGS F-47.
+                if let (Ev::Enqueue(p), Illegal::NotWaiting(q)) = (*ev, &why)
+                    && *q == p
+                    && same.loc(p) == Loc::Ejected
+                {
+                    let mut fixed = same.clone();
+                    fixed.unmodelled_requeue(p);
+                    r.unmodelled.push(format!(
+                        "{} PR #{} re-enqueued after ejection — the model has no rule for this",
+                        src.at, src.pr
+                    ));
+                    s = try_step(fixed, *ev).unwrap_or_else(|b| b.0);
                     continue;
                 }
                 r.violations.push(format!(
@@ -245,5 +267,63 @@ mod tests {
         let r = replay(&t);
         assert!(r.violations.is_empty(), "{:?}", r.violations);
         assert_eq!(r.exit_code(), 0);
+    }
+
+    /// GitHub ejects a PR and adds it back. `CiSpec.Queue.step` has no rule for that, so the
+    /// harness must say "no rule" rather than "invariant broken" — and must keep going, or one
+    /// missing rule cascades into every later event for that PR.
+    #[test]
+    fn re_enqueue_after_ejection_is_unmodelled_not_a_violation() {
+        let t = vec![
+            ev("2026-09-10T01:00:00Z", 1, Kind::Added),
+            ev(
+                "2026-09-10T02:00:00Z",
+                1,
+                Kind::Removed {
+                    reason: "merge_conflict".into(),
+                },
+            ),
+            ev("2026-09-10T03:00:00Z", 1, Kind::Added),
+            ev("2026-09-10T04:00:00Z", 1, Kind::Merged),
+        ];
+        let r = replay(&t);
+        assert_eq!(r.unmodelled.len(), 1, "{:?}", r.unmodelled);
+        assert!(
+            r.violations.is_empty(),
+            "a missing rule was reported as a violation: {:?}",
+            r.violations
+        );
+        assert_eq!(r.exit_code(), 0);
+    }
+
+    /// The risk this classification carries, tested rather than asserted: a genuine out-of-order
+    /// merge must STILL fail. If compensating for the missing rule also swallowed real violations,
+    /// the check would be worse than the red it replaced.
+    #[test]
+    fn a_real_out_of_order_merge_still_fails_after_the_compensation() {
+        let t = vec![
+            ev("2026-09-10T01:00:00Z", 1, Kind::Added),
+            ev("2026-09-10T01:30:00Z", 2, Kind::Added),
+            // #2 merges while #1 is the head: the queue merging out of enqueue order.
+            ev("2026-09-10T02:00:00Z", 2, Kind::Merged),
+        ];
+        let r = replay(&t);
+        assert!(
+            !r.violations.is_empty(),
+            "an out-of-order merge was not reported"
+        );
+        assert_ne!(r.exit_code(), 0);
+    }
+
+    /// And the two must not be confusable: an out-of-order merge is never filed as unmodelled.
+    #[test]
+    fn a_real_violation_is_not_filed_as_unmodelled() {
+        let t = vec![
+            ev("2026-09-10T01:00:00Z", 1, Kind::Added),
+            ev("2026-09-10T01:30:00Z", 2, Kind::Added),
+            ev("2026-09-10T02:00:00Z", 2, Kind::Merged),
+        ];
+        let r = replay(&t);
+        assert!(r.unmodelled.is_empty(), "{:?}", r.unmodelled);
     }
 }
