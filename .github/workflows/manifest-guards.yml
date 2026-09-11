@@ -130,6 +130,13 @@ jobs:
       # decides all seven in one place, and adds the two properties no copy could state:
       # a pattern that matches NOTHING has stopped watching (and prints PASSED either way),
       # and an allowlist may only shrink.
+      # ADR 0006's own measurement, made standing. Two of its four arrows have a
+      # population that can be enumerated from a source — "#[must_use] and not
+      # Clone" for linearity, a closed set of spellings for act coverage — so
+      # those two are ratcheted and the other two are excluded by name rather
+      # than averaged in from a hand-written list.
+      - name: The distance to ADR 0006's four objects only shrinks
+        run: cargo run -q -p xtask -- convergence
       - name: The scan-vs-allowlist family, decided once
         run: cargo run -q -p xtask -- allowlist-gates
       # The port is only worth having if it decides the same thing the scripts do. Agreement

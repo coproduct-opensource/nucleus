@@ -1,0 +1,89 @@
+# How far the tree is from ADR 0006's "four objects, composed".
+#
+#     Principal --Delegation--> Authority --Allocation--> Permit<Act> --Execution--> Receipt
+#
+# ADR 0006 measured this once, in prose, on 2026-09-09. That table is an audit;
+# this is the standing version of two of its rows, so the distance can be read
+# rather than re-derived, and so it can only shrink.
+#
+# WHY ONLY TWO ROWS, AND WHY THESE TWO.
+#
+# ADR 0006's A-20 draws the line this file obeys: a population is trustworthy
+# only where it is ENUMERATED FROM A SOURCE THAT DEFINES IT. Two of the four
+# arrows have such a source and two do not:
+#
+#   linearity      YES — "#[must_use] and not Clone" is a computable predicate
+#                  over the tree. The author declared affine intent in the type;
+#                  the question is whether the calling convention honours it.
+#   act_coverage   YES — the untargeted surface is a closed set of spellings
+#                  (`spend(Operation::..)`, `check(Operation::..)`,
+#                  `GuardedAction<Operation>`, `GuardedAction<String>`), each
+#                  of which the collapse replaces.
+#   attenuation    NO  — "every site that narrows authority" has no definition
+#                  in the tree. ADR 0006 counts ~24 hand-rolled clamps, and a
+#                  hand-listed denominator is the metric equivalent of a gate
+#                  that cannot fail. Left out deliberately.
+#   lineage        NO  — same reason. ~28 chains, 9 never walked, none of it
+#                  computable from a source.
+#
+# So this file measures the distance it can measure, and says so. A convergence
+# number that silently included two hand-maintained rows would be exactly the
+# vacuity ADR 0007 I-1 forbids, one level up.
+#
+# WHAT IT DOES NOT TELL YOU: whether four objects is the right decomposition.
+# A score climbing toward zero is the kind of number that starts substituting
+# for that judgement, and it must not.
+
+# ── linearity: a one-shot right is taken by value ───────────────────────────
+#
+# ADR 0007 C-4, and `f7f9719b` is its load-bearing example: `DischargedBundle`
+# was `!Clone`, `!Copy` and `#[must_use]` — every affine signal Rust offers —
+# and replayable anyway, because three signatures took it by `&`.
+#
+# Measured 2026-09-11 by `cargo xtask convergence`, over the production region of
+# every tracked crate as `law_mechanisms::production_region` extracts it:
+#
+#   DecisionToken      31   ADR 0006 C2.5 already names it: inert outside
+#                           `debug_assert`. Nearly the whole number is one type.
+#   DischargedBundle    4
+#                      --
+#                      35   over a population of 7 affine types
+#
+# SEEDED FROM THE GATE, NOT FROM A PROBE. A scratch script written while scoping
+# this said 34 across three types, because it tracked `#[cfg(test)]` line by line
+# instead of by brace depth and so mis-drew the production boundary. The gate and
+# its number have to come from the same code or the number is about the probe.
+# `.clippy-ratchet.toml` records the same lesson from the other direction: a
+# ceiling seeded on macOS that CI counted differently red on its own PR.
+#
+# `SessionCleanseToken` is NOT in this population and is worth naming: it was
+# fixed today (taken by value, probed with a paired doctest) but carries no
+# `#[must_use]`, so the predicate does not see it. The population is what the
+# types declare, not what carries affine intent in someone's head — which is
+# also why adding `#[must_use]` to a type can RAISE this number. That is
+# correct: it means the tree started admitting a claim it was not honouring.
+[linearity]
+ceiling = 35
+target = 0
+
+# ── act_coverage: the protected boundary carries its target ─────────────────
+#
+# ADR 0006 C2. `Operation` is 13 untargeted verbs — `ReadFiles`, not
+# `Read(path)` — so `subject: &str` was threaded through 47 signatures and
+# re-parsed by each gate. `Act` carries the target with the verb.
+#
+# Measured 2026-09-11:
+#
+#   Authority::spend(Operation::..)   1   the transitional surface beside
+#                                         `spend_on(self, &Act)`
+#   GuardedAction<Operation>          1
+#   GuardedAction<String>             1
+#   guard.check(Operation::..)        0   C2.2 landed; already converged
+#                                    --
+#                                     3
+#
+# One of the four spellings is already at zero, which is the evidence that this
+# row tracks real progress rather than sitting at a constant.
+[act_coverage]
+ceiling = 3
+target = 0
