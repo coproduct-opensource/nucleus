@@ -69,6 +69,55 @@ impl std::fmt::Display for PathDenial {
 /// occurs in a real path, so `glob_match` can never match it.
 pub const NOTHING_ALLOWED: &str = "\u{0}nothing-allowed";
 
+/// Configuration that decides what an agent is allowed to do.
+///
+/// # Why these are blocked rather than merely audited
+///
+/// `nucleus audit` already treats these files as security-critical and scans
+/// them for plaintext credentials, dangerous commands and trifecta exposure
+/// (`nucleus-cli`'s `MCP_CONFIG_CANDIDATES`). Until this floor existed, none of
+/// the eleven canonical profiles mentioned any of them — so the same files were
+/// security-relevant enough to audit and writable by the agent whose
+/// permissions they configure.
+///
+/// That asymmetry is the whole finding. An integration that mediates an agent
+/// by installing a hook in `.claude/settings.json`, or by listing servers in
+/// `.mcp.json`, puts the mechanism that constrains the agent inside the tree
+/// the agent may write. Removing a hook merely disables mediation; rewriting
+/// `.mcp.json` is worse, because it can add an **unmediated** server.
+///
+/// # Why a floor in code and not a line in each profile
+///
+/// The per-profile `blocked` lists had already drifted before this existed:
+/// five of the six write-permitting profiles blocked `/etc/passwd` and
+/// `doc-editor` did not. Eleven copies of a security baseline is the shape this
+/// repo gates against elsewhere (`ci/one-svid-validator.sh`,
+/// `ci/merge-group-scope-parity.sh`). A floor applied where a profile becomes a
+/// [`PathLattice`] cannot be forgotten by a new profile and cannot be removed
+/// by editing one YAML file.
+///
+/// # Reads too, deliberately
+///
+/// [`PathLattice`] blocks a path for every access, not writes alone. That is
+/// the right default here: these files are exactly what `nucleus audit` scans
+/// for plaintext credentials, so read access to them is its own exposure.
+///
+/// Instruction files (`CLAUDE.md`, `AGENTS.md`) are **not** here. They steer an
+/// agent but do not grant it anything, and a coding agent that cannot read its
+/// own repository's instructions is broken rather than contained.
+pub const AGENT_HARNESS_CONFIG: &[&str] = &[
+    // Claude Code / Claude Desktop
+    "**/.claude/**",
+    "**/claude_desktop_config.json",
+    // MCP server manifests, in every spelling `nucleus audit` looks for
+    "**/.mcp.json",
+    "**/mcp.json",
+    "**/.vscode/mcp.json",
+    // Other harnesses of the same shape
+    "**/.cursor/**",
+    "**/.gemini/**",
+];
+
 /// Path access lattice with allowed/blocked semantics.
 ///
 /// - `allowed`: Glob patterns for allowed paths. Empty means "all allowed".

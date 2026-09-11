@@ -49,6 +49,13 @@ risc0-zkvm = { workspace = true, optional = true }
 [dev-dependencies]
 wat = "1"
 
+# `act`'s totality test probes the kernel's admissible `(Operation, SinkClass)`
+# relation through `discharge::test_helpers::try_bundle_for`, which is gated
+# behind the kernel's `test-helpers` feature. Declared here rather than by
+# turning on this crate's own passthrough feature, so the test runs under a
+# plain `cargo test -p portcullis-core` and the production graph stays
+# dependency-free for Aeneas.
+
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
 
@@ -61,3 +68,32 @@ path = "../ck-types"
 
 [dev-dependencies.ck-policy]
 path = "../ck-policy"
+
+[dev-dependencies.nucleus-ifc-kernel]
+path = "../nucleus-ifc-kernel"
+features = ["test-helpers"]
+
+# Feature-gated test targets. `default = []`, so without these declarations both
+# files below are compiled under a bare `cargo test` and fail to resolve items
+# that are not there — and a test-target compile error aborts the WHOLE run, so
+# `cargo test --workspace` executed zero tests on a clean checkout (#2731).
+#
+# `required-features` rather than a `#![cfg(...)]` inner attribute: cfg would
+# still build the target and leave it empty, while this skips it, and it is the
+# convention already used for gated test targets across the workspace
+# (portcullis has seven, nucleus-agent-card and nucleus-github-oidc one each).
+#
+# Nothing in CI covered this: feature-matrix runs `cargo hack check
+# --each-feature --no-dev-deps`, which excludes test targets, and ci.yml's test
+# lane pins `--all-features`, where every gated item exists. So the per-feature
+# sweep never builds tests and the test lane never varies features.
+
+[[test]]
+name = "provenance_e2e"
+# witness (envelope), prov_export (serde), ProvenanceSchema::content_hash (artifact)
+required-features = ["artifact", "serde", "envelope"]
+
+[[test]]
+name = "flow_red_team"
+# portcullis_core::memory is #[cfg(feature = "serde")]
+required-features = ["serde"]

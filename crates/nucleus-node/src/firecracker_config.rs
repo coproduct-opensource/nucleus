@@ -111,6 +111,13 @@ pub(crate) struct JailLayout {
 
 /// In-jail names. Fixed, not derived from the host path: a jailed Firecracker
 /// sees `/kernel`, never `/var/lib/nucleus/images/<sha>/vmlinux`.
+/// Default size of a node-provisioned scratch disk. Sparse, so this is a
+/// ceiling on what the guest may write to `/work`, not an upfront cost. Four
+/// GiB is what the #2789 report used by hand to confirm `/work` became
+/// writable. Sizing from the pod's `resources` is the obvious follow-up.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const DEFAULT_SCRATCH_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) mod in_jail {
     pub const KERNEL: &str = "/kernel";
@@ -190,7 +197,11 @@ pub(crate) struct JailResource {
 /// The config file and the log file are NOT here: they are produced rather than
 /// relocated, so `prepare_jail` writes them directly.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn jail_resources(image: &nucleus_spec::ImageSpec, spec: &PodSpec) -> Vec<JailResource> {
+pub(crate) fn jail_resources(
+    image: &nucleus_spec::ImageSpec,
+    spec: &PodSpec,
+    scratch_is_node_provisioned: bool,
+) -> Vec<JailResource> {
     let mut resources = vec![
         JailResource {
             host_source: image.kernel_path.clone(),
@@ -203,7 +214,17 @@ pub(crate) fn jail_resources(image: &nucleus_spec::ImageSpec, spec: &PodSpec) ->
             in_jail: in_jail::ROOTFS,
             // Mirrors `lower_drives`' `is_read_only: image.read_only` exactly. If
             // these two ever disagree, a writable rootfs gets copied and the
-            // guest's writes vanish — hence the `rw_rootfs_is_hard_link_only` pin.
+            // guest's writes vanish — hence the `rw_rootfs_is_hard_link_only`
+            // pin, which until #2784 was named here and never written.
+            //
+            // The agreement is necessary and NOT sufficient. A hard link means
+            // the guest writes through to `image.rootfs_path` itself, so
+            // `read_only: false` against the shared installed artifact gives
+            // every later pod the previous pod's writes and lets concurrent
+            // pods share one writable block device. That is why
+            // `ImageSpec::read_only` now defaults to TRUE: the placement below
+            // is correct for a private image and unsafe for a shared one, and
+            // nothing here can tell which it was handed.
             placement: if image.read_only {
                 Placement::CopyableIfCrossDevice
             } else {
@@ -212,13 +233,20 @@ pub(crate) fn jail_resources(image: &nucleus_spec::ImageSpec, spec: &PodSpec) ->
         },
     ];
 
+    // A NODE-PROVISIONED scratch disk is created at its in-jail path already
+    // (see `provision_pod_scratch`), so there is nothing to bring inside and a
+    // `JailResource` for it would try to hard-link the file onto itself. Only a
+    // caller-supplied `scratch_path` names a file that lives elsewhere on the
+    // host and has to be placed.
     if let Some(ref scratch) = image.scratch_path {
-        resources.push(JailResource {
-            host_source: scratch.clone(),
-            in_jail: in_jail::SCRATCH,
-            // `lower_drives` gives scratch `is_read_only: false` unconditionally.
-            placement: Placement::HardLinkOnly,
-        });
+        if !scratch_is_node_provisioned {
+            resources.push(JailResource {
+                host_source: scratch.clone(),
+                in_jail: in_jail::SCRATCH,
+                // `lower_drives` gives scratch `is_read_only: false` unconditionally.
+                placement: Placement::HardLinkOnly,
+            });
+        }
     }
 
     // A custom seccomp filter is opened by Firecracker AFTER the chroot, so the
@@ -275,6 +303,119 @@ fn place_resource(resource: &JailResource, dest: &Path) -> Result<(), String> {
     }
 }
 
+/// The per-pod scratch disk that makes `/work` writable (#2789).
+///
+/// `/work` mounts `/dev/vdb`, which exists only when a scratch drive is
+/// attached — and nothing created one, so a `codegen` pod met `EROFS` on its
+/// first write. The other route to a writable guest, `read_only: false`, is the
+/// one #2784 closed: it writes through the shared rootfs artifact.
+///
+/// BORN INSIDE THE JAIL. Under the jailer `lower_drives` gives the drive a
+/// `path_on_host` of `in_jail::SCRATCH`, resolved after `chroot`, so the file
+/// must exist at `jail_root/scratch.ext4`. Creating it there leaves no
+/// host-side source to bring in — no hard link, so none of the cross-device
+/// failure modes `Placement` exists to reason about. `jail_resources` skips it
+/// for that reason.
+///
+/// FAIL-SAFE. `None`, not an error, when the disk cannot be made (no
+/// `mkfs.ext4`, no space): the caller then boots with no scratch drive, exactly
+/// today's behaviour. This can add a writable `/work`; it cannot turn a pod
+/// that boots into one that does not. The reason is logged, because a silently
+/// read-only `/work` is the bug being fixed. The image is sparse, so 4 GiB
+/// costs what the guest writes, and it is removed with the jail.
+/// Decide what image the pod boots with, and whether its scratch disk is the
+/// node's. Unchanged when the spec names a `scratch_path`, when there is no
+/// jail to make one in, or when making one failed — the last being the fallback
+/// that keeps this unable to break a boot. Here, not at the call site, so the
+/// decision is testable without a node.
+#[cfg(target_os = "linux")]
+pub(crate) fn scratch_for_pod(
+    image: &nucleus_spec::ImageSpec,
+    jail_layout: Option<&JailLayout>,
+    uid: u32,
+    gid: u32,
+) -> (nucleus_spec::ImageSpec, bool) {
+    let mut effective = image.clone();
+    if effective.scratch_path.is_some() {
+        return (effective, false);
+    }
+    let Some(jail) = jail_layout else {
+        return (effective, false);
+    };
+    match provision_pod_scratch(&jail.jail_root, DEFAULT_SCRATCH_BYTES, uid, gid) {
+        Some(path) => {
+            effective.scratch_path = Some(path);
+            (effective, true)
+        }
+        None => (effective, false),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn provision_pod_scratch(
+    jail_root: &Path,
+    size_bytes: u64,
+    uid: u32,
+    gid: u32,
+) -> Option<std::path::PathBuf> {
+    let path = jail_root.join(in_jail::SCRATCH.trim_start_matches('/'));
+
+    match build_scratch_image(jail_root, &path, size_bytes, uid, gid) {
+        Ok(()) => Some(path),
+        Err(err) => {
+            tracing::warn!(
+                scratch = %path.display(),
+                error = %err,
+                "could not provision a scratch disk; /work will be read-only in this pod.                  Install e2fsprogs (mkfs.ext4) on the node host, or give the spec its own                  image.scratch_path."
+            );
+            // Leave nothing half-made behind for the next boot to trip over.
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn build_scratch_image(
+    jail_root: &Path,
+    path: &Path,
+    size_bytes: u64,
+    uid: u32,
+    gid: u32,
+) -> Result<(), String> {
+    use std::os::unix::fs::chown;
+
+    // `prepare_jail` also does this and the jailer tolerates an existing root;
+    // doing it here lets the disk be made BEFORE the config that declares the
+    // drive is written, which is what keeps the fallback honest.
+    std::fs::create_dir_all(jail_root)
+        .map_err(|e| format!("creating {}: {e}", jail_root.display()))?;
+
+    let file =
+        std::fs::File::create(path).map_err(|e| format!("creating {}: {e}", path.display()))?;
+    file.set_len(size_bytes)
+        .map_err(|e| format!("sizing {} to {size_bytes} bytes: {e}", path.display()))?;
+    drop(file);
+
+    let out = std::process::Command::new("mkfs.ext4")
+        .args(["-q", "-F", &path.display().to_string()])
+        .output()
+        .map_err(|e| format!("running mkfs.ext4: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "mkfs.ext4 failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    // Firecracker runs unprivileged after the jailer's drop, and the guest
+    // writes through this disk — a root-owned image would leave `/work`
+    // read-only for the very workload it exists to serve. Same reasoning, and
+    // the same uid/gid, as every other file `prepare_jail` chowns.
+    chown(path, Some(uid), Some(gid)).map_err(|e| format!("chown {}: {e}", path.display()))?;
+    Ok(())
+}
+
 /// Build the jail's contents so the jailer has something to chroot into.
 ///
 /// ORDERING. This runs BEFORE the jailer is spawned, which is safe because the
@@ -296,6 +437,7 @@ pub(crate) fn prepare_jail(
     config_json: &[u8],
     uid: u32,
     gid: u32,
+    scratch_is_node_provisioned: bool,
 ) -> Result<(), String> {
     use std::os::unix::fs::chown;
 
@@ -308,7 +450,7 @@ pub(crate) fn prepare_jail(
 
     let mut placed: Vec<std::path::PathBuf> = Vec::new();
 
-    for resource in jail_resources(image, spec) {
+    for resource in jail_resources(image, spec, scratch_is_node_provisioned) {
         let dest = layout.host_path(resource.in_jail);
         place_resource(&resource, &dest)?;
         placed.push(dest);
@@ -607,6 +749,7 @@ impl FirecrackerConfig {
         // without it. See `enforce_pci_off`.
         boot_args = boot_args.map(|args| enforce_pci_off(&args));
 
+        // OS assumption: KB-VSOCK-PEER-CID; docs/assumptions/kernel-behaviour.md.
         // `nucleus.auth_secret` is NO LONGER EMITTED.
         //
         // The kernel command line is world-readable inside the guest
@@ -891,6 +1034,8 @@ fn seccomp_args(spec: &PodSpec, jailed: bool) -> Vec<std::ffi::OsString> {
     }
 }
 
+/// OS assumption: KB-PROCFS-STATUS (docs/assumptions/kernel-behaviour.md).
+///
 /// Verify that seccomp is active on a Firecracker process by reading /proc/{pid}/status.
 /// Returns Ok(()) if seccomp mode is 2 (SECCOMP_MODE_FILTER).
 #[cfg(target_os = "linux")]
@@ -1013,6 +1158,63 @@ mod tests {
     fn base_spec() -> PodSpec {
         serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
             .expect("base PodSpec must deserialize")
+    }
+
+    /// The pin `jail_resources` has named since it was written, and which
+    /// #2784 found did not exist: `grep -rn rw_rootfs_is_hard_link_only`
+    /// returned exactly one hit, the comment claiming it.
+    ///
+    /// A writable rootfs MUST be hard-linked. Copying it would put the guest's
+    /// writes in a jail-local copy that is discarded when the jail is torn
+    /// down — the writes would vanish silently, which is worse than refusing.
+    /// A read-only rootfs may be copied, because nothing writes through it.
+    #[test]
+    fn rw_rootfs_is_hard_link_only() {
+        let rw = jail_resources(&image(false, false), &base_spec(), false);
+        let rootfs = rw
+            .iter()
+            .find(|r| r.in_jail == in_jail::ROOTFS)
+            .expect("a rootfs resource must be jailed");
+        assert_eq!(
+            rootfs.placement,
+            Placement::HardLinkOnly,
+            "a writable rootfs that gets copied loses every guest write when the \
+             jail is torn down"
+        );
+
+        let ro = jail_resources(&image(true, false), &base_spec(), false);
+        let rootfs = ro
+            .iter()
+            .find(|r| r.in_jail == in_jail::ROOTFS)
+            .expect("a rootfs resource must be jailed");
+        assert_eq!(
+            rootfs.placement,
+            Placement::CopyableIfCrossDevice,
+            "a read-only rootfs is safe to copy, and copying is what lets the \
+             artifact live on a different device from the jail"
+        );
+    }
+
+    /// The consequence the placement above cannot avoid, stated so it is not
+    /// rediscovered: a hard link is the SAME FILE. `read_only: false` therefore
+    /// means the guest writes through to the artifact every other pod boots
+    /// from. Measured in #2784 — the installed rootfs digest changed from
+    /// `7739f5cd…` to `b7c40744…` after `verify --tier2` pod boots, and the
+    /// jail entry shared the artifact's inode with `links=2`.
+    #[test]
+    fn a_writable_rootfs_is_the_artifact_itself_not_a_copy() {
+        let rw = jail_resources(&image(false, false), &base_spec(), false);
+        let rootfs = rw
+            .iter()
+            .find(|r| r.in_jail == in_jail::ROOTFS)
+            .expect("a rootfs resource must be jailed");
+        assert_eq!(
+            rootfs.host_source,
+            PathBuf::from("/var/lib/nucleus/rootfs.ext4"),
+            "the jail entry links the shared artifact, so a writable rootfs is \
+             shared mutable state between pods — the reason the spec default is \
+             now read_only: true"
+        );
     }
 
     fn image(read_only: bool, scratch: bool) -> ImageSpec {
@@ -1589,7 +1791,7 @@ mod tests {
         );
         let config_json = serde_json::to_vec_pretty(&config).expect("serialize");
 
-        prepare_jail(&layout, &img, &spec, &config_json, uid, gid).expect("prepare_jail");
+        prepare_jail(&layout, &img, &spec, &config_json, uid, gid, false).expect("prepare_jail");
 
         // Every path the config names, except the vsock socket, which Firecracker
         // creates itself at boot — so what must exist for it is the writable jail
@@ -1621,7 +1823,7 @@ mod tests {
         );
 
         // Re-running must be idempotent: pods get relaunched.
-        prepare_jail(&layout, &img, &spec, &config_json, uid, gid)
+        prepare_jail(&layout, &img, &spec, &config_json, uid, gid, false)
             .expect("prepare_jail must be idempotent");
 
         cleanup_jail(&layout);
@@ -1674,7 +1876,7 @@ mod tests {
         for (read_only, scratch) in [(true, true), (true, false), (false, true), (false, false)] {
             let img = image(read_only, scratch);
             let spec = base_spec();
-            let resources = jail_resources(&img, &spec);
+            let resources = jail_resources(&img, &spec, false);
             let drives = lower_drives(&img, true);
 
             for drive in &drives {
@@ -1742,7 +1944,7 @@ mod tests {
             )),
         );
 
-        let resources = jail_resources(&img, &spec);
+        let resources = jail_resources(&img, &spec, false);
         // Produced inside the jail rather than relocated into it.
         let produced = [in_jail::CONFIG, in_jail::LOG, in_jail::VSOCK];
         let mut known: Vec<&str> = resources.iter().map(|r| r.in_jail).collect();
@@ -2216,5 +2418,82 @@ mod tests {
             once.split_whitespace().filter(|t| *t == "pci=off").count(),
             1
         );
+    }
+
+    // ── Node-provisioned scratch disk (#2789) ────────────────────────────────
+
+    /// Born at its in-jail path already, so placing it would hard-link the file
+    /// onto itself — and having no host-side source is the whole point.
+    #[test]
+    fn a_node_provisioned_scratch_is_not_placed_into_the_jail() {
+        let mut img = image(true, true);
+        img.scratch_path = Some(PathBuf::from("/srv/jailer/.../root/scratch.ext4"));
+
+        let placed = jail_resources(&img, &base_spec(), true);
+        assert!(
+            !placed.iter().any(|r| r.in_jail == in_jail::SCRATCH),
+            "the node already made this file inside the jail; placing it would \
+             hard-link it onto itself: {placed:?}"
+        );
+    }
+
+    /// ...but a CALLER's `scratch_path` lives elsewhere and must still come in by
+    /// hard link: a copy would discard the guest's writes at teardown.
+    #[test]
+    fn a_caller_supplied_scratch_is_still_placed_hard_link_only() {
+        let placed = jail_resources(&image(true, true), &base_spec(), false);
+        let scratch = placed
+            .iter()
+            .find(|r| r.in_jail == in_jail::SCRATCH)
+            .expect("a caller-supplied scratch must be jailed");
+        assert_eq!(
+            scratch.placement,
+            Placement::HardLinkOnly,
+            "a copied scratch loses every guest write when the jail is torn down"
+        );
+    }
+
+    /// Whoever made it, the drive must reach the guest — that is what puts a
+    /// block device behind `/work`, at the in-jail path resolved after `chroot`.
+    #[test]
+    fn a_provisioned_scratch_still_reaches_the_guest_as_a_writable_drive() {
+        let drives = lower_drives(&image(true, true), true);
+        let scratch = drives
+            .iter()
+            .find(|d| d.drive_id == "scratch")
+            .expect("the scratch drive is what /work is mounted from");
+        assert_eq!(scratch.path_on_host, in_jail::SCRATCH);
+        assert!(
+            !scratch.is_read_only,
+            "a read-only scratch is the bug, not the fix"
+        );
+        assert!(!scratch.is_root_device);
+    }
+
+    /// No jail means nowhere to put one; a spec that names one keeps it. Both
+    /// report "not node-provisioned", so a caller's file is still placed.
+    #[test]
+    fn scratch_for_pod_leaves_a_caller_supplied_or_jailless_image_alone() {
+        let declared = image(true, true);
+        let (out, provisioned) = scratch_for_pod(&declared, None, 123, 100);
+        assert_eq!(out.scratch_path, declared.scratch_path);
+        assert!(!provisioned, "the caller's file is not the node's to skip");
+
+        let plain = image(true, false);
+        let (out, provisioned) = scratch_for_pod(&plain, None, 123, 100);
+        assert_eq!(out.scratch_path, None, "no jail, so nothing was made");
+        assert!(!provisioned);
+    }
+
+    /// The fallback IS the safety property: no scratch means no scratch DRIVE, so
+    /// the pod boots as before rather than dying on a drive it cannot open.
+    #[test]
+    fn no_scratch_means_no_drive_rather_than_a_broken_one() {
+        let drives = lower_drives(&image(true, false), true);
+        assert!(
+            !drives.iter().any(|d| d.drive_id == "scratch"),
+            "a declared drive with no file behind it would fail the boot"
+        );
+        assert_eq!(drives.len(), 1, "only the rootfs remains: {drives:?}");
     }
 }

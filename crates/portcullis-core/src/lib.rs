@@ -75,6 +75,7 @@
 //!   proof verifies algebraic structure of the type. Together they provide
 //!   complementary assurance.
 
+pub mod act;
 pub mod agent_message;
 pub mod argv;
 #[cfg(feature = "artifact")]
@@ -949,7 +950,12 @@ mod tests {
             SinkClass::AuditLogAppend.required_authority(),
             AuthorityLevel::NoAuthority
         );
-        // All write/exec sinks require Suggestive
+        // All write/exec sinks require Suggestive — including the git-publish
+        // trio. #24 briefly raised those three to Directive when it merged the
+        // duplicate tables at the pointwise-strictest value; `flow_red_team`
+        // showed that denies Deterministic and HumanPromoted data at a verified
+        // sink, which is what such a sink exists to accept. The merge stands;
+        // the value was reverted.
         for sink in SinkClass::ALL {
             if sink != SinkClass::SecretRead && sink != SinkClass::AuditLogAppend {
                 assert_eq!(

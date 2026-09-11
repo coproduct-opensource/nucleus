@@ -170,6 +170,7 @@ impl Sandbox {
     }
 
     fn open_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<File> {
+        let path = &self.root_relative(path)?;
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -225,8 +226,9 @@ impl Sandbox {
         options: &OpenOptions,
         approval: Option<&ApprovalToken>,
     ) -> Result<File> {
+        let path = &self.root_relative(path)?;
         // OpenOptions can include write or truncation; conservatively treat as edit.
-        self.check_edit_capability(path, "open_with", approval)?;
+        self.check_edit_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -270,7 +272,8 @@ impl Sandbox {
     }
 
     fn create_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<File> {
-        self.check_write_capability(path, "create", approval)?;
+        let path = &self.root_relative(path)?;
+        self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -312,6 +315,7 @@ impl Sandbox {
     }
 
     fn read_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<Vec<u8>> {
+        let path = &self.root_relative(path)?;
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -358,6 +362,7 @@ impl Sandbox {
         path: &Path,
         approval: Option<&ApprovalToken>,
     ) -> Result<String> {
+        let path = &self.root_relative(path)?;
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -402,12 +407,15 @@ impl Sandbox {
         decision: &DecisionToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
-        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        // The SAME operation the capability check below will use, and the same
+        // one the reference monitor upstream decided about: writing over an
+        // existing file is an edit. Hardcoding `WriteFiles` here made the
+        // authority spend disagree with the discharge bundle the caller had
+        // minted — "bundle authorises EditFiles/WorkspaceWrite, this effect is
+        // WriteFiles/WorkspaceWrite" — measured on a live pod.
+        let op = self.write_operation_for(path.as_ref());
+        debug_assert_eq!(decision.operation(), op, "DecisionToken operation mismatch");
+        self.spend_as(authority, op, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, None)
     }
 
@@ -425,12 +433,15 @@ impl Sandbox {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<()> {
-        debug_assert_eq!(
-            decision.operation(),
-            Operation::WriteFiles,
-            "DecisionToken operation mismatch"
-        );
-        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        // The SAME operation the capability check below will use, and the same
+        // one the reference monitor upstream decided about: writing over an
+        // existing file is an edit. Hardcoding `WriteFiles` here made the
+        // authority spend disagree with the discharge bundle the caller had
+        // minted — "bundle authorises EditFiles/WorkspaceWrite, this effect is
+        // WriteFiles/WorkspaceWrite" — measured on a live pod.
+        let op = self.write_operation_for(path.as_ref());
+        debug_assert_eq!(decision.operation(), op, "DecisionToken operation mismatch");
+        self.spend_as(authority, op, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, Some(approval))
     }
 
@@ -461,8 +472,9 @@ impl Sandbox {
         contents: impl AsRef<[u8]>,
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
+        let path = &self.root_relative(path)?;
         self.check_policy(path)?;
-        self.check_write_or_edit_capability(path, "write", approval)?;
+        self.check_write_or_edit_capability(path, approval)?;
 
         self.root
             .write(path, contents)
@@ -503,7 +515,8 @@ impl Sandbox {
     }
 
     fn create_dir_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
-        self.check_write_capability(path, "create_dir", approval)?;
+        let path = &self.root_relative(path)?;
+        self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -545,7 +558,8 @@ impl Sandbox {
     }
 
     fn create_dir_all_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
-        self.check_write_capability(path, "create_dir_all", approval)?;
+        let path = &self.root_relative(path)?;
+        self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -587,7 +601,8 @@ impl Sandbox {
     }
 
     fn remove_file_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
-        self.check_edit_capability(path, "remove_file", approval)?;
+        let path = &self.root_relative(path)?;
+        self.check_edit_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -629,7 +644,8 @@ impl Sandbox {
     }
 
     fn remove_dir_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
-        self.check_edit_capability(path, "remove_dir", approval)?;
+        let path = &self.root_relative(path)?;
+        self.check_edit_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root
@@ -663,6 +679,10 @@ impl Sandbox {
     }
 
     fn exists_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> bool {
+        let Ok(path) = self.root_relative(path) else {
+            return false;
+        };
+        let path = &path;
         if self.check_read_capability(path, approval).is_err() {
             return false;
         }
@@ -670,6 +690,36 @@ impl Sandbox {
             return false;
         }
         self.root.exists(path)
+    }
+
+    /// Which capability a write to `path` will actually be checked against.
+    ///
+    /// [`Operation::EditFiles`] when the path already exists,
+    /// [`Operation::WriteFiles`] when it does not — the same test
+    /// `check_write_or_edit_capability` makes, exposed so the reference monitor
+    /// upstream can decide about the SAME operation this sandbox will enforce.
+    ///
+    /// It has to be exposed rather than guessed. The HTTP write path mediated
+    /// every write as `WriteFiles`, so writing over an existing file was
+    /// decided by the kernel as one operation and enforced here as another: the
+    /// caller was told to approve `WriteFiles notes.txt`, did, and was then
+    /// refused for want of `EditFiles notes.txt`. Measured on a live pod
+    /// (`nucleus-perf agency`, task `edit-an-existing-file`). The audit record
+    /// was wrong in the same way — an edit recorded as a write.
+    ///
+    /// Deliberately NOT gated on a `DecisionToken`, unlike [`Self::exists`].
+    /// It answers one bit about a path inside the pod's own workspace, which
+    /// `glob` already answers in bulk, and its only use is choosing which of
+    /// two gates applies. Gating it would force the caller to guess the
+    /// operation before it may ask which operation it is, which is precisely
+    /// the ordering that produced the mismatch.
+    #[must_use]
+    pub fn write_operation_for(&self, path: impl AsRef<Path>) -> Operation {
+        if self.root.exists(path.as_ref()) {
+            Operation::EditFiles
+        } else {
+            Operation::WriteFiles
+        }
     }
 
     /// Get the absolute path of the sandbox root.
@@ -690,6 +740,7 @@ impl Sandbox {
     ///
     /// Returns `Err` for paths outside the sandbox or unreadable files.
     pub fn read_to_string_for_search(&self, path: &Path, authority: Authority) -> Result<String> {
+        let path = &self.root_relative(path)?;
         self.spend_as(authority, Operation::GrepSearch, SinkClass::AuditLogAppend)?;
         self.check_policy(path)?;
         self.root
@@ -697,23 +748,44 @@ impl Sandbox {
             .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
+    /// Interpret a caller-supplied path against the sandbox root.
+    ///
+    /// A relative path is returned unchanged. An absolute path that is
+    /// lexically under the root is returned with the root stripped, so the two
+    /// spellings of the same file behave identically -- which is what every
+    /// agent harness fronting this sandbox assumes, and what `/work/hello.txt`
+    /// vs `hello.txt` used to disagree about (#2787). An absolute path that is
+    /// *not* under the root keeps its refusal, and only now is the error's own
+    /// claim ("resolves outside sandbox root") true: before this, the root was
+    /// never consulted.
+    ///
+    /// Stripping cannot widen what is reachable. The result is fed through
+    /// exactly the checks a relative path already faced -- the path policy
+    /// here, and `cap-std`'s containment on the `Dir` handle at the point of
+    /// I/O, which is what actually refuses `..` traversal and symlinks out.
+    pub fn root_relative(&self, path: &Path) -> Result<PathBuf> {
+        if !path.is_absolute() {
+            return Ok(path.to_path_buf());
+        }
+        path.strip_prefix(&self.root_path)
+            .map(Path::to_path_buf)
+            .map_err(|_| NucleusError::SandboxEscape {
+                path: path.to_path_buf(),
+            })
+    }
+
     /// Check if a path is allowed by the policy.
     fn check_policy(&self, path: &Path) -> Result<()> {
-        // First, check for obvious escapes
+        // Absolute paths are interpreted against the root first; what survives
+        // is relative, or a genuine escape.
+        let path = self.root_relative(path)?;
         let path_str = path.to_string_lossy();
-
-        // Reject absolute paths
-        if path.is_absolute() {
-            return Err(NucleusError::SandboxEscape {
-                path: path.to_path_buf(),
-            });
-        }
 
         // Check against portcullis policy
         // Note: We pass the relative path to the policy checker
-        if !self.policy.can_access(path) {
+        if !self.policy.can_access(&path) {
             return Err(NucleusError::PathDenied {
-                path: path.to_path_buf(),
+                path: path.clone(),
                 reason: format!("blocked by path policy: {}", path_str),
             });
         }
@@ -726,37 +798,27 @@ impl Sandbox {
             Operation::ReadFiles,
             "read_files",
             self.capabilities.read_files,
-            &format!("read {}", path.display()),
+            path,
             approval,
         )
     }
 
-    fn check_write_capability(
-        &self,
-        path: &Path,
-        op: &str,
-        approval: Option<&ApprovalToken>,
-    ) -> Result<()> {
+    fn check_write_capability(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
         self.check_capability(
             Operation::WriteFiles,
             "write_files",
             self.capabilities.write_files,
-            &format!("{} {}", op, path.display()),
+            path,
             approval,
         )
     }
 
-    fn check_edit_capability(
-        &self,
-        path: &Path,
-        op: &str,
-        approval: Option<&ApprovalToken>,
-    ) -> Result<()> {
+    fn check_edit_capability(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
         self.check_capability(
             Operation::EditFiles,
             "edit_files",
             self.capabilities.edit_files,
-            &format!("{} {}", op, path.display()),
+            path,
             approval,
         )
     }
@@ -764,14 +826,23 @@ impl Sandbox {
     fn check_write_or_edit_capability(
         &self,
         path: &Path,
-        op: &str,
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
         if self.root.exists(path) {
-            self.check_edit_capability(path, op, approval)
+            self.check_edit_capability(path, approval)
         } else {
-            self.check_write_capability(path, op, approval)
+            self.check_write_capability(path, approval)
         }
+    }
+
+    /// [`crate::approval::approval_key`] for a path subject.
+    ///
+    /// A thin forward on purpose: the rule lives with `ApprovalRequest`, next
+    /// to the type it names, so the file sandbox and the command executor
+    /// cannot drift apart by each keeping their own copy of it.
+    #[must_use]
+    pub fn approval_key(op: Operation, subject: &Path) -> String {
+        crate::approval_key(op, &subject.display().to_string())
     }
 
     fn check_capability(
@@ -779,9 +850,10 @@ impl Sandbox {
         op: Operation,
         capability_name: &str,
         level: CapabilityLevel,
-        operation: &str,
+        subject: &Path,
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
+        let operation = &Self::approval_key(op, subject);
         if level == CapabilityLevel::Never {
             return Err(NucleusError::InsufficientCapability {
                 capability: capability_name.into(),
@@ -846,6 +918,7 @@ impl Sandbox {
     }
 
     fn open_dir_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<Sandbox> {
+        let path = &self.root_relative(path)?;
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
@@ -1191,7 +1264,15 @@ mod tests {
         let approved = Sandbox::new(&policy, tmp.path())
             .unwrap()
             .with_approval_callback(|_| true);
-        let approval_token = approved.request_approval("create approved.txt").unwrap();
+        // Derived, not spelled out: an approval is named `{Operation:?} {subject}`
+        // everywhere (`Sandbox::approval_key`), and a test that hardcoded one
+        // gate's wording is how the two vocabularies drifted apart in #2406.
+        let approval_token = approved
+            .request_approval(Sandbox::approval_key(
+                Operation::WriteFiles,
+                std::path::Path::new("approved.txt"),
+            ))
+            .unwrap();
         let result = approved.create_approved(
             "approved.txt",
             &decision_token,
@@ -1264,6 +1345,128 @@ mod tests {
             )
             .unwrap();
         assert_eq!(contents, "nested");
+    }
+
+    // ── Absolute paths under the root (#2787) ────────────────────────────
+
+    /// The measured symptom: the same file, refused by its absolute spelling
+    /// and accepted by its relative one.
+    #[test]
+    fn an_absolute_path_under_the_root_is_the_same_file_as_the_relative_one() {
+        let tmp = tempdir().unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let wt = token(&mut kernel, Operation::WriteFiles, "hello.txt");
+        sandbox
+            .write(
+                "hello.txt",
+                b"hello from the host",
+                &wt,
+                Authority::new(allowed_bundle()),
+            )
+            .unwrap();
+
+        // Read it back by the absolute spelling an agent harness would use.
+        let absolute = sandbox.root_path().join("hello.txt");
+        let rt = token(&mut kernel, Operation::ReadFiles, "hello.txt");
+        let contents = sandbox
+            .read_to_string(
+                &absolute,
+                &rt,
+                Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend)),
+            )
+            .expect("an absolute path under the root is not an escape");
+        assert_eq!(contents, "hello from the host");
+    }
+
+    /// Writing by absolute path lands in the same place as writing by relative.
+    #[test]
+    fn an_absolute_write_lands_at_the_relative_path() {
+        let tmp = tempdir().unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let absolute = sandbox.root_path().join("written.txt");
+        let wt = token(&mut kernel, Operation::WriteFiles, "written.txt");
+        sandbox
+            .write(&absolute, b"body", &wt, Authority::new(allowed_bundle()))
+            .expect("absolute write under the root should be accepted");
+
+        let rt = token(&mut kernel, Operation::ReadFiles, "written.txt");
+        let via_relative = sandbox
+            .read_to_string(
+                "written.txt",
+                &rt,
+                Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend)),
+            )
+            .unwrap();
+        assert_eq!(via_relative, "body");
+    }
+
+    /// Accepting absolute paths must not accept absolute paths that leave the
+    /// root -- including one spelled as a traversal *through* the root, which
+    /// strips to a relative `..` and must still be refused at the `Dir`.
+    #[test]
+    fn an_absolute_path_outside_the_root_is_still_refused() {
+        let tmp = tempdir().unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        // Plainly outside.
+        let rt = token(&mut kernel, Operation::ReadFiles, "/etc/passwd");
+        assert!(
+            sandbox
+                .read_to_string(
+                    "/etc/passwd",
+                    &rt,
+                    Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend)),
+                )
+                .is_err(),
+            "an absolute path outside the root must stay refused"
+        );
+
+        // Traversal that passes through the root on its way out.
+        let escaping = sandbox.root_path().join("../etc/passwd");
+        let rt2 = token(&mut kernel, Operation::ReadFiles, "../etc/passwd");
+        assert!(
+            sandbox
+                .read_to_string(
+                    &escaping,
+                    &rt2,
+                    Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend)),
+                )
+                .is_err(),
+            "stripping the root must not turn a traversal into an accepted read"
+        );
+    }
+
+    /// `root_relative` is the whole rule, and is idempotent on relative input.
+    #[test]
+    fn root_relative_strips_the_root_and_leaves_relative_paths_alone() {
+        let tmp = tempdir().unwrap();
+        let policy = permissive_policy();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        assert_eq!(
+            sandbox.root_relative(Path::new("a/b.txt")).unwrap(),
+            Path::new("a/b.txt")
+        );
+        assert_eq!(
+            sandbox
+                .root_relative(&sandbox.root_path().join("a/b.txt"))
+                .unwrap(),
+            Path::new("a/b.txt")
+        );
+        // The root itself is the empty relative path, not an escape.
+        assert_eq!(
+            sandbox.root_relative(sandbox.root_path()).unwrap(),
+            Path::new("")
+        );
+        assert!(sandbox.root_relative(Path::new("/etc/passwd")).is_err());
     }
 }
 

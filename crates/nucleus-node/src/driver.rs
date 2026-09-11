@@ -26,9 +26,9 @@ pub(crate) enum DriverKind {
     /// Container runtime.
     Container,
     /// Apple Virtualization.framework (macOS-native). Its enforcement capability
-    /// is already declared (`BackendCapability::APPLE_VZ`, selected by
-    /// [`isolation_backend`] for the `apple-vz` backend); the boot
-    /// driver is [`spawn_vz_pod`].
+    /// is already declared (`BackendCapability::APPLE_VZ`, which
+    /// [`isolation_backend`] selects for this variant); the boot driver is
+    /// [`spawn_vz_pod`].
     AppleVz,
 }
 
@@ -56,14 +56,27 @@ pub(crate) async fn spawn_vz_pod(
     ))
 }
 
-/// The isolation backend this node enforces with. Defaults to Firecracker
-/// (Linux/KVM — the full lattice); set `NUCLEUS_ISOLATION_BACKEND=apple-vz` on a
-/// macOS `Virtualization.framework` host so un-enforceable levels (no host
-/// egress allowlist, no namespaces tier) are clamped UP to what VZ delivers.
-pub(crate) fn isolation_backend() -> &'static BackendCapability {
-    match std::env::var("NUCLEUS_ISOLATION_BACKEND").as_deref() {
-        Ok("apple-vz") => &BackendCapability::APPLE_VZ,
-        _ => &BackendCapability::FIRECRACKER,
+/// The isolation backend a driver enforces with.
+///
+/// This is a total function of the driver, and deliberately reads no
+/// environment. It used to consult `NUCLEUS_ISOLATION_BACKEND`, defaulting to
+/// [`BackendCapability::FIRECRACKER`] — which declares the **full** lattice — so
+/// a node run with `--driver container` or `--driver local` clamped every pod
+/// against Firecracker's capabilities and wrote `backend=firecracker` into the
+/// spec labels. `EnforcedIsolation::is_faithful()` then returned true and the
+/// certificate carried a posture nothing delivered (SECURITY_TODO #17).
+///
+/// The env var was introduced for the Apple-VZ case and `Container` was never
+/// given an arm; the driver already carries the answer, so it is the selector.
+/// The match is exhaustive on purpose: a new `DriverKind` is a compile error
+/// here before it is a silently mis-declared posture.
+pub(crate) fn isolation_backend(kind: &DriverKind) -> &'static BackendCapability {
+    match kind {
+        #[cfg(feature = "local-driver")]
+        DriverKind::Local => &BackendCapability::LOCAL,
+        DriverKind::Firecracker => &BackendCapability::FIRECRACKER,
+        DriverKind::Container => &BackendCapability::CONTAINER,
+        DriverKind::AppleVz => &BackendCapability::APPLE_VZ,
     }
 }
 
@@ -77,35 +90,51 @@ pub(crate) fn isolation_backend() -> &'static BackendCapability {
 /// platform does not deliver. Until #2438 this clamp lived inside the trust
 /// gate and ran only when a trust API was configured and enforcing; a node
 /// with no trust API skipped it entirely.
-pub(crate) fn clamp_isolation_to_backend(spec: &mut PodSpec) {
-    clamp_isolation_to(spec, isolation_backend());
+pub(crate) fn clamp_isolation_to_backend(
+    kind: &DriverKind,
+    spec: &mut PodSpec,
+) -> Result<(), ApiError> {
+    clamp_isolation_to(spec, isolation_backend(kind))
 }
 
 /// [`clamp_isolation_to_backend`] against an explicit backend (testable
-/// without the environment).
-pub(crate) fn clamp_isolation_to(spec: &mut PodSpec, backend: &'static BackendCapability) {
+/// without a node).
+pub(crate) fn clamp_isolation_to(
+    spec: &mut PodSpec,
+    backend: &'static BackendCapability,
+) -> Result<(), ApiError> {
     let lattice = match spec.spec.resolve_policy() {
         Ok(l) => l,
         Err(e) => {
             // Admission resolves the same policy and refuses the spec; nothing
             // to clamp until there is a lattice.
             warn!(error = %e, "isolation clamp: policy resolution failed");
-            return;
+            return Ok(());
         }
     };
     let enforced = match require_isolation(lattice.effective_minimum_isolation(), backend) {
         Ok(enforced) => enforced,
         Err(err) => {
-            // Unreachable for the built-in backends (their top level is always
-            // enforceable); a misconfigured custom backend could reach here.
-            // Fail safe: keep the requested posture and surface the error
-            // rather than silently under-enforcing.
+            // REFUSE. This arm was previously `warn` + return, on the reasoning
+            // that it was unreachable for the built-in backends and that keeping
+            // the requested posture was "fail safe". Neither holds: it is
+            // reachable now that `CONTAINER` and `LOCAL` declare only the floor
+            // (SECURITY_TODO #17), and keeping the requested posture is exactly
+            // the outcome this function exists to prevent — a pod running while
+            // believing it holds a guarantee the platform does not deliver.
+            //
+            // A silent downgrade IS the failure mode: the operator asked for
+            // enforcement, did not get it, and had no way to tell. The error
+            // names the dimension, the request and the backend so the refusal is
+            // actionable rather than a wall.
             error!(
                 backend = backend.name,
                 error = %err,
                 "isolation clamp: required isolation is unenforceable on this backend"
             );
-            return;
+            return Err(ApiError::InvalidSpec(format!(
+                "isolation unenforceable on this node: {err}"
+            )));
         }
     };
 
@@ -134,6 +163,7 @@ pub(crate) fn clamp_isolation_to(spec: &mut PodSpec, backend: &'static BackendCa
             lattice: Box::new(lattice.with_minimum_isolation(enforced.enforced)),
         };
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -173,7 +203,8 @@ mod tests {
         let mut spec = spec_with(PolicySpec::Profile {
             name: "default".to_string(),
         });
-        clamp_isolation_to(&mut spec, &BackendCapability::FIRECRACKER);
+        clamp_isolation_to(&mut spec, &BackendCapability::FIRECRACKER)
+            .expect("firecracker enforces the full lattice");
 
         assert_eq!(
             label(&spec, "isolation.coproduct.one/backend"),
@@ -210,7 +241,8 @@ mod tests {
         let mut spec = spec_with(PolicySpec::Inline {
             lattice: Box::new(requested),
         });
-        clamp_isolation_to(&mut spec, &BackendCapability::APPLE_VZ);
+        clamp_isolation_to(&mut spec, &BackendCapability::APPLE_VZ)
+            .expect("apple-vz clamps up rather than refusing this posture");
 
         assert_eq!(
             label(&spec, "isolation.coproduct.one/backend"),
@@ -237,8 +269,8 @@ mod tests {
     fn the_clamp_is_wired_before_admission_unconditionally() {
         let main = include_str!("main.rs");
         let clamp = main
-            .find("driver::clamp_isolation_to_backend(&mut spec)")
-            .expect("the clamp is called from main.rs");
+            .find("driver::clamp_isolation_to_backend(&state.driver, &mut spec)?")
+            .expect("the clamp is called from main.rs, with the node's own driver, and its refusal propagated");
         let admit = main
             .find("state.authority.admit(&admission, &spec, id)")
             .expect("admission is called from main.rs");
@@ -247,6 +279,80 @@ mod tests {
         assert_eq!(
             indent, "    ",
             "the clamp must be at function-body level, not under a condition"
+        );
+    }
+
+    // ── SECURITY_TODO #17: the backend is the driver's, not the environment's ──
+
+    /// The capability is a total function of the driver. Before this, the
+    /// selector was `NUCLEUS_ISOLATION_BACKEND` defaulting to Firecracker, so a
+    /// container node clamped against the FULL lattice and labelled itself
+    /// `backend=firecracker` — a posture nothing on that path delivers.
+    #[test]
+    fn the_backend_is_the_drivers_not_the_environments() {
+        assert_eq!(
+            isolation_backend(&DriverKind::Container).name,
+            "container",
+            "a container node must not inherit Firecracker's capability"
+        );
+        assert_eq!(
+            isolation_backend(&DriverKind::Firecracker).name,
+            "firecracker"
+        );
+        assert_eq!(isolation_backend(&DriverKind::AppleVz).name, "apple-vz");
+        #[cfg(feature = "local-driver")]
+        assert_eq!(isolation_backend(&DriverKind::Local).name, "local");
+    }
+
+    /// The common case must not regress into a refusal: a pod that names no
+    /// minimum gets `localhost()` (Shared/Unrestricted/Host), which every
+    /// backend can back. If this ever reds, the container floor was set below
+    /// the default posture and every ordinary pod is being refused.
+    #[test]
+    fn a_container_pod_with_no_minimum_is_admitted_and_labelled_container() {
+        let mut spec = spec_with(PolicySpec::Profile {
+            name: "default".to_string(),
+        });
+        clamp_isolation_to(&mut spec, &BackendCapability::CONTAINER)
+            .expect("the default posture is deliverable on a container");
+
+        assert_eq!(
+            label(&spec, "isolation.coproduct.one/backend"),
+            Some("container"),
+            "the label must name the backend that actually ran the clamp"
+        );
+    }
+
+    /// The refusal this item exists for: a container cannot deliver a microVM,
+    /// so a pod asking for one is REFUSED rather than told it got it. This arm
+    /// used to `warn!` and return, leaving the spec unclamped.
+    #[test]
+    fn a_container_pod_asking_for_a_microvm_is_refused_naming_the_dimension() {
+        let requested = spec_with(PolicySpec::Profile {
+            name: "default".to_string(),
+        })
+        .spec
+        .resolve_policy()
+        .expect("default profile resolves")
+        .with_minimum_isolation(IsolationLattice::new(
+            ProcessIsolation::MicroVM,
+            FileIsolation::Unrestricted,
+            NetworkIsolation::Host,
+        ));
+        let mut spec = spec_with(PolicySpec::Inline {
+            lattice: Box::new(requested),
+        });
+
+        let err = clamp_isolation_to(&mut spec, &BackendCapability::CONTAINER)
+            .expect_err("a container has no separate kernel; this must not be granted in name");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("process") && msg.contains("container"),
+            "the refusal must name the dimension and the backend, not just fail: {msg}"
+        );
+        assert!(
+            label(&spec, "isolation.coproduct.one/enforced").is_none(),
+            "a refused clamp must not leave a posture label asserting enforcement"
         );
     }
 }

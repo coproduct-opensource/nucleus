@@ -100,6 +100,39 @@ Use proptest::proptest! macro with arbitrary input generation."""
 applies_to = ["**/portcullis/src/**"]
 anti_patterns = ["Testing lattice ops with only hardcoded examples"]
 
+[[conventions]]
+id = "delegatable-agency-objective"
+category = "custom/direction"
+priority = "high"
+title = "Every change projects onto safely delegatable agency"
+prompt_injection = """
+The objective (ADR 0005) is to expand the frontier of safely delegatable machine
+agency: an agent should do as much useful real-world work as its principal
+authorizes, and be structurally incapable of exceeding that authorization.
+
+  I = useful autonomous work completed
+      / (authority risk + human friction + integration cost)
+
+subject to the invariant `exercised authority <= delegated authority`.
+
+The product test for any change: does this let someone safely delegate MORE
+agency, MORE PRECISELY, MORE EASILY, or with GREATER CONFIDENCE? A change with
+no projection onto one of those four is peripheral; say so early.
+
+Never raise the objective by weakening the invariant. Widening what an agent may
+do without its principal saying so is not an improvement. Usability never
+improves by granting more: rho = granted / observably-required must trend to 1
+(crates/portcullis/src/authority_metrics.rs).
+
+No claim about how much work can be delegated ships ahead of a committed harness
+run that measured it (docs/PROOFS.md tiers, extended by MEASURED)."""
+applies_to = ["**"]
+anti_patterns = [
+    "Widening a default profile or ceiling to make a task pass",
+    "Adding an authority dimension with no way to grant less of it",
+    "Publishing a work-completed or capability number with no committed harness run behind it",
+]
+
 # ── Autonomy Zones ──────────────────────────────────────────────────────
 
 [[autonomy]]

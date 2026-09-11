@@ -143,7 +143,129 @@ subject_prefix = "spiffe://YOUR-TRUST-DOMAIN/ns/production/*"
 audience = "https://kms.YOUR-DOMAIN.example/v1/sign"
 allowed_grants = ["urn:ietf:params:oauth:grant-type:token-exchange"]
 max_token_lifetime_secs = 300
+max_scope = ["sign:release"]
 ```
+
+### `max_scope` — what the token may DO once it arrives
+
+The three fields above bound **who** may reach **which** audience and **for how
+long**. `max_scope` bounds **what the issued token may do when it gets there**,
+and it is the field to set deliberately.
+
+Before it existed, `scope` was echoed from the request verbatim: a workload
+asked for a scope and the OP minted it. Nothing downstream enforces on our
+`scope` today, which made it inert rather than dangerous — but it is precisely
+the claim a relying party keys on, and the moment one does, an unbounded scope
+is an unbounded credential.
+
+| `max_scope` | meaning |
+|---|---|
+| absent | the rule bounds no scope. A request that **asks** for one is refused; a request that asks for none is unaffected. |
+| `max_scope = []` | constrained to nothing: no scope may be requested. Distinct from absent. |
+| `max_scope = ["a", "b"]` | the requested scope must be a **subset**. A caller may ask for less; never for more. |
+
+Narrowing only, and **refused rather than trimmed**: a caller asking for
+`sign:release sign:anything` under the rule above gets an error, not a token
+that quietly does half of what they asked. A credential that silently means less
+than its holder believes is its own class of incident.
+
+The caller sees a bare `invalid_target`. Which scopes the rule admits is
+operator information — answering it would make the token endpoint a policy
+oracle a caller could enumerate — so **the refused scopes and the ceiling go to
+the log**, at `WARN`, with the rule id. That is where to look when a workload
+reports a denial you did not expect.
+
+Absent is the migration-safe default rather than the fail-closed one, and the
+distinction is worth understanding: fail-closed on the *hazard* (an unbounded
+scope being minted) costs nothing, because a request for no scope still
+succeeds under every rule. Set `max_scope` on every rule whose RP looks at
+scope at all.
+
+### `scope_requires` — what the PRINCIPAL delegated
+
+`max_scope` is the operator's ceiling: what this rule is willing to issue.
+`scope_requires` is the principal's: what the person who approved *this pod's*
+grant actually delegated. Both have to hold.
+
+```toml
+[[rule]]
+id = "agents-to-logs"
+subject_prefix = "spiffe://YOUR-TRUST-DOMAIN/ns/production/*"
+audience = "https://logs.YOUR-DOMAIN.example/v1"
+allowed_grants = ["urn:ietf:params:oauth:grant-type:token-exchange"]
+max_token_lifetime_secs = 900
+max_scope = ["logs:read", "logs:write"]
+
+[rule.scope_requires]
+"logs:read"  = ["aws/read-logs"]
+"logs:write" = ["aws/write-object"]
+```
+
+The map is a **translation**, and it has to be: a relying party's scopes are its
+own (`logs:read`), nucleus's effects are the units a person granted
+(`aws/read-logs`). The rule is the one place that knows both, which makes it the
+one place an operator can be asked to state the correspondence deliberately
+rather than have it guessed.
+
+A workload presents its pod certificate as the RFC 8693 `actor_token`:
+
+```
+actor_token=<base64 AttenuationToken>
+actor_token_type=urn:nucleus:params:oauth:token-type:pod-certificate
+```
+
+`actor_token` is the slot for "the party acting on the subject's behalf", and a
+pod certificate is exactly that: the signed, attenuating record of what a person
+delegated to this workload. It is not a JWT and does not need to be — RFC 8693
+lets a token type be any URI.
+
+The rule above then issues `logs:write` only to a pod whose certificate grants
+`aws/write-object`. **The operator's ceiling and the principal's grant both
+apply**, and the delegation ceiling survives the boundary — which is the thing
+SPIFFE alone does not give you. SPIFFE says *who this workload is*; the
+certificate says *what its principal allowed*.
+
+A scope with no `scope_requires` entry is bounded by `max_scope` alone, so the
+feature is opt-in per scope and adding it breaks nothing.
+
+#### `NUCLEUS_OIDC_CERT_ROOT_PUBKEY` is not optional if you use this
+
+Set it to the hex of the 32-byte Ed25519 root your pod certificates chain to.
+
+**Why it is load-bearing.** `AttenuationToken::verify` walks the chain against
+the root key *the token itself carries*, which proves the chain is internally
+consistent and nothing else — anyone can generate a root and mint themselves a
+certificate granting `aws/mutate-iam`. The pinned root is the only thing that
+makes a presented certificate mean anything, and it is compared in constant time
+before the chain is walked at all.
+
+An OP with no pinned root refuses every certificate, so a rule using
+`scope_requires` will deny rather than fall back to the operator ceiling. That
+is the intended failure direction: a misconfigured OP issues nothing rather than
+issuing something it cannot justify.
+
+#### What the relying party receives
+
+When a certificate was verified, the issued token carries the granted effects:
+
+```json
+{
+  "sub": "spiffe://prod.example.com/ns/agents/sa/coder",
+  "aud": "https://logs.YOUR-DOMAIN.example/v1",
+  "scope": "logs:read",
+  "act": { "sub": "spiffe://prod.example.com/ns/agents/sa/coder" },
+  "urn:nucleus:effects": ["aws/read-inventory", "aws/read-logs"]
+}
+```
+
+An RP that understands nucleus can enforce per-effect from the token alone. One
+that does not ignores a namespaced private claim it has never heard of (RFC 7519
+§4.3), and the `scope` it does understand is already bounded by those effects.
+
+**`urn:nucleus:effects` absent means "not established", never "none".** An
+exchange with no certificate omits the claim rather than asserting an empty
+grant. An RP that read the first as the second would conclude a workload had
+been delegated nothing, when in fact nobody had said either way.
 
 Glob semantics: `*` suffix only (no regex, no anywhere-glob). Audience is exact match. See `crates/nucleus-oidc-provider/src/federation.rs` for the schema.
 

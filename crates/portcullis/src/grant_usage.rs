@@ -168,6 +168,46 @@ impl UsageReport {
     pub fn is_empty(&self) -> bool {
         self.observations == 0
     }
+
+    /// Denials on a dimension the grant itself holds above `Never`.
+    ///
+    /// This is where friction lives. The grant said this *kind* of act was
+    /// authorised and the run was refused anyway — because a path was
+    /// blocked, a host was off the list, a budget ran out, an approval was
+    /// wanted. Every one of them is a place a person's stated intent and the
+    /// runtime's behaviour disagreed, and it is exactly the population
+    /// `EscalationProposal` turns into a decision somebody can act on.
+    ///
+    /// Read it as an **upper bound on wrongly-refused work, not a bug count**.
+    /// A blocked `.ssh/id_rsa` read under a grant that holds `read_files` is
+    /// in here and is a perfectly correct refusal; so is an approval-gated
+    /// write, which is a deferral rather than a denial of authority. What the
+    /// number is good for is direction: it should fall as effects get more
+    /// precise, and a rise means a grant is drifting away from the work it was
+    /// compiled for.
+    ///
+    /// Denials on dimensions the grant does NOT hold are excluded, because
+    /// those are the boundary doing its job on work nobody authorised — the
+    /// opposite of friction, and counting them here would make a tighter grant
+    /// look worse.
+    #[must_use]
+    pub fn denials_within_grant(&self) -> usize {
+        self.denials
+            .iter()
+            .filter(|d| self.operations_granted.contains(&d.operation))
+            .map(|d| d.count)
+            .sum()
+    }
+
+    /// The denial rows behind [`Self::denials_within_grant`], for a report
+    /// that has to say *which* work was refused rather than how much.
+    #[must_use]
+    pub fn denials_within_grant_rows(&self) -> Vec<&OperationCount> {
+        self.denials
+            .iter()
+            .filter(|d| self.operations_granted.contains(&d.operation))
+            .collect()
+    }
 }
 
 fn ratio(num: usize, den: usize) -> f64 {
@@ -359,8 +399,7 @@ pub fn narrow(grant: &TaskGrant, usage: &UsageReport, name: &str) -> Narrowed {
     }
 
     let restrictive = PermissionLattice::restrictive();
-    let gap = WeakeningCostConfig::default().compute_gap(&restrictive, &lattice);
-    let risk = summarise_risk(&lattice, gap);
+    let risk = summarise_risk(&restrictive, &lattice, &WeakeningCostConfig::default());
 
     let mut provenance = grant.provenance.clone();
     provenance
@@ -797,5 +836,70 @@ mod tests {
             Some("h.example")
         );
         assert_eq!(host_of(""), None);
+    }
+
+    // ── The friction term (ADR 0005) ────────────────────────────────────────
+    //
+    // ρ says how much authority was held beyond what was used. It says nothing
+    // about the other direction — work the grant meant to admit and the runtime
+    // refused anyway — and that direction is where a person's stated intent and
+    // the runtime's behaviour actually disagree.
+
+    #[test]
+    fn a_denial_inside_the_grant_counts_as_friction() {
+        let catalog = catalog();
+        let grant = grant(&catalog);
+        // `read_files` is granted (fs/read-workspace lowers to it), and this
+        // read was refused anyway — a blocked path, say.
+        let obs = vec![Observation::failed(Operation::ReadFiles, "secrets/.env")];
+        let report = attribute(&grant, &catalog, &obs);
+        assert!(
+            report.operations_granted.contains(&Operation::ReadFiles),
+            "precondition: the grant holds read_files"
+        );
+        assert_eq!(report.denials_within_grant(), 1);
+        assert_eq!(report.denied, 1);
+    }
+
+    /// The other direction, and the reason the two numbers are separate. A
+    /// denial on a dimension nobody granted is the boundary doing its job on
+    /// work nobody authorised. Counting it as friction would make a TIGHTER
+    /// grant score worse, which is exactly backwards.
+    #[test]
+    fn a_denial_outside_the_grant_is_not_friction() {
+        let catalog = catalog();
+        let grant = grant(&catalog);
+        let obs = vec![Observation::failed(Operation::GitPush, "origin main")];
+        let report = attribute(&grant, &catalog, &obs);
+        assert!(
+            !report.operations_granted.contains(&Operation::GitPush),
+            "precondition: the grant does NOT hold git_push"
+        );
+        assert_eq!(
+            report.denials_within_grant(),
+            0,
+            "a refusal of unauthorised work is the boundary working, not friction"
+        );
+        assert_eq!(report.denied, 1, "it is still counted as a denial");
+    }
+
+    /// Non-vacuity for the pair above: with both present, the two numbers
+    /// differ, so neither is just an alias for `denied`.
+    #[test]
+    fn friction_and_total_denials_are_different_numbers() {
+        let catalog = catalog();
+        let grant = grant(&catalog);
+        let obs = vec![
+            Observation::failed(Operation::ReadFiles, "secrets/.env"),
+            Observation::failed(Operation::GitPush, "origin main"),
+            Observation::failed(Operation::GitPush, "origin release"),
+        ];
+        let report = attribute(&grant, &catalog, &obs);
+        assert_eq!(report.denials_within_grant(), 1);
+        assert_eq!(report.denied, 3);
+        let rows = report.denials_within_grant_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].operation, Operation::ReadFiles);
+        assert_eq!(rows[0].example, "secrets/.env");
     }
 }

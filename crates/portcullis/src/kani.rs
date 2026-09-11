@@ -2246,7 +2246,7 @@ fn proof_compartment_transition_no_leak() {
 fn proof_budget_ledger_conserves() {
     let max: u8 = kani::any();
     let consumed: u8 = kani::any();
-    let mut ledger = crate::budget_ledger::LedgerCore::<4>::new(max as u64, consumed as u64);
+    let mut ledger = crate::budget_ledger::LedgerCore::<u64, 4>::new(max as u64, consumed as u64);
     assert!(
         ledger.conserves(),
         "constructor must establish the invariant"
@@ -2277,21 +2277,21 @@ fn proof_budget_ledger_conserves() {
 fn proof_budget_ledger_release_conserves() {
     let max: u8 = kani::any();
     let consumed: u8 = kani::any();
-    let mut ledger = crate::budget_ledger::LedgerCore::<4>::new(max as u64, consumed as u64);
+    let mut ledger = crate::budget_ledger::LedgerCore::<u64, 4>::new(max as u64, consumed as u64);
 
     let amount: u8 = kani::any();
     let other: u8 = kani::any();
     let _ = ledger.try_allocate(1, amount as u64);
     let _ = ledger.try_allocate(2, other as u64);
 
-    let consumed_before = ledger.parent_consumed_micro();
+    let consumed_before = ledger.parent_consumed_units();
     let allocation = ledger.allocation_of(1);
     let reported: u8 = kani::any();
     let result = ledger.release(1, reported as u64);
 
     match (allocation, result) {
         (Some(a), Ok(refund)) => {
-            let folded = ledger.parent_consumed_micro() - consumed_before;
+            let folded = ledger.parent_consumed_units() - consumed_before;
             assert!(
                 folded <= a,
                 "parent consumption grows by at most the allocation"

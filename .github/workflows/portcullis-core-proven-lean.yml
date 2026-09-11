@@ -24,10 +24,14 @@ on:
   push:
     branches: ["main"]
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/portcullis-core/lean/**"
       - ".github/workflows/portcullis-core-proven-lean.yml"
   pull_request:
     paths:
+      - "scripts/check-lean-external-state.py"
+      - "scripts/lean-axiom-audit.sh"
       - "crates/portcullis-core/lean/**"
       - ".github/workflows/portcullis-core-proven-lean.yml"
   merge_group:
@@ -72,7 +76,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.merge_group.head_sha }}
-          PATTERN: '^crates/portcullis-core/lean/|^\.github/workflows/portcullis-core-proven-lean\.yml$'
+          PATTERN: '^crates/portcullis-core/lean/|^\.github/workflows/portcullis-core-proven-lean\.yml$|^scripts/(check-lean-external-state\.py|lean-axiom-audit\.sh)$'
         run: |
           set -euo pipefail
           if [ "$EVENT" != "merge_group" ]; then
@@ -97,131 +101,93 @@ jobs:
           fi
 
 
-      - name: Reject compiler overrides (with planted-override falsifiers)
+      - name: Build Lean project with cached artifacts
         if: steps.scope.outputs.relevant == 'true'
-        run: |
-          python3 crates/portcullis-core/lean/check_compiler_overrides.py --self-test
-          python3 crates/portcullis-core/lean/check_compiler_overrides.py
-
-      - name: Install elan (Lean toolchain)
-        if: runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true')
-        run: |
-          # elan v4.2.4 as its release binary, checksum-verified before it runs; no downloaded
-          # script is handed to an interpreter (Scorecard Pinned-Dependencies).
-          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
-          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  /tmp/elan.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/elan.tar.gz -C /tmp elan-init
-          /tmp/elan-init -y --no-modify-path
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      # Cache-poisoning ignored: formal-proof build only, no published artifacts.
-      - name: Cache Lake / Mathlib build artifacts
-        if: ${{ runner.environment == 'github-hosted' && (steps.scope.outputs.relevant == 'true') }}
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5 # zizmor: ignore[cache-poisoning]
+        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
+        env:
+          LEAN_NUM_THREADS: "4"
         with:
-          path: |
-            crates/portcullis-core/lean/.lake
-            ~/.elan
-            ~/.cache/mathlib
-          key: lean-aeneas-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
-          restore-keys: |
-            lean-aeneas-${{ runner.os }}-${{ runner.arch }}-
-
-      # Prebuilt Mathlib oleans from Azure: ~5 min vs ~1 h cold compile.
-      - name: Fetch Mathlib cache (prebuilt oleans)
-        if: steps.scope.outputs.relevant == 'true'
-        working-directory: crates/portcullis-core/lean
-        run: lake exe cache get || true
-
-      - name: lake build (proven tier — type-check all kernel-checked libs)
-        if: steps.scope.outputs.relevant == 'true'
-        working-directory: crates/portcullis-core/lean
-        run: |
-          LEAN_NUM_THREADS=4 lake build \
-            PortcullisCoreBridge \
-            PortcullisCoreIFC \
-            IntegrityNoninterferenceExtracted \
-            ExposureProofs \
-            FlowProofs \
-            FlowGraphProofs \
-            DecidePureProofs \
-            DeclassifyProofs \
-            DeclassifySinkScopeExtracted \
-            CompartmentProofs \
-            DelegationProofs \
-            DerivationProofs \
-            SessionCeilingProofs \
-            GuestDeviceSurfaceProofs \
-            GovernanceCompletenessSpike \
-            GkatSyntaxProofs \
-            GkatGuardedStringProofs \
-            GkatInexpressibleProofs \
-            GkatUniquenessFrontierProofs \
-            GkatExistenceFrontierProofs \
-            GkatUAIndependenceProofs \
-            GkatObservationProofs \
-            GkatPullbackWitnessProofs \
-            GkatDerivativeProofs \
-            GkatWellNestedProofs \
-            GkatBisimulationProofs \
-            GkatCompletenessProofs \
-            GkatDerivativeFiniteProofs \
-            GkatDecisionProofs \
-            GkatBehaviorProofs \
-            GkatInexpressibilityProofs \
-            GkatCoequationProofs \
-            GkatFaithfulnessProofs \
-            GkatKleeneProofs \
-            GkatChainEliminationProofs \
-            ExposureLoopFixpointProofs \
-            GkatGuardedLoopBridge \
-            GkatWhileStep \
-            GkatOrderedProofs \
-            SnapshotCloneSafetyProofs \
-            DerivationCascadeAdmissible \
-            ReceiptChainProofs \
-            IFCSemilatticeProofs \
-            DelegationCategoryProofs \
-            GaloisConnectionProofs \
-            AttenuationProofs \
-            PortcullisCoreAttenuation \
-            AttenuationChainExtracted \
-            PortcullisCoreCertChain \
-            CertChainMonotoneExtracted \
-            SemanticIFC \
-            MonoidalPermissionProofs \
-            ConstructiveSecurity \
-            WasiWorldFunctor \
-            WasiIfcBoundary \
-            BelnapDecisionProofs \
-            RepairAlgebraProofs \
-            MatrixBridge \
-            PortcullisCoreCapQuantale \
-            CapabilityResiduatedQuantaleProofs \
-            PortcullisCoreIdentity \
-            IdentityMaterialNoninterferenceExtracted \
-            PortcullisCoreChannel \
-            ChannelAdmissionExtracted \
-            SnapshotChannelBindingProofs \
-            AssuranceCoverage \
-            UniversalDetection \
-            PodMachineSpike \
-            PodCrossView \
-            IdentityOracleMirror \
-            ConfidentialityOracleMirror \
-            IntegrityOracleMirror \
+          lake-package-directory: crates/portcullis-core/lean
+          auto-config: "false"
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "true"
+          use-github-cache: "${{ runner.environment == 'github-hosted' }}"
+          build-args: >-
+            PortcullisCoreBridge
+            PortcullisCoreIFC
+            IntegrityNoninterferenceExtracted
+            ExposureProofs
+            FlowProofs
+            FlowGraphProofs
+            DecidePureProofs
+            DeclassifyProofs
+            DeclassifySinkScopeExtracted
+            CompartmentProofs
+            DelegationProofs
+            DerivationProofs
+            SessionCeilingProofs
+            GuestDeviceSurfaceProofs
+            GovernanceCompletenessSpike
+            GkatSyntaxProofs
+            GkatGuardedStringProofs
+            GkatInexpressibleProofs
+            GkatUniquenessFrontierProofs
+            GkatExistenceFrontierProofs
+            GkatUAIndependenceProofs
+            GkatObservationProofs
+            GkatPullbackWitnessProofs
+            GkatDerivativeProofs
+            GkatWellNestedProofs
+            GkatBisimulationProofs
+            GkatCompletenessProofs
+            GkatDerivativeFiniteProofs
+            GkatDecisionProofs
+            GkatBehaviorProofs
+            GkatInexpressibilityProofs
+            GkatCoequationProofs
+            GkatFaithfulnessProofs
+            GkatKleeneProofs
+            GkatChainEliminationProofs
+            ExposureLoopFixpointProofs
+            GkatGuardedLoopBridge
+            GkatWhileStep
+            GkatOrderedProofs
+            SnapshotCloneSafetyProofs
+            DerivationCascadeAdmissible
+            ReceiptChainProofs
+            IFCSemilatticeProofs
+            DelegationCategoryProofs
+            GaloisConnectionProofs
+            AttenuationProofs
+            PortcullisCoreAttenuation
+            AttenuationChainExtracted
+            PortcullisCoreCertChain
+            CertChainMonotoneExtracted
+            SemanticIFC
+            MonoidalPermissionProofs
+            ConstructiveSecurity
+            WasiWorldFunctor
+            WasiIfcBoundary
+            BelnapDecisionProofs
+            RepairAlgebraProofs
+            MatrixBridge
+            PortcullisCoreCapQuantale
+            CapabilityResiduatedQuantaleProofs
+            PortcullisCoreIdentity
+            IdentityMaterialNoninterferenceExtracted
+            PortcullisCoreChannel
+            ChannelAdmissionExtracted
+            SnapshotChannelBindingProofs
+            AssuranceCoverage
+            UniversalDetection
+            PodMachineSpike
+            PodCrossView
+            IdentityOracleMirror
+            ConfidentialityOracleMirror
+            IntegrityOracleMirror
             ChannelOracleMirror
-          # CapabilityResiduatedQuantaleProofs: the residuation adjunction
-          # (a⊗b≤c ⟺ b≤a⊸c) for capability, proven over the Aeneas-extracted
-          # capability_quantale slice — the enriching value V of the
-          # Enriched-Reflection model. sorry-free; #print-axioms below.
-          # MatrixBridge: the gaussRankBool ↔ Matrix.rank bridge — fully discharged
-          # (sorry-free; #print-axioms = propext/Classical.choice/Quot.sound) as of
-          # 2026-06-28; promoted research → proven, removed from the GATE-ALLOWLIST.
-          # NOTE: CategoryProofs and LabeledTypeProofs are intentionally EXCLUDED
-          # — they do not currently compile (Mathlib order-refactor drift /
-          # unbound auto-implicits). Tracked as Tier 3 (STALE) in CONJECTURES.md.
-          # Re-add them here once repaired so they cannot regress again.
 
       - name: Proof-hole scan (no sorry/admit outside the research manifest)
         if: steps.scope.outputs.relevant == 'true'
@@ -286,15 +252,15 @@ jobs:
         if: steps.scope.outputs.relevant == 'true'
         # Replaces the three hand-written PrintAxioms files (#2567), whose theorem
         # list was maintained by hand — a theorem nobody added was never audited.
-        # The roots are read from THIS workflow's own `lake build` list, so the
+        # The roots are read from THIS workflow's explicit Lean-action build inputs, so the
         # audited set and the built set cannot drift. One environment per root,
         # so the pairwise-incompatible Aeneas extractions (PortcullisCoreIFC /
         # CapQuantale / Channel) never share an import. Policy, fixtures and the
         # per-theorem native_decide exceptions: scripts/lean-axiom-audit.sh and
         # crates/portcullis-core/lean/.axiom-audit-exceptions.
         run: |
-          roots=$(sed -n '/lake build \\/,/^$/p' .github/workflows/portcullis-core-proven-lean.yml \
-            | grep -oE '^\s+[A-Za-z0-9]+ \\' | tr -d ' \\' | paste -sd, -)
+          builds=$(cargo run -q -p xtask -- lean-action-builds --workflow .github/workflows/portcullis-core-proven-lean.yml)
+          roots=$(printf '%s\n' "$builds" | awk '$1 == "named" {print $2}' | paste -sd, -)
           n=$(echo "$roots" | tr ',' '\n' | wc -l | tr -d ' ')
           [ "$n" -ge 40 ] || { echo "::error::only $n roots parsed from the build list — the audit would be partial"; exit 1; }
           echo "auditing $n roots"

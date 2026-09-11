@@ -392,6 +392,14 @@ struct CreatePodResponse {
 async fn create_pod(admission: &AdmissionMaterial) -> Result<Pod> {
     let issuer = &admission.issuer_hex;
     let creds = &admission.credentials;
+    // `read_only: true` (#2784). This pod boots from the SHARED installed
+    // artifact, and a writable rootfs is hard-linked into the jail rather than
+    // copied — so `verify --tier2` was writing through to the very artifact
+    // whose digest `nucleus setup` pinned and `verify-attestation` compares
+    // against `--expect-rootfs`. The reporter measured it: the installed rootfs
+    // went from `7739f5cd…` to `b7c40744…` across tier-2 runs. Read-only boots
+    // since #2379 put the SVID on tmpfs, so verifying the node no longer
+    // invalidates the thing being verified.
     let body = format!(
         r#"{{"apiVersion":"nucleus/v1","kind":"Pod",
             "metadata":{{"name":"nucleus-verify",
@@ -402,7 +410,7 @@ async fn create_pod(admission: &AdmissionMaterial) -> Result<Pod> {
               "policy":{{"type":"profile","name":"codegen"}},
               "image":{{"kernel_path":"{HOST_ARTIFACTS_DIR}/vmlinux",
                         "rootfs_path":"{HOST_ARTIFACTS_DIR}/rootfs.ext4",
-                        "read_only":false}},
+                        "read_only":true}},
               "vsock":{{"guest_cid":3,"port":5005}}}}}}"#
     );
 
@@ -776,10 +784,16 @@ fn check_credential_absent_from_guest(host: &Tier2Host, pod: &Pod) -> Result<()>
 
     let log = format!("{HOST_STATE_DIR}/pods/{}/firecracker.log", pod.id);
     let contents = host.sh(&format!("cat {log}"))?;
-    assess_leak_sweep(&contents, &canary)?;
-    println!(
-        "  [OK] no node-held secret surfaced in the guest (sweep read its sites; canary absent)"
-    );
+    match assess_leak_sweep(&contents, &canary)? {
+        LeakSweep::Clean => println!(
+            "  [OK] no node-held secret surfaced in the guest (sweep read its sites; canary absent)"
+        ),
+        LeakSweep::NoProbeWorkload => println!(
+            "  [OK] the node's canary is absent from the guest console\n       \
+             (this pod carries no probe workload, so the four-site sweep did not run; \
+             the probe-pod boot lane in CI is what asserts that sweep)"
+        ),
+    }
     Ok(())
 }
 
@@ -841,16 +855,36 @@ fn resolve_canary(host: &Tier2Host) -> Result<String> {
 /// (`looked=yes` on the always-readable ones — otherwise "no canary" means "no
 /// look"), then that no site saw the canary, and finally that the canary value does
 /// not appear anywhere on the console (a path the four sites might not enumerate).
-fn assess_leak_sweep(contents: &str, canary: &str) -> Result<()> {
+fn assess_leak_sweep(contents: &str, canary: &str) -> Result<LeakSweep> {
     let sweep: Vec<&str> = contents
         .lines()
         .filter(|l| l.contains("NUCLEUS_E2E_LEAK"))
         .collect();
     if sweep.is_empty() {
-        bail!(
-            "the guest log has no NUCLEUS_E2E_LEAK lines: the in-guest leak sweep never \
-             ran, so 'the canary was not found' would mean 'nobody looked'."
-        );
+        // Whether this is a failure depends on whether the pod could have
+        // answered. `NUCLEUS_E2E_LEAK` lines come only from
+        // `nucleus-workload-probe`, which a pod emits only when it runs the
+        // probe AS ITS WORKLOAD — and the guest takes its workload from the
+        // spec baked into the image (`build-rootfs.sh` copies `POD_SPEC` to
+        // /etc/nucleus/pod.yaml), not from the API request. The demo rootfs
+        // that `verify --tier2` boots has no `workload:` block at all, so it
+        // cannot produce these lines however healthy it is (#2717).
+        //
+        // The probe's OTHER sentinel, `NUCLEUS_WORKLOAD_PROBE`, tells the two
+        // cases apart, and the neighbouring check in `check_guest_facts`
+        // already gates on exactly that for exactly this reason.
+        if contents.contains("NUCLEUS_WORKLOAD_PROBE") {
+            bail!(
+                "the guest ran the workload probe but its log has no NUCLEUS_E2E_LEAK \
+                 lines: the in-guest leak sweep never ran, so 'the canary was not \
+                 found' would mean 'nobody looked'."
+            );
+        }
+        // Still worth doing on a pod with no probe: the sweep enumerates four
+        // sites, but the canary appearing ANYWHERE on the console is a leak on
+        // a path those sites do not cover, and that check needs no probe.
+        assert_canary_absent_from_console(contents, canary)?;
+        return Ok(LeakSweep::NoProbeWorkload);
     }
 
     // Non-vacuity: the always-readable sites must report looked=yes.
@@ -878,6 +912,23 @@ fn assess_leak_sweep(contents: &str, canary: &str) -> Result<()> {
 
     // Belt-and-suspenders: the canary VALUE must not appear anywhere on the console,
     // catching a leak on any path the four enumerated sites do not cover.
+    assert_canary_absent_from_console(contents, canary)?;
+    Ok(LeakSweep::Clean)
+}
+
+/// What the guest log could establish about the leak sweep.
+#[derive(Debug, PartialEq, Eq)]
+enum LeakSweep {
+    /// The sweep ran, read its sites, and saw nothing.
+    Clean,
+    /// This pod carries no probe workload, so there was no sweep to read. The
+    /// console-wide canary check still ran and passed.
+    NoProbeWorkload,
+}
+
+/// The canary VALUE must not appear anywhere on the guest console. Applies to
+/// any pod, probe or not, because it needs no cooperation from the guest.
+fn assert_canary_absent_from_console(contents: &str, canary: &str) -> Result<()> {
     if contents.contains(canary) {
         bail!(
             "the node's canary value appears in the guest console log — a leak on a path \
@@ -1040,16 +1091,58 @@ mod leak_sweep {
     /// that refused every sweep would satisfy all of them while being useless.
     #[test]
     fn a_clean_sweep_passes() {
-        assert!(assess_leak_sweep(&clean_sweep(), CANARY).is_ok());
+        assert_eq!(
+            assess_leak_sweep(&clean_sweep(), CANARY).expect("a clean sweep passes"),
+            LeakSweep::Clean
+        );
     }
 
-    /// The probe never ran the sweep, so nothing was inspected. This is the state
-    /// that used to be indistinguishable from success.
+    /// The probe RAN and still swept nothing, so nothing was inspected. This is
+    /// the state that used to be indistinguishable from success, and it is still
+    /// a refusal — the anti-vacuity fence is the point of this function.
     #[test]
-    fn a_sweep_that_never_ran_is_refused() {
-        let err = assess_leak_sweep("some unrelated boot log\n", CANARY)
+    fn a_probe_that_swept_nothing_is_refused() {
+        let ran_but_silent = "NUCLEUS_WORKLOAD_PROBE: PASS\nsome unrelated boot log\n";
+        let err = assess_leak_sweep(ran_but_silent, CANARY)
             .expect_err("no NUCLEUS_E2E_LEAK lines means nobody looked");
         assert!(format!("{err}").contains("nobody looked"));
+    }
+
+    /// A pod with no probe workload cannot emit sweep lines however healthy it
+    /// is: the guest reads its workload from the spec baked into the image, and
+    /// the demo rootfs `verify --tier2` boots has no `workload:` block. Asking
+    /// it for sweep evidence made `verify --tier2` exit 1 after 16 passing
+    /// checks on a correct install (#2717).
+    #[test]
+    fn a_pod_with_no_probe_workload_is_not_asked_for_a_sweep() {
+        assert_eq!(
+            assess_leak_sweep("some unrelated boot log\n", CANARY)
+                .expect("a demo pod cannot answer, so it is not asked"),
+            LeakSweep::NoProbeWorkload
+        );
+    }
+
+    /// ...but "not asked for a sweep" is not "not checked". The console-wide
+    /// canary check needs no cooperation from the guest, so it still runs — a
+    /// real leak on a probe-less pod is still caught, and still without
+    /// printing the secret.
+    #[test]
+    fn a_leak_on_a_probe_less_pod_is_still_caught() {
+        let leaked = format!("some unrelated boot log\nSECRET={CANARY}\n");
+        let err =
+            assess_leak_sweep(&leaked, CANARY).expect_err("the canary value is on the console");
+        let msg = format!("{err}");
+        assert!(
+            !msg.contains(CANARY),
+            "the failure printed the secret it exists to protect"
+        );
+        // It must be refused for the LEAK, not for the absent sweep — otherwise
+        // this passes on the very behaviour #2717 is about, and would stop
+        // catching the leak the moment that behaviour changed.
+        assert!(
+            msg.contains("appears in the guest console log"),
+            "refused for the wrong reason, so this is not evidence the leak was seen: {msg}"
+        );
     }
 
     /// A required site reports `looked=no` — its read or search is broken, so its
