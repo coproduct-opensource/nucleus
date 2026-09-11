@@ -126,6 +126,13 @@ enum Command {
     /// not wired to the enforcement path — the general case of the class C8
     /// gates for the Aeneas predicates.
     LawMechanisms,
+    /// How far the tree is from ADR 0006's four objects, on the two arrows
+    /// whose population can be enumerated from a source: `linearity` (a
+    /// one-shot right taken by value) and `act_coverage` (a protected boundary
+    /// carrying its target). `attenuation` and `lineage` are excluded because a
+    /// hand-listed denominator is the metric equivalent of a gate that cannot
+    /// fail — see `.convergence-ratchet.toml`.
+    Convergence,
     /// A witness accepted and dropped is a gate that is present but does
     /// nothing. Every `_`-bound authority/attestation parameter in the
     /// production region must be declared in
@@ -301,6 +308,7 @@ mod ci_otel;
 mod ci_spec;
 mod ci_timings;
 mod clippy_config;
+mod convergence;
 mod fly_pools;
 mod gatehouse_pin;
 mod inert_authority;
@@ -361,6 +369,10 @@ fn main() -> Result<()> {
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
         // Exit code mapped here rather than inside the check, so a unit test
         // calling `run()` survives — the SelfPin arm's reasoning.
+        Command::Convergence => match convergence::run()? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::LawMechanisms => match law_mechanisms::run()? {
             0 => Ok(()),
             code => std::process::exit(code),
