@@ -150,12 +150,26 @@ reproduces; adding a cedar-bearing package to the same invocation does not.
   direction they are meant to move is down. When a merge from main brings in
   someone else's comments, follow the ceiling rather than delete their prose.
 - **Coverage** (`coverage-matrix.yml`): `--fail-under-lines 83` workspace-wide.
-  Its `--ignore-filename-regex '(tests/|kani\.rs|main\.rs)'` excludes test
-  *directories* and `main.rs` but **not** in-file `#[cfg(test)] mod tests`, so
-  test code counts as covered lines on both sides of the ratio. Adding `L` lines
-  of executed test code lowers the production lines still needed by `0.17 * L`.
-  Worth knowing before reading a percentage as a statement about production
-  coverage.
+  Read the **lines** column, not regions — they differ by half a point and only
+  one of them is the gate. Its `--ignore-filename-regex
+  '(tests/|kani\.rs|main\.rs)'` excludes test *directories* and `main.rs` but
+  **not** in-file `#[cfg(test)] mod tests`, so test code is measured too.
+
+  It is tempting to conclude that test code therefore lifts the ratio for free.
+  **Measured, it does not.** Twenty tests adding 491 lines to three files took
+  108 missed lines out of them — a real improvement to those files — and the
+  workspace line figure moved 82.46% → 82.44%. Test code brings its own
+  uncovered arms (`let Ok(..) = .. else { return }`, panic paths); a new
+  fixture module landed at 88% covered, not 100%. Coverage arithmetic done on
+  the assumption that added test lines all execute will mislead you.
+
+  The other thing worth checking before writing tests to move this number: the
+  largest pools of missed lines are usually nowhere near the change under
+  review. On one measurement the top six were `exposure-playground` (1523
+  missed, 0% — a crate with no tests at all), `nucleus-tool-proxy/src/mcp.rs`
+  (870), `nucleus-cli/src/run.rs` (589) and `nucleus-perf/src/agency.rs` (559,
+  0%). A workspace-wide floor is moved by whatever is cheapest to cover
+  anywhere, which is rarely the diff that tripped it.
 
 ## Disk
 
