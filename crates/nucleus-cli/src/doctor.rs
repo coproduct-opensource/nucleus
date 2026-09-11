@@ -1,7 +1,6 @@
 //! Doctor command - diagnose nucleus environment issues
 
 use anyhow::Result;
-use std::path::PathBuf;
 use std::process::Command;
 
 use crate::keychain::{self, SecretKind, SecretStore};
@@ -634,9 +633,20 @@ fn check_config() -> bool {
     println!("Configuration");
     println!("-------------");
 
-    let config_path = dirs::config_dir()
-        .map(|d| d.join("nucleus").join("config.toml"))
-        .unwrap_or_else(|| PathBuf::from("~/.config/nucleus/config.toml"));
+    // `config::default_config_path()`, NOT `dirs::config_dir()`. The two agree
+    // on Linux and disagree on macOS, where `dirs::config_dir()` is
+    // `~/Library/Application Support` and nothing in nucleus ever writes there
+    // — so doctor reported "not found" about a file `setup` had just written,
+    // and named a path no other command uses (#2734). `nucleus_dir()`'s own doc
+    // comment records this same defect being found in `main.rs` on 2026-07-29;
+    // doctor was the third caller, outside the guard that was added then.
+    let Ok(config_path) = crate::config::default_config_path() else {
+        return print_check(
+            "Config file",
+            Status::Warning,
+            "could not determine the home directory",
+        );
+    };
 
     let config_path_str = config_path.display().to_string();
     print_check(
@@ -658,17 +668,35 @@ async fn check_node_connectivity() -> bool {
     println!("Node Connectivity");
     println!("-----------------");
 
-    // Try to connect to default node URL
-    let node_url = "http://127.0.0.1:8080/health";
+    // The node's listener is mTLS-only with no plaintext mode, and its health
+    // route is `/v1/health`. This probe sent plaintext `GET /health`, so it
+    // reported "not reachable" about every healthy node and told the user to
+    // start a node that was already running — the same defect as #2788 in
+    // `start.rs`, in the command that #2734 notes is what `setup` and every
+    // failure message point at to check an install.
+    let node_url = "https://127.0.0.1:8080/v1/health";
 
-    // Create agent with timeout
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(2)))
-        .build();
-    let agent: ureq::Agent = config.into();
+    let client = match crate::provision::mtls_client_from_provisioned_identity() {
+        Ok(client) => client,
+        Err(_) => {
+            // No provisioned identity means this probe cannot complete a
+            // handshake with ANY node, healthy or not. Say that, rather than
+            // reporting the node unreachable for a reason on this side.
+            return print_check(
+                "nucleus-node",
+                Status::Warning,
+                "no CLI identity to check with (run: nucleus setup)",
+            );
+        }
+    };
 
-    match agent.get(node_url).call() {
-        Ok(resp) if resp.status().as_u16() == 200 => {
+    match client
+        .get(node_url)
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
             print_check("nucleus-node", Status::Ok, "reachable")
         }
         Ok(resp) => print_check(
@@ -679,7 +707,7 @@ async fn check_node_connectivity() -> bool {
         Err(_) => print_check(
             "nucleus-node",
             Status::Warning,
-            "not reachable (start with: nucleus-node)",
+            "not reachable (start with: nucleus start)",
         ),
     }
 }
