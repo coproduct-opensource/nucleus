@@ -35,6 +35,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Emit explicit Lean-action targets for the library coverage gate.
+    LeanActionBuilds {
+        /// Limit output to one workflow, for its per-theorem audit.
+        #[arg(long)]
+        workflow: Option<std::path::PathBuf>,
+    },
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
     /// The two pins naming gatehouse must agree: `.gatehouse/pipeline.writ`'s import
@@ -249,6 +255,7 @@ mod gatehouse_pin;
 mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
+mod lean_action_builds;
 mod line_ratchet;
 mod pin_parity;
 mod rerun_plan;
@@ -258,6 +265,7 @@ mod self_pin;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {
             base,
