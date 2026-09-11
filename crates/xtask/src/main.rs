@@ -356,6 +356,7 @@ mod schedule_liveness;
 mod scoreboard;
 mod scorecard;
 mod self_pin;
+mod tot;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
