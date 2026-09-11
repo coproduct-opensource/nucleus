@@ -1828,7 +1828,7 @@ mod tests {
             let output = executor
                 .run(
                     "cat /proc/self/status",
-                    &dt,
+                    dt,
                     Authority::new(run_bundle("cat /proc/self/status")),
                 )
                 .unwrap();
