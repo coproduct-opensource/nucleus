@@ -41,7 +41,13 @@ jobs:
       #     gatehouse than the plan check compares two things that were never the same.
       # Moved 4d42510 -> 7326bfa9 (a descendant) on 2026-09-10 to close a skew that had
       # gone unnoticed because nothing compared the two workflows.
-      GATEHOUSE_REF: 7326bfa9ea3f490c20bb406941527ac0484410c5
+      # Moved 7326bfa9 -> 759a6ad on 2026-09-11, with the plan's import digest, because
+      # gatehouse's `Gate` gained a ninth field (`image`) for its `pinned_b` conjunct and
+      # the five gate literals here had eight. The plan had not typechecked against
+      # gatehouse `main` since; this workflow is path-filtered to `.gatehouse/**`, so a
+      # change on the OTHER side of the pin cannot trigger it and nothing reported the
+      # break. That is the gap the filter buys and it is worth knowing about.
+      GATEHOUSE_REF: 759a6adaac6055247802db3aa94b66c4be4b587f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

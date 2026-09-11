@@ -67,7 +67,7 @@ jobs:
               crates/ci-spec/**
               scripts/check-ci-spec.sh
     env:
-      GATEHOUSE_REF: 7326bfa9ea3f490c20bb406941527ac0484410c5
+      GATEHOUSE_REF: 759a6adaac6055247802db3aa94b66c4be4b587f
       GATE_NAME: ${{ matrix.gate }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
