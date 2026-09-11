@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "label": "compiled grant for 'fix the failing tests', ceiling codegen, Tier 1 local, macOS arm64",
-  "commit": "ececf02d2",
+  "commit": "d20469f72",
   "enforcement": "local",
   "tasks": [
     {
@@ -51,9 +51,17 @@
     "overhead_dimensions": 1.75,
     "overhead_effects": 1.25,
     "clicks": 1,
-    "denials_within_grant": 3,
-    "denials_total": 4,
+    "denials_within_grant": 5,
+    "denials_total": 6,
     "deferrals": 0,
     "residual_risk": "medium"
+  },
+  "recovery": {
+    "task": "write-after-refusal",
+    "blocked_by": "kernel_denied",
+    "proposal_named": "fs/edit-workspace",
+    "decisions": 1,
+    "seconds": 0.26891575,
+    "recovered": true
   }
 }

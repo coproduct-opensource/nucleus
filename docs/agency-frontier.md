@@ -199,6 +199,62 @@ effects in `Cannot` **with the reason** — `outside ceiling local-dev: web_fetc
 is never` — rather than failing to recognise the goal at all. A denial that names
 what it would take is the raw material of an escalation proposal; silence is not.
 
+## Recovery friction
+
+`D`'s denominator is human decisions + configuration + security knowledge +
+recovery friction. `C(T)` was the only one measured, and it only counts the
+decisions on the **happy path** — the run where the grant was right the first
+time. It says nothing about the run where it was not, which is where delegation
+actually fails: an agent is refused something it needed, and either the system
+tells it what would have worked or the person goes and reads a profile.
+
+That failure is invisible in a completion rate. The task simply does not
+complete, and nothing distinguishes "one decision away" from "ten".
+
+`--recovery-goal` measures it. The lane is deliberately under-granted — a
+read-shaped goal, then a write — so the refusal is the boundary doing its job.
+From there:
+
+1. the refusal is read off the wire,
+2. `escalation_proposal::propose` names the least authority that would have
+   allowed it,
+3. the grant is recompiled with exactly that effect added — **one decision**,
+4. the same work is attempted again.
+
+First reading, Tier 1 local, ceiling `codegen`:
+
+```
+recover: write-after-refusal — refused by kernel_denied,
+         proposal named fs/edit-workspace, 1 decision(s) over 0.3s, recovered
+```
+
+The target is one decision, and one decision is what it takes.
+
+### What is actually being asserted
+
+Not `decisions == 1`. A proposal that named nothing and a harness that already
+knew the answer would also score 1. The claim is that the fix came from the
+**system's** proposal and that the proposal was *sufficient*: refused before,
+granted exactly the named effect, completed after.
+
+The harness is not allowed to know which effect fixes it — the name comes from
+`propose`, from the catalog and the ceiling, never from the lane. Two checks
+keep that honest, and both were run:
+
+| perturbation | result |
+|---|---|
+| recovery goal wide enough that the write already succeeds | the lane **errors** rather than reporting 0 friction — a grant that was never too narrow has not measured recovery |
+| the proposal forced to name `fs/read-workspace` instead | `STILL REFUSED after granting the proposed minimum` |
+
+That second row is the one worth keeping. A proposal that names a minimum which
+does not work is *worse* than proposing nothing: it spends the person's one
+decision and leaves them exactly where they started. The report must be able to
+say so, and it can.
+
+Recovery is friction, not work. It is reported beside `clicks` and never enters
+the numerator — measured with and without the lane, the completion rate, ρ and
+every denial count are identical.
+
 ## History
 
 The first reading of this suite, an hour before the one above, was **3/5**. The

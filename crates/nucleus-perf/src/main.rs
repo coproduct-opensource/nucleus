@@ -73,6 +73,12 @@ struct AgencyArgs {
     /// an anecdote.
     #[arg(long)]
     commit: Option<String>,
+    /// Measure recovery friction with this goal, which must be narrow enough
+    /// that a write is REFUSED under it — the lane measures the path from that
+    /// refusal to a working grant, and a goal wide enough to succeed measures
+    /// nothing. `--local` only.
+    #[arg(long, value_name = "GOAL")]
+    recovery_goal: Option<String>,
     /// Tier 1: compile `--goal` into a grant, seal it, and spawn a local
     /// tool-proxy under it instead of booting a pod through the node.
     ///
@@ -271,7 +277,16 @@ fn agency_local(a: AgencyArgs) -> Result<()> {
         .map(std::path::PathBuf::from)
         .unwrap_or(std::env::current_dir()?);
 
-    let run = agency::spawn_local_under_grant(goal, &a.ceiling, &a.tool_proxy_path, &work_dir)?;
+    // No explicit effects: the measured arm grants exactly what the goal
+    // implies. Widening is a decision, and this arm is measuring the run that
+    // did not need one.
+    let run = agency::spawn_local_under_grant(
+        goal,
+        &a.ceiling,
+        &a.tool_proxy_path,
+        &work_dir,
+        &std::collections::BTreeSet::new(),
+    )?;
     println!(
         "grant {} under ceiling {}: {} effect(s) granted, {} clipped\nproxy {}",
         run.grant.id,
@@ -288,7 +303,7 @@ fn agency_local(a: AgencyArgs) -> Result<()> {
             None
         }
     };
-    let report = agency::measure_under_grant(
+    let mut report = agency::measure_under_grant(
         agency::GrantRun {
             proxy: &run.proxy_url,
             secret: Some(run.auth_secret.clone()),
@@ -300,6 +315,22 @@ fn agency_local(a: AgencyArgs) -> Result<()> {
         },
         &run.grant,
     )?;
+
+    if let Some(recovery_goal) = a.recovery_goal.as_deref() {
+        // Its own proxies, under its own grants: the recovery lane
+        // deliberately runs under-granted, and folding that into the measured
+        // arm would drag ρ and the completion rate with it. What it
+        // contributes to the report is one row about friction, not a task.
+        println!("\nrecovery (the term nobody was measuring)");
+        drop(run);
+        report.recovery = Some(agency::measure_recovery(
+            recovery_goal,
+            &a.ceiling,
+            &a.tool_proxy_path,
+            &work_dir,
+        )?);
+    }
+
     agency::write_report(&report, a.out.as_deref())
 }
 
