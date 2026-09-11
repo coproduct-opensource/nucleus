@@ -392,4 +392,72 @@ mod tests {
             "the committed schedule must be one this gate can read: {cron}"
         );
     }
+
+    // ── `report` — the verdict-to-exit-code half ────────────────────────────
+    //
+    // Untested until now, which the coverage gate found before a reader did:
+    // 91 of this file's lines were uncovered and `report` was most of them.
+    // Its three arms are the whole reason the enum has three variants, so a
+    // test per arm is the minimum that makes the distinction load-bearing.
+
+    /// Fresh is the only arm that passes, and it passes with 0.
+    #[test]
+    fn a_fresh_schedule_exits_zero() {
+        let fresh = Liveness::Fresh {
+            age: Duration::from_secs(10 * 60),
+            tolerance: Duration::from_secs(60 * 60),
+        };
+        assert_eq!(report(&fresh, "ci-assurance.yml"), 0);
+    }
+
+    /// Stale is a finding, not an error: the gate looked and did not like what
+    /// it saw. Exit 1 is what reds the check.
+    #[test]
+    fn a_stale_schedule_exits_one() {
+        let stale = Liveness::Stale {
+            age: Duration::from_secs(4 * 60 * 60),
+            tolerance: Duration::from_secs(60 * 60),
+        };
+        assert_eq!(report(&stale, "ci-assurance.yml"), 1);
+    }
+
+    /// Never-ran is also a finding, and deliberately a DIFFERENT variant from
+    /// stale — "it never started" and "it stopped" want different fixes, and
+    /// collapsing them is the case ADR 0007 A-1 is about. The exit code is the
+    /// same; the message is not, which is why both arms exist.
+    #[test]
+    fn a_schedule_that_never_ran_exits_one_and_is_not_stale() {
+        let never = Liveness::NeverRan {
+            tolerance: Duration::from_secs(60 * 60),
+        };
+        assert_eq!(report(&never, "ci-assurance.yml"), 1);
+        assert_ne!(
+            never,
+            Liveness::Stale {
+                age: Duration::from_secs(4 * 60 * 60),
+                tolerance: Duration::from_secs(60 * 60),
+            },
+            "never-ran and stale must stay distinguishable"
+        );
+    }
+
+    /// `report` never returns 2. Exit 2 means "could not look", which only the
+    /// I/O boundary in `run` can decide — a pure function that has been handed
+    /// a verdict has, by construction, already looked. Asserting it here keeps
+    /// the meaning of 2 from leaking into the pure half.
+    #[test]
+    fn report_never_claims_it_could_not_look() {
+        let tolerance = Duration::from_secs(60 * 60);
+        for liveness in [
+            Liveness::Fresh { age: Duration::from_secs(1), tolerance },
+            Liveness::Stale { age: Duration::from_secs(9_999), tolerance },
+            Liveness::NeverRan { tolerance },
+        ] {
+            assert_ne!(
+                report(&liveness, "w.yml"),
+                2,
+                "exit 2 belongs to the I/O boundary, not to a decided verdict"
+            );
+        }
+    }
 }
