@@ -175,6 +175,8 @@ pub fn families() -> Vec<Box<dyn Family>> {
         Box::new(crate::alg::Alg),
         Box::new(crate::tot::Tot),
         Box::new(crate::life::Life),
+        Box::new(crate::typed::Typed),
+        Box::new(crate::suppress::Suppress),
     ]
 }
 
