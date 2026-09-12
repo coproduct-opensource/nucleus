@@ -53,6 +53,8 @@
 // the detector stays live and will report the next thing that stops being wired.
 #![cfg_attr(all(not(test), not(target_os = "linux")), allow(dead_code))]
 
+use uuid::Uuid;
+
 use crate::broker_rollout::BrokerRollout;
 use nucleus_cred_broker::PodIdentity;
 
@@ -183,10 +185,12 @@ pub fn on_start_failure(rollout: BrokerRollout) -> StartFailure {
 /// affineness.
 pub struct BrokerCapability;
 
-/// The token the workload API serves to the guest. Move-only, consumed once.
+/// The token the workload API serves to the guest. Move-only, consumed once,
+/// and bound to the pod it was minted for.
 #[must_use = "a ServeToken that is never served is a capability the guest never gets"]
 pub struct ServeToken {
     secret: String,
+    pod: Uuid,
 }
 
 /// The token the broker listener verifies against. Move-only, consumed once.
@@ -194,6 +198,7 @@ pub struct ServeToken {
               which is exactly the defect BrokerCapability exists to prevent"]
 pub struct VerifyToken {
     secret: String,
+    pod: Uuid,
 }
 
 impl std::fmt::Debug for ServeToken {
@@ -209,19 +214,80 @@ impl std::fmt::Debug for VerifyToken {
     }
 }
 
+/// A capability token used for a pod other than the one it was minted for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrongPod {
+    /// The pod the token was minted for.
+    pub minted_for: Uuid,
+    /// The pod it was about to be used for.
+    pub used_for: Uuid,
+}
+
+impl std::fmt::Display for WrongPod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "broker capability was minted for pod {} and would be used for pod {}: \
+             two pods sharing one would let either sign for the other",
+            self.minted_for, self.used_for
+        )
+    }
+}
+
+impl std::error::Error for WrongPod {}
+
+/// Using another pod's capability is a driver refusal, at every call site.
+///
+/// Here rather than at each `?`, so a new consumer of these tokens gets the
+/// refusal without writing a `map_err` — and so `main.rs`, which sits exactly
+/// at its line ceiling, does not pay three lines for a conversion that belongs
+/// to the error's own module.
+impl From<WrongPod> for crate::ApiError {
+    fn from(e: WrongPod) -> Self {
+        Self::Driver(format!("not this pod's broker capability: {e}"))
+    }
+}
+
 impl ServeToken {
     /// Consume the token, yielding the value served to the guest exactly once.
-    #[must_use]
-    pub fn into_served(self) -> String {
-        self.secret
+    ///
+    /// `pod` is required, not advisory. The doc on [`BrokerCapability::mint`]
+    /// has always said these are "per-pod and never reused: two pods sharing one
+    /// would let either sign for the other, and the listener's identity binding
+    /// — one socket per VM — would stop meaning anything". Nothing enforced it:
+    /// the token carried a bare `String` and `into_served` handed it to whoever
+    /// called. Stating an invariant in prose beside a method that cannot check
+    /// it is the shape this campaign keeps finding.
+    ///
+    /// # Errors
+    ///
+    /// [`WrongPod`] when the token was minted for a different pod.
+    pub fn into_served(self, pod: Uuid) -> Result<String, WrongPod> {
+        if self.pod != pod {
+            return Err(WrongPod {
+                minted_for: self.pod,
+                used_for: pod,
+            });
+        }
+        Ok(self.secret)
     }
 }
 
 impl VerifyToken {
     /// Consume the token, yielding the key the listener authenticates with.
-    #[must_use]
-    pub fn into_verifier(self) -> std::sync::Arc<Vec<u8>> {
-        std::sync::Arc::new(self.secret.into_bytes())
+    ///
+    /// # Errors
+    ///
+    /// [`WrongPod`] when the token was minted for a different pod — see
+    /// [`ServeToken::into_served`] for why that is refused rather than trusted.
+    pub fn into_verifier(self, pod: Uuid) -> Result<std::sync::Arc<Vec<u8>>, WrongPod> {
+        if self.pod != pod {
+            return Err(WrongPod {
+                minted_for: self.pod,
+                used_for: pod,
+            });
+        }
+        Ok(std::sync::Arc::new(self.secret.into_bytes()))
     }
 }
 
@@ -235,13 +301,14 @@ impl BrokerCapability {
     /// Per-pod and never reused: two pods sharing one would let either sign for
     /// the other, and the listener's identity binding — one socket per VM —
     /// would stop meaning anything.
-    pub fn mint() -> (ServeToken, VerifyToken) {
+    pub fn mint(pod: Uuid) -> (ServeToken, VerifyToken) {
         let secret = uuid::Uuid::new_v4().simple().to_string();
         (
             ServeToken {
                 secret: secret.clone(),
+                pod,
             },
-            VerifyToken { secret },
+            VerifyToken { secret, pod },
         )
     }
 }
@@ -383,7 +450,10 @@ pub fn start_broker_for_pod(
             upstreams,
             // The SAME value the workload API serves the guest. Passing `None`
             // here is what made the capability inert; see `BrokerCapability`.
-            broker_secret: capability.into_verifier(),
+            // Refused rather than started with the wrong pod's capability: a
+            // verifier holding another pod's secret would authenticate that
+            // pod's proxy against this pod's broker.
+            broker_secret: capability.into_verifier(id)?,
         },
         jail_owner,
     ) {
@@ -418,9 +488,10 @@ mod broker_capability {
     /// the bridge minted its own and the listener got `None`.
     #[test]
     fn what_is_served_is_what_is_verified() {
-        let (serve, verify) = BrokerCapability::mint();
-        let served = serve.into_served();
-        let verifier = verify.into_verifier();
+        let pod = Uuid::new_v4();
+        let (serve, verify) = BrokerCapability::mint(pod);
+        let served = serve.into_served(pod).expect("this pod's token");
+        let verifier = verify.into_verifier(pod).expect("this pod's token");
         assert_eq!(
             served.as_bytes(),
             verifier.as_slice(),
@@ -433,10 +504,48 @@ mod broker_capability {
     /// meaning anything.
     #[test]
     fn two_pods_do_not_share_a_capability() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
         assert_ne!(
-            BrokerCapability::mint().0.into_served(),
-            BrokerCapability::mint().0.into_served()
+            BrokerCapability::mint(a).0.into_served(a).expect("own pod"),
+            BrokerCapability::mint(b).0.into_served(b).expect("own pod"),
+            "each mint is a fresh secret"
         );
+    }
+
+    /// …and sharing is now REFUSED rather than merely discouraged.
+    ///
+    /// The doc on `mint` has always said "per-pod and never reused: two pods
+    /// sharing one would let either sign for the other, and the listener's
+    /// identity binding — one socket per VM — would stop meaning anything."
+    /// Nothing enforced it: the tokens carried a bare `String` and
+    /// `into_served` handed it to whoever called. Stating an invariant in prose
+    /// beside a method that cannot check it is the shape this campaign keeps
+    /// finding.
+    #[test]
+    fn a_capability_minted_for_one_pod_is_refused_for_another() {
+        let (mine, theirs) = (Uuid::new_v4(), Uuid::new_v4());
+        let (serve, verify) = BrokerCapability::mint(mine);
+
+        let err = serve
+            .into_served(theirs)
+            .expect_err("another pod's capability is not servable here");
+        assert_eq!(err.minted_for, mine);
+        assert_eq!(err.used_for, theirs);
+        assert!(err.to_string().contains("sign for the other"), "{err}");
+
+        assert!(
+            verify.into_verifier(theirs).is_err(),
+            "and the verifier half refuses the same way"
+        );
+    }
+
+    #[test]
+    fn a_capability_is_accepted_for_the_pod_it_was_minted_for() {
+        // So the refusal above is not passing by refusing everything.
+        let pod = Uuid::new_v4();
+        let (serve, verify) = BrokerCapability::mint(pod);
+        assert!(serve.into_served(pod).is_ok());
+        assert!(verify.into_verifier(pod).is_ok());
     }
 
     /// **The tokens cannot be duplicated, and the COMPILER says so.**
@@ -502,10 +611,15 @@ mod broker_capability {
     #[test]
     fn mint_appears_exactly_once_on_the_spawn_path() {
         let src = include_str!("main.rs");
-        let mints = src.matches("BrokerCapability::mint()").count();
+        // The needle is `mint(` and not `mint()`: binding the pair to a pod gave
+        // the constructor an argument, and a needle carrying the old empty
+        // parens would have counted ZERO and this guard would have failed
+        // loudly — or worse, been "fixed" by deleting it. A guard whose needle
+        // stops matching the code is the defect this campaign has hit twice.
+        let mints = src.matches("BrokerCapability::mint(").count();
         assert_eq!(
             mints, 1,
-            "found {mints} calls to BrokerCapability::mint() in main.rs. Two mints means the \
+            "found {mints} calls to BrokerCapability::mint( in main.rs. Two mints means the \
              workload API and the broker listener can each get their own, which is the exact \
              defect this type was introduced to remove."
         );

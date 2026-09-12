@@ -965,8 +965,88 @@ perturb_convergence_linearity() {
     append_line "$1" 'fn _gate_of_gates_affine(_a: &portcullis_effects::Authority) {}'
 }
 
+# A new parameter accepts a witness and drops it: a gate that is present and
+# decides nothing, which is the 60% defect class the 2026-09-11 issue census
+# found. `Authority` because it is the witness with the most live sites, so the
+# perturbation lands in the same population the ratio is computed over.
+#
+# UNQUALIFIED, unlike perturb_convergence_linearity's `portcullis_effects::Authority`
+# beside it. The two gates read the same line differently: `convergence` asks
+# whether an affine type is taken by reference and matches the tail of a path,
+# while `bound` extracts the head of the type and compares it against a closed
+# vocabulary, where the head of `portcullis_effects::Authority` is the crate
+# name. The first spelling of this perturbation used the qualified form by
+# symmetry with its neighbour and the gate stayed green -- a probe that proves
+# nothing, which is the failure this whole script exists to catch, caught here
+# on itself.
+perturb_bound_dropped_witness() {
+    append_line "$1" 'fn _gate_of_gates_dropped(_authority: Authority) {}'
+}
+
+# One more witness accepted under a CONSULTABLE name. The `bound` family rises to
+# 172/173, above its pinned floor, and the scorecard refuses: a floor with slack
+# under it has already stopped gating (ADR 0007 I-1), so the pin must be raised in
+# the same edit that earned it.
+#
+# Deliberately the opposite perturbation to the one above. A dropped witness would
+# red the scorecard too, but through `bound`'s INERT_TOTAL cross-check -- an error,
+# not a verdict, and it would prove the scorecard reds when a DEPENDENCY errors
+# rather than when its own decision procedure fires.
+perturb_scorecard_slack() {
+    append_line "$1" 'fn _gate_of_gates_scorecard(authority: Authority) {}'
+}
+
+# One more law-bearing trait impl with no `lattice_laws!` declaration beside it:
+# two obligations the tree now states and nothing discharges. This is the `alg`
+# family's whole subject, and it drives the OTHER half of the scorecard's decision
+# procedure from the perturbation above -- Fell rather than Slack.
+perturb_scorecard_undischarged_law() {
+    append_line "$1" 'impl DistributiveLattice for _GateOfGatesAlg {}'
+}
+
+# A crate that declared itself panic-free drops one lint from the list. Six of
+# seven still leaves a way to panic, so the crate stops discharging the `tot`
+# obligation and the family falls. The subject is a real annotation on a real
+# crate, not an appended line, because this is the one family whose declaration
+# is something the tree already carries.
+perturb_scorecard_partial_totality() {
+    sed -i.gate-bak 's/^        clippy::indexing_slicing,$//' "$1" && rm -f "$1.gate-bak"
+}
+
+# The first affine right to gain a validity interval. `life` is pinned at a
+# MEASURED zero -- 7 rights, none of which expires -- and the whole defence of
+# admitting a zero floor is that the slack check turns the first discharge into a
+# red demanding the pin be raised. This probe is that claim, on a real type: give
+# ServeToken an `expires_at` and the family goes 0.00% -> 14.28% and the gate
+# refuses to carry the stale zero forward.
+# A waiver that expires becomes one that never does. `#[expect]` errors when its
+# lint stops firing, so it dies with the reason that created it; `#[allow]` is
+# forever and silent. This is the `suppress` family's whole subject, and the
+# subject is a real production attribute rather than an appended line.
+perturb_scorecard_forever_waiver() {
+    sed -i.gate-bak 's/^    #\[expect($/    #[allow(/' "$1" && rm -f "$1.gate-bak"
+}
+
+perturb_scorecard_first_expiry() {
+    sed -i.gate-bak 's/^pub struct ServeToken {$/pub struct ServeToken {\n    expires_at: u64,/' "$1" && rm -f "$1.gate-bak"
+}
+
 probe_xtask convergence crates/nucleus-tool-proxy/src/run_gate.rs \
     "one more affine type taken by reference" perturb_convergence_linearity
+probe_xtask bound crates/nucleus-tool-proxy/src/run_gate.rs \
+    "one more witness accepted and dropped" perturb_bound_dropped_witness
+probe_xtask scorecard crates/nucleus-tool-proxy/src/run_gate.rs \
+    "a family's pin gone slack under it" perturb_scorecard_slack
+probe_xtask scorecard crates/nucleus-tool-proxy/src/pod_mgmt.rs \
+    "a law the tree declares and nothing discharges" perturb_scorecard_undischarged_law
+probe_xtask scorecard crates/nucleus-pca/src/lib.rs \
+    "a crate's totality declaration losing one of its seven lints" \
+    perturb_scorecard_partial_totality
+probe_xtask scorecard crates/nucleus-node/src/broker_launch.rs \
+    "the first affine right to gain a validity interval" perturb_scorecard_first_expiry
+probe_xtask scorecard crates/nucleus-tool-proxy/src/art12.rs \
+    "a waiver that expires downgraded to one that never does" \
+    perturb_scorecard_forever_waiver
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask pin-parity ci/lean/lean-toolchain \

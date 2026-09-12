@@ -39,6 +39,23 @@
 //! BREACH; withhold the proxy URL to force INCONCLUSIVE). In the real guest the
 //! defaults hit the real surfaces (`/proc/1/environ`, `/`, the public internet).
 
+// ADR 0007 totality: a function whose signature says it returns is lying if it
+// panics. Denied for the shipped build only — `assert!` IS a panic, so denying
+// inside `#[cfg(test)]` would forbid the thing tests are made of. This is the
+// same line `is_production_path` draws when it strips the test region.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
@@ -158,7 +175,7 @@ fn stage_exfil(breaches: &mut Vec<&'static str>, timeout: Duration) {
         let Ok(addr) = target.parse::<std::net::SocketAddr>() else {
             continue;
         };
-        probed += 1;
+        probed = probed.saturating_add(1);
         if TcpStream::connect_timeout(&addr, timeout).is_ok() {
             escaped = true;
         }

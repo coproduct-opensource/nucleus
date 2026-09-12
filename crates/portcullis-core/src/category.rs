@@ -643,6 +643,264 @@ pub fn verify_distributive_laws<L: Lattice + std::fmt::Debug>(samples: &[L]) -> 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Generated law suites
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Declare that a type discharges the laws its lattice traits oblige.
+///
+/// ```ignore
+/// lattice_laws!(conf_level, ConfLevel, ConfLevel::ALL.to_vec(), [lattice, bounded, distributive]);
+/// ```
+///
+/// generates a `#[cfg(test)] mod conf_level` with one `#[test]` per law family,
+/// each calling the corresponding `verify_*` function above.
+///
+/// # Why a macro and not a blanket impl
+///
+/// The question a gate wants to ask is "for every `impl Lattice for T`, is there
+/// a law check for `T`?", and answering it needs the check's *type argument*
+/// resolved — `verify_lattice_laws::<ConfLevel>` — which is a `typeck` question,
+/// not a grep. A first attempt at the grep attributed `CapabilityLevel`
+/// correctly, missed `ConfLevel`, `IFCLabel`, `Verdict` and `FlowState`, and
+/// picked up a bare generic parameter `L` as though it were a type.
+///
+/// So the covered set is not inferred, it is **declared**: one invocation per
+/// line, naming the type and the law families it discharges. Both sides of the
+/// ratio are then syntax a gate can see without a resolver, which is the
+/// discipline `inert_authority`'s closed `WITNESS` vocabulary already uses.
+///
+/// # The macro cannot over-claim
+///
+/// Listing `bounded` for a type that does not implement [`BoundedLattice`] fails
+/// to compile, because the generated body calls a function with that bound.
+/// Listing too *few* families is possible, and is exactly the gap the gate
+/// measures: population comes from the `impl` lines, discharged from these.
+///
+/// # Equality
+///
+/// The `verify_*` functions compare with `PartialEq`, so a type whose derived
+/// equality is finer than its law equality would report spurious violations. The
+/// tree's answer is to make `PartialEq` *be* the law equality —
+/// `LiteralDelegation` hand-writes it for precisely this reason, since deriving
+/// it "would break join commutativity: `a ∨ b` and `b ∨ a` list elements in
+/// different orders". No separate hook exists because nothing needs one; if a
+/// type ever does, that is the place to add it.
+#[macro_export]
+macro_rules! lattice_laws {
+    ($name:ident, $ty:ty, $samples:expr, [$($law:ident),+ $(,)?]) => {
+        #[cfg(test)]
+        mod $name {
+            #[allow(unused_imports)]
+            use super::*;
+            $( $crate::lattice_law_case!($law, $ty, $samples); )+
+        }
+    };
+}
+
+/// One law family for [`lattice_laws!`]. Not called directly.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! lattice_law_case {
+    (lattice, $ty:ty, $samples:expr) => {
+        #[test]
+        fn lattice() {
+            let samples: ::std::vec::Vec<$ty> = $samples;
+            $crate::category::assert_samples_are_witnesses(&samples, stringify!($ty));
+            let v = $crate::category::verify_lattice_laws(&samples);
+            assert!(
+                v.is_empty(),
+                "{} violates lattice laws: {:?}",
+                stringify!($ty),
+                v
+            );
+        }
+    };
+    (bounded, $ty:ty, $samples:expr) => {
+        #[test]
+        fn bounded() {
+            let samples: ::std::vec::Vec<$ty> = $samples;
+            $crate::category::assert_samples_are_witnesses(&samples, stringify!($ty));
+            let v = $crate::category::verify_bounded_lattice_laws(&samples);
+            assert!(
+                v.is_empty(),
+                "{} violates bounded lattice laws: {:?}",
+                stringify!($ty),
+                v
+            );
+        }
+    };
+    (distributive, $ty:ty, $samples:expr) => {
+        #[test]
+        fn distributive() {
+            let samples: ::std::vec::Vec<$ty> = $samples;
+            $crate::category::assert_samples_are_witnesses(&samples, stringify!($ty));
+            let v = $crate::category::verify_distributive_laws(&samples);
+            assert!(
+                v.is_empty(),
+                "{} violates distributivity: {:?}",
+                stringify!($ty),
+                v
+            );
+        }
+    };
+}
+
+/// Refuse a sample set that would make the law checks pass without testing them.
+///
+/// Every `verify_*` function above returns an empty violation list for an empty
+/// slice, and a one-element slice satisfies commutativity, associativity and
+/// distributivity for free — `a ∧ a = a ∧ a` holds in any structure. A suite
+/// seeded that way is green and proves nothing, which is the failure ADR 0007
+/// I-1 names: a gate whose green is indistinguishable from vacuity.
+///
+/// Three samples, at least two of them distinct: three because the associativity
+/// and distributivity loops are ternary and a shorter slice never varies all
+/// three indices, and two distinct because binary laws over a constant are
+/// tautologies.
+///
+/// # Panics
+///
+/// If `samples` is too short or carries no two distinct values.
+pub fn assert_samples_are_witnesses<L: PartialEq>(samples: &[L], ty: &str) {
+    assert!(
+        samples.len() >= 3,
+        "{ty}: {} sample(s) cannot witness a ternary law; the associativity and \
+         distributivity loops would never vary all three indices and the suite \
+         would be green without testing anything (ADR 0007 I-1)",
+        samples.len()
+    );
+    assert!(
+        samples.iter().any(|a| a != &samples[0]),
+        "{ty}: every sample is equal, so commutativity, associativity and \
+         distributivity hold as tautologies over a constant. The suite would be \
+         green without testing anything (ADR 0007 I-1)"
+    );
+}
+
+// ── Declared law suites ──────────────────────────────────────────────────────
+//
+// One invocation per type, naming the law families it discharges. These replace
+// eight hand-written test functions that called the `verify_*` helpers directly
+// and were, between them, four different spellings of the same three assertions.
+//
+// The families listed are exactly those the hand-written tests checked, so this
+// change is verdict-for-verdict identical. Where a type implements a trait whose
+// laws are NOT listed here — `CapabilityLattice` and `AuthorityLevel` both
+// implement `DistributiveLattice` and neither had a distributivity test — the
+// omission is now visible on one line instead of spread across a test module,
+// which is the point.
+
+lattice_laws!(
+    capability_level_laws,
+    CapabilityLevel,
+    vec![
+        CapabilityLevel::Never,
+        CapabilityLevel::LowRisk,
+        CapabilityLevel::Always,
+    ],
+    [bounded, distributive]
+);
+
+lattice_laws!(
+    capability_lattice_laws,
+    CapabilityLattice,
+    vec![
+        CapabilityLattice::bottom(),
+        CapabilityLattice::default(),
+        CapabilityLattice::top(),
+    ],
+    [bounded]
+);
+
+lattice_laws!(
+    conf_level_laws,
+    ConfLevel,
+    vec![ConfLevel::Public, ConfLevel::Internal, ConfLevel::Secret],
+    [bounded, distributive]
+);
+
+lattice_laws!(
+    integ_level_laws,
+    IntegLevel,
+    vec![
+        IntegLevel::Adversarial,
+        IntegLevel::Untrusted,
+        IntegLevel::Trusted,
+    ],
+    [bounded, distributive]
+);
+
+lattice_laws!(
+    authority_level_laws,
+    AuthorityLevel,
+    vec![
+        AuthorityLevel::NoAuthority,
+        AuthorityLevel::Informational,
+        AuthorityLevel::Suggestive,
+        AuthorityLevel::Directive,
+    ],
+    [bounded]
+);
+
+lattice_laws!(
+    derivation_class_laws,
+    DerivationClass,
+    vec![
+        DerivationClass::Deterministic,
+        DerivationClass::AIDerived,
+        DerivationClass::HumanPromoted,
+        DerivationClass::Mixed,
+        DerivationClass::OpaqueExternal,
+    ],
+    [bounded, distributive]
+);
+
+// Uniform freshness, because `Freshness::leq` has a known inconsistency with
+// `Freshness::meet` around `ttl_secs = 0` — see the NOTE above. Meet and join are
+// correct; only `leq` has the edge case, which is also why `IFCLabel` does not
+// implement `BoundedLattice` and why only `lattice` is listed here.
+lattice_laws!(
+    ifc_label_laws,
+    IFCLabel,
+    {
+        let fresh = Freshness {
+            observed_at: 1000,
+            ttl_secs: 3600,
+        };
+        vec![
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::bottom()
+            },
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::top()
+            },
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::default()
+            },
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::web_content(1000)
+            },
+        ]
+    },
+    [lattice]
+);
+
+lattice_laws!(
+    product_lattice_laws,
+    ProductLattice<ConfLevel, IntegLevel>,
+    vec![
+        ProductLattice(ConfLevel::Public, IntegLevel::Trusted),
+        ProductLattice(ConfLevel::Secret, IntegLevel::Adversarial),
+        ProductLattice(ConfLevel::Internal, IntegLevel::Untrusted),
+    ],
+    [bounded, distributive]
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Functoriality of label propagation
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -714,103 +972,36 @@ mod tests {
         (h.finish() as usize) % n
     }
 
+    // ── The sample guard, driven both ways ────────────────────────────
+    //
+    // `verify_lattice_laws(&[])` returns no violations, and so does a
+    // single-element slice: `a ∧ a = a ∧ a` holds in any structure. A suite
+    // seeded that way is green and tests nothing. These two are the probe.
+
+    #[test]
+    #[should_panic(expected = "cannot witness a ternary law")]
+    fn two_samples_cannot_witness_a_ternary_law() {
+        assert_samples_are_witnesses(&[ConfLevel::Public, ConfLevel::Secret], "ConfLevel");
+    }
+
+    #[test]
+    #[should_panic(expected = "tautologies over a constant")]
+    fn three_equal_samples_make_every_binary_law_a_tautology() {
+        assert_samples_are_witnesses(
+            &[ConfLevel::Public, ConfLevel::Public, ConfLevel::Public],
+            "ConfLevel",
+        );
+    }
+
+    #[test]
+    fn three_samples_with_two_distinct_are_accepted() {
+        assert_samples_are_witnesses(
+            &[ConfLevel::Public, ConfLevel::Public, ConfLevel::Secret],
+            "ConfLevel",
+        );
+    }
+
     // ── Generic lattice law tests ─────────────────────────────────────
-
-    #[test]
-    fn capability_level_lattice_laws() {
-        let samples = vec![
-            CapabilityLevel::Never,
-            CapabilityLevel::LowRisk,
-            CapabilityLevel::Always,
-        ];
-        let v = verify_bounded_lattice_laws(&samples);
-        assert!(v.is_empty(), "CapabilityLevel violations: {v:?}");
-    }
-
-    #[test]
-    fn capability_lattice_lattice_laws() {
-        let samples = vec![
-            CapabilityLattice::bottom(),
-            CapabilityLattice::default(),
-            CapabilityLattice::top(),
-        ];
-        let v = verify_bounded_lattice_laws(&samples);
-        assert!(v.is_empty(), "CapabilityLattice violations: {v:?}");
-    }
-
-    #[test]
-    fn conf_level_lattice_laws() {
-        let samples = vec![ConfLevel::Public, ConfLevel::Internal, ConfLevel::Secret];
-        let v = verify_bounded_lattice_laws(&samples);
-        assert!(v.is_empty(), "ConfLevel violations: {v:?}");
-    }
-
-    #[test]
-    fn integ_level_lattice_laws() {
-        let samples = vec![
-            IntegLevel::Adversarial,
-            IntegLevel::Untrusted,
-            IntegLevel::Trusted,
-        ];
-        let v = verify_bounded_lattice_laws(&samples);
-        assert!(v.is_empty(), "IntegLevel violations: {v:?}");
-    }
-
-    #[test]
-    fn authority_level_lattice_laws() {
-        let samples = vec![
-            AuthorityLevel::NoAuthority,
-            AuthorityLevel::Informational,
-            AuthorityLevel::Suggestive,
-            AuthorityLevel::Directive,
-        ];
-        let v = verify_bounded_lattice_laws(&samples);
-        assert!(v.is_empty(), "AuthorityLevel violations: {v:?}");
-    }
-
-    #[test]
-    fn derivation_class_lattice_laws() {
-        let samples = vec![
-            DerivationClass::Deterministic,
-            DerivationClass::AIDerived,
-            DerivationClass::HumanPromoted,
-            DerivationClass::Mixed,
-            DerivationClass::OpaqueExternal,
-        ];
-        let v = verify_bounded_lattice_laws(&samples);
-        assert!(v.is_empty(), "DerivationClass violations: {v:?}");
-    }
-
-    #[test]
-    fn ifc_label_lattice_laws() {
-        // Use samples with uniform freshness to avoid the known Freshness::leq
-        // inconsistency around ttl_secs=0 (see NOTE above BoundedLattice comment).
-        // Meet/join are fully correct; only leq has the edge case.
-        let fresh = Freshness {
-            observed_at: 1000,
-            ttl_secs: 3600,
-        };
-        let samples = vec![
-            IFCLabel {
-                freshness: fresh,
-                ..IFCLabel::bottom()
-            },
-            IFCLabel {
-                freshness: fresh,
-                ..IFCLabel::top()
-            },
-            IFCLabel {
-                freshness: fresh,
-                ..IFCLabel::default()
-            },
-            IFCLabel {
-                freshness: fresh,
-                ..IFCLabel::web_content(1000)
-            },
-        ];
-        let v = verify_lattice_laws(&samples);
-        assert!(v.is_empty(), "IFCLabel violations: {v:?}");
-    }
 
     // ── Legacy semilattice law tests (kept for coverage) ──────────────
 
@@ -975,18 +1166,6 @@ mod tests {
     // ── Product lattice tests ─────────────────────────────────────────
 
     #[test]
-    fn product_lattice_laws() {
-        use super::ProductLattice;
-        let samples = vec![
-            ProductLattice(ConfLevel::Public, IntegLevel::Trusted),
-            ProductLattice(ConfLevel::Secret, IntegLevel::Adversarial),
-            ProductLattice(ConfLevel::Internal, IntegLevel::Untrusted),
-        ];
-        let v = verify_bounded_lattice_laws(&samples);
-        assert!(v.is_empty(), "ProductLattice violations: {v:?}");
-    }
-
-    #[test]
     fn product_lattice_pointwise() {
         use super::ProductLattice;
         let a = ProductLattice(CapabilityLevel::LowRisk, ConfLevel::Internal);
@@ -1042,69 +1221,6 @@ mod tests {
     }
 
     // ── Distributive lattice tests ────────────────────────────────────
-
-    #[test]
-    fn capability_level_distributive() {
-        let samples = vec![
-            CapabilityLevel::Never,
-            CapabilityLevel::LowRisk,
-            CapabilityLevel::Always,
-        ];
-        let v = super::verify_distributive_laws(&samples);
-        assert!(
-            v.is_empty(),
-            "CapabilityLevel distributivity violations: {v:?}"
-        );
-    }
-
-    #[test]
-    fn conf_level_distributive() {
-        let samples = vec![ConfLevel::Public, ConfLevel::Internal, ConfLevel::Secret];
-        let v = super::verify_distributive_laws(&samples);
-        assert!(v.is_empty(), "ConfLevel distributivity violations: {v:?}");
-    }
-
-    #[test]
-    fn integ_level_distributive() {
-        let samples = vec![
-            IntegLevel::Adversarial,
-            IntegLevel::Untrusted,
-            IntegLevel::Trusted,
-        ];
-        let v = super::verify_distributive_laws(&samples);
-        assert!(v.is_empty(), "IntegLevel distributivity violations: {v:?}");
-    }
-
-    #[test]
-    fn derivation_class_distributive() {
-        let samples = vec![
-            DerivationClass::Deterministic,
-            DerivationClass::AIDerived,
-            DerivationClass::HumanPromoted,
-            DerivationClass::Mixed,
-            DerivationClass::OpaqueExternal,
-        ];
-        let v = super::verify_distributive_laws(&samples);
-        assert!(
-            v.is_empty(),
-            "DerivationClass distributivity violations: {v:?}"
-        );
-    }
-
-    #[test]
-    fn product_lattice_distributive() {
-        use super::ProductLattice;
-        let samples = vec![
-            ProductLattice(ConfLevel::Public, IntegLevel::Trusted),
-            ProductLattice(ConfLevel::Secret, IntegLevel::Adversarial),
-            ProductLattice(ConfLevel::Internal, IntegLevel::Untrusted),
-        ];
-        let v = super::verify_distributive_laws(&samples);
-        assert!(
-            v.is_empty(),
-            "ProductLattice distributivity violations: {v:?}"
-        );
-    }
 
     // ── Monotone map tests ────────────────────────────────────────────
 
