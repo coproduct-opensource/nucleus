@@ -234,9 +234,23 @@ fn run() -> Result<(), String> {
     }
 
     // Never a shell: a missing spec is a named boot error.
-    // The host's spec wins when there is one; `resolve_pod_spec` decides between
-    // the two BAKED locations and knows nothing about the fetched one.
-    let spec_path = if Path::new(HOST_POD_SPEC).exists() {
+    // THE BAKED SPEC WINS WHEN THERE IS ONE, and the fetched one is the fallback.
+    //
+    // This was the other way round — host wins — and it broke every existing
+    // pod: `NUCLEUS_WORKLOAD_PROBE: PASS` stopped appearing because the node
+    // serves a spec for EVERY pod, so every pod switched to the fetched path at
+    // once. A new mechanism made the default for everything is not additive, it
+    // is a migration nobody asked for.
+    //
+    // The fetched spec exists for the case that has NO baked one: a snapshot
+    // base, whose whole point is a rootfs that names no command. There the
+    // resolution below fails and this is the only spec there is. A pod with a
+    // baked spec keeps it, and behaves exactly as it did before.
+    let spec_path = if !Path::new(POD_SPEC_PATH).exists()
+        && !Path::new(FALLBACK_POD_SPEC).exists()
+        && Path::new(HOST_POD_SPEC).exists()
+    {
+        eprintln!("no baked pod spec; using the one fetched from the host");
         HOST_POD_SPEC.to_string()
     } else {
         boot::resolve_pod_spec(
