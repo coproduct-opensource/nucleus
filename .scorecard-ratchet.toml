@@ -215,8 +215,10 @@ population_floor = 83
 # borrow; the first four are in-process and could take a lifetime instead, which
 # would make staleness a compile error the way affinity already makes replay one
 # (E0382). That is an ADR and a call-site refactor, not a ratchet.
-floor_bp = 1428
-population_floor = 7
+# 2026-09-12: both verified CI result types now carry and enforce a consumption
+# deadline. With their two added affine rights: 3 bounded rights out of 9.
+floor_bp = 3333
+population_floor = 9
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

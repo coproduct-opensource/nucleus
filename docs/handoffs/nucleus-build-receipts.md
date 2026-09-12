@@ -18,9 +18,10 @@ Implementation branch: `feat/nucleus-build-receipts`, based on receipt-store PR
   `signed_claims_for_another_run_are_refused` fail against a signed claim for
   another action. Restoring them made the suite pass (A-19).
 
-This is a consumer boundary, not yet a production caller or build attestation.
-The controller still needs a complete environment identity and authoritative
-execution observation. No receipt is being published as a GitHub check yet.
+This authenticates the existing gate-verdict format. The execution body below
+now also has a production node signer. A complete build verdict still needs
+source/environment and artifact bindings. No receipt is published as a GitHub
+check yet.
 
 ## Execution finding, 2026-09-12
 
@@ -81,6 +82,55 @@ request labels are not evidence for it. `WorkloadLaunch::build` resolves four
 inherited variables before admission, so the declared program digest alone is
 not the resolved environment identity. The eventual build verifier must bind
 that environment, require complete image/data pins and validate output hashes.
+
+## Host-signed execution implemented, 2026-09-12
+
+`GET /v1/pods/{id}/execution-receipt` now signs a completed supervisor result
+with the existing persistent host-only executor key. Its versioned
+`nucleus.execution.v1` CI body uses the existing `nucleus-receipt` envelope.
+It binds pod, program identity, actual host driver, architecture, installed uid
+boundary, normal/signal exit, raw output hashes and authority-inventory hash.
+It has no build-success conclusion and does not claim source/environment/output
+artifact evidence that has not been collected.
+
+The node refuses unfinished observations and disagreement between host and
+supervisor program identities. Firecracker receipts additionally require an
+explicit read-only rootfs and complete kernel/rootfs/data/supplied-scratch pins;
+the existing Firecracker spawn path measures those pins against placed bytes.
+The public verifier authenticates against controller-supplied expectations and
+refuses local, container and non-isolated guest results. Its private witness and
+the earlier CI verdict witness now enforce a consumption deadline. They do not
+constitute a build-publication right. Removing the microVM boundary check made
+the signed-local refusal test fail, and restoring it made the suite pass.
+
+The live mTLS local-driver path signed actual exit 23 for the fake-success-file
+case and actual exit 0 for the successful case. OpenSSL independently verified
+both signatures using the host's public key; changing the signed exit broke
+verification. Both bodies explicitly identify local/unconfined execution.
+Temporary pods were cancelled and the test node stopped.
+
+That live test first caught a real identity defect: certificate verification
+recomputes equivalent policy provenance, and command/path HashSets serialized in
+arbitrary order. Policy serialization now orders those sets, and program identity
+uses the existing semantic policy checksum. The domain is bumped to
+`nucleus.pod-program.v2`; old program/snapshot identities intentionally miss.
+An existing command-digest mutation test had changed between constructors with
+identical commands and passed only because of random ordering. It now changes
+an actual blocked command and checks that the policy changed.
+
+Validation: all-feature suites pass for node (515 unit tests), proxy (451),
+Portcullis (1273), spec, both receipt crates, and their integration/doc tests.
+Clippy with warnings denied passes for node, proxy, spec and both receipt crates.
+The scorecard now measures 3 bounded affine rights out of 9 and its floor has
+ratcheted upward to 33.33%; the exemplar scoreboard also passes. Receipt
+verification's explicit `verify_strict` spelling delegates to the same strict
+Ed25519 implementation as the compatibility `verify` spelling.
+
+For the real microVM build, use an image without a baked PodSpec. Guest init
+already fetches the host spec over the workload API but intentionally prefers a
+baked spec when one exists. A mismatched template should remain a signing refusal,
+not be treated as the requested program. Resolved environment, artifact capture,
+source materialization and actual build timings remain the next acceptance work.
 
 ## Remaining acceptance work (milestones not yet complete)
 

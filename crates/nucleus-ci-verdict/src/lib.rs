@@ -51,6 +51,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod execution;
 pub mod verify;
 
 /// What the gate answered.

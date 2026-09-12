@@ -57,8 +57,19 @@ fn authenticated_outcomes_remain_distinct() {
         claim.exit_status = status;
         let checked = verify(&sign(&claim, &key, 150), &expected(&public)).unwrap();
         assert_eq!(checked.verdict().conclusion, conclusion);
-        assert_eq!(checked.into_verdict().exit_status, status);
+        assert_eq!(checked.into_verdict(200).unwrap().exit_status, status);
     }
+}
+
+#[test]
+fn a_verified_verdict_expires_before_delayed_publication() {
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let checked = verify(&sign(&claim(), &key, 150), &expected(&public)).unwrap();
+    assert_eq!(
+        checked.into_verdict(201).unwrap_err(),
+        VerificationError::OutsideWindow
+    );
 }
 
 #[test]

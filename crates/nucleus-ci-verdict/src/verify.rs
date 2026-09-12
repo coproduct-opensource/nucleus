@@ -36,6 +36,7 @@ pub struct ExpectedRun<'a> {
 #[must_use]
 pub struct VerifiedCiVerdict {
     verdict: CiVerdict,
+    valid_until: u64,
 }
 
 impl VerifiedCiVerdict {
@@ -45,8 +46,11 @@ impl VerifiedCiVerdict {
     }
 
     /// Consume the verified verdict at the publication boundary (ADR C-4).
-    pub fn into_verdict(self) -> CiVerdict {
-        self.verdict
+    pub fn into_verdict(self, now_micros: u64) -> Result<CiVerdict, VerificationError> {
+        if now_micros > self.valid_until {
+            return Err(VerificationError::OutsideWindow);
+        }
+        Ok(self.verdict)
     }
 }
 
@@ -94,7 +98,7 @@ pub fn verify(
         return Err(VerificationError::Version(receipt.version));
     }
     receipt
-        .verify(verifying_key)
+        .verify_strict(verifying_key)
         .map_err(|e| VerificationError::Signature(e.to_string()))?;
     for (field, actual, wanted) in [
         (
@@ -136,5 +140,8 @@ pub fn verify(
             return Err(VerificationError::InconsistentOutcome);
         }
     }
-    Ok(VerifiedCiVerdict { verdict })
+    Ok(VerifiedCiVerdict {
+        verdict,
+        valid_until: *issued_not_after_micros,
+    })
 }
