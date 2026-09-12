@@ -134,6 +134,17 @@ jobs:
       - name: A gate's timeout must fire before its job is killed
         run: cargo run -q -p xtask -- gate-budget
 
+      # This repository's first rule about reading CI, applied to CI reading itself. GitHub runs
+      # a `run:` block as `bash -e {0}` -- NO pipefail -- unless the step says `shell: bash`,
+      # which reads like a no-op restating the default and is the difference between a pipeline
+      # whose failure is seen and one whose failure is not. Measured 2026-09-12: none of the 73
+      # workflows sets `defaults.run.shell`, 100 `run:` blocks contain a pipeline, and 44 of
+      # those are unguarded. A shrink-only ratchet over candidates, not a debt to drive to zero:
+      # some of the 44 cannot fail in a way anyone reads, and saying which is a judgement made
+      # once per site.
+      - name: A pipeline must not hide its exit status
+        run: cargo run -q -p xtask -- pipefail
+
       # Seven scan-vs-allowlist gates lived in four shell scripts, each with its own copy
       # of the same `#[cfg(test)]`-stripping awk program -- five copies, four of them
       # differing byte-for-byte, one carrying a false negative its own comment names. This
@@ -147,6 +158,18 @@ jobs:
       # than averaged in from a hand-written list.
       - name: The distance to ADR 0006's four objects only shrinks
         run: cargo run -q -p xtask -- convergence
+      # The 2026-09-11 issue census: 72 of the 120 audit/bug issues (60%, 64 of
+      # them security) are one defect -- a mechanism that exists and that nothing
+      # binds to the live path. This counts the one class of it whose denominator
+      # can be enumerated exactly, and pins BOTH the ratio and the size of the
+      # surface, because a floor alone rewards deleting enforcement points.
+      - name: Declared enforcement stays bound to the live path
+        run: cargo run -q -p xtask -- bound
+      # One card over the four families the 2026-09-11 issue census found, with a
+      # badge naming the WEAKEST rather than an average -- an average lets a family
+      # at zero hide behind one at a hundred, which is ADR 0007 I-1 exactly.
+      - name: Every defect family's obligations, on one card
+        run: cargo run -q -p xtask -- scorecard
       - name: The scan-vs-allowlist family, decided once
         run: cargo run -q -p xtask -- allowlist-gates
       # The port is only worth having if it decides the same thing the scripts do. Agreement

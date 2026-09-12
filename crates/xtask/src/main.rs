@@ -109,6 +109,9 @@ enum Command {
     /// that overruns is reported as `cancelled` and carries no verdict. Decided from the
     /// workflow and the action definition alone.
     GateBudget,
+    /// A `run:` block that pipes without `pipefail` discards the exit status of every command
+    /// but the last. Decided from workflow YAML alone; reads no source tree.
+    Pipefail,
     /// A claim's falsifier must produce a REQUIRED context. A gate CI runs, that goes red, and
     /// that the merge queue merges past anyway enforces nothing — it is a red light beside an
     /// open gate. Ratcheted, not driven to zero: whether a given check should be required is a
@@ -150,6 +153,37 @@ enum Command {
     /// The dual of `law-mechanisms`: that gate finds mechanisms with no call
     /// site, this finds mechanisms that are called and then ignored.
     InertAuthority,
+    /// How much of the enforcement the repo *declares* is actually reachable —
+    /// `B / D` over witness-accepting parameter sites, pinned as a floor in
+    /// `.bound-ratchet.toml`.
+    ///
+    /// Built from the 2026-09-11 census of 868 issues: of the 120 that are
+    /// `bug`-labelled or audit-prefixed, 72 (60%, 64 of them security) are one
+    /// defect — a mechanism that exists and that nothing binds to the live
+    /// path. This counts one exactly-enumerable class of it. `--measure`
+    /// prints the census without gating; `--badge` emits shields.io JSON.
+    Bound {
+        #[arg(long)]
+        measure: bool,
+        #[arg(long)]
+        badge: bool,
+    },
+    /// One card, one row per defect family, and a badge naming the WEAKEST —
+    /// not an average, which would let a family at zero hide behind one at a
+    /// hundred (ADR 0007 I-1).
+    ///
+    /// Each family reports population (obligations the tree declares),
+    /// discharged (those a mechanism that can fail covers) and undeclared
+    /// (sites with the family's shape that are outside the population). Pinned
+    /// per family in `.scorecard-ratchet.toml`, two floors each: on the ratio,
+    /// so it cannot fall, and on the population, because deleting an obligation
+    /// raises the ratio without discharging anything.
+    Scorecard {
+        #[arg(long)]
+        measure: bool,
+        #[arg(long)]
+        badge: bool,
+    },
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
     /// catch feature-unification-masked breakages — crates that compile in a
     /// full `--workspace` build but fail standalone (and on `cargo publish`)
@@ -309,8 +343,10 @@ enum CiSpecCmd {
     },
 }
 
+mod alg;
 mod allowlist_gates;
 mod assurance_required;
+mod bound;
 mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
@@ -325,13 +361,19 @@ mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
 mod lean_action_builds;
+mod life;
 mod line_ratchet;
 mod pin_parity;
+mod pipefail;
 mod push_auth;
 mod rerun_plan;
 mod schedule_liveness;
 mod scoreboard;
+mod scorecard;
 mod self_pin;
+mod suppress;
+mod tot;
+mod typed;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
@@ -369,6 +411,7 @@ fn main() -> Result<()> {
         Command::PushAuth => push_auth::check(&std::env::current_dir()?),
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
+        Command::Pipefail => pipefail::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;
@@ -392,6 +435,14 @@ fn main() -> Result<()> {
         // Exit code mapped here, not inside the check, for the SelfPin arm's
         // reason: a unit test calling `run()` must survive.
         Command::InertAuthority => match inert_authority::run()? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
+        Command::Bound { measure, badge } => match bound::run(measure, badge)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
+        Command::Scorecard { measure, badge } => match scorecard::run(measure, badge)? {
             0 => Ok(()),
             code => std::process::exit(code),
         },

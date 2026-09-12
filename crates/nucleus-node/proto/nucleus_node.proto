@@ -124,6 +124,20 @@ message ExecutionReceipt {
   uint64 cache_read_tokens = 14;
   // Estimated cost in USD (IEEE 754 double)
   double cost_usd = 15;
+
+  // === v1.2 The node's signature ===
+  //
+  // Hex Ed25519 over the receipt's tagged, length-prefixed preimage (every
+  // field above; not these two, since a signature cannot cover itself). The
+  // NODE signs — the key is the one in pod_authority and never enters a guest,
+  // which is what makes the signature worth more than the pod's own word.
+  //
+  // Empty when the node could not sign. A receipt that looks signed and is not
+  // would be worse than an unsigned one.
+  string signature = 16;
+  // The root public key that made it, hex, so a relying party can verify
+  // without asking the signer.
+  string signer_pubkey = 17;
 }
 
 message GetReceiptRequest {

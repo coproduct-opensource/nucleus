@@ -370,6 +370,56 @@ pub enum ApprovalSource {
     },
 }
 
+/// Why a [`DecisionToken`] could not be redeemed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedeemError {
+    /// The decision authorises a different operation than the one being done.
+    ScopeMismatch {
+        /// What the decision authorises.
+        authorised: Operation,
+        /// What the effect is.
+        performing: Operation,
+    },
+    /// The decision was taken against permissions other than the ones in force.
+    StalePermissions {
+        /// Checksum of the permissions the decision was taken against.
+        decided_under: String,
+        /// Checksum of the permissions the effect would run under.
+        executing_under: String,
+    },
+}
+
+impl std::fmt::Display for RedeemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// First eight hex characters: enough to tell two digests apart in a
+        /// message a human reads. The full digest belongs in the trace.
+        fn short(d: &str) -> &str {
+            d.get(..8).unwrap_or(d)
+        }
+        match self {
+            Self::ScopeMismatch {
+                authorised,
+                performing,
+            } => write!(
+                f,
+                "decision authorises {authorised:?}, this effect is {performing:?}"
+            ),
+            Self::StalePermissions {
+                decided_under,
+                executing_under,
+            } => write!(
+                f,
+                "decision was taken against permissions {} but this effect runs under {}: \
+                 a decision does not carry across a change of policy",
+                short(decided_under),
+                short(executing_under)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RedeemError {}
+
 /// Proof that Kernel::decide() returned Allow.
 ///
 /// This token is:
@@ -379,25 +429,81 @@ pub enum ApprovalSource {
 ///
 /// Only Kernel::decide() can create this token. Kani proof
 /// `proof_decision_token_unforgeable` verifies no other construction path exists.
+///
+/// The only way to USE one is [`DecisionToken::redeem`], which checks both
+/// that the decision authorises this operation and that it was taken against
+/// the permissions now in force.
 #[must_use = "DecisionToken must be consumed by executing the authorized operation"]
 pub struct DecisionToken {
     /// The operation this token authorizes.
     pub(crate) operation: Operation,
     /// The decision sequence number for audit correlation.
     pub(crate) sequence: u64,
+    /// Checksum of the effective permissions this decision was taken against.
+    ///
+    /// The affine discipline on this type proves a token cannot be used TWICE.
+    /// It proves nothing about whether the token is still TRUE: the consume-side
+    /// check compared two `Operation`s and never consulted the state the
+    /// decision was made under. A token decided against one policy could be
+    /// redeemed under another.
+    ///
+    /// Carrying the fingerprint makes that answerable at the redeem site without
+    /// threading the kernel there. It is the first step of a validity interval,
+    /// and the honest name for what it bounds: not elapsed time, but whether the
+    /// thing the decision depended on is the thing being executed under.
+    pub(crate) permissions: String,
     /// Prevents external construction.
     _seal: (),
 }
 
 impl DecisionToken {
-    /// The operation this token authorizes.
-    pub fn operation(&self) -> Operation {
-        self.operation
+    /// Consume this token to perform `performing` under `executing_under`.
+    ///
+    /// The only public way to use a `DecisionToken`, and it checks both things a
+    /// redeemer must check:
+    ///
+    /// * **scope** — the decision authorises the operation being performed;
+    /// * **currency** — the decision was taken against the very permissions the
+    ///   effect is about to run under.
+    ///
+    /// Taking `self` by value makes this the token's single use, so the affine
+    /// discipline and the two checks are one event rather than three things a
+    /// call site is trusted to do in order. A new effect method cannot read the
+    /// token without performing them: there is nothing else to call.
+    ///
+    /// # Errors
+    ///
+    /// [`RedeemError::ScopeMismatch`] when the decision authorises a different
+    /// operation; [`RedeemError::StalePermissions`] when it was taken against a
+    /// different policy.
+    pub fn redeem(self, executing_under: &str, performing: Operation) -> Result<(), RedeemError> {
+        if self.operation != performing {
+            return Err(RedeemError::ScopeMismatch {
+                authorised: self.operation,
+                performing,
+            });
+        }
+        if self.permissions != executing_under {
+            return Err(RedeemError::StalePermissions {
+                decided_under: self.permissions,
+                executing_under: executing_under.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// The decision sequence number for audit correlation.
     pub fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    /// Checksum of the effective permissions this decision was taken against.
+    ///
+    /// A redeemer compares this with the permissions it is about to execute
+    /// under, and refuses on a mismatch.
+    #[must_use]
+    pub fn permissions(&self) -> &str {
+        &self.permissions
     }
 }
 
@@ -1941,9 +2047,21 @@ impl Kernel {
         self.next_seq += 1;
 
         let token = if matches!(verdict, Verdict::Allow) {
+            // NORMALIZED, not `post_hash`. The kernel decides against
+            // `self.effective` as written; an executor enforces
+            // `policy.clone().normalize()`, and `normalize` is not the identity —
+            // it applies the uninhabitable-state constraint, which ADDS approval
+            // obligations. So the two sides hold different values of the same
+            // policy, and comparing the raw checksum would refuse every token
+            // for a policy that normalization changes.
+            //
+            // Computed only on the Allow branch, so the deny path does not pay
+            // for it, and `normalize` is idempotent (`permission_normalize_is_
+            // idempotent`) so an already-normalized policy costs a clone.
             Some(DecisionToken {
                 operation,
                 sequence: seq,
+                permissions: self.effective.clone().normalize().checksum(),
                 _seal: (),
             })
         } else {
