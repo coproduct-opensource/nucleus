@@ -477,3 +477,32 @@ binary, with new executor keys and explicit predecessor provenance. It cannot
 recursively request another successor. Public evidence for both stages is exported
 separately. This wiring passes the ten build-image tests, strict xtask Clippy and
 actionlint; its real successor run remains the next experiment.
+
+
+## Successor chain observed (2026-09-12)
+
+[Run 34723000387](https://github.com/coproduct-opensource/nucleus/actions/runs/34723000387)
+completed successfully at `58d894f18b891eccfacb5ee8ecf85a7ea63aa11a`, tree
+`802e893ac6b66ed2aa58c33b349b2962b0e11e58`. Both bootstrap and both successor
+Firecracker builds returned independently verified execution/artifact bundles.
+The successor runtime's node digest equals the first verified output; its
+provenance binds the first receipt root and its fresh executor key differs from
+the bootstrap key. All four binaries are 58,545,208 bytes and have SHA-256
+`53d2dcf2326aa634231ee9940d250214daaee41ee2dcfd45b1148cb0175abe83`.
+
+Bootstrap cold/warm totals: 224.773/90.455 s. Successor cold/warm totals:
+226.490/89.695 s, with Cargo console times 2m51s/39.42s. The warm scratch disk
+again used sparse-copy fallback (3.018 s copying and 7.174 s verifying).
+
+Informational [`nucleus/build` check 103634804793](https://github.com/coproduct-opensource/nucleus/runs/103634804793)
+was published from the verified successor warm bundle for that exact source.
+App ID 4853870 and returned head/attempt/conclusion were independently confirmed.
+A live attempt with a different PR subject was refused before check creation;
+the accepted attempt reconciled PR 2884's current head immediately before sending.
+Required checks and production signer policy were not changed.
+
+The self-built successor is now observed evidence, not just wiring. Still open:
+the automatic leased execution worker and live webhook delivery, live red and
+merge-group checks, required-check App pinning after acceptance, native Linux
+reflink measurements, checkpoint quiescence, and production cache/result-store
+integration. Do not infer any of these from the successful successor experiment.

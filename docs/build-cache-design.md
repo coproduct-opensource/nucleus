@@ -69,6 +69,16 @@ and digest verification (6.589 s). This proves exact-tree cache reuse through
 its fallback, not Linux reflink performance. It does not prove reproducibility
 across arbitrary hosts or source revisions.
 
+A second run, [34723000387](https://github.com/coproduct-opensource/nucleus/actions/runs/34723000387),
+completed the successor chain at exact source `58d894f18b891eccfacb5ee8ecf85a7ea63aa11a`.
+The verified first-stage output ran as the next executor, with fresh signing keys.
+Bootstrap cold/warm totals were 224.773/90.455 s; successor totals were
+226.490/89.695 s. The successor's Cargo times were 2m51s/39.42s. All four outputs
+were byte-identical and all four receipt/artifact bundles independently verified.
+The successor warm path again used sparse copy: 3.018 s copying, 7.174 s verifying
+an 8 GiB logical scratch disk. This repeats the roughly 2.5x exact-tree warm
+speedup; native Linux COW and shared caches remain the next performance work.
+
 Cancellation is not a guest filesystem flush. Journal recovery supplies a
 crash-consistent seed and may lose recently written cache entries. A production
 checkpoint needs a supervisor-controlled sync/quiescence protocol. Authenticating
