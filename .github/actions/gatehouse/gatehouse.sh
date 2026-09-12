@@ -77,8 +77,25 @@ jq -n --arg plan "$PLAN" --arg kid "$KID" --arg sk "$SK" --arg rd "$RUNNER_DIGES
     credential_tier: "developer", runner_digest: $rd, binding: null}' > "$W/job.json"
 
 # ── 4. The runner: materialize, run, sign ──────────────────────────────────────────────────
-set +e; "$RUNNER" "$W/job.json" "$W/receipt.json"; RC=$?; set -e
-case "$RC" in 0) VERDICT=held ;; 1) VERDICT=failed ;; *) die "the runner errored (exit $RC): the gate could not be run" ;; esac
+# An OUTER deadline on the runner itself, above the gate's own `timeout_s`.
+#
+# The gate's timeout bounds the COMMAND. It says nothing about the runner
+# hanging anywhere else — materializing the scope, reading a pipe, signing —
+# and on 2026-09-11 exactly that happened: a deadlock in the runner's log
+# reader (gatehouse F-100) hung every shadow job until GitHub cancelled it,
+# which produces no receipt, no log and no diagnosis. `timeout` turns that into
+# exit 124 and the message below.
+#
+# The slack is deliberate: the runner must be allowed to hit its own deadline,
+# kill the command and write an honest `errored` receipt before this fires.
+set +e; timeout --signal=TERM --kill-after=30 "$(( GH_TIMEOUT + 120 ))" \
+  "$RUNNER" "$W/job.json" "$W/receipt.json"; RC=$?; set -e
+case "$RC" in
+  0) VERDICT=held ;;
+  1) VERDICT=failed ;;
+  124|137) die "the runner did not finish within $(( GH_TIMEOUT + 120 ))s and was killed: it hung somewhere outside the command's own timeout, so there is no receipt to show" ;;
+  *) die "the runner errored (exit $RC): the gate could not be run" ;;
+esac
 say "gate $NAME: $VERDICT"
 
 # ── 5. The receipt into the hosted log, and verified here against the tenant's trust ───────
