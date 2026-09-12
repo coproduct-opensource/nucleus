@@ -13788,6 +13788,7 @@ dependencies = [
  "portcullis",
  "regex",
  "reqwest 0.13.4",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

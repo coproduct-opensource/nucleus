@@ -406,3 +406,39 @@ launch-attestation hashing; the bootstrap spent more than seven minutes before
 that node call. The controller now logs each input hash's byte count and elapsed
 time so a later optimization can address a measured component. No cold/warm
 build timing or artifact receipt has been produced by this failed run.
+
+
+## Copy-on-write build cache and measured controller cost
+
+The web-researched design is in [build-cache-design.md](../build-cache-design.md).
+The experiment now uses a separate writable scratch inode per phase, with an
+exact-tree seed promoted only after successful artifact verification and confirmed
+VM shutdown. Promotion checks the ext4 journal; warm scratch uses Linux reflink or
+APFS clonefile, with a measured sparse fallback. Every clone is hashed before
+publication, and the new execution must still verify. No shared remote cache or
+cross-tree receipt reuse is enabled.
+
+On this Mac, a synthetic 512 MiB image with 3 MiB allocated measured:
+
+| Controller / copy method | Copy | Source + clone verification | Total |
+|---|---:|---:|---:|
+| Debug / sparse extent copy | 7.9 ms | 5.188 s | 5.196 s |
+| Release / sparse extent copy | 8.3 ms | 0.402 s | 0.410 s |
+| Release / native APFS clone | 4.7 ms | 0.393 s | 0.398 s |
+
+These are local storage probes, not build times or Linux reflink measurements.
+The workflow now uses the optimized controller for preparation, execution and
+public evidence export. `cargo xtask build-cache-probe` exposes the same storage
+path for host measurements; `cache.json` and phase timing expose copy, hashing,
+preparation, execution and checkpoint costs in later real builds.
+
+Ten build-image tests pass, including native clone write isolation, sparse-copy
+holes, corrupt-seed rejection and destination collision refusal. Strict xtask
+Clippy, the line ratchet and workflow actionlint pass. The actual cache module also
+cross-checks for Linux with rustix; this is compilation evidence, not a live
+Linux COW result. Experiment 34720923251 was dispatched immediately after pushing f1cbac5fe,
+but GitHub recorded its actual head as cffbb336f and ran that older workflow and
+source. Its terminal failure repeated the missing egress sentinel and unreadable
+vendor file; it tested neither the image repairs nor these cache changes. Compare
+the dispatched run's `headSha` with the intended full commit before accepting a
+new experiment as validation; reading the branch ref alone did not establish it.

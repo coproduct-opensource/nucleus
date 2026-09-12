@@ -12,6 +12,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub(crate) mod execute;
+pub(crate) mod scratch_cache;
 pub(crate) mod successor;
 
 // linux/amd64 manifest resolved from the official 1.96.1-bookworm index on

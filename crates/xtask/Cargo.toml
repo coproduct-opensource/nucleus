@@ -46,3 +46,5 @@ ed25519-dalek = { workspace = true, features = ["pkcs8"] }
 regex = { workspace = true }
 # Isolated executable copies for successor builds, plus throwaway test trees.
 tempfile = { workspace = true }
+# Safe filesystem cloning and sparse extent discovery for build scratch caches.
+rustix = { version = "1.1.4", features = ["fs"] }

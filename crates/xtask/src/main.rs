@@ -45,6 +45,8 @@ enum Command {
     BuildSuccessor(build_image::successor::Args),
     /// Export only public build experiment evidence, excluding all private keys.
     BuildEvidence(build_image::execute::EvidenceArgs),
+    /// Measure private image cloning and verification on this host filesystem.
+    BuildCacheProbe(build_image::scratch_cache::ProbeArgs),
     /// Emit explicit Lean-action targets for the library coverage gate.
     LeanActionBuilds {
         /// Limit output to one workflow, for its per-theorem audit.
@@ -398,6 +400,7 @@ fn main() -> Result<()> {
         Command::BuildBootstrap(args) => build_image::execute::bootstrap(args),
         Command::BuildSuccessor(args) => build_image::successor::run(args),
         Command::BuildEvidence(args) => build_image::execute::evidence(args),
+        Command::BuildCacheProbe(args) => build_image::scratch_cache::probe(args),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {

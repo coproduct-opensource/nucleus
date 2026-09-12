@@ -284,6 +284,7 @@ pub fn evidence(args: EvidenceArgs) -> Result<()> {
             "execution-receipt.json",
             "artifact-receipt.json",
             "timing.json",
+            "cache.json",
             "nucleus-node",
         ] {
             copy_evidence(
@@ -421,23 +422,39 @@ pub fn run(args: Args) -> Result<()> {
     fs::create_dir(&output).context("build output must be a new directory")?;
     let output = output.canonicalize()?;
     fs::write(output.join("inputs.json"), &input_bytes)?;
-    let scratch = output.join("scratch.ext4");
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&scratch)?
-        .set_len(8 * 1024 * 1024 * 1024)?;
-    checked(
-        Command::new("mke2fs")
-            .args(["-q", "-t", "ext4", "-m", "0", "-F"])
-            .arg(&scratch),
-    )?;
-    // Warm means a second real build with the first run's compiler cache, on
-    // a new VM. It does not mean a receipt cache hit or cross-tree reuse.
+    let mut seed: Option<super::scratch_cache::FrozenScratch> = None;
+    // Every VM gets a private inode. Only a verified, stopped cold build can
+    // become the seed; this is compiler-cache reuse for this exact tree.
     for phase in ["cold", "warm"] {
+        let phase_started = Instant::now();
         let directory = output.join(phase);
         fs::create_dir(&directory)?;
-        let spec = build_spec(&inputs, &scratch, &sha256(&scratch)?)?;
+        let scratch = directory.join("scratch.ext4");
+        let (scratch_digest, cache) = match &seed {
+            Some(seed) => seed.fork(&scratch)?,
+            None => {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&scratch)?
+                    .set_len(8 * 1024 * 1024 * 1024)?;
+                checked(
+                    Command::new("mke2fs")
+                        .args(["-q", "-t", "ext4", "-m", "0", "-F"])
+                        .arg(&scratch),
+                )?;
+                (
+                    sha256(&scratch)?,
+                    serde_json::json!({"mode": "empty", "scope": "exact_tree"}),
+                )
+            }
+        };
+        fs::write(
+            directory.join("cache.json"),
+            serde_json::to_vec_pretty(&cache)?,
+        )?;
+        let preparation_seconds = phase_started.elapsed().as_secs_f64();
+        let spec = build_spec(&inputs, &scratch, &scratch_digest)?;
         fs::write(
             directory.join("spec.json"),
             serde_json::to_vec_pretty(&spec)?,
@@ -494,29 +511,51 @@ pub fn run(args: Args) -> Result<()> {
             )?;
             collect(&client, &pod_url, &expected, &directory)
         })();
-        // Cancellation is attempted on both success and failure. A failure to
-        // stop the VM prevents a warm run from sharing its writable disk.
+        // Cancellation is attempted on both success and failure. Only success
+        // of BOTH verification and shutdown can mint the completed-build witness.
         let cancelled = client
             .post(format!("{pod_url}/cancel"))
             .send()
             .and_then(reqwest::blocking::Response::error_for_status);
         result?;
-        cancelled.context("could not stop build VM; refusing shared scratch reuse")?;
+        cancelled.context("could not stop build VM; refusing cache promotion")?;
+        let completed = CompletedBuild { scratch };
+        let execution_seconds = timer.elapsed().as_secs_f64();
+        let checkpoint_started = Instant::now();
+        if phase == "cold" {
+            seed = Some(super::scratch_cache::FrozenScratch::seal(completed)?);
+        }
         fs::write(
             directory.join("timing.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "phase": phase, "wall_seconds": timer.elapsed().as_secs_f64(),
+                "phase": phase, "wall_seconds": execution_seconds,
                 "scope": "launch through verified artifact retrieval and cancellation",
+                "preparation_seconds": preparation_seconds,
+                "checkpoint_seconds": checkpoint_started.elapsed().as_secs_f64(),
+                "total_seconds": phase_started.elapsed().as_secs_f64(),
                 "pod_id": created.id, "source_commit": inputs.source_commit,
                 "source_tree": inputs.source_tree, "program_digest": program,
             }))?,
         )?;
         println!(
             "{phase}: verified nucleus-node artifact in {:.3}s",
-            timer.elapsed().as_secs_f64()
+            execution_seconds
         );
     }
     Ok(())
+}
+
+/// Minted only after authenticating successful artifacts AND stopping the VM.
+/// Consumed by cache promotion (ADR 0007 C-4); a path alone cannot promote.
+#[must_use]
+pub(super) struct CompletedBuild {
+    scratch: PathBuf,
+}
+
+impl CompletedBuild {
+    pub(super) fn into_scratch(self) -> PathBuf {
+        self.scratch
+    }
 }
 
 fn client(cert: &Path, key: &Path, bundle: &Path) -> Result<Client> {
