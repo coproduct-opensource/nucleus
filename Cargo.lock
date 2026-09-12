@@ -7365,6 +7365,7 @@ name = "nucleus-receipt-store"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "ci-spec",
  "nucleus-action-key",
  "serde_json",
  "tempfile",

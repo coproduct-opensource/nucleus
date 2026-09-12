@@ -17,4 +17,5 @@ nucleus-action-key = { path = "../nucleus-action-key" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+ci-spec = { path = "../ci-spec" }
 tempfile = { workspace = true }
