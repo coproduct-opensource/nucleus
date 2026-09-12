@@ -166,6 +166,73 @@ probe() {
 # restore it, the gate must go green. The wiring check is the same question asked
 # of the workflows, and comment lines are stripped for the reason the derivation
 # above explains.
+# A gate CI invokes BOTH bare and with a flag, probed on the flagged form too.
+#
+# `probe_xtask`'s CI-parity guard asks whether SOME invocation is bare, and passes when one is.
+# That is right as far as it goes — probing bare then tests a command CI really runs — but it
+# leaves a flagged sibling unprobed while the accounting counts the subcommand as covered. The
+# harness derives its domain from `xtask -- <sub>`, so `allowlist-gates` and
+# `allowlist-gates --parity` are one name to it and the second mode is invisible.
+#
+# That matters here specifically: `--parity` is the mode that checks the Rust harness implements
+# every gate its shell scripts announce. A mode nothing probes is a gate that cannot fail.
+probe_xtask_flagged() {
+    local sub="$1" flags="$2" target="$3" desc="$4"
+    shift 4
+
+    local invocations
+    invocations="$(grep -rhE "xtask -- ${sub}" .github/workflows/*.yml 2>/dev/null \
+        | grep -vE '^[[:space:]]*#' \
+        | grep -oE "xtask -- ${sub}[^\"'\`|]*" \
+        | sed -E "s/xtask -- $sub//; s/^[[:space:]]+//; s/[[:space:]]+\$//")"
+    if ! printf '%s\n' "$invocations" | grep -qxF -- "$flags"; then
+        echo "  FAIL  xtask $sub $flags — no workflow invokes it with exactly those flags."
+        echo "        CI runs: $(printf '%s' "$invocations" | tr '\n' '/')"
+        echo "        Probing a form CI does not run tests something CI does not run."
+        failures=$((failures + 1))
+        return
+    fi
+    if [[ ! -f "$target" ]]; then
+        echo "  ERROR: $target does not exist"
+        failures=$((failures + 1))
+        return
+    fi
+
+    RESTORE_TO="$target"
+    RESTORE_FROM="$(mktemp)"
+    cp "$target" "$RESTORE_FROM"
+
+    "$@" "$target"
+
+    if cmp -s "$target" "$RESTORE_FROM"; then
+        echo "  FAIL  xtask $sub $flags — the perturbation for '$desc' changed $target not at all"
+        restore
+        RESTORE_FROM=""
+        failures=$((failures + 1))
+        return
+    fi
+
+    local perturbed_rc=0
+    # shellcheck disable=SC2086
+    cargo run -q -p xtask -- "$sub" $flags >/dev/null 2>&1 || perturbed_rc=$?
+    restore
+    RESTORE_FROM=""
+    local restored_rc=0
+    # shellcheck disable=SC2086
+    cargo run -q -p xtask -- "$sub" $flags >/dev/null 2>&1 || restored_rc=$?
+
+    covered=$((covered + 1))
+    if [[ "$perturbed_rc" -eq 0 ]]; then
+        echo "  FAIL  xtask $sub $flags — $desc did NOT fail the gate (exit 0)"
+        failures=$((failures + 1))
+    elif [[ "$restored_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub $flags — still failing (exit $restored_rc) after restore"
+        failures=$((failures + 1))
+    else
+        echo "  ok    xtask $sub $flags — RED on $desc, GREEN when restored"
+    fi
+}
+
 probe_xtask() {
     local sub="$1" target="$2" desc="$3"
     shift 3
@@ -635,6 +702,14 @@ perturb_fly_pool_volumes() {
     # end of the list compile onto the root filesystem and run out of disk.
     sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
 }
+# allowlist-gates --parity: a shell script gains a gate the Rust harness has not ported. This is
+# the real shape -- `check-verify-strict.sh` carried two gates and the port took one -- reproduced
+# on a different script so the probe does not depend on that one defect staying fixed.
+perturb_unported_shell_gate() {
+    local f="$1"
+    printf '%s\n' 'echo "unported gate PASSED: a question the Rust harness does not ask."' >> "$f"
+}
+
 
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
@@ -644,6 +719,9 @@ probe_xtask self-pin .github/workflows/scan.yml \
     "a self-pin naming a commit that does not exist" perturb_self_pin_sha
 probe_xtask allowlist-gates ci/allowlist-gates.txt \
     "an allowlist grown past its pinned size" perturb_allowlist_pin
+
+probe_xtask_flagged allowlist-gates --parity scripts/check-ingest-hashed.sh \
+    "a shell gate the Rust harness never ported" perturb_unported_shell_gate
 probe_xtask fly-pools ci/fly-runner/manager.toml \
     "the committed POOLS default the manager refuses" perturb_fly_pool_volumes
 probe_xtask push-auth .github/workflows/clippy-ratchet.yml \
