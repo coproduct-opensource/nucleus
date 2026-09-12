@@ -220,6 +220,12 @@ const RECEIPT_DOMAIN: &[u8] = b"nucleus/pod-receipt/v1\0";
 /// bytes, and must not need a `PodAuthority` — which owns the PRIVATE key — to
 /// check a receipt. If verification required the signer, only the signer could
 /// verify, which is not a property anyone should accept from an attestation.
+// No production caller YET: the node signs, and the thing that verifies is a
+// relying party outside it. Stated rather than hidden — the same note
+// `snapshot_vmm::load` carries. A verifier nothing calls is still the half of
+// the pair that makes the signature checkable, and shipping the signer without
+// it would be a signature no one can test against.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn verify_pod_receipt(pubkey_hex: &str, preimage: &[u8], signature_hex: &str) -> bool {
     let (Ok(pubkey), Ok(sig)) = (hex::decode(pubkey_hex), hex::decode(signature_hex)) else {
         return false;

@@ -457,6 +457,22 @@ mod tests {
 
         /// A pod handle whose child has actually run and exited, or is still
         /// running when `exit` is false.
+        /// A real `PodAuthority` over a temp state dir, so `build` signs for
+        /// real in these tests rather than against a stub. The key is generated
+        /// per-test, which is also what makes "another key does not verify"
+        /// meaningful.
+        fn authority(dir: &std::path::Path) -> crate::pod_authority::PodAuthority {
+            crate::pod_authority::PodAuthority::new(
+                &crate::pod_authority::AuthorityArgs {
+                    root_minter_spiffe_id: None,
+                    cert_trust_anchors: Vec::new(),
+                    max_children_per_pod: 8,
+                },
+                "nucleus.local",
+                dir,
+            )
+        }
+
         async fn pod(
             work_dir: &std::path::Path,
             exit: bool,
@@ -528,7 +544,7 @@ mod tests {
             let handle = pod(dir.path(), false, &[]).await;
             // `let Err(..) else` rather than `expect_err`: `Built` has no
             // `Debug`, and a test is not a reason to add one to a production type.
-            let Err(err) = build(&handle).await else {
+            let Err(err) = build(&handle, &authority(dir.path())).await else {
                 panic!("a running pod must not produce a receipt");
             };
             assert!(matches!(err, ReceiptError::NotExited), "{err:?}");
@@ -541,7 +557,7 @@ mod tests {
         async fn an_exited_pod_with_no_report_says_which_file_is_missing() {
             let dir = tempfile::tempdir().expect("tempdir");
             let handle = pod(dir.path(), true, &[]).await;
-            let Err(err) = build(&handle).await else {
+            let Err(err) = build(&handle, &authority(dir.path())).await else {
                 panic!("no report on disk, so no receipt");
             };
             let ReceiptError::NoExitReport(why) = err else {
@@ -560,7 +576,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             write_report(dir.path(), "{not json");
             let handle = pod(dir.path(), true, &[]).await;
-            let Err(err) = build(&handle).await else {
+            let Err(err) = build(&handle, &authority(dir.path())).await else {
                 panic!("malformed json must not produce a receipt");
             };
             assert!(matches!(err, ReceiptError::Malformed(_)), "{err:?}");
@@ -573,7 +589,9 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             write_report(dir.path(), REPORT);
             let handle = pod(dir.path(), true, &[]).await;
-            let built = build(&handle).await.expect("a receipt is produced");
+            let built = build(&handle, &authority(dir.path()))
+                .await
+                .expect("a receipt is produced");
 
             let r = &built.receipt;
             assert_eq!(r.pod_id, handle.id.to_string());
@@ -603,8 +621,12 @@ mod tests {
             let b = tempfile::tempdir().expect("tempdir");
             write_report(a.path(), REPORT);
             write_report(b.path(), REPORT);
-            let one = build(&pod(a.path(), true, &[]).await).await.expect("built");
-            let two = build(&pod(b.path(), true, &[]).await).await.expect("built");
+            let one = build(&pod(a.path(), true, &[]).await, &authority(a.path()))
+                .await
+                .expect("built");
+            let two = build(&pod(b.path(), true, &[]).await, &authority(b.path()))
+                .await
+                .expect("built");
 
             assert_ne!(
                 one.receipt.v1_content_hash, two.receipt.v1_content_hash,
@@ -632,7 +654,7 @@ mod tests {
                 ],
             )
             .await;
-            let built = build(&handle).await.expect("built");
+            let built = build(&handle, &authority(dir.path())).await.expect("built");
 
             assert_eq!(built.trust_bracket.as_deref(), Some("B2"));
             assert_eq!(built.trust_profile.as_deref(), Some("restricted"));
@@ -654,7 +676,7 @@ mod tests {
         async fn an_unlabelled_pod_still_names_itself() {
             let dir = tempfile::tempdir().expect("tempdir");
             write_report(dir.path(), REPORT);
-            let built = build(&pod(dir.path(), true, &[]).await)
+            let built = build(&pod(dir.path(), true, &[]).await, &authority(dir.path()))
                 .await
                 .expect("built");
             assert_eq!(
