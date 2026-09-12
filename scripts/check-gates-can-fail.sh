@@ -841,6 +841,7 @@ SELF_FALSIFIED=(
     "check-mediation-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
     "check-observed-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
     "check-rest-pattern-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
+    "check-preimage-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)"
     "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)"
     "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)"
     "check-clippy-ratchet.sh     ceiling-below-actual in the 'ratchet-falsifier' job (clippy-ratchet.yml)"
