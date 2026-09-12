@@ -56,6 +56,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     let inputs = inputs.canonicalize()?;
     fs::create_dir(&output).context("bootstrap output must be a new directory")?;
     let output = output.canonicalize()?;
+    check_bootstrap_socket_paths(&output)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -76,7 +77,10 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             .arg(&output),
     )?;
     let release = output.join("release-v1.16.1-x86_64");
-    let firecracker = release.join("firecracker-v1.16.1-x86_64");
+    // The jailer includes the executable basename in every Unix socket path.
+    // The versioned release name overflowed sun_path with this output layout.
+    let firecracker = output.join("firecracker");
+    copy_executable(&release.join("firecracker-v1.16.1-x86_64"), &firecracker)?;
     let jailer = release.join("jailer-v1.16.1-x86_64");
     let state = output.join("state");
     let log = fs::File::create(output.join("node.log"))?;
@@ -177,6 +181,19 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     Ok(())
 }
 
+fn check_bootstrap_socket_paths(output: &Path) -> Result<()> {
+    let longest = output
+        .join("jailer/firecracker")
+        .join("00000000-0000-0000-0000-000000000000")
+        .join("root/vsock.sock_4294967295");
+    ensure!(
+        longest.as_os_str().as_encoded_bytes().len() < 108,
+        "bootstrap output path is too long for Linux Unix sockets: {}",
+        output.display()
+    );
+    Ok(())
+}
+
 fn mint_client(output: &Path, state: &Path) -> Result<()> {
     let config = output.join("client.cnf");
     fs::write(
@@ -240,6 +257,7 @@ pub fn evidence(args: EvidenceArgs) -> Result<()> {
     for phase in ["cold", "warm"] {
         for name in [
             "spec.json",
+            "expected-execution.json",
             "execution-receipt.json",
             "artifact-receipt.json",
             "timing.json",
@@ -444,7 +462,15 @@ pub fn run(args: Args) -> Result<()> {
             issued_not_before_micros: started,
             issued_not_after_micros: deadline,
         };
-        let result = collect(&client, &pod_url, &expected, &directory);
+        // Persist the controller's values before collecting any returned claim.
+        // An offline verifier must not reconstruct these from the receipt.
+        let result = (|| -> Result<()> {
+            fs::write(
+                directory.join("expected-execution.json"),
+                serde_json::to_vec_pretty(&expected)?,
+            )?;
+            collect(&client, &pod_url, &expected, &directory)
+        })();
         // Cancellation is attempted on both success and failure. A failure to
         // stop the VM prevents a warm run from sharing its writable disk.
         let cancelled = client
@@ -729,6 +755,17 @@ mod tests {
                 sha256: "e".repeat(64),
             },
         }
+    }
+
+    #[test]
+    fn bootstrap_layout_fits_linux_socket_paths() {
+        assert!(check_bootstrap_socket_paths(Path::new("/tmp/nucleus-self-run")).is_ok());
+        assert!(
+            check_bootstrap_socket_paths(Path::new(&format!("/tmp/{}", "x".repeat(50)))).is_err()
+        );
+        // This was the real failed experiment's host-side vsock address.
+        let old = "/tmp/nucleus-self-run/jailer/firecracker-v1.16.1-x86_64/00000000-0000-0000-0000-000000000000/root/vsock.sock_15012";
+        assert!(old.len() >= 108);
     }
 
     #[test]

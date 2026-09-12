@@ -301,6 +301,22 @@ lane passed. The workflow now loads that module along with `vhost_vsock`;
 run `34716636960` exercises the correction. A module-setup pass is not evidence
 that the self-build workload launched or returned a binary.
 
+Run `34716636960` passed the separate KVM enforcement lane but its build guest
+panicked during spec delivery. Downloaded `node.log` repeatedly reports
+`path must be shorter than SUN_LEN`; the versioned Firecracker executable name
+was incorporated into the jailer path and overflowed Linux's Unix-socket path
+limit. The harness now copies the pinned executable to the short `firecracker`
+basename and checks its longest socket path before starting the node. Five
+build-image tests pass, including the failed layout's length and the corrected
+one. A subsequent live build must still demonstrate guest startup and completion.
+
+The controller now saves `expected-execution.json` before retrieving any receipt
+and includes it in the named public evidence export. It contains only expected
+bindings and the executor public key, never signing material. A consumer must
+load that record from its trusted attempt store and independently pin the
+executor key; receiving a matching expectation beside an untrusted receipt is
+not sufficient to establish trust.
+
 The bootstrap already called both kill and wait before propagating its build
 result. Reordering the `?` operations did not add cleanup; it only changed error
 precedence. Preserve the original build error after both cleanup calls so an

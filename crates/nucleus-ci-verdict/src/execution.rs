@@ -66,6 +66,7 @@ impl ExecutionClaim {
 }
 
 /// Expectations come from the controller's attempt record and pinned signer.
+#[derive(Serialize)]
 pub struct ExpectedExecution<'a> {
     pub pod_id: &'a str,
     pub source_commit: &'a str,
