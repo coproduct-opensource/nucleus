@@ -11,14 +11,19 @@
 # Regenerate with `cargo xtask ci-spec inline-gates > ci/inline-gates.txt`
 # (annotations are carried forward).
 #
-# UNCOVERED_CEILING = 80
+# UNCOVERED_CEILING = 90
 #
-# 2026-09-06: 71 → 80. The build-once consolidation (#2635) reports each of the
-# eight consolidated steps back to its required context through a thin relay
-# step (`case $JOB/$STEP`); each relay is a new inline gate with no falsifier of
-# its own — the step it relays keeps its falsifier under its own key. The ninth
-# is kani-spawn-boundary.yml::kani-argv, an existing inline gate the inventory
-# had never listed. Shrinks again when the relays get a self-test.
+# 2026-09-11: 80 → 90. The grep-only consolidation folds eleven single-script
+# gate jobs into `ci.yml`'s `text-gates` and relays each outcome back to its own
+# required context through a thin `case $JOB/$STEP` step. Each relay is a new
+# inline gate with no falsifier of its own; the SCRIPT it relays keeps its
+# falsifier under its own key in scripts/check-gates-can-fail.sh. Exactly the
+# shape of 2026-09-06's 71 → 80, and for the same reason.
+#
+# The three entries this regeneration would also have absorbed
+# (action-smoke-test.yml::dry-run and two podlist-probe steps) are PRE-EXISTING
+# drift and are deliberately left out: a ratchet that quietly swallows
+# unrelated debt is not a ratchet.
 
 a2a-tck.yml::tck::Start the target on :9999 | UNCOVERED: no falsifier yet
 action-smoke-test.yml::dry-run::Dry-run: safe_pr_fixer profile | UNCOVERED: no falsifier yet
@@ -60,6 +65,17 @@ ci.yml::declassify-sink-scope-enforced::Report | UNCOVERED: relay of a consolida
 ci.yml::cross-pod-lineage::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
 ci.yml::c1-inbound-fences-enforced::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
 ci.yml::gates-can-fail::Report | UNCOVERED: relay of a consolidated step's outcome to this required context; the relayed step carries the falsifier
+ci.yml::verify-strict::Report | UNCOVERED: no falsifier yet
+ci.yml::sandbox-trusted-base-gate::Report | UNCOVERED: no falsifier yet
+ci.yml::failclosed-verifier-gate::Report | UNCOVERED: no falsifier yet
+ci.yml::mediation-gate::Report | UNCOVERED: no falsifier yet
+ci.yml::north-star-ledger::Report | UNCOVERED: no falsifier yet
+ci.yml::extracted-callsites::Report | UNCOVERED: no falsifier yet
+ci.yml::task-compiler-offline::Report | UNCOVERED: no falsifier yet
+ci.yml::ingest-hash-gate::Report | UNCOVERED: no falsifier yet
+ci.yml::kani-divergence-gate::Report | UNCOVERED: no falsifier yet
+ci.yml::sealed-home-gate::Report | UNCOVERED: no falsifier yet
+ci.yml::declassify-governor-keys-sealed::Report | UNCOVERED: no falsifier yet
 ck-policy-aeneas.yml::ck-policy-aeneas::Verify generated Lean matches committed (drift gate) | UNCOVERED: no falsifier yet
 ck-policy-aeneas.yml::ck-policy-aeneas::Ban sorry / admit / native_decide in our proof file | UNCOVERED: no falsifier yet
 ck-policy-lean.yml::ck-policy-lean::Ban sorry / admit / native_decide / sorryAx in ck-policy Lean | UNCOVERED: no falsifier yet
