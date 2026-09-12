@@ -65,13 +65,13 @@ use std::collections::BTreeMap;
 use crate::convergence::{affine_corpus, affine_types};
 use crate::scorecard::{Census, Family};
 
-/// Field names that carry a validity interval.
+/// Field names that bound a right's validity by TIME.
 ///
 /// A closed vocabulary, like `inert_authority`'s witness list, and for the same
 /// reason: this is a grep, not a resolver, so the alternative is matching
 /// anything that looks temporal and crediting a `created_at` that nothing reads.
-/// An interval must say when the right STOPS being valid — `issued_at` alone
-/// does not, and is deliberately absent.
+/// A bound must say when the right STOPS being valid — `issued_at` alone does
+/// not, and is deliberately absent.
 pub const INTERVAL_FIELDS: [&str; 7] = [
     "not_after",
     "expires_at",
@@ -80,6 +80,31 @@ pub const INTERVAL_FIELDS: [&str; 7] = [
     "expiry",
     "valid_until",
     "valid_until_unix",
+];
+
+/// Field names that bound a right's validity by the STATE it was decided
+/// against.
+///
+/// A wall-clock TTL asks *how long has it been?* The invariant a one-shot right
+/// actually needs is *has anything it depended on changed?* Those diverge in
+/// both directions: a thirty-second token is stale at one millisecond if the
+/// policy was amended, and sound an hour later if nothing moved. A TTL also
+/// imports a trusted clock and host/guest skew across the vsock boundary.
+///
+/// So a right carrying the fingerprint of the state it was decided against is
+/// bounded **more tightly** than one carrying a duration, not less — it expires
+/// the instant that state changes rather than on a timer someone guessed. This
+/// list exists so the family measures the property rather than the spelling.
+///
+/// It is deliberately narrow. A field must name the state the decision DEPENDED
+/// on; a `session_id` or a `sequence` identifies the right, and identifying is
+/// not bounding.
+pub const DEPENDENCY_FIELDS: [&str; 5] = [
+    "permissions",
+    "policy_hash",
+    "generation",
+    "epoch",
+    "state_hash",
 ];
 
 /// The body of `pub struct`/`pub enum` `ty`, if this source declares it.
@@ -125,20 +150,45 @@ pub fn declaration_body<'a>(src: &'a str, ty: &str) -> Option<&'a str> {
 }
 
 /// Does this type's declaration carry a field saying when it stops being valid?
+///
+/// Either form counts: a time after which it is stale, or a fingerprint of the
+/// state it was decided against. See [`DEPENDENCY_FIELDS`] for why the second is
+/// the stronger bound.
 pub fn has_validity_interval(body: &str) -> bool {
     body.lines()
         .map(str::trim_start)
         .filter(|l| !l.starts_with("//"))
         .any(|l| {
-            INTERVAL_FIELDS.iter().any(|f| {
-                // A field, not a mention: `expires_at: u64`, never a doc line or
-                // a method called `expires_at()`.
-                l.strip_prefix("pub ")
-                    .unwrap_or(l)
-                    .strip_prefix(*f)
-                    .is_some_and(|r| r.trim_start().starts_with(':'))
-            })
+            INTERVAL_FIELDS
+                .iter()
+                .chain(DEPENDENCY_FIELDS.iter())
+                .any(|f| {
+                    // A field, not a mention: `expires_at: u64`, never a doc line or
+                    // a method called `expires_at()`.
+                    strip_visibility(l)
+                        .strip_prefix(*f)
+                        .is_some_and(|r| r.trim_start().starts_with(':'))
+                })
         })
+}
+
+/// Drop a leading visibility modifier: `pub`, `pub(crate)`, `pub(super)`,
+/// `pub(in path)`.
+///
+/// Only `pub ` was stripped before, so every `pub(crate)` field was invisible to
+/// this family — and the first right to gain a validity bound carried exactly
+/// that: `pub(crate) permissions: String` on `DecisionToken`. The gate reported
+/// the work as not done.
+fn strip_visibility(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix("pub") else {
+        return line;
+    };
+    match rest.strip_prefix('(') {
+        Some(after) => after
+            .split_once(')')
+            .map_or(line, |(_, tail)| tail.trim_start()),
+        None => rest.trim_start(),
+    }
 }
 
 /// Per affine type, whether it carries a validity interval.
@@ -243,8 +293,43 @@ mod tests {
     }
 
     #[test]
+    fn a_restricted_visibility_field_is_still_a_field() {
+        // Only `pub ` was stripped before, so every `pub(crate)` field was
+        // invisible — including the first right in the tree to gain a bound.
+        for vis in ["pub", "pub(crate)", "pub(super)", "pub(in crate::a)", ""] {
+            let src = format!("pub struct A {{\n    {vis} expires_at: u64,\n}}\n");
+            let b = declaration_body(&src, "A").expect("declared");
+            assert!(
+                has_validity_interval(b),
+                "visibility `{vis}` should not hide the field"
+            );
+        }
+    }
+
+    #[test]
+    fn a_state_fingerprint_bounds_validity_as_much_as_a_clock_does() {
+        // A right carrying the state it was decided against expires the instant
+        // that state changes — a tighter bound than a duration someone guessed.
+        let src = "pub struct Token {\n    pub(crate) permissions: String,\n}\n";
+        let b = declaration_body(src, "Token").expect("declared");
+        assert!(has_validity_interval(b));
+    }
+
+    #[test]
+    fn identifying_a_right_is_not_bounding_it() {
+        for f in ["session_id", "sequence", "issued_at", "id"] {
+            let src = format!("pub struct A {{\n    {f}: u64,\n}}\n");
+            let b = declaration_body(&src, "A").expect("declared");
+            assert!(
+                !has_validity_interval(b),
+                "{f} identifies, it does not bound"
+            );
+        }
+    }
+
+    #[test]
     fn every_spelling_in_the_vocabulary_counts() {
-        for f in INTERVAL_FIELDS {
+        for f in INTERVAL_FIELDS.iter().chain(DEPENDENCY_FIELDS.iter()) {
             let src = format!("pub struct A {{\n    {f}: u64,\n}}\n");
             let b = declaration_body(&src, "A").expect("declared");
             assert!(has_validity_interval(b), "{f} should count");

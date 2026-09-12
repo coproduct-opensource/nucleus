@@ -190,10 +190,29 @@ population_floor = 81
 # sentence rather than a value someone left out, and the parser refuses the key
 # once floor_bp rises above zero, so the acknowledgement cannot go stale.
 #
-# 2026-09-11: seeded at the measurement. Giving a right an expiry is a behaviour
-# change on a security boundary -- a clock at the mint site, a check at the
-# consume site, and a decision about what expiry means for an operation already
-# in flight. This gate states the debt exactly; it does not pay it.
-floor_bp = 0
+# 2026-09-11 (second pass): DecisionToken carries the checksum of the effective
+# permissions it was decided against, and the executor refuses a token whose
+# checksum is not the one it is about to run under. 0 -> 1 of 7.
+#
+# The measured zero did exactly what it was admitted to do. It did not sit
+# quietly at zero while the work happened: the slack check turned the first
+# discharge into a red -- "life is at 14.28% but the floor is pinned at 0.00%"
+# -- and the pin could not be carried forward. That is the whole defence of
+# admitting floor_bp = 0, and it was driven rather than argued.
+#
+# A STATE FINGERPRINT IS A TIGHTER BOUND THAN A CLOCK, not a weaker one. A TTL
+# asks "how long has it been?"; the invariant a one-shot right needs is "has
+# anything it depended on changed?". Those diverge both ways -- a thirty-second
+# token is stale at one millisecond if the policy was amended, and sound an hour
+# later if nothing moved -- and a TTL also imports a trusted clock and host/guest
+# skew across the vsock boundary. So the family counts either form, and the
+# vocabulary says which is which.
+#
+# Not yet bounded: Authority, CheckProof, DischargedBundle, PodRuntime,
+# ServeToken, VerifyToken. The last two cross a process boundary and are
+# serialized, so they need the fingerprint checked on arrival rather than a
+# borrow; the first four are in-process and could take a lifetime instead, which
+# would make staleness a compile error the way affinity already makes replay one
+# (E0382). That is an ADR and a call-site refactor, not a ratchet.
+floor_bp = 1428
 population_floor = 7
-measured_zero = true
