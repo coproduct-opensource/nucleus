@@ -575,13 +575,30 @@ mod tests {
 
     // ── helpers ────────────────────────────────────────────────────
 
+    /// A directory no other test can name.
+    ///
+    /// This used to be `temp_dir().join(format!("nucleus-registry-test-{nanos}"))`
+    /// followed by `remove_dir_all`. Nine tests in this module share it, and two
+    /// landing in the same nanosecond bucket get the SAME PATH — at which point
+    /// the second one's `remove_dir_all` deletes the first one's registry
+    /// underneath it, mid-test.
+    ///
+    /// That is not hypothetical. `push_pull_roundtrip` failed in CI twice on one
+    /// PR whose diff was a workflow timeout, 1 failure in 7444, and re-running
+    /// reproduced it: a clock-keyed name is a race that fires under load, not a
+    /// flake that goes away.
+    ///
+    /// Process id AND a counter, because the two runners collide differently.
+    /// `cargo nextest` gives each test its own process, so the pid separates
+    /// them; plain `cargo test` runs them as threads in one process, so the pid
+    /// is shared and only the counter does. Neither reads a clock.
     fn tempdir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "nucleus-registry-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "nucleus-registry-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = fs::remove_dir_all(&dir);
         dir
