@@ -46,6 +46,19 @@ impl std::ops::BitOr for MsFlags {
 
 const POD_SPEC_PATH: &str = "/etc/nucleus/pod.yaml";
 const FALLBACK_POD_SPEC: &str = "/pod.yaml";
+/// Where a spec fetched from the HOST is written.
+///
+/// `/run` and not `/etc/nucleus`: a real pod's rootfs is READ-ONLY, so writing
+/// the fetched spec beside the baked one is impossible. The first version of
+/// this wrote to `POD_SPEC_PATH` and every real pod died on it —
+/// `the host supplied a pod spec and /etc/nucleus/pod.yaml could not be
+/// written — refusing to boot`, followed by `Kernel panic - not syncing:
+/// Attempted to kill init!`. The fail-closed path was right; the target was
+/// not.
+///
+/// `/run` is a load-bearing tmpfs mounted well before the barrier, so it is
+/// writable by the time the spec arrives and gone when the pod does.
+const HOST_POD_SPEC: &str = "/run/nucleus/pod.yaml";
 const PROXY_BIN: &str = "/usr/local/bin/nucleus-tool-proxy";
 /// The egress backstop probe, baked into the rootfs beside the proxy.
 const EGRESS_PROBE_BIN: &str = "/usr/local/bin/nucleus-egress-probe";
@@ -200,7 +213,13 @@ fn run() -> Result<(), String> {
     // says nothing.
     if let Some(port) = workload_api_port {
         match identity::fetch_pod_spec(port, &past_barrier) {
-            Ok(spec) => match boot::place_host_spec(POD_SPEC_PATH, Some(&spec), |p, body| {
+            Ok(spec) => match boot::place_host_spec(HOST_POD_SPEC, Some(&spec), |p, body| {
+                // The parent first: /run is a fresh tmpfs every boot.
+                if let Some(dir) = Path::new(p).parent()
+                    && fs::create_dir_all(dir).is_err()
+                {
+                    return false;
+                }
                 fs::write(p, body).is_ok()
             }) {
                 Ok(true) => eprintln!("pod spec fetched from the host"),
@@ -215,13 +234,19 @@ fn run() -> Result<(), String> {
     }
 
     // Never a shell: a missing spec is a named boot error.
-    let spec_path = boot::resolve_pod_spec(
-        POD_SPEC_PATH,
-        FALLBACK_POD_SPEC,
-        |p| Path::new(p).exists(),
-        |from, to| fs::copy(from, to).is_ok(),
-    )
-    .map_err(|e| e.to_string())?;
+    // The host's spec wins when there is one; `resolve_pod_spec` decides between
+    // the two BAKED locations and knows nothing about the fetched one.
+    let spec_path = if Path::new(HOST_POD_SPEC).exists() {
+        HOST_POD_SPEC.to_string()
+    } else {
+        boot::resolve_pod_spec(
+            POD_SPEC_PATH,
+            FALLBACK_POD_SPEC,
+            |p| Path::new(p).exists(),
+            |from, to| fs::copy(from, to).is_ok(),
+        )
+        .map_err(|e| e.to_string())?
+    };
     if let Some(port) = workload_api_port {
         // Announce the barrier before asking for anything. After the first fetch below this VM
         // is one particular pod, and a snapshot of it would hand that pod's identity to every
