@@ -1076,6 +1076,14 @@ perturb_gatehouse_bin_dir_dropped() {
     perl -0pi -e 's/^\s*bin-dir:.*\n//m' "$f"
 }
 
+# workspace-members: a crate dropped from the members list. This is the real mistake -- the
+# list is explicit, not a glob, so forgetting one is the normal way a crate ends up outside
+# the workspace, invisible to every `--workspace` command and failing nothing.
+perturb_workspace_member_dropped() {
+    local f="$1"
+    perl -0pi -e 's/^\s*"crates\/nucleus-audit",[^\n]*\n//m' "$f"
+}
+
 # allowlist-gates --parity: a shell script gains a gate the Rust harness has not ported. This is
 # the real shape -- `check-verify-strict.sh` carried two gates and the port took one -- reproduced
 # on a different script so the probe does not depend on that one defect staying fixed.
@@ -1205,6 +1213,8 @@ probe_xtask_partial gatehouse-pin "--gatehouse gatehouse" \
     .github/workflows/gatehouse-shadow.yml \
     "a step falling back to the action's downloaded default" \
     perturb_gatehouse_bin_dir_dropped
+probe_xtask workspace-members Cargo.toml \
+    "a crate dropped from the workspace members list" perturb_workspace_member_dropped
 probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
     "a baseline claiming a score the tree does not have" \
     "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \
