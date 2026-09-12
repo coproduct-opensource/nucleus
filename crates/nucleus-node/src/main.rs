@@ -49,6 +49,7 @@ mod pod_receipt;
 mod production_confinement;
 mod workload_api_protocol;
 mod workload_api_vsock;
+mod workload_artifacts;
 mod workload_result;
 use auth::{AuthError, AuthorizationError};
 mod boot_trace;
@@ -841,7 +842,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/workload-result", get(workload_result::get))
         .route(
             "/v1/pods/{id}/execution-receipt",
-            get(workload_result::receipt),
+            get(workload_result::receipt).post(workload_artifacts::collect),
         )
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(

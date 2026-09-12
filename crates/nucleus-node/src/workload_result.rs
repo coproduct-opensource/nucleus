@@ -33,7 +33,16 @@ pub(crate) async fn receipt(
     Extension(caller): Extension<Option<Uuid>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Receipt>, ApiError> {
-    let pod = pod_api::get_pod_for_caller(&state, id, caller).await?;
+    let (claim, _) = observe_claim(&state, caller, id).await?;
+    sign_claim(&state, id, claim).map(Json)
+}
+
+pub(crate) async fn observe_claim(
+    state: &NodeState,
+    caller: Option<Uuid>,
+    id: Uuid,
+) -> Result<(ExecutionClaim, String), ApiError> {
+    let pod = pod_api::get_pod_for_caller(state, id, caller).await?;
     let backend = match &pod.driver_state {
         #[cfg(feature = "local-driver")]
         DriverState::Local(_) => Backend::Local,
@@ -48,6 +57,14 @@ pub(crate) async fn receipt(
         .ok_or_else(|| ApiError::Driver("workload supervisor is not reachable yet".into()))?;
     let observed = fetch(&state.http_client, &address).await?;
     let claim = completed_claim(&pod.spec, id, backend, observed)?;
+    Ok((claim, address))
+}
+
+pub(crate) fn sign_claim(
+    state: &NodeState,
+    id: Uuid,
+    claim: ExecutionClaim,
+) -> Result<Receipt, ApiError> {
     let projection = claim
         .to_projection()
         .map_err(|e| ApiError::Driver(format!("encoding execution claim: {e}")))?;
@@ -56,7 +73,7 @@ pub(crate) async fn receipt(
         .map_err(|e| ApiError::Driver(format!("execution receipt clock: {e}")))?;
     let issued_at_micros = u64::try_from(issued.as_micros())
         .map_err(|e| ApiError::Driver(format!("execution receipt clock overflow: {e}")))?;
-    Ok(Json(Receipt::sign(
+    Ok(Receipt::sign(
         Session {
             session_id: id.to_string(),
             issuer_kid: state.trust_gate.executor_id.clone(),
@@ -65,7 +82,7 @@ pub(crate) async fn receipt(
         },
         vec![projection],
         &state.trust_gate.executor_signing_key,
-    )))
+    ))
 }
 
 fn completed_claim(
@@ -116,6 +133,7 @@ fn completed_claim(
         launch_hash,
         environment_inputs_sha256: environment.inputs_sha256,
         environment_complete_sha256: environment.complete_sha256,
+        artifacts: Default::default(),
     })
 }
 

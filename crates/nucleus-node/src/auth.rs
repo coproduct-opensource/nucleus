@@ -393,6 +393,9 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
             &axum::http::Method::GET,
             ["v1", "pods", _id, "workload-result" | "execution-receipt"],
         ) => Some(Operation::GetReceipt),
+        (&axum::http::Method::POST, ["v1", "pods", _id, "execution-receipt"]) => {
+            Some(Operation::GetReceipt)
+        }
         _ => None,
     }
 }

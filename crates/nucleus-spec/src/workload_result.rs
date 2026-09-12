@@ -3,6 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Per-artifact and per-bundle raw-byte limit for build output transfer.
+pub const MAX_ARTIFACT_BYTES: usize = 256 * 1024 * 1024;
+
 /// The exact admitted environment, split into stable inputs and a complete
 /// per-attempt commitment. Only the two mediator-injected bindings are omitted
 /// from inputs; an arbitrary `NUCLEUS_*` name is still an input.

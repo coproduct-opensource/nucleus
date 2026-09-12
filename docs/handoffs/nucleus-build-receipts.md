@@ -168,6 +168,54 @@ always bakes a PodSpec, so the build-image preparation must explicitly arrange
 for the host-fetched spec to be used, rather than accidentally compiling the
 image's template job.
 
+## Artifact capture implemented, 2026-09-12
+
+`POST /v1/pods/{id}/execution-receipt` accepts an artifact manifest such as
+`{"artifacts":{"nucleus-node":"target/debug/nucleus-node"}}`. It establishes
+pod lineage and completed execution, then calls the proxy's mediated binary
+reader. The response bundles standard-base64 artifact bytes with the shared
+signed receipt; the execution body commits each name, relative path, byte count
+and SHA-256 computed by the host from those exact bytes. Collection must finish
+before signing. Missing files or failed reads never yield an empty success.
+
+`Sandbox::read_bounded` consumes both a matching read decision and discharged
+authority, applies capability/path checks through cap-std, opens nonblocking,
+rejects non-regular files, and bounds the read even if the file grows. The proxy
+also records the read outcome and treats output bytes as untrusted tool data.
+Each artifact and the complete bundle are limited to 256 MiB of decoded bytes;
+the node checks response length and streamed chunks. At most eight named relative
+workspace outputs can be requested. No ambient privileged file-reading route or
+disk mount was introduced.
+
+`verify_artifacts` verifies execution against controller expectations, matches
+the entire requested manifest, and checks every returned artifact's size and
+digest. It alone constructs the private, deadline-bound `VerifiedArtifacts`.
+Checking just the receipt cannot construct that witness. It proves the captured
+bytes, not that the build passed: the observed exit remains part of the claim.
+
+Live mTLS/local-driver evidence: binary output containing NUL and invalid UTF-8
+survived collection unchanged. OpenSSL independently verified the host signature,
+and independently computed size/hash matched the signed descriptor. Symlink
+escape, parent traversal, absolute paths, missing files and FIFO collection all
+returned refusals; the FIFO returned in 0.01 s. Pods were cancelled and the test
+node stopped. This remains local integration evidence, not the required microVM
+compile.
+
+Validation: full all-feature suites passed for nucleus (80 unit tests), node
+(515), proxy (452) and CI verdict, plus their integrations/docs. Two final node
+tests additionally check manifests and an oversized chunked upstream response.
+All-target/all-feature Clippy, formatting, strict line ratchet and scorecard pass.
+The scorecard ratchets to 173/174 covered boundaries and 4/10 bounded affine
+rights. Removing only the digest comparison let same-length altered bytes pass
+and made the negative test fail; restoring it made the verifier suite pass.
+
+Next priority is the real build harness: materialize the exact Git source into
+declared pinned inputs, run the pinned toolchain with a declared environment in
+a microVM, collect the nucleus binary through this API, and record cold/warm
+timings. Source commit/tree and gate metadata still need an explicit signed
+binding and controller verification. Do not mistake the green boot probe for
+that build or the captured-artifact witness for GitHub publication authority.
+
 ## Remaining acceptance work (milestones not yet complete)
 
 1. Protected supervisor observation, output/log hashing and a host-signed typed

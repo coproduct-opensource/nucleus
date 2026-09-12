@@ -6,6 +6,15 @@
 
 use nucleus_receipt::{Projection, RECEIPT_VERSION, Receipt};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactIdentity {
+    pub path: String,
+    pub sha256: String,
+    pub size: u64,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionSchema {
@@ -43,6 +52,8 @@ pub struct ExecutionClaim {
     pub environment_inputs_sha256: String,
     /// Complete per-attempt env, including mediator URL and authentication.
     pub environment_complete_sha256: String,
+    #[serde(default)]
+    pub artifacts: BTreeMap<String, ArtifactIdentity>,
 }
 
 impl ExecutionClaim {
@@ -57,6 +68,7 @@ pub struct ExpectedExecution<'a> {
     pub program_digest: &'a str,
     pub architecture: &'a str,
     pub environment_inputs_sha256: &'a str,
+    pub artifacts: &'a BTreeMap<String, String>,
     pub session_id: &'a str,
     pub issuer_kid: &'a str,
     pub verifying_key: &'a [u8; 32],
@@ -103,6 +115,7 @@ pub enum ExecutionError {
     OutsideWindow,
     NotProtectedMicroVm,
     InvalidDigest(&'static str),
+    Artifact(&'static str),
 }
 
 impl std::fmt::Display for ExecutionError {
@@ -124,6 +137,7 @@ pub fn verify_execution(
         program_digest,
         architecture,
         environment_inputs_sha256,
+        artifacts: expected_artifacts,
         session_id,
         issuer_kid,
         verifying_key,
@@ -187,6 +201,7 @@ pub fn verify_execution(
         launch_hash,
         environment_inputs_sha256: actual_environment,
         environment_complete_sha256,
+        artifacts,
     } = &claim;
     for (field, actual, wanted) in [
         ("pod_id", actual_pod.as_str(), *pod_id),
@@ -204,6 +219,17 @@ pub fn verify_execution(
     }
     if *backend != Backend::Firecracker || !uid_isolated {
         return Err(ExecutionError::NotProtectedMicroVm);
+    }
+    if artifacts.len() != expected_artifacts.len()
+        || !expected_artifacts.iter().all(|(name, path)| {
+            artifacts
+                .get(name)
+                .is_some_and(|artifact| artifact.path == *path)
+        })
+    {
+        return Err(ExecutionError::Artifact(
+            "manifest differs from controller request",
+        ));
     }
     for (field, digest) in [
         ("program_digest", actual_program),
@@ -224,5 +250,66 @@ pub fn verify_execution(
     Ok(VerifiedExecution {
         claim,
         valid_until: *issued_not_after_micros,
+    })
+}
+
+/// Verified execution plus the exact output bytes. Private construction keeps
+/// checking only a receipt from being mistaken for checking its artifacts.
+///
+/// ```compile_fail
+/// use nucleus_ci_verdict::execution::{ExecutionClaim, VerifiedArtifacts};
+/// fn forge(claim: ExecutionClaim) -> VerifiedArtifacts {
+///     VerifiedArtifacts { claim, bytes: Default::default(), valid_until: u64::MAX }
+/// }
+/// ```
+#[derive(Debug)]
+#[must_use]
+pub struct VerifiedArtifacts {
+    claim: ExecutionClaim,
+    bytes: BTreeMap<String, Vec<u8>>,
+    valid_until: u64,
+}
+
+impl VerifiedArtifacts {
+    pub fn into_parts(
+        self,
+        now_micros: u64,
+    ) -> Result<(ExecutionClaim, BTreeMap<String, Vec<u8>>), ExecutionError> {
+        if now_micros > self.valid_until {
+            return Err(ExecutionError::OutsideWindow);
+        }
+        Ok((self.claim, self.bytes))
+    }
+}
+
+pub fn verify_artifacts(
+    receipt: &Receipt,
+    expected: &ExpectedExecution<'_>,
+    bytes: BTreeMap<String, Vec<u8>>,
+) -> Result<VerifiedArtifacts, ExecutionError> {
+    use sha2::{Digest, Sha256};
+    let verified = verify_execution(receipt, expected)?;
+    if expected.artifacts.is_empty() || bytes.len() != verified.claim.artifacts.len() {
+        return Err(ExecutionError::Artifact("missing artifact bytes"));
+    }
+    for (name, artifact) in &verified.claim.artifacts {
+        let ArtifactIdentity {
+            path: _,
+            sha256,
+            size,
+        } = artifact;
+        let data = bytes
+            .get(name)
+            .ok_or(ExecutionError::Artifact("missing artifact bytes"))?;
+        if data.len() as u64 != *size || hex::encode(Sha256::digest(data)) != *sha256 {
+            return Err(ExecutionError::Artifact(
+                "artifact bytes differ from signed identity",
+            ));
+        }
+    }
+    Ok(VerifiedArtifacts {
+        claim: verified.claim,
+        bytes,
+        valid_until: verified.valid_until,
     })
 }

@@ -5,6 +5,47 @@ use nucleus_ci_verdict::execution::{
 use nucleus_receipt::{Projection, Receipt, Session};
 
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+static NO_ARTIFACTS: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+
+#[test]
+fn artifact_bytes_names_paths_and_consumption_deadline_are_checked() {
+    use nucleus_ci_verdict::execution::{ArtifactIdentity, verify_artifacts};
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let paths = BTreeMap::from([("binary".into(), "target/nucleus-node".into())]);
+    let mut expected = expected(&public);
+    expected.artifacts = &paths;
+    let data = b"binary\0\xff".to_vec();
+    let bytes = BTreeMap::from([("binary".into(), data.clone())]);
+    let mut claim = claim();
+    claim.artifacts.insert(
+        "binary".into(),
+        ArtifactIdentity {
+            path: "target/nucleus-node".into(),
+            sha256: hex::encode(Sha256::digest(&data)),
+            size: data.len() as u64,
+        },
+    );
+    let receipt = sign(&claim, &key);
+    let valid = verify_artifacts(&receipt, &expected, bytes.clone()).unwrap();
+    assert_eq!(valid.into_parts(200).unwrap().1, bytes);
+    assert_eq!(
+        verify_artifacts(&receipt, &expected, bytes.clone())
+            .unwrap()
+            .into_parts(201)
+            .unwrap_err(),
+        ExecutionError::OutsideWindow
+    );
+    let changed = BTreeMap::from([("binary".into(), b"altered\0".to_vec())]);
+    assert!(verify_artifacts(&receipt, &expected, changed).is_err());
+    assert!(verify_artifacts(&receipt, &expected, BTreeMap::new()).is_err());
+    let renamed = BTreeMap::from([("other".into(), data)]);
+    assert!(verify_artifacts(&receipt, &expected, renamed).is_err());
+    claim.artifacts.get_mut("binary").unwrap().path = "another/source".into();
+    assert!(verify_artifacts(&sign(&claim, &key), &expected, bytes).is_err());
+}
 
 fn claim() -> ExecutionClaim {
     ExecutionClaim {
@@ -20,6 +61,7 @@ fn claim() -> ExecutionClaim {
         launch_hash: DIGEST.into(),
         environment_inputs_sha256: DIGEST.into(),
         environment_complete_sha256: DIGEST.into(),
+        artifacts: Default::default(),
     }
 }
 
@@ -46,6 +88,7 @@ fn expected(key: &[u8; 32]) -> ExpectedExecution<'_> {
         program_digest: DIGEST,
         architecture: "x86_64",
         environment_inputs_sha256: DIGEST,
+        artifacts: &NO_ARTIFACTS,
         session_id: "pod-1",
         issuer_kid: "executor-1",
         verifying_key: key,

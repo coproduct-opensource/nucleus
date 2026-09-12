@@ -68,6 +68,7 @@ mod url_allow;
 mod validation;
 
 use crate::api_error::ApiError;
+mod artifact;
 mod verdict_sink;
 mod web_fetch_policy;
 mod workload;
@@ -1965,6 +1966,7 @@ async fn main() -> Result<(), ApiError> {
         )
         .route("/v1/health", get(health))
         .route("/v1/read", post(read_file))
+        .route("/v1/artifact", post(artifact::read))
         .route("/v1/write", post(write_file))
         .route("/v1/run", post(run_command))
         .route("/v1/web_fetch", post(web_fetch))
@@ -2201,7 +2203,12 @@ const HEALTH_PATH: &str = "/v1/health";
 fn is_allowed_during_lockdown(path: &str) -> bool {
     matches!(
         path,
-        "/v1/read" | "/v1/glob" | "/v1/grep" | "/v1/health" | "/v1/workload/result"
+        "/v1/read"
+            | "/v1/artifact"
+            | "/v1/glob"
+            | "/v1/grep"
+            | "/v1/health"
+            | "/v1/workload/result"
     )
 }
 
