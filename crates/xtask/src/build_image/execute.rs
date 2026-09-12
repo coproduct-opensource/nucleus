@@ -660,8 +660,18 @@ fn build_spec(
     // lattice, so the independently computed program identity does not depend
     // on a profile name becoming inline during admission. Attenuation beyond
     // this request is still a mismatch and must be refused by verification.
+    let lattice = spec.spec.resolve_policy()?;
+    let isolation = portcullis::enforcement::require_isolation(
+        lattice.effective_minimum_isolation(),
+        &portcullis::enforcement::BackendCapability::FIRECRACKER,
+    )?;
+    spec.record_isolation(isolation);
     spec.spec.policy = nucleus_spec::PolicySpec::Inline {
-        lattice: Box::new(spec.spec.resolve_policy()?),
+        lattice: Box::new(if isolation.was_strengthened() {
+            lattice.with_minimum_isolation(isolation.enforced)
+        } else {
+            lattice
+        }),
     };
     Ok(spec)
 }

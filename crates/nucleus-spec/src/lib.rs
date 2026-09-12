@@ -52,6 +52,31 @@ pub struct PodSpec {
 }
 
 impl PodSpec {
+    /// Record the backend's resolved isolation declaration. Shared by node
+    /// admission and controllers predicting the admitted program identity;
+    /// these labels alone are not evidence of actual backend execution.
+    pub fn record_isolation(&mut self, isolation: portcullis::enforcement::EnforcedIsolation) {
+        let portcullis::enforcement::EnforcedIsolation {
+            requested,
+            enforced,
+            backend,
+        } = isolation;
+        self.metadata.labels.extend([
+            (
+                "isolation.coproduct.one/requested".into(),
+                requested.to_string(),
+            ),
+            (
+                "isolation.coproduct.one/enforced".into(),
+                enforced.to_string(),
+            ),
+            (
+                "isolation.coproduct.one/backend".into(),
+                backend.to_string(),
+            ),
+        ]);
+    }
+
     /// Create a new PodSpec with defaults for version and kind.
     pub fn new(spec: PodSpecInner) -> Self {
         Self {

@@ -271,6 +271,12 @@ the node state or its keys. Local request-binding/export tests and Clippy pass;
 the real cold/warm experiment remains to be observed. No GitHub check publisher
 or cache-hit authority is implied by these development commands.
 
+Admission also records requested/enforced/backend isolation labels. The build
+controller must predict those before hashing its expected spec. Their rendering
+now lives in `PodSpec::record_isolation`, used by both node admission and the
+controller with the public enforcement resolver. The receipt cannot supply the
+expected program identity. Node backend-clamp tests pass after this extraction.
+
 Executor promotion must require a controller-approved, protected source and
 artifact digest. A valid receipt for an arbitrary PR-produced executable is
 not authority to run that executable with the production signer or App secrets.

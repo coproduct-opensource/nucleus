@@ -36,6 +36,7 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 nucleus-spec = { path = "../nucleus-spec" }
+portcullis = { path = "../portcullis" }
 nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
 nucleus-receipt = { path = "../nucleus-receipt" }
 reqwest = { workspace = true, features = ["rustls-no-provider", "json", "blocking"] }

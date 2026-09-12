@@ -13785,6 +13785,7 @@ dependencies = [
  "nucleus-ci-verdict",
  "nucleus-receipt",
  "nucleus-spec",
+ "portcullis",
  "regex",
  "reqwest 0.13.4",
  "rustls",
