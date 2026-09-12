@@ -412,14 +412,11 @@ pub fn run(args: Args) -> Result<()> {
             .checked_add(3600 * 1_000_000)
             .context("build deadline overflow")?;
         let timer = Instant::now();
-        let created: Created = response_json(
-            client
-                .post(format!("{}/v1/pods", node_url.trim_end_matches('/')))
-                .json(&serde_json::json!({"spec": spec}))
-                .send()?
-                .error_for_status()?,
-            16 * 1024,
-        )?;
+        let create_response = client
+            .post(format!("{}/v1/pods", node_url.trim_end_matches('/')))
+            .json(&serde_json::json!({ "spec": spec }))
+            .send()?;
+        let created: Created = response_json_checked(create_response, 16 * 1024)?;
         // The ID is used as a URL segment and session binding, never as a path.
         ensure!(
             created.id.len() == 36
@@ -604,6 +601,28 @@ fn response_json<T: serde::de::DeserializeOwned>(
         u64::try_from(bytes.len())? <= limit,
         "node response exceeds size limit"
     );
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn response_json_checked<T: serde::de::DeserializeOwned>(
+    response: reqwest::blocking::Response,
+    limit: u64,
+) -> Result<T> {
+    let status = response.status();
+    let mut bytes = Vec::new();
+    response
+        .take(limit.checked_add(1).context("response limit overflow")?)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        u64::try_from(bytes.len())? <= limit,
+        "node response exceeds size limit"
+    );
+    if !status.is_success() {
+        bail!(
+            "node refused pod creation ({status}): {}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
     Ok(serde_json::from_slice(&bytes)?)
 }
 
