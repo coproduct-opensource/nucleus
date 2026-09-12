@@ -1663,7 +1663,7 @@ fn proof_decision_token_unforgeable() {
     if matches!(decision.verdict, Verdict::Allow) {
         assert!(token.is_some());
         let t = token.unwrap();
-        assert!(t.operation() == op);
+        assert!(t.operation == op);
         assert!(t.sequence() == decision.sequence);
     } else {
         assert!(token.is_none());
@@ -1689,7 +1689,7 @@ fn proof_denied_ops_have_no_token() {
 
 /// **E3 — Token operation matches decision operation.**
 ///
-/// For any operation, when a token is produced, its `operation()` and
+/// For any operation, when a token is produced, its `operation` field and
 /// `sequence()` must match the decision's fields exactly.
 #[kani::proof]
 #[kani::solver(cadical)]
@@ -1700,7 +1700,7 @@ fn proof_token_operation_matches_decision() {
     let op = arbitrary_operation();
     let (decision, token) = kernel.decide(op, "subject");
     if let Some(t) = token {
-        assert!(t.operation() == decision.operation);
+        assert!(t.operation == decision.operation);
         assert!(t.sequence() == decision.sequence);
     }
 }
@@ -1725,7 +1725,7 @@ fn proof_issue_approved_token_is_audited() {
     let token = kernel.issue_approved_token(op, "external-approval");
 
     // Token carries the correct operation
-    assert!(token.operation() == op);
+    assert!(token.operation == op);
     // Trace grew — the operation is auditable
     assert!(kernel.trace().len() > trace_len_before);
     // Exposure is monotonic — never decreases
@@ -1755,7 +1755,7 @@ fn proof_approved_token_bypass_is_audited() {
     let token = kernel.issue_approved_token(Operation::RunBash, "external-override");
 
     // But the bypass is audited
-    assert!(token.operation() == Operation::RunBash);
+    assert!(token.operation == Operation::RunBash);
     assert!(kernel.trace().len() > trace_len_before);
 }
 

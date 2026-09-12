@@ -22,6 +22,23 @@
 //!
 //! Exit codes: 0 conformant; 1 violation or missing/empty inventory; 2 usage.
 
+// ADR 0007 totality: a function whose signature says it returns is lying if it
+// panics. Denied for the shipped build only — `assert!` IS a panic, so denying
+// inside `#[cfg(test)]` would forbid the thing tests are made of. This is the
+// same line `is_production_path` draws when it strips the test region.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use nucleus_ifc_kernel::env_classifier::env_key_material;
 use nucleus_ifc_kernel::extracted::identity::{Principal, ident_may_deliver};
 
@@ -39,7 +56,7 @@ fn parse_inventory(log: &str) -> Vec<String> {
     let mut names = Vec::new();
     for line in log.lines() {
         if let Some(idx) = line.find(INVENTORY_NEEDLE) {
-            let name = line[idx + INVENTORY_NEEDLE.len()..].trim();
+            let name = line[idx.saturating_add(INVENTORY_NEEDLE.len())..].trim();
             // Guest consoles interleave; keep only plausible env names so a
             // corrupted line cannot smuggle an unparseable entry past review.
             if !name.is_empty()
