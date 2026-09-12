@@ -233,6 +233,47 @@ pub fn announce_snapshot_ready(port: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Fetch the spec naming what this pod runs.
+///
+/// Past the barrier by construction — it takes a [`PastBarrier`]. Fetching the
+/// spec is the most personalising thing a guest can do: a VM that has one is
+/// committed to a single job, and a base snapshotted after this point can be
+/// restored for exactly that job and no other.
+///
+/// The body is NOT logged on a parse failure. It is not a secret the way a
+/// broker capability is, but it is the pod's command line and the guest console
+/// is the wrong place to reproduce it.
+pub fn fetch_pod_spec(port: u32, _past_barrier: &PastBarrier) -> Result<String, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(
+            b"FETCH_POD_SPEC
+",
+        )
+        .map_err(|e| format!("failed to send FETCH_POD_SPEC: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read pod-spec response: {e}"))?;
+
+    let parsed: serde_json::Value = serde_json::from_str(&response)
+        .map_err(|_| "pod-spec response was not valid JSON".to_string())?;
+    if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
+        return Err(err.to_string());
+    }
+    parsed
+        .get("spec")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "pod-spec response named no spec".to_string())
+}
+
 pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;

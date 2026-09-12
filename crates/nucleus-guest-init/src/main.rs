@@ -159,14 +159,6 @@ fn run() -> Result<(), String> {
         eprintln!("optional mount {missing} failed — continuing without it");
     }
 
-    // Never a shell: a missing spec is a named boot error.
-    let spec_path = boot::resolve_pod_spec(
-        POD_SPEC_PATH,
-        FALLBACK_POD_SPEC,
-        |p| Path::new(p).exists(),
-        |from, to| fs::copy(from, to).is_ok(),
-    )
-    .map_err(|e| e.to_string())?;
     let net_config = parse_net_config("/proc/cmdline");
 
     if let Some(net) = net_config.as_ref() {
@@ -194,6 +186,42 @@ fn run() -> Result<(), String> {
     // convention anyone has to remember, it does not compile.
     let past_barrier = identity::barrier(workload_api_port);
     mount_work(&past_barrier);
+
+    // THE COMMAND, FETCHED RATHER THAN BAKED.
+    //
+    // `FETCH_POD_SPEC` existed as a protocol variant and a host handler, and
+    // nothing sent it: the guest read /etc/nucleus/pod.yaml out of its own
+    // rootfs and the command was whatever the image was built with. A base is
+    // then per-JOB, which is the thing the barrier exists to avoid.
+    //
+    // Past the barrier, because a VM that has fetched its spec is committed to
+    // one job. `place_host_spec` writes it where `resolve_pod_spec` looks, so
+    // the two compose and the baked spec remains the fallback for a host that
+    // says nothing.
+    if let Some(port) = workload_api_port {
+        match identity::fetch_pod_spec(port, &past_barrier) {
+            Ok(spec) => match boot::place_host_spec(POD_SPEC_PATH, Some(&spec), |p, body| {
+                fs::write(p, body).is_ok()
+            }) {
+                Ok(true) => eprintln!("pod spec fetched from the host"),
+                Ok(false) => {}
+                // NOT a fallback to the baked spec: the host believes it
+                // dispatched a different job.
+                Err(e) => return Err(e.to_string()),
+            },
+            // The host having nothing to say is every pod today.
+            Err(e) => eprintln!("no pod spec over vsock (keeping the baked one): {e}"),
+        }
+    }
+
+    // Never a shell: a missing spec is a named boot error.
+    let spec_path = boot::resolve_pod_spec(
+        POD_SPEC_PATH,
+        FALLBACK_POD_SPEC,
+        |p| Path::new(p).exists(),
+        |from, to| fs::copy(from, to).is_ok(),
+    )
+    .map_err(|e| e.to_string())?;
     if let Some(port) = workload_api_port {
         // Announce the barrier before asking for anything. After the first fetch below this VM
         // is one particular pod, and a snapshot of it would hand that pod's identity to every
