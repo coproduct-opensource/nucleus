@@ -82,7 +82,7 @@ stable identity — set image.kernel_digest and image.rootfs_digest
 `program_digest` refusing an unpinned image, exactly as designed. Pinning
 `kernel_digest` and `rootfs_digest` clears it.
 
-**2. A writable scratch — even when the spec declares none.**
+**2. A writable scratch — and the reason is not the obvious one.**
 
 ```
 refusing to snapshot this microVM: this microVM has a writable scratch disk,
@@ -90,27 +90,61 @@ which clones cannot share and cannot be given fresh without stranding the
 guest's cached filesystem state
 ```
 
-This one is worth stating precisely, because it is easy to read as a spec
-problem and it is not: **the pod spec declared no `scratch_path` at all.**
-`scratch_for_pod` provisions one for every *jailed* pod, so a jailed pod always
-has a writable scratch, `clone_safety` always sees one, and **no base can be
-published on the live path today**. Every pod cold-boots, which is what the
-table above measures.
+The obvious reading — `scratch_for_pod` provisions a scratch, and any scratch
+is refused — is wrong. `clone_safety` was changed at exactly that point:
+
+> `ATTACHED is fine; MOUNTED is not` … This *was* "is a writable non-root drive
+> attached", which refused every jailed pod.
+
+The refusal above is `Mounted`, not "attached". The pod had booted fully, and a
+booted pod has mounted `/work`. So the real question is **whether anything can
+observe the VM while it is still at its barrier** — and today nothing can:
+
+1. `guest-init` announces `SNAPSHOT_READY` and **does not stop**.
+   `announce_snapshot_ready` is best-effort by design: "announcing a barrier is
+   not a request for anything."
+2. The host's handler declines to act on it, explicitly:
+   > **Recorded, not acted on.** Taking the snapshot here would make every boot
+   > wait on a decision only the operator has, so the guest is told to carry on
+   > and the host keeps the fact for whoever asks to snapshot later.
+3. So `at_snapshot_barrier` latches true, the guest proceeds to mount `/work`,
+   and the operator's `POST /v1/pods/{id}/snapshot` — the only way to publish a
+   base — necessarily arrives *after* the mount.
+
+`clone_safety` is therefore **structurally unsatisfiable on the live path** for
+any pod with a scratch, which is every jailed pod. Not because the check is
+wrong, but because the only certifiable instant is one nothing is positioned to
+catch. A synchronisation point does exist — the guest blocks reading the reply
+to `SNAPSHOT_READY`, deliberately, "the content is not interesting, the
+ordering is" — and the handler declines to use it, for a stated reason.
+
+On `origin/main` it is not even a race: `/work` mounts at
+`crates/nucleus-guest-init/src/main.rs:132`, *before* the pod spec is resolved,
+so the barrier is announced with the scratch already mounted. #2867 moves that
+mount past the barrier and is still in the merge queue.
 
 ## What this changes about what to do next
 
-1. **A base frozen at the mount barrier is worth ~2.2 s per pod** — two thirds
-   of pod create. The barrier is the place `clone_safety` can certify, and it
-   is also, contrary to this document's first version, the place worth
-   freezing. They are the same place after all.
-2. **The residual target is the tool-proxy's ~0.75 s**, which a barrier
-   snapshot does not capture because the barrier precedes it. That is the
-   second-order optimisation, worth roughly a third of what the snapshot is.
-3. **None of it is reachable until a base can be published at all.**
-   `scratch_for_pod` provisions a writable scratch for every jailed pod, so
-   `clone_safety` refuses every one of them — see refusal 2 below, and
-   `snapshot-scratch.md` for why that constraint is real rather than a default
-   to flip.
+1. **A base frozen at the mount barrier is worth ~2.2 s per pod**, two thirds
+   of pod create. The barrier is both where `clone_safety` can certify and
+   where the saving is — contrary to this document's first version, the same
+   place.
+2. **Nothing can currently freeze there.** One of two things has to change, and
+   it is a design choice rather than a flag:
+   - a pod mode that **halts at the barrier** awaiting a snapshot decision — an
+     explicit "build me a base" pod, paying the wait once rather than on every
+     boot, which is the cost the handler's comment is refusing; or
+   - deferring the `/work` mount to **first use** rather than to immediately
+     past the barrier, so a pod that never touches `/work` stays certifiable
+     for as long as it stays untouched.
+
+   The second is the better shape: no new mode, and an ordinary pod becomes
+   usable as a base rather than needing one built for the purpose.
+3. **#2867 is a prerequisite either way** — without it the mount happens before
+   the barrier is announced at all.
+4. **The residual after a barrier snapshot is the tool-proxy's ~0.75 s**, which
+   a barrier-frozen base does not capture. Second-order target, worth about a
+   third of what the snapshot is.
 
 ## Reproducing
 
