@@ -22,24 +22,17 @@
 #   80  after adding the `FlowGraph` family to the marker set
 #   28  after scoping the ENFORCED finding to `OBSERVED_CRATES`
 #   12  after scoping again to what the AGENT can reach (`AGENT_ROOTS`), the
-#       same move `cb4a_separation` makes with its PDP/CDP roots. The other 17
-#       are boot and shutdown I/O — config loads, exit-report hashing, Article
-#       12 shipping, sandbox proof — still reported, as ADVISORY, and not gated.
+#       same move `cb4a_separation` makes with its PDP/CDP roots
+#    1  after `NodeClient` observes its own responses
 #
-# WHAT THE 12 ARE, and why they are one finding rather than twelve: the agent
-# asks the tool-proxy to manage a pod (`pod_mgmt::{create_sub_pod, list_sub_pods,
-# get_pod_status, get_pod_logs, cancel_sub_pod}`), the proxy asks the node
-# (`node_client::{get_json, post_json, create_pod, list_pods, pod_logs,
-# cancel_pod}`), and the node's response comes back to the agent unobserved.
-# `pod_logs` is the sharp one: a child pod's log content is whatever that pod
-# wrote, and it reaches the model with no flow node.
-#
-# The twelfth is `web_fetch_policy::read_body_capped`, and it is a DIFFERENT
-# question. Its caller `web_fetch` observes, twice. The pass reports at the
-# ingest rather than at an observing ancestor, on purpose — "the observation
-# belongs next to the ingest" — so a leaf whose caller observes still shows up.
-# Fixing it means either observing in the leaf or moving the report location,
-# and those are different answers with different costs.
+# THE LAST ONE IS A REPORT-LOCATION QUESTION, NOT A HOLE.
+# `web_fetch_policy::read_body_capped` reads the fetched body, and its caller
+# `web_fetch` DOES observe — twice. The pass reports at the ingest rather than at
+# an observing ancestor, on purpose: "the observation belongs next to the
+# ingest". Closing it means either observing in the leaf (which would double-
+# observe the same bytes) or changing where the pass reports. Neither is
+# obviously right, so it stays at 1 with the reason written down rather than
+# being driven to 0 by whichever is easier.
 #
 # The 16 ADVISORY are boot and shutdown I/O: exit_report (3), art12_shipper (2),
 # node_identity (2), sandbox_proof (2), and single sites in build_mtls_config,
@@ -51,5 +44,5 @@
 # move is not to lower this by one: it is to decide whether infrastructure
 # ingest inside this crate should be observed too, or given a marker that says
 # it is not agent-attributed. Either answer shrinks this number honestly.
-ceiling = 12
+ceiling = 1
 target = 0

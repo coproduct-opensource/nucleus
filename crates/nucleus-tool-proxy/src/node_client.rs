@@ -17,6 +17,12 @@
 /// definition is what keeps a typo from silently degrading every caller to
 /// "unidentified" — the fail-open direction, and one that raises no error.
 pub(crate) use nucleus_client::{HEADER_POD_ID, HEADER_POD_TOKEN};
+use portcullis::flow_graph::FlowGraph;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use crate::ingest::observe_into_graph;
+use nucleus::portcullis::NodeKind;
 
 /// Whether a (pod id, token) pair amounts to an identity — the decision itself,
 /// separated from where the values come from so it can be tested without
@@ -54,6 +60,18 @@ use uuid::Uuid;
 pub struct NodeClient {
     base_url: String,
     http: reqwest::Client,
+    /// The flow graph every node response is observed into.
+    ///
+    /// A response from the node is external bytes entering the session: pod ids,
+    /// statuses, and — for `pod_logs` — whatever a CHILD POD wrote. All of it is
+    /// returned to the agent. Before this, none of it created a flow node, so
+    /// the egress gate could not see any of it; `nucleus-observed-lint` reported
+    /// all four read sites and the pod-management handlers above them.
+    ///
+    /// Held here rather than passed per call because the observation belongs
+    /// next to the ingest, which is the position the lint takes and the reason
+    /// it reports at the reading function rather than at an observing ancestor.
+    flow_graph: Arc<Mutex<FlowGraph>>,
 }
 
 /// Information about a managed pod (mirrors nucleus-node PodInfo).
@@ -116,6 +134,7 @@ impl NodeClient {
         base_url: String,
         identity_pem: &[u8],
         trust_bundle_pem: &[u8],
+        flow_graph: Arc<Mutex<FlowGraph>>,
     ) -> Result<Self, NodeClientError> {
         // Idempotent — see nucleus-cli's `create_client` for why this must
         // run before building any reqwest client on the `rustls-no-provider`
@@ -152,6 +171,7 @@ impl NodeClient {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http,
+            flow_graph,
         })
     }
 
@@ -167,6 +187,30 @@ impl NodeClient {
     }
 
     /// Get logs for a specific pod.
+    /// Observe bytes that arrived from the node.
+    ///
+    /// `HTTPResponse` — Internal confidentiality, Untrusted integrity — is the
+    /// truthful label for a control-plane reply from the node that launched this
+    /// pod. It raises the integrity ceiling without tripping `is_tainted`, which
+    /// fires only on `Adversarial`.
+    ///
+    /// A GAP, named rather than papered over: `pod_logs` returns a CHILD POD's
+    /// log content, which is whatever that pod wrote and may include anything it
+    /// fetched. That deserves `Adversarial`, and no `NodeKind` names it — the
+    /// closest, `McpToolResult`, carries the right integrity under a wrong name.
+    /// Adding a variant touches the IFC kernel and its Lean, so it is not folded
+    /// in here. Untrusted is strictly better than the nothing it replaces, and
+    /// this comment is the record of what it still under-calls.
+    async fn observe_node_response(&self, bytes: &[u8]) {
+        observe_into_graph(
+            &self.flow_graph,
+            NodeKind::HTTPResponse,
+            true,
+            crate::ingest_content_hash(bytes),
+        )
+        .await;
+    }
+
     pub async fn pod_logs(&self, id: Uuid) -> Result<String, NodeClientError> {
         let url = format!("{}/v1/pods/{}/logs", self.base_url, id);
         let mut request = self.http.get(&url);
@@ -185,7 +229,13 @@ impl NodeClient {
             });
         }
 
-        response.text().await.map_err(|e| NodeClientError {
+        // A child pod's log content — the most external thing this client
+        // returns. Observed before it is handed back to the agent.
+        let bytes = response.bytes().await.map_err(|e| NodeClientError {
+            message: e.to_string(),
+        })?;
+        self.observe_node_response(&bytes).await;
+        String::from_utf8(bytes.to_vec()).map_err(|e| NodeClientError {
             message: e.to_string(),
         })
     }
@@ -208,6 +258,13 @@ impl NodeClient {
         let response = request.send().await.map_err(|e| NodeClientError {
             message: e.to_string(),
         })?;
+
+        // No body is read here — the status is the whole of what crosses. It is
+        // still information from the node that reaches the agent, as a success
+        // or a refusal, so it is observed on BOTH paths rather than only the
+        // happy one.
+        self.observe_node_response(response.status().as_str().as_bytes())
+            .await;
 
         if !response.status().is_success() {
             return Err(NodeClientError {
@@ -252,7 +309,14 @@ impl NodeClient {
             });
         }
 
-        response.json::<R>().await.map_err(|e| NodeClientError {
+        // Read the body as BYTES so it can be observed before it is parsed. The
+        // previous `response.json::<R>()` consumed the response without ever
+        // exposing what arrived, which is why nothing could observe it.
+        let bytes = response.bytes().await.map_err(|e| NodeClientError {
+            message: e.to_string(),
+        })?;
+        self.observe_node_response(&bytes).await;
+        serde_json::from_slice::<R>(&bytes).map_err(|e| NodeClientError {
             message: e.to_string(),
         })
     }
@@ -281,7 +345,14 @@ impl NodeClient {
             });
         }
 
-        response.json::<R>().await.map_err(|e| NodeClientError {
+        // Read the body as BYTES so it can be observed before it is parsed. The
+        // previous `response.json::<R>()` consumed the response without ever
+        // exposing what arrived, which is why nothing could observe it.
+        let bytes = response.bytes().await.map_err(|e| NodeClientError {
+            message: e.to_string(),
+        })?;
+        self.observe_node_response(&bytes).await;
+        serde_json::from_slice::<R>(&bytes).map_err(|e| NodeClientError {
             message: e.to_string(),
         })
     }
@@ -446,8 +517,13 @@ mod mtls_tests {
             .unwrap();
         });
 
-        let client =
-            NodeClient::new(format!("https://{addr}"), &identity_pem, &bundle_pem).unwrap();
+        let client = NodeClient::new(
+            format!("https://{addr}"),
+            &identity_pem,
+            &bundle_pem,
+            Arc::new(Mutex::new(FlowGraph::new())),
+        )
+        .unwrap();
         let pods = client
             .list_pods()
             .await
@@ -495,8 +571,13 @@ mod mtls_tests {
             let _ = acceptor.accept(stream).await;
         });
 
-        let client =
-            NodeClient::new(format!("https://{addr}"), &identity_pem, &bundle_pem).unwrap();
+        let client = NodeClient::new(
+            format!("https://{addr}"),
+            &identity_pem,
+            &bundle_pem,
+            Arc::new(Mutex::new(FlowGraph::new())),
+        )
+        .unwrap();
         let result = client.list_pods().await;
         assert!(
             result.is_err(),
