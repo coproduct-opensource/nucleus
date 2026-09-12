@@ -668,8 +668,12 @@ pub(crate) struct LaunchReceipt {
     pub(crate) hardened: bool,
     pub(crate) argv_len: usize,
     pub(crate) child_pid: Option<u32>,
-    /// SHA-256 of the canonical preimage below, hex. Anchors the record.
+    /// SHA-256 of the authority-inventory preimage below. The resolved
+    /// environment commitment is separate and covered by the execution signer.
     pub(crate) hash: String,
+    /// Commit the resolved values actually passed to env_clear/env, separately
+    /// from the authority inventory. Never expose those values in the receipt.
+    pub(crate) environment: nucleus_spec::workload_result::EnvironmentIdentity,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -729,6 +733,7 @@ impl LaunchReceipt {
             argv_len,
             child_pid,
             hash,
+            environment: nucleus_spec::workload_result::EnvironmentIdentity::of(&plan.env),
         }
     }
 
@@ -1409,5 +1414,36 @@ mod tests {
                 "{key} is inherited by name but the FM-5 model refuses it"
             );
         }
+    }
+    #[tokio::test]
+    async fn environment_commitment_matches_the_admitted_child_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec_with(&[("PATH", "/usr/bin:/bin"), ("BUILD_INPUT", "pinned")]);
+        spec.command = "/usr/bin/env".into();
+        spec.args.clear();
+        let plan = WorkloadLaunch::build(
+            &spec,
+            "http://127.0.0.1:8080",
+            "test-attempt-secret",
+            dir.path(),
+            &[],
+        )
+        .admit()
+        .unwrap();
+        let (child, receipt) = spawn_admitted(plan).unwrap();
+        let output = child.wait_with_output().await.unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        let actual: BTreeMap<String, String> = text
+            .lines()
+            .map(|line| {
+                let (key, value) = line.split_once('=').unwrap();
+                (key.to_owned(), value.to_owned())
+            })
+            .collect();
+        assert_eq!(
+            receipt.environment,
+            nucleus_spec::workload_result::EnvironmentIdentity::of(&actual)
+        );
     }
 }

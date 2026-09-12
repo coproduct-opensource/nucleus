@@ -63,6 +63,7 @@ pub(crate) fn start(
                 stdout_sha256,
                 stderr_sha256,
                 launch_hash: launch.hash,
+                environment: launch.environment,
                 program,
                 isolation,
             },

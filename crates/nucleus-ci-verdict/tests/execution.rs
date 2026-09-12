@@ -18,6 +18,8 @@ fn claim() -> ExecutionClaim {
         stdout_sha256: DIGEST.into(),
         stderr_sha256: DIGEST.into(),
         launch_hash: DIGEST.into(),
+        environment_inputs_sha256: DIGEST.into(),
+        environment_complete_sha256: DIGEST.into(),
     }
 }
 
@@ -43,6 +45,7 @@ fn expected(key: &[u8; 32]) -> ExpectedExecution<'_> {
         pod_id: "pod-1",
         program_digest: DIGEST,
         architecture: "x86_64",
+        environment_inputs_sha256: DIGEST,
         session_id: "pod-1",
         issuer_kid: "executor-1",
         verifying_key: key,
@@ -98,7 +101,12 @@ fn every_serialized_execution_field_is_inside_the_signature() {
 fn signed_execution_for_another_pod_program_or_architecture_is_refused() {
     let key = SigningKey::from_bytes(&[7; 32]);
     let public = key.verifying_key().to_bytes();
-    for field in ["pod_id", "program_digest", "architecture"] {
+    for field in [
+        "pod_id",
+        "program_digest",
+        "architecture",
+        "environment_inputs_sha256",
+    ] {
         let mut body = serde_json::to_value(claim()).unwrap();
         body[field] = serde_json::json!("another");
         assert_eq!(

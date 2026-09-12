@@ -39,6 +39,10 @@ pub struct ExecutionClaim {
     pub stderr_sha256: String,
     /// Authority inventory, not a command or environment digest.
     pub launch_hash: String,
+    /// Every resolved env input except the two mediator-injected bindings.
+    pub environment_inputs_sha256: String,
+    /// Complete per-attempt env, including mediator URL and authentication.
+    pub environment_complete_sha256: String,
 }
 
 impl ExecutionClaim {
@@ -52,6 +56,7 @@ pub struct ExpectedExecution<'a> {
     pub pod_id: &'a str,
     pub program_digest: &'a str,
     pub architecture: &'a str,
+    pub environment_inputs_sha256: &'a str,
     pub session_id: &'a str,
     pub issuer_kid: &'a str,
     pub verifying_key: &'a [u8; 32],
@@ -118,6 +123,7 @@ pub fn verify_execution(
         pod_id,
         program_digest,
         architecture,
+        environment_inputs_sha256,
         session_id,
         issuer_kid,
         verifying_key,
@@ -179,11 +185,18 @@ pub fn verify_execution(
         stdout_sha256,
         stderr_sha256,
         launch_hash,
+        environment_inputs_sha256: actual_environment,
+        environment_complete_sha256,
     } = &claim;
     for (field, actual, wanted) in [
         ("pod_id", actual_pod.as_str(), *pod_id),
         ("program_digest", actual_program.as_str(), *program_digest),
         ("architecture", actual_arch.as_str(), *architecture),
+        (
+            "environment_inputs_sha256",
+            actual_environment.as_str(),
+            *environment_inputs_sha256,
+        ),
     ] {
         if actual != wanted {
             return Err(ExecutionError::Binding(field));
@@ -197,6 +210,8 @@ pub fn verify_execution(
         ("stdout_sha256", stdout_sha256),
         ("stderr_sha256", stderr_sha256),
         ("launch_hash", launch_hash),
+        ("environment_inputs_sha256", actual_environment),
+        ("environment_complete_sha256", environment_complete_sha256),
     ] {
         if digest.len() != 64
             || !digest

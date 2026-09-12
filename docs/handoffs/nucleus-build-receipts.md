@@ -132,6 +132,42 @@ baked spec when one exists. A mismatched template should remain a signing refusa
 not be treated as the requested program. Resolved environment, artifact capture,
 source materialization and actual build timings remain the next acceptance work.
 
+## Resolved environment bound, 2026-09-12
+
+The admitted launch now hashes the exact environment map passed after
+`env_clear`, including resolved PATH/HOME/LANG/TZ. Its `inputs_sha256` omits only
+the two values the mediator overwrites (`NUCLEUS_TOOL_PROXY_URL` and
+`NUCLEUS_TOOL_PROXY_AUTH_SECRET`); `complete_sha256` commits every entry for the
+individual attempt. Other runtime-looking names, including arbitrary
+`NUCLEUS_EGRESS_*` keys, remain inputs. Values are never emitted in either
+receipt. Both hashes travel through the supervisor result into the signed
+execution body; verification requires the controller's independently derived
+input digest. This is not cache-reuse permission: a workload can observe the
+injected bindings, so ignoring their per-attempt differences additionally needs
+a demonstrated noninterference boundary (for example a pinned build launcher
+that omits them from the compiler's environment).
+
+A test through build/admit/spawn compares the commitment with a real
+`/usr/bin/env` child's output. Input-value, boundary-ambiguity and fake-runtime-name
+tests pass, as does refusal of a signed execution with another environment input
+digest. Spec/CI-verdict suites, the node projection tests and all-target,
+all-feature Clippy for the affected runtime crates pass.
+
+The next artifact step should use the existing sandbox's binary `open`/`read`
+operations with a redeemed read decision and discharged authority, as the HTTP
+text reader already does. Snapshot bounded artifact bytes after workload exit,
+hash those same bytes on the host and bind the requested artifact manifest before
+signing a complete build result. Do not replace this with a privileged arbitrary
+file read. An offline ext4 reader was considered, but additionally requires
+guest filesystem flush/finalization and a new host parsing/access boundary.
+
+The existing x86_64 real-pod boot job passed for the draft; this does not yet
+demonstrate a nucleus compile in that pod. The rootfs builder accepts a Debian
+container base (`DEBIAN_IMAGE`), which can carry a pinned Rust toolchain. It
+always bakes a PodSpec, so the build-image preparation must explicitly arrange
+for the host-fetched spec to be used, rather than accidentally compiling the
+image's template job.
+
 ## Remaining acceptance work (milestones not yet complete)
 
 1. Protected supervisor observation, output/log hashing and a host-signed typed

@@ -82,6 +82,7 @@ fn completed_claim(
         stdout_sha256,
         stderr_sha256,
         launch_hash,
+        environment,
         program,
         isolation,
     } = observed
@@ -113,6 +114,8 @@ fn completed_claim(
         stdout_sha256,
         stderr_sha256,
         launch_hash,
+        environment_inputs_sha256: environment.inputs_sha256,
+        environment_complete_sha256: environment.complete_sha256,
     })
 }
 
@@ -195,6 +198,7 @@ mod tests {
             stdout_sha256: "a".repeat(64),
             stderr_sha256: "b".repeat(64),
             launch_hash: "c".repeat(64),
+            environment: nucleus_spec::workload_result::EnvironmentIdentity::of(&Default::default()),
             program: ProgramBinding::Bound {
                 digest: nucleus_spec::identity::program_digest(spec).unwrap(),
             },
