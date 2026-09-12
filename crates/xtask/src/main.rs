@@ -115,6 +115,13 @@ enum Command {
     /// Shell constructs that behave differently on the platform CI runs (GNU) and the one
     /// this is written on (BSD). Decided from the shell text alone.
     Portability,
+    /// A `with:` key an action does not declare is dropped with only a log warning. The local
+    /// action is decided from this checkout; third-party ones need their action.yml at the
+    /// pinned ref, and are reported as unchecked rather than passed without `--network`.
+    ActionInputs {
+        #[arg(long)]
+        network: bool,
+    },
     /// A crate outside the workspace is reached by no `--workspace` command. Decided from
     /// `cargo metadata` and Cargo.toml's own `exclude` list.
     WorkspaceMembers,
@@ -349,6 +356,7 @@ enum CiSpecCmd {
     },
 }
 
+mod action_inputs;
 mod alg;
 mod allowlist_gates;
 mod assurance_required;
@@ -421,6 +429,9 @@ fn main() -> Result<()> {
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
         Command::Pipefail => pipefail::check(&std::env::current_dir()?),
         Command::Portability => portability::check(&std::env::current_dir()?),
+        Command::ActionInputs { network } => {
+            action_inputs::check(&std::env::current_dir()?, network)
+        }
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {

@@ -154,6 +154,27 @@ jobs:
       # runner, so a GNU-only construct there is correct by construction.
       - name: Shell a person runs means the same on both platforms
         run: cargo run -q -p xtask -- portability
+      # A `with:` key an action does not declare is DROPPED, with only
+      # `##[warning]Unexpected input(s) …` in the log -- and actionlint does not catch it
+      # (measured 2026-09-12: clean on a file with three). `ci.yml` passed `targets:` to
+      # setup-rust-toolchain at three sites; the action declares `target`, singular, so no
+      # target was installed by it at any of them. None of the three jobs was broken, which
+      # is the point rather than a mitigation: the musl job runs `rustup target add` on its
+      # own line and the wasm jobs use `wasm-pack --target`, so the keys were dead config
+      # that read as live, and the same typo without a second route fails in the build, far
+      # from the `with:` block that caused it.
+      #
+      # Run TWICE, deliberately. Bare is hermetic and decides every caller of an action whose
+      # action.yml is in this repository; `--network` fetches a third-party action.yml at the
+      # pinned ref and decides the rest. The bare form is also what the gate-of-gates probes,
+      # so the harness needs no network to falsify this.
+      - name: A `with:` key must be one its action declares (in-repo actions)
+        run: cargo run -q -p xtask -- action-inputs
+
+      - name: ...and third-party ones, at the ref they are pinned to
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cargo run -q -p xtask -- action-inputs --network
       # `Cargo.toml` lists members explicitly rather than by glob, so a new crate joins the
       # workspace only when someone remembers. Forget, and the crate still compiles locally,
       # still has tests, and is reached by none of `cargo clippy --workspace`, `cargo test
