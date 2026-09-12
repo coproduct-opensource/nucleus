@@ -1,0 +1,20 @@
+[package]
+name = "nucleus-receipt-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Receipts stored under the action key they are about, with the store refusing to believe its own index"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+nucleus-action-key = { path = "../nucleus-action-key" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
