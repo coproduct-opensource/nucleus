@@ -897,6 +897,15 @@ perturb_dep_ceiling_raise() {
     # crate name) and rewrites whatever count follows, never matching the count.
     sed -i.bak -E 's/^([[:space:]]*"[a-z0-9_-]+) [0-9]+"/\1 9"/' "$1" && rm -f "$1.bak"
 }
+# action-inputs: a `with:` key the action does not declare. GitHub drops it with a log
+# warning and runs the step without it, so the defect is invisible unless something reads
+# the declaration -- which is what this gate does. Perturbs the caller of the action whose
+# action.yml is IN this repository, so the probe needs no network.
+perturb_action_inputs_undeclared_key() {
+    local f="$1"
+    perl -0pi -e 's/^(\s*)(scope: \$\{\{ matrix\.scope \}\})$/$1$2\n$1tarjets: wasm32-unknown-unknown/m' "$f"
+}
+
 # policy-gate: the base manifest the amendment departs from. CI copies the committed
 # PolicyManifest.toml from the merge base; for the probe the committed file IS the base,
 # because the perturbation below is what makes candidate differ from it.
@@ -1071,6 +1080,8 @@ probe_xtask fly-pools ci/fly-runner/manager.toml \
 
 probe_xtask pipefail .github/workflows/a2a-tck.yml \
     "a pipeline added to a block with no pipefail" perturb_pipefail_new_unguarded_pipe
+probe_xtask action-inputs .github/workflows/gatehouse-shadow.yml \
+    "a `with:` key the action does not declare" perturb_action_inputs_undeclared_key
 probe_xtask workspace-members Cargo.toml \
     "a crate dropped from the workspace members list" perturb_workspace_member_dropped
 probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \

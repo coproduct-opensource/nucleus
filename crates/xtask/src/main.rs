@@ -112,6 +112,13 @@ enum Command {
     /// A `run:` block that pipes without `pipefail` discards the exit status of every command
     /// but the last. Decided from workflow YAML alone; reads no source tree.
     Pipefail,
+    /// A `with:` key an action does not declare is dropped with only a log warning. The local
+    /// action is decided from this checkout; third-party ones need their action.yml at the
+    /// pinned ref, and are reported as unchecked rather than passed without `--network`.
+    ActionInputs {
+        #[arg(long)]
+        network: bool,
+    },
     /// A crate outside the workspace is reached by no `--workspace` command. Decided from
     /// `cargo metadata` and Cargo.toml's own `exclude` list.
     WorkspaceMembers,
@@ -346,6 +353,7 @@ enum CiSpecCmd {
     },
 }
 
+mod action_inputs;
 mod alg;
 mod allowlist_gates;
 mod assurance_required;
@@ -416,6 +424,9 @@ fn main() -> Result<()> {
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
         Command::Pipefail => pipefail::check(&std::env::current_dir()?),
+        Command::ActionInputs { network } => {
+            action_inputs::check(&std::env::current_dir()?, network)
+        }
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
