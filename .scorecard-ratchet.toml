@@ -1,0 +1,90 @@
+# Scorecard ratchet — one section per defect family, two floors each.
+#
+# Read by `cargo xtask scorecard` (crates/xtask/src/scorecard.rs).
+#
+# WHY THIS FILE EXISTS
+#
+# A census of all 868 nucleus issues (2026-09-11) classified the 120 that are
+# bug-labelled or carry an audit prefix. Four families account for ~90%:
+#
+#   bound  72 (60%)  a mechanism exists and nothing binds it to the live path
+#   alg    15 (13%)  a law of a structure the code already claims to be
+#   life   14 (12%)  unbounded carrier, no durable state, no validity interval
+#   tot     7  (6%)  a function whose type says total, that panics
+#
+# The remaining 10% is genuinely novel and no census here will find it.
+#
+# Each family already had, or could have, its own gate. What did not exist was
+# one card: a place where a family at zero is visible beside a family at a
+# hundred, and where adding a fifth family is a section rather than a redesign.
+#
+# WHAT IS PINNED, AND WHY TWO THINGS
+#
+#   floor_bp          minimum discharged/population in basis points. May only RISE.
+#   population_floor  minimum population. A shrinking surface is a decision.
+#
+# Both, because neither alone is a gate. A floor on the ratio rewards deleting
+# obligations: remove one and numerator and denominator fall together while the
+# ratio rises. A pin on the debt misses a ratio falling at constant debt. This
+# is the trap the neighbouring repo's CCI has, where documenting a known gap
+# lowers the score.
+#
+# THE BADGE NAMES THE WEAKEST FAMILY
+#
+# Not an average. Pooling numerators over pooled denominators gives a number
+# dominated by whichever family has the largest population — `tot` alone
+# measures in the thousands — so a family at 0% would vanish into it. The badge
+# reads `alg 22%`: the lowest-scoring family AND its number, so it moves when
+# the weakest improves, cannot hide a bad family behind a good one, and says
+# where the next hour of work goes. ADR 0007 I-1: a gate whose green is
+# indistinguishable from vacuity.
+#
+# 2026-09-11: seeded at the measured value with one family. `alg`, `tot` and
+# `life` arrive as their own sections. Raising floor_bp is how a family's debt
+# is paid; lowering either pin needs a dated note here saying what went away
+# and who decided.
+
+[family.bound]
+# 171 of 172 witness-accepting parameter sites bind their witness under a name
+# the body can consult. The one remaining is `trait CaClient` in
+# crates/nucleus-identity/src/ca/mod.rs, which performs an act while dropping
+# its witness. 32 further sites are class-N in
+# scripts/inert-authority-manifest.txt — DenyAllEffects::run refuses
+# unconditionally, so it performs no act and correctly consults nothing — and
+# they are reported as `undeclared` rather than counted against the ratio.
+floor_bp = 9941
+population_floor = 172
+
+[family.alg]
+# 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
+# declaration. The unit is one law of one type, not one type: a per-type census
+# calls six types covered that between them check nine, six, four, four, four and
+# one of the fifteen their traits oblige.
+#
+# 21 types across 3 traits. Lattice obliges 9 laws, BoundedLattice 4 more,
+# DistributiveLattice 2 — exactly what verify_lattice_laws,
+# verify_bounded_lattice_laws and verify_distributive_laws check, counted by
+# reading them.
+#
+# MeetSemilattice and JoinSemilattice are implemented here and have NO verifier,
+# so their obligations are excluded rather than counted as undischarged: mixing
+# "a checker exists and is not wired" with "no checker exists" hides two
+# different debts behind one number. `convergence` made the same call for its
+# two unmeasurable arrows. When a semilattice verifier lands the population
+# rises, which is a number going up because the measurement got honest.
+#
+# 9 types carry meet/join/leq with no lattice trait impl at all -- WasiGrant,
+# WasiWorld, the two CRDT joins, RiskCost/WeakeningCost among them. No generic
+# suite can reach them, so they are reported as `undeclared` rather than counted
+# against the ratio: shape without declaration.
+#
+# UNDERSTATED, ON PURPOSE, FOR A STATED REASON: six types in
+# crates/portcullis/tests/proptest_lattice.rs are law-checked today by hand with
+# generated samples, and this gate cannot see them because it counts
+# declarations, not inferred coverage. Converting them STRENGTHENS those suites
+# from four laws to nine and may turn something red -- PathLattice,
+# CommandLattice, BudgetLattice and TimeLattice have never had associativity or
+# absorption checked -- so it is its own commit. This number rises when that
+# lands.
+floor_bp = 3956
+population_floor = 278
