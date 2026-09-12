@@ -40,7 +40,7 @@ describes a filesystem that is not underneath it.
   capability. Tensorlake ships something equivalent out-of-tree. Neither is in
   the pinned v1.16.1.
 
-## The candidate design, stated as untested
+## The candidate design — MEASURED 2026-09-12, and it holds
 
 **Attach the scratch but do not MOUNT it before the barrier.**
 
@@ -54,25 +54,57 @@ That makes mounting scratch part of *personalization*, which is where it
 belongs: the barrier already separates "a base anyone can restore" from "a VM
 committed to one job", and `FETCH_POD_SPEC` is on the same side of it.
 
-Two things this needs that do not exist:
+### The measurement
 
-1. `clone_safety`'s predicate is currently **attachment**-based
-   (`snapshot_inputs` sets `writable_scratch` for any writable non-root drive).
-   It would have to become mount-based, and the host cannot see whether the
-   guest mounted anything — the guest would have to say so, which is what
-   `SNAPSHOT_READY` already does for "I have asked for nothing yet".
-2. Validation. The claim that virtio-blk device state survives a substituted
-   backing file of identical geometry is **reasoning, not a measurement.** It
-   is exactly the kind of claim #759 is the failure of.
+`scripts/experiments/snapshot-deferred-mount.sh`, on Firecracker v1.16.1,
+aarch64/KVM, 2026-09-12. Raw Firecracker and a busybox rootfs — the question is
+about the VMM, not nucleus, so bringing ninety crates into it would only add
+ways to be wrong.
+
+Boot with a 16 MiB ext4 attached as `vdb` and never mounted; snapshot; restore
+twice, each against a **fresh, distinct** image of identical geometry at the
+drive's path; mount, write, sync, unmount in each guest; `fsck` both host-side.
+
+| | |
+|---|---|
+| precondition — vdb mounts at snapshot time | **0** |
+| restore A / B | mounted, wrote, unmounted cleanly |
+| `result-A.ext4` / `result-B.ext4` contents | `A.txt` only / `B.txt` only |
+| cross-contamination | **none** |
+| `EXT4-fs error` in either guest | **0** |
+| `e2fsck -fn` on both | clean, 12/4096 files, 1292/4096 blocks |
+
+So the corruption `clone_safety` refuses is specifically about a **mounted**
+scratch. An unmounted one leaves virtio-blk queue state in the snapshot and no
+ext4 metadata, and a fresh filesystem underneath it is read for the first time
+on the restored guest's own mount.
+
+This is one configuration, not a proof. It says nothing about a scratch of
+DIFFERENT geometry, about a guest that read the raw device without mounting it,
+or about the same trick on a root filesystem. Each would need its own run.
+
+## What still has to change
+
+`clone_safety`'s predicate is **attachment**-based: `snapshot_inputs` sets
+`writable_scratch` for any writable non-root drive. It has to become
+mount-based, and the host cannot see whether the guest mounted anything — the
+guest must say so, which is exactly what `SNAPSHOT_READY` already does for "I
+have asked for nothing yet". Extending that report to "and I have mounted
+nothing writable" is the change.
+
+Mounting scratch then becomes part of *personalization*, which is where the
+barrier already puts `FETCH_POD_SPEC`: take the base, then tell the VM what to
+run and give it somewhere to write.
 
 ## What this means for the plan
 
-M3's snapshot work is larger than one line and depends on a guest-side change
-that cannot be checked without a real boot. It does not block M2 — the
-command-in (`FETCH_POD_SPEC`), result-out (scratch read-back) and host-signing
-pieces are independent of whether the base is snapshot-restorable, and a pod
-that cold-boots produces the same receipt as one that resumes.
+M3 is unblocked, and is a guest-side change plus a predicate, not the two
+one-line policy flips the plan claimed.
 
-The honest sequencing is therefore: finish and land M2, then validate the
-deferred-mount hypothesis on real hardware before writing any of it into a
-design.
+It never blocked M2: command-in (`FETCH_POD_SPEC`), result-out (the scratch
+read-back) and host-signing are independent of whether the base is
+snapshot-restorable, because **a pod that cold-boots produces the same receipt
+as one that resumes.** The measurement also settles the branch that would have
+hurt: had the deferred mount failed, the base would have had to be scratch-free
+entirely, which would have taken the output channel off the scratch disk and
+invalidated the read-back.
