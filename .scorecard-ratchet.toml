@@ -136,13 +136,21 @@ population_floor = 278
 # looked and it was fine". They are reported as undeclared and the population is
 # the 80 crates clippy can see.
 #
+# 2026-09-11 (second pass): nine more crates cleared and annotated, 13 -> 22.
+# Each was ONE arithmetic site -- a Vec::with_capacity hint or a counter -- where
+# saturating_add/mul is exactly equivalent: a capacity hint that saturates
+# allocates rather than wraps, and the loop fills the real size. 24 more crates
+# sit within 8 sites of clean; clearing all of them would reach 46 of 80 (57.5%).
+# The remainder need judgement about a contract rather than an arithmetic
+# rewrite, so they are not batched in here.
+#
 # 2026-09-11: seeded after annotating the 13 crates that were already clean, and
 # probing one of them red -- `v[0] + 1` in nucleus-pca fires indexing_slicing and
 # arithmetic_side_effects, and the crate is green again when it is removed. The
 # 67 remaining crates need their sites fixed before they can declare; the two
 # tractable lints there are unwrap_used (87) and panic (10), and the 1528
 # arithmetic and indexing sites are a program, not a gate.
-floor_bp = 1728
+floor_bp = 2750
 population_floor = 81
 
 [family.life]

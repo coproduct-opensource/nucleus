@@ -369,7 +369,7 @@ pub fn verify_binding_inclusion(
         .iter()
         .filter(|s| s.trust_domain == trust_domain)
     {
-        candidates += 1;
+        candidates = candidates.saturating_add(1);
         let leaf_hash = binding_leaf(trust_domain, bundle_bytes, owner_id, stored.ts)?;
         if hex::encode(leaf_hash) != stored.leaf_hash_hex {
             continue;
