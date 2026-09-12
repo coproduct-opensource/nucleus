@@ -245,6 +245,32 @@ pub(crate) fn report_to_trust_gate(state: &NodeState, built: &Built) {
     });
 }
 
+/// The exit report read out of a Firecracker pod's scratch image, or `None`
+/// when this pod has no such image (every other driver shares a directory and
+/// never reaches here).
+///
+/// The guest mounts the image at `/work`, so `/work/.nucleus-exit-report.json`
+/// in the guest is `/.nucleus-exit-report.json` in the filesystem.
+async fn scratch_report(
+    handle: &Arc<PodHandle>,
+) -> Option<Result<String, scratch_readback::ReadbackError>> {
+    let crate::DriverState::Firecracker(pod) = &handle.driver_state else {
+        return None;
+    };
+    let jail = pod.jail.lock().await;
+    let layout = jail.as_ref()?;
+    let image = layout
+        .jail_root
+        .join(crate::firecracker_config::in_jail::SCRATCH.trim_start_matches('/'));
+    if !image.exists() {
+        return None;
+    }
+    Some(
+        scratch_readback::read_file(&image, "/.nucleus-exit-report.json")
+            .map(|b| String::from_utf8_lossy(&b).into_owned()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,30 +589,4 @@ mod tests {
             assert!(built.trust_bracket.is_none());
         }
     }
-}
-
-/// The exit report read out of a Firecracker pod's scratch image, or `None`
-/// when this pod has no such image (every other driver shares a directory and
-/// never reaches here).
-///
-/// The guest mounts the image at `/work`, so `/work/.nucleus-exit-report.json`
-/// in the guest is `/.nucleus-exit-report.json` in the filesystem.
-async fn scratch_report(
-    handle: &Arc<PodHandle>,
-) -> Option<Result<String, scratch_readback::ReadbackError>> {
-    let crate::DriverState::Firecracker(pod) = &handle.driver_state else {
-        return None;
-    };
-    let jail = pod.jail.lock().await;
-    let layout = jail.as_ref()?;
-    let image = layout
-        .jail_root
-        .join(crate::firecracker_config::in_jail::SCRATCH.trim_start_matches('/'));
-    if !image.exists() {
-        return None;
-    }
-    Some(
-        scratch_readback::read_file(&image, "/.nucleus-exit-report.json")
-            .map(|b| String::from_utf8_lossy(&b).into_owned()),
-    )
 }
