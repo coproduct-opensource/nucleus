@@ -41,6 +41,8 @@ enum Command {
     BuildRun(build_image::execute::Args),
     /// Run the microVM build experiment with a disposable bootstrap node/key.
     BuildBootstrap(build_image::execute::BootstrapArgs),
+    /// Build again using a verified predecessor artifact as the disposable node.
+    BuildSuccessor(build_image::successor::Args),
     /// Export only public build experiment evidence, excluding all private keys.
     BuildEvidence(build_image::execute::EvidenceArgs),
     /// Emit explicit Lean-action targets for the library coverage gate.
@@ -394,6 +396,7 @@ fn main() -> Result<()> {
         Command::BuildImage(args) => build_image::run(args),
         Command::BuildRun(args) => build_image::execute::run(args),
         Command::BuildBootstrap(args) => build_image::execute::bootstrap(args),
+        Command::BuildSuccessor(args) => build_image::successor::run(args),
         Command::BuildEvidence(args) => build_image::execute::evidence(args),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),

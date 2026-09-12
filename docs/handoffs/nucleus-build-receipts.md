@@ -317,6 +317,23 @@ load that record from its trusted attempt store and independently pin the
 executor key; receiving a matching expectation beside an untrusted receipt is
 not sufficient to establish trust.
 
+The next executor path is now implemented as `cargo xtask build-successor
+--predecessor <protected-stage-one-directory> --source-commit <approved-commit>
+--executor-public-key <independent-pin> --output <new-short-directory>`. It checks
+the saved expectations, authenticates the artifact-bearing receipt, requires
+exit zero and copies only verified bytes into an owner-only executable directory.
+It rechecks the predecessor deadline immediately before launching the new node.
+The successor receives fresh disposable node keys, and its public evidence export
+includes `successor-provenance.json` linking the binary digest and predecessor
+receipt root. It never imports the first node's signing material.
+
+The owned `RecordedExecution` and borrowed verifier expectations now share one
+field definition; round-trip and unknown-field tests cover the controller record
+wire format. Six build-image tests (including successor refusal cases) and all
+25 CI-verdict tests/doctests pass; strict Clippy passes for both crates. This is
+implementation evidence only. A live predecessor build and successor execution
+must still pass before milestone 4 can be claimed.
+
 The bootstrap already called both kill and wait before propagating its build
 result. Reordering the `?` operations did not add cleanup; it only changed error
 precedence. Preserve the original build error after both cleanup calls so an

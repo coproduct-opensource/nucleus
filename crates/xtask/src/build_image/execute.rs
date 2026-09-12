@@ -22,14 +22,17 @@ const FIRECRACKER_TGZ_SHA256: &str =
 #[derive(clap::Args)]
 pub struct BootstrapArgs {
     #[arg(long)]
-    inputs: PathBuf,
+    pub(super) inputs: PathBuf,
     #[arg(long)]
-    source_commit: String,
+    pub(super) source_commit: String,
     #[arg(long)]
-    node_binary: PathBuf,
+    pub(super) node_binary: PathBuf,
     /// New directory for the disposable node, keys and verified build output.
     #[arg(long)]
-    output: PathBuf,
+    pub(super) output: PathBuf,
+    /// Set only by the verified successor path, never by command-line input.
+    #[arg(skip)]
+    pub(super) successor_provenance: Option<(serde_json::Value, u64)>,
 }
 
 pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
@@ -39,6 +42,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         source_commit,
         node_binary,
         output,
+        successor_provenance,
     } = args;
     ensure!(
         Path::new("/dev/kvm").exists() && Path::new("/dev/vhost-vsock").exists(),
@@ -63,6 +67,13 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         fs::set_permissions(&output, fs::Permissions::from_mode(0o700))?;
     }
     let archive = output.join("firecracker.tgz");
+    let successor_deadline = successor_provenance.as_ref().map(|(_, deadline)| *deadline);
+    if let Some((provenance, _)) = successor_provenance {
+        fs::write(
+            output.join("successor-provenance.json"),
+            serde_json::to_vec_pretty(&provenance)?,
+        )?;
+    }
     checked(Command::new("curl").args(["--fail", "--location", "--retry", "2", "--output"])
         .arg(&archive).arg("https://github.com/firecracker-microvm/firecracker/releases/download/v1.16.1/firecracker-v1.16.1-x86_64.tgz"))?;
     ensure!(
@@ -86,6 +97,12 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     let log = fs::File::create(output.join("node.log"))?;
     let auth = capture(Command::new("openssl").args(["rand", "-hex", "32"]))?;
     let approval = capture(Command::new("openssl").args(["rand", "-hex", "32"]))?;
+    if let Some(deadline) = successor_deadline {
+        ensure!(
+            now()? <= deadline,
+            "predecessor evidence expired before successor launch"
+        );
+    }
     let mut node = Command::new(&node_binary)
         .arg("--state-dir")
         .arg(&state)
@@ -251,7 +268,12 @@ pub fn evidence(args: EvidenceArgs) -> Result<()> {
     let EvidenceArgs { experiment, output } = args;
     ensure!(experiment.is_dir(), "experiment directory is absent");
     fs::create_dir(&output).context("evidence output must be a new directory")?;
-    for name in ["bootstrap-runtime.json", "node.log", "build/inputs.json"] {
+    for name in [
+        "bootstrap-runtime.json",
+        "successor-provenance.json",
+        "node.log",
+        "build/inputs.json",
+    ] {
         copy_evidence(&experiment, &output, Path::new(name))?;
     }
     for phase in ["cold", "warm"] {

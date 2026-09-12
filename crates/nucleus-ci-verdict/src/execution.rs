@@ -65,22 +65,65 @@ impl ExecutionClaim {
     }
 }
 
-/// Expectations come from the controller's attempt record and pinned signer.
-#[derive(Serialize)]
-pub struct ExpectedExecution<'a> {
-    pub pod_id: &'a str,
-    pub source_commit: &'a str,
-    pub source_tree: &'a str,
-    pub gate: &'a str,
-    pub program_digest: &'a str,
-    pub architecture: &'a str,
-    pub environment_inputs_sha256: &'a str,
-    pub artifacts: &'a BTreeMap<String, String>,
-    pub session_id: &'a str,
-    pub issuer_kid: &'a str,
-    pub verifying_key: &'a [u8; 32],
+/// Controller inputs, shared by the borrowed verifier view and durable record.
+/// Deserialization does not establish trust: these come from the controller's
+/// attempt store and pinned signer, never from the receipt supplier.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionExpectation<S, A, K> {
+    pub pod_id: S,
+    pub source_commit: S,
+    pub source_tree: S,
+    pub gate: S,
+    pub program_digest: S,
+    pub architecture: S,
+    pub environment_inputs_sha256: S,
+    pub artifacts: A,
+    pub session_id: S,
+    pub issuer_kid: S,
+    pub verifying_key: K,
     pub issued_not_before_micros: u64,
     pub issued_not_after_micros: u64,
+}
+
+pub type ExpectedExecution<'a> =
+    ExecutionExpectation<&'a str, &'a BTreeMap<String, String>, &'a [u8; 32]>;
+
+pub type RecordedExecution = ExecutionExpectation<String, BTreeMap<String, String>, [u8; 32]>;
+
+impl RecordedExecution {
+    pub fn as_expected(&self) -> ExpectedExecution<'_> {
+        let Self {
+            pod_id,
+            source_commit,
+            source_tree,
+            gate,
+            program_digest,
+            architecture,
+            environment_inputs_sha256,
+            artifacts,
+            session_id,
+            issuer_kid,
+            verifying_key,
+            issued_not_before_micros,
+            issued_not_after_micros,
+        } = self;
+        ExpectedExecution {
+            pod_id,
+            source_commit,
+            source_tree,
+            gate,
+            program_digest,
+            architecture,
+            environment_inputs_sha256,
+            artifacts,
+            session_id,
+            issuer_kid,
+            verifying_key,
+            issued_not_before_micros: *issued_not_before_micros,
+            issued_not_after_micros: *issued_not_after_micros,
+        }
+    }
 }
 
 /// Authenticated microVM execution, not yet a verified build or cache hit.

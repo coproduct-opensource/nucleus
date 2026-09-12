@@ -8,6 +8,22 @@ const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 static NO_ARTIFACTS: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
 
 #[test]
+fn recorded_controller_expectations_preserve_bindings_and_refuse_unknown_fields() {
+    use nucleus_ci_verdict::execution::RecordedExecution;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let wire = serde_json::to_value(expected(&public)).unwrap();
+    let mut record: RecordedExecution = serde_json::from_value(wire.clone()).unwrap();
+    let receipt = sign(&claim(), &key);
+    assert!(verify_execution(&receipt, &record.as_expected()).is_ok());
+    record.source_commit = "another-source".into();
+    assert!(verify_execution(&receipt, &record.as_expected()).is_err());
+    let mut unknown = wire;
+    unknown["unexpected_trust_override"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<RecordedExecution>(unknown).is_err());
+}
+
+#[test]
 fn artifact_bytes_names_paths_and_consumption_deadline_are_checked() {
     use nucleus_ci_verdict::execution::{ArtifactIdentity, verify_artifacts};
     use sha2::{Digest, Sha256};
