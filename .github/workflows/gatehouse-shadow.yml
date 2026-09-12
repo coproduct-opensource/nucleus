@@ -28,7 +28,15 @@ permissions:
 
 jobs:
   shadow:
-    name: "The ${{ matrix.gate }} gate, run the gatehouse way, agrees with the GitHub check (shadow, informational)"
+    # The name says what a RED means, because this check never fails on
+    # disagreement — only when the loop could not run at all. Named "agrees
+    # with the GitHub check", sixteen red shadows on 2026-09-11 read as sixteen
+    # disagreements when every one of them meant "could not look". gatehouse's
+    # verifier is three-valued (Verified / Refuted / CouldNotLook) and a GitHub
+    # check has two states, so the name is the only place that distinction can
+    # survive. ADR 0007 A-2: "I could not look" is never "I looked and it was
+    # fine" — and it is not "I looked and it was wrong" either.
+    name: "The ${{ matrix.gate }} gate, run the gatehouse way (shadow, informational; red = could not look, never disagreement)"
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -115,7 +123,15 @@ jobs:
           run: ${{ matrix.github }}
           name: ${{ matrix.gate }}
           scope: ${{ matrix.scope }}
-          timeout: "2700"
+          # STRICTLY BELOW the job's 45 minutes, and that is the whole point.
+          # It was 2700 — the same 2,700 seconds as `timeout-minutes: 45` — so
+          # the runner's own deadline could never fire first: a hung gate could
+          # only ever end as a cancelled job, with no receipt, no log and
+          # nothing saying why. Measured 2026-09-11, when a deadlock in the
+          # runner (gatehouse F-100) did exactly that on sixteen open pull
+          # requests. A gate's own timeout must fire before its job is killed,
+          # or the gate cannot report its own failure.
+          timeout: "2100"
           bin-dir: gatehouse/target/debug
           control-url: ${{ vars.GATEHOUSE_CONTROL_URL || 'https://gatehouse-controld.fly.dev' }}
       - name: The agreement line
