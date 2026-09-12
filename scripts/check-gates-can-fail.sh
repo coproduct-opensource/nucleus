@@ -236,6 +236,116 @@ probe_xtask_flagged() {
         echo "  ok    xtask $sub $flags — RED on $desc, GREEN when restored"
     fi
 }
+# One probe for a gate that is a `cargo xtask` subcommand rather than a shell
+# script. Same contract as probe(): perturb a REAL subject, the gate must go red,
+# restore it, the gate must go green. The wiring check is the same question asked
+# of the workflows, and comment lines are stripped for the reason the derivation
+# above explains.
+# A gate CI invokes with a flag this script cannot supply, probed on the conjuncts
+# that do not need it.
+#
+# `probe_xtask` refuses any gate CI calls with flags, and it is right to: probing a
+# different command than CI runs tests something CI does not. But the refusal has
+# been doing double duty as an EXEMPTION. `gatehouse-pin` sat in UNCOVERED as
+# "takes --gatehouse <path>; the probe needs a gatehouse checkout this script does
+# not have", and that sentence is true about ONE of its three conjuncts. The other
+# two -- every GATEHOUSE_REF names the same commit, and every step using the action
+# runs a build this repo pins -- are decided from this tree alone, before the flag
+# is consulted, and return the same verdict with or without it. The obstacle named
+# the gate's subject and never touched its detection.
+#
+# So this probes bare, and pays for the difference with two assertions probe_xtask
+# does not make:
+#
+#   * the CLEAN bare run must be GREEN. If omitting the flag made the gate error or
+#     bail early, a bare probe would be measuring "could not look" and the red below
+#     would mean nothing.
+#   * the PERTURBED bare run must red WITH AN EXPECTED MARKER in its output, not
+#     merely exit non-zero. Exit status alone cannot tell "the conjunct under test
+#     fired" from "the gate fell over on the way there" -- which is exactly the
+#     failure mode a bare invocation invites.
+#
+# CI's flags are still asserted verbatim, so the day CI changes them this stops
+# being a licensed difference and says so.
+probe_xtask_partial() {
+    local sub="$1" ci_flags="$2" marker="$3" target="$4" desc="$5"
+    shift 5
+
+    local invocations
+    invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
+        | grep -vE '^[[:space:]]*#' \
+        | grep -oE "xtask -- ${sub}[^\"'\`|]*" \
+        | sed -E "s/xtask -- $sub//; s/^[[:space:]]+//; s/[[:space:]]+\$//")"
+    if [[ -z "$(printf '%s' "$invocations")" ]]; then
+        echo "  FAIL  xtask $sub — no workflow invokes it"
+        failures=$((failures + 1))
+        return
+    fi
+    # Every invocation must be the declared one. `-x` so a longer flag string that
+    # merely contains it is not a match, and `--` because the pattern starts with a
+    # dash.
+    local unexpected
+    unexpected="$(printf '%s\n' "$invocations" | grep -vxF -- "$ci_flags" || true)"
+    if [[ -n "$unexpected" ]]; then
+        echo "  FAIL  xtask $sub — CI invokes it as '$(printf '%s' "$unexpected" | head -1)',"
+        echo "        but this probe is licensed against '$ci_flags'. The flags moved:"
+        echo "        re-read what the probe still covers before widening this."
+        failures=$((failures + 1))
+        return
+    fi
+    if [[ ! -f "$target" ]]; then
+        echo "  ERROR: $target does not exist"
+        failures=$((failures + 1))
+        return
+    fi
+
+    # The clean bare run, BEFORE perturbing: green, or the probe measures nothing.
+    local clean_rc=0
+    cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || clean_rc=$?
+    if [[ "$clean_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub — bare (without '$ci_flags') the gate already exits $clean_rc"
+        echo "        on a clean tree, so a red under perturbation would not be evidence."
+        failures=$((failures + 1))
+        return
+    fi
+
+    RESTORE_TO="$target"
+    RESTORE_FROM="$(mktemp)"
+    cp "$target" "$RESTORE_FROM"
+
+    "$@" "$target"
+
+    if cmp -s "$target" "$RESTORE_FROM"; then
+        echo "  FAIL  xtask $sub — the perturbation for '$desc' changed $target not at all"
+        restore
+        RESTORE_FROM=""
+        failures=$((failures + 1))
+        return
+    fi
+
+    local out perturbed_rc=0
+    out="$(cargo run -q -p xtask -- "$sub" 2>&1)" || perturbed_rc=$?
+    restore
+    RESTORE_FROM=""
+    local restored_rc=0
+    cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || restored_rc=$?
+
+    covered=$((covered + 1))
+    if [[ "$perturbed_rc" -eq 0 ]]; then
+        echo "  FAIL  xtask $sub — $desc did NOT fail the gate (exit 0)"
+        failures=$((failures + 1))
+    elif ! printf '%s' "$out" | grep -qF -- "$marker"; then
+        echo "  FAIL  xtask $sub — $desc red the gate, but not for the reason under test:"
+        echo "        expected '$marker' in the output, got: $(printf '%s' "$out" | head -1)"
+        failures=$((failures + 1))
+    elif [[ "$restored_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub — still failing (exit $restored_rc) after restore"
+        failures=$((failures + 1))
+    else
+        echo "  ok    xtask $sub — RED on $desc, GREEN when restored"
+    fi
+}
+
 
 probe_xtask() {
     local sub="$1" target="$2" desc="$3"
@@ -854,6 +964,23 @@ perturb_fly_pool_volumes() {
     # end of the list compile onto the root filesystem and run out of disk.
     sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
 }
+# gatehouse-pin: a second pin naming a different commit. The real one -- the plan
+# lane ran 4d42510 while the shadow lane ran 7326bfa9 -- is what put the third pin
+# in this gate in the first place.
+perturb_gatehouse_ref_skew() {
+    local f="$1"
+    perl -0pi -e 's/(GATEHOUSE_REF:\s*)[0-9a-f]{40}/${1}4d425108b1a4de0e0c0f3f0e0d0c0b0a09080706/' "$f"
+}
+
+# gatehouse-pin: a step that runs a gatehouse no pin names. Dropping `bin-dir` is
+# not a contrived edit -- it is the action's own DEFAULT, and the default is the
+# download path, so this is the state a second step gets by being written the
+# short way.
+perturb_gatehouse_bin_dir_dropped() {
+    local f="$1"
+    perl -0pi -e 's/^\s*bin-dir:.*\n//m' "$f"
+}
+
 # allowlist-gates --parity: a shell script gains a gate the Rust harness has not ported. This is
 # the real shape -- `check-verify-strict.sh` carried two gates and the port took one -- reproduced
 # on a different script so the probe does not depend on that one defect staying fixed.
@@ -888,6 +1015,21 @@ probe_xtask fly-pools ci/fly-runner/manager.toml \
 
 probe_xtask pipefail .github/workflows/a2a-tck.yml \
     "a pipeline added to a block with no pipefail" perturb_pipefail_new_unguarded_pipe
+# gatehouse-pin, probed on the two conjuncts that need no gatehouse checkout. It
+# was UNCOVERED as "takes --gatehouse <path>", which is true of its THIRD conjunct
+# and of neither of these. See probe_xtask_partial for what the bare invocation
+# costs and what is asserted to pay for it.
+probe_xtask_partial gatehouse-pin "--gatehouse gatehouse" \
+    "the pins name different gatehouses" \
+    .github/workflows/gatehouse-shadow.yml \
+    "two workflows building gatehouse at different commits" \
+    perturb_gatehouse_ref_skew
+
+probe_xtask_partial gatehouse-pin "--gatehouse gatehouse" \
+    "a step runs a gatehouse no pin names" \
+    .github/workflows/gatehouse-shadow.yml \
+    "a step falling back to the action's downloaded default" \
+    perturb_gatehouse_bin_dir_dropped
 probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
     "a baseline claiming a score the tree does not have" \
     "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \
@@ -1008,7 +1150,6 @@ UNCOVERED=(
     # asked. Listing them is the point: each now owes a perturbation or a reason,
     # and the ceiling below only shrinks. Two of the ten are probed already.
     "xtask ci-spec                 reads live branch protection; a perturbation needs the GitHub API, not a file"
-    "xtask gatehouse-pin           takes --gatehouse <path>; the probe needs a gatehouse checkout this script does not have"
     "xtask lean-action-builds      needs a Lean toolchain to reach its verdict"
     "xtask line-ratchet            probed through scripts/check-line-ratchet.sh, which is the same decision procedure"
     "xtask policy-gate             runs ck-kernel admission on a manifest amendment; needs a real amendment"
@@ -1048,7 +1189,12 @@ UNCOVERED=(
 # half and silent about the DETECTION half -- a grep over `cargo tree` keyed on box
 # drawing characters, which would pass forever if cargo changed its output. Declaring
 # a present crate forbidden exercises that path from a committed list.
-UNCOVERED_CEILING=5
+# 5 -> 4 on 2026-09-12: gatehouse-pin. Its exemption said the probe "needs a
+# gatehouse checkout this script does not have", which is true about the conjunct
+# that hashes prelude/ci.writ at the pinned ref and about neither of the other
+# two. The obstacle named the gate's SUBJECT and never touched its DETECTION.
+# Two perturbations now red it, both from this tree alone.
+UNCOVERED_CEILING=4
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #
@@ -1200,7 +1346,13 @@ for sub in "${XTASK_GATES[@]}"; do
     gate="xtask $sub"
     # Both probe forms count as coverage: probe_xtask for a bare invocation,
     # probe_xtask_generated for one CI runs with flags naming a generated file.
-    grep -qE "^probe_xtask(_generated)?[[:space:]]+$sub([[:space:]]|$)" "$0" && continue
+    # ANY `probe_xtask*` helper counts, derived rather than listed. An explicit alternation
+    # goes stale the moment a sibling branch adds a helper -- main gained `probe_xtask_flagged`
+    # in #2868 while this predicate still named only `_generated`, so a gate probed solely by
+    # the flagged form read as UNACCOUNTED, and it was correct on main only because the one
+    # user is also probed bare (gatehouse F-142). This branch adds `_partial`, which would be
+    # the second such hole. Deriving the family removes the class.
+    grep -qE "^probe_xtask[a-z_]*[[:space:]]+${sub}([[:space:]]|$)" "$0" && continue
     printf '%s\n' "${UNCOVERED[@]}" | grep -q "^${gate}[[:space:]]" && continue
     UNACCOUNTED+=("$gate")
 done
