@@ -333,14 +333,38 @@ pub fn is_production_path(path: &str) -> bool {
     if !path.ends_with(".rs") || !path.starts_with("crates/") {
         return false;
     }
-    let excluded = ["/tests/", "/benches/", "/examples/", "/fuzz/"];
+    // Directory segments that never ship. `/proofs/` and `/kani/` join the
+    // original four because a proof harness is not production code: it is
+    // written against a narrowed model on purpose, and counting it makes the
+    // crate holding the most proofs look like the crate with the most defects.
+    // 44 of `portcullis`'s 69 `.unwrap()` calls live in `src/kani.rs`, which
+    // ships in no binary — a gate reading them reports roughly twice the truth
+    // and names the wrong worst crate.
+    let excluded = [
+        "/tests/",
+        "/benches/",
+        "/examples/",
+        "/fuzz/",
+        "/proofs/",
+        "/kani/",
+    ];
     if excluded.iter().any(|seg| path.contains(seg)) {
         return false;
     }
-    !Path::new(path)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .is_some_and(|f| f.ends_with("_tests.rs"))
+    let Some(file) = Path::new(path).file_name().and_then(|f| f.to_str()) else {
+        return false;
+    };
+    // `_tests.rs` was the original rule and missed `_test.rs` by one character;
+    // `crates/portcullis/src/certificate_convergence_test.rs` sat in the
+    // production corpus for as long as this helper has existed. `kani.rs` is the
+    // filename form of the `/kani/` segment above, and is the same exclusion the
+    // coverage gate already spells as `--ignore-filename-regex '…kani\.rs…'`.
+    // `build.rs` runs at compile time on the host and is not part of any shipped
+    // artifact.
+    !(file.ends_with("_test.rs")
+        || file.ends_with("_tests.rs")
+        || file == "kani.rs"
+        || file == "build.rs")
 }
 
 /// The verdict for one row: where its anchor was seen, outside its own file.
@@ -742,5 +766,50 @@ mod tests {
         assert!(!is_production_path("crates/a/tests/it.rs"));
         assert!(!is_production_path("crates/a/src/foo_tests.rs"));
         assert!(!is_production_path("crates/a/src/lib.md"));
+    }
+
+    #[test]
+    fn a_proof_harness_is_not_production_code() {
+        // A Kani harness is written against a deliberately narrowed model —
+        // `portcullis` marks whole fields `#[cfg(not(kani))]` — so counting it
+        // measures the proof, not the binary. Every real path in the tree:
+        assert!(!is_production_path("crates/portcullis/src/kani.rs"));
+        assert!(!is_production_path(
+            "crates/portcullis/src/kani/certificate_harnesses.rs"
+        ));
+        assert!(!is_production_path(
+            "crates/nucleus-econ-kernels/proofs/welfare_no_overflow.rs"
+        ));
+    }
+
+    #[test]
+    fn the_singular_test_suffix_was_missed_by_one_character() {
+        // `_tests.rs` was the original rule.
+        // `crates/portcullis/src/certificate_convergence_test.rs` has been in the
+        // production corpus for as long as this helper has existed.
+        assert!(!is_production_path("crates/a/src/foo_test.rs"));
+        assert!(!is_production_path(
+            "crates/portcullis/src/certificate_convergence_test.rs"
+        ));
+    }
+
+    #[test]
+    fn a_build_script_runs_on_the_host_and_ships_in_nothing() {
+        assert!(!is_production_path("crates/portcullis/build.rs"));
+        assert!(!is_production_path("crates/nucleus-proto/build.rs"));
+        // But a module merely NAMED after one is production.
+        assert!(is_production_path("crates/a/src/rebuild.rs"));
+    }
+
+    #[test]
+    fn the_tightening_does_not_swallow_ordinary_source() {
+        // The exclusions are segments and whole filenames, not substrings: a
+        // crate called `kani-utils` or a module called `proofs_index` still
+        // ships, and a gate that quietly stopped looking at them would be the
+        // failure this whole campaign is about.
+        assert!(is_production_path("crates/kani-utils/src/lib.rs"));
+        assert!(is_production_path("crates/a/src/proofs_index.rs"));
+        assert!(is_production_path("crates/a/src/kani_support.rs"));
+        assert!(is_production_path("crates/a/src/testing.rs"));
     }
 }

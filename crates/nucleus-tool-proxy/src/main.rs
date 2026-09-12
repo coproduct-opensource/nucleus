@@ -2808,7 +2808,7 @@ async fn read_file(
         match state
             .runtime
             .sandbox()
-            .read_to_string(&path, &decision_token, first_authority)
+            .read_to_string(&path, decision_token, first_authority)
         {
             Ok(contents) => contents,
             Err(NucleusError::ApprovalRequired { operation: op }) => {
@@ -2830,7 +2830,7 @@ async fn read_file(
                     let retry_authority = read_authority!();
                     state.runtime.sandbox().read_to_string_approved(
                         &path,
-                        &approved_dt,
+                        approved_dt,
                         &approval,
                         retry_authority,
                     )?
@@ -2992,7 +2992,7 @@ async fn write_file(
     match state.runtime.sandbox().write(
         &path,
         contents.as_bytes(),
-        &decision_token,
+        decision_token,
         portcullis_effects::authority::Authority::new(discharge_bundle),
     ) {
         Ok(()) => {}
@@ -3068,7 +3068,7 @@ async fn write_file(
                 state.runtime.sandbox().write_approved(
                     &path,
                     contents.as_bytes(),
-                    &approved_dt,
+                    approved_dt,
                     &approval,
                     portcullis_effects::authority::Authority::new(retry_bundle),
                 )?;
@@ -3281,7 +3281,7 @@ async fn run_command(
         &req.args,
         stdin,
         directory,
-        &decision_token,
+        decision_token,
         portcullis_effects::authority::Authority::new(discharge_bundle),
     ) {
         Ok(output) => output,
@@ -3310,7 +3310,7 @@ async fn run_command(
                     &req.args,
                     stdin,
                     directory,
-                    &approved_dt,
+                    approved_dt,
                     &approval,
                     // A fresh discharge for the retry. The first attempt spent
                     // the authority minted above — one discharge authorizes one

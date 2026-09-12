@@ -482,7 +482,7 @@ pub(crate) async fn get_receipt(
 ) -> Result<Json<crate::pod_receipt::Receipt>, ApiError> {
     use crate::pod_receipt::ReceiptError;
     let pod = get_pod_for_caller(&state, id, caller).await?;
-    match crate::pod_receipt::build(&pod).await {
+    match crate::pod_receipt::build(&pod, &state.authority).await {
         Ok(built) => Ok(Json(built.receipt)),
         // A pod that has not finished has no receipt YET, which is not the same as not having one
         // — and neither is the same as not existing. `NoExitReport` maps to NotFound because the

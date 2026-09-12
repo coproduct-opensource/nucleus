@@ -58,6 +58,23 @@
 //! verify_binding(&binding, &passport_pk).expect("binding verifies");
 //! ```
 
+// ADR 0007 totality: a function whose signature says it returns is lying if it
+// panics. Denied for the shipped build only — `assert!` IS a panic, so denying
+// inside `#[cfg(test)]` would forbid the thing tests are made of. This is the
+// same line `is_production_path` draws when it strips the test region.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 
@@ -100,7 +117,13 @@ pub struct NodeBinding {
 /// This is a total, deterministic function of its inputs: the same
 /// `(node_id, principal)` pair always yields identical bytes.
 pub fn binding_message(node_id: &[u8; 32], principal: &str) -> Vec<u8> {
-    let mut msg = Vec::with_capacity(DOMAIN_PREFIX.len() + 32 + 1 + principal.len());
+    let mut msg = Vec::with_capacity(
+        DOMAIN_PREFIX
+            .len()
+            .saturating_add(32)
+            .saturating_add(1)
+            .saturating_add(principal.len()),
+    );
     msg.extend_from_slice(DOMAIN_PREFIX);
     msg.extend_from_slice(node_id);
     msg.push(b':');

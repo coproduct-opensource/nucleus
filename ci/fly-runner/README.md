@@ -73,6 +73,32 @@ jobs left on hosted runners then flow. The gate pool takes the rest. Jobs that h
 `ubuntu-latest` (63 sites) or `ubuntu-24.04` (16) stay hosted; those are the ones that need
 Docker, CodeQL or a hosted-only tool.
 
+**Measured after the fact, 2026-09-12.** The consolidation below was justified by
+an estimate (~38 minutes of slot wait per merged PR). The merge group on main's
+tip, against the #2848 baseline the estimate came from:
+
+| | before (#2848) | after |
+|---|---|---|
+| total queue | 222.4 min | **174.6 min** |
+| queue-to-work ratio | 3.14× | **2.48×** |
+| `CI` alone | 131.4 min | **67.3 min** |
+| work | 70.9 min | 70.3 min |
+| `CI` pool acquisitions | ~29 of 33 jobs | **18 of 34** |
+
+CI's queue time halved, and the estimate was conservative rather than
+optimistic. Work is unchanged, which is the point: consolidation removes slot
+acquisitions, not compute.
+
+The mechanism is visible rather than inferred — in that run `Text gates (one
+pod)` is a single `nucleus-fly-gate` acquisition and all eleven relays report
+from `ubuntu-latest`.
+
+**What this does not establish.** These are different merge groups with
+different content, and other changes landed between them (#2856's shadow
+timeout, #2860's gate registration). The direction and rough magnitude hold;
+attributing all 48 minutes to this one change does not. The relay-runner
+evidence is the part that is directly attributable.
+
 The gate count fell 54 → 40 on 2026-09-11: `ci.yml`'s eleven grep-only gate jobs were folded
 into one `text-gates` pod, and the fifteen relay jobs that report their outcomes back to each
 required context moved to hosted runners. A relay does nothing but read a step outcome, so on

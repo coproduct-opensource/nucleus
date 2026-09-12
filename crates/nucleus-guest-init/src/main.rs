@@ -46,10 +46,55 @@ impl std::ops::BitOr for MsFlags {
 
 const POD_SPEC_PATH: &str = "/etc/nucleus/pod.yaml";
 const FALLBACK_POD_SPEC: &str = "/pod.yaml";
+/// Where a spec fetched from the HOST is written.
+///
+/// `/run` and not `/etc/nucleus`: a real pod's rootfs is READ-ONLY, so writing
+/// the fetched spec beside the baked one is impossible. The first version of
+/// this wrote to `POD_SPEC_PATH` and every real pod died on it —
+/// `the host supplied a pod spec and /etc/nucleus/pod.yaml could not be
+/// written — refusing to boot`, followed by `Kernel panic - not syncing:
+/// Attempted to kill init!`. The fail-closed path was right; the target was
+/// not.
+///
+/// `/run` is a load-bearing tmpfs mounted well before the barrier, so it is
+/// writable by the time the spec arrives and gone when the pod does.
+const HOST_POD_SPEC: &str = "/run/nucleus/pod.yaml";
 const PROXY_BIN: &str = "/usr/local/bin/nucleus-tool-proxy";
 /// The egress backstop probe, baked into the rootfs beside the proxy.
 const EGRESS_PROBE_BIN: &str = "/usr/local/bin/nucleus-egress-probe";
 const GUEST_NET_SH: &str = "/usr/local/bin/guest-net.sh";
+
+/// Mount the per-pod scratch at `/work`, if this pod has one.
+///
+/// Optional: a guest without a data volume, or with a read-only one, is
+/// legitimate (`workload.rs` allows a read-only `/work`).
+///
+/// # Why it takes a [`identity::PastBarrier`]
+///
+/// This used to run with the other mounts, well before the barrier. Mounting
+/// ext4 WRITES to its superblock — the mount count goes to 1 and the
+/// last-mounted path is recorded — so a base snapshotted here carried one pod's
+/// filesystem metadata, and a clone restored against a fresh image had cached
+/// metadata describing a filesystem that was not there. `clone_safety` refused
+/// every jailed pod for exactly that reason.
+///
+/// The host verifies the outcome in the superblock rather than taking the
+/// guest's word (`snapshot::mount_state`), so this is not a claim being made
+/// here — it is the behaviour that makes the host's check pass. The token makes
+/// the ordering unwritable rather than merely correct today.
+fn mount_work(_past_barrier: &identity::PastBarrier) {
+    if Path::new("/dev/vdb").exists()
+        && let Err(err) = mount_fs(
+            "/dev/vdb",
+            "/work",
+            "ext4",
+            MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+            None,
+        )
+    {
+        eprintln!("optional mount /work failed — continuing without it: {err}");
+    }
+}
 
 /// Time one startup step and print it as it completes.
 ///
@@ -127,28 +172,6 @@ fn run() -> Result<(), String> {
         eprintln!("optional mount {missing} failed — continuing without it");
     }
 
-    // `/work` is optional: a guest without a data volume, or a read-only one,
-    // is legitimate (workload.rs allows a read-only /work).
-    if Path::new("/dev/vdb").exists()
-        && let Err(err) = mount_fs(
-            "/dev/vdb",
-            "/work",
-            "ext4",
-            MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-            None,
-        )
-    {
-        eprintln!("optional mount /work failed — continuing without it: {err}");
-    }
-
-    // Never a shell: a missing spec is a named boot error.
-    let spec_path = boot::resolve_pod_spec(
-        POD_SPEC_PATH,
-        FALLBACK_POD_SPEC,
-        |p| Path::new(p).exists(),
-        |from, to| fs::copy(from, to).is_ok(),
-    )
-    .map_err(|e| e.to_string())?;
     let net_config = parse_net_config("/proc/cmdline");
 
     if let Some(net) = net_config.as_ref() {
@@ -171,14 +194,79 @@ fn run() -> Result<(), String> {
     // slow, and the total says whether batching them into one round trip is
     // worth doing at all. Neither number existed before.
     let handshake_start = std::time::Instant::now();
+    // THE BARRIER. Announced once, for both paths, and it hands back the token
+    // `mount_work` requires — so mounting the scratch before this line is not a
+    // convention anyone has to remember, it does not compile.
+    let past_barrier = identity::barrier(workload_api_port);
+    mount_work(&past_barrier);
+
+    // THE COMMAND, FETCHED RATHER THAN BAKED.
+    //
+    // `FETCH_POD_SPEC` existed as a protocol variant and a host handler, and
+    // nothing sent it: the guest read /etc/nucleus/pod.yaml out of its own
+    // rootfs and the command was whatever the image was built with. A base is
+    // then per-JOB, which is the thing the barrier exists to avoid.
+    //
+    // Past the barrier, because a VM that has fetched its spec is committed to
+    // one job. `place_host_spec` writes it where `resolve_pod_spec` looks, so
+    // the two compose and the baked spec remains the fallback for a host that
+    // says nothing.
+    if let Some(port) = workload_api_port {
+        match identity::fetch_pod_spec(port, &past_barrier) {
+            Ok(spec) => match boot::place_host_spec(HOST_POD_SPEC, Some(&spec), |p, body| {
+                // The parent first: /run is a fresh tmpfs every boot.
+                if let Some(dir) = Path::new(p).parent()
+                    && fs::create_dir_all(dir).is_err()
+                {
+                    return false;
+                }
+                fs::write(p, body).is_ok()
+            }) {
+                Ok(true) => eprintln!("pod spec fetched from the host"),
+                Ok(false) => {}
+                // NOT a fallback to the baked spec: the host believes it
+                // dispatched a different job.
+                Err(e) => return Err(e.to_string()),
+            },
+            // The host having nothing to say is every pod today.
+            Err(e) => eprintln!("no pod spec over vsock (keeping the baked one): {e}"),
+        }
+    }
+
+    // Never a shell: a missing spec is a named boot error.
+    // THE BAKED SPEC WINS WHEN THERE IS ONE, and the fetched one is the fallback.
+    //
+    // This was the other way round — host wins — and it broke every existing
+    // pod: `NUCLEUS_WORKLOAD_PROBE: PASS` stopped appearing because the node
+    // serves a spec for EVERY pod, so every pod switched to the fetched path at
+    // once. A new mechanism made the default for everything is not additive, it
+    // is a migration nobody asked for.
+    //
+    // The fetched spec exists for the case that has NO baked one: a snapshot
+    // base, whose whole point is a rootfs that names no command. There the
+    // resolution below fails and this is the only spec there is. A pod with a
+    // baked spec keeps it, and behaves exactly as it did before.
+    let spec_path = if !Path::new(POD_SPEC_PATH).exists()
+        && !Path::new(FALLBACK_POD_SPEC).exists()
+        && Path::new(HOST_POD_SPEC).exists()
+    {
+        eprintln!("no baked pod spec; using the one fetched from the host");
+        HOST_POD_SPEC.to_string()
+    } else {
+        boot::resolve_pod_spec(
+            POD_SPEC_PATH,
+            FALLBACK_POD_SPEC,
+            |p| Path::new(p).exists(),
+            |from, to| fs::copy(from, to).is_ok(),
+        )
+        .map_err(|e| e.to_string())?
+    };
     if let Some(port) = workload_api_port {
         // Announce the barrier before asking for anything. After the first fetch below this VM
         // is one particular pod, and a snapshot of it would hand that pod's identity to every
         // clone. Best-effort: a host that does not know the command simply never records it, and
         // the only consequence is that this VM cannot be used as a base.
-        if let Err(e) = identity::announce_snapshot_ready(port) {
-            eprintln!("snapshot barrier not announced (continuing): {e}");
-        }
+
         match timed("identity", || identity::fetch_identity(port)) {
             Ok(spiffe_id) => {
                 eprintln!("fetched identity: {spiffe_id}");
