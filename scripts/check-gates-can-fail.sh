@@ -319,6 +319,14 @@ probe_xtask() {
 # probe_xtask_generated <sub> <target> <desc> <ci_flags> <generated> <local_path> <gen_fn> <perturb_fn>
 probe_xtask_generated() {
     local sub="$1" target="$2" desc="$3" ci_flags="$4" generated="$5" local_path="$6" gen_fn="$7" perturb_fn="$8"
+    # An OPTIONAL second generated input, for a gate CI feeds more than one.
+    #
+    # `policy-gate` needs two: a base manifest and a changed-files list, both written by
+    # the job before it runs. One slot is not enough, and the obvious workaround -- have
+    # the generator write the second file at CI's own path in the repo root -- would leave
+    # it behind, and THIS SCRIPT refuses to start on a dirty tree. A probe whose cost is
+    # that the next run cannot start is not a probe.
+    local generated2="${9:-}" local_path2="${10:-}" gen_fn2="${11:-}"
 
     local invocations
     invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
@@ -340,7 +348,7 @@ probe_xtask_generated() {
         failures=$((failures + 1))
         return
     fi
-    # ...and the probe's own flags may differ ONLY by the generated file's path.
+    # ...and the probe's own flags may differ ONLY by the generated files' paths.
     local expected_local="${ci_flags/$generated/$local_path}"
     if [[ "$expected_local" == "$ci_flags" ]]; then
         echo "  FAIL  xtask $sub — '$generated' does not appear in CI's flags, so there is"
@@ -348,6 +356,30 @@ probe_xtask_generated() {
         failures=$((failures + 1))
         return
     fi
+    if [[ -n "$generated2" ]]; then
+        local before2="$expected_local"
+        expected_local="${expected_local/$generated2/$local_path2}"
+        if [[ "$expected_local" == "$before2" ]]; then
+            echo "  FAIL  xtask $sub — '$generated2' does not appear in CI's flags either."
+            failures=$((failures + 1))
+            return
+        fi
+    fi
+
+    # Both generated paths must sit OUTSIDE the repository. The generator writing into
+    # the tree leaves a file behind that this script's own dirty-tree guard would refuse
+    # on the next invocation -- a probe that runs once and then blocks the suite.
+    local pth
+    for pth in "$local_path" ${local_path2:+"$local_path2"}; do
+        case "$pth" in
+            /*) ;;
+            *)  echo "  FAIL  xtask $sub — generated input '$pth' is a repo-relative path."
+                echo "        It would be left in the tree, and the dirty-tree guard at the"
+                echo "        top of this script would refuse the NEXT run. Use mktemp."
+                failures=$((failures + 1))
+                return ;;
+        esac
+    done
 
     if ! "$gen_fn" "$local_path"; then
         echo "  FAIL  xtask $sub — could not generate $local_path for the probe"
@@ -358,6 +390,20 @@ probe_xtask_generated() {
         echo "  FAIL  xtask $sub — $gen_fn produced nothing; an empty input is not a probe"
         failures=$((failures + 1))
         return
+    fi
+    if [[ -n "$gen_fn2" ]]; then
+        if ! "$gen_fn2" "$local_path2"; then
+            echo "  FAIL  xtask $sub — could not generate $local_path2 for the probe"
+            failures=$((failures + 1))
+            return
+        fi
+        # NOT `-s`: a changed-files list is legitimately empty when the amendment touches
+        # no may_not_modify path, and refusing that would refuse the gate's normal input.
+        if [[ ! -f "$local_path2" ]]; then
+            echo "  FAIL  xtask $sub — $gen_fn2 produced no file at $local_path2"
+            failures=$((failures + 1))
+            return
+        fi
     fi
     if [[ ! -f "$target" ]]; then
         echo "  ERROR: $target does not exist"
@@ -815,6 +861,39 @@ perturb_dep_ceiling_raise() {
     # crate name) and rewrites whatever count follows, never matching the count.
     sed -i.bak -E 's/^([[:space:]]*"[a-z0-9_-]+) [0-9]+"/\1 9"/' "$1" && rm -f "$1.bak"
 }
+# policy-gate: the base manifest the amendment departs from. CI copies the committed
+# PolicyManifest.toml from the merge base; for the probe the committed file IS the base,
+# because the perturbation below is what makes candidate differ from it.
+gen_policy_base() {
+    cp PolicyManifest.toml "$1"
+}
+
+# policy-gate: the changed-files list. `may_not_modify` is checked against it, and the
+# escalation the perturbation makes is refused on capabilities alone -- so naming the
+# manifest is honest (it IS what changed) without depending on a path rule.
+gen_policy_changed() {
+    printf '%s\n' PolicyManifest.toml > "$1"
+}
+
+# policy-gate: an amendment the constitutional kernel must refuse.
+#
+# The uncovered entry read "runs ck-kernel admission on a manifest amendment; needs a
+# real amendment". It needs an amendment, and an amendment is a second manifest --
+# `GateMode::Preflight` builds the kernel `with_skip_for_testing()`, so there is no
+# signature, no witness bundle and no governance ceremony to arrange. Measured
+# 2026-09-12: base == candidate gives ACCEPTED and exit 0; one entry added to
+# `network_allow` gives exit 1 and
+#
+#   CapabilityNonEscalation: Capability escalation: ["network_allow: +[evil.example.com]"]
+#
+# which is the kernel's whole point. Sixth exemption this session to name the gate's
+# SUBJECT -- a real governance amendment -- while its DETECTION needed a copy of a
+# committed file.
+perturb_policy_escalation() {
+    local f="$1"
+    perl -0pi -e 's/^(network_allow = \[)/${1}"evil.example.com", /m' "$f"
+}
+
 
 gen_exemplar_scoreboard() {
     bash scripts/exemplar-scoreboard.sh "$1" >/dev/null 2>&1
@@ -867,6 +946,14 @@ probe_xtask coverage-floor .github/workflows/coverage-matrix.yml \
     "a coverage floor lowered without moving its pin" perturb_coverage_floor
 probe_xtask gate-budget .github/workflows/gatehouse-shadow.yml \
     "a gate timeout its job kills before the runner can report" perturb_gate_budget_timeout
+
+# policy-gate, with TWO generated inputs -- see probe_xtask_generated's second slot.
+probe_xtask_generated policy-gate PolicyManifest.toml \
+    "an amendment the constitutional kernel must refuse" \
+    "--base before.toml --candidate PolicyManifest.toml --changed-files changed.txt" \
+    "before.toml" "$(mktemp -t policy-base).toml" gen_policy_base \
+    perturb_policy_escalation \
+    "changed.txt" "$(mktemp -t policy-changed).txt" gen_policy_changed
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
@@ -1009,7 +1096,12 @@ UNCOVERED=(
 # ceiling, and raising a ceiling above the actual count exercises that half from a
 # committed declaration. The same shape as scoreboard-ratchet above: the exemption
 # named a real obstacle and stopped there.
-UNCOVERED_CEILING=6
+# 6 -> 5 on 2026-09-12: `policy-gate`. Its exemption said "needs a real amendment", and
+# an amendment is just a second manifest: `GateMode::Preflight` builds the kernel
+# `with_skip_for_testing()`, so no signature, witness or governance ceremony is involved.
+# One entry added to `network_allow` is refused as CapabilityNonEscalation. Sixth entry
+# this session whose stated obstacle named the gate's SUBJECT and not its DETECTION.
+UNCOVERED_CEILING=5
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #
