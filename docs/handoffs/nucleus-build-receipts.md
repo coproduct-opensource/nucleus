@@ -282,6 +282,10 @@ now lives in `PodSpec::record_isolation`, used by both node admission and the
 controller with the public enforcement resolver. The receipt cannot supply the
 expected program identity. Node backend-clamp tests pass after this extraction.
 
+Execution claims now carry explicit `source_commit`, `source_tree`, and `gate`
+fields. The verifier compares all three to controller expectations in addition
+to the program digest, making source provenance visible in the signed body.
+
 Executor promotion must require a controller-approved, protected source and
 artifact digest. A valid receipt for an arbitrary PR-produced executable is
 not authority to run that executable with the production signer or App secrets.
