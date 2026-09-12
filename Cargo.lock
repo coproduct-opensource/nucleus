@@ -13780,6 +13780,7 @@ dependencies = [
  "ck-types",
  "clap",
  "hex",
+ "nucleus-spec",
  "regex",
  "serde",
  "serde_json",

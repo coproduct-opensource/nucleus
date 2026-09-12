@@ -35,6 +35,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare exact-tree, offline Rust build inputs for a nucleus microVM.
+    BuildImage(build_image::Args),
     /// Emit explicit Lean-action targets for the library coverage gate.
     LeanActionBuilds {
         /// Limit output to one workflow, for its per-theorem audit.
@@ -347,6 +349,7 @@ mod alg;
 mod allowlist_gates;
 mod assurance_required;
 mod bound;
+mod build_image;
 mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
@@ -378,6 +381,7 @@ mod typed;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::BuildImage(args) => build_image::run(args),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {

@@ -226,6 +226,33 @@ export no files. A second live run collected the declared binary and refused
 an existing undeclared file, a renamed export, a declared symlink escape and a
 declared FIFO. Selection tests, 21 identity tests and Clippy pass after this change.
 
+## Exact-tree build image preparation
+
+`cargo xtask build-image` prepares a read-only root image containing the pinned
+official Rust 1.96.1 linux/amd64 image, an exact Git commit export, vendored
+dependencies and separately supplied bootstrap guest binaries. It records the
+source commit/tree/archive hash, immutable OCI manifest, bootstrap hashes and
+placed kernel/rootfs hashes in `inputs.json`. The kernel defaults to the existing
+public Tier 2 pin; a custom kernel requires an explicit matching digest.
+Preparation refuses branch names, abbreviated IDs, submodules and an existing
+output directory. Cargo vendoring runs outside the source checkout with an
+explicit toolchain, so repository Cargo configuration cannot select a host
+compiler wrapper. No subject build script runs during preparation.
+
+The initial exact-tree path puts source/vendor data in the root image because
+guest init does not currently mount the host-supported read-only data disk.
+The image has no baked pod spec: the host-fetched spec must select the build.
+The existing quickstart workflow has a manual image-preparation lane; that lane
+is not a compilation or execution-verification result. Local materialization
+and config-relocation tests, Clippy and strict line ratchet pass. A Linux image
+preparation run remains to be observed before relying on the resulting image.
+
+Executor promotion must require a controller-approved, protected source and
+artifact digest. A valid receipt for an arbitrary PR-produced executable is
+not authority to run that executable with the production signer or App secrets.
+Experiments with the draft can use disposable keys and explicit bootstrap
+provenance; production executor trust stays pinned.
+
 ## Remaining acceptance work (milestones not yet complete)
 
 1. Protected supervisor observation, output/log hashing and a host-signed typed
