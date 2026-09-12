@@ -180,8 +180,16 @@ impl AuditEntry {
             .unwrap_or_default();
         hasher.update(ts.as_nanos().to_le_bytes());
         hasher.update(self.identity.as_bytes());
-        // Hash the event discriminant + key fields
-        hasher.update(format!("{:?}", self.event).as_bytes());
+        // The event, tagged and length-prefixed rather than `Debug`-rendered.
+        // See `PermissionEvent::digest_parts` for why that is not a cosmetic
+        // change: `Debug` is not a stability contract, so this chain was only
+        // ever verifiable inside one build.
+        for (tag, part) in self.event.digest_parts() {
+            hasher.update(tag.as_bytes());
+            hasher.update(b"\x00");
+            hasher.update((part.len() as u64).to_be_bytes());
+            hasher.update(part.as_bytes());
+        }
         if let Some(ref cid) = self.correlation_id {
             hasher.update(cid.as_bytes());
         }
@@ -323,6 +331,248 @@ pub enum PermissionEvent {
         /// Dimensions that were restricted (e.g., "write_files", "git_push").
         restricted_dimensions: Vec<String>,
     },
+}
+
+/// Stable digest encodings for the field types [`PermissionEvent`] carries.
+///
+/// Every one of these is an explicit, hand-written rendering. None of them is
+/// `Debug`. See [`PermissionEvent::digest_parts`] for why that distinction is
+/// the whole point of this module.
+mod digest_enc {
+    use super::{CapabilityLevel, Operation, StateRisk, WeakeningCost, WeakeningRequest};
+
+    /// A risk level as a stable name. `StateRisk` has no `Display`, and its
+    /// discriminants are load-bearing elsewhere, so this is a separate
+    /// exhaustive match rather than a cast.
+    pub fn risk(r: &StateRisk) -> String {
+        match r {
+            StateRisk::Safe => "safe",
+            StateRisk::Low => "low",
+            StateRisk::Medium => "medium",
+            StateRisk::Uninhabitable => "uninhabitable",
+        }
+        .to_string()
+    }
+
+    /// An operation by its `Display` name (`read_files`, `git_push`, …), which
+    /// is the same spelling `FromStr` parses — so the digest commits to a name
+    /// the codebase already treats as stable wire text.
+    pub fn op(o: &Operation) -> String {
+        o.to_string()
+    }
+
+    /// A capability level by its `Display` name (`never`/`low_risk`/`always`).
+    pub fn level(l: &CapabilityLevel) -> String {
+        l.to_string()
+    }
+
+    /// A decimal by its `to_string`, which `rust_decimal` documents as
+    /// round-trippable through `FromStr`.
+    pub fn dec(d: &rust_decimal::Decimal) -> String {
+        d.to_string()
+    }
+
+    /// An optional string, injectively: `none`, or `some:<len>:<value>`. The
+    /// length prefix is what stops `Some("a:b")` and `Some("a")` + a following
+    /// part from sharing a preimage.
+    pub fn opt(v: Option<&String>) -> String {
+        match v {
+            None => "none".to_string(),
+            Some(s) => format!("some:{}:{s}", s.len()),
+        }
+    }
+
+    /// A list of strings, injectively: each element as `<len>:<value>`.
+    /// Concatenation alone is not injective — `["ab","c"]` and `["a","bc"]`
+    /// would agree — and these are the dimensions a delegation narrowed.
+    pub fn list(items: &[String]) -> String {
+        let mut s = String::new();
+        for item in items {
+            s.push_str(&item.len().to_string());
+            s.push(':');
+            s.push_str(item);
+        }
+        s
+    }
+
+    /// A cost as its three decimals, separated. Fixed arity, so no length
+    /// prefix is needed.
+    pub fn cost(c: &WeakeningCost) -> String {
+        format!(
+            "{}|{}|{}",
+            dec(&c.base),
+            dec(&c.uninhabitable_multiplier),
+            dec(&c.isolation_multiplier)
+        )
+    }
+
+    /// A weakening dimension.
+    ///
+    /// Deliberately NOT `WeakeningDimension`'s `Display`, which renders its two
+    /// operation-carrying variants with `{:?}` — the derived `Debug` this whole
+    /// module exists to keep out of digests. Going through `Display` would have
+    /// satisfied the lint (the format call is not at a sink) while leaving the
+    /// preimage exactly as unstable as before, one layer down.
+    pub fn dimension(d: &crate::weakening::WeakeningDimension) -> String {
+        use crate::weakening::WeakeningDimension as D;
+        match d {
+            D::Capability(o) => format!("capability:{}", op(o)),
+            D::ObligationRemoval(o) => format!("obligation_removal:{}", op(o)),
+            D::Path => "path".to_string(),
+            D::Budget => "budget".to_string(),
+            D::Command => "command".to_string(),
+            D::Time => "time".to_string(),
+            D::ProcessIsolation => "process_isolation".to_string(),
+            D::FileIsolation => "file_isolation".to_string(),
+            D::NetworkIsolation => "network_isolation".to_string(),
+        }
+    }
+
+    /// A weakening request, field by field. Destructured exhaustively for the
+    /// same reason as the events themselves: a field added to the request is a
+    /// compile error here, not a field that silently stops being committed.
+    pub fn request(r: &WeakeningRequest) -> String {
+        let WeakeningRequest {
+            dimension: dim,
+            from_level,
+            to_level,
+            cost: c,
+            uninhabitable_impact,
+            justification,
+        } = r;
+        format!(
+            "{}|{}:{from_level}|{}:{to_level}|{}|{}|{}",
+            dimension(dim),
+            from_level.len(),
+            to_level.len(),
+            cost(c),
+            risk(uninhabitable_impact),
+            opt(justification.as_ref())
+        )
+    }
+}
+
+impl PermissionEvent {
+    /// The event as `(tag, value)` pairs — a digest preimage that survives a
+    /// compiler upgrade.
+    ///
+    /// `AuditEntry::content_hash` fed `format!("{:?}", self.event)` to SHA-256.
+    /// **`Debug` is not a stability contract**: the same entry can hash
+    /// differently under a new rustc, so the hash chain it anchors was only
+    /// ever valid inside a single build — the defect #747 already records for
+    /// the receipt chain. Because `Debug` is *derived*, it is also silent in
+    /// both directions: a field added to a variant rewrites every historical
+    /// hash, and a field removed simply stops being committed, with nothing
+    /// failing.
+    ///
+    /// So this is an exhaustive match with no wildcard arm and no `..` in any
+    /// pattern — the discipline ADR 0007 E-1 gates on the delegation path,
+    /// applied here for the same reason. A new variant, or a new field on an
+    /// existing one, is a compile error until someone says how it commits.
+    ///
+    /// The caller absorbs each part tag-separated and length-prefixed, so no
+    /// two distinct events share a preimage by concatenation.
+    fn digest_parts(&self) -> Vec<(&'static str, String)> {
+        use digest_enc::{cost, dec, level, list, op, opt, request, risk};
+        match self {
+            PermissionEvent::PermissionsDeclared {
+                description,
+                state_risk,
+            } => vec![
+                ("event", "permissions_declared".to_string()),
+                ("description", description.clone()),
+                ("state_risk", risk(state_risk)),
+            ],
+            PermissionEvent::OperationRequested {
+                operation,
+                declared_level,
+                requested_level,
+            } => vec![
+                ("event", "operation_requested".to_string()),
+                ("operation", op(operation)),
+                ("declared_level", level(declared_level)),
+                ("requested_level", level(requested_level)),
+            ],
+            PermissionEvent::WeakeningRequested {
+                request: req,
+                uninhabitable_impact,
+            } => vec![
+                ("event", "weakening_requested".to_string()),
+                ("request", request(req)),
+                ("uninhabitable_impact", risk(uninhabitable_impact)),
+            ],
+            PermissionEvent::UninhabitableStateChanged {
+                before,
+                after,
+                trigger,
+            } => vec![
+                ("event", "uninhabitable_state_changed".to_string()),
+                ("before", risk(before)),
+                ("after", risk(after)),
+                ("trigger", trigger.clone()),
+            ],
+            PermissionEvent::ExecutionCompleted {
+                total_cost,
+                weakening_count,
+                state_uninhabitable,
+            } => vec![
+                ("event", "execution_completed".to_string()),
+                ("total_cost", cost(total_cost)),
+                ("weakening_count", weakening_count.to_string()),
+                ("state_uninhabitable", state_uninhabitable.to_string()),
+            ],
+            PermissionEvent::ApprovalRequested { operation, reason } => vec![
+                ("event", "approval_requested".to_string()),
+                ("operation", op(operation)),
+                ("reason", reason.clone()),
+            ],
+            PermissionEvent::ApprovalGranted {
+                operation,
+                approver,
+            } => vec![
+                ("event", "approval_granted".to_string()),
+                ("operation", op(operation)),
+                ("approver", opt(approver.as_ref())),
+            ],
+            PermissionEvent::ApprovalDenied { operation, reason } => vec![
+                ("event", "approval_denied".to_string()),
+                ("operation", op(operation)),
+                ("reason", opt(reason.as_ref())),
+            ],
+            PermissionEvent::ExecutionBlocked {
+                operation,
+                reason,
+                threshold_exceeded,
+            } => vec![
+                ("event", "execution_blocked".to_string()),
+                ("operation", op(operation)),
+                ("reason", reason.clone()),
+                (
+                    "threshold_exceeded",
+                    match threshold_exceeded {
+                        None => "none".to_string(),
+                        Some(d) => format!("some:{}", dec(d)),
+                    },
+                ),
+            ],
+            PermissionEvent::DelegationDecision {
+                from_identity,
+                to_identity,
+                requested_description,
+                granted_description,
+                was_narrowed,
+                restricted_dimensions,
+            } => vec![
+                ("event", "delegation_decision".to_string()),
+                ("from_identity", from_identity.clone()),
+                ("to_identity", to_identity.clone()),
+                ("requested_description", requested_description.clone()),
+                ("granted_description", granted_description.clone()),
+                ("was_narrowed", was_narrowed.to_string()),
+                ("restricted_dimensions", list(restricted_dimensions)),
+            ],
+        }
+    }
 }
 
 /// Append-only audit log for permission events.
