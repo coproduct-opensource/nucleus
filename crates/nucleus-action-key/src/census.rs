@@ -65,16 +65,20 @@ pub fn run(root: &Path) -> Result<Census> {
     let mut census = Census::default();
     for context in &model.ledger.contexts {
         let outcome = match derive::key_for(root, &model, context) {
-            Ok(Ok(key)) => {
-                let inputs = derive::inputs_for(root, &model, context)?
-                    .expect("a context that keyed cannot refuse on the next call");
-                Outcome::Keyed {
+            // One call, not two. This derived the key and then re-derived the
+            // inputs to count them, with an `expect` asserting the second call
+            // agreed with the first — an assumption about determinism enforced
+            // by a panic. `inputs_for` gives both, so there is nothing to
+            // assume.
+            Ok(Ok(key)) => match derive::inputs_for(root, &model, context)? {
+                Ok(inputs) => Outcome::Keyed {
                     context: context.clone(),
                     key,
                     reads: inputs.read_set.len(),
                     gate_files: inputs.gate.len(),
-                }
-            }
+                },
+                Err(refusal) => Outcome::Refused(refusal),
+            },
             Ok(Err(refusal)) => Outcome::Refused(refusal),
             Err(e) => Outcome::Unmeasured {
                 context: context.clone(),
