@@ -107,7 +107,7 @@ jobs:
       - name: Build bootstrap guest runtime
         run: |
           cargo build --locked -p xtask
-          cargo build --locked --target x86_64-unknown-linux-musl -p nucleus-node -p nucleus-guest-init -p nucleus-tool-proxy -p nucleus-net-probe
+          cargo build --locked --target x86_64-unknown-linux-musl -p nucleus-node -p nucleus-guest-init -p nucleus-tool-proxy -p nucleus-net-probe -p nucleus-egress-probe
       - name: Materialize pinned offline build image
         env:
           SOURCE_COMMIT: ${{ github.sha }}

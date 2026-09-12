@@ -20,6 +20,13 @@ const RUST_IMAGE: &str =
     "rust@sha256:d99f7b31f49909348dc59b51f3c95d1efded1701ffb222f095aaab7de3c4abd8";
 const TOOLCHAIN: &str = "1.96.1";
 const GUEST_INPUTS: &str = "/opt/nucleus-build";
+// Required guest executables, used for both provenance and image placement.
+const GUEST_BINARIES: &[(&str, &str)] = &[
+    ("nucleus-guest-init", "init"),
+    ("nucleus-tool-proxy", "usr/local/bin/nucleus-tool-proxy"),
+    ("nucleus-net-probe", "usr/local/bin/nucleus-net-probe"),
+    ("nucleus-egress-probe", "usr/local/bin/nucleus-egress-probe"),
+];
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -85,12 +92,8 @@ pub fn run(args: Args) -> Result<()> {
     // Check all bootstrap inputs before allocating the image. These hashes are
     // provenance, not permission to promote an arbitrary PR-built executor.
     let mut bootstrap = std::collections::BTreeMap::new();
-    for name in [
-        "nucleus-guest-init",
-        "nucleus-tool-proxy",
-        "nucleus-net-probe",
-    ] {
-        bootstrap.insert(name.to_owned(), sha256(&guest_bin_dir.join(name))?);
+    for (name, _) in GUEST_BINARIES {
+        bootstrap.insert((*name).to_owned(), sha256(&guest_bin_dir.join(name))?);
     }
     fs::create_dir(&output).context("output must be a new directory")?;
     let output = output.canonicalize()?;
@@ -179,27 +182,18 @@ pub fn run(args: Args) -> Result<()> {
     fs::create_dir_all(root.join("usr/local/bin"))?;
     fs::create_dir_all(root.join("etc/nucleus"))?;
     fs::create_dir_all(root.join("work"))?;
-    copy_executable(
-        &guest_bin_dir.join("nucleus-guest-init"),
-        &root.join("init"),
-    )?;
-    for name in ["nucleus-tool-proxy", "nucleus-net-probe"] {
-        copy_executable(
-            &guest_bin_dir.join(name),
-            &root.join("usr/local/bin").join(name),
-        )?;
-    }
-    for (name, digest) in &bootstrap {
-        let placed = if name == "nucleus-guest-init" {
-            root.join("init")
-        } else {
-            root.join("usr/local/bin").join(name)
-        };
+    for (name, destination) in GUEST_BINARIES {
+        let placed = root.join(destination);
+        copy_executable(&guest_bin_dir.join(name), &placed)?;
         ensure!(
-            sha256(&placed)? == *digest,
+            bootstrap.get(*name) == Some(&sha256(&placed)?),
             "bootstrap binary changed during preparation: {name}"
         );
     }
+    // Cargo verifies every vendored file, including metadata such as .travis.yml.
+    // Some crate archives preserve 0640 modes, unreadable by the workload uid.
+    // Normalize only the exported source/vendor inputs, before hashing the image.
+    make_inputs_readable(&inputs)?;
     let rootfs_path = output.join("rootfs.ext4");
     // A fixed ceiling makes disk demand reviewable. Sparse ext4; free space is
     // not writable by the workload because the node mounts this image read-only.
@@ -349,6 +343,44 @@ fn guest_vendor_config(config: &str, vendor: &Path) -> Result<String> {
     Ok(toml::to_string(&config)?)
 }
 
+fn make_inputs_readable(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() {
+            // Do not change a target outside the materialized input tree.
+            return Ok(());
+        }
+        let mode = if metadata.is_dir() {
+            0o755
+        } else if metadata.is_file() {
+            if metadata.permissions().mode() & 0o111 != 0 {
+                0o755
+            } else {
+                0o644
+            }
+        } else {
+            bail!(
+                "build input is not a file, directory or symlink: {}",
+                path.display()
+            );
+        };
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)? {
+                make_inputs_readable(&entry?.path())?;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    bail!(
+        "build image permissions require a Unix host: {}",
+        path.display()
+    );
+    Ok(())
+}
+
 fn copy_executable(source: &Path, target: &Path) -> Result<()> {
     fs::copy(source, target)?;
     #[cfg(unix)]
@@ -360,6 +392,7 @@ fn copy_executable(source: &Path, target: &Path) -> Result<()> {
 }
 
 fn sha256(path: &Path) -> Result<String> {
+    let started = std::time::Instant::now();
     let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut hash = Sha256::new();
     let mut buf = [0u8; 65536];
@@ -370,6 +403,12 @@ fn sha256(path: &Path) -> Result<String> {
         }
         hash.update(buf.get(..read).context("file read exceeded buffer")?);
     }
+    eprintln!(
+        "hashed {} ({} bytes) in {:?}",
+        path.display(),
+        file.metadata()?.len(),
+        started.elapsed()
+    );
     Ok(hex::encode(hash.finalize()))
 }
 
@@ -439,6 +478,42 @@ mod tests {
         assert!(!dest.join("untracked").exists());
         assert!(resolve_source(&repo, "HEAD").is_err());
         assert!(resolve_source(&repo, "--help").is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrictive_vendor_modes_are_readable_without_changing_bytes_or_link_targets() -> Result<()>
+    {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = tempfile::tempdir()?;
+        let inputs = temp.path().join("inputs");
+        let vendor = inputs.join("vendor/fnv-1.0.7");
+        fs::create_dir_all(&vendor)?;
+        let metadata_file = vendor.join(".travis.yml");
+        fs::write(&metadata_file, b"vendored content")?;
+        fs::set_permissions(&metadata_file, fs::Permissions::from_mode(0o640))?;
+        fs::set_permissions(&vendor, fs::Permissions::from_mode(0o700))?;
+        let executable = inputs.join("executable");
+        fs::write(&executable, b"source executable")?;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
+        let outside = temp.path().join("outside");
+        fs::write(&outside, b"private outside input")?;
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o600))?;
+        symlink(&outside, inputs.join("link"))?;
+        let before = sha256(&metadata_file)?;
+        make_inputs_readable(&inputs)?;
+        assert_eq!(
+            fs::metadata(&metadata_file)?.permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(fs::metadata(&vendor)?.permissions().mode() & 0o777, 0o755);
+        assert_eq!(
+            fs::metadata(&executable)?.permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(fs::metadata(&outside)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(sha256(&metadata_file)?, before);
         Ok(())
     }
 

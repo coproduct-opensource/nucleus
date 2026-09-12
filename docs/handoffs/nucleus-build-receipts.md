@@ -385,3 +385,24 @@ The first manifest gate on `cffbb336f3` refused ratchet slack, not a new dropped
 witness: `cargo xtask bound --measure` reports net D=174, B=173, dropped=1
 (99.42%) against the previous 99.41% floor. The floor and declared-site minimum
 are raised to the measured values. The existing dropped-site debt remains one.
+
+Run `34719599559` at `cffbb336f3` proves the repaired startup path: the guest
+fetched its spec, SVID and per-pod material (21 ms total handshake), started the
+supervised workload, and ran Cargo. It did not complete the build. The node
+refused admission because `/usr/local/bin/nucleus-egress-probe` was missing;
+the image included `nucleus-net-probe`, which is a different executable. Cargo
+also reported EACCES reading `vendor/fnv-1.0.7/.travis.yml`. The locally cached
+copy of that crate file is mode 0640, unreadable to the workload's other uid.
+
+Image preparation now requires, hashes and places the egress probe alongside
+the other guest binaries, and normalizes exported source/vendor directories to
+0755 and files to 0644 (0755 for executables). It preserves content and executable
+status and never follows symlinks while changing modes. The rootfs remains
+read-only and the workload remains unprivileged. Seven build-image tests pass,
+including restrictive hidden vendor metadata and an outside symlink target.
+
+The node's boot trace measured 32,927 ms for creation, including 10,353 ms for
+launch-attestation hashing; the bootstrap spent more than seven minutes before
+that node call. The controller now logs each input hash's byte count and elapsed
+time so a later optimization can address a measured component. No cold/warm
+build timing or artifact receipt has been produced by this failed run.
