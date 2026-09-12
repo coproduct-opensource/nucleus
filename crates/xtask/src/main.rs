@@ -109,6 +109,9 @@ enum Command {
     /// that overruns is reported as `cancelled` and carries no verdict. Decided from the
     /// workflow and the action definition alone.
     GateBudget,
+    /// A `run:` block that pipes without `pipefail` discards the exit status of every command
+    /// but the last. Decided from workflow YAML alone; reads no source tree.
+    Pipefail,
     /// A claim's falsifier must produce a REQUIRED context. A gate CI runs, that goes red, and
     /// that the merge queue merges past anyway enforces nothing — it is a red light beside an
     /// open gate. Ratcheted, not driven to zero: whether a given check should be required is a
@@ -319,6 +322,7 @@ mod law_mechanisms;
 mod lean_action_builds;
 mod line_ratchet;
 mod pin_parity;
+mod pipefail;
 mod push_auth;
 mod rerun_plan;
 mod schedule_liveness;
@@ -361,6 +365,7 @@ fn main() -> Result<()> {
         Command::PushAuth => push_auth::check(&std::env::current_dir()?),
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
+        Command::Pipefail => pipefail::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;
