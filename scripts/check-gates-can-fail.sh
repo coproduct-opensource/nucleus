@@ -915,6 +915,14 @@ perturb_scorecard_partial_totality() {
 # red demanding the pin be raised. This probe is that claim, on a real type: give
 # ServeToken an `expires_at` and the family goes 0.00% -> 14.28% and the gate
 # refuses to carry the stale zero forward.
+# A waiver that expires becomes one that never does. `#[expect]` errors when its
+# lint stops firing, so it dies with the reason that created it; `#[allow]` is
+# forever and silent. This is the `suppress` family's whole subject, and the
+# subject is a real production attribute rather than an appended line.
+perturb_scorecard_forever_waiver() {
+    sed -i.gate-bak 's/^    #\[expect($/    #[allow(/' "$1" && rm -f "$1.gate-bak"
+}
+
 perturb_scorecard_first_expiry() {
     sed -i.gate-bak 's/^pub struct ServeToken {$/pub struct ServeToken {\n    expires_at: u64,/' "$1" && rm -f "$1.gate-bak"
 }
@@ -932,6 +940,9 @@ probe_xtask scorecard crates/nucleus-pca/src/lib.rs \
     perturb_scorecard_partial_totality
 probe_xtask scorecard crates/nucleus-node/src/broker_launch.rs \
     "the first affine right to gain a validity interval" perturb_scorecard_first_expiry
+probe_xtask scorecard crates/nucleus-tool-proxy/src/art12.rs \
+    "a waiver that expires downgraded to one that never does" \
+    perturb_scorecard_forever_waiver
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask pin-parity ci/lean/lean-toolchain \
