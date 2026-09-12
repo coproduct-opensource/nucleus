@@ -150,6 +150,21 @@ enum Command {
     /// The dual of `law-mechanisms`: that gate finds mechanisms with no call
     /// site, this finds mechanisms that are called and then ignored.
     InertAuthority,
+    /// How much of the enforcement the repo *declares* is actually reachable —
+    /// `B / D` over witness-accepting parameter sites, pinned as a floor in
+    /// `.bound-ratchet.toml`.
+    ///
+    /// Built from the 2026-09-11 census of 868 issues: of the 120 that are
+    /// `bug`-labelled or audit-prefixed, 72 (60%, 64 of them security) are one
+    /// defect — a mechanism that exists and that nothing binds to the live
+    /// path. This counts one exactly-enumerable class of it. `--measure`
+    /// prints the census without gating; `--badge` emits shields.io JSON.
+    Bound {
+        #[arg(long)]
+        measure: bool,
+        #[arg(long)]
+        badge: bool,
+    },
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
     /// catch feature-unification-masked breakages — crates that compile in a
     /// full `--workspace` build but fail standalone (and on `cargo publish`)
@@ -311,6 +326,7 @@ enum CiSpecCmd {
 
 mod allowlist_gates;
 mod assurance_required;
+mod bound;
 mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
@@ -392,6 +408,10 @@ fn main() -> Result<()> {
         // Exit code mapped here, not inside the check, for the SelfPin arm's
         // reason: a unit test calling `run()` must survive.
         Command::InertAuthority => match inert_authority::run()? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
+        Command::Bound { measure, badge } => match bound::run(measure, badge)? {
             0 => Ok(()),
             code => std::process::exit(code),
         },

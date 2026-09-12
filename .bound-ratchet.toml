@@ -1,0 +1,64 @@
+# Bound-enforcement ratchet — how much of the enforcement this repo DECLARES is
+# reachable on the live path, for the one class that can be counted exactly.
+#
+# Read by `cargo xtask bound` (crates/xtask/src/bound.rs).
+#
+# WHY THIS FILE EXISTS
+#
+# A census of nucleus's 868 issues (2026-09-11) classified the 120 that are
+# bug-labelled or carry an audit prefix. 72 of them — 60%, and 64 of those
+# security-labelled — are ONE defect: a mechanism that exists and that nothing
+# binds to the live path. Kernel flow control was opt-in, so decide() without
+# enable_flow_control() skipped every IFC check (#750). FieldEnvelope and
+# WitnessBundle were never compiled into portcullis (#781). Egress policy sat
+# behind a feature flag, off by default (#738). FlowReceipt::verify_signature
+# was a permanent stub (#732). DischargedBundle's witness was discarded at every
+# callsite (#1360).
+#
+# They close in a median of 0.1 days against 0.4 for every other defect — the
+# fix is one call, one flag, one `&` removed. They survive for months because
+# nothing is looking: 45 of the 72 were found by a human reading code, none by a
+# gate. ADR 0006's Consequences asked for exactly this and nobody built it:
+# "The audit found a category it does not cover: PROVEN but not on the path. A
+# `wired?` column, mechanically checked, would have caught most of items 17-30."
+#
+# WHAT IS PINNED
+#
+#   floor_bp        minimum net B/D in basis points. May only RISE.
+#   declared_floor  minimum D. A shrinking surface is a decision, not a win.
+#
+# Both, not one. A floor alone rewards deleting enforcement points: remove a
+# witness parameter and B and D fall together while the ratio rises. A debt pin
+# alone (D - B) misses a ratio falling at constant debt. This is the trap the
+# neighbouring repo's CCI has, where documenting a known gap lowers the score.
+#
+# RAW VERSUS NET
+#
+# Raw census today: D=204, B=171, dropped=33. 32 of those 33 are class N in
+# scripts/inert-authority-manifest.txt — DenyAllEffects::run refuses
+# unconditionally, so it performs no act and correctly consults nothing. Gating
+# raw would push toward binding a witness in a double that has no use for one.
+# So class-N sites come out of BOTH terms, and `cargo xtask bound` additionally
+# asserts dropped_raw == INERT_TOTAL: two independent scans over one population
+# must keep agreeing, or neither ratio can be trusted.
+#
+# WHAT THIS NUMBER DOES NOT SAY
+#
+# Net debt is 1 — one site, `trait CaClient` in nucleus-identity/src/ca/mod.rs,
+# performs an act while dropping its witness. Witness discipline is for
+# practical purposes already paid off, which REFUTES the obvious reading of the
+# census: the 72 L6 defects are mostly feature gates, opt-in enforcement, stubs
+# and unconstructed types, none of which is a witness parameter.
+#
+# So 99.41% is honest and is not yet a useful badge. It becomes one when the
+# undischarged classes join the same denominator, each with its own exact
+# census. The badge reads `authority bound`, naming its class, rather than
+# anything that would let a reader hear "secure" — ADR 0007 I-1, a gate whose
+# green is indistinguishable from vacuity.
+#
+# 2026-09-11: seeded at the measured value. Raising floor_bp is how the debt is
+# paid; lowering it, or lowering declared_floor, needs a dated note here saying
+# which enforcement point went away and who decided.
+
+floor_bp = 9941
+declared_floor = 172
