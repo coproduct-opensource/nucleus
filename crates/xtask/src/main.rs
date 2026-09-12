@@ -353,6 +353,7 @@ mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
 mod lean_action_builds;
+mod life;
 mod line_ratchet;
 mod pin_parity;
 mod push_auth;
@@ -361,6 +362,7 @@ mod schedule_liveness;
 mod scoreboard;
 mod scorecard;
 mod self_pin;
+mod tot;
 
 fn main() -> Result<()> {
     match Cli::parse().command {

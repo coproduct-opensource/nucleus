@@ -88,3 +88,112 @@ population_floor = 172
 # lands.
 floor_bp = 3956
 population_floor = 278
+
+[family.tot]
+# 13 of 80 production crates declare themselves panic-free for the shipped
+# build. A function whose signature says `-> T` and panics is lying about its
+# type: #1203 (FlowTracker::label(0), u64 underflow on an unguarded sentinel),
+# #1184 (truncate() on multi-byte UTF-8), #481 (Ed25519 keygen .expect() in a
+# hot path), #2395 (a guest_cid other than 3 panics the guest, silently).
+#
+# THE SITE CENSUS, recorded here rather than gated, per clippy.toml's own rule:
+# "Where a mandate is not yet clean, the ADR records the measured count and the
+# ratchet instead of putting a red gate on main."
+#
+#   2026-09-11, production region, 1787 sites:
+#     arithmetic_side_effects  912
+#     indexing_slicing         616
+#     expect_used              155
+#     unwrap_used               87
+#     panic                     10
+#     unreachable                7
+#     todo                       0
+#
+#   cargo clippy --workspace --exclude nucleus-verifier-service --lib --bins \
+#     --all-features --message-format=json -- \
+#     -W clippy::unwrap_used -W clippy::expect_used -W clippy::indexing_slicing \
+#     -W clippy::arithmetic_side_effects -W clippy::panic \
+#     -W clippy::unreachable -W clippy::todo -A clippy::all
+#
+# That takes minutes and this gate runs in the fast Manifest Guards job, so the
+# gate does not recompute it. It asks the binding question, which is a grep: how
+# many crates have DECLARED themselves panic-free. A count of sites nothing
+# enforces is a measurement; a crate-level deny is a gate.
+#
+# WHY cfg_attr(not(test), deny(...)). assert! is a panic. Of the 13 crates
+# measuring zero over lib and bins, only 2 are also clean under --all-targets --
+# the other 11 are clean where it matters and panic in their own test modules,
+# correctly. So the declaration is scoped to the shipped build, the same line
+# law_mechanisms::production_region draws when it strips the test region.
+#
+# ALL SEVEN LINTS OR NONE. Six of seven leaves a way to panic, and crediting it
+# would make the ratio mean "mostly".
+#
+# UNMEASURABLE IS NOT CLEAN. Eighteen crates showed zero; five showed zero
+# because clippy never looked -- four are workspace excludes (wasm, maturin,
+# RISC-V) and nucleus-verifier-service needs a wasm artifact CI builds. Counting
+# them as discharged is ADR 0007 A-2 exactly: "I could not look" is never "I
+# looked and it was fine". They are reported as undeclared and the population is
+# the 80 crates clippy can see.
+#
+# 2026-09-11 (second pass): nine more crates cleared and annotated, 13 -> 22.
+# Each was ONE arithmetic site -- a Vec::with_capacity hint or a counter -- where
+# saturating_add/mul is exactly equivalent: a capacity hint that saturates
+# allocates rather than wraps, and the loop fills the real size. 24 more crates
+# sit within 8 sites of clean; clearing all of them would reach 46 of 80 (57.5%).
+# The remainder need judgement about a contract rather than an arithmetic
+# rewrite, so they are not batched in here.
+#
+# 2026-09-11: seeded after annotating the 13 crates that were already clean, and
+# probing one of them red -- `v[0] + 1` in nucleus-pca fires indexing_slicing and
+# arithmetic_side_effects, and the crate is green again when it is removed. The
+# 67 remaining crates need their sites fixed before they can declare; the two
+# tractable lints there are unwrap_used (87) and panic (10), and the 1528
+# arithmetic and indexing sites are a program, not a gate.
+floor_bp = 2839
+population_floor = 81
+
+[family.life]
+# 7 affine rights, 0 with a validity interval.
+#
+# Every one-shot right in nucleus is affine and enforced as such. `Authority`
+# carries #[must_use = "an Authority that is never spent is an action that was
+# authorised and not taken"], is consumed by value in spend_on, and has two
+# compile_fail doctests proving replay (E0382) and clone (E0599) are rejected.
+# DecisionToken, CheckProof, DischargedBundle, PodRuntime, ServeToken and
+# VerifyToken are the same shape.
+#
+# NOT ONE OF THEM EXPIRES. A token minted at t=0 authorises at t=infinity, so the
+# window between time-of-check and time-of-use is unbounded on every right in the
+# system. The affine half of the discipline is done; the temporal half was never
+# started. 14 of the 120 audit-and-bug issues are lifecycle defects.
+#
+# WHY THIS SUB-CENSUS AND NOT THE OTHER TWO. Unbounded carriers have a real
+# defect behind them -- Kernel.trace is a Vec<Decision> appended once per allowed
+# operation with no cap, and FlowTracker never compacts while its capped mirror
+# FlowGraph carries four named ceilings -- but the population is "a collection in
+# a LONG-LIVED struct", and long-lived is a judgement. The measurement that
+# exists (902 collection fields, 328 grown and never bounded, 69 in structs whose
+# NAMES suggest they persist) rests on a regex over struct names, and a
+# denominator decided that way is the metric equivalent of a gate that cannot
+# fail. Transition totality has almost no population: three transition functions
+# in the whole repo, one of them on a mock whose trait declares no transition law
+# at all. Both are ADRs, not ratchets, and both become countable once their
+# design question is answered. convergence made the same call for two of its four
+# arrows and named them rather than averaging them in.
+#
+# WHY floor_bp = 0 IS PINNED AND NOT MISSING. A zero floor normally means a gate
+# that passes for every tree. Here the zero is still gated from both sides:
+# population_floor keeps the denominator from shrinking, and the slack check
+# fires the moment the first right gains an interval -- turning the gate red and
+# forcing the pin up to meet it. measured_zero = true makes that a deliberate
+# sentence rather than a value someone left out, and the parser refuses the key
+# once floor_bp rises above zero, so the acknowledgement cannot go stale.
+#
+# 2026-09-11: seeded at the measurement. Giving a right an expiry is a behaviour
+# change on a security boundary -- a clock at the mint site, a check at the
+# consume site, and a decision about what expiry means for an operation already
+# in flight. This gate states the debt exactly; it does not pay it.
+floor_bp = 0
+population_floor = 7
+measured_zero = true
