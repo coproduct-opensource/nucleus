@@ -19,3 +19,4 @@ anyhow = { workspace = true }
 ci-spec = { path = "../ci-spec" }
 sha2 = { workspace = true }
 hex = { workspace = true }
+serde_json = { workspace = true }

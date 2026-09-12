@@ -252,4 +252,5 @@ impl std::fmt::Display for ActionKey {
 }
 
 pub mod census;
+pub mod closure;
 pub mod derive;

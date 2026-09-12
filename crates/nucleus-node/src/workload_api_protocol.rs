@@ -185,6 +185,29 @@ pub enum WorkloadApiCommand {
     /// cannot reach from inside a default-deny netns.
     PodList,
 
+    /// `FETCH_POD_SPEC` — the spec naming what THIS pod runs.
+    ///
+    /// # Why this is not a convenience
+    ///
+    /// The command a pod runs is baked into its ROOTFS
+    /// (`scripts/firecracker/build-rootfs.sh` copies the spec to
+    /// `/etc/nucleus/pod.yaml`, and `nucleus-guest-init` reads it from there).
+    /// That is the same defect [`Self::FetchTaskToken`] documents — per-pod
+    /// material baked into a boot artifact, so **every clone restored from a
+    /// snapshot inherits one pod's command** — and it is the largest instance
+    /// of it, because the command is the whole point of the pod.
+    ///
+    /// It is what makes a snapshot base per-JOB rather than per-toolchain. A
+    /// base that boots to the barrier having asked for nothing can be restored
+    /// for any job; a base with a command in its rootfs can be restored for
+    /// exactly one.
+    ///
+    /// # Why it is `personalizes_the_vm`
+    ///
+    /// Emphatically. A guest that has fetched its spec is a guest committed to
+    /// one job, and snapshotting after that point publishes a base nobody else
+    /// can use. The barrier exists to take the base BEFORE this.
+    FetchPodSpec,
     /// `SHIP_RECEIPT` — stream one signed `MediationReceipt` to the host for
     /// durable, completeness-bounded collection (see [`crate::mediation_receipt_collector`]).
     ///
@@ -237,7 +260,10 @@ impl WorkloadApiCommand {
             | Self::FetchPodCallerToken
             | Self::FetchBrokerSecret
             | Self::FetchAuditCredentials
-            | Self::FetchMediationKey => true,
+            | Self::FetchMediationKey
+            // The command this pod runs. See the variant's own note: this is
+            // what makes a base per-job instead of per-toolchain.
+            | Self::FetchPodSpec => true,
             // Not per-pod: the trust bundle is the same for everyone, a ping says nothing, a
             // pod listing is a read-only view of the node, and shipping a receipt moves data
             // guest -> host rather than the reverse.
@@ -274,6 +300,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
             WorkloadApiCommand::PodList => "POD_LIST",
             WorkloadApiCommand::SnapshotReady => "SNAPSHOT_READY",
+            WorkloadApiCommand::FetchPodSpec => "FETCH_POD_SPEC",
             WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
         }
     }
@@ -345,6 +372,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_AUDIT_CREDENTIALS" => Ok(WorkloadApiCommand::FetchAuditCredentials),
         "FETCH_MEDIATION_KEY" => Ok(WorkloadApiCommand::FetchMediationKey),
         "POD_LIST" => Ok(WorkloadApiCommand::PodList),
+        "FETCH_POD_SPEC" => Ok(WorkloadApiCommand::FetchPodSpec),
         "SHIP_RECEIPT" => Ok(WorkloadApiCommand::ShipReceipt),
         "SNAPSHOT_READY" => Ok(WorkloadApiCommand::SnapshotReady),
         other => Err(CommandParseError::Unknown(other.to_string())),
@@ -528,6 +556,7 @@ mod tests {
                 WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
                 WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
                 WorkloadApiCommand::PodList => "POD_LIST",
+                WorkloadApiCommand::FetchPodSpec => "FETCH_POD_SPEC",
                 WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
                 WorkloadApiCommand::SnapshotReady => "SNAPSHOT_READY",
             }
@@ -548,10 +577,19 @@ mod tests {
 
     #[test]
     fn the_guest_request_surface_is_exactly_the_declared_set() {
-        // Every variant the host accepts. Kept in lockstep with the exhaustive
-        // match above — a new variant fails THAT test's compile, which is what
-        // stops this list from silently going stale (as its 3-command ancestor
-        // did while five commands were added past it).
+        // Every variant the host accepts.
+        //
+        // This list is HAND-MAINTAINED and the comment here used to claim the
+        // exhaustive match above kept it honest — "a new variant fails THAT
+        // test's compile". It does not. The match is in a different function,
+        // so adding an arm there satisfies the compiler while leaving these two
+        // lists stale, and the test then compares one stale list to the other
+        // and passes. `FETCH_POD_SPEC` was added that way and this test stayed
+        // green; the `expected` count below is what actually catches it now.
+        //
+        // The compiler does force a wire SPELLING to exist for every variant.
+        // It cannot force anyone to declare that the spelling is one a guest may
+        // send, which is what this list is for.
         let surface = [
             WorkloadApiCommand::FetchSvid,
             WorkloadApiCommand::FetchBundle,
@@ -563,6 +601,7 @@ mod tests {
             WorkloadApiCommand::FetchPodCertificate,
             WorkloadApiCommand::FetchAuditCredentials,
             WorkloadApiCommand::FetchMediationKey,
+            WorkloadApiCommand::FetchPodSpec,
             WorkloadApiCommand::PodList,
             WorkloadApiCommand::ShipReceipt,
             WorkloadApiCommand::SnapshotReady,
@@ -580,6 +619,7 @@ mod tests {
             "FETCH_POD_CERTIFICATE",
             "FETCH_AUDIT_CREDENTIALS",
             "FETCH_MEDIATION_KEY",
+            "FETCH_POD_SPEC",
             "POD_LIST",
             "SHIP_RECEIPT",
             "SNAPSHOT_READY",
@@ -597,6 +637,18 @@ mod tests {
             accepted.len(),
             surface.len(),
             "two commands share a wire spelling"
+        );
+        // The population pin, which is the only thing here a mechanical edit
+        // cannot satisfy by accident. Patching every `match` arm in the file —
+        // the natural way to add a command — leaves this number alone, so it
+        // reds and the two lists above get read. Raise it in the same change
+        // that adds a command, never separately.
+        const DECLARED_COMMANDS: usize = 14;
+        assert_eq!(
+            surface.len(),
+            DECLARED_COMMANDS,
+            "the guest request surface changed size: add the command to BOTH lists above and \
+             raise DECLARED_COMMANDS in this same change, or remove it from both and lower it"
         );
         // The set is the REAL accepted surface: each declared spelling parses
         // back to its command, so this pins what the host acts on, not just text.
