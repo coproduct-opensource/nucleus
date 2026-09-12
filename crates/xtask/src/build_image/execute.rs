@@ -169,9 +169,9 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     })();
     let stopped = node.kill();
     let reaped = node.wait();
-    result?;
     stopped.context("stop bootstrap node")?;
     reaped.context("reap bootstrap node")?;
+    result?;
     Ok(())
 }
 
