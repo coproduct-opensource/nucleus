@@ -6604,6 +6604,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-ci-verdict"
+version = "1.0.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "nucleus-receipt",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nucleus-cli"
 version = "1.0.0"
 dependencies = [
@@ -7358,6 +7368,20 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "nucleus-receipt-store"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "ci-spec",
+ "ed25519-dalek 3.0.0",
+ "nucleus-action-key",
+ "nucleus-ci-verdict",
+ "nucleus-receipt",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

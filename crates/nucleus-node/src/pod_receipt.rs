@@ -509,6 +509,53 @@ mod tests {
             )
         }
 
+        /// **The claim, end to end.** Every other signature test builds a `Receipt`
+        /// by hand and signs a preimage itself, which tests the primitives and not
+        /// the composition: until this existed, nothing checked that a receipt
+        /// `build` actually produced carries a signature that verifies.
+        ///
+        /// That is the same shape as `FETCH_POD_SPEC` shipping with a handler, a
+        /// helper and tests and nothing sending it. A claim is about the assembled
+        /// thing.
+        #[tokio::test]
+        async fn a_receipt_build_produced_verifies_against_the_nodes_key() {
+            use crate::pod_authority::verify_pod_receipt;
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_report(dir.path(), REPORT);
+            let auth = authority(dir.path());
+            let built = build(&pod(dir.path(), true, &[]).await, &auth)
+                .await
+                .expect("built");
+            let r = &built.receipt;
+
+            assert!(
+                !r.signature.is_empty(),
+                "build produced an unsigned receipt"
+            );
+            assert_eq!(
+                r.signer_pubkey,
+                auth.root_pubkey_hex(),
+                "the receipt names a key other than the one that signed it"
+            );
+            assert!(
+                verify_pod_receipt(&r.signer_pubkey, &r.preimage(), &r.signature),
+                "a receipt this node built does not verify against this node's key"
+            );
+
+            // And it is bound to its content: move one field and the signature no
+            // longer covers it.
+            let mut tampered = r.clone();
+            tampered.workspace_hash = "rewritten-in-flight".into();
+            assert!(
+                !verify_pod_receipt(
+                    &tampered.signer_pubkey,
+                    &tampered.preimage(),
+                    &tampered.signature
+                ),
+                "a rewritten workspace hash still verified — the signature is not binding the content"
+            );
+        }
+
         async fn pod(
             work_dir: &std::path::Path,
             exit: bool,

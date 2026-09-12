@@ -150,8 +150,9 @@ population_floor = 278
 # 67 remaining crates need their sites fixed before they can declare; the two
 # tractable lints there are unwrap_used (87) and panic (10), and the 1528
 # arithmetic and indexing sites are a program, not a gate.
-floor_bp = 2839
-population_floor = 81
+# 2026-09-12: both new CI receipt crates deny all seven totality lints; 25/83.
+floor_bp = 3012
+population_floor = 83
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
