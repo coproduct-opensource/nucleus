@@ -767,6 +767,16 @@ perturb_fly_pool_volumes() {
     # end of the list compile onto the root filesystem and run out of disk.
     sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
 }
+# fly-pools routing: a job routed at a runner variable nobody declared. This is the shape that
+# hides -- the workflow is valid YAML, actionlint passes it, and GitHub reports the job waiting
+# for a runner exactly the way it reports a busy pool. nucleus shares eight build machines
+# between its pull requests and its merge queue, so "waiting" is the normal state and an
+# unroutable job sits inside it unnoticed.
+perturb_runs_on_undeclared_var() {
+    local f="$1"
+    perl -0pi -e "s/(runs-on: \\\$\\{\\{ vars\\.)CI_RUNNER/\${1}CI_HEAVY_RUNNER/" "$f"
+}
+
 
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
@@ -783,6 +793,8 @@ probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
     "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \
     "scoreboard.json" "$(mktemp -t scoreboard).json" \
     gen_exemplar_scoreboard perturb_exemplar_baseline
+probe_xtask fly-pools .github/workflows/audit.yml \
+    "a job routed at a runner variable nobody declared" perturb_runs_on_undeclared_var
 probe_xtask push-auth .github/workflows/clippy-ratchet.yml \
     "a CI push relying on the checkout's ambient credential" perturb_push_auth_strip
 probe_xtask coverage-floor .github/workflows/coverage-matrix.yml \
