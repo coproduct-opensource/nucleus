@@ -79,10 +79,10 @@ fn a_read_only_data_image_does_not_count_as_writable_scratch() {
         logger: None,
     };
     assert!(
-        !cfg(&with_data)
+        cfg(&with_data)
             .snapshot_inputs(nucleus_spec::vmm_version::PINNED)
             .scratch_path
-            .is_some(),
+            .is_none(),
         "a read-only corpus must not read as writable scratch, or attaching one would make \
              the pod unsnapshottable"
     );
