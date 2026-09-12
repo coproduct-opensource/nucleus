@@ -191,6 +191,9 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             executor_public_key: public.clone(),
             executor_id: "nucleus-self-build/bootstrap".into(),
             output: output.join("build"),
+            lease_file: None,
+            attempt_id: None,
+            single_build: false,
         })?;
         // The trusted controller minted this key before the workload existed.
         // Carry it directly to successor verification, never read it from a
@@ -377,6 +380,15 @@ pub struct Args {
     /// New output directory, on the same host as the node.
     #[arg(long)]
     output: PathBuf,
+    /// Host-only heartbeat file, atomically renewed by a durable execution worker.
+    #[arg(long, requires = "attempt_id")]
+    lease_file: Option<PathBuf>,
+    /// Independent attempt binding for the heartbeat file.
+    #[arg(long, requires = "lease_file")]
+    attempt_id: Option<String>,
+    /// Execute one cold build; omit the warm-cache experiment.
+    #[arg(long)]
+    single_build: bool,
 }
 
 #[derive(Deserialize)]
@@ -402,7 +414,12 @@ pub fn run(args: Args) -> Result<()> {
         executor_public_key,
         executor_id,
         output,
+        lease_file,
+        attempt_id,
+        single_build,
     } = args;
+    let lease = super::lease::Watch::new(lease_file, attempt_id)?;
+    lease.check()?;
     ensure!(
         node_url.starts_with("https://"),
         "the node URL must use mTLS HTTPS"
@@ -441,7 +458,13 @@ pub fn run(args: Args) -> Result<()> {
     let mut seed: Option<super::scratch_cache::FrozenScratch> = None;
     // Every VM gets a private inode. Only a verified, stopped cold build can
     // become the seed; this is compiler-cache reuse for this exact tree.
-    for phase in ["cold", "warm"] {
+    let phases: &[&str] = if single_build {
+        &["cold"]
+    } else {
+        &["cold", "warm"]
+    };
+    for &phase in phases {
+        lease.check()?;
         let phase_started = Instant::now();
         let directory = output.join(phase);
         fs::create_dir(&directory)?;
@@ -488,6 +511,7 @@ pub fn run(args: Args) -> Result<()> {
             .checked_add(3600 * 1_000_000)
             .context("build deadline overflow")?;
         let timer = Instant::now();
+        lease.check()?;
         let create_response = client
             .post(format!("{}/v1/pods", node_url.trim_end_matches('/')))
             .json(&serde_json::json!({ "spec": spec }))
@@ -520,25 +544,12 @@ pub fn run(args: Args) -> Result<()> {
         };
         // Persist the controller's values before collecting any returned claim.
         // An offline verifier must not reconstruct these from the receipt.
-        let result = (|| -> Result<()> {
-            fs::write(
-                directory.join("expected-execution.json"),
-                serde_json::to_vec_pretty(&expected)?,
-            )?;
-            collect(&client, &pod_url, &expected, &directory)
-        })();
-        // Cancellation is attempted on both success and failure. Only success
-        // of BOTH verification and shutdown can mint the completed-build witness.
-        let cancelled = client
-            .post(format!("{pod_url}/cancel"))
-            .send()
-            .and_then(reqwest::blocking::Response::error_for_status);
-        result?;
-        cancelled.context("could not stop build VM; refusing cache promotion")?;
+        collect_and_stop(&client, &pod_url, &expected, &directory, &lease)?;
+        lease.check()?;
         let completed = CompletedBuild { scratch };
         let execution_seconds = timer.elapsed().as_secs_f64();
         let checkpoint_started = Instant::now();
-        if phase == "cold" {
+        if phase == "cold" && !single_build {
             seed = Some(super::scratch_cache::FrozenScratch::seal(completed)?);
         }
         fs::write(
@@ -589,18 +600,45 @@ fn client(cert: &Path, key: &Path, bundle: &Path) -> Result<Client> {
         .build()?)
 }
 
+fn collect_and_stop(
+    client: &Client,
+    pod_url: &str,
+    expected: &ExpectedExecution<'_>,
+    directory: &Path,
+    lease: &super::lease::Watch,
+) -> Result<()> {
+    let result = (|| -> Result<()> {
+        fs::write(
+            directory.join("expected-execution.json"),
+            serde_json::to_vec_pretty(expected)?,
+        )?;
+        collect(client, pod_url, expected, directory, lease)
+    })();
+    // Lease refusal is an execution error and still reaches remote cancellation.
+    let cancelled = client
+        .post(format!("{pod_url}/cancel"))
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status);
+    // Preserve a failed cleanup even if collection also failed.
+    cancelled.context("could not stop build VM; cleanup unconfirmed")?;
+    result
+}
+
 fn collect(
     client: &Client,
     pod_url: &str,
     expected: &ExpectedExecution<'_>,
     directory: &Path,
+    lease: &super::lease::Watch,
 ) -> Result<()> {
     loop {
+        lease.check()?;
         ensure!(
             now()? <= expected.issued_not_after_micros,
             "build timed out"
         );
         let response = client.get(format!("{pod_url}/workload-result")).send()?;
+        lease.check()?;
         // The node may not have a proxy address while the VM boots. Do not
         // reinterpret that transient absence as success, or retry auth errors.
         if response.status().is_server_error() {
@@ -629,6 +667,7 @@ fn collect(
             .error_for_status()?,
         128 * 1024,
     )?;
+    lease.check()?;
     fs::write(
         directory.join("execution-receipt.json"),
         serde_json::to_vec_pretty(&receipt)?,
@@ -688,6 +727,7 @@ fn collect(
         );
     }
     let verified = verify_artifacts(&bundle.receipt, expected, bytes)?;
+    lease.check()?;
     let (claim, mut bytes) = verified.into_parts(now()?)?;
     ensure!(
         claim.exit_code == Some(0),
@@ -741,7 +781,7 @@ fn response_json_checked<T: serde::de::DeserializeOwned>(
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn now() -> Result<u64> {
+pub(super) fn now() -> Result<u64> {
     Ok(u64::try_from(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros(),
     )?)
@@ -813,6 +853,80 @@ fn build_spec(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revoked_worker_still_cancels_the_remote_pod() -> Result<()> {
+        use std::io::{Read, Write};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let url = format!("http://{}/v1/pods/pod-1", listener.local_addr()?);
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((mut socket, _)) => {
+                        socket
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let mut bytes = [0; 4096];
+                        let count = socket.read(&mut bytes).unwrap();
+                        let request = String::from_utf8_lossy(&bytes[..count]).into_owned();
+                        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+                        return request;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "controller never cancelled its pod"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("test listener: {e}"),
+                }
+            }
+        });
+        let root = tempfile::tempdir()?;
+        let lease = super::super::lease::Watch::new(
+            Some(root.path().join("missing-heartbeat")),
+            Some("attempt-1".into()),
+        )?;
+        let artifacts = BTreeMap::new();
+        let expected = ExpectedExecution {
+            pod_id: "pod-1",
+            source_commit: "commit",
+            source_tree: "tree",
+            gate: "gate",
+            program_digest: "program",
+            architecture: "x86_64",
+            environment_inputs_sha256: "env",
+            artifacts: &artifacts,
+            session_id: "pod-1",
+            issuer_kid: "node",
+            verifying_key: &[0; 32],
+            issued_not_before_micros: 0,
+            issued_not_after_micros: u64::MAX,
+        };
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()?;
+        let result = collect_and_stop(&client, &url, &expected, root.path(), &lease);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("heartbeat missing")
+        );
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .starts_with("POST /v1/pods/pod-1/cancel ")
+        );
+        assert!(!root.path().join("artifact-receipt.json").exists());
+        Ok(())
+    }
 
     fn inputs() -> BuildInputs {
         BuildInputs {

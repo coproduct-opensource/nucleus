@@ -12,6 +12,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub(crate) mod execute;
+mod lease;
 pub(crate) mod scratch_cache;
 pub(crate) mod successor;
 

@@ -506,3 +506,31 @@ the automatic leased execution worker and live webhook delivery, live red and
 merge-group checks, required-check App pinning after acceptance, native Linux
 reflink measurements, checkpoint quiescence, and production cache/result-store
 integration. Do not infer any of these from the successful successor experiment.
+
+
+## Execution-worker controller contract (2026-09-12)
+
+`build-run` now accepts `--single-build` for a single cold execution and an
+optional paired `--lease-file` / `--attempt-id`. The host-only heartbeat schema is
+`{"schema":"nucleus.controller-lease.v1","attempt":"<id>","expires_micros":<Unix-microseconds>}`.
+A durable worker atomically replaces this private file while it holds authority.
+The controller checks the independent attempt binding and expiration before
+launch and around external execution waits. Missing, oversized, malformed,
+wrong-attempt or expired heartbeats refuse execution and reach remote mTLS
+cancellation for an admitted pod. Existing manual cold/warm/successor commands
+remain available without a worker lease.
+
+Cancellation was extracted into one helper that runs after both successful and
+failed collection. A loopback HTTP test proves a missing worker heartbeat still
+causes POST to the real cancellation route; removing that POST drove the test
+red. All twelve build-image tests pass after restoration, including existing
+cache and successor tests. Strict xtask Clippy and the line ratchet pass.
+The loopback test required explicit crypto-provider initialization, matching the
+production client; a default test client initially panicked before sending HTTP.
+
+This is not a new live worker run. A private typed worker now consumes this CLI
+contract in local protocol tests, but its Linux deployment is still unmeasured.
+Abrupt loss of the controller itself or a lost pod-create response still needs
+node-side reconciliation; heartbeat checks cannot recover an unknown pod ID.
+A failed cancellation response is reported as cleanup unconfirmed and cannot
+mint the completed-build/cache-promotion witness.
