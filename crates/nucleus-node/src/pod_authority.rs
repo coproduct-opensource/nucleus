@@ -208,6 +208,30 @@ struct Inner {
     external: HashMap<[u8; 32], BudgetLedger>,
 }
 
+/// Domain separator for pod-receipt signatures.
+///
+/// Versioned: a change to how the preimage is built is a new signature space,
+/// not a silent reinterpretation of the old one.
+const RECEIPT_DOMAIN: &[u8] = b"nucleus/pod-receipt/v1\0";
+
+/// Verify a pod-receipt signature against a node's advertised root public key.
+///
+/// Free function, not a method: a relying party has the public key and the
+/// bytes, and must not need a `PodAuthority` — which owns the PRIVATE key — to
+/// check a receipt. If verification required the signer, only the signer could
+/// verify, which is not a property anyone should accept from an attestation.
+pub(crate) fn verify_pod_receipt(pubkey_hex: &str, preimage: &[u8], signature_hex: &str) -> bool {
+    let (Ok(pubkey), Ok(sig)) = (hex::decode(pubkey_hex), hex::decode(signature_hex)) else {
+        return false;
+    };
+    let mut msg = Vec::with_capacity(RECEIPT_DOMAIN.len() + preimage.len());
+    msg.extend_from_slice(RECEIPT_DOMAIN);
+    msg.extend_from_slice(preimage);
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &pubkey)
+        .verify(&msg, &sig)
+        .is_ok()
+}
+
 /// The node's certificate authority for pods. See the module docs.
 pub(crate) struct PodAuthority {
     trust_domain: String,
@@ -290,6 +314,36 @@ impl PodAuthority {
     }
 
     /// The hex root public key delivered to pods as the pinned anchor.
+    /// Sign a pod receipt's preimage with the node's root key.
+    ///
+    /// # Why this is not `sign(&[u8])`
+    ///
+    /// The root key also mints `LatticeCertificate`s. A general signing
+    /// accessor would be an oracle: anything holding a `&PodAuthority` could
+    /// have the node sign bytes of its choosing, and a receipt preimage that
+    /// happened to parse as a certificate body would yield a signature valid as
+    /// BOTH. The domain tag makes the two languages disjoint, and keeping the
+    /// tagging inside this method means no caller can forget it.
+    ///
+    /// # Why the HOST signs a pod receipt at all
+    ///
+    /// `MediationReceipt` mints a per-pod key and serves it INTO the guest, which
+    /// is right for attesting decisions the in-guest mediator made. It is wrong
+    /// for a receipt about what a pod produced: a workload holding the key can
+    /// sign any verdict it likes. SLSA Build L3's defining property is that
+    /// signing keys are isolated from user-controlled build steps, and this key
+    /// never leaves the host — only public halves enter a guest.
+    ///
+    /// What the signature establishes is therefore narrow and worth stating: the
+    /// node, holding this key, observed these bytes. It says nothing about
+    /// whether the workload told the truth in them.
+    pub fn sign_pod_receipt(&self, preimage: &[u8]) -> String {
+        let mut msg = Vec::with_capacity(RECEIPT_DOMAIN.len() + preimage.len());
+        msg.extend_from_slice(RECEIPT_DOMAIN);
+        msg.extend_from_slice(preimage);
+        hex::encode(self.root_key.sign(&msg).as_ref())
+    }
+
     pub fn root_pubkey_hex(&self) -> String {
         hex::encode(&self.root_pubkey)
     }

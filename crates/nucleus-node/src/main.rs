@@ -3631,34 +3631,20 @@ impl NodeService for GrpcService {
         let pod_id_str = req.pod_id;
         let handle = pod_api::grpc_scoped_pod(&self.state, &md, &pod_id_str).await?;
 
-        let built = pod_receipt::build(&handle).await.map_err(|e| match e {
-            pod_receipt::ReceiptError::NotExited => Status::failed_precondition(e.to_string()),
-            pod_receipt::ReceiptError::NoExitReport(_) => Status::not_found(e.to_string()),
-            pod_receipt::ReceiptError::Malformed(_) => Status::internal(e.to_string()),
-        })?;
+        let built = pod_receipt::build(&handle, &self.state.authority)
+            .await
+            .map_err(|e| match e {
+                pod_receipt::ReceiptError::NotExited => Status::failed_precondition(e.to_string()),
+                pod_receipt::ReceiptError::NoExitReport(_) => Status::not_found(e.to_string()),
+                pod_receipt::ReceiptError::Malformed(_) => Status::internal(e.to_string()),
+            })?;
         // The outward-facing report stays on this transport only; see `pod_receipt`'s module docs
         // for why the HTTP route deliberately does not inherit it.
         pod_receipt::report_to_trust_gate(&self.state, &built);
         let r = built.receipt;
 
         Ok(GrpcResponse::new(proto::GetReceiptResponse {
-            receipt: Some(proto::ExecutionReceipt {
-                pod_id: r.pod_id,
-                workspace_hash: r.workspace_hash,
-                audit_tail_hash: r.audit_tail_hash,
-                audit_entry_count: r.audit_entry_count,
-                timestamp_unix: r.timestamp_unix,
-                manifest_hash: r.manifest_hash,
-                sandbox_tier: r.sandbox_tier,
-                spiffe_id: r.spiffe_id,
-                version: r.version,
-                v1_content_hash: r.v1_content_hash,
-                extensions: std::collections::HashMap::new(),
-                input_tokens: r.input_tokens,
-                output_tokens: r.output_tokens,
-                cache_read_tokens: r.cache_read_tokens,
-                cost_usd: r.cost_usd,
-            }),
+            receipt: Some(r.into()),
         }))
     }
 

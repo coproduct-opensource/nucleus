@@ -23,12 +23,6 @@
 //! is what a GET should be. The asymmetry is the bug being contained rather than spread, and it is
 //! written down here so the next person finds a decision instead of an inconsistency.
 
-// Declared HERE, not in main.rs, because this is the only thing that needs it:
-// the read-back exists so a receipt can be built for a microVM. It also keeps
-// `main.rs` off its line ceiling, which it was sitting exactly on.
-#[path = "scratch_readback.rs"]
-mod scratch_readback;
-
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -53,6 +47,72 @@ pub(crate) struct Receipt {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cost_usd: f64,
+    /// The node's signature over [`Receipt::preimage`], and the key that made
+    /// it. Empty when this node could not sign — never a receipt that looks
+    /// signed and is not.
+    pub signature: String,
+    pub signer_pubkey: String,
+}
+
+impl Receipt {
+    /// The bytes the node signs.
+    ///
+    /// EXHAUSTIVELY DESTRUCTURED, so a field added to `Receipt` is an E0027
+    /// here until someone says whether it is committed to. The silent failure
+    /// of a digest is a field that quietly stopped counting, and this struct is
+    /// the thing a receipt is ABOUT.
+    ///
+    /// Each part is absorbed tag-separated and length-prefixed, so no two
+    /// distinct receipts share a preimage by concatenation, and nothing goes
+    /// through `Debug` — `scripts/check-preimage-dylint.sh` gates that.
+    ///
+    /// `signature` and `signer_pubkey` are deliberately NOT in it: a signature
+    /// cannot cover itself.
+    pub fn preimage(&self) -> Vec<u8> {
+        let Receipt {
+            pod_id,
+            workspace_hash,
+            audit_tail_hash,
+            audit_entry_count,
+            timestamp_unix,
+            manifest_hash,
+            sandbox_tier,
+            spiffe_id,
+            version,
+            v1_content_hash,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cost_usd,
+            signature: _,
+            signer_pubkey: _,
+        } = self;
+
+        let mut out = Vec::new();
+        let mut absorb = |tag: &str, bytes: &[u8]| {
+            out.extend_from_slice(tag.as_bytes());
+            out.push(0);
+            out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+            out.extend_from_slice(bytes);
+        };
+        absorb("pod_id", pod_id.as_bytes());
+        absorb("workspace_hash", workspace_hash.as_bytes());
+        absorb("audit_tail_hash", audit_tail_hash.as_bytes());
+        absorb("audit_entry_count", &audit_entry_count.to_be_bytes());
+        absorb("timestamp_unix", &timestamp_unix.to_be_bytes());
+        absorb("manifest_hash", manifest_hash.as_bytes());
+        absorb("sandbox_tier", sandbox_tier.as_bytes());
+        absorb("spiffe_id", spiffe_id.as_bytes());
+        absorb("version", &version.to_be_bytes());
+        absorb("v1_content_hash", v1_content_hash.as_bytes());
+        absorb("input_tokens", &input_tokens.to_be_bytes());
+        absorb("output_tokens", &output_tokens.to_be_bytes());
+        absorb("cache_read_tokens", &cache_read_tokens.to_be_bytes());
+        // `to_bits` rather than `to_string`: a float's decimal rendering is a
+        // formatting decision, and this is a digest preimage.
+        absorb("cost_usd", &cost_usd.to_bits().to_be_bytes());
+        out
+    }
 }
 
 /// Why a receipt could not be produced.
@@ -95,7 +155,10 @@ pub(crate) struct Built {
 /// # Errors
 ///
 /// [`ReceiptError`] — still running, no exit report, or an unreadable one.
-pub(crate) async fn build(handle: &Arc<PodHandle>) -> Result<Built, ReceiptError> {
+pub(crate) async fn build(
+    handle: &Arc<PodHandle>,
+    authority: &crate::pod_authority::PodAuthority,
+) -> Result<Built, ReceiptError> {
     let id = handle.id;
     let state = handle.status().await;
     let PodState::Exited { code, .. } = state else {
@@ -103,39 +166,9 @@ pub(crate) async fn build(handle: &Arc<PodHandle>) -> Result<Built, ReceiptError
     };
 
     let report_path = handle.spec.spec.work_dir.join(".nucleus-exit-report.json");
-    let report_json = match tokio::fs::read_to_string(&report_path).await {
-        Ok(json) => json,
-        // A MICROVM SHARES NO DIRECTORY, so this path never existed for it.
-        //
-        // `nucleus-spec` says so outright — "A microVM has no host-directory
-        // mount and there never will be one" — which means this function has
-        // returned `NoExitReport` for every Firecracker pod since it was
-        // written. The guest's `/work` is a block device; its report is inside
-        // that image, and the host owns the image.
-        //
-        // ORDERING HAZARD, stated because it is real: the jail is removed at
-        // teardown (`FirecrackerPod::jail` is held "so teardown can remove
-        // it"). This read must happen while the jail still exists. A jail
-        // already gone reads as `Absent`, which is honest but is NOT the same
-        // as the pod having written nothing — so a receipt built too late is
-        // indistinguishable from a workload that crashed early, and that is a
-        // gap this comment is recording rather than closing.
-        Err(host_err) => match scratch_report(handle).await {
-            Some(Ok(json)) => json,
-            Some(Err(readback)) => {
-                return Err(ReceiptError::NoExitReport(format!(
-                    "{}: {host_err}; and the scratch disk: {readback}",
-                    report_path.display()
-                )));
-            }
-            None => {
-                return Err(ReceiptError::NoExitReport(format!(
-                    "{}: {host_err}",
-                    report_path.display()
-                )));
-            }
-        },
-    };
+    let report_json = tokio::fs::read_to_string(&report_path)
+        .await
+        .map_err(|e| ReceiptError::NoExitReport(format!("{}: {e}", report_path.display())))?;
     let report: nucleus_spec::ExitReport =
         serde_json::from_str(&report_json).map_err(|e| ReceiptError::Malformed(e.to_string()))?;
 
@@ -159,23 +192,34 @@ pub(crate) async fn build(handle: &Arc<PodHandle>) -> Result<Built, ReceiptError
         .cloned()
         .unwrap_or_default();
 
+    let mut receipt = Receipt {
+        pod_id: id.to_string(),
+        workspace_hash: report.workspace_hash.clone(),
+        audit_tail_hash: report.audit_tail_hash.clone(),
+        audit_entry_count: report.audit_entry_count,
+        timestamp_unix: report.timestamp_unix,
+        manifest_hash,
+        sandbox_tier: trust_profile.clone().unwrap_or_default(),
+        spiffe_id,
+        version: 1,
+        v1_content_hash,
+        input_tokens: report.input_tokens,
+        output_tokens: report.output_tokens,
+        cache_read_tokens: report.cache_read_tokens,
+        cost_usd: report.cost_usd,
+        // Filled below: the preimage is over the OTHER fields, so the
+        // receipt has to exist before it can be signed.
+        signature: String::new(),
+        signer_pubkey: String::new(),
+    };
+    // The node signs, not the pod. See `PodAuthority::sign_pod_receipt` for why
+    // this is the one place the MediationReceipt pattern is deliberately not
+    // followed.
+    receipt.signature = authority.sign_pod_receipt(&receipt.preimage());
+    receipt.signer_pubkey = authority.root_pubkey_hex();
+
     Ok(Built {
-        receipt: Receipt {
-            pod_id: id.to_string(),
-            workspace_hash: report.workspace_hash.clone(),
-            audit_tail_hash: report.audit_tail_hash.clone(),
-            audit_entry_count: report.audit_entry_count,
-            timestamp_unix: report.timestamp_unix,
-            manifest_hash,
-            sandbox_tier: trust_profile.clone().unwrap_or_default(),
-            spiffe_id,
-            version: 1,
-            v1_content_hash,
-            input_tokens: report.input_tokens,
-            output_tokens: report.output_tokens,
-            cache_read_tokens: report.cache_read_tokens,
-            cost_usd: report.cost_usd,
-        },
+        receipt,
         report,
         trust_bracket,
         trust_profile,
@@ -245,6 +289,37 @@ pub(crate) fn report_to_trust_gate(state: &NodeState, built: &Built) {
     });
 }
 
+/// The gRPC shape, beside the type it is a shape OF.
+///
+/// This lived inline in `main.rs`'s `get_receipt`, which is why adding two
+/// fields to `Receipt` pushed that file over its line ceiling. A mapping
+/// between a type and its wire form belongs with the type: the two lists have
+/// to stay equal, and `the_http_body_names_the_same_fields_the_proto_does`
+/// checks exactly that — from here, where both are visible.
+impl From<Receipt> for crate::proto::ExecutionReceipt {
+    fn from(r: Receipt) -> Self {
+        Self {
+            pod_id: r.pod_id,
+            workspace_hash: r.workspace_hash,
+            audit_tail_hash: r.audit_tail_hash,
+            audit_entry_count: r.audit_entry_count,
+            timestamp_unix: r.timestamp_unix,
+            manifest_hash: r.manifest_hash,
+            sandbox_tier: r.sandbox_tier,
+            spiffe_id: r.spiffe_id,
+            version: r.version,
+            v1_content_hash: r.v1_content_hash,
+            extensions: std::collections::HashMap::new(),
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            cache_read_tokens: r.cache_read_tokens,
+            cost_usd: r.cost_usd,
+            signature: r.signature,
+            signer_pubkey: r.signer_pubkey,
+        }
+    }
+}
+
 /// The exit report read out of a Firecracker pod's scratch image, or `None`
 /// when this pod has no such image (every other driver shares a directory and
 /// never reaches here).
@@ -291,6 +366,8 @@ mod tests {
             output_tokens: 20,
             cache_read_tokens: 5,
             cost_usd: 0.5,
+            signature: String::new(),
+            signer_pubkey: String::new(),
         }
     }
 
@@ -326,6 +403,8 @@ mod tests {
             "output_tokens",
             "cache_read_tokens",
             "cost_usd",
+            "signature",
+            "signer_pubkey",
         ]
         .into_iter()
         .collect();
@@ -588,5 +667,241 @@ mod tests {
             );
             assert!(built.trust_bracket.is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+    use crate::pod_authority::verify_pod_receipt;
+
+    fn sample() -> Receipt {
+        Receipt {
+            pod_id: "11111111-1111-1111-1111-111111111111".into(),
+            workspace_hash: "ws".into(),
+            audit_tail_hash: "tail".into(),
+            audit_entry_count: 3,
+            timestamp_unix: 1_700_000_000,
+            manifest_hash: "mh".into(),
+            sandbox_tier: "tier2".into(),
+            spiffe_id: "spiffe://nucleus.local/ns/default/sa/x".into(),
+            version: 1,
+            v1_content_hash: "v1".into(),
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 30,
+            cost_usd: 0.5,
+            signature: String::new(),
+            signer_pubkey: String::new(),
+        }
+    }
+
+    /// **Every committed field must move the preimage.** A field the signature
+    /// does not cover can be rewritten in flight while the signature still
+    /// verifies — the tamper a signature exists to prevent.
+    #[test]
+    fn every_field_reaches_the_preimage() {
+        let base = sample().preimage();
+        let cases: Vec<(&str, Receipt)> = vec![
+            (
+                "pod_id",
+                Receipt {
+                    pod_id: "other".into(),
+                    ..sample()
+                },
+            ),
+            (
+                "workspace_hash",
+                Receipt {
+                    workspace_hash: "other".into(),
+                    ..sample()
+                },
+            ),
+            (
+                "audit_tail_hash",
+                Receipt {
+                    audit_tail_hash: "other".into(),
+                    ..sample()
+                },
+            ),
+            (
+                "audit_entry_count",
+                Receipt {
+                    audit_entry_count: 4,
+                    ..sample()
+                },
+            ),
+            (
+                "timestamp_unix",
+                Receipt {
+                    timestamp_unix: 1_700_000_001,
+                    ..sample()
+                },
+            ),
+            (
+                "manifest_hash",
+                Receipt {
+                    manifest_hash: "other".into(),
+                    ..sample()
+                },
+            ),
+            (
+                "sandbox_tier",
+                Receipt {
+                    sandbox_tier: "tier1".into(),
+                    ..sample()
+                },
+            ),
+            (
+                "spiffe_id",
+                Receipt {
+                    spiffe_id: "spiffe://other".into(),
+                    ..sample()
+                },
+            ),
+            (
+                "version",
+                Receipt {
+                    version: 2,
+                    ..sample()
+                },
+            ),
+            (
+                "v1_content_hash",
+                Receipt {
+                    v1_content_hash: "other".into(),
+                    ..sample()
+                },
+            ),
+            (
+                "input_tokens",
+                Receipt {
+                    input_tokens: 11,
+                    ..sample()
+                },
+            ),
+            (
+                "output_tokens",
+                Receipt {
+                    output_tokens: 21,
+                    ..sample()
+                },
+            ),
+            (
+                "cache_read_tokens",
+                Receipt {
+                    cache_read_tokens: 31,
+                    ..sample()
+                },
+            ),
+            (
+                "cost_usd",
+                Receipt {
+                    cost_usd: 0.6,
+                    ..sample()
+                },
+            ),
+        ];
+        for (field, perturbed) in cases {
+            assert_ne!(
+                base,
+                perturbed.preimage(),
+                "{field} does not reach the preimage: it can be rewritten with the signature \
+                 still verifying"
+            );
+        }
+    }
+
+    /// The signature cannot cover itself, so those two fields must NOT move it —
+    /// otherwise signing would invalidate what it just signed.
+    #[test]
+    fn the_signature_fields_are_not_in_their_own_preimage() {
+        let base = sample().preimage();
+        let signed = Receipt {
+            signature: "deadbeef".into(),
+            signer_pubkey: "cafe".into(),
+            ..sample()
+        };
+        assert_eq!(base, signed.preimage());
+    }
+
+    /// **Framing must be injective.** Without the length prefixes, moving a
+    /// character across a field boundary would be the same bytes — two
+    /// different receipts under one signature.
+    #[test]
+    fn a_field_boundary_cannot_move_without_changing_the_preimage() {
+        let a = Receipt {
+            workspace_hash: "ab".into(),
+            audit_tail_hash: String::new(),
+            ..sample()
+        };
+        let b = Receipt {
+            workspace_hash: "a".into(),
+            audit_tail_hash: "b".into(),
+            ..sample()
+        };
+        assert_ne!(a.preimage(), b.preimage());
+    }
+
+    /// A signature made by a DIFFERENT key must not verify. This is what makes
+    /// the host-held key meaningful: a guest, which never sees it, cannot
+    /// produce one.
+    #[test]
+    fn another_key_cannot_sign_a_receipt_this_node_would_accept() {
+        use ring::signature::KeyPair;
+        let rng = ring::rand::SystemRandom::new();
+        let mk = || {
+            let doc = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).expect("gen");
+            ring::signature::Ed25519KeyPair::from_pkcs8(doc.as_ref()).expect("parse")
+        };
+        let node = mk();
+        let impostor = mk();
+        let node_pub = hex::encode(node.public_key().as_ref());
+        let preimage = sample().preimage();
+
+        // Same domain tag the authority uses; a signature over the bare
+        // preimage must not verify either.
+        let mut msg = b"nucleus/pod-receipt/v1\0".to_vec();
+        msg.extend_from_slice(&preimage);
+
+        let theirs = hex::encode(impostor.sign(&msg).as_ref());
+        assert!(
+            !verify_pod_receipt(&node_pub, &preimage, &theirs),
+            "a receipt signed by another key verified against this node's"
+        );
+
+        let ours = hex::encode(node.sign(&msg).as_ref());
+        assert!(
+            verify_pod_receipt(&node_pub, &preimage, &ours),
+            "the node's own did not verify"
+        );
+    }
+
+    /// **The domain tag is load-bearing.** A signature over the untagged
+    /// preimage must not verify, or a signature minted in another of the root
+    /// key's roles could be replayed as a receipt.
+    #[test]
+    fn a_signature_over_the_untagged_preimage_does_not_verify() {
+        use ring::signature::KeyPair;
+        let rng = ring::rand::SystemRandom::new();
+        let doc = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).expect("gen");
+        let key = ring::signature::Ed25519KeyPair::from_pkcs8(doc.as_ref()).expect("parse");
+        let preimage = sample().preimage();
+        let untagged = hex::encode(key.sign(&preimage).as_ref());
+        assert!(!verify_pod_receipt(
+            &hex::encode(key.public_key().as_ref()),
+            &preimage,
+            &untagged
+        ));
+    }
+
+    /// Malformed input is `false`, never a panic: a verifier is handed
+    /// attacker-controlled text by definition.
+    #[test]
+    fn malformed_signatures_are_refused_rather_than_fatal() {
+        let p = sample().preimage();
+        assert!(!verify_pod_receipt("nothex", &p, "nothex"));
+        assert!(!verify_pod_receipt("", &p, ""));
+        assert!(!verify_pod_receipt("aabb", &p, "ccdd"));
     }
 }
