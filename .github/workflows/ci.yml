@@ -349,7 +349,7 @@ jobs:
           filter: blob:none
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          targets: wasm32-unknown-unknown
+          target: wasm32-unknown-unknown
           cache: ${{ runner.environment == 'github-hosted' }}
       # PREREQUISITE, not boilerplate. `nucleus-verifier-service` vendors the
       # wasm SDK with `include_str!`/`include_bytes!` on sdks/verifier-js/pkg/*,
@@ -710,7 +710,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           components: clippy
-          targets: wasm32-unknown-unknown
+          target: wasm32-unknown-unknown
           cache: ${{ runner.environment == 'github-hosted' }}
       # Pinned prebuilt binary with a checksum, not `curl … init.sh | sh`: that
       # piped an unpinned remote script straight into a shell on every run, so
@@ -859,7 +859,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         if: ${{ steps.skip.outcome == 'skipped' }}
         with:
-          targets: x86_64-unknown-linux-musl
+          target: x86_64-unknown-linux-musl
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install musl-gcc (hosted x86 only)
         if: ${{ steps.skip.outcome == 'skipped' && runner.environment == 'github-hosted' }}
