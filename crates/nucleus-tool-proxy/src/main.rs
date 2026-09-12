@@ -23,7 +23,7 @@ use nucleus_spec::PodSpec;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
@@ -68,9 +68,11 @@ mod url_allow;
 mod validation;
 
 use crate::api_error::ApiError;
+mod artifact;
 mod verdict_sink;
 mod web_fetch_policy;
 mod workload;
+mod workload_supervisor;
 
 use attestation::AttestationVerifier;
 use auth::AuthConfig;
@@ -1238,54 +1240,6 @@ fn console_line(msg: &str) {
     eprint!("{line}");
 }
 
-/// Start the pod's workload (if configured) and drain its piped stdout/stderr
-/// to the guest console log, line-attributed as `[workload] ...`.
-///
-/// Called on BOTH serve paths — vsock and TCP — and it must stay that way. In a
-/// real guest the proxy serves over VSOCK and `main` RETURNS from that branch;
-/// run 4 of the phase-2b boot gate found the spawn sitting below that early
-/// return, on the TCP-only path, so the in-guest workload never started at all:
-/// the console channels were proven live at 0.9s by the startup diagnostics,
-/// verify's checks were served over vsock, and yet not even the `[workload]`
-/// start line appeared — the code was simply unreachable in the guest.
-///
-/// Draining BOTH streams also keeps a chatty workload from blocking on a full
-/// pipe nobody reads. The returned child must be held for the pod's lifetime
-/// (`kill_on_drop`).
-fn start_and_drain_workload(
-    spec: &nucleus_spec::PodSpec,
-    bound: workload::BoundProxy,
-    auth_secret: &str,
-) -> Result<Option<(tokio::process::Child, workload::LaunchReceipt)>, ApiError> {
-    let mut started = workload::start_if_configured(spec, bound, auth_secret)?;
-    match started.as_mut() {
-        Some((child, _receipt)) => {
-            console_line(&format!("[workload] started (pid={:?})", child.id()));
-            if let Some(out) = child.stdout.take() {
-                tokio::spawn(async move {
-                    let mut lines = BufReader::new(out).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        console_line(&format!("[workload] {line}"));
-                    }
-                });
-            }
-            if let Some(err) = child.stderr.take() {
-                tokio::spawn(async move {
-                    let mut lines = BufReader::new(err).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        console_line(&format!("[workload] {line}"));
-                    }
-                });
-            }
-        }
-        // Not an error: most pods run no workload. Logged so a boot that expected
-        // one (the probe pod) can tell "no workload configured" — a spec/POD_SPEC
-        // problem — apart from "workload ran but produced nothing".
-        None => console_line("[workload] no workload configured in pod spec"),
-    }
-    Ok(started)
-}
-
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
@@ -2002,13 +1956,17 @@ async fn main() -> Result<(), ApiError> {
         return mcp::run_mcp_server(Arc::new(state)).await;
     }
 
+    let (completion_writer, completion_reader) = workload_supervisor::channel();
     let mut app = Router::new()
+        .route("/v1/workload/result", get(workload_supervisor::result))
+        .layer(axum::Extension(completion_reader))
         .route(
             "/v1/egress/{name}/{*path}",
             post(egress::credentialed_egress),
         )
         .route("/v1/health", get(health))
         .route("/v1/read", post(read_file))
+        .route("/v1/artifact", post(artifact::read))
         .route("/v1/write", post(write_file))
         .route("/v1/run", post(run_command))
         .route("/v1/web_fetch", post(web_fetch))
@@ -2079,7 +2037,8 @@ async fn main() -> Result<(), ApiError> {
         // serve, so its proxy URL names a socket that exists); before run 4's
         // diagnosis it started only below, and an in-guest pod's workload never
         // ran at all.
-        let _workload = start_and_drain_workload(&spec, bound.proxy(), &args.auth_secret)?;
+        let _workload =
+            workload_supervisor::start(&spec, bound.proxy(), &args.auth_secret, completion_writer)?;
         st.report();
         bound.serve(app).await?;
         exit_report::write_exit_report(
@@ -2105,10 +2064,14 @@ async fn main() -> Result<(), ApiError> {
     }
 
     // Started here and not earlier; `workload::start_if_configured` explains why.
-    // `start_and_drain_workload` explains why the same call also sits on the
+    // The supervisor owns the child on both transports. The same call sits on the
     // vsock branch above — this line alone is unreachable in a real guest.
-    let _workload =
-        start_and_drain_workload(&spec, workload::BoundProxy::Tcp(addr), &args.auth_secret)?;
+    let _workload = workload_supervisor::start(
+        &spec,
+        workload::BoundProxy::Tcp(addr),
+        &args.auth_secret,
+        completion_writer,
+    )?;
 
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -2238,7 +2201,15 @@ const HEALTH_PATH: &str = "/v1/health";
 /// (i.e., `read_files`, `glob_search`, `grep_search` all at `Always`) pass
 /// through, while every mutating operation is blocked.
 fn is_allowed_during_lockdown(path: &str) -> bool {
-    matches!(path, "/v1/read" | "/v1/glob" | "/v1/grep" | "/v1/health")
+    matches!(
+        path,
+        "/v1/read"
+            | "/v1/artifact"
+            | "/v1/glob"
+            | "/v1/grep"
+            | "/v1/health"
+            | "/v1/workload/result"
+    )
 }
 
 const HEADER_ATTESTATION: &str = "x-nucleus-attestation";

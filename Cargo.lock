@@ -6608,9 +6608,11 @@ name = "nucleus-ci-verdict"
 version = "1.0.0"
 dependencies = [
  "ed25519-dalek 3.0.0",
+ "hex",
  "nucleus-receipt",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -7106,6 +7108,7 @@ dependencies = [
  "ipnet",
  "jsonwebtoken",
  "nucleus",
+ "nucleus-ci-verdict",
  "nucleus-client",
  "nucleus-cred-broker",
  "nucleus-cred-protocol",
@@ -7114,6 +7117,7 @@ dependencies = [
  "nucleus-otel-bootstrap",
  "nucleus-proto",
  "nucleus-provenance-memory",
+ "nucleus-receipt",
  "nucleus-spec",
  "oid-registry",
  "portcullis",
@@ -13769,14 +13773,23 @@ name = "xtask"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "chrono",
  "ci-fly-runner",
  "ci-spec",
  "ck-kernel",
  "ck-types",
  "clap",
+ "ed25519-dalek 3.0.0",
  "hex",
+ "nucleus-ci-verdict",
+ "nucleus-receipt",
+ "nucleus-spec",
+ "portcullis",
  "regex",
+ "reqwest 0.13.4",
+ "rustix",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml",

@@ -52,8 +52,10 @@
 # scripts/inert-authority-manifest.txt — DenyAllEffects::run refuses
 # unconditionally, so it performs no act and correctly consults nothing — and
 # they are reported as `undeclared` rather than counted against the ratio.
-floor_bp = 9941
-population_floor = 172
+# 2026-09-12: bounded artifact reads require both the decision and discharged
+# authority. The additional covered boundary raises the measured ratio.
+floor_bp = 9942
+population_floor = 174
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -215,8 +217,11 @@ population_floor = 83
 # borrow; the first four are in-process and could take a lifetime instead, which
 # would make staleness a compile error the way affinity already makes replay one
 # (E0382). That is an ADR and a call-site refactor, not a ratchet.
-floor_bp = 1428
-population_floor = 7
+# 2026-09-12: both verified CI result types now carry and enforce a consumption
+# deadline. With their two added affine rights: 3 bounded rights out of 9.
+# 2026-09-12: VerifiedArtifacts carries and enforces its consumption deadline.
+floor_bp = 4000
+population_floor = 10
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

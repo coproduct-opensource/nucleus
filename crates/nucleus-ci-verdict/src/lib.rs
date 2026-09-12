@@ -51,6 +51,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod execution;
+pub mod verify;
+
 /// What the gate answered.
 ///
 /// Deliberately not a `bool`. A gate that could not run is not a gate that

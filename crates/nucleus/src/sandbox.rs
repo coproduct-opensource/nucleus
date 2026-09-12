@@ -277,6 +277,56 @@ impl Sandbox {
         self.read_internal(path.as_ref(), None)
     }
 
+    /// Snapshot bounded bytes from a regular file under the same read decision,
+    /// discharge, capability and path checks as `read`. Nonblocking open keeps
+    /// an attacker-supplied FIFO from hanging artifact collection.
+    pub fn read_bounded(
+        &self,
+        path: impl AsRef<Path>,
+        limit: usize,
+        decision: DecisionToken,
+        authority: Authority,
+    ) -> Result<Vec<u8>> {
+        use std::io::Read;
+        decision.redeem(&self.permissions, Operation::ReadFiles)?;
+        self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
+        let path = self.root_relative(path.as_ref())?;
+        self.check_read_capability(&path, None)?;
+        self.check_policy(&path)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let file = self
+            .root
+            .open_with(&path, &options)
+            .map_err(|e| classify_path_io(path.clone(), &e))?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > limit as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "artifact must be a bounded regular file",
+            )
+            .into());
+        }
+        let bound = limit.checked_add(1).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "artifact limit overflow")
+        })?;
+        let mut bytes = Vec::new();
+        file.take(bound as u64).read_to_end(&mut bytes)?;
+        if bytes.len() > limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "artifact grew beyond its limit",
+            )
+            .into());
+        }
+        Ok(bytes)
+    }
+
     /// Read a file's contents as bytes with an approval token.
     pub fn read_approved(
         &self,
@@ -1165,6 +1215,72 @@ mod tests {
             )
             .unwrap();
         assert_eq!(contents, "hello world");
+    }
+
+    #[test]
+    fn bounded_artifact_reads_preserve_bytes_and_refuse_overflow_and_wrong_authority() {
+        let tmp = tempdir().unwrap();
+        let data = b"binary\0\xff";
+        std::fs::write(tmp.path().join("output"), data).unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::capability_only(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        for (limit, pass) in [(data.len(), true), (data.len() - 1, false)] {
+            let result = sandbox.read_bounded(
+                "output",
+                limit,
+                token(&mut kernel, Operation::ReadFiles, "output"),
+                Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend)),
+            );
+            if pass {
+                assert_eq!(result.unwrap(), data);
+            } else {
+                assert!(result.is_err());
+            }
+        }
+        assert!(
+            sandbox
+                .read_bounded(
+                    "output",
+                    100,
+                    token(&mut kernel, Operation::ReadFiles, "output"),
+                    Authority::new(allowed_bundle())
+                )
+                .is_err()
+        );
+        assert!(
+            sandbox
+                .read_bounded(
+                    ".",
+                    100,
+                    token(&mut kernel, Operation::ReadFiles, "."),
+                    Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend))
+                )
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_artifact_read_refuses_symlink_escape() {
+        let root = tempdir().unwrap();
+        let other = tempdir().unwrap();
+        std::fs::write(other.path().join("secret"), b"outside").unwrap();
+        std::os::unix::fs::symlink(other.path().join("secret"), root.path().join("output"))
+            .unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::capability_only(policy.clone());
+        let sandbox = Sandbox::new(&policy, root.path()).unwrap();
+        assert!(
+            sandbox
+                .read_bounded(
+                    "output",
+                    100,
+                    token(&mut kernel, Operation::ReadFiles, "output"),
+                    Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend))
+                )
+                .is_err()
+        );
     }
 
     #[test]

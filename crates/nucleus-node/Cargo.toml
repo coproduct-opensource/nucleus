@@ -81,6 +81,8 @@ nucleus-identity = { path = "../nucleus-identity" }
 nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap", optional = true }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-spec = { path = "../nucleus-spec" }
+nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
+nucleus-receipt = { path = "../nucleus-receipt" }
 # The extracted egress matcher the Lean confinement theorem is stated over, so
 # `model_rule` targets the proof's own types rather than a restatement.
 nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel" }

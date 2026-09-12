@@ -174,6 +174,13 @@ impl Receipt {
     /// was built.
     #[must_use = "the verification result must be checked; a dropped `Err` silently accepts an unverified receipt"]
     pub fn verify(&self, verifying_key_bytes: &[u8; 32]) -> Result<(), ReceiptError> {
+        self.verify_strict(verifying_key_bytes)
+    }
+
+    /// Explicitly named strict Ed25519 verification, including canonical-body
+    /// hash validation. `verify` is the compatibility spelling of this method.
+    #[must_use = "the verification result must be checked"]
+    pub fn verify_strict(&self, verifying_key_bytes: &[u8; 32]) -> Result<(), ReceiptError> {
         let vk = ed25519_dalek::VerifyingKey::from_bytes(verifying_key_bytes)
             .map_err(|e| ReceiptError::InvalidKey(e.to_string()))?;
         let canonical = canonical_signing_bytes(&self.session, &self.projections);

@@ -118,6 +118,8 @@ pub mod constraint;
 /// every surface uses, so a person is never shown Rust `Debug` syntax.
 #[cfg(all(feature = "spec", not(kani)))]
 pub mod deny_reason;
+#[cfg(feature = "serde")]
+mod serde_sets;
 // Uses `CapabilityLattice::extensions`, which is compiled out under Kani.
 #[cfg(not(kani))]
 pub mod tool_surface;

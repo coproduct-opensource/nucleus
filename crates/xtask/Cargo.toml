@@ -35,8 +35,16 @@ chrono = { workspace = true }
 # `gatehouse-pin`: the import digest is a plain SHA-256 of prelude/ci.writ.
 sha2 = { workspace = true }
 hex = { workspace = true }
+nucleus-spec = { path = "../nucleus-spec" }
+portcullis = { path = "../portcullis" }
+nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
+nucleus-receipt = { path = "../nucleus-receipt" }
+reqwest = { workspace = true, features = ["rustls-no-provider", "json", "blocking"] }
+rustls = { workspace = true }
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["pkcs8"] }
 regex = { workspace = true }
-
-[dev-dependencies]
-# `clippy-config` builds throwaway trees to drive its own gate red.
+# Isolated executable copies for successor builds, plus throwaway test trees.
 tempfile = { workspace = true }
+# Safe filesystem cloning and sparse extent discovery for build scratch caches.
+rustix = { version = "1.1.4", features = ["fs"] }

@@ -3,6 +3,7 @@
 pub mod identity;
 pub mod tier2_artifacts;
 pub mod vmm_version;
+pub mod workload_result;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -51,6 +52,31 @@ pub struct PodSpec {
 }
 
 impl PodSpec {
+    /// Record the backend's resolved isolation declaration. Shared by node
+    /// admission and controllers predicting the admitted program identity;
+    /// these labels alone are not evidence of actual backend execution.
+    pub fn record_isolation(&mut self, isolation: portcullis::enforcement::EnforcedIsolation) {
+        let portcullis::enforcement::EnforcedIsolation {
+            requested,
+            enforced,
+            backend,
+        } = isolation;
+        self.metadata.labels.extend([
+            (
+                "isolation.coproduct.one/requested".into(),
+                requested.to_string(),
+            ),
+            (
+                "isolation.coproduct.one/enforced".into(),
+                enforced.to_string(),
+            ),
+            (
+                "isolation.coproduct.one/backend".into(),
+                backend.to_string(),
+            ),
+        ]);
+    }
+
     /// Create a new PodSpec with defaults for version and kind.
     pub fn new(spec: PodSpecInner) -> Self {
         Self {
@@ -1045,6 +1071,11 @@ pub struct WorkloadSpec {
     /// key — see `workload_env`.
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Outputs made available to receipt readers after execution: artifact name
+    /// to relative workspace path. Undeclared files cannot be collected through
+    /// the node's receipt API. Included in the declared program identity.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub artifacts: std::collections::BTreeMap<String, String>,
     /// UID to run the workload as.
     ///
     /// # Why this matters more than it looks

@@ -35,6 +35,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare exact-tree, offline Rust build inputs for a nucleus microVM.
+    BuildImage(build_image::Args),
+    /// Build nucleus in a prepared microVM image and verify cold/warm artifacts.
+    BuildRun(build_image::execute::Args),
+    /// Run the microVM build experiment with a disposable bootstrap node/key.
+    BuildBootstrap(build_image::execute::BootstrapArgs),
+    /// Build again using a verified predecessor artifact as the disposable node.
+    BuildSuccessor(build_image::successor::Args),
+    /// Export only public build experiment evidence, excluding all private keys.
+    BuildEvidence(build_image::execute::EvidenceArgs),
+    /// Measure private image cloning and verification on this host filesystem.
+    BuildCacheProbe(build_image::scratch_cache::ProbeArgs),
     /// Emit explicit Lean-action targets for the library coverage gate.
     LeanActionBuilds {
         /// Limit output to one workflow, for its per-theorem audit.
@@ -361,6 +373,7 @@ mod alg;
 mod allowlist_gates;
 mod assurance_required;
 mod bound;
+mod build_image;
 mod ci_ejections;
 mod ci_otel;
 mod ci_spec;
@@ -394,6 +407,12 @@ mod workspace_members;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::BuildImage(args) => build_image::run(args),
+        Command::BuildRun(args) => build_image::execute::run(args),
+        Command::BuildBootstrap(args) => build_image::execute::bootstrap(args),
+        Command::BuildSuccessor(args) => build_image::successor::run(args),
+        Command::BuildEvidence(args) => build_image::execute::evidence(args),
+        Command::BuildCacheProbe(args) => build_image::scratch_cache::probe(args),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {

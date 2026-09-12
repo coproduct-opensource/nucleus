@@ -97,7 +97,9 @@ path = "crates/nucleus-node/src/main.rs"
 # on the pod-creation path in THIS file because that is where the jail layout and
 # the jailer uid/gid are both in scope. Re-seeded at the measured value, as every
 # move of this entry has been.
-ceiling = 4007
+# Lowered 4007 -> 3843 on 2026-09-12: the prepared workload-API service
+# and its failure cleanup now live in pod_boot_identity.rs, before VMM spawn.
+ceiling = 3843
 target = 2000
 step = 1
 
