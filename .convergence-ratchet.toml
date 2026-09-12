@@ -43,11 +43,13 @@
 # Measured 2026-09-11 by `cargo xtask convergence`, over the production region of
 # every tracked crate as `law_mechanisms::production_region` extracts it:
 #
-#   DecisionToken      31   ADR 0006 C2.5 already names it: inert outside
-#                           `debug_assert`. Nearly the whole number is one type.
-#   DischargedBundle    4
+#   35 -> 4, by taking `DecisionToken` by value at all 31 of its signatures.
+#
+#   DischargedBundle    4   what remains. `ifc_api.rs`'s `_proof`, the audit-log
+#                           renderer `discharge_witness`, and two effect
+#                           signatures — the `f7f9719b` shape at its origin.
 #                      --
-#                      35   over a population of 7 affine types
+#                       4   over a population of 7 affine types
 #
 # SEEDED FROM THE GATE, NOT FROM A PROBE. A scratch script written while scoping
 # this said 34 across three types, because it tracked `#[cfg(test)]` line by line
@@ -55,15 +57,8 @@
 # its number have to come from the same code or the number is about the probe.
 # `.clippy-ratchet.toml` records the same lesson from the other direction: a
 # ceiling seeded on macOS that CI counted differently red on its own PR.
-#
-# `SessionCleanseToken` is NOT in this population and is worth naming: it was
-# fixed today (taken by value, probed with a paired doctest) but carries no
-# `#[must_use]`, so the predicate does not see it. The population is what the
-# types declare, not what carries affine intent in someone's head — which is
-# also why adding `#[must_use]` to a type can RAISE this number. That is
-# correct: it means the tree started admitting a claim it was not honouring.
 [linearity]
-ceiling = 35
+ceiling = 4
 target = 0
 
 # ── act_coverage: the protected boundary carries its target ─────────────────

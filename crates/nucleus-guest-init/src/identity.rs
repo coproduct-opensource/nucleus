@@ -190,6 +190,32 @@ pub struct BrokerCapability {
 /// returns `Ok(())` anyway: announcing a barrier is not a request for anything, so failing to
 /// announce it must never stop a pod from starting. The cost of a host that never hears it is
 /// that the VM is refused as a snapshot base, which is the correct answer.
+/// Proof that the snapshot barrier is behind us.
+///
+/// The field is private and this type lives HERE, not beside its user. That is
+/// load-bearing: Rust's field privacy is module-scoped, so a marker defined in
+/// the same module as the code it constrains can be constructed by that code
+/// and constrains nothing. The first version of this was in `main.rs` and a
+/// perturbation test compiled straight through it.
+///
+/// Defined here, the only way to hold one is [`barrier`] — which announces.
+pub struct PastBarrier(());
+
+/// Announce the snapshot barrier and return the proof that it happened.
+///
+/// Best-effort by design: a host that never hears it simply never records the
+/// barrier, and the only consequence is that this VM cannot serve as a base. A
+/// VM with no workload API has no barrier to announce and is already unusable
+/// as one — either way nothing is left to defer, so the token is issued.
+pub fn barrier(port: Option<u32>) -> PastBarrier {
+    if let Some(port) = port
+        && let Err(e) = announce_snapshot_ready(port)
+    {
+        eprintln!("snapshot barrier not announced (continuing): {e}");
+    }
+    PastBarrier(())
+}
+
 pub fn announce_snapshot_ready(port: u32) -> Result<(), String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
@@ -205,6 +231,47 @@ pub fn announce_snapshot_ready(port: u32) -> Result<(), String> {
     let mut response = String::new();
     let _ = reader.read_line(&mut response);
     Ok(())
+}
+
+/// Fetch the spec naming what this pod runs.
+///
+/// Past the barrier by construction — it takes a [`PastBarrier`]. Fetching the
+/// spec is the most personalising thing a guest can do: a VM that has one is
+/// committed to a single job, and a base snapshotted after this point can be
+/// restored for exactly that job and no other.
+///
+/// The body is NOT logged on a parse failure. It is not a secret the way a
+/// broker capability is, but it is the pod's command line and the guest console
+/// is the wrong place to reproduce it.
+pub fn fetch_pod_spec(port: u32, _past_barrier: &PastBarrier) -> Result<String, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(
+            b"FETCH_POD_SPEC
+",
+        )
+        .map_err(|e| format!("failed to send FETCH_POD_SPEC: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read pod-spec response: {e}"))?;
+
+    let parsed: serde_json::Value = serde_json::from_str(&response)
+        .map_err(|_| "pod-spec response was not valid JSON".to_string())?;
+    if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
+        return Err(err.to_string());
+    }
+    parsed
+        .get("spec")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "pod-spec response named no spec".to_string())
 }
 
 pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
