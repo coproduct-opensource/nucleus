@@ -21,17 +21,35 @@
 #                counted as unobserved, `read_file` and `run_command` included
 #   80  after adding the `FlowGraph` family to the marker set
 #   28  after scoping the ENFORCED finding to `OBSERVED_CRATES`
+#   12  after scoping again to what the AGENT can reach (`AGENT_ROOTS`), the
+#       same move `cb4a_separation` makes with its PDP/CDP roots. The other 17
+#       are boot and shutdown I/O — config loads, exit-report hashing, Article
+#       12 shipping, sandbox proof — still reported, as ADVISORY, and not gated.
 #
-# What the 28 are: node_client (5), pod_mgmt (5), exit_report (3), art12_shipper
-# (2), node_identity (2), sandbox_proof (2), and single sites in build_mtls_config,
-# build_audit_log, load_last_hash, load_policy_file, proposal::load, main, and
-# web_fetch_policy::read_body_capped. None is an agent-facing handler; every
-# agent-facing handler now absorbs its obligation correctly, which is the thing
-# this change fixed.
+# WHAT THE 12 ARE, and why they are one finding rather than twelve: the agent
+# asks the tool-proxy to manage a pod (`pod_mgmt::{create_sub_pod, list_sub_pods,
+# get_pod_status, get_pod_logs, cancel_sub_pod}`), the proxy asks the node
+# (`node_client::{get_json, post_json, create_pod, list_pods, pod_logs,
+# cancel_pod}`), and the node's response comes back to the agent unobserved.
+# `pod_logs` is the sharp one: a child pod's log content is whatever that pod
+# wrote, and it reaches the model with no flow node.
+#
+# The twelfth is `web_fetch_policy::read_body_capped`, and it is a DIFFERENT
+# question. Its caller `web_fetch` observes, twice. The pass reports at the
+# ingest rather than at an observing ancestor, on purpose — "the observation
+# belongs next to the ingest" — so a leaf whose caller observes still shows up.
+# Fixing it means either observing in the leaf or moving the report location,
+# and those are different answers with different costs.
+#
+# The 16 ADVISORY are boot and shutdown I/O: exit_report (3), art12_shipper (2),
+# node_identity (2), sandbox_proof (2), and single sites in build_mtls_config,
+# build_audit_log, load_last_hash, load_policy_file, proposal::load, main and
+# require_node_identity. Still reported, never gated. They are outside what the
+# IFC theorems quantify over.
 #
 # `target = 0` is the real goal and the direction of travel is DOWN. The next
 # move is not to lower this by one: it is to decide whether infrastructure
 # ingest inside this crate should be observed too, or given a marker that says
 # it is not agent-attributed. Either answer shrinks this number honestly.
-ceiling = 28
+ceiling = 12
 target = 0
