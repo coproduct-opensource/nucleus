@@ -55,7 +55,6 @@
     )
 )]
 
-
 use anyhow::{Context, Result};
 use nucleus_action_key::ActionKey;
 use nucleus_ci_verdict::CiVerdict;

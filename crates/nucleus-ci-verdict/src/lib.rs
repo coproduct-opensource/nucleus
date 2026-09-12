@@ -49,7 +49,6 @@
     )
 )]
 
-
 use serde::{Deserialize, Serialize};
 
 /// What the gate answered.
