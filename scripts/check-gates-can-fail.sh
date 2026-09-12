@@ -954,7 +954,7 @@ probe_xtask fly-pools ci/fly-runner/manager.toml \
 probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
     "a baseline claiming a score the tree does not have" \
     "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \
-    "scoreboard.json" "$(mktemp -t scoreboard).json" \
+    "scoreboard.json" "$(mktemp "${TMPDIR:-/tmp}/scoreboard.XXXXXX").json" \
     gen_exemplar_scoreboard perturb_exemplar_baseline
 probe_xtask push-auth .github/workflows/clippy-ratchet.yml \
     "a CI push relying on the checkout's ambient credential" perturb_push_auth_strip
@@ -967,9 +967,9 @@ probe_xtask gate-budget .github/workflows/gatehouse-shadow.yml \
 probe_xtask_generated policy-gate PolicyManifest.toml \
     "an amendment the constitutional kernel must refuse" \
     "--base before.toml --candidate PolicyManifest.toml --changed-files changed.txt" \
-    "before.toml" "$(mktemp -t policy-base).toml" gen_policy_base \
+    "before.toml" "$(mktemp "${TMPDIR:-/tmp}/policy-base.XXXXXX").toml" gen_policy_base \
     perturb_policy_escalation \
-    "changed.txt" "$(mktemp -t policy-changed).txt" gen_policy_changed
+    "changed.txt" "$(mktemp "${TMPDIR:-/tmp}/policy-changed.XXXXXX").txt" gen_policy_changed
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
