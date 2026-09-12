@@ -271,6 +271,11 @@ the node state or its keys. Local request-binding/export tests and Clippy pass;
 the real cold/warm experiment remains to be observed. No GitHub check publisher
 or cache-hit authority is implied by these development commands.
 
+The gatehouse review now names a separate `Substrate::Nucleus` with a
+`NodeAttested` verifier ceiling and a typed exact-SHA event for PR
+synchronization and `merge_group.checks_requested`. Its backend intentionally
+refuses execution until the nucleus receipt schema adapter is implemented.
+
 Admission also records requested/enforced/backend isolation labels. The build
 controller must predict those before hashing its expected spec. Their rendering
 now lives in `PodSpec::record_isolation`, used by both node admission and the
