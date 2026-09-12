@@ -61,14 +61,26 @@ Program identity hashes declared inputs and is not proof of host measurement:
 data/scratch pin completeness must still be checked by the CI admission path.
 
 Validation: full proxy all-feature suite passed (449 unit tests plus integration
-suites); the final five supervisor tests include invalid UTF-8 across multiple
-buffer reads. The node's HTTP-error test, all-target/all-feature Clippy for both
+suites); the final six supervisor tests include invalid UTF-8 across multiple
+buffer reads and preservation of boot-probe sentinels across split reads.
+Console rendering retains ordinary lines and bounds oversized ones to 8192 bytes,
+independently of the raw-byte hash. The node's HTTP-error test, all-target/all-feature Clippy for both
 crates, formatting and the line ratchet pass. Local sockets required sandbox
 escalation. Temporary pods were cancelled and the test node stopped.
 
 The existing quickstart boot workflow uses Ubuntu x86_64 runners with explicit
 KVM/vhost-vsock checks. This is a concrete route for real microVM validation;
 local-driver evidence does not satisfy that acceptance criterion.
+
+Before extending the signer, account for these existing seams: the node's
+`image_identity::verify` measures placed kernel/rootfs/data pins just before
+launch (only pins actually present are checked). Its `trust_gate` already owns
+a persistent host-only Ed25519 executor signing key compatible with the shared
+receipt envelope. `PodHandle::driver_state` records the actual spawned backend;
+request labels are not evidence for it. `WorkloadLaunch::build` resolves four
+inherited variables before admission, so the declared program digest alone is
+not the resolved environment identity. The eventual build verifier must bind
+that environment, require complete image/data pins and validate output hashes.
 
 ## Remaining acceptance work (milestones not yet complete)
 

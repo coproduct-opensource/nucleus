@@ -94,6 +94,10 @@ async fn observe(
 async fn drain(mut stream: impl AsyncRead + Unpin) -> std::io::Result<String> {
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 8192];
+    let mut line = Vec::new();
+    let mut emit = |bytes: &[u8]| {
+        crate::console_line(&format!("[workload] {}", String::from_utf8_lossy(bytes)));
+    };
     loop {
         let size = stream.read(&mut buffer).await?;
         if size == 0 {
@@ -101,11 +105,29 @@ async fn drain(mut stream: impl AsyncRead + Unpin) -> std::io::Result<String> {
         }
         let bytes = &buffer[..size];
         hash.update(bytes);
-        // Console rendering may be lossy; the attested hash is over raw bytes.
-        // Fixed-size chunks bound memory even for a stream with no newlines.
-        crate::console_line(&format!("[workload] {}", String::from_utf8_lossy(bytes)));
+        render(bytes, &mut line, &mut emit);
+    }
+    if !line.is_empty() {
+        emit(&line);
     }
     Ok(hex::encode(hash.finalize()))
+}
+
+/// Keep ordinary console lines intact across pipe reads: boot probes inspect
+/// their sentinels. Bound oversized lines without changing the raw-byte hash.
+fn render(bytes: &[u8], line: &mut Vec<u8>, emit: &mut impl FnMut(&[u8])) {
+    for byte in bytes {
+        if *byte == b'\n' {
+            emit(line);
+            line.clear();
+        } else {
+            line.push(*byte);
+            if line.len() == 8192 {
+                emit(line);
+                line.clear();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -175,5 +197,21 @@ mod tests {
             drain(bytes.as_slice()).await.expect("read raw output"),
             hex::encode(Sha256::digest(&bytes))
         );
+    }
+
+    #[test]
+    fn console_sentinels_survive_split_reads_and_long_lines_are_bounded() {
+        let mut line = Vec::new();
+        let mut emitted = Vec::new();
+        let mut emit = |bytes: &[u8]| emitted.push(bytes.to_vec());
+        render(b"PROBE PA", &mut line, &mut emit);
+        render(b"SS\n", &mut line, &mut emit);
+        render(&vec![b'x'; 20_000], &mut line, &mut emit);
+        assert_eq!(
+            emitted.first().map(Vec::as_slice),
+            Some(b"PROBE PASS".as_slice())
+        );
+        assert!(emitted.iter().all(|chunk| chunk.len() <= 8192));
+        assert!(line.len() < 8192);
     }
 }
