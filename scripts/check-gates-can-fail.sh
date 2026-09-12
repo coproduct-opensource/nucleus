@@ -854,6 +854,15 @@ perturb_unported_shell_gate() {
 }
 
 
+# One more by-reference site on an affine type: the calling convention defeating
+# the affine intent the type declares, which is the whole of what `linearity`
+# counts. ADR 0007 C-4, and `f7f9719b` is the defect it generalises.
+perturb_convergence_linearity() {
+    append_line "$1" 'fn _gate_of_gates_affine(_a: &portcullis_effects::Authority) {}'
+}
+
+probe_xtask convergence crates/nucleus-tool-proxy/src/run_gate.rs \
+    "one more affine type taken by reference" perturb_convergence_linearity
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask pin-parity ci/lean/lean-toolchain \
