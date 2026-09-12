@@ -2860,7 +2860,7 @@ async fn spawn_firecracker_pod(
         // different blocks below, and this used to be exactly the gap they fell
         // into — the bridge minted its own while the listener got `None`, so the
         // guest held a capability the verifier had never seen.
-        let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint();
+        let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
 
         let (pod_identity, identity_manager, workload_api_bridge) = if let Some(manager) =
             identity_source
@@ -2948,7 +2948,7 @@ async fn spawn_firecracker_pod(
                     // The broker capability, minted per pod and served ONCE. See
                     // `handle_fetch_broker_secret`: this is what lets the host
                     // tell the mediating proxy from every other guest process.
-                    broker_secret: Some(broker_serve.into_served()),
+                    broker_secret: Some(broker_serve.into_served(id)?),
                     // Served WITH the capability, not separately — the proxy
                     // needs both to reach the broker and neither is useful alone.
                     broker_port: state.broker_vsock_port,

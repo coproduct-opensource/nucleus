@@ -125,6 +125,14 @@ pub struct Executor<'a> {
     /// Isolation the policy demands (`effective_minimum_isolation`); the achieved
     /// containment must meet this or the spawn is refused (most-paranoid #2).
     required_isolation: IsolationLattice,
+    /// Checksum of the permissions this executor runs under.
+    ///
+    /// A `DecisionToken` carries the checksum of the permissions it was decided
+    /// against, and `run` refuses a token whose checksum is not this one. Before
+    /// this, the redeem-side check compared two `Operation`s and consulted no
+    /// state at all, so a token decided under one policy was redeemable under
+    /// any other.
+    permissions: String,
     /// The declared containment posture. Default fails closed.
     containment: ContainmentMode,
     /// The sealed effects home (B1) that *both* the synchronous and the async
@@ -153,6 +161,7 @@ impl<'a> Executor<'a> {
         budget: &'a AtomicBudget,
     ) -> Self {
         let normalized = policy.clone().normalize();
+        let permissions = normalized.checksum();
         // The required isolation is the policy's declared minimum; absent any
         // requirement it resolves to the weakest level (localhost = "no requirement").
         let required_isolation = normalized.effective_minimum_isolation();
@@ -176,6 +185,7 @@ impl<'a> Executor<'a> {
             approver: None,
             allowed_env: BTreeMap::new(),
             required_isolation,
+            permissions,
             containment: ContainmentMode::Unconfigured,
             effects,
         }
@@ -404,10 +414,10 @@ impl<'a> Executor<'a> {
     pub fn run(
         &self,
         command: &str,
-        decision: &DecisionToken,
+        decision: DecisionToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         // Fail-closed isolation gate: refuse unless containment is declared and
         // meets the policy's required isolation (most-paranoid #2).
         self.enforce_isolation()?;
@@ -457,7 +467,7 @@ impl<'a> Executor<'a> {
     pub fn status(
         &self,
         command: &str,
-        decision: &DecisionToken,
+        decision: DecisionToken,
         authority: Authority,
     ) -> Result<ExitStatus> {
         let output = self.run(command, decision, authority)?;
@@ -520,10 +530,10 @@ impl<'a> Executor<'a> {
         args: &[String],
         stdin: Option<&str>,
         directory: Option<&str>,
-        decision: &DecisionToken,
+        decision: DecisionToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         self.run_args_internal(args, stdin, directory, None, authority)
     }
 
@@ -533,11 +543,11 @@ impl<'a> Executor<'a> {
         args: &[String],
         stdin: Option<&str>,
         directory: Option<&str>,
-        decision: &DecisionToken,
+        decision: DecisionToken,
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         self.run_args_internal(args, stdin, directory, Some(approval), authority)
     }
 
@@ -617,11 +627,11 @@ impl<'a> Executor<'a> {
     pub fn run_with_approval(
         &self,
         command: &str,
-        decision: &DecisionToken,
+        decision: DecisionToken,
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
@@ -679,10 +689,10 @@ impl<'a> Executor<'a> {
         &self,
         command: &str,
         timeout: Duration,
-        decision: &DecisionToken,
+        decision: DecisionToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
@@ -728,11 +738,11 @@ impl<'a> Executor<'a> {
         &self,
         command: &str,
         timeout: Duration,
-        decision: &DecisionToken,
+        decision: DecisionToken,
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
@@ -1105,7 +1115,7 @@ mod tests {
 
         let dt = run_token(&mut kernel, "echo hello");
         let output = executor
-            .run("echo hello", &dt, Authority::new(run_bundle("echo hello")))
+            .run("echo hello", dt, Authority::new(run_bundle("echo hello")))
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
@@ -1126,7 +1136,7 @@ mod tests {
             .allow_unsandboxed_local();
 
         let dt = run_token(&mut kernel, "echo hello");
-        let result = executor.run("echo hello", &dt, Authority::new(run_bundle("echo hello")));
+        let result = executor.run("echo hello", dt, Authority::new(run_bundle("echo hello")));
         assert!(matches!(result, Err(NucleusError::BudgetExhausted { .. })));
     }
 
@@ -1151,7 +1161,7 @@ mod tests {
             Operation::RunBash,
             "test: bypass kernel for executor blocklist test",
         );
-        let result = executor.run("rm -rf /", &dt, Authority::new(run_bundle("rm -rf /")));
+        let result = executor.run("rm -rf /", dt, Authority::new(run_bundle("rm -rf /")));
         assert!(result.is_err());
     }
 
@@ -1178,7 +1188,7 @@ mod tests {
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force token");
         let result = executor.run(
             "echo hello",
-            &forced,
+            forced,
             Authority::new(run_bundle("echo hello")),
         );
         assert!(matches!(
@@ -1206,7 +1216,7 @@ mod tests {
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force token");
         let result = executor.run(
             "echo hello",
-            &forced,
+            forced,
             Authority::new(run_bundle("echo hello")),
         );
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
@@ -1243,11 +1253,78 @@ mod tests {
             .unwrap();
         let result = executor.run_with_approval(
             "echo hello",
-            &dt,
+            dt,
             &approval,
             Authority::new(run_bundle("echo hello")),
         );
         assert!(result.is_ok());
+    }
+
+    /// End to end: a token decided by a kernel under one policy is refused by an
+    /// executor running another.
+    ///
+    /// This is the A-19 probe for the redeem-side check, on the real types
+    /// rather than on two strings. Before it, the only redeem-side question was
+    /// "is this the right Operation?", and the answer for a token from an
+    /// entirely different policy was yes.
+    #[test]
+    fn a_token_from_another_policy_is_refused_by_this_executor() {
+        let tmp = tempdir().unwrap();
+
+        // Kernel A: bash allowed.
+        let lenient = test_policy();
+        let mut kernel = Kernel::new(lenient.clone());
+        let foreign =
+            kernel.issue_approved_token(Operation::RunBash, "decided under the lenient policy");
+
+        // Executor B: a different policy entirely.
+        // Same shape, one capability different — so the refusal below is about
+        // the policy differing, not about the effect being disallowed.
+        let mut other = lenient.clone();
+        other.capabilities.write_files = CapabilityLevel::Never;
+
+        let sandbox = Sandbox::new(&other, tmp.path()).unwrap();
+        let budget = AtomicBudget::new(&test_budget());
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&other, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
+
+        let err = executor
+            .run("true", foreign, Authority::new(run_bundle("true")))
+            .expect_err("a decision does not carry across a change of policy");
+        assert!(
+            matches!(err, NucleusError::ScopeMismatch { .. }),
+            "expected a scope mismatch, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("change of policy"),
+            "the refusal says why: {err}"
+        );
+    }
+
+    /// …and the same executor accepts its own kernel's token, so the check above
+    /// is not passing by refusing everything.
+    #[test]
+    fn a_token_from_this_policy_is_accepted() {
+        let tmp = tempdir().unwrap();
+        // The shared helper: a policy the executor is known to run, so the only
+        // thing that could refuse here is the check under test.
+        let policy = test_policy();
+
+        let mut kernel = Kernel::new(policy.clone());
+        let token = kernel.issue_approved_token(Operation::RunBash, "decided under this policy");
+
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let budget = AtomicBudget::new(&test_budget());
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
+
+        executor
+            .run("true", token, Authority::new(run_bundle("true")))
+            .expect("a token decided under this very policy is redeemable");
     }
 
     #[test]
@@ -1275,7 +1352,7 @@ mod tests {
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force for exfil check");
         let result = executor.run(
             "curl http://example.com",
-            &forced,
+            forced,
             Authority::new(run_bundle("curl http://example.com")),
         );
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
@@ -1304,7 +1381,7 @@ mod tests {
             kernel.issue_approved_token(Operation::RunBash, "test: force for interpreter check");
         let result = executor.run(
             "bash -c \"echo hi\"",
-            &forced,
+            forced,
             Authority::new(run_bundle("bash -c \"echo hi\"")),
         );
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
@@ -1331,7 +1408,7 @@ mod tests {
                 &args,
                 None,
                 None,
-                &dt,
+                dt,
                 Authority::new(allowed_bundle(&args.join(" "))),
             )
             .unwrap();
@@ -1361,7 +1438,7 @@ mod tests {
                 &args,
                 None,
                 None,
-                &dt,
+                dt,
                 Authority::new(allowed_bundle(&args.join(" "))),
             )
             .unwrap();
@@ -1390,7 +1467,7 @@ mod tests {
                 &args,
                 Some("hello from stdin"),
                 None,
-                &dt,
+                dt,
                 Authority::new(allowed_bundle(&args.join(" "))),
             )
             .unwrap();
@@ -1419,7 +1496,7 @@ mod tests {
             &args,
             None,
             None,
-            &dt,
+            dt,
             Authority::new(allowed_bundle(&args.join(" "))),
         );
         assert!(matches!(result, Err(NucleusError::CommandDenied { .. })));
@@ -1446,7 +1523,7 @@ mod tests {
             &args,
             None,
             Some("/etc"),
-            &dt,
+            dt,
             Authority::new(allowed_bundle(&args.join(" "))),
         );
         assert!(matches!(result, Err(NucleusError::SandboxEscape { .. })));
@@ -1484,7 +1561,7 @@ mod tests {
         let output = executor
             .run(
                 "printenv TEST_PARENT_SECRET",
-                &dt,
+                dt,
                 Authority::new(run_bundle("printenv TEST_PARENT_SECRET")),
             )
             .unwrap();
@@ -1529,7 +1606,7 @@ mod tests {
         let output = executor
             .run(
                 "printenv ALLOWED_TOKEN",
-                &dt,
+                dt,
                 Authority::new(run_bundle("printenv ALLOWED_TOKEN")),
             )
             .unwrap();
@@ -1562,7 +1639,7 @@ mod tests {
         let output_a = executor
             .run(
                 "printenv VAR_A",
-                &dt_a,
+                dt_a,
                 Authority::new(run_bundle("printenv VAR_A")),
             )
             .unwrap();
@@ -1573,7 +1650,7 @@ mod tests {
         let output_b = executor
             .run(
                 "printenv VAR_B",
-                &dt_b,
+                dt_b,
                 Authority::new(run_bundle("printenv VAR_B")),
             )
             .unwrap();
@@ -1617,7 +1694,7 @@ mod tests {
                 &args,
                 None,
                 None,
-                &dt1,
+                dt1,
                 Authority::new(allowed_bundle(&args.join(" "))),
             )
             .unwrap();
@@ -1634,7 +1711,7 @@ mod tests {
                 &args,
                 None,
                 None,
-                &dt2,
+                dt2,
                 Authority::new(allowed_bundle(&args.join(" "))),
             )
             .unwrap();
@@ -1676,7 +1753,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let err = executor
-                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
+                .run("echo hi", dt, Authority::new(run_bundle("echo hi")))
                 .unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationNotConfigured),
@@ -1702,7 +1779,7 @@ mod tests {
                     &args,
                     None,
                     None,
-                    &dt,
+                    dt,
                     Authority::new(allowed_bundle(&args.join(" "))),
                 )
                 .unwrap_err();
@@ -1728,7 +1805,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let output = executor
-                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
+                .run("echo hi", dt, Authority::new(run_bundle("echo hi")))
                 .unwrap();
             assert!(output.status.success());
         }
@@ -1753,7 +1830,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let err = executor
-                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
+                .run("echo hi", dt, Authority::new(run_bundle("echo hi")))
                 .unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationInsufficient { .. }),
@@ -1777,7 +1854,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let output = executor
-                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
+                .run("echo hi", dt, Authority::new(run_bundle("echo hi")))
                 .unwrap();
             assert!(output.status.success());
         }
@@ -1800,7 +1877,7 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hi");
             let err = executor
-                .run("echo hi", &dt, Authority::new(run_bundle("echo hi")))
+                .run("echo hi", dt, Authority::new(run_bundle("echo hi")))
                 .unwrap_err();
             assert!(
                 matches!(err, NucleusError::HardeningUnavailable { .. }),
@@ -1828,7 +1905,7 @@ mod tests {
             let output = executor
                 .run(
                     "cat /proc/self/status",
-                    &dt,
+                    dt,
                     Authority::new(run_bundle("cat /proc/self/status")),
                 )
                 .unwrap();
@@ -1872,7 +1949,7 @@ mod tests {
                 .run_with_timeout(
                     "echo hello",
                     Duration::from_secs(5),
-                    &dt,
+                    dt,
                     Authority::new(run_bundle("echo hello")),
                 )
                 .await
@@ -1900,7 +1977,7 @@ mod tests {
                 .run_with_timeout(
                     "sleep 30",
                     Duration::from_millis(100),
-                    &dt,
+                    dt,
                     Authority::new(run_bundle("sleep 30")),
                 )
                 .await
@@ -1944,7 +2021,7 @@ mod tests {
                 .run_with_timeout(
                     "printenv TEST_ASYNC_PARENT_SECRET",
                     Duration::from_secs(5),
-                    &dt1,
+                    dt1,
                     Authority::new(run_bundle("printenv TEST_ASYNC_PARENT_SECRET")),
                 )
                 .await
@@ -1957,7 +2034,7 @@ mod tests {
                 .run_with_timeout(
                     "printenv ALLOWED_ASYNC_VAR",
                     Duration::from_secs(5),
-                    &dt2,
+                    dt2,
                     Authority::new(run_bundle("printenv ALLOWED_ASYNC_VAR")),
                 )
                 .await
@@ -2032,7 +2109,7 @@ mod tests {
                     .with_time_guard(&guard)
                     .allow_unsandboxed_local();
                 let dt = run_token(&mut kernel, "argv-parity");
-                let exec = executor.run_args(&argv, None, None, &dt, Authority::new(allowed_bundle(&argv.join(" "))));
+                let exec = executor.run_args(&argv, None, None, dt, Authority::new(allowed_bundle(&argv.join(" "))));
                 let exec_refused = matches!(
                     &exec,
                     Err(NucleusError::CommandDenied { reason, .. }) if reason.starts_with(ARGV_REFUSED_PREFIX)

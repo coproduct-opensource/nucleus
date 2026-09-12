@@ -151,6 +151,21 @@ pub struct Site {
 }
 
 impl Site {
+    /// How many times the command runs under `timeout_s`.
+    ///
+    /// **This counts on something the action must do, and saying so here is the point.**
+    /// `runs = 2` is only arithmetic about a real bound if BOTH invocations are actually
+    /// bounded — the runner AND the plain `compare` run. `gatehouse.sh` bounds both, and
+    /// that change shipped in the same pull request as this gate purely because one author
+    /// wrote both. They are separate facts.
+    ///
+    /// If the compare run ever loses its bound, this stays green while the second run is
+    /// unbounded — the gate would be checking an arithmetic whose operands no longer
+    /// describe anything, which is the failure gatehouse F-103 records after nucleus #2856
+    /// arrived with a better outer-deadline fix that did not bound the compare run.
+    ///
+    /// A reader who changes `gatehouse.sh` should change this model with it, or explain why
+    /// it still holds.
     pub fn runs(&self) -> u64 {
         if self.compare { 2 } else { 1 }
     }

@@ -9,6 +9,23 @@
 //!   - submit_attack: Submit a tool-call sequence against a level
 //!   - run_challenge: Run attacks across multiple levels in one call
 
+// ADR 0007 totality: a function whose signature says it returns is lying if it
+// panics. Denied for the shipped build only — `assert!` IS a panic, so denying
+// inside `#[cfg(test)]` would forbid the thing tests are made of. This is the
+// same line `is_production_path` draws when it strips the test region.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use std::collections::BTreeSet;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -245,7 +262,7 @@ impl VaultCtfServer {
                 meta.defenses.iter().map(|d| d.name.to_string()).collect();
             let mut engine = CtfEngine::new(&level);
             let result = engine.run_attack(&tool_calls);
-            total_score += result.score;
+            total_score = total_score.saturating_add(result.score);
             for d in &result.defenses_activated {
                 all_defenses.insert(d.clone());
             }

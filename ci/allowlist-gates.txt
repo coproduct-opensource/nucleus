@@ -27,6 +27,17 @@
 #
 # `verify-strict` scans 70 files for 2 matching lines. That ratio is the gate working as intended:
 # it selects every file mentioning `ed25519_dalek` and then asks a narrow question of each.
+# 2026-09-11: an EIGHTH gate, `ring-ed25519`, joins the harness and has NO line here.
+# `check-verify-strict.sh` always carried two gates and the port took one. The second forbids
+# `ring::signature::ED25519` on any production path and the script says why there is no list:
+# "A reference to the ED25519 verification algorithm in production code is a regression, full
+# stop -- there is no allowlist for it." So it has no population to pin, and pinning zero would
+# read as an allowlist that happens to be empty rather than one that does not exist.
+#
+# What keeps it honest instead is named in the gate: the A-19 probe in
+# scripts/check-gates-can-fail.sh that drives it red on a cofactored ring verify. A gate exempt
+# from the non-vacuity rule owes that sentence.
+
 mediation/spawn=1
 mediation/net=4
 mediation/vsock=1

@@ -79,15 +79,37 @@ enum Matcher {
     },
 }
 
+/// What the scan is expected to find, which is not the same question as whether it passes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Population {
+    /// The scan MUST find at least one matching production line, allowlisted or not. A pattern
+    /// that matches nothing has stopped watching and reports that identically to working.
+    NonEmpty,
+    /// The scan must find NOTHING, there is no allowlist, and zero hits is the passing state.
+    ///
+    /// Non-vacuity cannot come from a live hit here — a live hit IS the defect. It comes from the
+    /// named A-19 probe, which drives the gate red on a real perturbation and green on restore.
+    /// Naming it is the point: a gate excused from the non-vacuity rule must say what keeps it
+    /// honest instead, or the exemption is just the rule not applying to this one.
+    Empty { falsifier: &'static str },
+}
+
 /// One question, asked of one scope.
 struct Gate {
     /// The shell gate this replaces, for the parity check.
     script: &'static str,
+    /// The line in that script's OUTPUT this gate answers for, identified by a substring unique
+    /// within that script. Every verdict line a script prints must be claimed by exactly one gate
+    /// or declared a [`SUMMARIES`] restatement — that is what makes a gate the port never
+    /// implemented visible on a GREEN tree, instead of waiting for someone to violate it.
+    verdict: &'static str,
     label: &'static str,
     scope: &'static [&'static str],
     select: Select,
     matcher: Matcher,
-    allowlist: &'static str,
+    /// The allowlist file, or `None` for a gate that has none: any hit is a violation, full stop.
+    allowlist: Option<&'static str>,
+    population: Population,
     /// Which files are NOT production, as the script defines it.
     ///
     /// **The four scripts do not agree, and that is transcribed rather than smoothed over.** Three
@@ -119,6 +141,7 @@ enum Exclude {
 const GATES: &[Gate] = &[
     Gate {
         script: "scripts/check-mediation.sh",
+        verdict: "(spawn)",
         label: "mediation/spawn",
         scope: &[
             "crates/nucleus/src",
@@ -127,11 +150,13 @@ const GATES: &[Gate] = &[
         ],
         select: Select::Literal("Command::new"),
         matcher: Matcher::Literal("Command::new"),
-        allowlist: "scripts/mediation-allowlist.txt",
+        allowlist: Some("scripts/mediation-allowlist.txt"),
+        population: Population::NonEmpty,
         exclude: Exclude::Dirs,
     },
     Gate {
         script: "scripts/check-mediation.sh",
+        verdict: "(net)",
         label: "mediation/net",
         scope: &[
             "crates/nucleus/src",
@@ -140,11 +165,13 @@ const GATES: &[Gate] = &[
         ],
         select: Select::Literal(".send()"),
         matcher: Matcher::Literal(".send()"),
-        allowlist: "scripts/mediation-net-allowlist.txt",
+        allowlist: Some("scripts/mediation-net-allowlist.txt"),
+        population: Population::NonEmpty,
         exclude: Exclude::Dirs,
     },
     Gate {
         script: "scripts/check-mediation.sh",
+        verdict: "(vsock)",
         label: "mediation/vsock",
         scope: &[
             "crates/nucleus/src",
@@ -153,29 +180,35 @@ const GATES: &[Gate] = &[
         ],
         select: Select::Literal("VsockStream::connect"),
         matcher: Matcher::Literal("VsockStream::connect"),
-        allowlist: "scripts/mediation-vsock-allowlist.txt",
+        allowlist: Some("scripts/mediation-vsock-allowlist.txt"),
+        population: Population::NonEmpty,
         exclude: Exclude::Dirs,
     },
     Gate {
         script: "scripts/check-sealed-home.sh",
+        verdict: "(spawn)",
         label: "sealed-home/spawn",
         scope: &["crates/portcullis-effects/src"],
         select: Select::Literal("Command::new"),
         matcher: Matcher::Literal("Command::new"),
-        allowlist: "scripts/sealed-home-allowlist.txt",
+        allowlist: Some("scripts/sealed-home-allowlist.txt"),
+        population: Population::NonEmpty,
         exclude: Exclude::Dirs,
     },
     Gate {
         script: "scripts/check-sealed-home.sh",
+        verdict: "(net)",
         label: "sealed-home/net",
         scope: &["crates/portcullis-effects/src"],
         select: Select::Literal(".send()"),
         matcher: Matcher::Literal(".send()"),
-        allowlist: "scripts/sealed-home-allowlist.txt",
+        allowlist: Some("scripts/sealed-home-allowlist.txt"),
+        population: Population::NonEmpty,
         exclude: Exclude::Dirs,
     },
     Gate {
         script: "scripts/check-ingest-hashed.sh",
+        verdict: "ingest-hash gate",
         label: "ingest-hashed",
         scope: &[
             "crates/nucleus/src",
@@ -190,11 +223,13 @@ const GATES: &[Gate] = &[
             forbid: None,
             require: None,
         },
-        allowlist: "scripts/ingest-hashed-allowlist.txt",
+        allowlist: Some("scripts/ingest-hashed-allowlist.txt"),
+        population: Population::NonEmpty,
         exclude: Exclude::DirsAndTestModules,
     },
     Gate {
         script: "scripts/check-verify-strict.sh",
+        verdict: "M-3 verify-strict gate",
         label: "verify-strict",
         scope: &["crates"],
         select: Select::Literal("ed25519_dalek"),
@@ -203,10 +238,85 @@ const GATES: &[Gate] = &[
             forbid: Some("verify_strict"),
             require: Some(r",\s*&"),
         },
-        allowlist: "scripts/verify-strict-allowlist.txt",
+        allowlist: Some("scripts/verify-strict-allowlist.txt"),
+        population: Population::NonEmpty,
         exclude: Exclude::Dirs,
     },
+    // The EIGHTH, and it was in the script all along. `check-verify-strict.sh` carries two gates,
+    // not one: the M-3 dalek gate above, and this. The port took the first and left the second,
+    // and nothing said so — `--parity` compares one exit status against one aggregate verdict, so
+    // on a tree with no violation an unported gate is indistinguishable from a satisfied one. It
+    // surfaced on 2026-09-11 only because a PR wrote the very construct it forbids, and then the
+    // harness printed `ok verify-strict` while the script printed FAILED.
+    //
+    // It does not fit the shape the other seven share, and that is why it was droppable:
+    //
+    //   * **No allowlist.** The script says so in as many words — "A reference to the `ED25519`
+    //     verification algorithm in production code is a regression, full stop — there is no
+    //     allowlist for it." `Allowlist: None` is that sentence.
+    //   * **An empty population is the PASSING state.** Every trust-path Ed25519 re-verify was
+    //     migrated to `verify_strict`, so a clean tree has zero hits — which the non-vacuity rule
+    //     reads as "the gate has stopped watching". The rule is right about the other seven and
+    //     wrong about this one, so the gate declares which rule applies and names what keeps it
+    //     honest instead.
+    Gate {
+        script: "scripts/check-verify-strict.sh",
+        verdict: "#16 ring-Ed25519 gate",
+        label: "ring-ed25519",
+        scope: &["crates"],
+        select: Select::Pattern(RING_ED25519),
+        matcher: Matcher::Guarded {
+            find: RING_ED25519,
+            forbid: None,
+            require: None,
+        },
+        allowlist: None,
+        population: Population::Empty {
+            falsifier: "scripts/check-gates-can-fail.sh — \"a cofactored ring ED25519 verify\"",
+        },
+        exclude: Exclude::DirsAndTestModules,
+    },
 ];
+
+/// The ring gate's pattern, assembled from pieces **so that this file does not contain it**.
+///
+/// Written whole, the literal below would be a production line in `crates/` matching the very
+/// construct the gate forbids, and both the harness and `check-verify-strict.sh` would red on
+/// their own implementation. That is not hypothetical — it happened on the first run of this
+/// gate, and the two hits were these two lines.
+///
+/// The general fact, which is worth more than the workaround: the scripts' `rg -l` selector reads
+/// the WHOLE file, and `production_lines` strips comments and `#[cfg(test)]` blocks but **not
+/// string literals**. So any Rust source that names a forbidden construct inside a string is a
+/// false positive for every gate in this family. Splitting the literal is the fix that adds no
+/// exemption — an exclusion for "the gate's own source" would be a hole the next file could sit
+/// in, and it would make the harness disagree with the script.
+const RING_ED25519: &str = concat!("signature::", "ED25519", r"([^_A-Za-z0-9]|$)");
+
+/// Lines a script prints that RESTATE gates already counted, rather than deciding anything of
+/// their own. Listed rather than omitted, each with the reason, on the same argument the rest of
+/// this repository's exemption lists use: an entry here is a claim a reader can check, and an
+/// omission is not.
+///
+/// Everything else a script prints as a verdict must be claimed by exactly one [`Gate`]. That is
+/// the whole mechanism — a script gate the harness never ported has an unclaimed verdict line on
+/// a GREEN tree, where waiting for a violation means waiting for the defect.
+const SUMMARIES: &[(&str, &str)] = &[
+    (
+        "no un-allowlisted raw effect primitive on the agent path (spawn + net + vsock)",
+        "restates mediation/spawn, mediation/net and mediation/vsock",
+    ),
+    (
+        "no raw effect primitive outside the sealed RealEffects home (spawn + net)",
+        "restates sealed-home/spawn and sealed-home/net",
+    ),
+];
+
+/// A line of a script's output that announces a verdict. Both spellings, because a marker that
+/// only matches `PASSED` would stop accounting for a gate at the moment it fires.
+fn is_verdict_line(line: &str) -> bool {
+    line.contains("gate PASSED") || line.contains("gate FAILED")
+}
 
 /// The production lines of a Rust source: `#[cfg(test)]` items and comment lines removed.
 ///
@@ -356,7 +466,15 @@ struct Report {
 }
 
 fn run_gate(root: &Path, g: &Gate) -> Result<Report> {
-    let allow = load_allowlist(root, g.allowlist)?;
+    let allow = match g.allowlist {
+        Some(rel) => load_allowlist(root, rel)?,
+        // A gate with no allowlist: nothing is blessed, so every hit is a violation.
+        None => Allowlist {
+            snippets: Vec::new(),
+            files: Vec::new(),
+            entries: 0,
+        },
+    };
     let select = match g.select {
         Select::Literal(_) => None,
         Select::Pattern(p) => Some(Regex::new(p).with_context(|| format!("select {p}"))?),
@@ -466,22 +584,48 @@ pub fn check(root: &Path) -> Result<()> {
 
     for g in GATES {
         let rep = run_gate(root, g)?;
-        total_matched += rep.matched;
+        if g.population == Population::NonEmpty {
+            total_matched += rep.matched;
+        }
 
         for v in &rep.violations {
             println!("  FAIL  {}: {v}", rep.label);
             failures += 1;
         }
 
-        // A pattern that matches nothing is not a gate that found nothing — it is a gate that
-        // stopped looking, and it reports the same thing either way.
-        if rep.matched == 0 {
-            println!(
-                "  FAIL  {}: the pattern matches no production line in {} file(s) — \
-                 the gate has stopped watching, which is indistinguishable from passing",
-                rep.label, rep.files_scanned
-            );
-            failures += 1;
+        match g.population {
+            // A pattern that matches nothing is not a gate that found nothing — it is a gate that
+            // stopped looking, and it reports the same thing either way.
+            Population::NonEmpty if rep.matched == 0 => {
+                println!(
+                    "  FAIL  {}: the pattern matches no production line in {} file(s) — \
+                     the gate has stopped watching, which is indistinguishable from passing",
+                    rep.label, rep.files_scanned
+                );
+                failures += 1;
+            }
+            // The passing state IS zero, so a live hit cannot be what keeps this honest. What
+            // keeps it honest is that the scan still reaches files: a `select` that selects
+            // nothing would pass this gate for the wrong reason, and that IS checkable.
+            Population::Empty { .. } if rep.files_scanned == 0 && rep.matched == 0 => {
+                // Nothing to say — no file in the tree mentions the construct, which is the
+                // migrated state this gate exists to hold. See the falsifier it names.
+            }
+            _ => {}
+        }
+
+        // Only a gate with an allowlist has a population to pin. One without is not exempt from
+        // scrutiny, it has a different question asked of it above.
+        if g.allowlist.is_none() {
+            // Not `ok` when it just printed violations: a gate that reports both is a gate whose
+            // summary line means nothing.
+            if rep.violations.is_empty() {
+                println!(
+                    "  ok    {:<20} {} file(s), 0 hit(s) — no allowlist, and none needed",
+                    rep.label, rep.files_scanned
+                );
+            }
+            continue;
         }
 
         match pinned.get(rep.label) {
@@ -548,41 +692,113 @@ pub fn parity(root: &Path) -> Result<()> {
 
     let mut failures = 0usize;
     for script in scripts {
-        let mine_red = GATES
-            .iter()
-            .filter(|g| g.script == script)
-            .map(|g| run_gate(root, g))
-            .collect::<Result<Vec<_>>>()?
-            .iter()
-            .any(|r| !r.violations.is_empty());
-
         let out = Command::new("bash")
             .arg(root.join(script))
             .current_dir(root)
             .output()
             .with_context(|| format!("running {script}"))?;
-        let theirs_red = !out.status.success();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let verdict_lines: Vec<&str> = combined.lines().filter(|l| is_verdict_line(l)).collect();
 
-        if mine_red == theirs_red {
+        // A script that announced nothing cannot be compared with anything, and an exit status
+        // alone would let it pass. This is the "could not look" case, and it is not a pass.
+        if verdict_lines.is_empty() {
             println!(
-                "  ok    {script} — both {}",
-                if mine_red { "RED" } else { "green" }
-            );
-        } else {
-            println!(
-                "  FAIL  {script} — harness says {}, the script says {} (exit {:?})",
-                if mine_red { "RED" } else { "green" },
-                if theirs_red { "RED" } else { "green" },
+                "  FAIL  {script} — printed no `gate PASSED`/`gate FAILED` line, so there is \
+                 nothing to compare the harness against (exit {:?})",
                 out.status.code()
             );
-            print!("{}", String::from_utf8_lossy(&out.stderr));
+            failures += 1;
+            continue;
+        }
+
+        // Gate by gate, on the script's OWN per-gate verdict rather than one exit status for the
+        // lot. Two compensating errors — the harness red where the script is green and green
+        // where it is red — cancel exactly in an aggregate comparison.
+        let mut claimed = vec![false; verdict_lines.len()];
+        for g in GATES.iter().filter(|g| g.script == script) {
+            let hits: Vec<usize> = verdict_lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.contains(g.verdict))
+                .map(|(i, _)| i)
+                .collect();
+            match hits.len() {
+                0 => {
+                    println!(
+                        "  FAIL  {} — no line of {script}'s output contains {:?}. Either the \
+                         script stopped announcing this gate, or the marker is wrong; a marker \
+                         that matches nothing accounts for nothing.",
+                        g.label, g.verdict
+                    );
+                    failures += 1;
+                    continue;
+                }
+                1 => {}
+                n => {
+                    println!(
+                        "  FAIL  {} — {:?} matches {n} of {script}'s verdict lines, so it does \
+                         not identify one gate. Narrow the marker.",
+                        g.label, g.verdict
+                    );
+                    failures += 1;
+                    continue;
+                }
+            }
+            let i = hits[0];
+            claimed[i] = true;
+            let theirs_red = verdict_lines[i].contains("gate FAILED");
+            let mine_red = !run_gate(root, g)?.violations.is_empty();
+            if mine_red == theirs_red {
+                println!(
+                    "  ok    {:<20} both {} ({script})",
+                    g.label,
+                    if mine_red { "RED" } else { "green" }
+                );
+            } else {
+                println!(
+                    "  FAIL  {} — harness says {}, {script} says {}:",
+                    g.label,
+                    if mine_red { "RED" } else { "green" },
+                    if theirs_red { "RED" } else { "green" }
+                );
+                println!("        {}", verdict_lines[i].trim());
+                failures += 1;
+            }
+        }
+
+        // The half that does not need a violation to exist. Every verdict line the script printed
+        // is either a gate this harness implements or a declared restatement of ones it does; a
+        // line that is neither is a gate the port never took, and it reads as `ok` today.
+        for (i, line) in verdict_lines.iter().enumerate() {
+            if claimed[i] {
+                continue;
+            }
+            if SUMMARIES.iter().any(|(m, _)| line.contains(m)) {
+                continue;
+            }
+            println!(
+                "  FAIL  {script} announces a verdict no gate in this harness claims:\n\
+                 \x20       {}\n\
+                 \x20       The script decides something the port does not. Add the Gate, or — if \
+                 it restates gates already here — add it to SUMMARIES with the reason. Leaving it \
+                 unclaimed is how `ok` gets printed for a question nobody asked.",
+                line.trim()
+            );
             failures += 1;
         }
     }
     if failures > 0 {
-        bail!("{failures} script(s) disagree with the harness");
+        bail!("{failures} disagreement(s) between the harness and the shell family");
     }
-    println!("OK: every shell gate in the family agrees with the harness");
+    println!(
+        "OK: every shell gate in the family is implemented here and agrees, {} gate(s) accounted for",
+        GATES.len()
+    );
     Ok(())
 }
 
@@ -608,6 +824,89 @@ mod tests {
                 .iter()
                 .all(|(_, l)| !l.contains("Command::new")),
             "a comment was read as code"
+        );
+    }
+
+    #[test]
+    fn a_pass_and_a_fail_are_both_verdict_lines() {
+        assert!(super::is_verdict_line(
+            "#16 ring-Ed25519 gate PASSED: no ring verify on any production path."
+        ));
+        assert!(super::is_verdict_line(
+            "#16 ring-Ed25519 gate FAILED: cofactored verify on a production path:"
+        ));
+        // A marker that only matched PASSED would stop accounting for a gate at the exact
+        // moment it fires, which is the moment accounting matters.
+        assert!(!super::is_verdict_line(
+            "scanning 71 files for ed25519_dalek"
+        ));
+    }
+
+    /// Every gate's `verdict` marker must identify ONE line within its own script. Two gates of
+    /// the same script sharing a marker, or a marker that is a substring of a sibling's line,
+    /// makes the accounting claim the wrong line and still print `ok`.
+    #[test]
+    fn verdict_markers_are_unique_within_a_script() {
+        for a in super::GATES {
+            let siblings: Vec<&super::Gate> = super::GATES
+                .iter()
+                .filter(|b| b.script == a.script && b.label != a.label)
+                .collect();
+            for b in siblings {
+                assert_ne!(
+                    a.verdict, b.verdict,
+                    "{} and {} share the marker {:?} in {}",
+                    a.label, b.label, a.verdict, a.script
+                );
+            }
+        }
+    }
+
+    /// The whole point of the eighth gate: `check-verify-strict.sh` carries two gates, so the
+    /// harness must carry two for it. A port that silently drops one is what this pins.
+    #[test]
+    fn verify_strict_has_both_of_its_gates() {
+        let n = super::GATES
+            .iter()
+            .filter(|g| g.script == "scripts/check-verify-strict.sh")
+            .count();
+        assert_eq!(
+            n, 2,
+            "the script decides the dalek gate AND the ring gate; the harness must do both"
+        );
+    }
+
+    /// A gate excused from the non-vacuity rule must say what keeps it honest instead, or the
+    /// exemption is just the rule not applying to this one.
+    #[test]
+    fn an_empty_population_names_its_falsifier() {
+        for g in super::GATES {
+            if let super::Population::Empty { falsifier } = g.population {
+                assert!(
+                    !falsifier.trim().is_empty(),
+                    "{} is exempt from non-vacuity and names nothing in its place",
+                    g.label
+                );
+                assert!(
+                    g.allowlist.is_none(),
+                    "{} expects an empty population but carries an allowlist — an entry in it \
+                     would be a blessed hit in a gate whose passing state is zero hits",
+                    g.label
+                );
+            }
+        }
+    }
+
+    /// This file writes the forbidden construct in pieces so that it is not a hit on itself. If
+    /// someone ever reassembles it, the gate reds on its own implementation — which is how this
+    /// was discovered.
+    #[test]
+    fn the_harness_is_not_a_hit_on_itself() {
+        let src = include_str!("allowlist_gates.rs");
+        let re = regex::Regex::new(super::RING_ED25519).expect("the gate's own pattern compiles");
+        assert!(
+            !re.is_match(src),
+            "this file matches the ring pattern; split the literal again"
         );
     }
 

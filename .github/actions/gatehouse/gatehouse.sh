@@ -106,7 +106,20 @@ jq -c .inclusion <<<"$PUSH" > "$W/proof.json"
 curl -sSf --max-time 30 "$CONTROL/v1/$TENANT/trust" > "$W/trust.json"
 "$GATE" expect "$W/gate.json" --repo . --tree HEAD --class optional --plan "$PLAN" --out "$W/expect.json" >/dev/null
 set +e
-VOUT="$("$GATE" receipt verify "$W/receipt.json" --trust "$W/trust.json" --expect "$W/expect.json" --inclusion "$W/proof.json")"; VC=$?
+# `2>&1`, and the reason is the one line this script exists to print. `$(...)` captures
+# stdout; `gate receipt verify` writes its diagnosis to STDERR. So the `die` below -- the
+# single place designed to explain why a receipt could not be checked -- interpolated an
+# empty string, while the explanation went past it into the raw log as an unattributed line.
+#
+# Seen 2026-09-12 on PR #2865's fmt shadow: the job reported
+#
+#   could not look: ProofNotAtCheckpoint { proof_size: 693, trusted_size: 694 }
+#   ##[error]gatehouse: could not verify the receipt against the log:
+#
+# -- the answer and the question, adjacent and unconnected, the error naming nothing. Inside
+# a folded log group the first line is easy to miss entirely, and then a red that says
+# exactly what happened reads as a red that says nothing.
+VOUT="$("$GATE" receipt verify "$W/receipt.json" --trust "$W/trust.json" --expect "$W/expect.json" --inclusion "$W/proof.json" 2>&1)"; VC=$?
 set -e
 case "$VC" in
   0) VERIFIED=true; HELD=held ;;
