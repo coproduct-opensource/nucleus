@@ -952,7 +952,6 @@ UNCOVERED=(
     # and the ceiling below only shrinks. Two of the ten are probed already.
     "xtask ci-spec                 reads live branch protection; a perturbation needs the GitHub API, not a file"
     "xtask gatehouse-pin           takes --gatehouse <path>; the probe needs a gatehouse checkout this script does not have"
-    "xtask lean-action-builds      needs a Lean toolchain to reach its verdict"
     "xtask line-ratchet            probed through scripts/check-line-ratchet.sh, which is the same decision procedure"
     "xtask policy-gate             runs ck-kernel admission on a manifest amendment; needs a real amendment"
 )
@@ -985,7 +984,14 @@ UNCOVERED=(
 # ceiling, and raising a ceiling above the actual count exercises that half from a
 # committed declaration. The same shape as scoreboard-ratchet above: the exemption
 # named a real obstacle and stopped there.
-UNCOVERED_CEILING=6
+# 6 -> 5 on 2026-09-12: `lean-action-builds` was never uncovered. Its exemption
+# said "needs a Lean toolchain to reach its verdict" and the program neither needs
+# one nor reaches a verdict -- it parses workflow YAML and hands the result to
+# `check-lean-libs-built.sh`, which is probed twice. Fifth instance of the shape
+# scoreboard-ratchet, check-dep-ceiling, check-wasm-closure and gatehouse-pin
+# each turned out to be, and the sharpest: the others named a real obstacle and
+# stopped short, this one named a different program's.
+UNCOVERED_CEILING=5
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #
@@ -1158,6 +1164,16 @@ SHIM_COVERED=(
     "inert-authority scripts/check-inert-authority.sh"
     "law-mechanisms  scripts/check-law-mechanisms.sh"
     "kani-coverage   scripts/check-kani-proof-count.sh"
+    # Moved here from UNCOVERED, where its stated reason was wrong about a
+    # different program. The entry read "needs a Lean toolchain to reach its
+    # verdict"; `crates/xtask/src/lean_action_builds.rs` contains no `Command`
+    # and no `process::` -- it reads `.github/workflows/*.yml` and parses YAML --
+    # and it reaches no verdict, because it is a READER: its own header says
+    # "read explicit Lean-action build inputs for the library-coverage gate",
+    # and `check-lean-libs-built.sh:50` is what decides on them. That script is
+    # probed twice. So the obstacle named neither this program's needs nor its
+    # shape, and the coverage was there all along.
+    "lean-action-builds scripts/check-lean-libs-built.sh"
 )
 
 for sub in "${XTASK_GATES[@]}"; do
@@ -1179,7 +1195,11 @@ for sub in "${XTASK_GATES[@]}"; do
         if [[ ! -f "$s_script" ]]; then
             echo "  FAIL  xtask $sub — SHIM_COVERED names $s_script, which does not exist."
             failures=$((failures + 1))
-        elif ! grep -qE "xtask -- ${sub}([[:space:]]|\"|$)" "$s_script"; then
+        # Any non-word boundary, not just a space or a quote: `$(cargo run ... -- sub)`
+        # ends the name with `)`, and `check-lean-libs-built.sh` calls it exactly that way.
+        # The narrower pattern reported a live, correct row as false -- a check that parses
+        # one calling syntax and reports confidently about the others.
+        elif ! grep -qE "xtask -- ${sub}([^a-zA-Z0-9_-]|$)" "$s_script"; then
             echo "  FAIL  xtask $sub — SHIM_COVERED says $s_script covers it, and that"
             echo "        script does not invoke it. The route into CI moved; this row is"
             echo "        now an exemption for a gate nothing runs."
