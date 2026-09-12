@@ -1122,31 +1122,91 @@ done
 # the identical trap probe() already records for shell gates ("a comment that
 # merely mentions the script is not an invocation"), and it is live in this repo
 # today rather than hypothetical.
+# A gate does not have to be named in a workflow to run in CI. It can be reached
+# through a SCRIPT that a workflow runs, and three are: `check-inert-authority.sh`
+# and `check-law-mechanisms.sh` are one-line shims (`exec cargo run -q -p xtask --
+# <sub> "$@"`), and `check-kani-proof-count.sh` calls `xtask -- kani-coverage` as
+# one of its steps. All three run in CI on every push. None of them appeared in
+# the domain below, none had an exemption row, and the accounting still printed
+# `0 unaccounted` -- because the derivation globbed `.github/workflows/*.yml` and
+# they are not there.
+#
+# That is this section's own thesis one level out. It opens by saying the shell
+# loop globs `scripts/check-*.sh`, so a gate that is not a shell script was never
+# in the domain being searched; the fix was to derive the xtask half from the
+# workflows. The workflows are not the whole of CI either. Composite actions are
+# included for the same reason -- `.github/actions/gatehouse` runs commands too.
 declare -a XTASK_GATES=()
 while IFS= read -r sub; do
     [[ -z "$sub" ]] && continue
     XTASK_GATES+=("$sub")
 done < <(
-    grep -rhoE '^[^#]*xtask -- [a-z][a-z-]*' .github/workflows/*.yml 2>/dev/null \
+    grep -rhoE '^[^#]*xtask -- [a-z][a-z-]*' \
+        .github/workflows/*.yml scripts/*.sh .github/actions/*/*.sh .github/actions/*/*.yml 2>/dev/null \
         | grep -oE 'xtask -- [a-z][a-z-]*' \
         | sed 's/xtask -- //' \
         | sort -u
 )
 
+# Subcommands whose ONLY route into CI is a script, with the script named. A row
+# here is a claim that gets CHECKED below, not asserted: the named script must
+# actually invoke the named subcommand, so a shim that is rewritten, or a call
+# that moves, stops being covered by this line rather than quietly staying
+# "exempt". Shrink-only in spirit -- a subcommand that gains a direct workflow
+# invocation should leave this list and be probed like the rest.
+SHIM_COVERED=(
+    "inert-authority scripts/check-inert-authority.sh"
+    "law-mechanisms  scripts/check-law-mechanisms.sh"
+    "kani-coverage   scripts/check-kani-proof-count.sh"
+)
+
 for sub in "${XTASK_GATES[@]}"; do
     gate="xtask $sub"
-    # Both probe forms count as coverage: probe_xtask for a bare invocation,
-    # probe_xtask_generated for one CI runs with flags naming a generated file.
-    grep -qE "^probe_xtask(_generated)?[[:space:]]+$sub([[:space:]]|$)" "$0" && continue
+    # Three probe forms count as coverage: probe_xtask for a bare invocation,
+    # probe_xtask_generated for one CI runs with flags naming a generated file, and
+    # probe_xtask_flagged for one CI runs BOTH bare and with a flag. Listing only the
+    # form this branch happened to add would drop the other two from the accounting.
+    grep -qE "^probe_xtask(_generated|_flagged)?[[:space:]]+${sub}([[:space:]]|$)" "$0" && continue
     printf '%s\n' "${UNCOVERED[@]}" | grep -q "^${gate}[[:space:]]" && continue
+
+    # Covered through a script? The row says WHICH, and the row is verified: a
+    # claim that a shim covers this gate is worth exactly as much as the shim
+    # still calling it.
+    shim=""
+    for row in "${SHIM_COVERED[@]}"; do
+        read -r s_sub s_script <<<"$row"
+        [[ "$s_sub" == "$sub" ]] || continue
+        if [[ ! -f "$s_script" ]]; then
+            echo "  FAIL  xtask $sub — SHIM_COVERED names $s_script, which does not exist."
+            failures=$((failures + 1))
+        elif ! grep -qE "xtask -- ${sub}([[:space:]]|\"|$)" "$s_script"; then
+            echo "  FAIL  xtask $sub — SHIM_COVERED says $s_script covers it, and that"
+            echo "        script does not invoke it. The route into CI moved; this row is"
+            echo "        now an exemption for a gate nothing runs."
+            failures=$((failures + 1))
+        fi
+        shim="$s_script"
+        break
+    done
+    [[ -n "$shim" ]] && continue
+
     UNACCOUNTED+=("$gate")
+done
+
+# A SHIM_COVERED row for a subcommand no longer in the domain is a gate ranging
+# over nothing, and it reads like live coverage.
+for row in "${SHIM_COVERED[@]}"; do
+    read -r s_sub _ <<<"$row"
+    printf '%s\n' "${XTASK_GATES[@]}" | grep -qxF "$s_sub" && continue
+    echo "  FAIL  SHIM_COVERED names xtask $s_sub, which nothing in CI invokes at all."
+    failures=$((failures + 1))
 done
 
 # NON-VACUITY of the half just added: if the derivation matched nothing, every
 # xtask gate would be accounted for by having vanished from the domain.
 if [[ "${#XTASK_GATES[@]}" -lt 5 ]]; then
     echo
-    echo "ERROR: derived only ${#XTASK_GATES[@]} xtask gate(s) from the workflows."
+    echo "ERROR: derived only ${#XTASK_GATES[@]} xtask gate(s) from the workflows and scripts."
     echo "The derivation is wrong, so the accounting below exempted every gate it"
     echo "failed to see -- which is the failure this script exists to catch."
     exit 2
