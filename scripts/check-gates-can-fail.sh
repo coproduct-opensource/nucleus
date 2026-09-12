@@ -804,6 +804,15 @@ perturb_gate_budget_timeout() {
     # cannot match it.
     sed -i.bak -E 's/^( *)timeout: "[0-9]+"/\1timeout: "9999"/' "$1" && rm -f "$1.bak"
 }
+# pipefail: a new pipeline in a block that has no pipefail. This is the growth direction the
+# ratchet exists to refuse -- a pipe added to an unguarded block, where every command but the
+# last can fail unseen. `a2a-tck.yml`'s first `run:` block has no pipe and no guard today, so
+# adding one there moves the population by exactly one.
+perturb_pipefail_new_unguarded_pipe() {
+    local f="$1"
+    perl -0pi -e 's/(\n( +)run: \|\n)/$1$2  cat \/etc\/hostname | tr -d "\\n"\n/ if !$done++;' "$f"
+}
+
 
 perturb_wasm_closure_forbid_present() {
     # "needs a non-wasm dependency added" is true, and it is not the only thing this
@@ -876,6 +885,9 @@ probe_xtask_flagged allowlist-gates --parity scripts/check-ingest-hashed.sh \
     "a shell gate the Rust harness never ported" perturb_unported_shell_gate
 probe_xtask fly-pools ci/fly-runner/manager.toml \
     "the committed POOLS default the manager refuses" perturb_fly_pool_volumes
+
+probe_xtask pipefail .github/workflows/a2a-tck.yml \
+    "a pipeline added to a block with no pipefail" perturb_pipefail_new_unguarded_pipe
 probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
     "a baseline claiming a score the tree does not have" \
     "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \

@@ -134,6 +134,17 @@ jobs:
       - name: A gate's timeout must fire before its job is killed
         run: cargo run -q -p xtask -- gate-budget
 
+      # This repository's first rule about reading CI, applied to CI reading itself. GitHub runs
+      # a `run:` block as `bash -e {0}` -- NO pipefail -- unless the step says `shell: bash`,
+      # which reads like a no-op restating the default and is the difference between a pipeline
+      # whose failure is seen and one whose failure is not. Measured 2026-09-12: none of the 73
+      # workflows sets `defaults.run.shell`, 100 `run:` blocks contain a pipeline, and 44 of
+      # those are unguarded. A shrink-only ratchet over candidates, not a debt to drive to zero:
+      # some of the 44 cannot fail in a way anyone reads, and saying which is a judgement made
+      # once per site.
+      - name: A pipeline must not hide its exit status
+        run: cargo run -q -p xtask -- pipefail
+
       # Seven scan-vs-allowlist gates lived in four shell scripts, each with its own copy
       # of the same `#[cfg(test)]`-stripping awk program -- five copies, four of them
       # differing byte-for-byte, one carrying a false negative its own comment names. This

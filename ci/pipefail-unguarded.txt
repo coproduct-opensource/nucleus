@@ -1,0 +1,40 @@
+# `run:` blocks that pipe without pipefail, pinned. Read by `cargo xtask pipefail`.
+#
+# WHY THIS FILE EXISTS
+#
+# GitHub runs a `run:` block under one of two shells, and the difference is a key that reads
+# like a no-op:
+#
+#     run: |          ->  bash -e {0}                              NO pipefail
+#     shell: bash     ->  bash --noprofile --norc -eo pipefail {0}  pipefail
+#
+# Without pipefail a pipeline reports only its LAST command's status. `cmd | tee log` is `tee`'s
+# status; `cmd | grep -q x` is grep's; `X="$(find ... | wc -l)"` is `wc`'s. Under `set -e` the
+# step then carries on, and a command that failed is indistinguishable from one that succeeded
+# and printed nothing. That is this repository's first rule about reading CI, and it applies to
+# CI reading itself.
+#
+# Measured 2026-09-12: none of the 73 workflows sets `defaults.run.shell`, so every block that
+# omits the key runs without pipefail. 262 `run:` blocks; 100 contain a pipeline; 44 of those
+# are unguarded.
+#
+# WHAT THE NUMBER IS, AND IS NOT
+#
+# It is a count of CANDIDATES, not of defects, and calling it a defect count would be the error
+# the gate exists to refuse. Spot-checked three on the day it was written:
+#
+#   ci.yml:448          `libs="$(cargo metadata ... | jq -r ...)"` -- a failing `cargo metadata`
+#                       gives an empty `libs` and the status of `jq`. Genuinely risky.
+#   ci-spec-lean.yml:112 `FILES=$(find ... | wc -l)` followed by `[ "$FILES" -lt 3 ] && exit 1`.
+#                       Already defended, by a non-vacuity floor the comment above it explains.
+#   action-smoke-test.yml:59 `nucleus-tool-proxy --help | head -3` printing to the log. Nothing
+#                       downstream reads its status.
+#
+# So the value is not a debt to drive to zero on sight. It is a population that may only SHRINK:
+# each site is examined once and either guarded or left, and the pin comes down when one is
+# guarded. Raising it blesses a site where an exit status is discarded, which is a decision and
+# should be an edit here with a date and a reason.
+#
+# Exact in both directions, like the repository's other population pins: a site that gets
+# guarded must lower this number in the same change, or the ratchet stops ratcheting.
+UNGUARDED=44
