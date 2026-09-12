@@ -112,6 +112,9 @@ enum Command {
     /// A `run:` block that pipes without `pipefail` discards the exit status of every command
     /// but the last. Decided from workflow YAML alone; reads no source tree.
     Pipefail,
+    /// Shell constructs that behave differently on the platform CI runs (GNU) and the one
+    /// this is written on (BSD). Decided from the shell text alone.
+    Portability,
     /// A `with:` key an action does not declare is dropped with only a log warning. The local
     /// action is decided from this checkout; third-party ones need their action.yml at the
     /// pinned ref, and are reported as unchecked rather than passed without `--network`.
@@ -376,6 +379,7 @@ mod life;
 mod line_ratchet;
 mod pin_parity;
 mod pipefail;
+mod portability;
 mod push_auth;
 mod rerun_plan;
 mod schedule_liveness;
@@ -424,6 +428,7 @@ fn main() -> Result<()> {
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
         Command::Pipefail => pipefail::check(&std::env::current_dir()?),
+        Command::Portability => portability::check(&std::env::current_dir()?),
         Command::ActionInputs { network } => {
             action_inputs::check(&std::env::current_dir()?, network)
         }

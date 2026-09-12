@@ -32,7 +32,9 @@ echo "PRECONDITION vdb mounts: $(echo "cat /proc/mounts | grep -c vdb" >&3; slee
 # ---------- 2. snapshot ----------
 curl -s --unix-socket base.sock -X PATCH http://localhost/vm -H "Content-Type: application/json" -d @- <<< '{"state":"Paused"}'
 API base.sock snapshot/create "{\"snapshot_type\":\"Full\",\"snapshot_path\":\"$PWD/snap.state\",\"mem_file_path\":\"$PWD/snap.mem\"}"
-echo "SNAPSHOT: state=$(stat -c %s snap.state) mem=$(stat -c %s snap.mem)"
+# `wc -c <` rather than `stat -c %s`: `-c` is GNU's format flag and BSD's file flag,
+# so the same line prints a size on Linux and errors on a Mac.
+echo "SNAPSHOT: state=$(wc -c < snap.state) mem=$(wc -c < snap.mem)"
 exec 3>&-; pkill -f "api-sock base.sock" || true; sleep 1
 
 # ---------- 3. restore twice, each against a FRESH scratch ----------

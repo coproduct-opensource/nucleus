@@ -1049,6 +1049,20 @@ perturb_dep_ceiling_raise() {
     # crate name) and rewrites whatever count follows, never matching the count.
     sed -i.bak -E 's/^([[:space:]]*"[a-z0-9_-]+) [0-9]+"/\1 9"/' "$1" && rm -f "$1.bak"
 }
+# portability: a BSD-only construct reintroduced. Zero hits is this gate's PASSING state --
+# every construct it forbids has a portable spelling and there is no allowlist -- so a live
+# hit cannot be what keeps it honest. This probe is. The `mktemp -t` below is the exact
+# spelling that wrote `./.json` into the repository root on every CI run for weeks.
+perturb_portability_bsd_only() {
+    local f="$1"
+    # The forbidden spelling is ASSEMBLED, never written. A forbidden-construct gate scans
+    # this file too, so a perturbation holding the literal reds the gate on its own
+    # perturbation -- which is exactly what happened, and is gatehouse F-115's shape in a
+    # second gate: the ring-ED25519 check had to split its pattern for the same reason.
+    # `/e` evaluates the replacement, so `mktemp -t` never appears contiguously here.
+    perl -0pi -e 's/\$\(mktemp "\$\{TMPDIR:-\/tmp\}\/scoreboard\.XXXXXX"\)/"\$(mk" . "temp -" . "t scoreboard)"/e' "$f"
+}
+
 # action-inputs: a `with:` key the action does not declare. GitHub drops it with a log
 # warning and runs the step without it, so the defect is invisible unless something reads
 # the declaration -- which is what this gate does. Perturbs the caller of the action whose
@@ -1274,6 +1288,8 @@ probe_xtask_partial gatehouse-pin "--gatehouse gatehouse" \
     .github/workflows/gatehouse-shadow.yml \
     "a step falling back to the action's downloaded default" \
     perturb_gatehouse_bin_dir_dropped
+probe_xtask portability scripts/check-gates-can-fail.sh \
+    "a BSD-only shell construct reintroduced" perturb_portability_bsd_only
 probe_xtask action-inputs .github/workflows/gatehouse-shadow.yml \
     "a `with:` key the action does not declare" perturb_action_inputs_undeclared_key
 probe_xtask workspace-members Cargo.toml \

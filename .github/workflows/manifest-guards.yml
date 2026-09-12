@@ -144,6 +144,16 @@ jobs:
       # once per site.
       - name: A pipeline must not hide its exit status
         run: cargo run -q -p xtask -- pipefail
+      # CI is Linux (GNU coreutils); the people writing these scripts are on macOS (BSD).
+      # A handful of everyday flags differ between the two without erroring in a way anyone
+      # reads, so a script works where it was written and does something else where it runs.
+      # `mktemp -t NAME` is the one that paid for this gate: it returns an absolute path on
+      # BSD and nothing at all on GNU, and `check-gates-can-fail.sh` therefore wrote a
+      # probe's input to `./.json` in the repository root on every CI run for weeks.
+      # Scoped to shell a PERSON runs -- a workflow's `run:` block only ever executes on the
+      # runner, so a GNU-only construct there is correct by construction.
+      - name: Shell a person runs means the same on both platforms
+        run: cargo run -q -p xtask -- portability
       # A `with:` key an action does not declare is DROPPED, with only
       # `##[warning]Unexpected input(s) …` in the log -- and actionlint does not catch it
       # (measured 2026-09-12: clean on a file with three). `ci.yml` passed `targets:` to
