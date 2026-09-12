@@ -101,7 +101,9 @@ jobs:
       - name: Install image and musl tools
         run: sudo apt-get install -y -qq musl-tools e2fsprogs iptables iproute2 dnsmasq
       - name: Enable the host vsock device
-        run: sudo modprobe vhost_vsock
+        run: |
+          sudo modprobe vhost_vsock
+          sudo modprobe br_netfilter
       - name: Build bootstrap guest runtime
         run: |
           cargo build --locked -p xtask
