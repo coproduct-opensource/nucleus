@@ -39,6 +39,27 @@
 //! host-side. This is why PASS here means "the listing is real and self-scoped,
 //! now go check exclusion" — not "cross-pod isolation holds".
 
+// ADR 0007 totality: a function whose signature says it returns is lying if it
+// panics. Denied for the shipped build only — `assert!` IS a panic, so denying
+// inside `#[cfg(test)]` would forbid the thing tests are made of. This is the
+// same line `is_production_path` draws when it strips the test region.
+//
+// Added because this crate measures ZERO of all seven lints today, per
+// `clippy.toml`'s own rule: entries are added only when the tree is already
+// clean of them.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::time::Duration;
 use vsock::VsockStream;

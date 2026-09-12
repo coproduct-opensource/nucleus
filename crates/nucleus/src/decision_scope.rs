@@ -32,8 +32,6 @@
 //! caller cannot present a decision about one act while spending an authority
 //! for another.
 
-use portcullis::Operation;
-
 use crate::error::NucleusError;
 
 /// Refuse a decision that was made about a different operation.
@@ -42,60 +40,73 @@ use crate::error::NucleusError;
 /// uses for "earned for a different action", because that is what this is.
 ///
 /// Checked in every profile. That is the whole point; see the module docs.
-pub(crate) fn require_decision_for(
-    decision_op: Operation,
-    performing: Operation,
-) -> Result<(), NucleusError> {
-    if decision_op == performing {
-        return Ok(());
+/// A refused redeem becomes a scope mismatch.
+///
+/// Both variants are the same kind of failure to a caller — the decision does
+/// not authorise this effect — and the message says which kind it was.
+///
+/// # Why this module is now three lines
+///
+/// It used to hold `require_decision_for`, which compared two `Operation`s and
+/// consulted no state, and callers were trusted to also compare permissions.
+/// They mostly did not: 24 of the 30 redeem sites in this crate checked the
+/// operation and nothing else, so a decision taken under one policy was
+/// redeemable under any other at every one of them.
+///
+/// The check now lives on the token as [`portcullis::kernel::DecisionToken::redeem`],
+/// which takes `self` by value and requires both the operation and the
+/// permissions in force. `DecisionToken::operation` is `pub(crate)` to
+/// portcullis, so there is no other way to read what a token authorises — a new
+/// effect method cannot forget, because there is nothing else to call.
+impl From<portcullis::kernel::RedeemError> for NucleusError {
+    fn from(e: portcullis::kernel::RedeemError) -> Self {
+        Self::ScopeMismatch {
+            reason: e.to_string(),
+        }
     }
-    Err(NucleusError::ScopeMismatch {
-        reason: format!("decision authorises {decision_op:?}, this effect is {performing:?}"),
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portcullis::Operation;
+    use portcullis::kernel::RedeemError;
 
+    /// THE regression, preserved. This check used to be
+    /// `debug_assert_eq!(decision.operation(), op, ..)`, which compiles to
+    /// nothing when `debug_assertions` is off — every release build — so a
+    /// `DecisionToken` minted for `ReadFiles` and handed to a `RunBash` entry
+    /// point was accepted exactly as readily as the right one.
+    ///
+    /// It is now a refusal in both profiles, and it is no longer a call site's
+    /// job to remember: `DecisionToken::redeem` is the only way to read a token.
+    /// The property lives with `redeem` in portcullis; this pins that the
+    /// refusal still arrives here as a `ScopeMismatch` rather than being
+    /// swallowed.
     #[test]
-    fn a_matching_decision_is_accepted() {
-        assert!(require_decision_for(Operation::RunBash, Operation::RunBash).is_ok());
-    }
+    fn a_refused_redeem_arrives_as_a_scope_mismatch() {
+        let scope = NucleusError::from(RedeemError::ScopeMismatch {
+            authorised: Operation::ReadFiles,
+            performing: Operation::RunBash,
+        });
+        assert!(matches!(scope, NucleusError::ScopeMismatch { .. }));
+        assert!(scope.to_string().contains("ReadFiles"), "{scope}");
+        assert!(scope.to_string().contains("RunBash"), "{scope}");
 
-    /// THE regression. Under `debug_assert_eq!` this case PANICKED in a debug
-    /// build and was SILENTLY ACCEPTED in a release one. It is now a refusal in
-    /// both.
-    #[test]
-    fn a_decision_about_another_operation_is_refused() {
-        let err = require_decision_for(Operation::ReadFiles, Operation::RunBash)
-            .expect_err("a decision about ReadFiles must not authorise RunBash");
+        let stale = NucleusError::from(RedeemError::StalePermissions {
+            decided_under: "aaaaaaaabbbb".to_string(),
+            executing_under: "ccccccccdddd".to_string(),
+        });
+        assert!(matches!(stale, NucleusError::ScopeMismatch { .. }));
+        let msg = stale.to_string();
         assert!(
-            matches!(err, NucleusError::ScopeMismatch { .. }),
-            "a decision for the wrong operation is a scope mismatch, got {err:?}"
+            msg.contains("aaaaaaaa"),
+            "names what it was decided under: {msg}"
         );
-    }
-
-    /// The message has to name BOTH sides, or it sends the reader to inspect
-    /// the wrong one. `15e3530f`'s lesson (ADR 0007 A-4) in a smaller place.
-    #[test]
-    fn the_refusal_names_what_was_held_and_what_was_attempted() {
-        let err = require_decision_for(Operation::ReadFiles, Operation::RunBash)
-            .expect_err("must refuse");
-        let msg = err.to_string();
-        assert!(msg.contains("ReadFiles"), "{msg}");
-        assert!(msg.contains("RunBash"), "{msg}");
-    }
-
-    /// Non-vacuity: the refusal test above would pass against a function that
-    /// refused everything. Every operation must authorise itself.
-    #[test]
-    fn every_operation_authorises_itself() {
-        for op in Operation::ALL {
-            assert!(
-                require_decision_for(op, op).is_ok(),
-                "{op:?} must authorise itself"
-            );
-        }
+        assert!(
+            msg.contains("cccccccc"),
+            "and what it would run under: {msg}"
+        );
+        assert!(msg.contains("change of policy"), "{msg}");
     }
 }
