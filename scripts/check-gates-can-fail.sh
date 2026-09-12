@@ -242,7 +242,15 @@ probe_xtask() {
     shift 3
 
     local invocations
-    invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
+    # Backslash continuations joined FIRST. A workflow may spell the invocation over
+    # several lines, and a line-at-a-time scan then reports the flags CI uses as `\`.
+    # It fails safe -- the parity check refuses rather than passes -- but it refuses a
+    # correct probe and says CI runs something it does not. `ck-admit.yml` writes
+    # `policy-gate` that way. Whitespace is squeezed because the join leaves the YAML
+    # indentation behind as runs of spaces.
+    invocations="$(sed -e :a -e '/\\$/N; s/\\\n[[:space:]]*/ /; ta' .github/workflows/*.yml 2>/dev/null \
+        | tr -s ' ' \
+        | grep -E "xtask -- $sub" \
         | grep -vE '^[[:space:]]*#' \
         | grep -oE "xtask -- ${sub}[^\"'\`|]*" \
         | sed -E "s/xtask -- $sub//; s/^[[:space:]]+//; s/[[:space:]]+\$//")"
@@ -329,7 +337,15 @@ probe_xtask_generated() {
     local generated2="${9:-}" local_path2="${10:-}" gen_fn2="${11:-}"
 
     local invocations
-    invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
+    # Backslash continuations joined FIRST. A workflow may spell the invocation over
+    # several lines, and a line-at-a-time scan then reports the flags CI uses as `\`.
+    # It fails safe -- the parity check refuses rather than passes -- but it refuses a
+    # correct probe and says CI runs something it does not. `ck-admit.yml` writes
+    # `policy-gate` that way. Whitespace is squeezed because the join leaves the YAML
+    # indentation behind as runs of spaces.
+    invocations="$(sed -e :a -e '/\\$/N; s/\\\n[[:space:]]*/ /; ta' .github/workflows/*.yml 2>/dev/null \
+        | tr -s ' ' \
+        | grep -E "xtask -- $sub" \
         | grep -vE '^[[:space:]]*#' \
         | grep -oE "xtask -- ${sub}[^\"'\`|]*" \
         | sed -E "s/xtask -- $sub//; s/^[[:space:]]+//; s/[[:space:]]+\$//")"
