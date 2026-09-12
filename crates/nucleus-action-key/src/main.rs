@@ -24,12 +24,23 @@
 
 use anyhow::Result;
 use nucleus_action_key::census::{self, Outcome};
-use std::path::PathBuf;
+use nucleus_action_key::{closure, derive};
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
     let root = std::env::var("NUCLEUS_REPO_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
+
+    // `--crates` reports the DERIVED read-sets: one per workspace crate, from
+    // `cargo metadata`'s dependency graph rather than a hand-written `paths:`
+    // filter. Every crate has one, which is the point — the 37 contexts the
+    // context census refuses for want of a declaration need no declaration
+    // here.
+    if std::env::args().nth(1).as_deref() == Some("--crates") {
+        return crates_report(&root);
+    }
 
     let census = census::run(&root)?;
 
@@ -88,6 +99,31 @@ fn main() -> Result<()> {
     // vacuity these gates exist to find.
     if census.unmeasured() > 0 {
         std::process::exit(2);
+    }
+    Ok(())
+}
+
+/// One line per crate: how many crates its closure spans and how many files
+/// that is, widest first.
+fn crates_report(root: &Path) -> Result<()> {
+    let ws = closure::load(root)?;
+    let tracked = derive::tracked_files(root)?;
+    let mut rows: Vec<(usize, usize, &String)> = Vec::new();
+    for name in ws.closures.keys() {
+        let files = ws.read_set(root, &tracked, name)?.len();
+        let span = ws.closures.get(name).map_or(0, BTreeSet::len);
+        rows.push((span, files, name));
+    }
+    rows.sort_unstable();
+    rows.reverse();
+    println!(
+        "{} crate(s), {} tracked file(s) in the tree",
+        rows.len(),
+        tracked.len()
+    );
+    println!("{:>6}  {:>6}  crate", "closure", "files");
+    for (span, files, name) in &rows {
+        println!("{span:>6}  {files:>6}  {name}");
     }
     Ok(())
 }

@@ -192,6 +192,73 @@ probe() {
 # restore it, the gate must go green. The wiring check is the same question asked
 # of the workflows, and comment lines are stripped for the reason the derivation
 # above explains.
+# A gate CI invokes BOTH bare and with a flag, probed on the flagged form too.
+#
+# `probe_xtask`'s CI-parity guard asks whether SOME invocation is bare, and passes when one is.
+# That is right as far as it goes — probing bare then tests a command CI really runs — but it
+# leaves a flagged sibling unprobed while the accounting counts the subcommand as covered. The
+# harness derives its domain from `xtask -- <sub>`, so `allowlist-gates` and
+# `allowlist-gates --parity` are one name to it and the second mode is invisible.
+#
+# That matters here specifically: `--parity` is the mode that checks the Rust harness implements
+# every gate its shell scripts announce. A mode nothing probes is a gate that cannot fail.
+probe_xtask_flagged() {
+    local sub="$1" flags="$2" target="$3" desc="$4"
+    shift 4
+
+    local invocations
+    invocations="$(grep -rhE "xtask -- ${sub}" .github/workflows/*.yml 2>/dev/null \
+        | grep -vE '^[[:space:]]*#' \
+        | grep -oE "xtask -- ${sub}[^\"'\`|]*" \
+        | sed -E "s/xtask -- $sub//; s/^[[:space:]]+//; s/[[:space:]]+\$//")"
+    if ! printf '%s\n' "$invocations" | grep -qxF -- "$flags"; then
+        echo "  FAIL  xtask $sub $flags — no workflow invokes it with exactly those flags."
+        echo "        CI runs: $(printf '%s' "$invocations" | tr '\n' '/')"
+        echo "        Probing a form CI does not run tests something CI does not run."
+        failures=$((failures + 1))
+        return
+    fi
+    if [[ ! -f "$target" ]]; then
+        echo "  ERROR: $target does not exist"
+        failures=$((failures + 1))
+        return
+    fi
+
+    RESTORE_TO="$target"
+    RESTORE_FROM="$(mktemp)"
+    cp "$target" "$RESTORE_FROM"
+
+    "$@" "$target"
+
+    if cmp -s "$target" "$RESTORE_FROM"; then
+        echo "  FAIL  xtask $sub $flags — the perturbation for '$desc' changed $target not at all"
+        restore
+        RESTORE_FROM=""
+        failures=$((failures + 1))
+        return
+    fi
+
+    local perturbed_rc=0
+    # shellcheck disable=SC2086
+    cargo run -q -p xtask -- "$sub" $flags >/dev/null 2>&1 || perturbed_rc=$?
+    restore
+    RESTORE_FROM=""
+    local restored_rc=0
+    # shellcheck disable=SC2086
+    cargo run -q -p xtask -- "$sub" $flags >/dev/null 2>&1 || restored_rc=$?
+
+    covered=$((covered + 1))
+    if [[ "$perturbed_rc" -eq 0 ]]; then
+        echo "  FAIL  xtask $sub $flags — $desc did NOT fail the gate (exit 0)"
+        failures=$((failures + 1))
+    elif [[ "$restored_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub $flags — still failing (exit $restored_rc) after restore"
+        failures=$((failures + 1))
+    else
+        echo "  ok    xtask $sub $flags — RED on $desc, GREEN when restored"
+    fi
+}
+
 probe_xtask() {
     local sub="$1" target="$2" desc="$3"
     shift 3
@@ -780,6 +847,17 @@ perturb_gate_budget_timeout() {
     sed -i.bak -E 's/^( *)timeout: "[0-9]+"/\1timeout: "9999"/' "$1" && rm -f "$1.bak"
 }
 
+perturb_wasm_closure_forbid_present() {
+    # "needs a non-wasm dependency added" is true, and it is not the only thing this
+    # gate decides. It also decides, for each crate in its committed FORBIDDEN list,
+    # whether that crate is in the wasm32 closure -- and THAT detection is the fragile
+    # half: a `grep -qE "(^|[│├└─ ])${c} v[0-9]"` over `cargo tree` output, keyed on box
+    # drawing characters. If cargo ever changes that format the gate passes forever and
+    # nothing says so. Declaring a crate that IS present exercises exactly that path.
+    # `serde` is in the closure by inspection; matches the ARRAY, never a crate name.
+    sed -i.bak -E 's/^FORBIDDEN=\((.*)\)$/FORBIDDEN=(\1 serde)/' "$1" && rm -f "$1.bak"
+}
+
 perturb_dep_ceiling_raise() {
     # The OTHER direction of this gate, and the one its uncovered entry did not see.
     # "needs a real duplicate crate version" is true for the drift half -- you cannot
@@ -819,7 +897,24 @@ perturb_runs_on_undeclared_var() {
     perl -0pi -e "s/(runs-on: \\\$\\{\\{ vars\\.)CI_RUNNER/\${1}CI_HEAVY_RUNNER/" "$f"
 }
 
+# allowlist-gates --parity: a shell script gains a gate the Rust harness has not ported. This is
+# the real shape -- `check-verify-strict.sh` carried two gates and the port took one -- reproduced
+# on a different script so the probe does not depend on that one defect staying fixed.
+perturb_unported_shell_gate() {
+    local f="$1"
+    printf '%s\n' 'echo "unported gate PASSED: a question the Rust harness does not ask."' >> "$f"
+}
 
+
+# One more by-reference site on an affine type: the calling convention defeating
+# the affine intent the type declares, which is the whole of what `linearity`
+# counts. ADR 0007 C-4, and `f7f9719b` is the defect it generalises.
+perturb_convergence_linearity() {
+    append_line "$1" 'fn _gate_of_gates_affine(_a: &portcullis_effects::Authority) {}'
+}
+
+probe_xtask convergence crates/nucleus-tool-proxy/src/run_gate.rs \
+    "one more affine type taken by reference" perturb_convergence_linearity
 probe_xtask assurance-required ci/assurance-required-ratchet.txt \
     "a claim whose falsifier the merge queue does not gate on, past the pin" perturb_assurance_required_pin
 probe_xtask pin-parity ci/lean/lean-toolchain \
@@ -828,6 +923,9 @@ probe_xtask self-pin .github/workflows/scan.yml \
     "a self-pin naming a commit that does not exist" perturb_self_pin_sha
 probe_xtask allowlist-gates ci/allowlist-gates.txt \
     "an allowlist grown past its pinned size" perturb_allowlist_pin
+
+probe_xtask_flagged allowlist-gates --parity scripts/check-ingest-hashed.sh \
+    "a shell gate the Rust harness never ported" perturb_unported_shell_gate
 probe_xtask fly-pools ci/fly-runner/manager.toml \
     "the committed POOLS default the manager refuses" perturb_fly_pool_volumes
 probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
@@ -848,6 +946,8 @@ probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-dep-ceiling.sh    "" scripts/check-dep-ceiling.sh \
       "a ceiling above the count it caps"     perturb_dep_ceiling_raise
+probe check-wasm-closure.sh   "" scripts/check-wasm-closure.sh \
+      "a crate forbidden that is in the closure" perturb_wasm_closure_forbid_present
 probe check-law-mechanisms.sh "" crates/portcullis/src/lattice.rs \
       "a declared-dead mechanism gains a production call site" perturb_law_mechanism_wired
 probe check-law-mechanisms.sh "" crates/portcullis/src/budget.rs \
@@ -945,7 +1045,6 @@ probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
 # A perturbation for these needs a duplicate crate version or a non-wasm
 # dependency — a real lockfile change, which this script will not make.
 UNCOVERED=(
-    "check-wasm-closure.sh         needs a non-wasm dependency added"
     # 2026-09-11: the xtask half of the domain became VISIBLE today. These eight
     # were never exempted by decision — they were outside the glob, so nothing
     # asked. Listing them is the point: each now owes a perturbation or a reason,
@@ -984,14 +1083,21 @@ UNCOVERED=(
 # ceiling, and raising a ceiling above the actual count exercises that half from a
 # committed declaration. The same shape as scoreboard-ratchet above: the exemption
 # named a real obstacle and stopped there.
-# 6 -> 5 on 2026-09-12: `lean-action-builds` was never uncovered. Its exemption
+#
+# 2026-09-12, 6 -> 5: `check-wasm-closure.sh` gets a probe, by the same reading that
+# freed the previous two. "Needs a non-wasm dependency added" is true of the CLOSURE
+# half and silent about the DETECTION half -- a grep over `cargo tree` keyed on box
+# drawing characters, which would pass forever if cargo changed its output. Declaring
+# a present crate forbidden exercises that path from a committed list.
+#
+# 5 -> 4 on 2026-09-12: `lean-action-builds` was never uncovered. Its exemption
 # said "needs a Lean toolchain to reach its verdict" and the program neither needs
 # one nor reaches a verdict -- it parses workflow YAML and hands the result to
 # `check-lean-libs-built.sh`, which is probed twice. Fifth instance of the shape
 # scoreboard-ratchet, check-dep-ceiling, check-wasm-closure and gatehouse-pin
 # each turned out to be, and the sharpest: the others named a real obstacle and
 # stopped short, this one named a different program's.
-UNCOVERED_CEILING=5
+UNCOVERED_CEILING=4
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #

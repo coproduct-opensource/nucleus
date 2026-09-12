@@ -132,7 +132,7 @@ fn match_one(pat: &str, seg: &str) -> bool {
 /// `git ls-files` is the enumeration, not `walkdir`: an untracked build
 /// artefact that happened to match a pattern would otherwise enter the key and
 /// make it depend on the machine.
-fn tracked_files(root: &Path) -> Result<Vec<String>> {
+pub fn tracked_files(root: &Path) -> Result<Vec<String>> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
