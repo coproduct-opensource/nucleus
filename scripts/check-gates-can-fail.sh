@@ -738,6 +738,17 @@ perturb_gate_budget_timeout() {
     sed -i.bak -E 's/^( *)timeout: "[0-9]+"/\1timeout: "9999"/' "$1" && rm -f "$1.bak"
 }
 
+perturb_dep_ceiling_raise() {
+    # The OTHER direction of this gate, and the one its uncovered entry did not see.
+    # "needs a real duplicate crate version" is true for the drift half -- you cannot
+    # conjure a second `sha2` line from a shell script. But the gate also fails when a
+    # watched crate sits STRICTLY BELOW its ceiling, because an unclaimed win is debt
+    # the next PR inherits. Raising a ceiling above the actual count exercises exactly
+    # that half, and the declaration it perturbs is committed. Matches the KEY (the
+    # crate name) and rewrites whatever count follows, never matching the count.
+    sed -i.bak -E 's/^([[:space:]]*"[a-z0-9_-]+) [0-9]+"/\1 9"/' "$1" && rm -f "$1.bak"
+}
+
 gen_exemplar_scoreboard() {
     bash scripts/exemplar-scoreboard.sh "$1" >/dev/null 2>&1
 }
@@ -781,6 +792,8 @@ probe_xtask gate-budget .github/workflows/gatehouse-shadow.yml \
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
+probe check-dep-ceiling.sh    "" scripts/check-dep-ceiling.sh \
+      "a ceiling above the count it caps"     perturb_dep_ceiling_raise
 probe check-law-mechanisms.sh "" crates/portcullis/src/lattice.rs \
       "a declared-dead mechanism gains a production call site" perturb_law_mechanism_wired
 probe check-law-mechanisms.sh "" crates/portcullis/src/budget.rs \
@@ -878,7 +891,6 @@ probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
 # A perturbation for these needs a duplicate crate version or a non-wasm
 # dependency — a real lockfile change, which this script will not make.
 UNCOVERED=(
-    "check-dep-ceiling.sh          needs a real duplicate crate version"
     "check-wasm-closure.sh         needs a non-wasm dependency added"
     # 2026-09-11: the xtask half of the domain became VISIBLE today. These eight
     # were never exempted by decision — they were outside the glob, so nothing
@@ -912,7 +924,14 @@ UNCOVERED=(
 # refused it. `probe_xtask_generated` keeps that guard -- it asserts CI's flags are
 # exactly what the probe claims -- and allows the probe's flags to differ only in the
 # generated path, which is named rather than inferred. The generator costs 4s.
-UNCOVERED_CEILING=7
+#
+# 2026-09-11, 7 -> 6: `check-dep-ceiling.sh` gets a probe. Its stated obstacle --
+# "needs a real duplicate crate version" -- was true for only ONE of the two things
+# it checks. The gate also fails when a watched crate sits strictly BELOW its
+# ceiling, and raising a ceiling above the actual count exercises that half from a
+# committed declaration. The same shape as scoreboard-ratchet above: the exemption
+# named a real obstacle and stopped there.
+UNCOVERED_CEILING=6
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #
