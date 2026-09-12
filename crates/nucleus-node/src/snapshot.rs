@@ -264,10 +264,25 @@ pub fn clone_safety(
     boot_args: &str,
     at_barrier: bool,
     personalized: bool,
-    writable_scratch: bool,
+    scratch: &MountState,
 ) -> SnapshotSafety {
-    if writable_scratch {
-        return SnapshotSafety::WritableScratchAttached;
+    // ATTACHED is fine; MOUNTED is not, and anything unreadable is refused.
+    //
+    // This was "is a writable non-root drive attached", which refused every
+    // jailed pod — `scratch_for_pod` auto-provisions one. Measured 2026-09-12
+    // (`scripts/experiments/snapshot-deferred-mount.sh`): a scratch that is
+    // attached and never mounted leaves no ext4 metadata in the snapshot, and
+    // two clones restored against fresh images of identical geometry both fsck
+    // clean with no cross-contamination.
+    //
+    // `Unknown` lands with `Mounted` deliberately. The costs are not symmetric:
+    // a wrong refusal is a cold boot, and a wrong certification is a base that
+    // corrupts every clone restored from it.
+    match scratch {
+        MountState::NeverMounted => {}
+        MountState::Mounted { .. } | MountState::Unknown(_) => {
+            return SnapshotSafety::WritableScratchAttached;
+        }
     }
     // Order matters for the message, not the verdict: a VM that is both personalised and past
     // its barrier should say the dangerous thing, because that is the one worth reading.
@@ -278,6 +293,101 @@ pub fn clone_safety(
         return SnapshotSafety::NotAtBarrier;
     }
     snapshot_safety(boot_args)
+}
+
+/// Whether the guest has ever mounted the filesystem in `image`.
+///
+/// # Why this is a MEASUREMENT and not a guest's word
+///
+/// `clone_safety` refuses a writable scratch because a restored clone inherits
+/// the base's in-memory ext4 state for it. Measured 2026-09-12
+/// (`scripts/experiments/snapshot-deferred-mount.sh`), that refusal is about a
+/// **mounted** scratch: an attached-but-never-mounted one leaves virtio-blk
+/// queue state in the snapshot and no ext4 metadata, two clones restored
+/// against fresh images of identical geometry both fsck clean, and neither sees
+/// the other's writes.
+///
+/// So the predicate wants to be "mounted", not "attached". The obvious way to
+/// get that is to ask the guest — it is the one that mounts things, and
+/// `SNAPSHOT_READY` is already a guest report. **That would be the wrong
+/// choice.** A base is restored by OTHER pods, so a guest that lies about its
+/// mount state does not corrupt itself; it publishes a base that corrupts
+/// everyone who restores it. A claim with that blast radius should not rest on
+/// the claimant.
+///
+/// ext4 records it in the superblock, so the host can simply look:
+///
+/// ```text
+/// fresh, never mounted      Mount count: 0    Last mounted on: <not available>
+/// mounted and unmounted     Mount count: 1    Last mounted on: /mnt
+/// ```
+///
+/// # What it does not establish
+///
+/// That the image is safe to snapshot for any other reason, and that a
+/// non-ext4 filesystem is unmounted — `dumpe2fs` will simply fail on one, which
+/// is [`MountState::Unknown`] and refused. A scratch this code cannot read is
+/// not a scratch it may certify.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MountState {
+    /// The superblock says mount count 0: no guest has ever mounted it.
+    NeverMounted,
+    /// It has been mounted at least once, so its metadata may be in a snapshot.
+    Mounted { count: u64 },
+    /// Could not be read. NOT folded into either: "I could not look" is never
+    /// "I looked and it was fine" (ADR 0007 A-2), and here it is also never
+    /// "I looked and it was dirty" — a wrong refusal costs a cold boot, while a
+    /// wrong certification corrupts every clone of the base.
+    Unknown(String),
+}
+
+/// Read the mount count out of an ext4 superblock with `dumpe2fs -h`.
+///
+/// e2fsprogs is already required to CREATE a scratch image
+/// (`provision_pod_scratch` shells to `mkfs.ext4`), so this costs no new
+/// dependency on any host that can make one.
+// The only caller is `pod_api::snapshot_pod`, which is `#[cfg(target_os =
+// "linux")]` — so on macOS there genuinely is no caller and clippy is right to
+// say so. Marked rather than blanket-allowed, because "dead everywhere" and
+// "dead on the host I happen to be on" are different facts.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn mount_state(image: &std::path::Path) -> MountState {
+    let out = match std::process::Command::new("dumpe2fs")
+        .args(["-h", &image.display().to_string()])
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => return MountState::Unknown(format!("running dumpe2fs: {e}")),
+    };
+    // `dumpe2fs -h` writes the header to stdout and its banner to stderr, and
+    // exits non-zero on a filesystem it cannot parse. Both are checked: a
+    // non-zero exit with parseable stdout is still a filesystem this code does
+    // not understand well enough to certify.
+    if !out.status.success() {
+        return MountState::Unknown(format!(
+            "dumpe2fs failed on {}: {}",
+            image.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    parse_mount_count(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The parsing half, separated so it is testable without e2fsprogs — which
+/// macOS does not have, and which would otherwise make this untested on the
+/// machine it is written on.
+pub(crate) fn parse_mount_count(header: &str) -> MountState {
+    for line in header.lines() {
+        let Some(rest) = line.strip_prefix("Mount count:") else {
+            continue;
+        };
+        return match rest.trim().parse::<u64>() {
+            Ok(0) => MountState::NeverMounted,
+            Ok(count) => MountState::Mounted { count },
+            Err(e) => MountState::Unknown(format!("unparseable mount count {rest:?}: {e}")),
+        };
+    }
+    MountState::Unknown("no `Mount count:` line in the superblock header".to_string())
 }
 
 #[cfg(test)]
@@ -527,7 +637,7 @@ mod tests {
             "precondition: these boot args are the clonable ones"
         );
         assert_eq!(
-            clone_safety(&clean, true, true, false),
+            clone_safety(&clean, true, true, &MountState::NeverMounted),
             SnapshotSafety::PersonalizedSince,
             "a VM that has been handed its identity is not a base, whatever its cmdline says"
         );
@@ -537,11 +647,11 @@ mod tests {
     #[test]
     fn an_unpersonalized_vm_is_still_judged_on_its_boot_args() {
         let clean = format!("{BASE} nucleus.workload_api_port=15012");
-        assert!(clone_safety(&clean, true, false, false).is_safe_to_clone());
+        assert!(clone_safety(&clean, true, false, &MountState::NeverMounted).is_safe_to_clone());
 
         let dirty = format!("{BASE} {}=deadbeef", PER_POD_SECRET_KEYS[0]);
         assert!(
-            !clone_safety(&dirty, true, false, false).is_safe_to_clone(),
+            !clone_safety(&dirty, true, false, &MountState::NeverMounted).is_safe_to_clone(),
             "the cmdline scan must still apply when nothing has been served yet"
         );
     }
@@ -555,12 +665,12 @@ mod tests {
     fn a_guest_that_never_announced_its_barrier_is_refused() {
         let clean = format!("{BASE} nucleus.workload_api_port=15012");
         assert_eq!(
-            clone_safety(&clean, false, false, false),
+            clone_safety(&clean, false, false, &MountState::NeverMounted),
             SnapshotSafety::NotAtBarrier
         );
         // ...and being personalised is the louder complaint of the two.
         assert_eq!(
-            clone_safety(&clean, false, true, false),
+            clone_safety(&clean, false, true, &MountState::NeverMounted),
             SnapshotSafety::PersonalizedSince,
             "when both are wrong, say the dangerous one"
         );
@@ -577,5 +687,95 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mount_state_tests {
+    use super::*;
+
+    /// The two superblock shapes, verbatim from `dumpe2fs -h` on 2026-09-12.
+    const FRESH: &str = "Filesystem volume name:   <none>\nLast mounted on:          <not available>\nFilesystem state:         clean\nMount count:              0\nMaximum mount count:      -1\n";
+    const USED: &str = "Filesystem volume name:   <none>\nLast mounted on:          /mnt\nFilesystem state:         clean\nMount count:              1\nMaximum mount count:      -1\n";
+
+    #[test]
+    fn a_never_mounted_image_reads_as_never_mounted() {
+        assert_eq!(parse_mount_count(FRESH), MountState::NeverMounted);
+    }
+
+    #[test]
+    fn an_image_a_guest_mounted_reads_as_mounted() {
+        assert_eq!(parse_mount_count(USED), MountState::Mounted { count: 1 });
+    }
+
+    /// **Unreadable is `Unknown`, never `NeverMounted`.** A scratch this code
+    /// cannot parse is not one it may certify: the costs are asymmetric, since
+    /// a wrong refusal is a cold boot and a wrong certification corrupts every
+    /// clone restored from the base.
+    #[test]
+    fn an_unparseable_superblock_is_unknown_not_clean() {
+        assert!(matches!(parse_mount_count(""), MountState::Unknown(_)));
+        assert!(matches!(
+            parse_mount_count("Mount count:              banana\n"),
+            MountState::Unknown(_)
+        ));
+        assert!(matches!(
+            parse_mount_count("Filesystem state: clean\n"),
+            MountState::Unknown(_)
+        ));
+    }
+
+    const CLEAN_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off init=/init";
+
+    /// **The change M3 turns on:** a scratch that is ATTACHED but never mounted
+    /// no longer blocks a base. Measured in
+    /// `scripts/experiments/snapshot-deferred-mount.sh` — two clones restored
+    /// against fresh images of identical geometry both fsck clean.
+    #[test]
+    fn an_attached_but_unmounted_scratch_is_cloneable() {
+        assert!(
+            clone_safety(CLEAN_ARGS, true, false, &MountState::NeverMounted).is_safe_to_clone(),
+            "an unmounted scratch must not block a base — that was the old, attachment-based \
+             predicate, and it made every jailed pod unsnapshottable"
+        );
+    }
+
+    /// **And the part that must NOT change:** a mounted one still blocks. Its
+    /// ext4 metadata is in the snapshot, so a clone restored against a fresh
+    /// image has cached metadata describing a filesystem that is not there.
+    #[test]
+    fn a_mounted_scratch_still_blocks_a_base() {
+        assert_eq!(
+            clone_safety(CLEAN_ARGS, true, false, &MountState::Mounted { count: 1 }),
+            SnapshotSafety::WritableScratchAttached
+        );
+    }
+
+    /// A scratch the host could not read blocks it too.
+    #[test]
+    fn an_unreadable_scratch_blocks_a_base() {
+        assert_eq!(
+            clone_safety(
+                CLEAN_ARGS,
+                true,
+                false,
+                &MountState::Unknown("no e2fsprogs".into())
+            ),
+            SnapshotSafety::WritableScratchAttached
+        );
+    }
+
+    /// The scratch check must not mask the others: a personalised VM with a
+    /// pristine scratch is still refused, and for its own reason.
+    #[test]
+    fn an_unmounted_scratch_does_not_excuse_a_personalised_vm() {
+        assert_eq!(
+            clone_safety(CLEAN_ARGS, true, true, &MountState::NeverMounted),
+            SnapshotSafety::PersonalizedSince
+        );
+        assert_eq!(
+            clone_safety(CLEAN_ARGS, false, false, &MountState::NeverMounted),
+            SnapshotSafety::NotAtBarrier
+        );
     }
 }
