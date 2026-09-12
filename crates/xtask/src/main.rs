@@ -105,6 +105,10 @@ enum Command {
     /// ci/coverage-floor.txt, so moving a coverage floor has to be written down. Decided
     /// from two committed files; measures no coverage.
     CoverageFloor,
+    /// A gate's own timeout must fire before the job running it is killed, or a gate
+    /// that overruns is reported as `cancelled` and carries no verdict. Decided from the
+    /// workflow and the action definition alone.
+    GateBudget,
     /// A claim's falsifier must produce a REQUIRED context. A gate CI runs, that goes red, and
     /// that the merge queue merges past anyway enforces nothing — it is a red light beside an
     /// open gate. Ratcheted, not driven to zero: whether a given check should be required is a
@@ -307,6 +311,7 @@ mod ci_timings;
 mod clippy_config;
 mod coverage_floor;
 mod fly_pools;
+mod gate_budget;
 mod gatehouse_pin;
 mod inert_authority;
 mod kani_coverage;
@@ -355,6 +360,7 @@ fn main() -> Result<()> {
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
         Command::PushAuth => push_auth::check(&std::env::current_dir()?),
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
+        Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;

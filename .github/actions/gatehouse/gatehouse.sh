@@ -118,8 +118,27 @@ say "receipt $INDEX in $(jq -r .log.origin <<<"$EXCHANGE"): $VOUT"
 # ── 6. The plain run, for the agreement line ───────────────────────────────────────────────
 AGREE=skipped; GITHUB=unknown
 if [ "$GH_COMPARE" = true ]; then
-  set +e; bash -c "$GH_RUN" >/dev/null 2>&1; FC=$?; set -e
+  # Bounded by the SAME budget as the gatehouse run. `cargo xtask gate-budget` computes the
+  # job's requirement as `runs * timeout + setup`, and with compare on `runs` is 2 -- which
+  # is only true if this second run is bounded too. It was not, so the arithmetic that gate
+  # checks described a bound that did not exist on this side.
+  #
+  # No slack here, unlike the runner above. The slack there exists so the runner can hit its
+  # own deadline and write an honest `errored` receipt first; this is a plain `bash -c` with
+  # no receipt to write and nothing to wait for, so the budget is the budget. The worst case
+  # across both runs is therefore (timeout + 120) + timeout, and that 120 is a term in
+  # `gate-budget`'s arithmetic (OUTER_SLACK_S) rather than something setup is assumed to
+  # absorb -- an assumed absorption is how the declared budget came to describe a bound that
+  # did not exist.
+  #
+  # A timed-out plain run is `fail` rather than fatal, deliberately: this half exists to say
+  # what GitHub's own check would have said, and "it did not finish in the budget" is a
+  # legitimate answer to that. Disagreement is never fatal in shadow mode.
+  set +e; timeout --kill-after=30s "$GH_TIMEOUT" bash -c "$GH_RUN" >/dev/null 2>&1; FC=$?; set -e
   if [ "$FC" -eq 0 ]; then GITHUB=pass; else GITHUB=fail; fi
+  if [ "$FC" -eq 124 ] || [ "$FC" -eq 137 ]; then
+    say "the plain run exceeded the same ${GH_TIMEOUT}s budget; counted as fail for the agreement line"
+  fi
   if { [ "$HELD" = held ] && [ "$GITHUB" = pass ]; } || { [ "$HELD" = not-held ] && [ "$GITHUB" = fail ]; }; then AGREE=true; else AGREE=false; fi
 fi
 
