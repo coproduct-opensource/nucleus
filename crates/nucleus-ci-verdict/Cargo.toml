@@ -1,0 +1,20 @@
+[package]
+name = "nucleus-ci-verdict"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The typed body for a CI projection: what a gate was asked, what it answered, and which half is keyed"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+nucleus-receipt = { path = "../nucleus-receipt" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
