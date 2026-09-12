@@ -37,6 +37,14 @@ pub(crate) async fn collect(
     Json(request): Json<Request>,
 ) -> Result<Json<Bundle>, ApiError> {
     validate_manifest(&request.artifacts)?;
+    let pod = crate::pod_api::get_pod_for_caller(&state, id, caller).await?;
+    let declared = pod
+        .spec
+        .spec
+        .workload
+        .as_ref()
+        .map(|workload| &workload.artifacts);
+    validate_selection(&request.artifacts, declared)?;
     // This establishes lineage and a completed workload before any artifact read.
     let (mut claim, address) = workload_result::observe_claim(&state, caller, id).await?;
     let mut artifacts = BTreeMap::new();
@@ -61,6 +69,21 @@ pub(crate) async fn collect(
     }
     let receipt = workload_result::sign_claim(&state, id, claim)?;
     Ok(Json(Bundle { receipt, artifacts }))
+}
+
+fn validate_selection(
+    request: &BTreeMap<String, String>,
+    declared: Option<&BTreeMap<String, String>>,
+) -> Result<(), ApiError> {
+    if !request
+        .iter()
+        .all(|(name, path)| declared.and_then(|outputs| outputs.get(name)) == Some(path))
+    {
+        return Err(ApiError::InvalidSpec(
+            "artifact was not declared by the workload creator".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_manifest(artifacts: &BTreeMap<String, String>) -> Result<(), ApiError> {
@@ -134,6 +157,19 @@ async fn fetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receipt_readers_cannot_choose_extra_workspace_paths() {
+        let declared = BTreeMap::from([("binary".into(), "target/nucleus-node".into())]);
+        assert!(validate_selection(&declared, Some(&declared)).is_ok());
+        assert!(validate_selection(&declared, None).is_err());
+        for request in [
+            BTreeMap::from([("binary".into(), "private/config".into())]),
+            BTreeMap::from([("other".into(), "target/nucleus-node".into())]),
+        ] {
+            assert!(validate_selection(&request, Some(&declared)).is_err());
+        }
+    }
 
     #[test]
     fn manifest_requires_named_relative_workspace_outputs() {

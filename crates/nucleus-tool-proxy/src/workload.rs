@@ -853,6 +853,7 @@ mod tests {
     fn spec_with(env: &[(&str, &str)]) -> WorkloadSpec {
         WorkloadSpec {
             command: "agent".into(),
+            artifacts: Default::default(),
             args: vec!["--flag".into()],
             uid: None,
             env: env
@@ -1046,6 +1047,7 @@ mod tests {
         );
         let spec = WorkloadSpec {
             command: "/bin/sh".into(),
+            artifacts: Default::default(),
             args: vec!["-c".into(), script],
             uid: None,
             env: std::collections::BTreeMap::new(),

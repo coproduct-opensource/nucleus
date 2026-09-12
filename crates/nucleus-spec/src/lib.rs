@@ -1046,6 +1046,11 @@ pub struct WorkloadSpec {
     /// key — see `workload_env`.
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Outputs made available to receipt readers after execution: artifact name
+    /// to relative workspace path. Undeclared files cannot be collected through
+    /// the node's receipt API. Included in the declared program identity.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub artifacts: std::collections::BTreeMap<String, String>,
     /// UID to run the workload as.
     ///
     /// # Why this matters more than it looks

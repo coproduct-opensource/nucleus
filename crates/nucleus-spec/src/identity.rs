@@ -226,6 +226,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exported_artifact_paths_are_part_of_the_program_identity() {
+        let mut spec =
+            pinned(r#", "workload": {"command":"cargo", "artifacts":{"binary":"target/a"}}"#);
+        let before = program_digest(&spec).unwrap();
+        spec.spec
+            .workload
+            .as_mut()
+            .unwrap()
+            .artifacts
+            .insert("binary".into(), "private/b".into());
+        assert_ne!(before, program_digest(&spec).unwrap());
+    }
+
+    #[test]
     fn reissued_policy_provenance_does_not_change_the_program_but_permissions_do() {
         let mut spec = pinned("");
         let policy = spec.spec.resolve_policy().unwrap();

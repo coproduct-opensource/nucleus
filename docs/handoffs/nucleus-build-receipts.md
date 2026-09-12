@@ -172,7 +172,9 @@ image's template job.
 
 `POST /v1/pods/{id}/execution-receipt` accepts an artifact manifest such as
 `{"artifacts":{"nucleus-node":"target/debug/nucleus-node"}}`. It establishes
-pod lineage and completed execution, then calls the proxy's mediated binary
+pod lineage, checks that each selected name/path was declared in
+`spec.workload.artifacts` at launch, and requires completed execution before
+calling the proxy's mediated binary
 reader. The response bundles standard-base64 artifact bytes with the shared
 signed receipt; the execution body commits each name, relative path, byte count
 and SHA-256 computed by the host from those exact bytes. Collection must finish
@@ -215,6 +217,14 @@ a microVM, collect the nucleus binary through this API, and record cold/warm
 timings. Source commit/tree and gate metadata still need an explicit signed
 binding and controller verification. Do not mistake the green boot probe for
 that build or the captured-artifact witness for GitHub publication authority.
+
+Authority review tightened collection before completion of this step: receipt
+readers may select only creator-declared exports, not arbitrary workspace paths.
+The declaration is included in program identity; changing an exported path
+changes the digest. Empty declarations preserve existing program identities and
+export no files. A second live run collected the declared binary and refused
+an existing undeclared file, a renamed export, a declared symlink escape and a
+declared FIFO. Selection tests, 21 identity tests and Clippy pass after this change.
 
 ## Remaining acceptance work (milestones not yet complete)
 
