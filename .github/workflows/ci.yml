@@ -122,51 +122,120 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
-  verify-strict:
-    name: Ed25519 verify_strict gate (M-3)
+  # ── The grep-only gates, ONCE per pod ─────────────────────────────────────
+  #
+  # Eleven jobs that each took a pod to run ONE `scripts/check-*.sh` over the
+  # checked-out tree. Measured on #2848, across its pull_request and
+  # merge_group runs: 2,297 seconds of slot wait for 178 seconds of work.
+  # Thirteen times more waiting than working, to run eleven greps.
+  #
+  # WHY THE RELAYS RUN ON GITHUB-HOSTED, WHICH IS THE WHOLE TRICK
+  #
+  # There is no build to share here. That makes this different from the
+  # live-path and workspace consolidations, where the saving was one cargo
+  # build instead of three — and it means the relay jobs decide whether this
+  # change is worth anything at all. A relay does nothing but read a step
+  # outcome, but if it asks for `vars.CI_RUNNER` it takes a pool slot exactly
+  # like the job it replaced, and eleven of those give back everything this
+  # job saves. On hosted runners they cost the pool nothing.
+  #
+  # (The four live-path relays below moved for the same reason. They were on
+  # the pool, which is why #2635's consolidation won on build time and lost on
+  # slot acquisitions.)
+  #
+  # WHAT MAY RIDE ALONG
+  #
+  # Read-only text gates only. Every script here was checked: none writes to
+  # the tree. A gate that PERTURBS files cannot share a pod with gates that
+  # read them — that is why `check-gates-can-fail.sh` runs last inside
+  # `live-path-gates` and not here.
+  #
+  # Each step is `continue-on-error`, so the job is green even when a gate
+  # reds; the relays below turn each outcome back into its own required
+  # context. No context name changes, so `ci/required-checks.txt` and branch
+  # protection are untouched.
+  text-gates:
+    name: Text gates (one pod)
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 15
+    outputs:
+      verify_strict: ${{ steps.verify_strict.outcome }}
+      sandbox_trusted_base: ${{ steps.sandbox_trusted_base.outcome }}
+      failclosed: ${{ steps.failclosed.outcome }}
+      mediation: ${{ steps.mediation.outcome }}
+      north_star: ${{ steps.north_star.outcome }}
+      extracted_callsites: ${{ steps.extracted_callsites.outcome }}
+      task_compiler: ${{ steps.task_compiler.outcome }}
+      ingest_hash: ${{ steps.ingest_hash.outcome }}
+      kani_divergence: ${{ steps.kani_divergence.outcome }}
+      sealed_home: ${{ steps.sealed_home.outcome }}
+      governor_keys: ${{ steps.governor_keys.outcome }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Forbid non-strict dalek .verify(...) on trust paths
+        id: verify_strict
+        continue-on-error: true
         run: scripts/check-verify-strict.sh
-
-  sandbox-trusted-base-gate:
-    name: Sandbox trusted-base gate
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Every pin names a real test; the unpinned set may only shrink
+        id: sandbox_trusted_base
+        continue-on-error: true
         run: scripts/check-sandbox-trusted-base.sh
-
-  failclosed-verifier-gate:
-    name: Fail-closed verifier gate
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Forbid a verifier that reports success where it cannot check
+        id: failclosed
+        continue-on-error: true
         run: scripts/check-failclosed-verifiers.sh
-
-  mediation-gate:
-    name: Mediation backstop gate (North Star)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Forbid raw agent-path effect primitives outside the discharge-gated API
+        id: mediation
+        continue-on-error: true
         run: scripts/check-mediation.sh
+      - name: Every status row is earned, evidenced, and uncontradicted
+        id: north_star
+        continue-on-error: true
+        run: scripts/check-north-star-ledger.sh
+      - name: Every extracted predicate's enforcement is still wired
+        id: extracted_callsites
+        continue-on-error: true
+        run: scripts/check-extracted-callsites.sh
+      - name: No network crate in its dependency tables, no socket type in its sources
+        id: task_compiler
+        continue-on-error: true
+        run: scripts/check-task-compiler-offline.sh
+      - name: Forbid non-hashing agent-path ingest observes (content-address every input)
+        id: ingest_hash
+        continue-on-error: true
+        run: scripts/check-ingest-hashed.sh
+      - name: Every cfg(kani) site is listed and justified; the total only shrinks
+        id: kani_divergence
+        continue-on-error: true
+        env:
+          # The script fetches this ref itself (checkout is depth 1).
+          KANI_DIVERGENCE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          # Owner override for a deliberate new divergence: the PR label.
+          KANI_DIVERGENCE_ALLOW_GROWTH: ${{ contains(github.event.pull_request.labels.*.name, 'kani-divergence-growth') && '1' || '0' }}
+        run: scripts/check-kani-divergence.sh
+      - name: Forbid raw effect primitives outside the sealed RealEffects home
+        id: sealed_home
+        continue-on-error: true
+        run: scripts/check-sealed-home.sh
+      - name: set_trusted_keys has no caller outside kernel construction
+        id: governor_keys
+        continue-on-error: true
+        run: scripts/check-declassify-governor-keys-sealed.sh
+      - name: Outcomes
+        if: always()
+        run: |
+          echo "- verify_strict: ${{ steps.verify_strict.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- sandbox_trusted_base: ${{ steps.sandbox_trusted_base.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- failclosed: ${{ steps.failclosed.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- mediation: ${{ steps.mediation.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- north_star: ${{ steps.north_star.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- extracted_callsites: ${{ steps.extracted_callsites.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- task_compiler: ${{ steps.task_compiler.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ingest_hash: ${{ steps.ingest_hash.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- kani_divergence: ${{ steps.kani_divergence.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- sealed_home: ${{ steps.sealed_home.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- governor_keys: ${{ steps.governor_keys.outcome }}" >> "$GITHUB_STEP_SUMMARY"
 
-  # `discharge::test_helpers::bundle_for` mints a DischargedBundle with no
-  # preflight. It is gated behind a `test-helpers` feature that only
-  # [dev-dependencies] enable — and Cargo unifies features per build, so one line
-  # moving to [dependencies] makes the proof mintable from production code with
-  # every test still green, because tests already have the feature on.
-  #
-  # This needs cargo (it reads the resolved no-dev feature graph rather than
-  # grepping manifests, which would miss transitive enabling), so it gets a
-  # toolchain rather than riding along with the grep-only gates above.
   test-helpers-seal:
     name: test-helpers is not reachable from a shipping build
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -210,64 +279,6 @@ jobs:
         shell: bash
         run: scripts/check-declassify-value-bound.sh
 
-  declassify-governor-keys-sealed:
-    name: Governor trusted-key set is not workload-writable
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: set_trusted_keys has no caller outside kernel construction
-        shell: bash
-        run: scripts/check-declassify-governor-keys-sealed.sh
-
-  north-star-ledger:
-    name: The North Star status table cannot outrun its wiring
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Every status row is earned, evidenced, and uncontradicted
-        shell: bash
-        run: scripts/check-north-star-ledger.sh
-
-  # C8 — the Aeneas-extracted predicates carry the flagship theorems; this
-  # asserts each manifest-covered predicate still has a LIVE production call site
-  # (production region, test blocks excluded), so a theorem cannot silently
-  # become a proof about dead code. Runs on every PR (no path filter), so it
-  # covers the live-path crates (nucleus-tool-proxy spawn path, portcullis
-  # kernel) that the scoped Aeneas proof job's trigger does not.
-  extracted-callsites:
-    name: Extracted predicates have live call sites (C8)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Every extracted predicate's enforcement is still wired
-        shell: bash
-        run: scripts/check-extracted-callsites.sh
-
-  # The delegation compiler (crates/nucleus-task-compiler) turns a goal into
-  # a minimum-authority grant and must never open a socket: an LLM-backed
-  # proposer is a child process outside nucleus, not a dependency of the
-  # compiler. Text-level so the gate-of-gates can probe it without cargo.
-  task-compiler-offline:
-    name: The task compiler is offline by construction
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: No network crate in its dependency tables, no socket type in its sources
-        shell: bash
-        run: scripts/check-task-compiler-offline.sh
-
-  # CI-1: the CI configuration itself is sound. A typed model of every
-  # workflow, the required-check ledger (ci/required-checks.txt) and the
-  # merge-queue pin (ci/merge-queue.toml), and the invariants the queue relies
-  # on decided over it — one producer per required context, twin lists
-  # set-equal, nothing skippable under merge_group, no fail-open gate shape,
-  # timeouts inside the queue budget, every gate wired and inventoried. Each
-  # invariant carries a fixture of the defect it was written for
-  # (crates/ci-spec/tests). Exit 2 ("could not look") is red, never green.
   ci-spec:
     name: CI configuration is sound (CI-1)
     # The GATE pool, not the build pool. This job's verdict is a function of workflow
@@ -319,55 +330,6 @@ jobs:
         shell: bash
         run: cargo run -q -p xtask -- assurance-required
 
-  ingest-hash-gate:
-    name: No-unwitnessed-ingest gate (InputsAuthorized)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Forbid non-hashing agent-path ingest observes (content-address every input)
-        run: scripts/check-ingest-hashed.sh
-
-  kani-divergence-gate:
-    name: cfg(kani) divergences are inventoried and ratcheted
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Every cfg(kani) site is listed and justified; the total only shrinks
-        env:
-          # The script fetches this ref itself (checkout is depth 1).
-          KANI_DIVERGENCE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
-          # Owner override for a deliberate new divergence: the PR label.
-          KANI_DIVERGENCE_ALLOW_GROWTH: ${{ contains(github.event.pull_request.labels.*.name, 'kani-divergence-growth') && '1' || '0' }}
-        run: scripts/check-kani-divergence.sh
-
-  sealed-home-gate:
-    name: Sealed-home integrity gate (North Star)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Forbid raw effect primitives outside the sealed RealEffects home
-        run: scripts/check-sealed-home.sh
-
-  # ── The workspace build, ONCE per pod ─────────────────────────────────────
-  #
-  # Tests, Doctests, the OWASP gauntlet, the K4 parity pin, and the SDK tests
-  # used to be five jobs, each compiling the workspace on its own ephemeral pod.
-  # On four build runners that is the whole PR wall clock: a rebase wave of
-  # eight PRs queued ~80 compile jobs and took an hour. They are now STEPS of
-  # one job on one warm target dir, with the same five status contexts kept as
-  # reporter jobs below (branch protection names them; nothing is dropped).
-  #
-  # On pull_request the run is SCOPED: only the crates the diff touches, closed
-  # under reverse dependencies (scripts/affected-crates.sh — a change to
-  # portcullis-core re-tests nucleus-node). merge_group and push run the whole
-  # workspace, so integration is validated before anything lands; a
-  # workspace-wide change (Cargo.toml/lock, .github/) forces the full run too.
-  #
-  # Drafts are skipped (a stacked child re-runs everything on every base
-  # change); ready_for_review is a trigger above so the run starts on ready.
   workspace-tests:
     name: Workspace build + tests (one pod)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -672,7 +634,9 @@ jobs:
 
   declassify-sink-scope-enforced:
     name: Declassify sink scope is enforced
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # GitHub-hosted: a relay that only reads a step outcome should not hold a
+    # pool slot. See `text-gates`.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: live-path-gates
     if: always()
@@ -687,7 +651,9 @@ jobs:
 
   cross-pod-lineage:
     name: The node records pod lineage on the live path (C2)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # GitHub-hosted: a relay that only reads a step outcome should not hold a
+    # pool slot. See `text-gates`.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: live-path-gates
     if: always()
@@ -702,7 +668,9 @@ jobs:
 
   c1-inbound-fences-enforced:
     name: C1 inbound fences are enforced
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # GitHub-hosted: a relay that only reads a step outcome should not hold a
+    # pool slot. See `text-gates`.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: live-path-gates
     if: always()
@@ -717,7 +685,9 @@ jobs:
 
   gates-can-fail:
     name: Gates must fail on their own subject
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # GitHub-hosted: a relay that only reads a step outcome should not hold a
+    # pool slot. See `text-gates`.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: live-path-gates
     if: always()
@@ -959,3 +929,190 @@ jobs:
           cargo fuzz run path_can_access -- -max_total_time=30
           cargo fuzz run permission_serde -- -max_total_time=30
           cargo fuzz run workload_api_command -- -max_total_time=30
+
+  verify-strict:
+    name: Ed25519 verify_strict gate (M-3)
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.verify_strict }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::verify_strict: $STEP (see 'Text gates (one pod)' → 'Forbid non-strict dalek .verify(...) on trust paths')"; exit 1;; esac
+
+  sandbox-trusted-base-gate:
+    name: Sandbox trusted-base gate
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.sandbox_trusted_base }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::sandbox_trusted_base: $STEP (see 'Text gates (one pod)' → 'Every pin names a real test; the unpinned set may only shrink')"; exit 1;; esac
+
+  failclosed-verifier-gate:
+    name: Fail-closed verifier gate
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.failclosed }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::failclosed: $STEP (see 'Text gates (one pod)' → 'Forbid a verifier that reports success where it cannot check')"; exit 1;; esac
+
+  mediation-gate:
+    name: Mediation backstop gate (North Star)
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.mediation }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::mediation: $STEP (see 'Text gates (one pod)' → 'Forbid raw agent-path effect primitives outside the discharge-gated API')"; exit 1;; esac
+
+  north-star-ledger:
+    name: The North Star status table cannot outrun its wiring
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.north_star }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::north_star: $STEP (see 'Text gates (one pod)' → 'Every status row is earned, evidenced, and uncontradicted')"; exit 1;; esac
+
+  extracted-callsites:
+    name: Extracted predicates have live call sites (C8)
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.extracted_callsites }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::extracted_callsites: $STEP (see 'Text gates (one pod)' → 'Every extracted predicate's enforcement is still wired')"; exit 1;; esac
+
+  task-compiler-offline:
+    name: The task compiler is offline by construction
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.task_compiler }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::task_compiler: $STEP (see 'Text gates (one pod)' → 'No network crate in its dependency tables, no socket type in its sources')"; exit 1;; esac
+
+  ingest-hash-gate:
+    name: No-unwitnessed-ingest gate (InputsAuthorized)
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.ingest_hash }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::ingest_hash: $STEP (see 'Text gates (one pod)' → 'Forbid non-hashing agent-path ingest observes (content-address every input)')"; exit 1;; esac
+
+  kani-divergence-gate:
+    name: cfg(kani) divergences are inventoried and ratcheted
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.kani_divergence }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::kani_divergence: $STEP (see 'Text gates (one pod)' → 'Every cfg(kani) site is listed and justified; the total only shrinks')"; exit 1;; esac
+
+  sealed-home-gate:
+    name: Sealed-home integrity gate (North Star)
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.sealed_home }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::sealed_home: $STEP (see 'Text gates (one pod)' → 'Forbid raw effect primitives outside the sealed RealEffects home')"; exit 1;; esac
+
+  declassify-governor-keys-sealed:
+    name: Governor trusted-key set is not workload-writable
+    # GitHub-hosted on purpose: see `text-gates`. A relay on the pool costs a
+    # slot and undoes the consolidation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: text-gates
+    if: always()
+    steps:
+      - name: Report
+        env:
+          JOB: ${{ needs.text-gates.result }}
+          STEP: ${{ needs.text-gates.outputs.governor_keys }}
+        run: |
+          case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::governor_keys: $STEP (see 'Text gates (one pod)' → 'set_trusted_keys has no caller outside kernel construction')"; exit 1;; esac
