@@ -41,7 +41,17 @@ jobs:
       #     gatehouse than the plan check compares two things that were never the same.
       # Moved 4d42510 -> 7326bfa9 (a descendant) on 2026-09-10 to close a skew that had
       # gone unnoticed because nothing compared the two workflows.
-      GATEHOUSE_REF: 7326bfa9ea3f490c20bb406941527ac0484410c5
+      #
+      # Moved 7326bfa9 -> 89f7acc on 2026-09-12, for the runner deadlock (gatehouse F-100)
+      # that hung every shadow job for 45 minutes. That ref also changed the PRELUDE, and
+      # the change was not free: `ci.Gate` gained an appended `image` field and
+      # `admissible_b` gained a `pinned_b` conjunct, so all five gates in
+      # .gatehouse/pipeline.writ and .gatehouse/gates/*.json had to carry a PULLABLE image
+      # reference before the plan would typecheck again. Ours were a bare `sha256:<hex>`,
+      # which pins the right bytes, names no repository, and no kubelet can pull — so those
+      # five gates could never have run. A pin bump that only moved the ref would have
+      # failed the plan check, which is the gate working.
+      GATEHOUSE_REF: 89f7acc1e37eaa3b32c4b5eb9266fb41959a076a
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
