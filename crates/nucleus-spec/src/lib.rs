@@ -500,6 +500,27 @@ pub struct ImageSpec {
     /// Optional scratch disk image for writable storage.
     #[serde(default)]
     pub scratch_path: Option<PathBuf>,
+    /// Refuse this pod a writable scratch disk entirely.
+    ///
+    /// `scratch_path: None` does NOT mean "no scratch" — it means "the node
+    /// picks one", and `scratch_for_pod` provisions 4 GiB for every jailed pod
+    /// so `/work` is writable (#2789). There was no way to say "none", and
+    /// that gap is what makes a snapshot base unreachable: mounting ext4 writes
+    /// to its superblock, so a pod that has mounted `/work` is refused by
+    /// `clone_safety`, and on the live path every jailed pod has mounted it by
+    /// the time an operator can ask for a snapshot.
+    ///
+    /// A pod with this set has no `/dev/vdb`, so `guest-init` mounts nothing,
+    /// the scratch reads `NeverMounted` for the whole life of the VM, and the
+    /// pod stays certifiable as a base for as long as it runs.
+    ///
+    /// **The cost, stated rather than discovered:** `/work` is not writable, so
+    /// a workload that writes there fails, and `resolve_audit_path` falls back
+    /// from `/work/audit/` to `/tmp` — volatile, and not readable by the host
+    /// after teardown. That is acceptable for a pod built to be a base, which
+    /// runs no workload, and is the reason this is opt-in rather than a default.
+    #[serde(default)]
+    pub no_scratch: bool,
     /// Expected digest of the kernel image, if the spec pins one.
     ///
     /// Absent means unpinned, which is what every spec written before this field says, so absence

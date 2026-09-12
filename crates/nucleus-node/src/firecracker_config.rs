@@ -359,6 +359,15 @@ pub(crate) fn scratch_for_pod(
     if effective.scratch_path.is_some() {
         return (effective, false);
     }
+    // The spec asked for none. Checked BEFORE the jail, because "the node
+    // provisions one for every jailed pod" is exactly what this opts out of —
+    // testing it after would make the opt-out apply only to pods that were
+    // never getting a scratch anyway. See `ImageSpec::no_scratch`: a pod with
+    // no `/dev/vdb` never mounts `/work`, so its scratch reads `NeverMounted`
+    // and `clone_safety` can certify it as a snapshot base.
+    if effective.no_scratch {
+        return (effective, false);
+    }
     let Some(jail) = jail_layout else {
         return (effective, false);
     };

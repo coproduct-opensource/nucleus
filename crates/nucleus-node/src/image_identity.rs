@@ -120,6 +120,7 @@ mod tests {
             scratch_digest: None,
             data_path: None,
             data_digest: None,
+            no_scratch: false,
         }
     }
 

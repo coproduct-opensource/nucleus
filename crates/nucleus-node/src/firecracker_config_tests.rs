@@ -107,6 +107,7 @@ fn image(read_only: bool, scratch: bool) -> ImageSpec {
         scratch_digest: None,
         data_path: None,
         data_digest: None,
+        no_scratch: false,
     }
 }
 
@@ -1566,6 +1567,39 @@ fn scratch_for_pod_leaves_a_caller_supplied_or_jailless_image_alone() {
     let (out, provisioned) = scratch_for_pod(&plain, None, 123, 100);
     assert_eq!(out.scratch_path, None, "no jail, so nothing was made");
     assert!(!provisioned);
+}
+
+/// A pod that asks for no scratch gets none, even jailed.
+///
+/// Jailed is the case that matters: `scratch_for_pod` provisions for every
+/// jailed pod, and that is precisely what `no_scratch` opts out of. A test that
+/// only covered the jailless path would pass against a check placed AFTER the
+/// jail lookup, which would leave the opt-out doing nothing for the only pods
+/// it exists for.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pod_that_asks_for_no_scratch_gets_none_even_when_jailed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jail = JailLayout {
+        jail_root: tmp.path().to_path_buf(),
+    };
+    let mut no = image(true, false);
+    no.no_scratch = true;
+    let (out, provisioned) = scratch_for_pod(&no, Some(&jail), 123, 100);
+    assert_eq!(
+        out.scratch_path, None,
+        "the spec said none; a jail is not a reason to override it"
+    );
+    assert!(!provisioned);
+
+    // The control: the SAME jail does provision when the flag is off, so the
+    // assertion above is about the flag and not about a jail that never worked.
+    let yes = image(true, false);
+    let (out, _) = scratch_for_pod(&yes, Some(&jail), 123, 100);
+    assert!(
+        out.scratch_path.is_some(),
+        "without the flag this jail provisions, so the test above is not vacuous"
+    );
 }
 
 /// The fallback IS the safety property: no scratch means no scratch DRIVE, so

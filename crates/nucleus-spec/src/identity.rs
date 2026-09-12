@@ -101,6 +101,19 @@ fn image_identity(image: &ImageSpec) -> Result<ImageIdentity<'_>, IdentityError>
         rootfs_path: _,
         scratch_path: _,
         data_path: _,
+        // OUT, and this one is load-bearing for snapshots rather than merely
+        // defensible. Whether a pod HAS a writable scratch is placement, the
+        // same argument that takes `scratch_path` out one line above; what a
+        // scratch CONTAINS is `scratch_digest`, which is IN below.
+        //
+        // It must be OUT or the feature it exists for cannot work. A base pod
+        // sets it and a job pod does not, and the two must land on the SAME
+        // derivation or `base_for` will never match the base to the pods it was
+        // built for. Since neither pins a `scratch_digest` — an auto-provisioned
+        // disk is freshly made and has no stable digest — both already
+        // contribute `scratch: None`, so excluding this keeps that true rather
+        // than making it so.
+        no_scratch: _,
         // IN — the bytes themselves.
         kernel_digest,
         rootfs_digest,
@@ -280,6 +293,56 @@ mod tests {
             program_digest(&here).unwrap(),
             program_digest(&there).unwrap(),
             "a path is a location; the digest is the identity"
+        );
+    }
+
+    /// **The property the whole snapshot-base design rests on.**
+    ///
+    /// A base pod sets `no_scratch` so it never mounts `/work` and stays
+    /// certifiable; the job pods that restore from it do not. If that one field
+    /// moved the program digest, `base_for` would look up a derivation the base
+    /// was never published under, and the base could never serve anybody — the
+    /// feature would compile, boot, publish a base, and silently never hit.
+    ///
+    /// Driven red by moving `no_scratch` from the OUT list into `ImageIdentity`.
+    #[test]
+    fn asking_for_no_scratch_does_not_change_what_the_pod_computes() {
+        let base = spec_from(&format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+                 "kernel_path":"/k","rootfs_path":"/r","no_scratch":true,
+                 "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}}}}}"#
+        ));
+        let job = spec_from(&format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+                 "kernel_path":"/k","rootfs_path":"/r",
+                 "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}}}}}"#
+        ));
+        assert_eq!(
+            program_digest(&base).unwrap(),
+            program_digest(&job).unwrap(),
+            "a base and the jobs it serves must share a derivation, or the base is unreachable"
+        );
+    }
+
+    /// The other half: what a scratch CONTAINS is still identity. Without this
+    /// the test above could be satisfied by dropping scratch from the digest
+    /// altogether, which is a different and much worse change.
+    #[test]
+    fn a_pinned_scratch_digest_is_still_part_of_the_program() {
+        let a = spec_from(&format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+                 "kernel_path":"/k","rootfs_path":"/r","scratch_digest":"{D1}",
+                 "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}}}}}"#
+        ));
+        let b = spec_from(&format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+                 "kernel_path":"/k","rootfs_path":"/r","scratch_digest":"{D2}",
+                 "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}}}}}"#
+        ));
+        assert_ne!(
+            program_digest(&a).unwrap(),
+            program_digest(&b).unwrap(),
+            "the scratch's CONTENT is identity even though its presence is not"
         );
     }
 
