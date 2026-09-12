@@ -1081,7 +1081,6 @@ UNCOVERED=(
     "xtask gatehouse-pin           takes --gatehouse <path>; the probe needs a gatehouse checkout this script does not have"
     "xtask lean-action-builds      needs a Lean toolchain to reach its verdict"
     "xtask line-ratchet            probed through scripts/check-line-ratchet.sh, which is the same decision procedure"
-    "xtask policy-gate             runs ck-kernel admission on a manifest amendment; needs a real amendment"
 )
 # Was 5. Three were paid down once their detection was read rather than guessed
 # at. The remaining two need a Cargo.lock change, which this script will not make.
