@@ -352,7 +352,13 @@ async fn snapshot_running_pod(
         &inputs.boot_args,
         at_barrier,
         personalized,
-        inputs.writable_scratch,
+        // No scratch at all is `NeverMounted`: nothing to carry stale metadata.
+        &inputs
+            .scratch_path
+            .as_deref()
+            .map_or(crate::snapshot::MountState::NeverMounted, |p| {
+                crate::snapshot::mount_state(p)
+            }),
     );
 
     let program = nucleus_spec::identity::program_digest(&pod.spec)

@@ -855,10 +855,10 @@ impl FirecrackerConfig {
             smt: self.machine_config.smt,
             // A scratch drive is the writable, non-root one. `is_read_only` is the property that
             // matters, not the drive's name, because a name is a convention and this is not.
-            writable_scratch: self
-                .drives
-                .iter()
-                .any(|d| !d.is_root_device && !d.is_read_only),
+            scratch_path: self.drives.iter().find_map(|d| {
+                (!d.is_root_device && !d.is_read_only)
+                    .then(|| std::path::PathBuf::from(&d.path_on_host))
+            }),
         }
     }
 
