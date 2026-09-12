@@ -199,6 +199,13 @@ pub struct PodMaterial {
     /// when receipts are not provisioned for this pod. Served ONCE, before the
     /// workload exists — the broker secret's discipline — because possession lets
     /// the holder sign receipts as this mediator.
+    /// The spec naming what this pod runs, served over vsock instead of baked
+    /// into the rootfs.
+    ///
+    /// `None` means the host has nothing to say and the guest keeps whatever its
+    /// image carries — which is the behaviour every pod has today, so a node
+    /// that never sets this is unchanged.
+    pub pod_spec_yaml: Option<String>,
     pub mediation_signing_key: Option<String>,
     /// The mediator SPIFFE id carried in emitted receipts. `None` disables the
     /// signer even if a key is present.
@@ -588,6 +595,19 @@ fn handle_fetch_mediation_key(
     serde_json::json!({ "signing_key": signing_key, "spiffe_id": spiffe_id }).to_string()
 }
 
+/// Handle `FETCH_POD_SPEC`: the command this pod is to run.
+///
+/// Absent is a NAMED refusal, not an empty spec. A guest that got `{}` back
+/// would boot something — whatever its rootfs carries — while believing the
+/// host had spoken, and the two would disagree about what ran. The guest falls
+/// back to its baked spec only when it is told there is nothing to fetch.
+fn handle_fetch_pod_spec(spec: Option<&str>) -> String {
+    match spec {
+        Some(spec) => serde_json::json!({ "spec": spec }).to_string(),
+        None => r#"{"error":"no pod spec provisioned for this pod"}"#.to_string(),
+    }
+}
+
 /// Handle `SHIP_RECEIPT`: read the receipt body frame (its own larger bound) and
 /// durably collect it under this pod's node-side dir.
 ///
@@ -781,6 +801,14 @@ async fn handle_connection(
                     material.mediation_spiffe_id.as_deref(),
                     &material.mediation_key_served,
                 )
+            }
+            Ok(WorkloadApiCommand::FetchPodSpec) => {
+                // Not a secret and not once-only: it is this pod's own command,
+                // and a guest re-reading it learns nothing it did not already
+                // run. The mediation key's `*_served` latch is about a value
+                // whose POSSESSION is the capability; this is not that.
+                debug!("workload API FETCH_POD_SPEC for pod {}", pod_id);
+                handle_fetch_pod_spec(material.pod_spec_yaml.as_deref())
             }
             Ok(WorkloadApiCommand::SnapshotReady) => {
                 debug!("workload API SNAPSHOT_READY for pod {}", pod_id);

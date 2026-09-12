@@ -39,6 +39,11 @@ pub enum BootError {
     /// with nothing to run has nothing to do, and a shell as PID 1 would be
     /// an unmediated workload.
     PodSpecMissing { primary: String, fallback: String },
+    /// The host supplied a spec and it could not be written. NOT a fallback to
+    /// the baked spec: the host believes it dispatched a different job, and
+    /// running the image's own command while it thinks so is the two of them
+    /// disagreeing about what ran.
+    PodSpecUnwritable { path: String },
     /// `remount / read-only` failed: refusing to start the workload rather
     /// than run it on a writable rootfs.
     SealFailed(String),
@@ -59,6 +64,10 @@ impl std::fmt::Display for BootError {
             BootError::PodSpecMissing { primary, fallback } => write!(
                 f,
                 "missing pod spec (expected {primary} or {fallback}) — refusing to boot: there is no workload to mediate and a shell as PID 1 would be an unmediated one"
+            ),
+            BootError::PodSpecUnwritable { path } => write!(
+                f,
+                "the host supplied a pod spec and {path} could not be written — refusing to boot: running this image's own command while the host believes it dispatched another is the two of them disagreeing about what ran"
             ),
             BootError::SealFailed(err) => write!(
                 f,
@@ -200,6 +209,43 @@ pub struct SealedProof {
 
 /// Choose the pod spec: the primary path, else the fallback (copied into
 /// place when possible), else a named error. Never a shell.
+/// Write the spec the HOST supplied where [`resolve_pod_spec`] will find it.
+///
+/// # Why the host's answer wins
+///
+/// The command a pod runs is baked into its rootfs today, so every clone
+/// restored from a snapshot inherits one pod's command — the defect
+/// `WorkloadApiCommand::FetchPodSpec` documents, and the reason a snapshot base
+/// is per-job rather than per-toolchain. A base that boots to the barrier
+/// having asked for nothing can be restored for any job.
+///
+/// # Why a failed write is an error and not a fallback
+///
+/// If the host sent a spec and it could not be stored, the guest must NOT
+/// quietly run the one in its image. Those are different jobs, and the host
+/// believes it dispatched the first. Falling back would be "I could not look"
+/// reported as "I looked and it was fine" (ADR 0007 A-2) with a command
+/// attached.
+///
+/// `None` — the host had nothing to say — is not a failure: that is every pod
+/// today, and it keeps its baked spec.
+pub fn place_host_spec(
+    primary: &str,
+    fetched: Option<&str>,
+    write: impl FnOnce(&str, &str) -> bool,
+) -> Result<bool, BootError> {
+    let Some(spec) = fetched else {
+        return Ok(false);
+    };
+    if write(primary, spec) {
+        Ok(true)
+    } else {
+        Err(BootError::PodSpecUnwritable {
+            path: primary.to_string(),
+        })
+    }
+}
+
 pub fn resolve_pod_spec(
     primary: &str,
     fallback: &str,
@@ -332,5 +378,67 @@ mod tests {
         assert_eq!(resolve_pod_spec(p, f, |x| x == f, |_, _| true).unwrap(), p);
         assert_eq!(resolve_pod_spec(p, f, |x| x == f, |_, _| false).unwrap(), f);
         assert_eq!(resolve_pod_spec(p, f, |x| x == p, |_, _| false).unwrap(), p);
+    }
+}
+
+#[cfg(test)]
+mod host_spec_tests {
+    use super::*;
+
+    /// The host's spec is written where `resolve_pod_spec` looks, so the two
+    /// compose: place, then resolve.
+    #[test]
+    fn a_host_supplied_spec_is_placed_and_then_resolved() {
+        let mut written: Option<(String, String)> = None;
+        let placed = place_host_spec("/etc/nucleus/pod.yaml", Some("cmd: build"), |p, body| {
+            written = Some((p.to_string(), body.to_string()));
+            true
+        })
+        .expect("placed");
+        assert!(placed);
+        assert_eq!(
+            written,
+            Some(("/etc/nucleus/pod.yaml".into(), "cmd: build".into()))
+        );
+        // Now the primary exists, so resolution finds it and never consults the
+        // baked fallback.
+        let got = resolve_pod_spec(
+            "/etc/nucleus/pod.yaml",
+            "/pod.yaml",
+            |p| p == "/etc/nucleus/pod.yaml",
+            |_, _| panic!("must not copy the baked spec over the host's"),
+        )
+        .expect("resolved");
+        assert_eq!(got, "/etc/nucleus/pod.yaml");
+    }
+
+    /// **No host spec is not an error.** That is every pod today: the host says
+    /// nothing and the image's own spec stands.
+    #[test]
+    fn no_host_spec_leaves_the_baked_one_alone() {
+        let placed = place_host_spec("/etc/nucleus/pod.yaml", None, |_, _| {
+            panic!("nothing to write")
+        })
+        .expect("not an error");
+        assert!(!placed);
+    }
+
+    /// **A failed write is an error, never a fallback.** The host believes it
+    /// dispatched one job; running the image's is the two disagreeing about
+    /// what ran. "I could not look" is never "I looked and it was fine".
+    #[test]
+    fn a_spec_the_host_sent_but_we_could_not_store_aborts_the_boot() {
+        let err = place_host_spec("/etc/nucleus/pod.yaml", Some("cmd: build"), |_, _| false)
+            .expect_err("must not fall back");
+        assert!(
+            matches!(err, BootError::PodSpecUnwritable { ref path } if path == "/etc/nucleus/pod.yaml"),
+            "{err:?}"
+        );
+        // And it says why, because a guest that aborts silently is a boot
+        // nobody can diagnose from the console.
+        assert!(
+            format!("{err}").contains("disagreeing about what ran"),
+            "{err}"
+        );
     }
 }
