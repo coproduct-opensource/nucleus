@@ -78,9 +78,9 @@ permissions:
 
 jobs:
   prepare-self-build:
-    # Manual experimental lane. Preparing inputs is not a build verdict and
-    # this job is not a required context. Execution/verification follows next.
-    name: prepare pinned nucleus build image
+    # Manual experimental lane with a disposable executor key. No production
+    # App credential or required-check publication authority is available here.
+    name: build nucleus inside a nucleus microVM
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -99,18 +99,29 @@ jobs:
       - name: Refresh package metadata
         run: sudo apt-get update -qq
       - name: Install image and musl tools
-        run: sudo apt-get install -y -qq musl-tools e2fsprogs
+        run: sudo apt-get install -y -qq musl-tools e2fsprogs iptables iproute2 dnsmasq
+      - name: Enable the host vsock device
+        run: sudo modprobe vhost_vsock
       - name: Build bootstrap guest runtime
-        run: cargo build --locked --target x86_64-unknown-linux-musl -p nucleus-guest-init -p nucleus-tool-proxy -p nucleus-net-probe
+        run: cargo build --locked --target x86_64-unknown-linux-musl -p nucleus-node -p nucleus-guest-init -p nucleus-tool-proxy -p nucleus-net-probe
       - name: Materialize pinned offline build image
         env:
           SOURCE_COMMIT: ${{ github.sha }}
         run: cargo xtask build-image --source-commit "$SOURCE_COMMIT" --output /tmp/nucleus-self-build --guest-bin-dir target/x86_64-unknown-linux-musl/debug
+      - name: Run and verify cold and warm builds with a disposable node
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: sudo env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$GITHUB_WORKSPACE" target/debug/xtask build-bootstrap --inputs /tmp/nucleus-self-build/inputs.json --source-commit "$SOURCE_COMMIT" --node-binary target/x86_64-unknown-linux-musl/debug/nucleus-node --output /tmp/nucleus-self-run
+      - name: Make public experiment evidence readable
+        if: always()
+        run: sudo target/debug/xtask build-evidence --experiment /tmp/nucleus-self-run --output /tmp/nucleus-self-evidence
       - name: Preserve input provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: nucleus-build-inputs
-          path: /tmp/nucleus-self-build/inputs.json
+          path: |
+            /tmp/nucleus-self-build/inputs.json
+            /tmp/nucleus-self-evidence/
           if-no-files-found: error
           retention-days: 7
   egress-probe-falsifier:

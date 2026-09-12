@@ -37,6 +37,12 @@ struct Cli {
 enum Command {
     /// Prepare exact-tree, offline Rust build inputs for a nucleus microVM.
     BuildImage(build_image::Args),
+    /// Build nucleus in a prepared microVM image and verify cold/warm artifacts.
+    BuildRun(build_image::execute::Args),
+    /// Run the microVM build experiment with a disposable bootstrap node/key.
+    BuildBootstrap(build_image::execute::BootstrapArgs),
+    /// Export only public build experiment evidence, excluding all private keys.
+    BuildEvidence(build_image::execute::EvidenceArgs),
     /// Emit explicit Lean-action targets for the library coverage gate.
     LeanActionBuilds {
         /// Limit output to one workflow, for its per-theorem audit.
@@ -382,6 +388,9 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
         Command::BuildImage(args) => build_image::run(args),
+        Command::BuildRun(args) => build_image::execute::run(args),
+        Command::BuildBootstrap(args) => build_image::execute::bootstrap(args),
+        Command::BuildEvidence(args) => build_image::execute::evidence(args),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {

@@ -11,6 +11,8 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+pub(crate) mod execute;
+
 // linux/amd64 manifest resolved from the official 1.96.1-bookworm index on
 // 2026-09-12. Docker verifies fetched layers against this immutable manifest.
 const RUST_IMAGE: &str =
@@ -36,21 +38,23 @@ pub struct Args {
     kernel_sha256: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InputFile {
     path: PathBuf,
     sha256: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BuildInputs {
-    schema: &'static str,
-    architecture: &'static str,
+    schema: String,
+    architecture: String,
     source_commit: String,
     source_tree: String,
     source_archive_sha256: String,
-    toolchain: &'static str,
-    base_image: &'static str,
+    toolchain: String,
+    base_image: String,
     bootstrap: std::collections::BTreeMap<String, String>,
     kernel: InputFile,
     rootfs: InputFile,
@@ -114,6 +118,15 @@ pub fn run(args: Args) -> Result<()> {
     let root = output.join("rootfs");
     fs::create_dir(&root)?;
     export_base(&output, &root)?;
+    for tool in ["cargo", "rustc"] {
+        ensure!(
+            root.join(format!(
+                "usr/local/rustup/toolchains/{TOOLCHAIN}-x86_64-unknown-linux-gnu/bin/{tool}"
+            ))
+            .is_file(),
+            "pinned image is missing the declared toolchain executable: {tool}"
+        );
+    }
     // Refuse a baked workload: the host-fetched spec must be the only command
     // source. A base image changing this convention must stop preparation.
     for name in ["etc/nucleus/pod.yaml", "pod.yaml"] {
@@ -197,13 +210,13 @@ pub fn run(args: Args) -> Result<()> {
             .arg("8192M"),
     )?;
     let manifest = BuildInputs {
-        schema: "nucleus.build-inputs.v1",
-        architecture: "x86_64",
+        schema: "nucleus.build-inputs.v1".into(),
+        architecture: "x86_64".into(),
         source_commit,
         source_tree,
         source_archive_sha256: sha256(&archive)?,
-        toolchain: TOOLCHAIN,
-        base_image: RUST_IMAGE,
+        toolchain: TOOLCHAIN.into(),
+        base_image: RUST_IMAGE.into(),
         bootstrap,
         kernel: InputFile {
             path: kernel_path,

@@ -245,7 +245,31 @@ The image has no baked pod spec: the host-fetched spec must select the build.
 The existing quickstart workflow has a manual image-preparation lane; that lane
 is not a compilation or execution-verification result. Local materialization
 and config-relocation tests, Clippy and strict line ratchet pass. A Linux image
-preparation run remains to be observed before relying on the resulting image.
+preparation run passed in Actions run `34713561240`: source commit
+`1a921a3c161b5da6b6c1f985ae3ee8c56295aa1f`, tree
+`41ecd661ff089b603b5b61dd5a2958926908f0ce`, rootfs SHA-256
+`527772c41226e983460ae43b8ae2913eaecd0ec052d4642384a0c2d7ac69f3d3`.
+Image preparation took 4m23s after the bootstrap binaries compiled. This is
+image evidence, not a successful in-guest compilation.
+
+`build-run` now launches two real builds (cold, then a new VM using the same
+compiler-cache disk), derives expected program/environment identity before
+launch, verifies signed exits and artifacts, and cancels each VM before reusing
+its disk. The source commit/tree/archive and gate name are labels committed by
+the program digest; command, image pins and explicit environment are committed
+by that same digest. An operator-supplied signer key remains independent of the
+receipt. The prepared image and controller record are trusted inputs; they are
+not reconstructed from a returned claim. A failed build is preserved as a
+signed failure, even if an old output exists on the cache disk.
+
+The manual workflow runs this through `build-bootstrap`, which starts a
+disposable node, mints its mTLS client identity, records the bootstrap node/VMM
+hashes and public key, and kills/reaps the node after the experiment. The
+Firecracker archive is pinned to a measured release digest. `build-evidence`
+exports named public results and host console logs; it never recursively copies
+the node state or its keys. Local request-binding/export tests and Clippy pass;
+the real cold/warm experiment remains to be observed. No GitHub check publisher
+or cache-hit authority is implied by these development commands.
 
 Executor promotion must require a controller-approved, protected source and
 artifact digest. A valid receipt for an arbitrary PR-produced executable is

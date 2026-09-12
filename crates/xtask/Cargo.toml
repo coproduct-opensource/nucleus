@@ -36,6 +36,12 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 nucleus-spec = { path = "../nucleus-spec" }
+nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
+nucleus-receipt = { path = "../nucleus-receipt" }
+reqwest = { workspace = true, features = ["rustls-no-provider", "json", "blocking"] }
+rustls = { workspace = true }
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["pkcs8"] }
 regex = { workspace = true }
 
 [dev-dependencies]
