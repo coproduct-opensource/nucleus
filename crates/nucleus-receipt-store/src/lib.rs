@@ -24,21 +24,30 @@
 //! That check is cheap and it is the whole point: without it this crate is a
 //! `HashMap` with extra steps, and the design's soundness rests on a filename.
 //!
+//! # What it stores
+//!
+//! A signed [`nucleus_receipt::Receipt`] carrying exactly one
+//! [`CiVerdict`](nucleus_ci_verdict::CiVerdict). The store reads the action key
+//! out of that verdict, which is why it knows the shape rather than holding an
+//! opaque blob: a store that cannot read what it holds cannot check that it
+//! holds the right thing.
+//!
 //! # What it does not do
 //!
-//! Verify the receipt's signature. That is `pod_authority::verify_pod_receipt`'s
-//! job and it needs the signer's public key, which a store has no business
-//! holding. A caller that skips it has an unsigned cache, and this crate cannot
-//! tell it so — stated here rather than implied by silence.
+//! Verify the signature. That needs the signer's public key, which a store has
+//! no business holding — the same key would then be reachable from anything
+//! that can reach the cache. Callers verify with
+//! [`nucleus_receipt::Receipt::verify`] before trusting a verdict, and a caller
+//! that skips it has an unsigned cache. This crate cannot tell it so, which is
+//! why it is said here rather than implied by silence.
 
 #![forbid(unsafe_code)]
 
 use anyhow::{Context, Result};
 use nucleus_action_key::ActionKey;
+use nucleus_ci_verdict::CiVerdict;
+use nucleus_receipt::Receipt;
 use std::path::PathBuf;
-
-/// The field a stored receipt must carry, naming the key it is filed under.
-const KEY_FIELD: &str = "action_key";
 
 /// Why a lookup did not produce a receipt.
 #[derive(Debug)]
@@ -100,18 +109,18 @@ impl ReceiptStore {
     /// the way out is deliberate: the write check catches a caller's mistake,
     /// and the read check catches everything that happens to a file after it is
     /// written, which is the larger set.
-    pub fn put(&self, key: &ActionKey, receipt_json: &str) -> Result<()> {
-        match declared_key(receipt_json) {
-            Ok(found) if found == key.to_hex() => {}
-            Ok(found) => {
-                return Err(StoreError::Mislabelled {
-                    asked: key.to_hex(),
-                    found,
-                }
-                .into());
+    pub fn put(&self, key: &ActionKey, receipt: &Receipt) -> Result<()> {
+        let verdict =
+            CiVerdict::from_receipt(receipt).map_err(|e| StoreError::Unreadable(e.to_string()))?;
+        if verdict.action_key != key.to_hex() {
+            return Err(StoreError::Mislabelled {
+                asked: key.to_hex(),
+                found: verdict.action_key,
             }
-            Err(e) => return Err(e.into()),
+            .into());
         }
+        let receipt_json =
+            serde_json::to_string(receipt).context("serializing a receipt for the store")?;
         let path = self.path_for(key);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
@@ -120,7 +129,7 @@ impl ReceiptStore {
         // Write-then-rename: a reader must never see half a receipt, and a
         // crash mid-write must leave the previous one intact.
         let tmp = path.with_extension("json.partial");
-        std::fs::write(&tmp, receipt_json)
+        std::fs::write(&tmp, &receipt_json)
             .with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, &path).with_context(|| format!("publishing {}", path.display()))?;
         Ok(())
@@ -131,14 +140,14 @@ impl ReceiptStore {
     ///
     /// `Ok(None)` is a miss — run the gate. An `Err` is a store that cannot be
     /// trusted, which is a different thing and must not be silently retried.
-    pub fn get(&self, key: &ActionKey) -> Result<Option<String>> {
+    pub fn get(&self, key: &ActionKey) -> Result<Option<Receipt>> {
         let path = self.path_for(key);
         let body = match std::fs::read_to_string(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        let found = declared_key(&body)?;
+        let (receipt, found) = parse(&body)?;
         if found != key.to_hex() {
             return Err(StoreError::Mislabelled {
                 asked: key.to_hex(),
@@ -146,7 +155,7 @@ impl ReceiptStore {
             }
             .into());
         }
-        Ok(Some(body))
+        Ok(Some(receipt))
     }
 
     /// Where a key's receipt would live. Exposed so an operator can look.
@@ -156,20 +165,25 @@ impl ReceiptStore {
     }
 }
 
-/// The key a receipt says it is about.
-fn declared_key(receipt_json: &str) -> Result<String, StoreError> {
-    let v: serde_json::Value = serde_json::from_str(receipt_json)
-        .map_err(|e| StoreError::Unreadable(format!("not JSON: {e}")))?;
-    v.get(KEY_FIELD)
-        .and_then(|k| k.as_str())
-        .map(str::to_string)
-        .ok_or_else(|| StoreError::Unreadable(format!("no `{KEY_FIELD}` field")))
+/// Parse a stored blob into the receipt and the key its verdict claims.
+///
+/// Both failures are [`StoreError::Unreadable`] rather than a miss: a blob
+/// this store cannot read well enough to confirm what it is about is not one
+/// it may hand back.
+fn parse(blob: &str) -> Result<(Receipt, String), StoreError> {
+    let receipt: Receipt = serde_json::from_str(blob)
+        .map_err(|e| StoreError::Unreadable(format!("not a receipt envelope: {e}")))?;
+    let verdict = CiVerdict::from_receipt(&receipt)
+        .map_err(|e| StoreError::Unreadable(e.to_string()))?;
+    let key = verdict.action_key.clone();
+    Ok((receipt, key))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use nucleus_action_key::{ActionKey, Inputs, ReadEntry};
+    use nucleus_ci_verdict::Conclusion;
 
     /// A real derived key. Deliberately NOT a byte constructor: `derive`'s
     /// exhaustive destructure is the only way a key is meant to come into
@@ -190,10 +204,29 @@ mod tests {
         })
     }
 
-    fn receipt_for(k: &ActionKey) -> String {
-        format!(
-            r#"{{"action_key":"{}","verdict":"pass","exit_status":0}}"#,
-            k.to_hex()
+    /// A real signed envelope carrying a real verdict, because the store now
+    /// reads the key out of the verdict and a hand-rolled JSON blob would be
+    /// testing a different function.
+    fn receipt_for(k: &ActionKey) -> nucleus_receipt::Receipt {
+        let verdict = CiVerdict {
+            action_key: k.to_hex(),
+            context: "The Gate".into(),
+            tree: "4b825dc642cb6eb9a060e54bf8d69288fbee4904".into(),
+            conclusion: Conclusion::Success,
+            exit_status: 0,
+            log_digest: "ab".repeat(32),
+            pod_id: "pod-1".into(),
+            certificate: None,
+        };
+        nucleus_receipt::Receipt::sign(
+            nucleus_receipt::Session {
+                session_id: "spiffe://nucleus/node/1".into(),
+                issuer_kid: "kid-1".into(),
+                issued_at_micros: 1_757_000_000_000_000,
+                parent_chain: vec![],
+            },
+            vec![verdict.to_projection()],
+            &ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]),
         )
     }
 
@@ -204,7 +237,13 @@ mod tests {
         let k = key("manifest-guards");
         store.put(&k, &receipt_for(&k)).unwrap();
         let got = store.get(&k).unwrap().expect("the receipt just filed");
-        assert!(got.contains(&k.to_hex()));
+        let v = CiVerdict::from_receipt(&got).expect("carries a verdict");
+        assert_eq!(v.action_key, k.to_hex());
+        // The envelope must still verify after a disk round trip — a store
+        // that quietly reserialized a receipt into something that no longer
+        // verifies would be useless in exactly the way that is hardest to see.
+        got.verify(&ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_bytes())
+            .expect("a stored receipt must still verify when it comes back");
     }
 
     #[test]
@@ -248,7 +287,7 @@ mod tests {
 
         let path = store.location(&asked);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, receipt_for(&other)).unwrap();
+        std::fs::write(&path, serde_json::to_string(&receipt_for(&other)).unwrap()).unwrap();
 
         let e = store
             .get(&asked)

@@ -14,8 +14,11 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 nucleus-action-key = { path = "../nucleus-action-key" }
+nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
+nucleus-receipt = { path = "../nucleus-receipt" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+ed25519-dalek = { workspace = true }
 ci-spec = { path = "../ci-spec" }
 tempfile = { workspace = true }

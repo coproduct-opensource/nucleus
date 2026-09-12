@@ -112,10 +112,26 @@ fn key_of(root: &Path) -> nucleus_action_key::ActionKey {
         .expect("has a key")
 }
 
-fn receipt_for(k: &nucleus_action_key::ActionKey) -> String {
-    format!(
-        r#"{{"action_key":"{}","verdict":"pass","exit_status":0}}"#,
-        k.to_hex()
+fn receipt_for(k: &nucleus_action_key::ActionKey) -> nucleus_receipt::Receipt {
+    let verdict = nucleus_ci_verdict::CiVerdict {
+        action_key: k.to_hex(),
+        context: "The Gate".into(),
+        tree: "4b825dc642cb6eb9a060e54bf8d69288fbee4904".into(),
+        conclusion: nucleus_ci_verdict::Conclusion::Success,
+        exit_status: 0,
+        log_digest: "ab".repeat(32),
+        pod_id: "pod-1".into(),
+        certificate: None,
+    };
+    nucleus_receipt::Receipt::sign(
+        nucleus_receipt::Session {
+            session_id: "spiffe://nucleus/node/1".into(),
+            issuer_kid: "kid-1".into(),
+            issued_at_micros: 1_757_000_000_000_000,
+            parent_chain: vec![],
+        },
+        vec![verdict.to_projection()],
+        &ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]),
     )
 }
 
