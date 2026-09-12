@@ -264,3 +264,52 @@ population_floor = 7
 # Secret are confidential -- and each is a struct plus a registry row.
 floor_bp = 869
 population_floor = 23
+
+[family.suppress]
+# 5 of 134 production lint suppressions expire. The rest are forever.
+#
+# THIS FAMILY MEASURES THE EXEMPTION CHANNEL OF THE OTHER FIVE. bound, alg, tot,
+# life and typed each report how much of what the tree declares is covered by a
+# mechanism that CAN FAIL. Every one of those mechanisms can be switched off,
+# silently and permanently, by one line: #[allow(clippy::whatever)].
+#
+# An #[allow] is forever. It outlives the reason it was written for and nothing
+# says when that reason expired. An #[expect] is the same waiver with an expiry:
+# when the lint stops firing there, unfulfilled_lint_expectations errors and the
+# attribute has to go. It is the ONLY suppression that can itself fail, which is
+# this card's definition of discharged applied to the waivers.
+#
+# THE ASYMMETRY IS THE CASE. Across the tree: 292 #[allow], of which ZERO carry a
+# `reason =`. 48 #[expect], of which all 48 do. The tree already knows the right
+# form and 86% of its suppressions are the other one.
+#
+# PRODUCTION ONLY, and for this family that is not merely the convention. A
+# suppression inside #[cfg(test)] cannot disable a production gate, and disabling
+# a production gate is the defect being measured. That is why the number is 5 of
+# 134 rather than 39 of 206: most existing #[expect]s waive lints in test code,
+# including nine of portcullis-effects' ten, which waive
+# clippy::let_underscore_must_use at test sites.
+#
+# A MANDATE ONLY REACHES WHERE ITS TABLE DOES. allow_attributes and
+# allow_attributes_without_reason are clippy lints, delivered through
+# [workspace.lints.clippy] -- and that table reaches a crate only if the crate
+# opts in with `[lints] workspace = true`. 54 of 95 crates opt in. 41 do NOT, and
+# they include portcullis, portcullis-core and nucleus-flow-replay: the crates
+# holding the lattice, the receipt hashing and the flow replay. Their 53
+# production suppressions are reported as `undeclared` rather than counted,
+# because counting them as discharged would mean a crate could LEAVE the lint
+# table and have its allows become compliant. Same reading `tot` takes of the
+# crates clippy cannot compile, same reason: ADR 0007 A-2.
+#
+# HOW IT IS PAID. Two lines into the existing [workspace.lints.clippy] table --
+# allow_attributes = "deny" and allow_attributes_without_reason = "deny" -- and
+# clippy::allow_attributes has a machine-applicable suggestion, so most of the
+# conversion is `cargo clippy --fix`. Two real costs: a #[allow(dead_code)] that
+# fires only under some feature combinations becomes an unfulfilled expectation
+# under others, so those need per-site judgement under the --all-features matrix;
+# and the 41 non-adopting crates need three manifest lines each before the
+# mandate reaches them at all.
+#
+# 2026-09-11: seeded at the measurement.
+floor_bp = 373
+population_floor = 134
