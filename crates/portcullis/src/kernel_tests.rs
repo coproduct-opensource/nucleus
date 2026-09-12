@@ -2066,3 +2066,64 @@ fn test_extract_host() {
     assert_eq!(extract_host("api.example.com"), "api.example.com");
     assert_eq!(extract_host("https://host.com"), "host.com");
 }
+
+// ── redeem: the only way to use a token ───────────────────────────────────────
+
+fn a_bash_token(kernel: &mut Kernel) -> DecisionToken {
+    kernel.issue_approved_token(Operation::RunBash, "test")
+}
+
+fn perms_of(kernel: &Kernel) -> String {
+    kernel.effective().clone().normalize().checksum()
+}
+
+#[test]
+fn a_token_redeems_under_the_permissions_it_was_decided_against() {
+    let mut kernel = Kernel::new(PermissionLattice::permissive());
+    let perms = perms_of(&kernel);
+    let token = a_bash_token(&mut kernel);
+    assert!(token.redeem(&perms, Operation::RunBash).is_ok());
+}
+
+#[test]
+fn a_token_is_refused_for_another_operation() {
+    // THE regression this replaces was `debug_assert_eq!`, which compiles to
+    // nothing in release: a token minted for one operation was accepted by the
+    // entry point of another in every shipped binary.
+    let mut kernel = Kernel::new(PermissionLattice::permissive());
+    let perms = perms_of(&kernel);
+    let token = a_bash_token(&mut kernel);
+    assert_eq!(
+        token.redeem(&perms, Operation::ReadFiles),
+        Err(RedeemError::ScopeMismatch {
+            authorised: Operation::RunBash,
+            performing: Operation::ReadFiles,
+        })
+    );
+}
+
+#[test]
+fn a_token_is_refused_under_other_permissions() {
+    let mut kernel = Kernel::new(PermissionLattice::permissive());
+    let token = a_bash_token(&mut kernel);
+    let elsewhere = PermissionLattice::restrictive().normalize().checksum();
+    let err = token
+        .redeem(&elsewhere, Operation::RunBash)
+        .expect_err("a decision does not carry across a change of policy");
+    assert!(matches!(err, RedeemError::StalePermissions { .. }));
+    assert!(err.to_string().contains("change of policy"), "{err}");
+}
+
+#[test]
+fn scope_is_checked_before_currency() {
+    // A token wrong on BOTH counts reports the operation mismatch, which is the
+    // one a caller can act on: the effect asked for the wrong authorisation, not
+    // merely a stale one.
+    let mut kernel = Kernel::new(PermissionLattice::permissive());
+    let token = a_bash_token(&mut kernel);
+    let elsewhere = PermissionLattice::restrictive().normalize().checksum();
+    assert!(matches!(
+        token.redeem(&elsewhere, Operation::ReadFiles),
+        Err(RedeemError::ScopeMismatch { .. })
+    ));
+}

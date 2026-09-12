@@ -25,6 +25,22 @@
 //! clock) and fully unit-testable.
 
 #![forbid(unsafe_code)]
+// ADR 0007 totality: a function whose signature says it returns is lying if it
+// panics. Denied for the shipped build only — `assert!` IS a panic, so denying
+// inside `#[cfg(test)]` would forbid the thing tests are made of. This is the
+// same line `is_production_path` draws when it strips the test region.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
 
 use std::collections::BTreeMap;
 
@@ -189,7 +205,11 @@ struct Subject {
 /// Standard DSSE Pre-Authentication Encoding:
 /// `"DSSEv1" SP LEN(type) SP type SP LEN(body) SP body` (LEN = ASCII-decimal).
 fn pae(payload_type: &str, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(32 + payload_type.len() + payload.len());
+    let mut out = Vec::with_capacity(
+        32usize
+            .saturating_add(payload_type.len())
+            .saturating_add(payload.len()),
+    );
     out.extend_from_slice(b"DSSEv1 ");
     out.extend_from_slice(payload_type.len().to_string().as_bytes());
     out.push(b' ');

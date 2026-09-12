@@ -30,6 +30,23 @@
 //!   that any party can check with `nucleus_envelope::verify_bundle` or the
 //!   public verifier — the verify-then-pay artifact.
 
+// ADR 0007 totality: a function whose signature says it returns is lying if it
+// panics. Denied for the shipped build only — `assert!` IS a panic, so denying
+// inside `#[cfg(test)]` would forbid the thing tests are made of. This is the
+// same line `is_production_path` draws when it strips the test region.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -253,7 +270,7 @@ where
 /// SHA-256 of `bytes` as a lowercase hex string.
 pub fn body_sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    let mut s = String::with_capacity(digest.len() * 2);
+    let mut s = String::with_capacity(digest.len().saturating_mul(2));
     for b in digest {
         use std::fmt::Write as _;
         let _ = write!(s, "{b:02x}");

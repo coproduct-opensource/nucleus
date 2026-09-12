@@ -36,6 +36,19 @@
 //! soundness. Neither is a judgement anyone should make implicitly.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 
 use serde::{Deserialize, Serialize};
 
@@ -215,7 +228,7 @@ impl CiVerdict {
         let first = bodies.next().ok_or(VerdictError::NoCiProjection)?;
         let extra = bodies.count();
         if extra > 0 {
-            return Err(VerdictError::ManyCiProjections(extra + 1));
+            return Err(VerdictError::ManyCiProjections(extra.saturating_add(1)));
         }
         serde_json::from_value(first.clone()).map_err(|e| VerdictError::Malformed(e.to_string()))
     }

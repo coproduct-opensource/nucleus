@@ -1,0 +1,42 @@
+# cargo-mutants configuration.
+#
+# In .cargo/, not the repo root. `cargo mutants --help` says so plainly —
+# "Read configuration from this file instead of .cargo/mutants.toml" — and a
+# root-level mutants.toml is read by nothing. The first version of this file was
+# at the root, CI reported the same two survivors unchanged, and `--list` locally
+# confirmed the exclusion was doing nothing at all.
+#
+# WHY THIS FILE EXISTS
+#
+# `Mutation Testing` runs `cargo mutants --package portcullis --all-features`.
+# cargo-mutants mutates SOURCE TEXT, so it generates mutants for code that the
+# feature set does not compile — and a mutant of code that is not compiled can
+# never be killed. It is reported as MISSED, and the gate requires missed == 0.
+#
+# `PermissionLattice::encode` exists twice: a `#[cfg(feature = "serde")]` variant
+# that serialises a field, and a `#[cfg(not(feature = "serde"))]` one that uses
+# `Debug`. Under `--all-features` only the first is built. Every mutant of the
+# second survives vacuously, which is what turned #2840 red.
+#
+# WHAT DEFENDS THE FUNCTION INSTEAD
+#
+# `every_policy_field_reaches_the_digest` in lattice.rs asserts that perturbing
+# any of the eight policy fields moves the checksum. A constant `encode` fails it
+# — every field would hash the same — so the property a mutant would violate is
+# pinned by a test that does not depend on mutation testing to notice.
+#
+# WHAT THIS DOES NOT FIX, STATED RATHER THAN HIDDEN
+#
+# The two variants produce DIFFERENT digests for the same policy, and nothing
+# checks that they agree, because no single binary compiles both. The real fix is
+# to delete the `Debug` path: give each of the eight policy field types a stable
+# `digest()` of its own so one implementation serves both feature sets. That also
+# removes the last Debug-into-a-hash in this file, which is #747's defect class.
+# It is seven small implementations and belongs in its own change.
+#
+# `checksum` cannot simply be gated on `serde`: `kernel.rs` and `kernel/ifc.rs`
+# call it, and `portcullis --no-default-features` is a real build (the WASM
+# consumers use it). Checked before writing this exclusion.
+exclude_re = [
+    "PermissionLattice::encode",
+]

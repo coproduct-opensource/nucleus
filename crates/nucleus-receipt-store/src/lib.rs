@@ -42,6 +42,19 @@
 //! why it is said here rather than implied by silence.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 
 use anyhow::{Context, Result};
 use nucleus_action_key::ActionKey;

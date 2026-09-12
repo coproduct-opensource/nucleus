@@ -1,0 +1,316 @@
+# Scorecard ratchet — one section per defect family, two floors each.
+#
+# Read by `cargo xtask scorecard` (crates/xtask/src/scorecard.rs).
+#
+# WHY THIS FILE EXISTS
+#
+# A census of all 868 nucleus issues (2026-09-11) classified the 120 that are
+# bug-labelled or carry an audit prefix. Four families account for ~90%:
+#
+#   bound  72 (60%)  a mechanism exists and nothing binds it to the live path
+#   alg    15 (13%)  a law of a structure the code already claims to be
+#   life   14 (12%)  unbounded carrier, no durable state, no validity interval
+#   tot     7  (6%)  a function whose type says total, that panics
+#
+# The remaining 10% is genuinely novel and no census here will find it.
+#
+# Each family already had, or could have, its own gate. What did not exist was
+# one card: a place where a family at zero is visible beside a family at a
+# hundred, and where adding a fifth family is a section rather than a redesign.
+#
+# WHAT IS PINNED, AND WHY TWO THINGS
+#
+#   floor_bp          minimum discharged/population in basis points. May only RISE.
+#   population_floor  minimum population. A shrinking surface is a decision.
+#
+# Both, because neither alone is a gate. A floor on the ratio rewards deleting
+# obligations: remove one and numerator and denominator fall together while the
+# ratio rises. A pin on the debt misses a ratio falling at constant debt. This
+# is the trap the neighbouring repo's CCI has, where documenting a known gap
+# lowers the score.
+#
+# THE BADGE NAMES THE WEAKEST FAMILY
+#
+# Not an average. Pooling numerators over pooled denominators gives a number
+# dominated by whichever family has the largest population — `tot` alone
+# measures in the thousands — so a family at 0% would vanish into it. The badge
+# reads `alg 22%`: the lowest-scoring family AND its number, so it moves when
+# the weakest improves, cannot hide a bad family behind a good one, and says
+# where the next hour of work goes. ADR 0007 I-1: a gate whose green is
+# indistinguishable from vacuity.
+#
+# 2026-09-11: seeded at the measured value with one family. `alg`, `tot` and
+# `life` arrive as their own sections. Raising floor_bp is how a family's debt
+# is paid; lowering either pin needs a dated note here saying what went away
+# and who decided.
+
+[family.bound]
+# 171 of 172 witness-accepting parameter sites bind their witness under a name
+# the body can consult. The one remaining is `trait CaClient` in
+# crates/nucleus-identity/src/ca/mod.rs, which performs an act while dropping
+# its witness. 32 further sites are class-N in
+# scripts/inert-authority-manifest.txt — DenyAllEffects::run refuses
+# unconditionally, so it performs no act and correctly consults nothing — and
+# they are reported as `undeclared` rather than counted against the ratio.
+floor_bp = 9941
+population_floor = 172
+
+[family.alg]
+# 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
+# declaration. The unit is one law of one type, not one type: a per-type census
+# calls six types covered that between them check nine, six, four, four, four and
+# one of the fifteen their traits oblige.
+#
+# 21 types across 3 traits. Lattice obliges 9 laws, BoundedLattice 4 more,
+# DistributiveLattice 2 — exactly what verify_lattice_laws,
+# verify_bounded_lattice_laws and verify_distributive_laws check, counted by
+# reading them.
+#
+# MeetSemilattice and JoinSemilattice are implemented here and have NO verifier,
+# so their obligations are excluded rather than counted as undischarged: mixing
+# "a checker exists and is not wired" with "no checker exists" hides two
+# different debts behind one number. `convergence` made the same call for its
+# two unmeasurable arrows. When a semilattice verifier lands the population
+# rises, which is a number going up because the measurement got honest.
+#
+# 9 types carry meet/join/leq with no lattice trait impl at all -- WasiGrant,
+# WasiWorld, the two CRDT joins, RiskCost/WeakeningCost among them. No generic
+# suite can reach them, so they are reported as `undeclared` rather than counted
+# against the ratio: shape without declaration.
+#
+# UNDERSTATED, ON PURPOSE, FOR A STATED REASON: six types in
+# crates/portcullis/tests/proptest_lattice.rs are law-checked today by hand with
+# generated samples, and this gate cannot see them because it counts
+# declarations, not inferred coverage. Converting them STRENGTHENS those suites
+# from four laws to nine and may turn something red -- PathLattice,
+# CommandLattice, BudgetLattice and TimeLattice have never had associativity or
+# absorption checked -- so it is its own commit. This number rises when that
+# lands.
+floor_bp = 3956
+population_floor = 278
+
+[family.tot]
+# 13 of 80 production crates declare themselves panic-free for the shipped
+# build. A function whose signature says `-> T` and panics is lying about its
+# type: #1203 (FlowTracker::label(0), u64 underflow on an unguarded sentinel),
+# #1184 (truncate() on multi-byte UTF-8), #481 (Ed25519 keygen .expect() in a
+# hot path), #2395 (a guest_cid other than 3 panics the guest, silently).
+#
+# THE SITE CENSUS, recorded here rather than gated, per clippy.toml's own rule:
+# "Where a mandate is not yet clean, the ADR records the measured count and the
+# ratchet instead of putting a red gate on main."
+#
+#   2026-09-11, production region, 1787 sites:
+#     arithmetic_side_effects  912
+#     indexing_slicing         616
+#     expect_used              155
+#     unwrap_used               87
+#     panic                     10
+#     unreachable                7
+#     todo                       0
+#
+#   cargo clippy --workspace --exclude nucleus-verifier-service --lib --bins \
+#     --all-features --message-format=json -- \
+#     -W clippy::unwrap_used -W clippy::expect_used -W clippy::indexing_slicing \
+#     -W clippy::arithmetic_side_effects -W clippy::panic \
+#     -W clippy::unreachable -W clippy::todo -A clippy::all
+#
+# That takes minutes and this gate runs in the fast Manifest Guards job, so the
+# gate does not recompute it. It asks the binding question, which is a grep: how
+# many crates have DECLARED themselves panic-free. A count of sites nothing
+# enforces is a measurement; a crate-level deny is a gate.
+#
+# WHY cfg_attr(not(test), deny(...)). assert! is a panic. Of the 13 crates
+# measuring zero over lib and bins, only 2 are also clean under --all-targets --
+# the other 11 are clean where it matters and panic in their own test modules,
+# correctly. So the declaration is scoped to the shipped build, the same line
+# law_mechanisms::production_region draws when it strips the test region.
+#
+# ALL SEVEN LINTS OR NONE. Six of seven leaves a way to panic, and crediting it
+# would make the ratio mean "mostly".
+#
+# UNMEASURABLE IS NOT CLEAN. Eighteen crates showed zero; five showed zero
+# because clippy never looked -- four are workspace excludes (wasm, maturin,
+# RISC-V) and nucleus-verifier-service needs a wasm artifact CI builds. Counting
+# them as discharged is ADR 0007 A-2 exactly: "I could not look" is never "I
+# looked and it was fine". They are reported as undeclared and the population is
+# the 80 crates clippy can see.
+#
+# 2026-09-11 (second pass): nine more crates cleared and annotated, 13 -> 22.
+# Each was ONE arithmetic site -- a Vec::with_capacity hint or a counter -- where
+# saturating_add/mul is exactly equivalent: a capacity hint that saturates
+# allocates rather than wraps, and the loop fills the real size. 24 more crates
+# sit within 8 sites of clean; clearing all of them would reach 46 of 80 (57.5%).
+# The remainder need judgement about a contract rather than an arithmetic
+# rewrite, so they are not batched in here.
+#
+# 2026-09-11: seeded after annotating the 13 crates that were already clean, and
+# probing one of them red -- `v[0] + 1` in nucleus-pca fires indexing_slicing and
+# arithmetic_side_effects, and the crate is green again when it is removed. The
+# 67 remaining crates need their sites fixed before they can declare; the two
+# tractable lints there are unwrap_used (87) and panic (10), and the 1528
+# arithmetic and indexing sites are a program, not a gate.
+# 2026-09-12: both new CI receipt crates deny all seven totality lints; 25/83.
+floor_bp = 3012
+population_floor = 83
+
+[family.life]
+# 7 affine rights, 0 with a validity interval.
+#
+# Every one-shot right in nucleus is affine and enforced as such. `Authority`
+# carries #[must_use = "an Authority that is never spent is an action that was
+# authorised and not taken"], is consumed by value in spend_on, and has two
+# compile_fail doctests proving replay (E0382) and clone (E0599) are rejected.
+# DecisionToken, CheckProof, DischargedBundle, PodRuntime, ServeToken and
+# VerifyToken are the same shape.
+#
+# NOT ONE OF THEM EXPIRES. A token minted at t=0 authorises at t=infinity, so the
+# window between time-of-check and time-of-use is unbounded on every right in the
+# system. The affine half of the discipline is done; the temporal half was never
+# started. 14 of the 120 audit-and-bug issues are lifecycle defects.
+#
+# WHY THIS SUB-CENSUS AND NOT THE OTHER TWO. Unbounded carriers have a real
+# defect behind them -- Kernel.trace is a Vec<Decision> appended once per allowed
+# operation with no cap, and FlowTracker never compacts while its capped mirror
+# FlowGraph carries four named ceilings -- but the population is "a collection in
+# a LONG-LIVED struct", and long-lived is a judgement. The measurement that
+# exists (902 collection fields, 328 grown and never bounded, 69 in structs whose
+# NAMES suggest they persist) rests on a regex over struct names, and a
+# denominator decided that way is the metric equivalent of a gate that cannot
+# fail. Transition totality has almost no population: three transition functions
+# in the whole repo, one of them on a mock whose trait declares no transition law
+# at all. Both are ADRs, not ratchets, and both become countable once their
+# design question is answered. convergence made the same call for two of its four
+# arrows and named them rather than averaging them in.
+#
+# WHY floor_bp = 0 IS PINNED AND NOT MISSING. A zero floor normally means a gate
+# that passes for every tree. Here the zero is still gated from both sides:
+# population_floor keeps the denominator from shrinking, and the slack check
+# fires the moment the first right gains an interval -- turning the gate red and
+# forcing the pin up to meet it. measured_zero = true makes that a deliberate
+# sentence rather than a value someone left out, and the parser refuses the key
+# once floor_bp rises above zero, so the acknowledgement cannot go stale.
+#
+# 2026-09-11 (second pass): DecisionToken carries the checksum of the effective
+# permissions it was decided against, and the executor refuses a token whose
+# checksum is not the one it is about to run under. 0 -> 1 of 7.
+#
+# The measured zero did exactly what it was admitted to do. It did not sit
+# quietly at zero while the work happened: the slack check turned the first
+# discharge into a red -- "life is at 14.28% but the floor is pinned at 0.00%"
+# -- and the pin could not be carried forward. That is the whole defence of
+# admitting floor_bp = 0, and it was driven rather than argued.
+#
+# A STATE FINGERPRINT IS A TIGHTER BOUND THAN A CLOCK, not a weaker one. A TTL
+# asks "how long has it been?"; the invariant a one-shot right needs is "has
+# anything it depended on changed?". Those diverge both ways -- a thirty-second
+# token is stale at one millisecond if the policy was amended, and sound an hour
+# later if nothing moved -- and a TTL also imports a trusted clock and host/guest
+# skew across the vsock boundary. So the family counts either form, and the
+# vocabulary says which is which.
+#
+# Not yet bounded: Authority, CheckProof, DischargedBundle, PodRuntime,
+# ServeToken, VerifyToken. The last two cross a process boundary and are
+# serialized, so they need the fingerprint checked on arrival rather than a
+# borrow; the first four are in-process and could take a lifetime instead, which
+# would make staleness a compile error the way affinity already makes replay one
+# (E0382). That is an ADR and a call-site refactor, not a ratchet.
+floor_bp = 1428
+population_floor = 7
+
+[family.typed]
+# 2 of 23 runtime flow kinds are distinguished at COMPILE time.
+#
+# portcullis_core::labeled encodes a Denning-style security lattice in the trait
+# system -- Labeled<T, I: IntegTag, C: ConfTag>, with Trusted/Untrusted/
+# Adversarial crossed with Public/Internal/Secret -- and its own compile_fail
+# doctest proves the thing that matters: Secret data cannot reach a function
+# requiring ConfAtMost<Public>. That is a compile error, not a check anyone has
+# to reach. It is the construction the 2026 literature calls Denning-style IFC in
+# Rust's type system, and it is already here.
+#
+# It is applied to TWO kinds: FileRead (Trusted, Internal) and WebContent
+# (Adversarial, Public). The other twenty-one are tracked by FlowTracker at
+# runtime, which is sound and is also a CHECK -- so it has to be reached.
+# nucleus-observed-lint exists precisely because an ingest path can forget to
+# call observe, and its doc names the defect it was built from: /v1/run returned
+# arbitrary subprocess stdout and observed nothing. A kind that is LIFTED cannot
+# forget. That is the whole difference, and this ratio is the fraction.
+#
+# A LINT AND A TYPE SYSTEM ARE NOT THE SAME TOOL, and this family is where the
+# difference is visible. A dylint pass can decide ADOPTION -- does every function
+# in the ingest closure return a labelled type -- which is a typeck question over
+# a bounded set of paths, and nucleus-observed-lint already answers the runtime
+# equivalent. It cannot decide THE INVARIANT: "no Secret value reaches a Public
+# sink, through any composition anyone writes later" is not a bounded search, it
+# is what parametric polymorphism gives for free once the data is inside the
+# typed region. The lint guards the frontier; the types guard the interior.
+#
+# So this family and `observed` should move in OPPOSITE directions. Every kind
+# lifted here is a path the lint no longer has to police, and .observed-ratchet
+# .toml's ceiling should fall as this ratio rises. If it does not, one of the two
+# is measuring something other than what it says.
+#
+# Custom is excluded by name: it carries a caller-supplied string and cannot take
+# a fixed pair of tags, so counting it would put an undischargeable obligation in
+# the denominator forever. convergence excludes its two unmeasurable arrows the
+# same way.
+#
+# A row of LIFTED_TO_TYPES cannot over-claim: the gate checks the named type
+# exists and carries a `Labeled<` field, and refuses a row naming a NodeKind that
+# is not a variant. Both halves are tested.
+#
+# 2026-09-11: seeded at the measurement. The next lifts are the ones with an
+# obvious tag pair -- McpToolResult and ToolResponse are adversarial, EnvVar and
+# Secret are confidential -- and each is a struct plus a registry row.
+floor_bp = 869
+population_floor = 23
+
+[family.suppress]
+# 5 of 134 production lint suppressions expire. The rest are forever.
+#
+# THIS FAMILY MEASURES THE EXEMPTION CHANNEL OF THE OTHER FIVE. bound, alg, tot,
+# life and typed each report how much of what the tree declares is covered by a
+# mechanism that CAN FAIL. Every one of those mechanisms can be switched off,
+# silently and permanently, by one line: #[allow(clippy::whatever)].
+#
+# An #[allow] is forever. It outlives the reason it was written for and nothing
+# says when that reason expired. An #[expect] is the same waiver with an expiry:
+# when the lint stops firing there, unfulfilled_lint_expectations errors and the
+# attribute has to go. It is the ONLY suppression that can itself fail, which is
+# this card's definition of discharged applied to the waivers.
+#
+# THE ASYMMETRY IS THE CASE. Across the tree: 292 #[allow], of which ZERO carry a
+# `reason =`. 48 #[expect], of which all 48 do. The tree already knows the right
+# form and 86% of its suppressions are the other one.
+#
+# PRODUCTION ONLY, and for this family that is not merely the convention. A
+# suppression inside #[cfg(test)] cannot disable a production gate, and disabling
+# a production gate is the defect being measured. That is why the number is 5 of
+# 134 rather than 39 of 206: most existing #[expect]s waive lints in test code,
+# including nine of portcullis-effects' ten, which waive
+# clippy::let_underscore_must_use at test sites.
+#
+# A MANDATE ONLY REACHES WHERE ITS TABLE DOES. allow_attributes and
+# allow_attributes_without_reason are clippy lints, delivered through
+# [workspace.lints.clippy] -- and that table reaches a crate only if the crate
+# opts in with `[lints] workspace = true`. 54 of 95 crates opt in. 41 do NOT, and
+# they include portcullis, portcullis-core and nucleus-flow-replay: the crates
+# holding the lattice, the receipt hashing and the flow replay. Their 53
+# production suppressions are reported as `undeclared` rather than counted,
+# because counting them as discharged would mean a crate could LEAVE the lint
+# table and have its allows become compliant. Same reading `tot` takes of the
+# crates clippy cannot compile, same reason: ADR 0007 A-2.
+#
+# HOW IT IS PAID. Two lines into the existing [workspace.lints.clippy] table --
+# allow_attributes = "deny" and allow_attributes_without_reason = "deny" -- and
+# clippy::allow_attributes has a machine-applicable suggestion, so most of the
+# conversion is `cargo clippy --fix`. Two real costs: a #[allow(dead_code)] that
+# fires only under some feature combinations becomes an unfulfilled expectation
+# under others, so those need per-site judgement under the --all-features matrix;
+# and the 41 non-adopting crates need three manifest lines each before the
+# mandate reaches them at all.
+#
+# 2026-09-11: seeded at the measurement.
+floor_bp = 373
+population_floor = 134

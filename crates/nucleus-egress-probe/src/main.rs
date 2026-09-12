@@ -65,6 +65,23 @@
 //! `scripts/check-egress-probe.sh` can point them at a hermetic peer it controls
 //! inside a netns.
 
+// ADR 0007 totality: a function whose signature says it returns is lying if it
+// panics. Denied for the shipped build only — `assert!` IS a panic, so denying
+// inside `#[cfg(test)]` would forbid the thing tests are made of. This is the
+// same line `is_production_path` draws when it strips the test region.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
@@ -161,7 +178,7 @@ fn check_denied_connects(fails: &mut Vec<String>, timeout: Duration) {
                 continue;
             }
         };
-        probed += 1;
+        probed = probed.saturating_add(1);
         match TcpStream::connect_timeout(&addr, timeout) {
             Err(err) => {
                 eprintln!("NUCLEUS_EGRESS_CHECK: denied-connect {addr} REFUSED ({err}) (ok)");

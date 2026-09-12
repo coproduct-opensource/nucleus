@@ -339,6 +339,37 @@ impl ReadOutput {
     }
 }
 
+/// Which runtime `NodeKind` each compile-time-labelled output lifts.
+///
+/// # Why a registry and not an inference
+///
+/// The `Labeled<T, I, C>` machinery in `portcullis_core::labeled` is a
+/// Denning-style security lattice encoded in the trait system, and its own
+/// `compile_fail` doctest proves the thing that matters: `Secret` data cannot
+/// reach a function requiring `ConfAtMost<Public>`. That is a compile error, not
+/// a check someone runs.
+///
+/// It is applied to **two** of the twenty-four kinds the runtime IFC
+/// distinguishes. The rest are tracked by `FlowTracker` at runtime, which is
+/// sound but is a check rather than a proof — and a check has to be reached.
+///
+/// This registry is how the gap gets a number. Each row says "this `NodeKind`
+/// has been lifted to the type system, by this output type". The gate reads the
+/// `NodeKind` enum for the population and this array for the discharge, so both
+/// sides are syntax and neither needs a resolver — the discipline
+/// `inert_authority`'s closed witness vocabulary already uses.
+///
+/// A row cannot over-claim: the gate checks the named type exists and carries a
+/// `Labeled<` field. A row naming a type that does not, or does not label, is a
+/// failure rather than a free point.
+pub const LIFTED_TO_TYPES: [(&str, &str); 2] = [
+    // A file read is trusted input at internal confidentiality.
+    ("FileRead", "ReadOutput"),
+    // Web content is adversarial at public confidentiality: passing it where
+    // `Trusted` is required does not compile.
+    ("WebContent", "FetchOutput"),
+];
+
 /// Output from [`NucleusRuntime::fetch_url`].
 ///
 /// Data is `Labeled<Vec<u8>, Adversarial, Public>` — web content carries
