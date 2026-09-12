@@ -233,9 +233,25 @@ pub(crate) fn verify_pod_receipt(pubkey_hex: &str, preimage: &[u8], signature_he
     let mut msg = Vec::with_capacity(RECEIPT_DOMAIN.len() + preimage.len());
     msg.extend_from_slice(RECEIPT_DOMAIN);
     msg.extend_from_slice(preimage);
-    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &pubkey)
-        .verify(&msg, &sig)
-        .is_ok()
+
+    // `verify_strict`, NOT `ring::signature::ED25519`.
+    //
+    // ring's is COFACTORED verification, which accepts signatures that strict
+    // verification rejects — small-order and non-canonical points, so one
+    // signature can verify under more than one key. The M-3 gate
+    // (`scripts/check-verify-strict.sh`) forbids it on a production path, and
+    // caught this line. For a receipt the property is not academic: a verdict
+    // that verifies under two keys is a verdict attributable to two nodes.
+    let Ok(vk_bytes) = <[u8; 32]>::try_from(pubkey.as_slice()) else {
+        return false;
+    };
+    let (Ok(vk), Ok(sig)) = (
+        ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes),
+        ed25519_dalek::Signature::from_slice(&sig),
+    ) else {
+        return false;
+    };
+    vk.verify_strict(&msg, &sig).is_ok()
 }
 
 /// The node's certificate authority for pods. See the module docs.

@@ -23,6 +23,12 @@
 //! is what a GET should be. The asymmetry is the bug being contained rather than spread, and it is
 //! written down here so the next person finds a decision instead of an inconsistency.
 
+// Declared HERE, not in main.rs, because this is the only thing that needs it:
+// the read-back exists so a receipt can be built for a microVM. It also keeps
+// `main.rs` off its line ceiling, which it was sitting exactly on.
+#[path = "scratch_readback.rs"]
+mod scratch_readback;
+
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -166,9 +172,39 @@ pub(crate) async fn build(
     };
 
     let report_path = handle.spec.spec.work_dir.join(".nucleus-exit-report.json");
-    let report_json = tokio::fs::read_to_string(&report_path)
-        .await
-        .map_err(|e| ReceiptError::NoExitReport(format!("{}: {e}", report_path.display())))?;
+    let report_json = match tokio::fs::read_to_string(&report_path).await {
+        Ok(json) => json,
+        // A MICROVM SHARES NO DIRECTORY, so this path never existed for it.
+        //
+        // `nucleus-spec` says so outright — "A microVM has no host-directory
+        // mount and there never will be one" — which means this function has
+        // returned `NoExitReport` for every Firecracker pod since it was
+        // written. The guest's `/work` is a block device; its report is inside
+        // that image, and the host owns the image.
+        //
+        // ORDERING HAZARD, stated because it is real: the jail is removed at
+        // teardown (`FirecrackerPod::jail` is held "so teardown can remove
+        // it"). This read must happen while the jail still exists. A jail
+        // already gone reads as `Absent`, which is honest but is NOT the same
+        // as the pod having written nothing — so a receipt built too late is
+        // indistinguishable from a workload that crashed early, and that is a
+        // gap this comment is recording rather than closing.
+        Err(host_err) => match scratch_report(handle).await {
+            Some(Ok(json)) => json,
+            Some(Err(readback)) => {
+                return Err(ReceiptError::NoExitReport(format!(
+                    "{}: {host_err}; and the scratch disk: {readback}",
+                    report_path.display()
+                )));
+            }
+            None => {
+                return Err(ReceiptError::NoExitReport(format!(
+                    "{}: {host_err}",
+                    report_path.display()
+                )));
+            }
+        },
+    };
     let report: nucleus_spec::ExitReport =
         serde_json::from_str(&report_json).map_err(|e| ReceiptError::Malformed(e.to_string()))?;
 
