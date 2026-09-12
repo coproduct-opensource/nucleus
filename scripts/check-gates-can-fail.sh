@@ -949,6 +949,14 @@ perturb_fly_pool_volumes() {
     # end of the list compile onto the root filesystem and run out of disk.
     sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
 }
+# workspace-members: a crate dropped from the members list. This is the real mistake -- the
+# list is explicit, not a glob, so forgetting one is the normal way a crate ends up outside
+# the workspace, invisible to every `--workspace` command and failing nothing.
+perturb_workspace_member_dropped() {
+    local f="$1"
+    perl -0pi -e 's/^\s*"crates\/nucleus-audit",[^\n]*\n//m' "$f"
+}
+
 # allowlist-gates --parity: a shell script gains a gate the Rust harness has not ported. This is
 # the real shape -- `check-verify-strict.sh` carried two gates and the port took one -- reproduced
 # on a different script so the probe does not depend on that one defect staying fixed.
@@ -1063,6 +1071,8 @@ probe_xtask fly-pools ci/fly-runner/manager.toml \
 
 probe_xtask pipefail .github/workflows/a2a-tck.yml \
     "a pipeline added to a block with no pipefail" perturb_pipefail_new_unguarded_pipe
+probe_xtask workspace-members Cargo.toml \
+    "a crate dropped from the workspace members list" perturb_workspace_member_dropped
 probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
     "a baseline claiming a score the tree does not have" \
     "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \

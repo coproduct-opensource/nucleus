@@ -120,6 +120,9 @@ enum Command {
     /// A `run:` block that pipes without `pipefail` discards the exit status of every command
     /// but the last. Decided from workflow YAML alone; reads no source tree.
     Pipefail,
+    /// A crate outside the workspace is reached by no `--workspace` command. Decided from
+    /// `cargo metadata` and Cargo.toml's own `exclude` list.
+    WorkspaceMembers,
     /// A claim's falsifier must produce a REQUIRED context. A gate CI runs, that goes red, and
     /// that the merge queue merges past anyway enforces nothing — it is a red light beside an
     /// open gate. Ratcheted, not driven to zero: whether a given check should be required is a
@@ -383,6 +386,7 @@ mod self_pin;
 mod suppress;
 mod tot;
 mod typed;
+mod workspace_members;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
@@ -425,6 +429,7 @@ fn main() -> Result<()> {
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
         Command::Pipefail => pipefail::check(&std::env::current_dir()?),
+        Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;

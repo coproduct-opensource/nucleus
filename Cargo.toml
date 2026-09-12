@@ -93,6 +93,14 @@ exclude = [
     "crates/nucleus-marketplace-dashboard-frontend", # Leptos CSR (wasm32); build with: cd … && trunk build
     "crates/portcullis-python",  # Python bindings (requires maturin)
     "crates/portcullis-zkvm-guest", # RISC-V zkVM guest (compiled separately by risc0-build)
+    # NOT a deliberate exclusion like the four above, and listed here so the state is on the
+    # record rather than implicit: crates/nucleus-policy holds a Cargo.toml and NOTHING ELSE --
+    # no src/, no lib.rs, nothing depends on it, and one commit has ever touched it (a repo-wide
+    # rustfmt pass). It was in neither `members` nor `exclude`, which is the state
+    # `cargo xtask workspace-members` now refuses. Excluding it is the non-destructive way to
+    # make that state explicit; deleting the directory is probably the right end, and is a
+    # judgement for whoever added it.
+    "crates/nucleus-policy",
     "sdks/verifier-js",           # WASM-only (wasm32-unknown-unknown); build with: wasm-pack build sdks/verifier-js
     "examples/a2a-server",        # A2A SDK example server (own workspace); build/test inside examples/a2a-server
     "sdks/verifier-py",           # Python extension module; build with: maturin develop --release
