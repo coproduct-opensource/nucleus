@@ -417,11 +417,7 @@ impl<'a> Executor<'a> {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
-        crate::decision_scope::require_permissions_match(
-            decision.permissions(),
-            &self.permissions,
-        )?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         // Fail-closed isolation gate: refuse unless containment is declared and
         // meets the policy's required isolation (most-paranoid #2).
         self.enforce_isolation()?;
@@ -537,11 +533,7 @@ impl<'a> Executor<'a> {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
-        crate::decision_scope::require_permissions_match(
-            decision.permissions(),
-            &self.permissions,
-        )?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         self.run_args_internal(args, stdin, directory, None, authority)
     }
 
@@ -555,11 +547,7 @@ impl<'a> Executor<'a> {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
-        crate::decision_scope::require_permissions_match(
-            decision.permissions(),
-            &self.permissions,
-        )?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         self.run_args_internal(args, stdin, directory, Some(approval), authority)
     }
 
@@ -643,11 +631,7 @@ impl<'a> Executor<'a> {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
-        crate::decision_scope::require_permissions_match(
-            decision.permissions(),
-            &self.permissions,
-        )?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
@@ -708,11 +692,7 @@ impl<'a> Executor<'a> {
         decision: DecisionToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
-        crate::decision_scope::require_permissions_match(
-            decision.permissions(),
-            &self.permissions,
-        )?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
@@ -762,11 +742,7 @@ impl<'a> Executor<'a> {
         approval: &ApprovalToken,
         authority: Authority,
     ) -> Result<Output> {
-        crate::decision_scope::require_decision_for(decision.operation(), Operation::RunBash)?;
-        crate::decision_scope::require_permissions_match(
-            decision.permissions(),
-            &self.permissions,
-        )?;
+        decision.redeem(&self.permissions, Operation::RunBash)?;
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
         // Check temporal constraints
