@@ -157,7 +157,7 @@ impl Family for Bound {
 
 /// Every family on the card, in the order they are printed.
 pub fn families() -> Vec<Box<dyn Family>> {
-    vec![Box::new(Bound)]
+    vec![Box::new(Bound), Box::new(crate::alg::Alg)]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
