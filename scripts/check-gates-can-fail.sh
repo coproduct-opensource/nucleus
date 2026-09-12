@@ -1178,11 +1178,20 @@ SHIM_COVERED=(
 
 for sub in "${XTASK_GATES[@]}"; do
     gate="xtask $sub"
-    # Three probe forms count as coverage: probe_xtask for a bare invocation,
-    # probe_xtask_generated for one CI runs with flags naming a generated file, and
-    # probe_xtask_flagged for one CI runs BOTH bare and with a flag. Listing only the
-    # form this branch happened to add would drop the other two from the accounting.
-    grep -qE "^probe_xtask(_generated|_flagged)?[[:space:]]+${sub}([[:space:]]|$)" "$0" && continue
+    # ANY `probe_xtask*` helper counts as coverage, derived rather than listed.
+    #
+    # This was an explicit alternation, and a list is the wrong shape for it. Each branch
+    # that adds a helper edits this ONE predicate, so two such branches conflict here, on
+    # the same line -- and "take both sides" has to mean union of the ALTERNATION, not
+    # union of the lines. Resolved the fast way it silently drops a sibling's form, and a
+    # gate that IS probed then reads as unaccounted. Three rebases hit it this session,
+    # and the alternation on this branch named `_flagged`, a helper defined on another
+    # branch and not here: a coverage claim wider than the code, which is the defect this
+    # file exists to refuse.
+    #
+    # Every helper lives in this file and is reviewed with it, so matching the family by
+    # name costs nothing the list was buying, and removes the conflict class entirely.
+    grep -qE "^probe_xtask[a-z_]*[[:space:]]+${sub}([[:space:]]|$)" "$0" && continue
     printf '%s\n' "${UNCOVERED[@]}" | grep -q "^${gate}[[:space:]]" && continue
 
     # Covered through a script? The row says WHICH, and the row is verified: a
