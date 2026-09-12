@@ -738,6 +738,17 @@ perturb_gate_budget_timeout() {
     sed -i.bak -E 's/^( *)timeout: "[0-9]+"/\1timeout: "9999"/' "$1" && rm -f "$1.bak"
 }
 
+perturb_wasm_closure_forbid_present() {
+    # "needs a non-wasm dependency added" is true, and it is not the only thing this
+    # gate decides. It also decides, for each crate in its committed FORBIDDEN list,
+    # whether that crate is in the wasm32 closure -- and THAT detection is the fragile
+    # half: a `grep -qE "(^|[│├└─ ])${c} v[0-9]"` over `cargo tree` output, keyed on box
+    # drawing characters. If cargo ever changes that format the gate passes forever and
+    # nothing says so. Declaring a crate that IS present exercises exactly that path.
+    # `serde` is in the closure by inspection; matches the ARRAY, never a crate name.
+    sed -i.bak -E 's/^FORBIDDEN=\((.*)\)$/FORBIDDEN=(\1 serde)/' "$1" && rm -f "$1.bak"
+}
+
 perturb_dep_ceiling_raise() {
     # The OTHER direction of this gate, and the one its uncovered entry did not see.
     # "needs a real duplicate crate version" is true for the drift half -- you cannot
@@ -794,6 +805,8 @@ probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-dep-ceiling.sh    "" scripts/check-dep-ceiling.sh \
       "a ceiling above the count it caps"     perturb_dep_ceiling_raise
+probe check-wasm-closure.sh   "" scripts/check-wasm-closure.sh \
+      "a crate forbidden that is in the closure" perturb_wasm_closure_forbid_present
 probe check-law-mechanisms.sh "" crates/portcullis/src/lattice.rs \
       "a declared-dead mechanism gains a production call site" perturb_law_mechanism_wired
 probe check-law-mechanisms.sh "" crates/portcullis/src/budget.rs \
@@ -891,7 +904,6 @@ probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
 # A perturbation for these needs a duplicate crate version or a non-wasm
 # dependency — a real lockfile change, which this script will not make.
 UNCOVERED=(
-    "check-wasm-closure.sh         needs a non-wasm dependency added"
     # 2026-09-11: the xtask half of the domain became VISIBLE today. These eight
     # were never exempted by decision — they were outside the glob, so nothing
     # asked. Listing them is the point: each now owes a perturbation or a reason,
@@ -931,7 +943,13 @@ UNCOVERED=(
 # ceiling, and raising a ceiling above the actual count exercises that half from a
 # committed declaration. The same shape as scoreboard-ratchet above: the exemption
 # named a real obstacle and stopped there.
-UNCOVERED_CEILING=6
+#
+# 2026-09-12, 6 -> 5: `check-wasm-closure.sh` gets a probe, by the same reading that
+# freed the previous two. "Needs a non-wasm dependency added" is true of the CLOSURE
+# half and silent about the DETECTION half -- a grep over `cargo tree` keyed on box
+# drawing characters, which would pass forever if cargo changed its output. Declaring
+# a present crate forbidden exercises that path from a committed list.
+UNCOVERED_CEILING=5
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #
