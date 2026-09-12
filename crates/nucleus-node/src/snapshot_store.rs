@@ -153,7 +153,13 @@ pub(crate) struct SnapshotInputs {
     /// Whether a writable scratch disk is attached, which refuses a snapshot outright: clones
     /// either share one writable file or get a fresh one their cached ext4 state does not
     /// describe. Both are filesystem corruption.
-    pub writable_scratch: bool,
+    /// The writable non-root drive's path on the host, when there is one.
+    ///
+    /// A PATH, not a bool. The question `clone_safety` asks is whether the
+    /// guest ever MOUNTED it, which is in the image's own superblock — so the
+    /// caller needs the file, not a flag saying one exists. See
+    /// `snapshot::mount_state`.
+    pub scratch_path: Option<std::path::PathBuf>,
 }
 
 impl SnapshotInputs {
