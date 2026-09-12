@@ -22,6 +22,12 @@
 //! **kernel decision**, not about the HTTP surface. Stated so the boundary is
 //! not silently overclaimed later.
 
+// ADR 0007 C-5: a discarded Result on a flow-write path is a taint state that
+// stopped being provable. Denied here because this crate is now clean of it and
+// its whole output is a taint measurement -- the one place where losing an
+// observation invalidates the number rather than merely risking it.
+#![deny(clippy::let_underscore_must_use)]
+
 use portcullis::action_term::ActionTerm;
 use portcullis::gate_class::{self, GateClass};
 use portcullis::kernel::{DenyReason, Kernel, Verdict};
@@ -123,6 +129,16 @@ pub struct ReplaySummary {
     /// Refusal-code histogram, so a reader can see *which* gate fired rather
     /// than only how often something did.
     pub deny_codes: std::collections::BTreeMap<String, usize>,
+    /// Ingest steps whose observation FAILED, so the taint state this summary
+    /// describes is not provable for the rest of the episode.
+    ///
+    /// Any value above zero invalidates every taint-derived number below it:
+    /// once an observation is lost the session's label is a guess, and
+    /// `ceiling_attributable` in particular is counting against a ceiling that
+    /// no longer reflects what was ingested. Reported rather than returned
+    /// because a replay harness that stops at the first anomaly measures less
+    /// than one that finishes and says what it could not account for.
+    pub unobserved_ingests: usize,
 
     // ── How the refusals split by sink consequence ─────────────────────────
     // The question this answers: are the denials concentrated on expensive,
@@ -232,9 +248,22 @@ pub fn replay(steps: &[TraceStep]) -> (Vec<StepOutcome>, ReplaySummary) {
             && let Some(kind) = step.ingest
         {
             let bytes = step.content.as_deref().unwrap_or("").as_bytes();
-            // A dropped observation poisons the session by design; surface it
-            // rather than silently continuing with an unprovable taint state.
-            let _ = flow.observe_with_content_hash(kind, content_hash(bytes));
+            // The comment that used to sit here said "surface it rather than
+            // silently continuing with an unprovable taint state", and the line
+            // under it was `let _ = ...`, which silently continues. The prose
+            // was right and the code did the opposite.
+            //
+            // A lost observation means every taint number after this step is a
+            // guess, so it is counted and the count is reported. The replay
+            // finishes — a harness that aborts measures less than one that
+            // finishes and says what it could not account for — but it can no
+            // longer claim the taint state it describes is provable.
+            if flow
+                .observe_with_content_hash(kind, content_hash(bytes))
+                .is_err()
+            {
+                summary.unobserved_ingests += 1;
+            }
         }
     }
 
