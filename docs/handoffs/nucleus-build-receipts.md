@@ -294,6 +294,18 @@ provenance; production executor trust stays pinned.
 
 ## Remaining acceptance work (milestones not yet complete)
 
+Measured on 2026-09-12: self-build run `34715671237` failed during pod admission
+because `br_netfilter` was not loaded. The refusal body named the missing
+`/proc/sys/net/bridge/bridge-nf-call-iptables` file. Its separate KVM enforcement
+lane passed. The workflow now loads that module along with `vhost_vsock`;
+run `34716636960` exercises the correction. A module-setup pass is not evidence
+that the self-build workload launched or returned a binary.
+
+The bootstrap already called both kill and wait before propagating its build
+result. Reordering the `?` operations did not add cleanup; it only changed error
+precedence. Preserve the original build error after both cleanup calls so an
+already-exited node does not replace the useful failure with a kill error.
+
 1. Protected supervisor observation, output/log hashing and a host-signed typed
    CI receipt bound to source commit/tree, gate, environment and architecture.
    Demonstrate a real `cargo build --locked -p nucleus-node` in a microVM,

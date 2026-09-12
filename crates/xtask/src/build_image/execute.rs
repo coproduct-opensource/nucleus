@@ -169,9 +169,11 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     })();
     let stopped = node.kill();
     let reaped = node.wait();
+    // Both cleanup operations have already run. Preserve the build failure if
+    // the node also exited before kill; cleanup must not hide that diagnosis.
+    result?;
     stopped.context("stop bootstrap node")?;
     reaped.context("reap bootstrap node")?;
-    result?;
     Ok(())
 }
 
