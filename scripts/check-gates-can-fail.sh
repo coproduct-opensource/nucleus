@@ -203,6 +203,24 @@ probe_xtask() {
         return
     fi
 
+    # The BASELINE, before anything is touched. `restored_rc` alone cannot tell "my
+    # perturbation broke it" from "it was already red when I arrived", and it blames the
+    # restore either way. Measured on PR #2835: `xtask scorecard` was red on that branch
+    # for an unrelated reason (a ratchet floor the base does not meet), and every probe of
+    # it reported `still failing after restore` -- four FAILs, all misattributed, none
+    # naming the one cause. A probe on a tree where the gate is already red decides
+    # nothing, and saying THAT is the only honest verdict available.
+    local baseline_rc=0
+    cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || baseline_rc=$?
+    if [[ "$baseline_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub — already red (exit $baseline_rc) BEFORE any perturbation."
+        echo "        Not a restore failure and not a broken probe: this gate is failing on"
+        echo "        this tree for its own reasons, so nothing it says under perturbation"
+        echo "        would be evidence. Fix that red first, then this probe means something."
+        failures=$((failures + 1))
+        return
+    fi
+
     RESTORE_TO="$target"
     RESTORE_FROM="$(mktemp)"
     cp "$target" "$RESTORE_FROM"
@@ -231,7 +249,9 @@ probe_xtask() {
         echo "  FAIL  xtask $sub — $desc did NOT fail the gate (exit 0)"
         failures=$((failures + 1))
     elif [[ "$restored_rc" -ne 0 ]]; then
-        echo "  FAIL  xtask $sub — still failing (exit $restored_rc) after restore"
+        echo "  FAIL  xtask $sub — green before, still failing (exit $restored_rc) after restore:"
+        echo "        the perturbation left something behind. The baseline was checked above,"
+        echo "        so this is the restore and not a pre-existing red."
         failures=$((failures + 1))
     else
         echo "  ok    xtask $sub — RED on $desc, GREEN when restored"
