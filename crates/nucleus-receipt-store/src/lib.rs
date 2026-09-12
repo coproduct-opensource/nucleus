@@ -123,8 +123,7 @@ impl ReceiptStore {
             serde_json::to_string(receipt).context("serializing a receipt for the store")?;
         let path = self.path_for(key);
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("creating {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         // Write-then-rename: a reader must never see half a receipt, and a
         // crash mid-write must leave the previous one intact.
@@ -173,8 +172,8 @@ impl ReceiptStore {
 fn parse(blob: &str) -> Result<(Receipt, String), StoreError> {
     let receipt: Receipt = serde_json::from_str(blob)
         .map_err(|e| StoreError::Unreadable(format!("not a receipt envelope: {e}")))?;
-    let verdict = CiVerdict::from_receipt(&receipt)
-        .map_err(|e| StoreError::Unreadable(e.to_string()))?;
+    let verdict =
+        CiVerdict::from_receipt(&receipt).map_err(|e| StoreError::Unreadable(e.to_string()))?;
     let key = verdict.action_key.clone();
     Ok((receipt, key))
 }
@@ -242,8 +241,12 @@ mod tests {
         // The envelope must still verify after a disk round trip — a store
         // that quietly reserialized a receipt into something that no longer
         // verifies would be useless in exactly the way that is hardest to see.
-        got.verify(&ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_bytes())
-            .expect("a stored receipt must still verify when it comes back");
+        got.verify(
+            &ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .expect("a stored receipt must still verify when it comes back");
     }
 
     #[test]
@@ -262,10 +265,7 @@ mod tests {
         let asked = key("clippy");
         let other = key("rustfmt");
         let e = store.put(&asked, &receipt_for(&other)).unwrap_err();
-        assert!(
-            e.to_string().contains("refusing to serve it"),
-            "got: {e}"
-        );
+        assert!(e.to_string().contains("refusing to serve it"), "got: {e}");
         assert!(
             !store.location(&asked).exists(),
             "a refused put must not leave a file behind"

@@ -177,7 +177,11 @@ fn a_weakened_gate_cannot_answer_from_its_stronger_selfs_history() {
     store.put(&strong, &receipt_for(&strong)).unwrap();
 
     // The gate now checks nothing. Its inputs are untouched.
-    write(&root, "scripts/check-thing.sh", "#!/bin/sh\n# do nothing\nexit 0\n");
+    write(
+        &root,
+        "scripts/check-thing.sh",
+        "#!/bin/sh\n# do nothing\nexit 0\n",
+    );
     git(&root, &["add", "-A"]);
 
     let weakened = key_of(&root);

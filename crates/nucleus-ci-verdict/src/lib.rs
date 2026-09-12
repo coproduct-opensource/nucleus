@@ -217,8 +217,7 @@ impl CiVerdict {
         if extra > 0 {
             return Err(VerdictError::ManyCiProjections(extra + 1));
         }
-        serde_json::from_value(first.clone())
-            .map_err(|e| VerdictError::Malformed(e.to_string()))
+        serde_json::from_value(first.clone()).map_err(|e| VerdictError::Malformed(e.to_string()))
     }
 }
 
