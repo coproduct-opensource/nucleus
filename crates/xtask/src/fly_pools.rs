@@ -29,7 +29,7 @@
 //! One committed TOML file. No source tree, no Fly API, no network.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -67,6 +67,291 @@ pub fn pools_json(manager_toml: &str) -> Result<String> {
     bail!("{MANAGER_TOML}: no POOLS assignment")
 }
 
+/// How a `runs-on:` variable is expected to resolve.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunnerVar {
+    /// It must name a label some pool in `POOLS` declares.
+    Pool,
+    /// It names a runner provisioned outside the Fly manager, with the reason.
+    Outside(&'static str),
+}
+
+/// Every `vars.*` a `runs-on:` in this repository may use.
+///
+/// The VALUES live in GitHub's repository variables, which a checkout cannot read — so this is not
+/// "the variable is set to the right label", which needs the API. It is the question a checkout
+/// CAN answer and that nothing asked: **is this a runner anybody decided on?** A workflow routing
+/// jobs at `vars.CI_HEAVY_RUNNER` is syntactically perfect, passes actionlint, and queues forever
+/// against a pool nobody deployed; GitHub reports a job waiting for a runner exactly the way it
+/// reports a busy pool, which is why it reads as capacity and gets waited on rather than fixed.
+const RUNNER_VARS: &[(&str, RunnerVar)] = &[
+    ("CI_BUILD_RUNNER", RunnerVar::Pool),
+    ("CI_RUNNER", RunnerVar::Pool),
+    (
+        "CI_MACOS_RUNNER",
+        RunnerVar::Outside("Apple hardware; no Fly pool can host it"),
+    ),
+    (
+        "ARM64_METAL_RUNNER",
+        RunnerVar::Outside("bare-metal arm64 with KVM and vsock, provisioned per-fork"),
+    ),
+];
+
+/// Self-hosted labels a `runs-on:` may name as a LITERAL without a pool declaring them. Listed
+/// rather than omitted, each with the reason, and shrink-only.
+const OUTSIDE_LABELS: &[(&str, &str)] = &[(
+    "nucleus-k3s",
+    "runner-smoke.yml's default target: a k3s runner the smoke test provisions for itself",
+)];
+
+/// GitHub-hosted label families. A `runs-on:` naming one of these needs no pool.
+const HOSTED_PREFIXES: &[&str] = &["ubuntu-", "macos-", "windows-", "self-hosted"];
+
+/// One `runs-on:` site, with the job's `if:` if it has one.
+struct Site {
+    file: String,
+    line: usize,
+    expr: String,
+    guard: Option<String>,
+}
+
+/// Every `runs-on:` under `.github/`, including block scalars (`runs-on: >-`), with the `if:` of
+/// the job that owns it.
+///
+/// The `if:` matters and collecting it is the point: an expression that can evaluate to the empty
+/// string is only safe when something refuses the empty case, and in this repository exactly one
+/// site relies on that.
+fn runs_on_sites(root: &Path) -> Result<Vec<Site>> {
+    let mut out = Vec::new();
+    let dir = root.join(".github/workflows");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "yml"))
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = fs::read_to_string(&path)?;
+        let lines: Vec<&str> = text.lines().collect();
+        // The most recent `if:` at the job's own indent, which is the one that gates the job.
+        let mut pending_if: Option<(usize, String)> = None;
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim_start();
+            let ind = line.len() - t.len();
+            if let Some(v) = t.strip_prefix("if:") {
+                pending_if = Some((ind, v.trim().to_string()));
+            }
+            let Some(v) = t.strip_prefix("runs-on:") else {
+                continue;
+            };
+            let v = v.trim();
+            let expr = if v == ">-" || v == "|" || v == ">" {
+                // A block scalar: everything indented deeper than the key, joined.
+                lines[i + 1..]
+                    .iter()
+                    .take_while(|l| l.trim().is_empty() || (l.len() - l.trim_start().len()) > ind)
+                    .map(|l| l.trim())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            } else {
+                v.to_string()
+            };
+            out.push(Site {
+                file: rel.clone(),
+                line: i + 1,
+                expr,
+                // An `if:` at the same indent as `runs-on:` belongs to the same job.
+                guard: pending_if
+                    .as_ref()
+                    .filter(|(gi, _)| *gi == ind)
+                    .map(|(_, g)| g.clone()),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The `vars.X` names an expression reads.
+fn vars_in(expr: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = expr;
+    while let Some(i) = rest.find("vars.") {
+        let tail = &rest[i + 5..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len());
+        if end > 0 {
+            out.push(tail[..end].to_string());
+        }
+        rest = &tail[end..];
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The single-quoted literals an expression can **fall back to** — which is not every quoted
+/// literal in it.
+///
+/// `aeneas-ifc-scoped.yml`'s `runs-on` is a ternary: `needs.scope.outputs.relevant == 'true' && A
+/// || B`. Taking every quoted string made `'true'` a candidate runner label and red the gate on a
+/// correct workflow. A literal that is the right-hand side of a comparison is an operand of the
+/// CONDITION, never a value the expression can produce, so it is skipped.
+fn literals_in(expr: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while let Some(i) = expr[at..].find('\'') {
+        let open = at + i;
+        let Some(j) = expr[open + 1..].find('\'') else {
+            break;
+        };
+        let close = open + 1 + j;
+        let before = expr[..open].trim_end();
+        if !(before.ends_with("==") || before.ends_with("!=")) {
+            out.push(expr[open + 1..close].to_string());
+        }
+        at = close + 1;
+    }
+    out
+}
+
+fn is_hosted(label: &str) -> bool {
+    HOSTED_PREFIXES.iter().any(|p| label.starts_with(p))
+}
+
+/// Measured 2026-09-11: 148 `runs-on:` sites across `.github/workflows/`. A scan that finds far
+/// fewer has stopped reading the tree, and every verdict below would then be about nothing.
+const MIN_SITES: usize = 120;
+
+/// Every job must be routable, and to a runner somebody decided on.
+///
+/// Two things go wrong here and neither announces itself. A `runs-on:` that evaluates to the empty
+/// string, and a `runs-on:` naming a pool that does not exist, both present as a job sitting in
+/// `queued` — the same way a job waits for a busy pool. nucleus shares eight build machines
+/// between its pull requests and its merge queue, so "waiting for a runner" is the normal state
+/// and an unroutable job hides inside it perfectly. One such job at the head of the merge queue
+/// holds every entry behind it for `check_response_timeout_minutes`, which is 360.
+///
+/// Both questions are answered by the tree:
+///
+///   * an expression that can yield nothing must be guarded by an `if:` that refuses that case;
+///   * every `vars.*` it reads must be a runner variable this repository has an opinion about,
+///     and every literal self-hosted label must be a declared pool or a listed exception.
+fn routing(root: &Path, pools: &[ci_fly_runner::PoolSpec]) -> Result<()> {
+    let sites = runs_on_sites(root)?;
+    if sites.len() < MIN_SITES {
+        bail!(
+            "only {} `runs-on:` site(s) found, floor {MIN_SITES} — the scan is wrong, so a clean \
+             verdict here would mean nothing",
+            sites.len()
+        );
+    }
+
+    let mut failures = 0usize;
+    let mut guarded = 0usize;
+    for s in &sites {
+        let vars = vars_in(&s.expr);
+        // A `runs-on:` with no `${{` IS a label — `runs-on: ubuntu-latest`, or `runs-on:
+        // nucleus-fly-build`. The quoted-literal scan below finds the fallbacks inside an
+        // expression and would have skipped every bare one, which is 79 of the 148 sites here:
+        // the gate would have checked only the sites that happened to be expressions, and said
+        // `all routable` about a tree where a bare label pointed at a pool that does not exist.
+        let lits = if s.expr.contains("${{") {
+            literals_in(&s.expr)
+        } else {
+            vec![s.expr.trim().to_string()]
+        };
+
+        // Routable: a literal `runs-on`, an expression with a literal alternative, or a `${{ }}`
+        // resolved from somewhere other than a variable (a matrix value, a workflow input).
+        let reads_var = !vars.is_empty();
+        let from_elsewhere = s.expr.contains("${{") && !reads_var && lits.is_empty();
+        if reads_var && lits.is_empty() && !from_elsewhere {
+            // The one shape that can be empty. Only an `if:` naming the same variable saves it.
+            let refused = vars.iter().all(|v| {
+                s.guard
+                    .as_deref()
+                    .is_some_and(|g| g.contains(&format!("vars.{v}")))
+            });
+            if !refused {
+                println!(
+                    "  FAIL  {}:{} — `runs-on: {}` has no literal fallback and no `if:` refusing \
+                     the empty case. Unset, this routes the job to the empty string: GitHub \
+                     queues it, reports it exactly as it reports a busy pool, and nothing times \
+                     it out until the workflow does.",
+                    s.file, s.line, s.expr
+                );
+                failures += 1;
+                continue;
+            }
+            guarded += 1;
+        }
+
+        for v in &vars {
+            let Some((_, kind)) = RUNNER_VARS.iter().find(|(n, _)| n == v) else {
+                println!(
+                    "  FAIL  {}:{} routes at `vars.{v}`, which is not a runner variable this \
+                     repository has decided on. Add it to RUNNER_VARS as a pool label or as a \
+                     runner provisioned elsewhere, with the reason — a variable nobody declared \
+                     is a pool nobody deployed, and the job waits for it the same way it waits \
+                     for a busy one.",
+                    s.file, s.line
+                );
+                failures += 1;
+                continue;
+            };
+            if let RunnerVar::Outside(_) = kind {
+                continue;
+            }
+            // `Pool`: nothing here can read the variable's value, and saying so is better than
+            // implying it was checked. What IS decided is that a pool exists to be named.
+            if pools.is_empty() {
+                println!("  FAIL  vars.{v} must name a pool, and POOLS declares none");
+                failures += 1;
+            }
+        }
+
+        for l in &lits {
+            if is_hosted(l) || OUTSIDE_LABELS.iter().any(|(n, _)| n == l) {
+                continue;
+            }
+            if pools.iter().any(|p| p.label == *l) {
+                continue;
+            }
+            println!(
+                "  FAIL  {}:{} can route to the literal label {l:?}, which is not a GitHub-hosted \
+                 family, not a label {MANAGER_TOML} declares, and not a listed exception.",
+                s.file, s.line
+            );
+            failures += 1;
+        }
+    }
+
+    if failures > 0 {
+        bail!(
+            "{failures} routing problem(s): a job that cannot reach a runner waits like one that is merely early"
+        );
+    }
+    println!(
+        "ok: {} `runs-on:` site(s), all routable — {} pool variable(s), {} guarded against an unset variable, {} listed exception(s)",
+        sites.len(),
+        RUNNER_VARS
+            .iter()
+            .filter(|(_, k)| *k == RunnerVar::Pool)
+            .count(),
+        guarded,
+        OUTSIDE_LABELS.len()
+    );
+    Ok(())
+}
+
 pub fn check(root: &Path) -> Result<()> {
     let text = fs::read_to_string(root.join(MANAGER_TOML))
         .with_context(|| format!("reading {MANAGER_TOML}"))?;
@@ -87,6 +372,7 @@ pub fn check(root: &Path) -> Result<()> {
             if pools.is_empty() {
                 bail!("{MANAGER_TOML}: POOLS parsed to no pools at all");
             }
+            routing(root, &pools)?;
             readme_agrees(root, &pools)
         }
         Err(e) => bail!(
@@ -360,6 +646,109 @@ fn readme_site_counts(root: &Path, joined: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A literal on the right of `==` is an operand of the CONDITION, not a value the expression
+    /// can produce. Taking every quoted string made `'true'` a candidate runner label and red the
+    /// gate on a correct workflow.
+    #[test]
+    fn a_comparison_operand_is_not_a_fallback_label() {
+        let expr = "${{ needs.scope.outputs.relevant == 'true' \
+                    && (vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest') \
+                    || (vars.CI_RUNNER || 'ubuntu-latest') }}";
+        let lits = super::literals_in(expr);
+        assert!(
+            !lits.iter().any(|l| l == "true"),
+            "the condition's operand leaked in as a label: {lits:?}"
+        );
+        assert!(lits.iter().any(|l| l == "ubuntu-latest"), "{lits:?}");
+    }
+
+    #[test]
+    fn a_not_equal_operand_is_skipped_too() {
+        assert!(
+            super::literals_in("${{ vars.X != 'off' && 'ubuntu-latest' }}")
+                .iter()
+                .all(|l| l != "off")
+        );
+    }
+
+    #[test]
+    fn every_variable_an_expression_reads_is_found() {
+        let v = super::vars_in("${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}");
+        assert_eq!(v, vec!["CI_BUILD_RUNNER", "CI_RUNNER"]);
+        assert!(super::vars_in("ubuntu-latest").is_empty());
+    }
+
+    /// The shipped tree, read the way the gate reads it. 148 measured 2026-09-11; the assertion is
+    /// a floor, because the number moves whenever a job is added and a brittle equality here would
+    /// be a gate that fails on unrelated work.
+    #[test]
+    fn the_scan_reaches_the_whole_workflow_tree() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let sites = super::runs_on_sites(&root).expect("the workflows parse");
+        assert!(
+            sites.len() >= super::MIN_SITES,
+            "found {} `runs-on:` sites, floor {}",
+            sites.len(),
+            super::MIN_SITES
+        );
+        // The block-scalar site must come through as one expression, not as the bare `>-`.
+        assert!(
+            sites
+                .iter()
+                .any(|s| s.expr.contains("needs.scope.outputs.relevant")),
+            "the `runs-on: >-` block scalar was not joined"
+        );
+        // And a bare literal must survive as itself, or the 79 bare sites go unchecked.
+        assert!(
+            sites.iter().any(|s| s.expr == "ubuntu-latest"),
+            "bare literal sites were dropped"
+        );
+    }
+
+    /// Exactly one site in this repository routes at a variable with no literal fallback, and it
+    /// is safe only because an `if:` refuses the unset case. If that pairing is ever broken the
+    /// gate must be the thing that notices, so this pins that the guard is FOUND, not just that
+    /// the gate passes.
+    #[test]
+    fn the_unfallbacked_site_is_guarded_by_its_own_variable() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let sites = super::runs_on_sites(&root).expect("the workflows parse");
+        let bare: Vec<&super::Site> = sites
+            .iter()
+            .filter(|s| {
+                !super::vars_in(&s.expr).is_empty() && super::literals_in(&s.expr).is_empty()
+            })
+            .collect();
+        for s in &bare {
+            for v in super::vars_in(&s.expr) {
+                assert!(
+                    s.guard
+                        .as_deref()
+                        .is_some_and(|g| g.contains(&format!("vars.{v}"))),
+                    "{}:{} routes at vars.{v} with no fallback and no `if:` naming it",
+                    s.file,
+                    s.line
+                );
+            }
+        }
+    }
+
+    /// Every variable declared here must actually be used by a `runs-on:`. A stale entry is an
+    /// exemption for a routing decision nobody makes any more, and it reads as one that is live.
+    #[test]
+    fn no_declared_runner_variable_is_unused() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let sites = super::runs_on_sites(&root).expect("the workflows parse");
+        for (name, _) in super::RUNNER_VARS {
+            assert!(
+                sites
+                    .iter()
+                    .any(|s| super::vars_in(&s.expr).iter().any(|v| v == name)),
+                "RUNNER_VARS declares {name}, which no `runs-on:` reads"
+            );
+        }
+    }
     use super::*;
     use std::path::PathBuf;
 

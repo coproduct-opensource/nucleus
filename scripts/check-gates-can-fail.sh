@@ -111,6 +111,26 @@ probe() {
         return
     fi
 
+    # The BASELINE, before anything is touched. This half of the harness covers thirty of the
+    # thirty-eight probes and carried the same gap as the xtask half: `restored_rc` alone
+    # cannot tell "my perturbation broke it" from "it was already red when I got here", and it
+    # blames the restore either way. Measured on PR #2835, where the xtask half printed
+    # `still failing after restore` four times about a gate that was red on arrival -- four
+    # failures, all naming the one thing that did not happen. Same fix, same reason, applied to
+    # the larger half: a probe on a tree where the gate is already red decides nothing, and
+    # saying THAT is the only honest verdict available.
+    local baseline_rc=0
+    # shellcheck disable=SC2086
+    bash "scripts/$gate" $ci_flags >/dev/null 2>&1 || baseline_rc=$?
+    if [[ "$baseline_rc" -ne 0 ]]; then
+        echo "  FAIL  $gate — already red (exit $baseline_rc) BEFORE any perturbation."
+        echo "        Not a restore failure and not a broken probe: this gate is failing on"
+        echo "        this tree for its own reasons, so nothing it says under perturbation"
+        echo "        would be evidence. Fix that red first, then this probe means something."
+        failures=$((failures + 1))
+        return
+    fi
+
     RESTORE_TO="$target"
     RESTORE_FROM="$(mktemp)"
     cp "$target" "$RESTORE_FROM"
@@ -156,7 +176,9 @@ probe() {
         echo "        The gate cannot detect the thing it is named for."
         failures=$((failures + 1))
     elif [[ "$restored_rc" -ne 0 ]]; then
-        echo "  FAIL  $gate — still failing (exit $restored_rc) after restore"
+        echo "  FAIL  $gate — green before, still failing (exit $restored_rc) after restore:"
+        echo "        the perturbation left something behind. The baseline was checked above,"
+        echo "        so this is the restore and not a pre-existing red."
         echo "        Either the restore is broken or the gate fails on everything,"
         echo "        and a gate that always fails detects nothing either."
         failures=$((failures + 1))
@@ -278,6 +300,24 @@ probe_xtask() {
         return
     fi
 
+    # The BASELINE, before anything is touched. `restored_rc` alone cannot tell "my
+    # perturbation broke it" from "it was already red when I arrived", and it blames the
+    # restore either way. Measured on PR #2835: `xtask scorecard` was red on that branch
+    # for an unrelated reason (a ratchet floor the base does not meet), and every probe of
+    # it reported `still failing after restore` -- four FAILs, all misattributed, none
+    # naming the one cause. A probe on a tree where the gate is already red decides
+    # nothing, and saying THAT is the only honest verdict available.
+    local baseline_rc=0
+    cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || baseline_rc=$?
+    if [[ "$baseline_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub — already red (exit $baseline_rc) BEFORE any perturbation."
+        echo "        Not a restore failure and not a broken probe: this gate is failing on"
+        echo "        this tree for its own reasons, so nothing it says under perturbation"
+        echo "        would be evidence. Fix that red first, then this probe means something."
+        failures=$((failures + 1))
+        return
+    fi
+
     RESTORE_TO="$target"
     RESTORE_FROM="$(mktemp)"
     cp "$target" "$RESTORE_FROM"
@@ -306,7 +346,9 @@ probe_xtask() {
         echo "  FAIL  xtask $sub — $desc did NOT fail the gate (exit 0)"
         failures=$((failures + 1))
     elif [[ "$restored_rc" -ne 0 ]]; then
-        echo "  FAIL  xtask $sub — still failing (exit $restored_rc) after restore"
+        echo "  FAIL  xtask $sub — green before, still failing (exit $restored_rc) after restore:"
+        echo "        the perturbation left something behind. The baseline was checked above,"
+        echo "        so this is the restore and not a pre-existing red."
         failures=$((failures + 1))
     else
         echo "  ok    xtask $sub — RED on $desc, GREEN when restored"
@@ -958,6 +1000,16 @@ perturb_fly_pool_volumes() {
     # end of the list compile onto the root filesystem and run out of disk.
     sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
 }
+# fly-pools routing: a job routed at a runner variable nobody declared. This is the shape that
+# hides -- the workflow is valid YAML, actionlint passes it, and GitHub reports the job waiting
+# for a runner exactly the way it reports a busy pool. nucleus shares eight build machines
+# between its pull requests and its merge queue, so "waiting" is the normal state and an
+# unroutable job sits inside it unnoticed.
+perturb_runs_on_undeclared_var() {
+    local f="$1"
+    perl -0pi -e "s/(runs-on: \\\$\\{\\{ vars\\.)CI_RUNNER/\${1}CI_HEAVY_RUNNER/" "$f"
+}
+
 # workspace-members: a crate dropped from the members list. This is the real mistake -- the
 # list is explicit, not a glob, so forgetting one is the normal way a crate ends up outside
 # the workspace, invisible to every `--workspace` command and failing nothing.
@@ -1089,6 +1141,8 @@ probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
     "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \
     "scoreboard.json" "$(mktemp "${TMPDIR:-/tmp}/scoreboard.XXXXXX").json" \
     gen_exemplar_scoreboard perturb_exemplar_baseline
+probe_xtask fly-pools .github/workflows/audit.yml \
+    "a job routed at a runner variable nobody declared" perturb_runs_on_undeclared_var
 probe_xtask push-auth .github/workflows/clippy-ratchet.yml \
     "a CI push relying on the checkout's ambient credential" perturb_push_auth_strip
 probe_xtask coverage-floor .github/workflows/coverage-matrix.yml \
@@ -1213,7 +1267,6 @@ UNCOVERED=(
     # and the ceiling below only shrinks. Two of the ten are probed already.
     "xtask ci-spec                 reads live branch protection; a perturbation needs the GitHub API, not a file"
     "xtask gatehouse-pin           takes --gatehouse <path>; the probe needs a gatehouse checkout this script does not have"
-    "xtask lean-action-builds      needs a Lean toolchain to reach its verdict"
     "xtask line-ratchet            probed through scripts/check-line-ratchet.sh, which is the same decision procedure"
 )
 # Was 5. Three were paid down once their detection was read rather than guessed
@@ -1252,12 +1305,21 @@ UNCOVERED=(
 # drawing characters, which would pass forever if cargo changed its output. Declaring
 # a present crate forbidden exercises that path from a committed list.
 #
+# 5 -> 4 on 2026-09-12: `lean-action-builds` was never uncovered. Its exemption
+# said "needs a Lean toolchain to reach its verdict" and the program neither needs
+# one nor reaches a verdict -- it parses workflow YAML and hands the result to
+# `check-lean-libs-built.sh`, which is probed twice. Fifth instance of the shape
+# scoreboard-ratchet, check-dep-ceiling, check-wasm-closure and gatehouse-pin
+# each turned out to be, and the sharpest: the others named a real obstacle and
+# stopped short, this one named a different program's.
+#
 # 5 -> 4 on 2026-09-12: `policy-gate`. Its exemption said "needs a real amendment", and
 # an amendment is just a second manifest: `GateMode::Preflight` builds the kernel
 # `with_skip_for_testing()`, so no signature, witness or governance ceremony is involved.
 # One entry added to `network_allow` is refused as CapabilityNonEscalation. Sixth entry
 # this session whose stated obstacle named the gate's SUBJECT and not its DETECTION.
-UNCOVERED_CEILING=4
+# 2026-09-12: merging both independent removals above leaves three exemptions.
+UNCOVERED_CEILING=3
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #
@@ -1394,31 +1456,114 @@ done
 # the identical trap probe() already records for shell gates ("a comment that
 # merely mentions the script is not an invocation"), and it is live in this repo
 # today rather than hypothetical.
+# A gate does not have to be named in a workflow to run in CI. It can be reached
+# through a SCRIPT that a workflow runs, and three are: `check-inert-authority.sh`
+# and `check-law-mechanisms.sh` are one-line shims (`exec cargo run -q -p xtask --
+# <sub> "$@"`), and `check-kani-proof-count.sh` calls `xtask -- kani-coverage` as
+# one of its steps. All three run in CI on every push. None of them appeared in
+# the domain below, none had an exemption row, and the accounting still printed
+# `0 unaccounted` -- because the derivation globbed `.github/workflows/*.yml` and
+# they are not there.
+#
+# That is this section's own thesis one level out. It opens by saying the shell
+# loop globs `scripts/check-*.sh`, so a gate that is not a shell script was never
+# in the domain being searched; the fix was to derive the xtask half from the
+# workflows. The workflows are not the whole of CI either. Composite actions are
+# included for the same reason -- `.github/actions/gatehouse` runs commands too.
 declare -a XTASK_GATES=()
 while IFS= read -r sub; do
     [[ -z "$sub" ]] && continue
     XTASK_GATES+=("$sub")
 done < <(
-    grep -rhoE '^[^#]*xtask -- [a-z][a-z-]*' .github/workflows/*.yml 2>/dev/null \
+    grep -rhoE '^[^#]*xtask -- [a-z][a-z-]*' \
+        .github/workflows/*.yml scripts/*.sh .github/actions/*/*.sh .github/actions/*/*.yml 2>/dev/null \
         | grep -oE 'xtask -- [a-z][a-z-]*' \
         | sed 's/xtask -- //' \
         | sort -u
 )
 
+# Subcommands whose ONLY route into CI is a script, with the script named. A row
+# here is a claim that gets CHECKED below, not asserted: the named script must
+# actually invoke the named subcommand, so a shim that is rewritten, or a call
+# that moves, stops being covered by this line rather than quietly staying
+# "exempt". Shrink-only in spirit -- a subcommand that gains a direct workflow
+# invocation should leave this list and be probed like the rest.
+SHIM_COVERED=(
+    "inert-authority scripts/check-inert-authority.sh"
+    "law-mechanisms  scripts/check-law-mechanisms.sh"
+    "kani-coverage   scripts/check-kani-proof-count.sh"
+    # Moved here from UNCOVERED, where its stated reason was wrong about a
+    # different program. The entry read "needs a Lean toolchain to reach its
+    # verdict"; `crates/xtask/src/lean_action_builds.rs` contains no `Command`
+    # and no `process::` -- it reads `.github/workflows/*.yml` and parses YAML --
+    # and it reaches no verdict, because it is a READER: its own header says
+    # "read explicit Lean-action build inputs for the library-coverage gate",
+    # and `check-lean-libs-built.sh:50` is what decides on them. That script is
+    # probed twice. So the obstacle named neither this program's needs nor its
+    # shape, and the coverage was there all along.
+    "lean-action-builds scripts/check-lean-libs-built.sh"
+)
+
 for sub in "${XTASK_GATES[@]}"; do
     gate="xtask $sub"
-    # Both probe forms count as coverage: probe_xtask for a bare invocation,
-    # probe_xtask_generated for one CI runs with flags naming a generated file.
-    grep -qE "^probe_xtask(_generated)?[[:space:]]+$sub([[:space:]]|$)" "$0" && continue
+    # ANY `probe_xtask*` helper counts as coverage, derived rather than listed.
+    #
+    # This was an explicit alternation, and a list is the wrong shape for it. Each branch
+    # that adds a helper edits this ONE predicate, so two such branches conflict here, on
+    # the same line -- and "take both sides" has to mean union of the ALTERNATION, not
+    # union of the lines. Resolved the fast way it silently drops a sibling's form, and a
+    # gate that IS probed then reads as unaccounted. Three rebases hit it this session,
+    # and the alternation on this branch named `_flagged`, a helper defined on another
+    # branch and not here: a coverage claim wider than the code, which is the defect this
+    # file exists to refuse.
+    #
+    # Every helper lives in this file and is reviewed with it, so matching the family by
+    # name costs nothing the list was buying, and removes the conflict class entirely.
+    grep -qE "^probe_xtask[a-z_]*[[:space:]]+${sub}([[:space:]]|$)" "$0" && continue
     printf '%s\n' "${UNCOVERED[@]}" | grep -q "^${gate}[[:space:]]" && continue
+
+    # Covered through a script? The row says WHICH, and the row is verified: a
+    # claim that a shim covers this gate is worth exactly as much as the shim
+    # still calling it.
+    shim=""
+    for row in "${SHIM_COVERED[@]}"; do
+        read -r s_sub s_script <<<"$row"
+        [[ "$s_sub" == "$sub" ]] || continue
+        if [[ ! -f "$s_script" ]]; then
+            echo "  FAIL  xtask $sub — SHIM_COVERED names $s_script, which does not exist."
+            failures=$((failures + 1))
+        # Any non-word boundary, not just a space or a quote: `$(cargo run ... -- sub)`
+        # ends the name with `)`, and `check-lean-libs-built.sh` calls it exactly that way.
+        # The narrower pattern reported a live, correct row as false -- a check that parses
+        # one calling syntax and reports confidently about the others.
+        elif ! grep -qE "xtask -- ${sub}([^a-zA-Z0-9_-]|$)" "$s_script"; then
+            echo "  FAIL  xtask $sub — SHIM_COVERED says $s_script covers it, and that"
+            echo "        script does not invoke it. The route into CI moved; this row is"
+            echo "        now an exemption for a gate nothing runs."
+            failures=$((failures + 1))
+        fi
+        shim="$s_script"
+        break
+    done
+    [[ -n "$shim" ]] && continue
+
     UNACCOUNTED+=("$gate")
+done
+
+# A SHIM_COVERED row for a subcommand no longer in the domain is a gate ranging
+# over nothing, and it reads like live coverage.
+for row in "${SHIM_COVERED[@]}"; do
+    read -r s_sub _ <<<"$row"
+    printf '%s\n' "${XTASK_GATES[@]}" | grep -qxF "$s_sub" && continue
+    echo "  FAIL  SHIM_COVERED names xtask $s_sub, which nothing in CI invokes at all."
+    failures=$((failures + 1))
 done
 
 # NON-VACUITY of the half just added: if the derivation matched nothing, every
 # xtask gate would be accounted for by having vanished from the domain.
 if [[ "${#XTASK_GATES[@]}" -lt 5 ]]; then
     echo
-    echo "ERROR: derived only ${#XTASK_GATES[@]} xtask gate(s) from the workflows."
+    echo "ERROR: derived only ${#XTASK_GATES[@]} xtask gate(s) from the workflows and scripts."
     echo "The derivation is wrong, so the accounting below exempted every gate it"
     echo "failed to see -- which is the failure this script exists to catch."
     exit 2
