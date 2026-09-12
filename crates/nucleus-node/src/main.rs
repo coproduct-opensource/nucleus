@@ -2184,9 +2184,8 @@ async fn spawn_firecracker_pod(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (state, pod_dir, spec, id);
-        Err(ApiError::Driver(
-            "firecracker requires Linux; run nucleus-node inside Colima on macOS".to_string(),
-        ))
+        let why = "firecracker requires Linux; run nucleus-node inside Colima on macOS";
+        Err(ApiError::Driver(why.to_string()))
     }
 
     #[cfg(target_os = "linux")]
@@ -2927,6 +2926,7 @@ async fn spawn_firecracker_pod(
                 id,
                 manager.clone(),
                 workload_api_vsock::PodMaterial {
+                    pod_spec_yaml: serde_yaml::to_string(spec).ok(),
                     // The same token that rides the kernel command line today.
                     // Serving it here is what lets the cmdline copy go: a value
                     // fetched after boot is not baked into a snapshot base.
