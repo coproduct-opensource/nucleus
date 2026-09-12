@@ -22,32 +22,50 @@ Three cold `POST /v1/pods`, same spec, digests pinned:
 
 ## What it says
 
-**94% of pod create is waiting for the in-guest tool-proxy to answer a health
-check.** The microVM itself is up in about 200 ms; the remaining ~3.13 s is
-`wait_for_proxy_health` polling at 100 ms intervals — about 31 polls, so this
-is real in-guest startup, not a fixed sleep. The guest's own trace agrees and
-locates it: `nucleus-startup-trace total=697ms … vsock_bind=1ms`, so
-`guest-init` finishes in ~700 ms and the tool-proxy spends roughly 2.4 s more
-before it reports healthy.
+**94% of pod create is spent in `proxy.health_wait`.** But that stage is not
+"the proxy is slow" — it is *the host waiting for the guest to finish booting*,
+because the host starts polling at +214 ms and the guest has not finished its
+kernel by then. Reading the guest console against the host clock decomposes it:
 
-The consequence for the "nucleus builds nucleus" plan is direct, and it is not
-what the plan assumed:
+| phase | guest kernel clock | duration |
+|---|---|---:|
+| kernel boot (`0.000` → `Run /init as init process`) | 0.000 → 1.534 | **1.53 s** |
+| `guest-init` (→ `[workload]`) | 1.534 → 2.598 | **1.06 s** |
+| tool-proxy until it answers healthy | 2.598 → ~3.35 | **~0.75 s** |
 
-> **A 17 ms restore removes at most ~200 ms of a ~3.4 s pod create — under 6%
-> — unless the base is taken PAST the point where the proxy is healthy.**
+Those sum to 3.34 s against a 3.35 s host wall, so the decomposition is
+complete — there is no unexplained remainder.
 
-The 17 ms figure in `snapshot_restore.rs` is a real measurement of *VMM* restore
-(10 ms load + 6 ms resume vs ~79 ms cold boot). It is not wrong. It is just
-measuring the part of pod create that was already nearly free. Optimising the
-VMM further is optimising 6% of the wall clock; the other 94% is in-guest
-process startup, which a snapshot captures **only if the barrier sits after
-it**.
+### What a restore actually replaces
 
-That makes barrier placement the design question, not an implementation
-detail. A base frozen at the mount barrier — before `/work` and before
-personalisation, which is where `clone_safety` can certify it — is frozen
-*before* the tool-proxy is healthy, and therefore saves the cheap 200 ms and
-none of the expensive 3.13 s.
+A VM snapshot restores memory and vCPU state, so the guest **resumes at the
+frozen point and does not re-run its kernel**. A base frozen at the mount
+barrier — `vsock_bind`, 669 ms into `guest-init`, so kernel clock ≈ 2.20 s —
+skips everything before it:
+
+> **~2.2 s of a ~3.35 s pod create, or about two thirds.** What remains is the
+> ~0.75 s the tool-proxy spends becoming healthy, plus ~0.2 s of host-side
+> work.
+
+The `17 ms restore vs ~79 ms cold boot` figure in `snapshot_restore.rs` is a
+VMM-level measurement — how long the *VMM* takes to start. It is correct and it
+is not the interesting number. The interesting number is the guest boot the
+restore skips entirely, which is 30× larger than the VMM difference.
+
+### A correction
+
+The first version of this document concluded the opposite — that a restore
+"removes at most ~200 ms, under 6%". That was wrong, and wrong in the way that
+would have redirected effort away from the thing worth doing. It treated
+`proxy.health_wait` as irreducible in-guest proxy startup because the stage is
+named after the proxy. It is named after what the host is polling, not after
+what the guest is doing, and for the first 2.2 s of it the guest is booting.
+
+The lesson is narrow and worth keeping: **a stage name describes the waiter,
+not the work.** The host-side breakdown alone could not distinguish "the proxy
+takes 3.1 s" from "the guest takes 3.1 s to reach a proxy that then answers
+quickly"; only the guest console could, and those two readings imply opposite
+optimisations.
 
 ## The two refusals a CI pod meets today, in order
 
@@ -81,15 +99,18 @@ table above measures.
 
 ## What this changes about what to do next
 
-1. **Measure the 3.13 s before optimising the 200 ms.** Whatever the tool-proxy
-   is doing between `vsock_bind` and its first healthy response is the budget.
-   Nothing here has looked at it yet.
-2. **A base is only worth taking where it captures that time.** Freezing at the
-   mount barrier is the safe place and the cheap place; those are not the same
-   place, and the plan treated them as one.
-3. **Publishing a base at all needs the scratch question answered first** —
-   `snapshot-scratch.md` argues it is a real constraint rather than a default to
-   flip, and this measurement does not weaken that argument.
+1. **A base frozen at the mount barrier is worth ~2.2 s per pod** — two thirds
+   of pod create. The barrier is the place `clone_safety` can certify, and it
+   is also, contrary to this document's first version, the place worth
+   freezing. They are the same place after all.
+2. **The residual target is the tool-proxy's ~0.75 s**, which a barrier
+   snapshot does not capture because the barrier precedes it. That is the
+   second-order optimisation, worth roughly a third of what the snapshot is.
+3. **None of it is reachable until a base can be published at all.**
+   `scratch_for_pod` provisions a writable scratch for every jailed pod, so
+   `clone_safety` refuses every one of them — see refusal 2 below, and
+   `snapshot-scratch.md` for why that constraint is real rather than a default
+   to flip.
 
 ## Reproducing
 
