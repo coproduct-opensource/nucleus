@@ -38,7 +38,39 @@ capabilities. Preserve that path. Investigate an authenticated completion
 channel from this protected supervisor to the host; the workload must not be
 able to forge a successful report by writing a file or contacting vsock itself.
 
-## Remaining acceptance work (none complete yet)
+## Supervisor observation implemented, 2026-09-12
+
+The proxy now owns and waits for its admitted child on both serving transports,
+draining both pipes concurrently and hashing every raw byte with SHA-256.
+Signals, incomplete reads, missing pipes and unfinished workloads cannot be
+represented as a successful exit. Dropping the server guard aborts observation
+and drops the kill-on-drop child. Only the observer task can update the result.
+
+The authenticated read-only `/v1/workload/result` route is exposed through the
+node's lineage-checked `/v1/pods/{id}/workload-result` bridge. The node rejects
+HTTP failures, malformed bodies and responses exceeding 16 KiB. This is unsigned
+observation data; the future issuer must separately establish the execution
+boundary and expected inputs before signing it.
+
+Live local-driver evidence: a workload wrote a fake successful
+`.nucleus-exit-report.json` and then exited 23; the node returned 23. A second
+workload exited 0 and returned 0. Both hashes matched the actual `out` and `err`
+streams. Both correctly reported `unconfined` on macOS. Their authority-inventory
+launch hashes matched despite different commands; their program digests differed.
+Program identity hashes declared inputs and is not proof of host measurement:
+data/scratch pin completeness must still be checked by the CI admission path.
+
+Validation: full proxy all-feature suite passed (449 unit tests plus integration
+suites); the final five supervisor tests include invalid UTF-8 across multiple
+buffer reads. The node's HTTP-error test, all-target/all-feature Clippy for both
+crates, formatting and the line ratchet pass. Local sockets required sandbox
+escalation. Temporary pods were cancelled and the test node stopped.
+
+The existing quickstart boot workflow uses Ubuntu x86_64 runners with explicit
+KVM/vhost-vsock checks. This is a concrete route for real microVM validation;
+local-driver evidence does not satisfy that acceptance criterion.
+
+## Remaining acceptance work (milestones not yet complete)
 
 1. Protected supervisor observation, output/log hashing and a host-signed typed
    CI receipt bound to source commit/tree, gate, environment and architecture.

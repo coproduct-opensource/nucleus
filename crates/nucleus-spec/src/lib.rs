@@ -3,6 +3,7 @@
 pub mod identity;
 pub mod tier2_artifacts;
 pub mod vmm_version;
+pub mod workload_result;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

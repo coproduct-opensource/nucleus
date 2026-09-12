@@ -49,6 +49,7 @@ mod pod_receipt;
 mod production_confinement;
 mod workload_api_protocol;
 mod workload_api_vsock;
+mod workload_result;
 use auth::{AuthError, AuthorizationError};
 mod boot_trace;
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
@@ -837,6 +838,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/cancel", post(pod_api::cancel_pod))
         .route("/v1/pods/{id}/snapshot", post(pod_api::snapshot_pod))
         .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
+        .route("/v1/pods/{id}/workload-result", get(workload_result::get))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
