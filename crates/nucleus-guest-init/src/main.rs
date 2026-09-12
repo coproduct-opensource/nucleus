@@ -127,6 +127,28 @@ fn run() -> Result<(), String> {
         eprintln!("optional mount {missing} failed — continuing without it");
     }
 
+    // devtmpfs gives us the device nodes a driver registered; it does NOT give
+    // us the four symlinks every init system creates by hand. Without them any
+    // workload using bash process substitution (`< <(cmd)`, `>(cmd)`) or the
+    // `/dev/std*` paths fails — and it fails naming the WORKLOAD's script, not
+    // the runtime, so it reads as the workload's own bug.
+    //
+    // Measured inside a real pod before this existed: `/dev` held 100+ nodes
+    // (console, null, vda, vsock, tty0-63 …) and all four of these were absent,
+    // with `cat <(echo works)` reporting
+    // `/dev/fd/63: No such file or directory`. A shell CI gate cannot run in a
+    // pod without them.
+    //
+    // Not load-bearing: a workload that never touches these should still boot
+    // if the symlink cannot be made, so a failure is reported and the boot
+    // continues — the same treatment `optional_mount_failures` gets above.
+    #[cfg(target_os = "linux")]
+    for (link, target) in DEV_FD_SYMLINKS {
+        if let Err(err) = symlink_if_absent(link, target) {
+            eprintln!("optional /dev symlink {link} -> {target} failed: {err}");
+        }
+    }
+
     // `/work` is optional: a guest without a data volume, or a read-only one,
     // is legitimate (workload.rs allows a read-only /work).
     if Path::new("/dev/vdb").exists()
@@ -604,6 +626,39 @@ impl GuestMount {
 /// mount the guest boots from, with no end-to-end test available here, risks the
 /// mount failing and `mount_fs` continuing without it, which would be a worse
 /// outcome than the flag's absence.
+/// The symlinks devtmpfs does not create.
+///
+/// POSIX-shell tooling assumes these exist. `/dev/fd` is what bash opens for
+/// process substitution; the three `std*` paths are what a script means by
+/// "the file that is my stdin". All four are plain symlinks into `/proc`, so
+/// they cost nothing and require only that `/proc` is mounted — which it is,
+/// load-bearing, by the time these are made.
+// Read only by the `#[cfg(target_os = "linux")]` loop that creates these, so a
+// macOS build sees the table as dead. Gating the table on Linux too would take
+// its test off every developer machine; keeping it portable means the shape of
+// the table is checked wherever tests run, and only the unused-on-macOS warning
+// is silenced. Narrow on purpose: this allow covers one constant, not a module.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const DEV_FD_SYMLINKS: &[(&str, &str)] = &[
+    ("/dev/fd", "/proc/self/fd"),
+    ("/dev/stdin", "/proc/self/fd/0"),
+    ("/dev/stdout", "/proc/self/fd/1"),
+    ("/dev/stderr", "/proc/self/fd/2"),
+];
+
+/// Create `link` -> `target`, treating "already there" as success.
+///
+/// A rootfs that ships its own `/dev/fd` is not a problem to correct, and
+/// racing a second boot on the same devtmpfs should not fail either.
+#[cfg(target_os = "linux")]
+fn symlink_if_absent(link: &str, target: &str) -> std::io::Result<()> {
+    match std::os::unix::fs::symlink(target, link) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "proc",
@@ -1000,6 +1055,35 @@ mod tests {
     /// Runs on any host because the table stores plain bools rather than
     /// `MsFlags` — a hardening table readable only on the machine it runs on is
     /// one nobody checks.
+    /// The four symlinks are exactly the ones POSIX tooling assumes, and every
+    /// one points into `/proc` — which is what makes them free and what makes
+    /// `/proc` a prerequisite. A fifth entry pointing somewhere else would be a
+    /// device the guest does not actually have.
+    #[test]
+    fn the_dev_symlinks_are_the_four_posix_ones_and_all_point_into_proc() {
+        let links: Vec<&str> = super::DEV_FD_SYMLINKS.iter().map(|(l, _)| *l).collect();
+        assert_eq!(
+            links,
+            vec!["/dev/fd", "/dev/stdin", "/dev/stdout", "/dev/stderr"],
+            "these four are what bash process substitution and `/dev/std*` need"
+        );
+        for (link, target) in super::DEV_FD_SYMLINKS {
+            assert!(link.starts_with("/dev/"), "{link} is not under /dev");
+            assert!(
+                target.starts_with("/proc/self/fd"),
+                "{target} is not a /proc path, so it would need a real device"
+            );
+        }
+        // /proc must be mounted before these resolve, and load-bearing means the
+        // boot stops if it is not. If this fires, the symlinks became dangling.
+        assert!(
+            super::GUEST_MOUNTS
+                .iter()
+                .any(|m| m.target == "/proc" && m.load_bearing),
+            "/proc must be a load-bearing mount or the /dev symlinks dangle"
+        );
+    }
+
     #[test]
     fn guest_mounts_are_hardened() {
         for m in super::GUEST_MOUNTS {
