@@ -115,6 +115,31 @@ jobs:
       - name: Build gate and gatehouse-runner
         if: steps.tok.outputs.present == 'true'
         run: cargo build --locked --manifest-path gatehouse/Cargo.toml -p gate -p gatehouse-runner
+
+      # WHICH gatehouse this job just built, in the log and in the summary.
+      #
+      # Nothing here said. The step below prints the tenant and the signing key and then a
+      # verdict, and a reader who sees `the runner did not finish within 1320s` has no way to
+      # tell a live defect from a pin this branch has not picked up yet. Measured 2026-09-12:
+      # every clippy-shadow red open at the time was a branch still on GATEHOUSE_REF 7326bfa9,
+      # whose runner deadlocks reading a pipe (gatehouse F-100); main moved to 89f7acc in #2857
+      # and every run on it succeeds in about eight minutes. The two are indistinguishable in
+      # the log, and hours went into treating the first as the second.
+      #
+      # `git rev-parse` rather than echoing the variable: the variable is what was ASKED for,
+      # this is what the checkout actually produced, and when those differ the difference is
+      # the whole answer.
+      - name: Which gatehouse
+        if: steps.tok.outputs.present == 'true'
+        env:
+          WANTED: ${{ env.GATEHOUSE_REF }}
+        run: |
+          BUILT="$(git -C gatehouse rev-parse HEAD)"
+          echo "gatehouse: built $BUILT (GATEHOUSE_REF asked for $WANTED)"
+          echo "gatehouse: built \`$BUILT\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$BUILT" != "$WANTED" ]; then
+            echo "::warning::the checkout resolved to $BUILT, not the pinned $WANTED"
+          fi
       - name: The gate, the gatehouse way, verified against the hosted log
         if: steps.tok.outputs.present == 'true'
         id: gh
