@@ -111,6 +111,26 @@ probe() {
         return
     fi
 
+    # The BASELINE, before anything is touched. This half of the harness covers thirty of the
+    # thirty-eight probes and carried the same gap as the xtask half: `restored_rc` alone
+    # cannot tell "my perturbation broke it" from "it was already red when I got here", and it
+    # blames the restore either way. Measured on PR #2835, where the xtask half printed
+    # `still failing after restore` four times about a gate that was red on arrival -- four
+    # failures, all naming the one thing that did not happen. Same fix, same reason, applied to
+    # the larger half: a probe on a tree where the gate is already red decides nothing, and
+    # saying THAT is the only honest verdict available.
+    local baseline_rc=0
+    # shellcheck disable=SC2086
+    bash "scripts/$gate" $ci_flags >/dev/null 2>&1 || baseline_rc=$?
+    if [[ "$baseline_rc" -ne 0 ]]; then
+        echo "  FAIL  $gate — already red (exit $baseline_rc) BEFORE any perturbation."
+        echo "        Not a restore failure and not a broken probe: this gate is failing on"
+        echo "        this tree for its own reasons, so nothing it says under perturbation"
+        echo "        would be evidence. Fix that red first, then this probe means something."
+        failures=$((failures + 1))
+        return
+    fi
+
     RESTORE_TO="$target"
     RESTORE_FROM="$(mktemp)"
     cp "$target" "$RESTORE_FROM"
@@ -156,7 +176,9 @@ probe() {
         echo "        The gate cannot detect the thing it is named for."
         failures=$((failures + 1))
     elif [[ "$restored_rc" -ne 0 ]]; then
-        echo "  FAIL  $gate — still failing (exit $restored_rc) after restore"
+        echo "  FAIL  $gate — green before, still failing (exit $restored_rc) after restore:"
+        echo "        the perturbation left something behind. The baseline was checked above,"
+        echo "        so this is the restore and not a pre-existing red."
         echo "        Either the restore is broken or the gate fails on everything,"
         echo "        and a gate that always fails detects nothing either."
         failures=$((failures + 1))
