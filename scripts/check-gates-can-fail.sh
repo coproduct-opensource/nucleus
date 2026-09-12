@@ -238,6 +238,101 @@ probe_xtask() {
     fi
 }
 
+# probe_xtask for a subcommand CI invokes WITH FLAGS, where one of those flags
+# names a file the job generates and the tree does not carry.
+#
+# `probe_xtask` refuses this shape on purpose: probing bare what CI runs with
+# arguments tests a command CI never runs. The answer is not to relax that, it is
+# to state both invocations and check they correspond. So this takes the flags CI
+# is asserted to pass and the flags the probe will pass, requires the first to be
+# exactly what the workflow declares, and requires the two to differ ONLY in the
+# generated path -- which is named, not inferred. A drift in CI's flags fails here
+# rather than being silently probed around.
+#
+# probe_xtask_generated <sub> <target> <desc> <ci_flags> <generated> <local_path> <gen_fn> <perturb_fn>
+probe_xtask_generated() {
+    local sub="$1" target="$2" desc="$3" ci_flags="$4" generated="$5" local_path="$6" gen_fn="$7" perturb_fn="$8"
+
+    local invocations
+    invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
+        | grep -vE '^[[:space:]]*#' \
+        | grep -oE "xtask -- ${sub}[^\"'\`|]*" \
+        | sed -E "s/xtask -- $sub//; s/^[[:space:]]+//; s/[[:space:]]+\$//")"
+    if [[ -z "$(printf '%s' "$invocations")" ]]; then
+        echo "  FAIL  xtask $sub — no workflow invokes it"
+        failures=$((failures + 1))
+        return
+    fi
+    # CI-PARITY, kept rather than waived: the declared flags must be what CI runs.
+    # `--` ends option parsing: $ci_flags begins with `--`, and without it grep reads
+    # the pattern as its own flags and dies with "invalid option".
+    if ! printf '%s\n' "$invocations" | grep -qxF -- "$ci_flags"; then
+        echo "  FAIL  xtask $sub — CI invokes it as: $(printf '%s' "$invocations" | head -1)"
+        echo "        but this probe claims parity with: $ci_flags"
+        echo "        Update the probe to match CI, or CI to match the probe."
+        failures=$((failures + 1))
+        return
+    fi
+    # ...and the probe's own flags may differ ONLY by the generated file's path.
+    local expected_local="${ci_flags/$generated/$local_path}"
+    if [[ "$expected_local" == "$ci_flags" ]]; then
+        echo "  FAIL  xtask $sub — '$generated' does not appear in CI's flags, so there is"
+        echo "        nothing for the probe to substitute; use probe_xtask instead."
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! "$gen_fn" "$local_path"; then
+        echo "  FAIL  xtask $sub — could not generate $local_path for the probe"
+        failures=$((failures + 1))
+        return
+    fi
+    if [[ ! -s "$local_path" ]]; then
+        echo "  FAIL  xtask $sub — $gen_fn produced nothing; an empty input is not a probe"
+        failures=$((failures + 1))
+        return
+    fi
+    if [[ ! -f "$target" ]]; then
+        echo "  ERROR: $target does not exist"
+        failures=$((failures + 1))
+        return
+    fi
+
+    RESTORE_TO="$target"
+    RESTORE_FROM="$(mktemp)"
+    cp "$target" "$RESTORE_FROM"
+
+    "$perturb_fn" "$target"
+
+    if cmp -s "$target" "$RESTORE_FROM"; then
+        echo "  FAIL  xtask $sub — the perturbation for '$desc' changed $target not at all"
+        restore
+        RESTORE_FROM=""
+        failures=$((failures + 1))
+        return
+    fi
+
+    local perturbed_rc=0
+    # shellcheck disable=SC2086
+    cargo run -q -p xtask -- "$sub" $expected_local >/dev/null 2>&1 || perturbed_rc=$?
+    restore
+    RESTORE_FROM=""
+    local restored_rc=0
+    # shellcheck disable=SC2086
+    cargo run -q -p xtask -- "$sub" $expected_local >/dev/null 2>&1 || restored_rc=$?
+
+    covered=$((covered + 1))
+    if [[ "$perturbed_rc" -eq 0 ]]; then
+        echo "  FAIL  xtask $sub — $desc did NOT fail the gate (exit 0)"
+        failures=$((failures + 1))
+    elif [[ "$restored_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub — still failing (exit $restored_rc) after restore"
+        failures=$((failures + 1))
+    else
+        echo "  ok    xtask $sub — RED on $desc, GREEN when restored"
+    fi
+}
+
 # ── Perturbations ─────────────────────────────────────────────────────────
 # Each introduces a real violation of the gate's OWN stated property, not a
 # syntax error that would fail any check.
@@ -643,6 +738,18 @@ perturb_gate_budget_timeout() {
     sed -i.bak -E 's/^( *)timeout: "[0-9]+"/\1timeout: "9999"/' "$1" && rm -f "$1.bak"
 }
 
+gen_exemplar_scoreboard() {
+    bash scripts/exemplar-scoreboard.sh "$1" >/dev/null 2>&1
+}
+
+perturb_exemplar_baseline() {
+    # Claim a perfect score the tree does not have. `sorry_admit` is lower-is-better,
+    # so a baseline of 0 makes the CURRENT count a regression against it -- which is
+    # the gate's own rule, not a malformed file. Matches the KEY and rewrites whatever
+    # number follows, never matching the value.
+    sed -i.bak -E 's/("sorry_admit"[[:space:]]*:[[:space:]]*)[0-9]+/\10/' "$1" && rm -f "$1.bak"
+}
+
 perturb_fly_pool_volumes() {
     # The exact configuration the manager refuses, and the one that was committed:
     # requires_volume with no volumes for eight machines, so the machines past the
@@ -660,6 +767,11 @@ probe_xtask allowlist-gates ci/allowlist-gates.txt \
     "an allowlist grown past its pinned size" perturb_allowlist_pin
 probe_xtask fly-pools ci/fly-runner/manager.toml \
     "the committed POOLS default the manager refuses" perturb_fly_pool_volumes
+probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
+    "a baseline claiming a score the tree does not have" \
+    "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \
+    "scoreboard.json" "$(mktemp -t scoreboard).json" \
+    gen_exemplar_scoreboard perturb_exemplar_baseline
 probe_xtask push-auth .github/workflows/clippy-ratchet.yml \
     "a CI push relying on the checkout's ambient credential" perturb_push_auth_strip
 probe_xtask coverage-floor .github/workflows/coverage-matrix.yml \
@@ -777,7 +889,6 @@ UNCOVERED=(
     "xtask lean-action-builds      needs a Lean toolchain to reach its verdict"
     "xtask line-ratchet            probed through scripts/check-line-ratchet.sh, which is the same decision procedure"
     "xtask policy-gate             runs ck-kernel admission on a manifest amendment; needs a real amendment"
-    "xtask scoreboard-ratchet      perturbation not yet written"
 )
 # Was 5. Three were paid down once their detection was read rather than guessed
 # at. The remaining two need a Cargo.lock change, which this script will not make.
@@ -793,7 +904,15 @@ UNCOVERED=(
 # versions reds it; self-pin resolves a `uses: .../nucleus/<dir>@<sha>` against
 # the clone, so a SHA that does not exist reds it (exit 2, "could not look",
 # which is the right red -- a pin nobody can resolve is not a pin).
-UNCOVERED_CEILING=8
+#
+# 2026-09-11, 8 -> 7: `scoreboard-ratchet` gets a probe. It was the only entry whose
+# stated reason was "perturbation not yet written" rather than a named obstacle, and
+# the obstacle turned out to be real but surmountable: CI passes `--current
+# scoreboard.json`, a file the job generates, so `probe_xtask`'s CI-parity guard
+# refused it. `probe_xtask_generated` keeps that guard -- it asserts CI's flags are
+# exactly what the probe claims -- and allows the probe's flags to differ only in the
+# generated path, which is named rather than inferred. The generator costs 4s.
+UNCOVERED_CEILING=7
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #
@@ -942,7 +1061,9 @@ done < <(
 
 for sub in "${XTASK_GATES[@]}"; do
     gate="xtask $sub"
-    grep -qE "^probe_xtask[[:space:]]+$sub([[:space:]]|$)" "$0" && continue
+    # Both probe forms count as coverage: probe_xtask for a bare invocation,
+    # probe_xtask_generated for one CI runs with flags naming a generated file.
+    grep -qE "^probe_xtask(_generated)?[[:space:]]+$sub([[:space:]]|$)" "$0" && continue
     printf '%s\n' "${UNCOVERED[@]}" | grep -q "^${gate}[[:space:]]" && continue
     UNACCOUNTED+=("$gate")
 done
