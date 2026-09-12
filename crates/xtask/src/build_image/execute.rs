@@ -429,6 +429,9 @@ pub fn run(args: Args) -> Result<()> {
         let pod_url = format!("{}/v1/pods/{}", node_url.trim_end_matches('/'), created.id);
         let expected = ExpectedExecution {
             pod_id: &created.id,
+            source_commit: &inputs.source_commit,
+            source_tree: &inputs.source_tree,
+            gate: "cargo-build-nucleus-node-v1",
             session_id: &created.id,
             program_digest: &program,
             architecture: &inputs.architecture,
@@ -529,6 +532,9 @@ fn collect(
     let none = BTreeMap::new();
     let ExpectedExecution {
         pod_id,
+        source_commit,
+        source_tree,
+        gate,
         program_digest,
         architecture,
         environment_inputs_sha256,
@@ -541,6 +547,9 @@ fn collect(
     } = expected;
     let empty_expected = ExpectedExecution {
         pod_id,
+        source_commit,
+        source_tree,
+        gate,
         program_digest,
         architecture,
         environment_inputs_sha256,

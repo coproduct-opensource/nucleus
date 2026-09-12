@@ -120,9 +120,30 @@ fn completed_claim(
             "supervisor program identity differs from host spec".into(),
         ));
     }
+    let source_commit = spec
+        .metadata
+        .labels
+        .get("build.source.commit")
+        .cloned()
+        .unwrap_or_default();
+    let source_tree = spec
+        .metadata
+        .labels
+        .get("build.source.tree")
+        .cloned()
+        .unwrap_or_default();
+    let gate = spec
+        .metadata
+        .labels
+        .get("build.gate")
+        .cloned()
+        .unwrap_or_default();
     Ok(ExecutionClaim {
         schema: ExecutionSchema::V1,
         pod_id: id.to_string(),
+        source_commit,
+        source_tree,
+        gate,
         program_digest: expected,
         architecture: std::env::consts::ARCH.into(),
         backend,

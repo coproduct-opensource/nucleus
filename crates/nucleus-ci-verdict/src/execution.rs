@@ -38,6 +38,9 @@ pub enum Backend {
 pub struct ExecutionClaim {
     pub schema: ExecutionSchema,
     pub pod_id: String,
+    pub source_commit: String,
+    pub source_tree: String,
+    pub gate: String,
     /// Declared program identity, matched between host and supervisor.
     pub program_digest: String,
     pub architecture: String,
@@ -65,6 +68,9 @@ impl ExecutionClaim {
 /// Expectations come from the controller's attempt record and pinned signer.
 pub struct ExpectedExecution<'a> {
     pub pod_id: &'a str,
+    pub source_commit: &'a str,
+    pub source_tree: &'a str,
+    pub gate: &'a str,
     pub program_digest: &'a str,
     pub architecture: &'a str,
     pub environment_inputs_sha256: &'a str,
@@ -134,6 +140,9 @@ pub fn verify_execution(
 ) -> Result<VerifiedExecution, ExecutionError> {
     let ExpectedExecution {
         pod_id,
+        source_commit,
+        source_tree,
+        gate,
         program_digest,
         architecture,
         environment_inputs_sha256,
@@ -191,6 +200,9 @@ pub fn verify_execution(
     let ExecutionClaim {
         schema: ExecutionSchema::V1,
         pod_id: actual_pod,
+        source_commit: actual_source_commit,
+        source_tree: actual_source_tree,
+        gate: actual_gate,
         program_digest: actual_program,
         architecture: actual_arch,
         backend,
@@ -207,6 +219,13 @@ pub fn verify_execution(
         ("pod_id", actual_pod.as_str(), *pod_id),
         ("program_digest", actual_program.as_str(), *program_digest),
         ("architecture", actual_arch.as_str(), *architecture),
+        (
+            "source_commit",
+            actual_source_commit.as_str(),
+            *source_commit,
+        ),
+        ("source_tree", actual_source_tree.as_str(), *source_tree),
+        ("gate", actual_gate.as_str(), *gate),
         (
             "environment_inputs_sha256",
             actual_environment.as_str(),

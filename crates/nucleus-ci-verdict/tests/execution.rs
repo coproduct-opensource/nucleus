@@ -51,6 +51,9 @@ fn claim() -> ExecutionClaim {
     ExecutionClaim {
         schema: ExecutionSchema::V1,
         pod_id: "pod-1".into(),
+        source_commit: "commit-1".into(),
+        source_tree: "tree-1".into(),
+        gate: "gate-1".into(),
         program_digest: DIGEST.into(),
         architecture: "x86_64".into(),
         backend: Backend::Firecracker,
@@ -85,6 +88,9 @@ fn sign(claim: &ExecutionClaim, key: &SigningKey) -> Receipt {
 fn expected(key: &[u8; 32]) -> ExpectedExecution<'_> {
     ExpectedExecution {
         pod_id: "pod-1",
+        source_commit: "commit-1",
+        source_tree: "tree-1",
+        gate: "gate-1",
         program_digest: DIGEST,
         architecture: "x86_64",
         environment_inputs_sha256: DIGEST,
