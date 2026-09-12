@@ -134,6 +134,16 @@ jobs:
       - name: A gate's timeout must fire before its job is killed
         run: cargo run -q -p xtask -- gate-budget
 
+      # `Cargo.toml` lists members explicitly rather than by glob, so a new crate joins the
+      # workspace only when someone remembers. Forget, and the crate still compiles locally,
+      # still has tests, and is reached by none of `cargo clippy --workspace`, `cargo test
+      # --workspace`, the totality census or the dead-code ratchet -- NOTHING FAILS, which is
+      # the whole difficulty: the evidence of the mistake is the absence of evidence.
+      # Measured 2026-09-12: 87 crate directories, 82 members, 5 excluded by decision, and
+      # `crates/nucleus-policy` in neither list.
+      - name: No crate sits outside the workspace
+        run: cargo run -q -p xtask -- workspace-members
+
       # Seven scan-vs-allowlist gates lived in four shell scripts, each with its own copy
       # of the same `#[cfg(test)]`-stripping awk program -- five copies, four of them
       # differing byte-for-byte, one carrying a false negative its own comment names. This

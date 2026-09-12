@@ -109,6 +109,9 @@ enum Command {
     /// that overruns is reported as `cancelled` and carries no verdict. Decided from the
     /// workflow and the action definition alone.
     GateBudget,
+    /// A crate outside the workspace is reached by no `--workspace` command. Decided from
+    /// `cargo metadata` and Cargo.toml's own `exclude` list.
+    WorkspaceMembers,
     /// A claim's falsifier must produce a REQUIRED context. A gate CI runs, that goes red, and
     /// that the merge queue merges past anyway enforces nothing — it is a red light beside an
     /// open gate. Ratcheted, not driven to zero: whether a given check should be required is a
@@ -332,6 +335,7 @@ mod rerun_plan;
 mod schedule_liveness;
 mod scoreboard;
 mod self_pin;
+mod workspace_members;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
@@ -369,6 +373,7 @@ fn main() -> Result<()> {
         Command::PushAuth => push_auth::check(&std::env::current_dir()?),
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
+        Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;
