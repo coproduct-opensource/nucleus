@@ -54,17 +54,24 @@ fn matches(pattern: &str, path: &str) -> Option<bool> {
 /// Segment matcher. `**` consumes zero or more segments, which is why this is
 /// recursive rather than a zip.
 fn match_segments(pat: &[&str], seg: &[&str]) -> bool {
-    match pat.first() {
-        None => seg.is_empty(),
-        Some(&"**") => {
-            // Zero or more segments. GitHub treats a trailing `**` as "this
-            // directory and everything under it".
-            (0..=seg.len()).any(|i| match_segments(&pat[1..], &seg[i..]))
-        }
-        Some(p) => match seg.first() {
+    // `split_first` rather than `first()` + `[1..]`: the tail comes back with
+    // the head, so there is no second, unchecked way to get it wrong. A panic
+    // here would be a key derivation that could not finish, which this crate
+    // must never confuse with a key that says "no match".
+    let Some((head, pat_rest)) = pat.split_first() else {
+        return seg.is_empty();
+    };
+    if *head == "**" {
+        // Zero or more segments. GitHub treats a trailing `**` as "this
+        // directory and everything under it".
+        return (0..=seg.len()).any(|i| match seg.get(i..) {
+            Some(tail) => match_segments(pat_rest, tail),
             None => false,
-            Some(s) => match_one(p, s) && match_segments(&pat[1..], &seg[1..]),
-        },
+        });
+    }
+    match seg.split_first() {
+        None => false,
+        Some((s, seg_rest)) => match_one(head, s) && match_segments(pat_rest, seg_rest),
     }
 }
 
@@ -72,35 +79,47 @@ fn match_segments(pat: &[&str], seg: &[&str]) -> bool {
 /// non-`/` characters.
 fn match_one(pat: &str, seg: &str) -> bool {
     let parts: Vec<&str> = pat.split('*').collect();
-    if parts.len() == 1 {
+    // `split_first`/`split_last` again: the interior is what is left over,
+    // which is the same fact as "not the first and not the last" without a
+    // second expression of it that can disagree. The old
+    // `&parts[1..parts.len().saturating_sub(1)]` was that second expression.
+    let Some((first, after_first)) = parts.split_first() else {
         return pat == seg;
-    }
+    };
+    let Some((last, interior)) = after_first.split_last() else {
+        // No `*` at all: one part, so the pattern is literal.
+        return pat == seg;
+    };
+
     let mut rest = seg;
     // The first part must be a prefix (unless the pattern starts with `*`).
-    if let Some(first) = parts.first()
-        && !first.is_empty()
-    {
+    if !first.is_empty() {
         match rest.strip_prefix(*first) {
             Some(r) => rest = r,
             None => return false,
         }
     }
     // The last must be a suffix (unless the pattern ends with `*`).
-    if let Some(last) = parts.last()
-        && !last.is_empty()
-    {
+    if !last.is_empty() {
         match rest.strip_suffix(*last) {
-            Some(r) if rest.len() >= last.len() => rest = r,
-            _ => return false,
+            Some(r) => rest = r,
+            None => return false,
         }
     }
     // Interior parts must appear in order.
-    for mid in &parts[1..parts.len().saturating_sub(1)] {
+    for mid in interior {
         if mid.is_empty() {
             continue;
         }
-        match rest.find(mid) {
-            Some(i) => rest = &rest[i + mid.len()..],
+        // `find` returns a byte offset at a char boundary and `mid` is a
+        // substring from there, so the sum is a boundary too — but slicing on
+        // an arithmetic result is exactly the shape that panics when the
+        // reasoning is wrong, so take the remainder by length instead.
+        match rest.find(mid).and_then(|i| {
+            rest.get(i..)
+                .and_then(|from_match| from_match.get(mid.len()..))
+        }) {
+            Some(after) => rest = after,
             None => return false,
         }
     }
@@ -240,10 +259,15 @@ pub fn inputs_for(root: &Path, model: &Model, context: &str) -> Result<Result<In
     // fires, and the noop reports the same context green in seconds. So the
     // real twin is the gate, and its filter is the declared read-set. Dropping
     // the noop half here is the difference between 11 refusals and 11 keys.
+    // `get` rather than `[]` throughout: `producers` hands back indices into
+    // `model.workflows`, and this crate must never turn a stale index into a
+    // panic. A panic here is a key derivation that could not finish, and the
+    // whole design turns on never confusing that with a derivation that
+    // finished and said "no key".
     let real: Vec<_> = all
         .iter()
         .copied()
-        .filter(|(wi, _)| !model.workflows[*wi].is_noop())
+        .filter(|(wi, _)| model.workflows.get(*wi).is_some_and(|w| !w.is_noop()))
         .collect();
     let producers = if real.is_empty() { all.clone() } else { real };
 
@@ -259,18 +283,31 @@ pub fn inputs_for(root: &Path, model: &Model, context: &str) -> Result<Result<In
                 context: context.to_string(),
                 producers: producers
                     .iter()
-                    .map(|(wi, ji)| {
-                        format!(
-                            "{}::{}",
-                            model.workflows[*wi].path, model.workflows[*wi].jobs[*ji].id
-                        )
+                    .map(|(wi, ji)| match model.workflows.get(*wi) {
+                        Some(w) => match w.jobs.get(*ji) {
+                            Some(j) => format!("{}::{}", w.path, j.id),
+                            None => format!("{}::<job {ji} is gone>", w.path),
+                        },
+                        None => format!("<workflow {wi} is gone>::<job {ji}>"),
                     })
                     .collect(),
             }));
         }
     }
-    let (wi, _) = producers[0];
-    let w = &model.workflows[wi];
+    // The `match` above established exactly one producer, but "established by
+    // an earlier branch" is the reasoning that `[0]` panics on when someone
+    // edits the branch. Ask for it.
+    let Some(&(wi, _)) = producers.first() else {
+        return Ok(Err(Refusal::NoProducer {
+            context: context.to_string(),
+        }));
+    };
+    let Some(w) = model.workflows.get(wi) else {
+        anyhow::bail!(
+            "context {context:?} names workflow index {wi}, which the model does not have: the \
+             model changed under the index and a key derived from it would be about nothing"
+        );
+    };
 
     let Some(filter) = filter_of(w) else {
         return Ok(Err(Refusal::Unfiltered {

@@ -1,5 +1,27 @@
 //! `nucleus-action-key` — derive a CI gate's receipt key, or say why it has none.
 
+// TOTALITY: a function whose signature says `-> T` and panics is lying about
+// its type. All seven lints, denied for the shipped build only — `assert!` IS
+// a panic, so denying inside `#[cfg(test)]` would forbid the thing tests are
+// made of. Measured zero of all seven before adding this, per `clippy.toml`'s
+// rule that an entry is added only when the tree is already clean of it.
+//
+// It matters more here than in most crates: this one decides whether a receipt
+// may be REUSED. A panic in the key derivation is a gate that could not look,
+// and the whole design turns on never confusing that with a gate that looked.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use anyhow::Result;
 use nucleus_action_key::census::{self, Outcome};
 use std::path::PathBuf;
