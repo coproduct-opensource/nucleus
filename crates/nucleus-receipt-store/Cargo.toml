@@ -1,0 +1,24 @@
+[package]
+name = "nucleus-receipt-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Receipts stored under the action key they are about, with the store refusing to believe its own index"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+nucleus-action-key = { path = "../nucleus-action-key" }
+nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
+nucleus-receipt = { path = "../nucleus-receipt" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+ci-spec = { path = "../ci-spec" }
+tempfile = { workspace = true }

@@ -67,6 +67,8 @@ members = [
     "crates/xtask",                      # Rust-native dev/CI task runner (cargo xtask <cmd>); migrating scripts/*.sh
     "crates/ci-spec",                 # CI configuration as a typed model + the merge-queue invariants as decision procedures
     "crates/nucleus-action-key",      # CI: the key a gate receipt is stored under, or a refusal naming what is undeclared
+    "crates/nucleus-receipt-store",  # CI: receipts filed under the action key they are about
+    "crates/nucleus-ci-verdict",  # CI: the typed body for Projection::Ci
     "crates/ci-fly-runner",             # The CI worker pool manager: a pure plan over a snapshot of queued jobs and machines
     "crates/nucleus-machine",            # MachineDriver: microVM execution-substrate abstraction (mock + Fly skeleton)
     "crates/nucleus-verify-commerce",    # Seller-side verify→serve→receipt middleware for x402/A2A (scaffold)
