@@ -51,6 +51,38 @@ const PROXY_BIN: &str = "/usr/local/bin/nucleus-tool-proxy";
 const EGRESS_PROBE_BIN: &str = "/usr/local/bin/nucleus-egress-probe";
 const GUEST_NET_SH: &str = "/usr/local/bin/guest-net.sh";
 
+/// Mount the per-pod scratch at `/work`, if this pod has one.
+///
+/// Optional: a guest without a data volume, or with a read-only one, is
+/// legitimate (`workload.rs` allows a read-only `/work`).
+///
+/// # Why it takes a [`identity::PastBarrier`]
+///
+/// This used to run with the other mounts, well before the barrier. Mounting
+/// ext4 WRITES to its superblock — the mount count goes to 1 and the
+/// last-mounted path is recorded — so a base snapshotted here carried one pod's
+/// filesystem metadata, and a clone restored against a fresh image had cached
+/// metadata describing a filesystem that was not there. `clone_safety` refused
+/// every jailed pod for exactly that reason.
+///
+/// The host verifies the outcome in the superblock rather than taking the
+/// guest's word (`snapshot::mount_state`), so this is not a claim being made
+/// here — it is the behaviour that makes the host's check pass. The token makes
+/// the ordering unwritable rather than merely correct today.
+fn mount_work(_past_barrier: &identity::PastBarrier) {
+    if Path::new("/dev/vdb").exists()
+        && let Err(err) = mount_fs(
+            "/dev/vdb",
+            "/work",
+            "ext4",
+            MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+            None,
+        )
+    {
+        eprintln!("optional mount /work failed — continuing without it: {err}");
+    }
+}
+
 /// Time one startup step and print it as it completes.
 ///
 /// Mirrors `nucleus-startup-phase` from the tool-proxy deliberately, including
@@ -127,20 +159,6 @@ fn run() -> Result<(), String> {
         eprintln!("optional mount {missing} failed — continuing without it");
     }
 
-    // `/work` is optional: a guest without a data volume, or a read-only one,
-    // is legitimate (workload.rs allows a read-only /work).
-    if Path::new("/dev/vdb").exists()
-        && let Err(err) = mount_fs(
-            "/dev/vdb",
-            "/work",
-            "ext4",
-            MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-            None,
-        )
-    {
-        eprintln!("optional mount /work failed — continuing without it: {err}");
-    }
-
     // Never a shell: a missing spec is a named boot error.
     let spec_path = boot::resolve_pod_spec(
         POD_SPEC_PATH,
@@ -171,14 +189,17 @@ fn run() -> Result<(), String> {
     // slow, and the total says whether batching them into one round trip is
     // worth doing at all. Neither number existed before.
     let handshake_start = std::time::Instant::now();
+    // THE BARRIER. Announced once, for both paths, and it hands back the token
+    // `mount_work` requires — so mounting the scratch before this line is not a
+    // convention anyone has to remember, it does not compile.
+    let past_barrier = identity::barrier(workload_api_port);
+    mount_work(&past_barrier);
     if let Some(port) = workload_api_port {
         // Announce the barrier before asking for anything. After the first fetch below this VM
         // is one particular pod, and a snapshot of it would hand that pod's identity to every
         // clone. Best-effort: a host that does not know the command simply never records it, and
         // the only consequence is that this VM cannot be used as a base.
-        if let Err(e) = identity::announce_snapshot_ready(port) {
-            eprintln!("snapshot barrier not announced (continuing): {e}");
-        }
+
         match timed("identity", || identity::fetch_identity(port)) {
             Ok(spiffe_id) => {
                 eprintln!("fetched identity: {spiffe_id}");

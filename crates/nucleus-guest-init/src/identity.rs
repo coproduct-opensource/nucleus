@@ -190,6 +190,32 @@ pub struct BrokerCapability {
 /// returns `Ok(())` anyway: announcing a barrier is not a request for anything, so failing to
 /// announce it must never stop a pod from starting. The cost of a host that never hears it is
 /// that the VM is refused as a snapshot base, which is the correct answer.
+/// Proof that the snapshot barrier is behind us.
+///
+/// The field is private and this type lives HERE, not beside its user. That is
+/// load-bearing: Rust's field privacy is module-scoped, so a marker defined in
+/// the same module as the code it constrains can be constructed by that code
+/// and constrains nothing. The first version of this was in `main.rs` and a
+/// perturbation test compiled straight through it.
+///
+/// Defined here, the only way to hold one is [`barrier`] — which announces.
+pub struct PastBarrier(());
+
+/// Announce the snapshot barrier and return the proof that it happened.
+///
+/// Best-effort by design: a host that never hears it simply never records the
+/// barrier, and the only consequence is that this VM cannot serve as a base. A
+/// VM with no workload API has no barrier to announce and is already unusable
+/// as one — either way nothing is left to defer, so the token is issued.
+pub fn barrier(port: Option<u32>) -> PastBarrier {
+    if let Some(port) = port
+        && let Err(e) = announce_snapshot_ready(port)
+    {
+        eprintln!("snapshot barrier not announced (continuing): {e}");
+    }
+    PastBarrier(())
+}
+
 pub fn announce_snapshot_ready(port: u32) -> Result<(), String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
