@@ -334,6 +334,28 @@ wire format. Six build-image tests (including successor refusal cases) and all
 implementation evidence only. A live predecessor build and successor execution
 must still pass before milestone 4 can be claimed.
 
+Run `34717924790` at `7b6e4bf15` completed with the self-build job failing.
+The guest reached PID 1, received a reset while announcing the snapshot barrier,
+failed to fetch its pod spec and exited. The node opened the workload API only
+after starting the VMM and computing the image's launch attestation. A small
+probe image had hidden this ordering problem; the 8 GiB build image did not.
+The log does not yet establish the individual hashing durations.
+
+`pod_boot_identity::prepare` now completes registration, attestation and the
+workload API listener before the guarded VMM spawn. Listener failure refuses
+launch. The preparation guard owns listener, certificate, registry and
+attestation cleanup until ownership transfers to the running pod; ordinary
+spawn failures and cancelled preparation release those resources. This follows
+C-4 (consume ownership at transfer) and D-1 (prepare services before the effect).
+The startup regression retrieves the host spec over a real Unix socket before
+attempting spawn, then verifies cleanup after a missing VMM executable. A second
+case refuses an unbindable API path. The full all-feature node suite passes
+(521 unit tests and 3 integration tests), and strict all-target/all-feature
+Clippy passes for node and xtask. Linux cross-checking on this Mac was blocked
+by the missing GNU cross compiler; the Zig substitute could not accept a build
+dependency's target flags. Linux CI and another real microVM run remain required.
+The experiment now enables INFO logs so existing boot-stage timings are exported.
+
 The bootstrap already called both kill and wait before propagating its build
 result. Reordering the `?` operations did not add cleanup; it only changed error
 precedence. Preserve the original build error after both cleanup calls so an

@@ -121,6 +121,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         .arg("--jailer-chroot-base")
         .arg(output.join("jailer"))
         .env("TRUST_EXECUTOR_ID", "nucleus-self-build/bootstrap")
+        .env("RUST_LOG", "info")
         .stdout(log.try_clone()?)
         .stderr(log)
         .spawn()

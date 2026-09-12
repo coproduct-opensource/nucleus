@@ -417,8 +417,15 @@ fn every_emitted_cmdline_key_is_classified() {
 fn the_workload_api_bridge_starts_before_the_health_check() {
     let src = include_str!("main.rs");
     let bridge = src
-        .find("WorkloadApiVsockBridge::start")
+        .find("pod_boot_identity::prepare(")
         .expect("the bridge start site");
+    let spawn = src
+        .find("prepared_identity.spawn(&mut command)")
+        .expect("guarded VMM spawn");
+    assert!(
+        bridge < spawn,
+        "host-fetched specs need the workload API before the VMM starts"
+    );
     let health = src
         // The health wait now sits inside `net::confinement::gate`, which
         // also requires the guest's egress attestation. The ordering this
