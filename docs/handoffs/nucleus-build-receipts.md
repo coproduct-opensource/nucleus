@@ -380,3 +380,8 @@ already-exited node does not replace the useful failure with a kill error.
 
 Public nucleus execution and base receipt verification must remain usable
 without private gatehouse. Optional certificates must stay optional.
+
+The first manifest gate on `cffbb336f3` refused ratchet slack, not a new dropped
+witness: `cargo xtask bound --measure` reports net D=174, B=173, dropped=1
+(99.42%) against the previous 99.41% floor. The floor and declared-site minimum
+are raised to the measured values. The existing dropped-site debt remains one.

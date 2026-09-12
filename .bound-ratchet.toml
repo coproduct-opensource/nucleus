@@ -60,5 +60,7 @@
 # paid; lowering it, or lowering declared_floor, needs a dated note here saying
 # which enforcement point went away and who decided.
 
-floor_bp = 9941
-declared_floor = 172
+# 2026-09-12: the self-build branch measures net D=174, B=173, dropped=1.
+# Raise both floors to that census; the one remaining dropped site is unchanged.
+floor_bp = 9942
+declared_floor = 174
