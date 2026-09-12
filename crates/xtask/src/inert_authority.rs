@@ -302,7 +302,7 @@ fn inert_site(line: &str, witness: &[String]) -> bool {
 /// asks is "which implementation drops the witness", and two impls of the same
 /// trait — `RealEffects` and `DenyAllEffects` — are exactly what must not share
 /// a row.
-fn scope_of(line: &str) -> Option<String> {
+pub fn scope_of(line: &str) -> Option<String> {
     let t = line.trim_start();
     if let Some(rest) = t.strip_prefix("impl") {
         if !rest.starts_with(|c: char| c.is_whitespace() || c == '<') {
