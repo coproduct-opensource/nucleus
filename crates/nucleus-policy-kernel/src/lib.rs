@@ -34,6 +34,22 @@
 //! the property over the **entire** (infinite) request space. No floats, no
 //! `unsafe`, no zkVM toolchain in the default build.
 
+// ADR 0007 totality: a function whose signature says it returns is lying if it
+// panics. Denied for the shipped build only — `assert!` IS a panic, so denying
+// inside `#[cfg(test)]` would forbid the thing tests are made of. This is the
+// same line `is_production_path` draws when it strips the test region.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
 // ADR 0007 B-3/E-2: a wildcard arm over an enum silently absorbs variants added
 // later, which is how a sum type loses a case without anyone reading the diff.
 // Denied here rather than workspace-wide because the workspace baseline is ~200
@@ -190,7 +206,14 @@ pub fn representative_requests(old: &Policy, new: &Policy) -> Vec<Request> {
     let principals = field_representatives(old, new, |r| &r.principal);
     let actions = field_representatives(old, new, |r| &r.action);
     let resources = field_representatives(old, new, |r| &r.resource);
-    let mut out = Vec::with_capacity(principals.len() * actions.len() * resources.len());
+    // A capacity HINT, so saturating is exactly right: an over-large product
+    // would allocate rather than wrap, and the loop below fills the real size.
+    let mut out = Vec::with_capacity(
+        principals
+            .len()
+            .saturating_mul(actions.len())
+            .saturating_mul(resources.len()),
+    );
     for p in &principals {
         for a in &actions {
             for res in &resources {

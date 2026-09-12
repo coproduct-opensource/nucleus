@@ -55,7 +55,7 @@ use crate::{
 /// • Commands: intersection(allowed), union(blocked)
 /// • Time: max(valid_from), min(valid_until)
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct PermissionLattice {
     /// Unique identifier for this permission set
@@ -116,6 +116,44 @@ pub struct PermissionLattice {
     pub created_at: DateTime<Utc>,
     /// Who/what created this permission
     pub created_by: String,
+}
+
+/// Equality is over what the permissions PERMIT, not over how they were made.
+///
+/// Derived `PartialEq` compared `id`, `description` and `derived_from` — audit
+/// provenance that `meet`, `join` and `leq` all deliberately ignore. Since
+/// `meet` mints `id: Uuid::new_v4()` on every call and builds an order-dependent
+/// `description`, the derived equality made this type satisfy **none** of the
+/// fifteen laws its three lattice traits declare: `verify_lattice_laws` over
+/// three of its own constructors reported 99 violations, `a.meet(&a) != a` among
+/// them, and `a.meet(&b) == a` was never true for any `a` and `b` — which breaks
+/// the `a ≤ b ⟺ a ∧ b = a` correspondence by construction.
+///
+/// It also meant two policy-identical permission sets compared unequal, which is
+/// the wrong answer to the only question `==` is ever asked here.
+///
+/// This is the move [`crate::delegation`]'s neighbour already makes:
+/// `portcullis_core::attenuation::LiteralDelegation` hand-writes `PartialEq`
+/// because *"deriving `PartialEq` would break join commutativity: `a ∨ b` and
+/// `b ∨ a` list elements in different orders"*. Same wall, same answer — make
+/// `PartialEq` **be** the law equality rather than adding a second notion of
+/// equality beside it.
+///
+/// `leq` was never affected and is unchanged: it compares only the policy
+/// fields, so the one production enforcement site
+/// (`certificate.rs`'s `effective_permissions.leq(prev_permissions)`) was sound
+/// throughout.
+impl PartialEq for PermissionLattice {
+    fn eq(&self, other: &Self) -> bool {
+        self.capabilities == other.capabilities
+            && self.obligations == other.obligations
+            && self.paths == other.paths
+            && self.budget == other.budget
+            && self.commands == other.commands
+            && self.time == other.time
+            && self.minimum_isolation == other.minimum_isolation
+            && self.uninhabitable_constraint == other.uninhabitable_constraint
+    }
 }
 
 /// Parse a UUID from a string WITHOUT risking a panic on hostile input.
@@ -589,12 +627,32 @@ impl PermissionLattice {
         self.time.is_expired()
     }
 
-    /// Compute a checksum for integrity verification.
-    #[cfg(feature = "serde")]
+    /// Compute a checksum over WHAT IS PERMITTED, not over how it was made.
+    ///
+    /// Coherent with [`PartialEq`], which is the law this previously broke:
+    /// two values that compare equal must hash equal, and they did not. The old
+    /// implementation serialized the whole struct — `id`, `description` and
+    /// `derived_from` included — so a `meet` that produced the same policy under
+    /// a new label produced a different checksum, and the audit chain recorded
+    /// `pre_permissions_hash != post_permissions_hash`: a permission change that
+    /// had not happened.
+    ///
+    /// The non-serde variant used to hash `format!("{:?}", self)`. Derived
+    /// `Debug` is not a stability contract — a field rename or reorder silently
+    /// rewrites every hash — which is the defect #747 records for the receipt
+    /// chain, here on the permission checksum itself. Both variants now hash the
+    /// same projection, so the two builds agree on what a policy hashes to.
+    #[must_use]
     pub fn checksum(&self) -> String {
-        let data = serde_json::to_string(self).unwrap_or_default();
         let mut hasher = Sha256::new();
-        hasher.update(data.as_bytes());
+        // Field-tagged and length-prefixed: without the tags, moving a byte from
+        // one field to the next would leave the digest unchanged.
+        for (tag, part) in self.digest_parts() {
+            hasher.update(tag.as_bytes());
+            hasher.update(b"\x00");
+            hasher.update((part.len() as u64).to_be_bytes());
+            hasher.update(part.as_bytes());
+        }
         hasher
             .finalize()
             .iter()
@@ -602,17 +660,48 @@ impl PermissionLattice {
             .collect::<String>()
     }
 
-    /// Compute a checksum for integrity verification (non-serde version).
+    /// The policy fields, in a fixed order, each as a stable string.
+    ///
+    /// Exactly the fields [`PartialEq`] compares — the two must not drift apart,
+    /// and `every_policy_field_reaches_the_digest` pins that each one actually
+    /// arrives.
+    ///
+    /// ONE function, with the feature split pushed down into [`Self::encode`].
+    /// It was two — a `#[cfg(feature = "serde")]` body and a `#[cfg(not(..))]`
+    /// one — and mutation testing reported five survivors against the second.
+    /// They survived because `--all-features` does not compile it: mutating code
+    /// that is `cfg`-ed out changes nothing, so every mutant passed. A function
+    /// no build in CI compiles is a function no test can defend, and splitting
+    /// on the feature at the top of a body is how that happens.
+    fn digest_parts(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("capabilities", Self::encode(&self.capabilities)),
+            ("obligations", Self::encode(&self.obligations)),
+            ("paths", Self::encode(&self.paths)),
+            ("budget", Self::encode(&self.budget)),
+            ("commands", Self::encode(&self.commands)),
+            ("time", Self::encode(&self.time)),
+            ("minimum_isolation", Self::encode(&self.minimum_isolation)),
+            ("uninhabitable", self.uninhabitable_constraint.to_string()),
+        ]
+    }
+
+    /// One field as a stable string.
+    ///
+    /// The only thing the `serde` feature changes about the digest. `Debug` is
+    /// not a stability contract across compiler versions — the defect #747
+    /// records for the receipt chain — so the serde build is the one whose
+    /// digest is durable, and the fallback exists for the WASM consumers that
+    /// build with `default-features = false`.
+    #[cfg(feature = "serde")]
+    fn encode<T: serde::Serialize>(field: &T) -> String {
+        serde_json::to_string(field).unwrap_or_default()
+    }
+
+    /// See the serde variant above.
     #[cfg(not(feature = "serde"))]
-    pub fn checksum(&self) -> String {
-        let data = format!("{:?}", self);
-        let mut hasher = Sha256::new();
-        hasher.update(data.as_bytes());
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
+    fn encode<T: std::fmt::Debug>(field: &T) -> String {
+        format!("{field:?}")
     }
 
     /// Create a permissive permission set (for trusted contexts).
@@ -1403,12 +1492,49 @@ impl EffectivePermissions {
     /// Create effective permissions from a lattice.
     pub fn new(lattice: PermissionLattice) -> Self {
         let lattice = lattice.normalize();
-        let checksum = lattice.checksum();
+        let checksum = Self::seal(&lattice);
         Self {
             lattice,
             budget_reservation_id: None,
             checksum,
         }
+    }
+
+    /// The tamper seal: a digest over the WHOLE value, provenance included.
+    ///
+    /// Deliberately not [`PermissionLattice::checksum`], which answers a
+    /// different question. That one asks *what is permitted*, and is coherent
+    /// with `PartialEq`: two policies that permit the same things hash the same,
+    /// so relabelling one does not read as a permission change in the audit
+    /// chain.
+    ///
+    /// This one asks *is this exact value the one I sealed*, and the answer must
+    /// be no if `description` or `derived_from` moved — an audit label a
+    /// reviewer reads is worth sealing even though it grants nothing.
+    /// `effective_permissions_detect_tampering` is the test that says so, and it
+    /// is right: a sealed structure seals everything it carries.
+    ///
+    /// Two questions, two digests. Collapsing them is what made the permission
+    /// checksum incoherent with equality in the first place.
+    fn seal(lattice: &PermissionLattice) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"portcullis-effective-permissions-seal-v1\x00");
+        hasher.update(lattice.checksum().as_bytes());
+        hasher.update(b"\x00");
+        hasher.update(lattice.id.as_bytes());
+        hasher.update(b"\x00");
+        hasher.update((lattice.description.len() as u64).to_be_bytes());
+        hasher.update(lattice.description.as_bytes());
+        hasher.update(b"\x00");
+        match lattice.derived_from {
+            Some(from) => hasher.update(from.as_bytes()),
+            None => hasher.update(b"none"),
+        }
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 
     /// Create effective permissions with a budget reservation.
@@ -1418,8 +1544,12 @@ impl EffectivePermissions {
     }
 
     /// Verify the integrity of the permissions.
+    ///
+    /// Detects any mutation of the sealed value, including a changed
+    /// `description` or `derived_from` — see [`Self::seal`] for why that is a
+    /// different question from "what is permitted".
     pub fn verify_integrity(&self) -> bool {
-        self.lattice.checksum() == self.checksum
+        Self::seal(&self.lattice) == self.checksum
     }
 
     /// Check if permissions have expired.
@@ -1441,6 +1571,216 @@ impl Default for EffectivePermissions {
 
 #[cfg(test)]
 mod tests {
+    // ── The laws PermissionLattice actually satisfies ─────────────────
+    //
+    // `verify_lattice_laws` is all-or-nothing, and this type does not pass it:
+    // absorption fails, for a reason worth naming rather than papering over.
+    // These pin the four laws that DO hold, so the equality fix below cannot
+    // regress silently, and `absorption_fails_because_meet_applies_a_closure`
+    // records the one that does not.
+
+    fn law_samples() -> Vec<PermissionLattice> {
+        vec![
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::default(),
+        ]
+    }
+
+    #[test]
+    fn meet_and_join_are_idempotent() {
+        for a in law_samples() {
+            assert_eq!(a.meet(&a), a, "a ∧ a = a");
+            assert_eq!(a.join(&a), a, "a ∨ a = a");
+        }
+    }
+
+    #[test]
+    fn meet_and_join_are_commutative() {
+        for a in law_samples() {
+            for b in law_samples() {
+                assert_eq!(a.meet(&b), b.meet(&a), "a ∧ b = b ∧ a");
+                assert_eq!(a.join(&b), b.join(&a), "a ∨ b = b ∨ a");
+            }
+        }
+    }
+
+    #[test]
+    fn meet_and_join_are_associative() {
+        for a in law_samples() {
+            for b in law_samples() {
+                for c in law_samples() {
+                    assert_eq!(a.meet(&b.meet(&c)), a.meet(&b).meet(&c));
+                    assert_eq!(a.join(&b.join(&c)), a.join(&b).join(&c));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn leq_agrees_with_meet() {
+        // `a ≤ b ⟺ a ∧ b = a`. This was FALSE for every pair before the
+        // equality fix, because `meet` mints a fresh `id` so `a.meet(&b) == a`
+        // could never hold.
+        for a in law_samples() {
+            for b in law_samples() {
+                assert_eq!(
+                    a.leq(&b),
+                    a.meet(&b) == a,
+                    "leq and meet must agree on {} ≤ {}",
+                    a.description,
+                    b.description
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_policy_field_reaches_the_digest() {
+        // The mutation-killing test. `cargo mutants` replaced `digest_parts`
+        // with constants and every one survived, because the variant it mutated
+        // was `cfg`-ed out under `--all-features`. With one function there is
+        // nowhere to hide — but a constant projection would still satisfy
+        // `checksum_agrees_with_equality`, which only compares digests to each
+        // other. This pins the stronger property: perturbing ANY of the eight
+        // fields moves the digest, so a field cannot silently drop out of it.
+        //
+        // That silent drop is #747's defect class, and the one this checksum was
+        // rewritten to avoid.
+        let base = PermissionLattice::restrictive();
+        let d = base.checksum();
+
+        let mut caps = base.clone();
+        caps.capabilities = PermissionLattice::permissive().capabilities;
+        assert_ne!(caps.checksum(), d, "capabilities");
+
+        let mut obl = base.clone();
+        obl.obligations = PermissionLattice::permissive().obligations;
+        assert_ne!(obl.checksum(), d, "obligations");
+
+        // A distinct value, not `permissive()`'s — the two constructors share
+        // their `paths`, so borrowing one perturbs nothing and the assertion
+        // would pass for the wrong reason. This test caught that on its first
+        // run, which is the argument for writing it field by field.
+        let mut paths = base.clone();
+        paths.paths.allowed.insert("src/only-here/**".to_string());
+        assert_ne!(paths.checksum(), d, "paths");
+
+        let mut budget = base.clone();
+        budget.budget = PermissionLattice::permissive().budget;
+        assert_ne!(budget.checksum(), d, "budget");
+
+        let mut commands = base.clone();
+        commands.commands = PermissionLattice::permissive().commands;
+        assert_ne!(commands.checksum(), d, "commands");
+
+        let mut time = base.clone();
+        time.time = PermissionLattice::permissive().time;
+        assert_ne!(time.checksum(), d, "time");
+
+        let mut iso = base.clone();
+        iso.minimum_isolation = Some(IsolationLattice::localhost());
+        assert_ne!(iso.checksum(), d, "minimum_isolation");
+
+        // `uninhabitable_constraint` is private; `normalize` is the supported
+        // way it differs, and a normalized policy must not hash as its input
+        // when normalization changed it.
+        let normalized = base.clone().normalize();
+        if normalized != base {
+            assert_ne!(normalized.checksum(), d, "uninhabitable/normalize");
+        }
+    }
+
+    #[test]
+    fn checksum_agrees_with_equality() {
+        // The `Hash`/`Eq` coherence law, which the old checksum broke: it
+        // serialized the whole struct, so a `meet` producing the same policy
+        // under a new label produced a different digest and the audit chain
+        // recorded `pre_permissions_hash != post_permissions_hash` — a
+        // permission change that had not happened.
+        let a = PermissionLattice::restrictive();
+        let mut b = a.clone();
+        b.id = Uuid::new_v4();
+        b.description = "a different label".to_string();
+        b.derived_from = Some(Uuid::new_v4());
+        assert_eq!(a, b, "same policy");
+        assert_eq!(a.checksum(), b.checksum(), "so the same checksum");
+
+        // …and it still separates policies that differ.
+        let c = PermissionLattice::permissive();
+        assert_ne!(a, c);
+        assert_ne!(a.checksum(), c.checksum());
+    }
+
+    #[test]
+    fn the_seal_asks_a_different_question_from_the_checksum() {
+        // Relabelling does not change what is permitted, so the checksum holds;
+        // it DOES change the sealed value, so integrity fails. Two questions,
+        // two digests — collapsing them is what made the checksum incoherent
+        // with equality in the first place.
+        let sealed = EffectivePermissions::new(PermissionLattice::restrictive());
+        assert!(sealed.verify_integrity());
+
+        let mut tampered = sealed.clone();
+        tampered.lattice.description = "tampered".to_string();
+        assert_eq!(
+            tampered.lattice.checksum(),
+            sealed.lattice.checksum(),
+            "relabelling permits nothing new"
+        );
+        assert!(
+            !tampered.verify_integrity(),
+            "but the seal covers the label a reviewer reads"
+        );
+    }
+
+    #[test]
+    fn equality_is_over_what_is_permitted_not_over_provenance() {
+        let a = PermissionLattice::restrictive();
+        let mut b = a.clone();
+        b.id = Uuid::new_v4();
+        b.description = "a different label".to_string();
+        b.derived_from = Some(Uuid::new_v4());
+        assert_eq!(a, b, "provenance is an audit handle, not identity");
+    }
+
+    #[test]
+    fn absorption_fails_because_meet_applies_a_closure() {
+        // `a ∧ (a ∨ b) = a` is the law a closure operator breaks, and `meet`
+        // applies one: `IncompatibilityConstraint::enforcing()` adds approval
+        // obligations for the capabilities the meet produces. So the composite
+        // is `j(a ∧ b)` for a closure `j`, which is a NUCLEUS on a lattice and
+        // not a lattice meet.
+        //
+        // Recorded rather than fixed: the obligations it adds are the
+        // uninhabitable-state constraint doing its job, so "make absorption
+        // hold" would mean weakening it. The type nonetheless implements
+        // `Lattice`, `BoundedLattice` and `DistributiveLattice`, three traits
+        // whose laws it does not satisfy — and this repo already has the right
+        // vocabulary for what it IS: `frame::Nucleus`, and the
+        // `ConstraintNucleus` that `scripts/law-mechanisms-manifest.txt` records
+        // as declared-dead, with production using "hardcoded ifs" instead.
+        //
+        // This test exists so that stops being invisible. If absorption ever
+        // starts holding, something changed about the constraint and this test
+        // says so.
+        let a = PermissionLattice::restrictive();
+        let b = PermissionLattice::permissive();
+        let absorbed = a.meet(&a.join(&b));
+        assert_ne!(
+            absorbed, a,
+            "if this now passes, meet stopped applying the uninhabitable closure"
+        );
+        assert_eq!(
+            absorbed.capabilities, a.capabilities,
+            "the break is in obligations, not capabilities"
+        );
+        assert!(
+            absorbed.obligations != a.obligations,
+            "the closure added approval obligations the operand did not carry"
+        );
+    }
+
     use super::*;
 
     /// Regression: a non-ASCII `id` used to PANIC uuid's error formatter

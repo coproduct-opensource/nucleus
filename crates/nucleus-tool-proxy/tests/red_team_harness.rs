@@ -433,7 +433,7 @@ impl ToolDispatcher {
         match self.guard.execute_and_record(proof, || {
             self.sandbox.read_to_string(
                 path,
-                &decision_token,
+                decision_token,
                 portcullis_effects::authority::Authority::new(
                     nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
                         nucleus_ifc_kernel::Operation::ReadFiles,
@@ -479,7 +479,7 @@ impl ToolDispatcher {
             self.sandbox.write(
                 path,
                 contents.as_bytes(),
-                &decision_token,
+                decision_token,
                 portcullis_effects::authority::Authority::new(discharge_bundle),
             )
         }) {

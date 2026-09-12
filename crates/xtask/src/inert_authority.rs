@@ -79,7 +79,7 @@ use std::collections::BTreeMap;
 
 use crate::law_mechanisms::{is_production_path, production_region, tracked};
 
-const MANIFEST: &str = "scripts/inert-authority-manifest.txt";
+pub const MANIFEST: &str = "scripts/inert-authority-manifest.txt";
 
 /// One manifest row: a `(file, scope)` group and how many inert sites it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,17 +202,38 @@ pub fn parse(text: &str) -> Result<Manifest> {
     })
 }
 
-/// Is `line` a parameter binding an inert witness — `_name: Type`, where `Type`
-/// is one of `witness`?
+/// How a parameter of a witness type binds the witness it is handed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Binding {
+    /// `_authority: Authority` — accepted and dropped. The signature demands a
+    /// witness; the body cannot name it, so it decides nothing.
+    Dropped,
+    /// `authority: Authority` — accepted under a name the body can consult.
+    /// Whether it *is* consulted is a different question, and a stronger gate;
+    /// this is the weakest binding that leaves consulting possible at all.
+    Bound,
+}
+
+/// Every witness-typed parameter on `line`, in source order.
 ///
 /// A grep, not a resolver, which is why the vocabulary is a closed list. `&`,
 /// `&mut` and a leading `&'a` are all accepted; a generic instantiation such as
 /// `Authorized<A>` matches on the head name, since that is the type whose
 /// discipline is at issue.
-fn inert_site(line: &str, witness: &[String]) -> bool {
-    // The `_` must START an identifier: preceded by `(`, `,`, whitespace or
-    // nothing, so `some_authority: Authority` and `x._field` do not match.
-    for (i, _) in line.match_indices('_') {
+///
+/// The scan starts at every identifier, not only at `_`, because the denominator
+/// this feeds — *how many sites accept a witness at all* — needs the bound ones
+/// too. `inert_site` below keeps the old first-match-wins bool so the
+/// inert-authority pin is measured exactly as it was.
+pub fn witness_params(line: &str, witness: &[String]) -> Vec<Binding> {
+    let mut out = Vec::new();
+    for (i, ch) in line.char_indices() {
+        // The identifier must START here: preceded by `(`, `,`, whitespace or
+        // nothing, so `some_authority: Authority` is one site and not two, and
+        // `x._field` is none.
+        if ch != '_' && !ch.is_ascii_lowercase() {
+            continue;
+        }
         let before = line[..i].chars().next_back();
         if !matches!(
             before,
@@ -255,10 +276,23 @@ fn inert_site(line: &str, witness: &[String]) -> bool {
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
             .collect();
         if witness.contains(&head) {
-            return true;
+            out.push(if name.starts_with('_') {
+                Binding::Dropped
+            } else {
+                Binding::Bound
+            });
         }
     }
-    false
+    out
+}
+
+/// Is `line` a parameter binding an inert witness — `_name: Type`, where `Type`
+/// is one of `witness`?
+///
+/// One line counts once however many witnesses it drops, which is how
+/// `INERT_TOTAL` was measured and must keep being measured.
+fn inert_site(line: &str, witness: &[String]) -> bool {
+    witness_params(line, witness).contains(&Binding::Dropped)
 }
 
 /// The enclosing scope of a line: the target of the nearest preceding `impl`,
@@ -268,7 +302,7 @@ fn inert_site(line: &str, witness: &[String]) -> bool {
 /// asks is "which implementation drops the witness", and two impls of the same
 /// trait — `RealEffects` and `DenyAllEffects` — are exactly what must not share
 /// a row.
-fn scope_of(line: &str) -> Option<String> {
+pub fn scope_of(line: &str) -> Option<String> {
     let t = line.trim_start();
     if let Some(rest) = t.strip_prefix("impl") {
         if !rest.starts_with(|c: char| c.is_whitespace() || c == '<') {
