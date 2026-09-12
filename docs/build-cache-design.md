@@ -1,8 +1,8 @@
 # Fast, verifiable Nucleus builds
 
 Research and implementation checkpoint: 2026-09-12. This describes the build
-experiment on `feat/nucleus-build-receipts`; it is not a production cache rollout
-or evidence that a complete self-build has succeeded.
+experiment on `feat/nucleus-build-receipts`; it is not a production cache rollout. Run [34721798028](https://github.com/coproduct-opensource/nucleus/actions/runs/34721798028)
+now demonstrates a complete cold/warm self-build at commit `9260327c8`.
 
 The design is immutable inputs, private writable clones, and verification before
 publication. Copy-on-write reduces storage work. Compiler caching reduces
@@ -61,8 +61,13 @@ measurement: approximately 17 ms restore/resume versus 79 ms cold boot. This doe
 not establish compiler-cache performance. The latest self-build failure before
 this caching change reached Cargo inside a real VM, but failed because the image
 omitted the egress sentinel and preserved unreadable vendor-file permissions.
-Those repairs are in a subsequent live experiment; no successful cold/warm build
-timings are claimed here.
+Run 34721798028 subsequently verified both real microVM builds: cold total
+225.740 s, warm total 88.779 s (about 2.54 times faster). Cargo reported 2m53s
+and 41.71s; both binaries had the same SHA-256. The Linux filesystem refused
+FICLONE with EOPNOTSUPP, so the reported warm path was sparse copy (2.946 s)
+and digest verification (6.589 s). This proves exact-tree cache reuse through
+its fallback, not Linux reflink performance. It does not prove reproducibility
+across arbitrary hosts or source revisions.
 
 Cancellation is not a guest filesystem flush. Journal recovery supplies a
 crash-consistent seed and may lose recently written cache entries. A production

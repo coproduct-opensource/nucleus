@@ -30,6 +30,9 @@ pub struct BootstrapArgs {
     /// New directory for the disposable node, keys and verified build output.
     #[arg(long)]
     pub(super) output: PathBuf,
+    /// After verification and shutdown, build again with the produced executor.
+    #[arg(long)]
+    pub(super) successor_output: Option<PathBuf>,
     /// Set only by the verified successor path, never by command-line input.
     #[arg(skip)]
     pub(super) successor_provenance: Option<(serde_json::Value, u64)>,
@@ -42,6 +45,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         source_commit,
         node_binary,
         output,
+        successor_output,
         successor_provenance,
     } = args;
     ensure!(
@@ -128,7 +132,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         .context("start disposable bootstrap node")?;
     // Keep every fallible operation after spawn inside the closure so normal
     // failure always kills and reaps the disposable node before returning.
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<(String, String)> {
         let start = Instant::now();
         while !state.join("ca/ca-cert.pem").exists()
             || !state.join("executor_signing_key.der").exists()
@@ -179,23 +183,35 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         }
         run(Args {
             inputs,
-            source_commit,
+            source_commit: source_commit.clone(),
             node_url: "https://127.0.0.1:18443".into(),
             tls_cert: cert,
             tls_key: key,
             trust_bundle: trust,
-            executor_public_key: public,
+            executor_public_key: public.clone(),
             executor_id: "nucleus-self-build/bootstrap".into(),
             output: output.join("build"),
-        })
+        })?;
+        // The trusted controller minted this key before the workload existed.
+        // Carry it directly to successor verification, never read it from a
+        // returned receipt or a workload-selected manifest.
+        Ok((source_commit, public))
     })();
     let stopped = node.kill();
     let reaped = node.wait();
     // Both cleanup operations have already run. Preserve the build failure if
     // the node also exited before kill; cleanup must not hide that diagnosis.
-    result?;
+    let (source_commit, executor_public_key) = result?;
     stopped.context("stop bootstrap node")?;
     reaped.context("reap bootstrap node")?;
+    if let Some(successor_output) = successor_output {
+        super::successor::run(super::successor::Args {
+            predecessor: output,
+            source_commit,
+            executor_public_key,
+            output: successor_output,
+        })?;
+    }
     Ok(())
 }
 

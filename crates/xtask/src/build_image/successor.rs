@@ -14,16 +14,16 @@ use super::*;
 pub struct Args {
     /// Protected stage-one experiment directory, not an arbitrary artifact bundle.
     #[arg(long)]
-    predecessor: PathBuf,
+    pub(super) predecessor: PathBuf,
     /// Independently approved exact commit for both builds.
     #[arg(long)]
-    source_commit: String,
+    pub(super) source_commit: String,
     /// Operator-pinned predecessor key. Never inferred from a receipt.
     #[arg(long)]
-    executor_public_key: String,
+    pub(super) executor_public_key: String,
     /// New, short directory for the successor node and its evidence.
     #[arg(long)]
-    output: PathBuf,
+    pub(super) output: PathBuf,
 }
 
 /// Only prepare() can mint the bytes that this command launches as an executor.
@@ -60,6 +60,7 @@ pub fn run(args: Args) -> Result<()> {
         source_commit,
         node_binary,
         output,
+        successor_output: None,
         successor_provenance: Some((verified.provenance, verified.valid_until)),
     })
 }

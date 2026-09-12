@@ -112,13 +112,16 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ github.sha }}
         run: target/release/xtask build-image --source-commit "$SOURCE_COMMIT" --output /tmp/nucleus-self-build --guest-bin-dir target/x86_64-unknown-linux-musl/debug
-      - name: Run and verify cold and warm builds with a disposable node
+      - name: Verify cold and warm builds, then build with their verified executor
         env:
           SOURCE_COMMIT: ${{ github.sha }}
-        run: sudo env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$GITHUB_WORKSPACE" target/release/xtask build-bootstrap --inputs /tmp/nucleus-self-build/inputs.json --source-commit "$SOURCE_COMMIT" --node-binary target/x86_64-unknown-linux-musl/debug/nucleus-node --output /tmp/nucleus-self-run
+        run: sudo env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$GITHUB_WORKSPACE" target/release/xtask build-bootstrap --inputs /tmp/nucleus-self-build/inputs.json --source-commit "$SOURCE_COMMIT" --node-binary target/x86_64-unknown-linux-musl/debug/nucleus-node --output /tmp/nucleus-self-run --successor-output /tmp/nucleus-next
       - name: Make public experiment evidence readable
         if: always()
         run: sudo target/release/xtask build-evidence --experiment /tmp/nucleus-self-run --output /tmp/nucleus-self-evidence
+      - name: Make successor experiment evidence readable
+        if: always()
+        run: sudo target/release/xtask build-evidence --experiment /tmp/nucleus-next --output /tmp/nucleus-next-evidence
       - name: Preserve input provenance
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -127,6 +130,7 @@ jobs:
           path: |
             /tmp/nucleus-self-build/inputs.json
             /tmp/nucleus-self-evidence/
+            /tmp/nucleus-next-evidence/
           if-no-files-found: error
           retention-days: 7
   egress-probe-falsifier:
