@@ -142,8 +142,8 @@ population_floor = 278
 # 67 remaining crates need their sites fixed before they can declare; the two
 # tractable lints there are unwrap_used (87) and panic (10), and the 1528
 # arithmetic and indexing sites are a program, not a gate.
-floor_bp = 1625
-population_floor = 80
+floor_bp = 1728
+population_floor = 81
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
