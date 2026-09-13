@@ -912,23 +912,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          toolchain: nightly
+          toolchain: 1.96.1, nightly
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: install cargo-fuzz
-        # Pin version, but DROP --locked so cargo resolves a rustix newer
-        # than the 0.36.5 cargo-fuzz bundles (0.36.5 uses rustc-internal
-        # attributes that current nightly rejects). Every cargo-fuzz from
-        # 0.11.x through 0.13.1 ships the same broken rustix pin in its
-        # Cargo.lock, so bumping version alone is insufficient — we have
-        # to let cargo do fresh resolution.
-        run: cargo install cargo-fuzz --version 0.13.1
+        # Build the CLI with the pinned stable compiler; only fuzz targets need
+        # nightly. Removing --locked still selected rustix 0.36.5 in run
+        # 34732139070, whose internal attributes current nightly rejects:
+        # https://github.com/rust-lang/rust/issues/156510
+        run: cargo +1.96.1 install cargo-fuzz --version 0.13.1 --locked
       - name: run fuzz targets
         run: |
           cd fuzz
-          cargo fuzz run command_can_execute -- -max_total_time=30
-          cargo fuzz run path_can_access -- -max_total_time=30
-          cargo fuzz run permission_serde -- -max_total_time=30
-          cargo fuzz run workload_api_command -- -max_total_time=30
+          cargo +nightly fuzz run command_can_execute -- -max_total_time=30
+          cargo +nightly fuzz run path_can_access -- -max_total_time=30
+          cargo +nightly fuzz run permission_serde -- -max_total_time=30
+          cargo +nightly fuzz run workload_api_command -- -max_total_time=30
 
   verify-strict:
     name: Ed25519 verify_strict gate (M-3)
