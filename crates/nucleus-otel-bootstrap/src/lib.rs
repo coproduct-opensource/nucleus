@@ -31,7 +31,11 @@
 //! }
 //! ```
 //!
-//! Drop the guard at process shutdown — it flushes pending spans.
+//! Runtime resource metrics are collected every five seconds on Linux when export is enabled.
+//! Drop the guard at process shutdown — it flushes pending spans and metrics.
+
+mod memory;
+mod resources;
 
 use anyhow::{Context, Result};
 use opentelemetry::trace::TracerProvider as _;
@@ -44,11 +48,43 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+/// Register Linux memory observations on an application's existing meter provider.
+/// The caller owns exporter configuration, resource identity and provider shutdown.
+/// This neither installs a global provider nor opens another exporter connection.
+pub fn register_memory_metrics(provider: &opentelemetry_sdk::metrics::SdkMeterProvider) {
+    memory::register(provider);
+}
+
+/// Register memory, CPU throttling, I/O and stall observations on an existing
+/// provider. Labels are bounded; kernel read failures emit health observations.
+pub fn register_runtime_metrics(provider: &opentelemetry_sdk::metrics::SdkMeterProvider) {
+    memory::register(provider);
+    resources::register(provider);
+}
+
+/// Preserve all bounded ancestor observations (64 scopes) without SDK overflow.
+/// Install this view before building a provider used for runtime observations.
+pub fn runtime_metrics_view(
+    instrument: &opentelemetry_sdk::metrics::Instrument,
+) -> Option<opentelemetry_sdk::metrics::Stream> {
+    matches!(
+        instrument.scope().name(),
+        "nucleus.memory" | "nucleus.resources"
+    )
+    .then(|| {
+        opentelemetry_sdk::metrics::Stream::builder()
+            .with_cardinality_limit(4096)
+            .build()
+            .expect("constant runtime metric stream is valid")
+    })
+}
+
 /// Process-lifetime guard. Dropping it flushes pending spans to the
 /// collector. Always hold this in `main` until the server finishes
 /// serving — otherwise traces emitted near shutdown get dropped.
 pub struct OtelGuard {
     provider: Option<SdkTracerProvider>,
+    metrics: Option<opentelemetry_sdk::metrics::SdkMeterProvider>,
 }
 
 impl OtelGuard {
@@ -56,12 +92,18 @@ impl OtelGuard {
     /// is still installed for `fmt::layer()` + `EnvFilter`; OTel
     /// pieces are no-ops.
     fn disabled() -> Self {
-        Self { provider: None }
+        Self {
+            provider: None,
+            metrics: None,
+        }
     }
 }
 
 impl Drop for OtelGuard {
     fn drop(&mut self) {
+        if let Some(provider) = self.metrics.take() {
+            let _ = provider.shutdown();
+        }
         if let Some(provider) = self.provider.take() {
             // Best-effort flush; ignore errors at shutdown.
             let _ = provider.shutdown();
@@ -166,6 +208,8 @@ where
         .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
         .build();
 
+    let resource = with_instance_id(resource);
+    let metrics = memory::provider(endpoint, resource.clone())?;
     let provider = SdkTracerProvider::builder()
         .with_resource(resource)
         .with_batch_exporter(exporter)
@@ -180,13 +224,51 @@ where
         layer,
         OtelGuard {
             provider: Some(provider),
+            metrics: Some(metrics),
         },
     ))
+}
+
+/// Preserve an operator-provided service.instance.id, or add a fresh UUID.
+/// Apply once per process resource and reuse that resource across signals.
+pub fn with_instance_id(resource: Resource) -> Resource {
+    if resource
+        .get(&opentelemetry::Key::new("service.instance.id"))
+        .is_some()
+    {
+        return resource;
+    }
+    Resource::builder_empty()
+        .with_attributes(
+            resource
+                .iter()
+                .map(|(k, v)| KeyValue::new(k.clone(), v.clone())),
+        )
+        .with_attribute(KeyValue::new(
+            "service.instance.id",
+            uuid::Uuid::new_v4().to_string(),
+        ))
+        .build()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instance_identity_is_unique_and_preserves_operator_identity() {
+        let key = opentelemetry::Key::new("service.instance.id");
+        let first = with_instance_id(Resource::builder_empty().build());
+        let second = with_instance_id(Resource::builder_empty().build());
+        assert_ne!(first.get(&key), second.get(&key));
+        let configured = Resource::builder_empty()
+            .with_attribute(KeyValue::new("service.instance.id", "operator-instance"))
+            .build();
+        assert_eq!(
+            with_instance_id(configured.clone()).get(&key),
+            configured.get(&key)
+        );
+    }
 
     #[test]
     fn disabled_guard_drop_is_noop() {
