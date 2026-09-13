@@ -1,5 +1,12 @@
 # Fast, verifiable Nucleus builds
 
+Ownership update, 2026-09-12: the implementation described here now belongs to
+Gatehouse’s proprietary `gatehouse-nucleus-controller`, together with durable
+attempt state, cache promotion/reuse policy and publication recovery. Nucleus
+provides the open-source runtime and independent receipt verification. These
+measurements remain public historical evidence; the controller is not required
+to build or use Nucleus.
+
 Research and implementation checkpoint: 2026-09-12. This describes the build
 experiment on `feat/nucleus-build-receipts`; it is not a production cache rollout. Run [34721798028](https://github.com/coproduct-opensource/nucleus/actions/runs/34721798028)
 now demonstrates a complete cold/warm self-build at commit `9260327c8`.
@@ -31,11 +38,11 @@ and [Apple's clonefile contract](https://github.com/apple-oss-distributions/xnu/
 `cache.json` records the clone method, fallback reason, seed digest, logical size,
 copy time, and verification time. Phase timing additionally separates preparation,
 execution, checkpointing, and total time. The public evidence exporter includes
-these records. The standalone probe runs without a node or KVM:
+these records. The standalone probe runs from the Gatehouse checkout without a node or KVM:
 
 ```sh
-cargo build --release --locked -p xtask
-target/release/xtask build-cache-probe --source /path/to/immutable-image --output /tmp/cache-probe-new
+cargo build --release --locked -p gatehouse-nucleus-controller
+target/release/gatehouse-nucleus-controller build-cache-probe --source /path/to/immutable-image --output /tmp/cache-probe-new
 ```
 
 The probe authenticates copying against its input hash, not against an approved

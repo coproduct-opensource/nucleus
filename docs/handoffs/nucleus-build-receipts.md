@@ -1,5 +1,13 @@
 # Nucleus builds and GitHub receipt trust — implementation progress
 
+Current ownership, 2026-09-12: Nucleus is the open-source execution and receipt
+verification runtime. Gatehouse owns the proprietary build controller, durable
+queues/leases/recovery, cache policy and GitHub publication. The six experimental
+`xtask build-*` commands and their manual self-build workflow have moved to
+Gatehouse’s `gatehouse-nucleus-controller`; public runtime boot/egress checks
+remain here. Historical commands and run links below describe the revisions at
+which they were measured. This change does not revoke the prototype's MIT license.
+
 Objective: execute the full 2026-09-12 review in
 `scratchpad/nucleus-on-nucleus-review-2026-09-12.md` in the primary checkout.
 Implementation branch: `feat/nucleus-build-receipts`, based on receipt-store PR
