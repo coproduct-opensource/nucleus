@@ -29,6 +29,7 @@ use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
+mod api_error;
 mod art12_collector;
 mod auth;
 mod firecracker_api;
@@ -52,7 +53,7 @@ mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
 mod workload_result;
-use auth::{AuthError, AuthorizationError};
+use api_error::ApiError;
 mod boot_trace;
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
 // On any other host every item here is genuinely dead, and CI builds release
@@ -577,55 +578,6 @@ struct CreatePodRequest {
     spec: Option<PodSpec>,
     #[serde(default)]
     yaml: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorBody {
-    error: String,
-}
-
-#[derive(Debug, thiserror::Error)]
-enum ApiError {
-    #[error("invalid spec: {0}")]
-    InvalidSpec(String),
-    #[error("pod not found")]
-    NotFound,
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("serde error: {0}")]
-    Serde(#[from] serde_yaml::Error),
-    #[error("driver error: {0}")]
-    Driver(String),
-    #[error("auth error: {0}")]
-    Auth(#[from] AuthError),
-    #[error("authorization error: {0}")]
-    Authorization(#[from] AuthorizationError), // authenticated, not permitted
-    /// Authenticated and route-authorized, but the caller could not prove
-    /// authority for the pod it asked for (pod_authority.rs).
-    #[error("authority denied: {0}")]
-    Authority(String),
-    #[error("request body error: {0}")]
-    Body(String),
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> AxumResponse {
-        let status = match self {
-            ApiError::InvalidSpec(_) => StatusCode::BAD_REQUEST,
-            ApiError::NotFound => StatusCode::NOT_FOUND,
-            ApiError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            ApiError::Serde(_) => StatusCode::BAD_REQUEST,
-            ApiError::Driver(_) => StatusCode::BAD_REQUEST,
-            ApiError::Auth(_) => StatusCode::UNAUTHORIZED,
-            ApiError::Authorization(_) => StatusCode::FORBIDDEN,
-            ApiError::Authority(_) => StatusCode::FORBIDDEN,
-            ApiError::Body(_) => StatusCode::BAD_REQUEST,
-        };
-        let body = Json(ErrorBody {
-            error: self.to_string(),
-        });
-        (status, body).into_response()
-    }
 }
 
 #[tokio::main]

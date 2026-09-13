@@ -558,3 +558,23 @@ response, cancelled it and confirmed the same pod exited; the stricter consumer
 refused the older node's omitted lineage. Both probe nodes were stopped. This
 measurement does not prove Firecracker worker recovery or authorize retry after an
 unknown launch. Absence from a listing cannot prove cleanup after a node restart.
+
+## Supervisor availability is separate from refusal (2026-09-13)
+
+The workload-result path previously converted every supervisor HTTP/transport
+error into `ApiError::Driver`, which maps to HTTP 400. An upstream 503 or a
+ten-second observation timeout therefore looked like a definitive bad request to
+the controller. The timeout's diagnostic also lost its cause. The new
+`SupervisorUnavailable` variant maps missing proxy addresses, transport failures
+and upstream server errors to HTTP 503. Invalid/oversized observations and
+upstream client refusals retain the definitive failure path; unavailable data
+never becomes a completed observation or a signed success.
+
+The HTTP error type now lives in `api_error.rs`, lowering the main-file ceiling
+from 3843 to 3795 lines. Real HTTP tests reproduced both old defects before the
+fix, then passed; they cover upstream 500/503, the production ten-second timeout,
+definitive 400/401/403, malformed and oversized bodies, and an actual Running
+response. All 525 node unit tests and three olog tests pass with all features,
+as do strict all-target Clippy and the line ratchet. These tests establish error
+classification, not a new successful microVM build or permission to restart an
+execution whose cleanup is unknown.

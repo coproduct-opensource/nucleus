@@ -20,7 +20,7 @@ pub(crate) async fn get(
     let pod = pod_api::get_pod_for_caller(&state, id, caller).await?;
     let address =
         pod.proxy_addr.lock().await.clone().ok_or_else(|| {
-            ApiError::Driver("workload supervisor is not reachable yet".to_string())
+            ApiError::SupervisorUnavailable("proxy address is not ready".to_string())
         })?;
     fetch(&state.http_client, &address).await.map(Json)
 }
@@ -54,7 +54,7 @@ pub(crate) async fn observe_claim(
         .lock()
         .await
         .clone()
-        .ok_or_else(|| ApiError::Driver("workload supervisor is not reachable yet".into()))?;
+        .ok_or_else(|| ApiError::SupervisorUnavailable("proxy address is not ready".into()))?;
     let observed = fetch(&state.http_client, &address).await?;
     let claim = completed_claim(&pod.spec, id, backend, observed)?;
     Ok((claim, address))
@@ -201,12 +201,12 @@ async fn fetch(client: &reqwest::Client, address: &str) -> Result<WorkloadResult
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| ApiError::Driver(format!("reading workload supervisor: {e}")))?;
+        .map_err(|e| supervisor_error("reading workload supervisor", e))?;
     let mut body = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| ApiError::Driver(format!("reading workload result body: {e}")))?
+        .map_err(|e| supervisor_error("reading workload result body", e))?
     {
         if body.len().saturating_add(chunk.len()) > 16 * 1024 {
             return Err(ApiError::Driver("workload result exceeds 16 KiB".into()));
@@ -216,6 +216,29 @@ async fn fetch(client: &reqwest::Client, address: &str) -> Result<WorkloadResult
     serde_json::from_slice(&body)
         .map_err(|e| ApiError::Driver(format!("malformed workload supervisor result: {e}")))
 }
+
+fn supervisor_error(context: &str, error: reqwest::Error) -> ApiError {
+    if let Some(status) = error.status() {
+        let message = format!("{context}: {error}");
+        if status.is_server_error() {
+            ApiError::SupervisorUnavailable(message)
+        } else {
+            ApiError::Driver(message)
+        }
+    } else {
+        let reason = if error.is_timeout() {
+            "timed out"
+        } else if error.is_connect() {
+            "connection failed"
+        } else {
+            "transport failed"
+        };
+        ApiError::SupervisorUnavailable(format!("{context}: {reason}: {error}"))
+    }
+}
+
+#[cfg(test)]
+mod http_tests;
 
 #[cfg(test)]
 mod tests {

@@ -99,7 +99,9 @@ path = "crates/nucleus-node/src/main.rs"
 # move of this entry has been.
 # Lowered 4007 -> 3843 on 2026-09-12: the prepared workload-API service
 # and its failure cleanup now live in pod_boot_identity.rs, before VMM spawn.
-ceiling = 3843
+# Lowered 3843 -> 3795 on 2026-09-13: HTTP error classification moved into
+# api_error.rs while separating unavailable supervisors from refused requests.
+ceiling = 3795
 target = 2000
 step = 1
 
