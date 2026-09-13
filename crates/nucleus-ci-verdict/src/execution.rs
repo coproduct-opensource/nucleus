@@ -158,7 +158,11 @@ impl VerifiedExecution {
                 return Err(ExecutionError::Log(stream));
             }
         }
-        Ok(VerifiedLogs { stdout, stderr })
+        Ok(VerifiedLogs {
+            stdout,
+            stderr,
+            valid_until: self.valid_until,
+        })
     }
 
     pub fn claim(&self) -> &ExecutionClaim {
@@ -194,6 +198,7 @@ pub enum ExecutionError {
 pub struct VerifiedLogs {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    valid_until: u64,
 }
 impl VerifiedLogs {
     pub fn stdout(&self) -> &[u8] {
@@ -202,8 +207,14 @@ impl VerifiedLogs {
     pub fn stderr(&self) -> &[u8] {
         &self.stderr
     }
-    pub fn into_parts(self) -> (Vec<u8>, Vec<u8>) {
-        (self.stdout, self.stderr)
+    /// Recheck the execution deadline before consuming logs as fresh evidence.
+    /// Borrowed bytes are available for archival inspection; they grant no
+    /// publication authority and cannot extend this deadline.
+    pub fn into_parts(self, now_micros: u64) -> Result<(Vec<u8>, Vec<u8>), ExecutionError> {
+        if now_micros > self.valid_until {
+            return Err(ExecutionError::OutsideWindow);
+        }
+        Ok((self.stdout, self.stderr))
     }
 }
 

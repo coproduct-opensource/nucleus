@@ -35,7 +35,15 @@ fn raw_logs_must_match_each_signed_stream_including_empty_and_non_utf8() {
         .unwrap();
     assert_eq!(logs.stdout(), stdout);
     assert_eq!(logs.stderr(), stderr);
-    assert_eq!(logs.into_parts(), (stdout, stderr));
+    assert_eq!(
+        logs.into_parts(200).unwrap(),
+        (stdout.clone(), stderr.clone())
+    );
+    let expired_logs = execution.verify_logs(stdout, stderr).unwrap();
+    assert_eq!(
+        expired_logs.into_parts(201).unwrap_err(),
+        ExecutionError::OutsideWindow
+    );
     assert_eq!(
         execution.into_claim(201).unwrap_err(),
         ExecutionError::OutsideWindow

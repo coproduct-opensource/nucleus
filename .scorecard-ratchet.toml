@@ -220,8 +220,11 @@ population_floor = 83
 # 2026-09-12: both verified CI result types now carry and enforce a consumption
 # deadline. With their two added affine rights: 3 bounded rights out of 9.
 # 2026-09-12: VerifiedArtifacts carries and enforces its consumption deadline.
-floor_bp = 4000
-population_floor = 10
+# 2026-09-13: VerifiedLogs inherits the execution deadline and checks it when
+# consumed. Adding the unbounded type first reddened CI at 4/11 (36.36%);
+# the expiry regression refuses consumption after the deadline. Now 5/11.
+floor_bp = 4545
+population_floor = 11
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

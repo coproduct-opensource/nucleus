@@ -609,3 +609,14 @@ Removing retention, node digest comparison or verifier digest comparison each
 made its corresponding real test fail before restoration. Local validation logs
 use `/private/tmp/nucleus-raw-logs-` prefixes. Live full-build log archival is a
 separate acceptance step; these tests alone do not establish it.
+
+### Raw-log consumption deadline (2026-09-13)
+
+CI caught the initial `VerifiedLogs` type enlarging the affine population without
+a validity bound: LIFE fell from 4/10 to 4/11 (36.36%). Logs now inherit the
+verified execution's deadline, and `into_parts(now_micros)` refuses consumption
+after it. Borrowed streams remain available for archival inspection and grant
+no publication authority. The signed-stream regression accepts the exact deadline
+and refuses the following microsecond. Removing this consumption check makes
+that test fail. The LIFE ratchet rises to the measured 5/11 (45.45%); neither
+the obligation nor the gate was removed.
