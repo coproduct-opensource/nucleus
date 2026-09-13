@@ -554,7 +554,7 @@ struct PodInfo {
     /// an operator can see the lineage the filter enforces, and a running-node
     /// test can assert the create path recorded it. Not agent-controlled — the
     /// node establishes it from the authenticated caller at creation.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Explicit null distinguishes a root from a node that does not report lineage.
     parent_pod_id: Option<Uuid>,
     /// The verified proof-carrying posture (`<posture>:verified`), present only
     /// when the pod carried a `dlc_posture` claim that passed admission against

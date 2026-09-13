@@ -542,3 +542,19 @@ Abrupt loss of the controller itself or a lost pod-create response still needs
 node-side reconciliation; heartbeat checks cannot recover an unknown pod ID.
 A failed cancellation response is reported as cleanup unconfirmed and cannot
 mint the completed-build/cache-promotion witness.
+
+## Explicit runtime lineage (2026-09-12)
+
+Pod listings now always include `parent_pod_id`: null for a node-established root,
+a UUID for a child. Consumers can distinguish explicit root lineage from an older
+node that omitted the field; omission must not establish root authority. This is a
+generic runtime API change. Durable launch journaling and recovery remain in the
+private Gatehouse controller.
+
+The serialization regression failed against the old omission behavior, then passed
+with explicit null. All 522 node unit tests and three olog checks pass with all
+features. A local-driver mTLS probe recovered a pod after discarding its create
+response, cancelled it and confirmed the same pod exited; the stricter consumer
+refused the older node's omitted lineage. Both probe nodes were stopped. This
+measurement does not prove Firecracker worker recovery or authorize retry after an
+unknown launch. Absence from a listing cannot prove cleanup after a node restart.
