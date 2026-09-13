@@ -5,6 +5,42 @@ use nucleus_ci_verdict::execution::{
 use nucleus_receipt::{Projection, Receipt, Session};
 
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+#[test]
+fn raw_logs_must_match_each_signed_stream_including_empty_and_non_utf8() {
+    use sha2::{Digest, Sha256};
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let stdout = b"raw\0\xff\nlast".to_vec();
+    let stderr = Vec::new();
+    let mut claim = claim();
+    claim.exit_code = Some(23);
+    claim.stdout_sha256 = hex::encode(Sha256::digest(&stdout));
+    claim.stderr_sha256 = hex::encode(Sha256::digest(&stderr));
+    let receipt = sign(&claim, &key);
+    let execution = verify_execution(&receipt, &expected(&public)).unwrap();
+    assert!(execution.verify_logs(Vec::new(), stderr.clone()).is_err());
+    assert!(
+        execution
+            .verify_logs(stdout.clone(), b"injected".to_vec())
+            .is_err()
+    );
+    assert!(
+        execution
+            .verify_logs(stderr.clone(), stdout.clone())
+            .is_err()
+    );
+    let logs = execution
+        .verify_logs(stdout.clone(), stderr.clone())
+        .unwrap();
+    assert_eq!(logs.stdout(), stdout);
+    assert_eq!(logs.stderr(), stderr);
+    assert_eq!(logs.into_parts(), (stdout, stderr));
+    assert_eq!(
+        execution.into_claim(201).unwrap_err(),
+        ExecutionError::OutsideWindow
+    );
+}
 static NO_ARTIFACTS: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
 
 #[test]

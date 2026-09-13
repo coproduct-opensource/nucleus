@@ -578,3 +578,34 @@ response. All 525 node unit tests and three olog tests pass with all features,
 as do strict all-target Clippy and the line ratchet. These tests establish error
 classification, not a new successful microVM build or permission to restart an
 execution whose cleanup is unknown.
+
+## Authenticated raw workload logs (2026-09-13)
+
+Rendered console lines are not the bytes committed by `stdout_sha256` and
+`stderr_sha256`: rendering changes invalid UTF-8, prefixes lines and can split
+long lines. The supervisor now retains each original stream, up to 16 MiB, in
+its protected process memory while continuing to hash and drain all output.
+Only a completed observation exposes logs. Overflow discards the retained prefix
+and explicitly refuses retrieval; it does not stop pipe draining or replace the
+full-stream digest with a truncated one. Console behavior remains unchanged.
+
+The proxy serves raw bytes at `/v1/workload/logs/stdout` and `/stderr`, with 409
+before completion and 413 after capture overflow. The node serves authenticated
+`GET /v1/pods/{id}/workload-logs/stdout` and `/stderr`. It checks caller lineage,
+a completed valid program observation, the response byte bound and the matching
+stream digest before returning bytes. Responses are octet-stream, private/no-store
+and nosniff. These endpoints do not make logs durable across pod cancellation or
+node shutdown; durable retention remains an orchestrator responsibility.
+
+The public `VerifiedExecution::verify_logs` API checks supplied raw bytes against
+the already authenticated stream identities and returns an opaque `VerifiedLogs`
+owner. It grants no new publication authority or freshness window. Empty streams
+are valid only when their signed digest matches; invalid UTF-8 is preserved.
+
+Tests cover binary streams across multiple pipe reads, repeated read-only access,
+empty stderr, exact capture-limit boundaries, overflow with complete hashing,
+swapped or changed streams, and chunked HTTP responses beyond the limit.
+Removing retention, node digest comparison or verifier digest comparison each
+made its corresponding real test fail before restoration. Local validation logs
+use `/private/tmp/nucleus-raw-logs-` prefixes. Live full-build log archival is a
+separate acceptance step; these tests alone do not establish it.

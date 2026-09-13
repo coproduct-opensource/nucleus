@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 /// Per-artifact and per-bundle raw-byte limit for build output transfer.
 pub const MAX_ARTIFACT_BYTES: usize = 256 * 1024 * 1024;
 
+/// Maximum retained raw bytes per stdout/stderr stream. Hashing still covers
+/// every byte when retention overflows; a partial stream must not be exported.
+pub const MAX_LOG_BYTES: usize = 16 * 1024 * 1024;
+
 /// The exact admitted environment, split into stable inputs and a complete
 /// per-attempt commitment. Only the two mediator-injected bindings are omitted
 /// from inputs; an arbitrary `NUCLEUS_*` name is still an input.

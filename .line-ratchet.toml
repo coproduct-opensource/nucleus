@@ -101,7 +101,9 @@ path = "crates/nucleus-node/src/main.rs"
 # and its failure cleanup now live in pod_boot_identity.rs, before VMM spawn.
 # Lowered 3843 -> 3795 on 2026-09-13: HTTP error classification moved into
 # api_error.rs while separating unavailable supervisors from refused requests.
-ceiling = 3795
+# Lowered 3795 -> 3791 on 2026-09-13: workload observation/log routes are
+# assembled beside their handlers instead of in main.
+ceiling = 3791
 target = 2000
 step = 1
 

@@ -142,6 +142,25 @@ pub struct VerifiedExecution {
 }
 
 impl VerifiedExecution {
+    /// Authenticate raw output against the already verified supervisor claim.
+    /// Checking bytes grants no publication authority or extension of freshness.
+    pub fn verify_logs(
+        &self,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    ) -> Result<VerifiedLogs, ExecutionError> {
+        use sha2::{Digest, Sha256};
+        for (bytes, digest, stream) in [
+            (&stdout, &self.claim.stdout_sha256, "stdout"),
+            (&stderr, &self.claim.stderr_sha256, "stderr"),
+        ] {
+            if hex::encode(Sha256::digest(bytes)) != *digest {
+                return Err(ExecutionError::Log(stream));
+            }
+        }
+        Ok(VerifiedLogs { stdout, stderr })
+    }
+
     pub fn claim(&self) -> &ExecutionClaim {
         &self.claim
     }
@@ -166,6 +185,26 @@ pub enum ExecutionError {
     NotProtectedMicroVm,
     InvalidDigest(&'static str),
     Artifact(&'static str),
+    Log(&'static str),
+}
+
+/// Exact raw bytes authenticated against a verified execution. No public
+/// constructor or deserialization; retained bytes never need a mutable re-read.
+#[must_use]
+pub struct VerifiedLogs {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+impl VerifiedLogs {
+    pub fn stdout(&self) -> &[u8] {
+        &self.stdout
+    }
+    pub fn stderr(&self) -> &[u8] {
+        &self.stderr
+    }
+    pub fn into_parts(self) -> (Vec<u8>, Vec<u8>) {
+        (self.stdout, self.stderr)
+    }
 }
 
 impl std::fmt::Display for ExecutionError {

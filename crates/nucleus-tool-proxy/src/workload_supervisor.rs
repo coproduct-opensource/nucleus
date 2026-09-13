@@ -2,6 +2,9 @@
 //! The only writer is the task that owns the child; the HTTP route receives a
 //! read-only handle. A guest-written exit report never enters this state.
 
+use axum::body::Bytes;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use nucleus_spec::workload_result::{ProgramBinding, WorkloadIsolation, WorkloadResult};
 use sha2::{Digest, Sha256};
@@ -11,16 +14,57 @@ use tokio::sync::watch;
 use crate::{ApiError, workload};
 
 #[derive(Clone)]
-pub(crate) struct Reader(watch::Receiver<WorkloadResult>);
-pub(crate) struct Writer(watch::Sender<WorkloadResult>);
+pub(crate) struct Reader(watch::Receiver<Observation>);
+pub(crate) struct Writer(watch::Sender<Observation>);
+
+struct Observation {
+    result: WorkloadResult,
+    logs: Option<(Capture, Capture)>,
+}
+
+struct Capture {
+    sha256: String,
+    /// None means retention overflow, never an empty or truncated stream.
+    bytes: Option<Bytes>,
+}
 
 pub(crate) fn channel() -> (Writer, Reader) {
-    let (writer, reader) = watch::channel(WorkloadResult::NotConfigured);
+    let (writer, reader) = watch::channel(Observation {
+        result: WorkloadResult::NotConfigured,
+        logs: None,
+    });
     (Writer(writer), Reader(reader))
 }
 
 pub(crate) async fn result(Extension(reader): Extension<Reader>) -> Json<WorkloadResult> {
-    Json(reader.0.borrow().clone())
+    Json(reader.0.borrow().result.clone())
+}
+
+pub(crate) async fn stdout(Extension(reader): Extension<Reader>) -> Result<Response, StatusCode> {
+    log(&reader, false)
+}
+
+pub(crate) async fn stderr(Extension(reader): Extension<Reader>) -> Result<Response, StatusCode> {
+    log(&reader, true)
+}
+
+fn log(reader: &Reader, stderr: bool) -> Result<Response, StatusCode> {
+    let observed = reader.0.borrow();
+    let (out, err) = observed.logs.as_ref().ok_or(StatusCode::CONFLICT)?;
+    let captured = if stderr { err } else { out };
+    let bytes = captured
+        .bytes
+        .as_ref()
+        .ok_or(StatusCode::PAYLOAD_TOO_LARGE)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::CACHE_CONTROL, "private, no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        bytes.clone(),
+    )
+        .into_response())
 }
 
 /// Dropping the server's guard cancels observation and drops the child whose
@@ -55,20 +99,29 @@ pub(crate) fn start(
     } else {
         WorkloadIsolation::Unconfined
     };
-    writer.0.send_replace(WorkloadResult::Running);
+    writer.0.send_replace(Observation {
+        result: WorkloadResult::Running,
+        logs: None,
+    });
     Ok(Some(Supervisor(tokio::spawn(async move {
         let observed = match observe(child).await {
-            Ok((exit_code, stdout_sha256, stderr_sha256)) => WorkloadResult::Exited {
-                exit_code,
-                stdout_sha256,
-                stderr_sha256,
-                launch_hash: launch.hash,
-                environment: launch.environment,
-                program,
-                isolation,
+            Ok((exit_code, stdout, stderr)) => Observation {
+                result: WorkloadResult::Exited {
+                    exit_code,
+                    stdout_sha256: stdout.sha256.clone(),
+                    stderr_sha256: stderr.sha256.clone(),
+                    launch_hash: launch.hash,
+                    environment: launch.environment,
+                    program,
+                    isolation,
+                },
+                logs: Some((stdout, stderr)),
             },
-            Err(error) => WorkloadResult::Unavailable {
-                reason: error.to_string(),
+            Err(error) => Observation {
+                result: WorkloadResult::Unavailable {
+                    reason: error.to_string(),
+                },
+                logs: None,
             },
         };
         writer.0.send_replace(observed);
@@ -77,7 +130,7 @@ pub(crate) fn start(
 
 async fn observe(
     mut child: tokio::process::Child,
-) -> std::io::Result<(Option<i32>, String, String)> {
+) -> std::io::Result<(Option<i32>, Capture, Capture)> {
     let stdout = child
         .stdout
         .take()
@@ -92,8 +145,16 @@ async fn observe(
     Ok((status?.code(), stdout?, stderr?))
 }
 
-async fn drain(mut stream: impl AsyncRead + Unpin) -> std::io::Result<String> {
+async fn drain(stream: impl AsyncRead + Unpin) -> std::io::Result<Capture> {
+    drain_bounded(stream, nucleus_spec::workload_result::MAX_LOG_BYTES).await
+}
+
+async fn drain_bounded(
+    mut stream: impl AsyncRead + Unpin,
+    limit: usize,
+) -> std::io::Result<Capture> {
     let mut hash = Sha256::new();
+    let mut retained = Some(Vec::new());
     let mut buffer = [0u8; 8192];
     let mut line = Vec::new();
     let mut emit = |bytes: &[u8]| {
@@ -106,12 +167,22 @@ async fn drain(mut stream: impl AsyncRead + Unpin) -> std::io::Result<String> {
         }
         let bytes = &buffer[..size];
         hash.update(bytes);
+        if let Some(output) = &mut retained {
+            if output.len().saturating_add(bytes.len()) <= limit {
+                output.extend_from_slice(bytes);
+            } else {
+                retained = None;
+            }
+        }
         render(bytes, &mut line, &mut emit);
     }
     if !line.is_empty() {
         emit(&line);
     }
-    Ok(hex::encode(hash.finalize()))
+    Ok(Capture {
+        sha256: hex::encode(hash.finalize()),
+        bytes: retained.map(Bytes::from),
+    })
 }
 
 /// Keep ordinary console lines intact across pipe reads: boot probes inspect
@@ -130,6 +201,9 @@ fn render(bytes: &[u8], line: &mut Vec<u8>, emit: &mut impl FnMut(&[u8])) {
         }
     }
 }
+
+#[cfg(test)]
+mod log_tests;
 
 #[cfg(test)]
 mod tests {
@@ -155,8 +229,10 @@ mod tests {
             .expect("spawn shell");
         let (code, out, err) = observe(child).await.expect("complete observation");
         assert_eq!(code, Some(23));
-        assert_eq!(out, hex::encode(Sha256::digest(b"out")));
-        assert_eq!(err, hex::encode(Sha256::digest(b"err")));
+        assert_eq!(out.sha256, hex::encode(Sha256::digest(b"out")));
+        assert_eq!(err.sha256, hex::encode(Sha256::digest(b"err")));
+        assert_eq!(out.bytes.as_deref(), Some(b"out".as_slice()));
+        assert_eq!(err.bytes.as_deref(), Some(b"err".as_slice()));
     }
 
     #[tokio::test]
@@ -195,7 +271,10 @@ mod tests {
     async fn output_hashes_cover_invalid_utf8_and_multiple_buffer_reads() {
         let bytes: Vec<u8> = (0..=255).cycle().take(16_385).collect();
         assert_eq!(
-            drain(bytes.as_slice()).await.expect("read raw output"),
+            drain(bytes.as_slice())
+                .await
+                .expect("read raw output")
+                .sha256,
             hex::encode(Sha256::digest(&bytes))
         );
     }

@@ -792,11 +792,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/cancel", post(pod_api::cancel_pod))
         .route("/v1/pods/{id}/snapshot", post(pod_api::snapshot_pod))
         .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
-        .route("/v1/pods/{id}/workload-result", get(workload_result::get))
-        .route(
-            "/v1/pods/{id}/execution-receipt",
-            get(workload_result::receipt).post(workload_artifacts::collect),
-        )
+        .merge(workload_result::routes())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),

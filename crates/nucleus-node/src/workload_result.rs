@@ -12,6 +12,20 @@ use uuid::Uuid;
 
 use crate::{ApiError, DriverState, NodeState, pod_api};
 
+mod logs;
+
+pub(crate) fn routes() -> axum::Router<NodeState> {
+    use axum::routing::get;
+    axum::Router::new()
+        .route("/v1/pods/{id}/workload-result", get(self::get))
+        .route("/v1/pods/{id}/workload-logs/stdout", get(logs::stdout))
+        .route("/v1/pods/{id}/workload-logs/stderr", get(logs::stderr))
+        .route(
+            "/v1/pods/{id}/execution-receipt",
+            get(receipt).post(crate::workload_artifacts::collect),
+        )
+}
+
 pub(crate) async fn get(
     State(state): State<NodeState>,
     Extension(caller): Extension<Option<Uuid>>,

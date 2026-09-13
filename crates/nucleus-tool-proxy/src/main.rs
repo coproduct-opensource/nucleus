@@ -1959,6 +1959,8 @@ async fn main() -> Result<(), ApiError> {
     let (completion_writer, completion_reader) = workload_supervisor::channel();
     let mut app = Router::new()
         .route("/v1/workload/result", get(workload_supervisor::result))
+        .route("/v1/workload/logs/stdout", get(workload_supervisor::stdout))
+        .route("/v1/workload/logs/stderr", get(workload_supervisor::stderr))
         .layer(axum::Extension(completion_reader))
         .route(
             "/v1/egress/{name}/{*path}",
@@ -2209,6 +2211,8 @@ fn is_allowed_during_lockdown(path: &str) -> bool {
             | "/v1/grep"
             | "/v1/health"
             | "/v1/workload/result"
+            | "/v1/workload/logs/stdout"
+            | "/v1/workload/logs/stderr"
     )
 }
 
