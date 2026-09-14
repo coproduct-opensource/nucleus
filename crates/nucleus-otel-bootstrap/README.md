@@ -65,9 +65,9 @@ provider is replaced. Measurements follow the
 
 | Instrument | Unit | Measurements (`memory.field`) |
 |---|---|---|
-| `nucleus.memory.bytes` | bytes | host MemTotal, MemAvailable, SwapTotal, SwapFree; process VmRSS, VmHWM, RssAnon, RssFile, RssShmem, VmSwap; cgroup memory.current, peak, max, high, swap.current, swap.max; finite max/high headroom; memory.stat anon, file, kernel, shmem, slab, inactive_file |
+| `nucleus.memory.bytes` | bytes | host MemTotal, MemAvailable, SwapTotal, SwapFree; process VmRSS, VmHWM, RssAnon, RssFile, RssShmem, VmSwap; cgroup memory.current, peak, max, high, swap.current, swap.max; finite max/high headroom; memory.stat anon, file, kernel, shmem, slab, inactive_file, active_file, file_mapped, file_dirty, file_writeback |
 | `nucleus.memory.pressure` | percent | some/full avg10, avg60, avg300; resolution 0.01 percentage points |
-| `nucleus.memory.events` | cumulative events | memory.events low, high, max, oom, oom_kill, oom_group_kill; memory.stat pgfault, pgmajfault, pgscan, pgsteal |
+| `nucleus.memory.events` | cumulative events | memory.events low, high, max, oom, oom_kill, oom_group_kill; memory.stat pgfault, pgmajfault, pgscan, pgsteal and workingset_refault/activate/restore for anon/file |
 | `nucleus.memory.observation.success` | 0 or 1 | per-field parsing/read success and cgroup discovery success |
 
 `memory.scope=process` means the exporting process itself (RSS includes shared
@@ -135,6 +135,26 @@ Throttled time and PSI distinguish scheduling pressure from useful CPU work.
 The CPU full PSI value at system scope is undefined by Linux; do not use it to
 infer host health. PSI totals retain short stalls that averaged samples can miss.
 The sampler does not yet export CPU quota/affinity or per-device latency.
+
+### Cache pressure and memory mapping
+
+Use file refault rates with reclaim, major faults and I/O PSI to investigate cache
+churn: refaults count previously evicted pages needed again. Activation and restore
+counters provide working-set context. They are not application cache hits/misses
+and do not yield a cache hit ratio. Dirty/writeback bytes help distinguish pending
+write work from clean cache; mapped and active file bytes describe overlapping
+subsets, not additional memory to sum. Missing kernel fields remain unknown.
+
+Memory mapping is an optimization candidate for bounded reads of immutable files.
+[Linux mmap semantics](https://www.man7.org/linux/man-pages/man2/mmap.2.html) do not
+make MAP_PRIVATE an immutable snapshot of mutable backing storage, and truncation
+can cause SIGBUS. Require enforced file lifetime and immutability before mapping
+verified objects. Compare the actual buffered and mapped Rust paths on cold/warm
+Linux workloads, measuring wall/CPU time, faults, RSS and cgroup pressure. Mapping
+does not replace digest verification or durable publication. Filesystem
+[reflink COW](https://www.man7.org/linux/man-pages/man2/FICLONERANGE.2const.html)
+is a separate mechanism for isolating writes to cloned files. No mmap read path
+or cache policy is enabled by these measurements.
 
 ### Measurement contract and research (2026-09-13)
 

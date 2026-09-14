@@ -220,12 +220,34 @@ fn sample_cgroup(out: &mut Vec<Point>, scope: &str, path: &Path) {
     for (file, keys, kind) in [
         (
             "memory.stat",
-            &["pgfault", "pgmajfault", "pgscan", "pgsteal"][..],
+            &[
+                "pgfault",
+                "pgmajfault",
+                "pgscan",
+                "pgsteal",
+                "workingset_refault_anon",
+                "workingset_refault_file",
+                "workingset_activate_anon",
+                "workingset_activate_file",
+                "workingset_restore_anon",
+                "workingset_restore_file",
+            ][..],
             Kind::Event,
         ),
         (
             "memory.stat",
-            &["anon", "file", "kernel", "shmem", "slab", "inactive_file"][..],
+            &[
+                "anon",
+                "file",
+                "kernel",
+                "shmem",
+                "slab",
+                "inactive_file",
+                "active_file",
+                "file_mapped",
+                "file_dirty",
+                "file_writeback",
+            ][..],
             Kind::Bytes,
         ),
         (

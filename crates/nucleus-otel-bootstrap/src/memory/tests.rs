@@ -133,6 +133,46 @@ fn exporter_collects_registered_observations_after_instrument_handles_drop() {
 }
 
 #[test]
+fn cache_churn_and_writeback_keep_units_and_missing_fields_distinct() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("memory.stat"),
+        "file_mapped 4096\nfile_dirty 8192\nfile_writeback 0\nactive_file 16384\nworkingset_refault_file 23\nworkingset_activate_file 7\nworkingset_restore_file 3\nworkingset_refault_anon invalid\n",
+    ).unwrap();
+    let mut points = Vec::new();
+    sample_cgroup(&mut points, "cgroup.0", dir.path());
+    for (kind, field, expected) in [
+        (Kind::Bytes, "file_mapped", 4096),
+        (Kind::Bytes, "file_dirty", 8192),
+        (Kind::Bytes, "file_writeback", 0),
+        (Kind::Bytes, "active_file", 16384),
+        (Kind::Event, "workingset_refault_file", 23),
+        (Kind::Event, "workingset_activate_file", 7),
+        (Kind::Event, "workingset_restore_file", 3),
+    ] {
+        let field = format!("memory.stat.{field}");
+        assert!(
+            points
+                .iter()
+                .any(|p| p.kind == kind && p.field == field && p.value == expected)
+        );
+    }
+    for field in ["workingset_refault_anon", "workingset_restore_anon"] {
+        let field = format!("memory.stat.{field}");
+        assert!(
+            !points
+                .iter()
+                .any(|p| p.kind == Kind::Event && p.field == field)
+        );
+        assert!(
+            points
+                .iter()
+                .any(|p| p.kind == Kind::Success && p.field == field && p.value == 0)
+        );
+    }
+}
+
+#[test]
 fn process_and_host_bytes_validate_units_overflow_and_read_failures() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("status");
