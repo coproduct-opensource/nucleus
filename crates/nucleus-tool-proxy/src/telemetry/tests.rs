@@ -13,9 +13,14 @@ fn http_runtime_child() {
 }
 
 #[test]
-// The test runner must isolate exporter environment/global state in a child;
-// this launches only the same test executable, not a workload shell effect.
-#[allow(clippy::disallowed_methods)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the exporter installs global state, so this test needs a child process to isolate \
+              it; the child is this same test executable, not a workload shell effect. An \
+              #[expect] rather than an #[allow] because it should stop compiling the day the \
+              exporter no longer needs isolating -- which is what the scorecard's suppress family \
+              measures, and an #[allow] would waive forever without saying when it expired."
+)]
 fn http_metrics_reach_signal_path_from_tokio_startup() {
     use std::{
         io::{Read, Write},
