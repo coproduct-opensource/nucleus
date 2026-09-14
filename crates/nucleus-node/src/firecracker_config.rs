@@ -69,8 +69,7 @@ struct MachineConfig {
     vcpu_count: i64,
     mem_size_mib: i64,
     smt: bool,
-    /// Omitted unless the spec asks, so an unchanged spec produces an unchanged
-    /// Firecracker request.
+    /// Omitted unless asked: an unchanged spec must produce an unchanged request.
     #[serde(skip_serializing_if = "Option::is_none")]
     huge_pages: Option<&'static str>,
 }
@@ -892,15 +891,7 @@ impl FirecrackerConfig {
             .and_then(|r| r.memory_mib)
             .unwrap_or(512) as i64;
 
-        let huge_pages = spec
-            .spec
-            .resources
-            .as_ref()
-            .and_then(|r| r.huge_pages)
-            .map(|h| match h {
-                nucleus_spec::HugePages::TwoMib => "2M",
-            });
-
+        let huge_pages = spec.spec.resources.as_ref().and_then(|r| r.huge_pages);
         let default_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init".to_string();
         let mut boot_args = match image.boot_args.clone() {
             Some(args) => {
@@ -1077,7 +1068,7 @@ impl FirecrackerConfig {
                 vcpu_count,
                 mem_size_mib,
                 smt: false,
-                huge_pages,
+                huge_pages: huge_pages.map(nucleus_spec::HugePages::as_firecracker),
             },
             network_interfaces,
             vsock,

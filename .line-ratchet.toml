@@ -182,6 +182,18 @@ path = "crates/nucleus-node/src/firecracker_config.rs"
 # would ratchet this branch against work it did not write. Left at 0, and flagged
 # here so the next person to touch the production half decides it deliberately.
 # The five tests #2789 added to this module went into the extracted sibling.
-ceiling = 1335
+#
+# Bumped 1335 -> 1341 2026-09-14: guest page size. The file sat exactly at its
+# ceiling, so the seven lines this needed had nowhere to go. Five are the
+# `MachineConfig` field and its omission rule; two read the spec. The wire name
+# ("2M") deliberately did NOT land here — it is `HugePages::as_firecracker` in
+# nucleus-spec, with the type it names, which is both the better home and why
+# this is six lines rather than fifteen.
+#
+# What the six buy, measured: two pristine microVMs differing only in this
+# field, 4 KiB was still building past twelve minutes where 2 MiB finished in
+# eighty-four seconds. Extracting further would mean splitting a struct
+# definition from the one place that fills it.
+ceiling = 1341
 target = 2500
 step = 0

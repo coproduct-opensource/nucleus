@@ -319,6 +319,18 @@ pub enum HugePages {
     TwoMib,
 }
 
+impl HugePages {
+    /// The spelling Firecracker's `machine-config` expects. A spelling it does
+    /// not know is a silently ignored request for the thing that decides
+    /// whether a build takes 84 seconds or does not finish.
+    #[must_use]
+    pub fn as_firecracker(self) -> &'static str {
+        match self {
+            Self::TwoMib => "2M",
+        }
+    }
+}
+
 /// Resource hints for the pod.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
