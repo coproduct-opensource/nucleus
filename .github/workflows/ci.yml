@@ -915,13 +915,18 @@ jobs:
           toolchain: nightly
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: install cargo-fuzz
-        # Pin version, but DROP --locked so cargo resolves a rustix newer
-        # than the 0.36.5 cargo-fuzz bundles (0.36.5 uses rustc-internal
-        # attributes that current nightly rejects). Every cargo-fuzz from
-        # 0.11.x through 0.13.1 ships the same broken rustix pin in its
-        # Cargo.lock, so bumping version alone is insufficient — we have
-        # to let cargo do fresh resolution.
-        run: cargo install cargo-fuzz --version 0.13.1
+        # 0.13.2, not 0.13.1. Dropping --locked was supposed to let cargo
+        # resolve past the rustix 0.36.5 that 0.11.x-0.13.1 bundle, and it did
+        # not: every run still compiled 0.36.5 and died on `attributes starting
+        # with `rustc` are reserved for use by the `rustc` compiler`. 0.13.1
+        # reaches rustix through `tempfile ^3.3.0` and `cargo_metadata ^0.18.1`,
+        # and that graph still admits the old one.
+        #
+        # 0.13.2 moves to `cargo_metadata ^0.23` and `tempfile ^3.4.0`, which
+        # resolves tempfile 3.27 and a current rustix. Verified by installing
+        # both locally: 0.13.2 builds clean and lists all four targets this job
+        # runs. --locked stays off; the version is what changed.
+        run: cargo install cargo-fuzz --version 0.13.2
       - name: run fuzz targets
         run: |
           cd fuzz
