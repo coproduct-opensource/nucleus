@@ -64,11 +64,15 @@ struct DriveConfig {
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 struct MachineConfig {
     vcpu_count: i64,
     mem_size_mib: i64,
     smt: bool,
+    /// Omitted unless the spec asks, so an unchanged spec produces an unchanged
+    /// Firecracker request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    huge_pages: Option<&'static str>,
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -810,6 +814,7 @@ impl FirecrackerConfig {
                 vcpu_count: 1,
                 mem_size_mib: 256,
                 smt: false,
+                huge_pages: None,
             },
             network_interfaces: Vec::new(),
             vsock: None,
@@ -886,6 +891,15 @@ impl FirecrackerConfig {
             .as_ref()
             .and_then(|r| r.memory_mib)
             .unwrap_or(512) as i64;
+
+        let huge_pages = spec
+            .spec
+            .resources
+            .as_ref()
+            .and_then(|r| r.huge_pages)
+            .map(|h| match h {
+                nucleus_spec::HugePages::TwoMib => "2M",
+            });
 
         let default_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init".to_string();
         let mut boot_args = match image.boot_args.clone() {
@@ -1063,6 +1077,7 @@ impl FirecrackerConfig {
                 vcpu_count,
                 mem_size_mib,
                 smt: false,
+                huge_pages,
             },
             network_interfaces,
             vsock,
