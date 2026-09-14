@@ -92,7 +92,8 @@ fn key(root: &Path, name: &str) -> String {
     let ws = closure::load(root).expect("metadata");
     let tracked = derive::tracked_files(root).expect("git ls-files");
     closure::key_for_crate(&ws, root, &tracked, name, "clippy", &[])
-        .expect("key")
+        .expect("could not look")
+        .expect("refused")
         .to_hex()
 }
 
@@ -257,4 +258,113 @@ fn the_read_set_contains_the_closures_sources() {
         "{paths:?}"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The escapes the scan finds must end up *in* the key, not merely reported.
+///
+/// This is the difference between measuring a hole and closing it. A crate that
+/// reads a tracked file outside its closure gets that file's digest folded in,
+/// so changing the file changes the key — which is the whole point, since
+/// otherwise the receipt answers green after the file changed.
+#[test]
+fn a_tracked_escape_enters_the_key_and_changing_it_changes_the_key() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let root = root.path();
+    std::fs::create_dir_all(root.join("crates/a/src")).expect("mkdir");
+    std::fs::create_dir_all(root.join("scripts")).expect("mkdir");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n",
+    )
+    .expect("workspace");
+    std::fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        root.join("crates/a/src/lib.rs"),
+        "pub const X: &str = include_str!(\"../../../scripts/boot.sh\");\n",
+    )
+    .expect("lib");
+    std::fs::write(root.join("scripts/boot.sh"), "#!/bin/sh\necho one\n").expect("script");
+    std::fs::write(root.join("Cargo.lock"), "").expect("lock");
+    std::fs::write(root.join("rust-toolchain.toml"), "").expect("toolchain");
+
+    let ws = closure::load(root).expect("metadata");
+    let tracked: Vec<String> = [
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "crates/a/Cargo.toml",
+        "crates/a/src/lib.rs",
+        "scripts/boot.sh",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+
+    let before = closure::key_for_crate(&ws, root, &tracked, "a", "clippy", &[])
+        .expect("could not look")
+        .expect("a tracked escape is keyable");
+
+    // Change only the escaping target. Nothing under crates/a moved.
+    std::fs::write(root.join("scripts/boot.sh"), "#!/bin/sh\necho two\n").expect("rewrite");
+    let after = closure::key_for_crate(&ws, root, &tracked, "a", "clippy", &[])
+        .expect("could not look")
+        .expect("still keyable");
+
+    assert_ne!(
+        before, after,
+        "a file the crate compiles in must change its key, or the receipt answers green after \
+         the file changed"
+    );
+}
+
+/// An untracked target cannot be keyed at all, and says so by name.
+#[test]
+fn an_untracked_escape_refuses_rather_than_narrowing_the_key() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let root = root.path();
+    std::fs::create_dir_all(root.join("crates/a/src")).expect("mkdir");
+    std::fs::create_dir_all(root.join("sdks/pkg")).expect("mkdir");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n",
+    )
+    .expect("workspace");
+    std::fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        root.join("crates/a/src/lib.rs"),
+        "pub const W: &[u8] = include_bytes!(\"../../../sdks/pkg/w.wasm\");\n",
+    )
+    .expect("lib");
+    std::fs::write(root.join("sdks/pkg/w.wasm"), b"\0asm").expect("wasm");
+    std::fs::write(root.join("Cargo.lock"), "").expect("lock");
+    std::fs::write(root.join("rust-toolchain.toml"), "").expect("toolchain");
+
+    let ws = closure::load(root).expect("metadata");
+    // Deliberately omits the wasm: git does not track it.
+    let tracked: Vec<String> = [
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "crates/a/Cargo.toml",
+        "crates/a/src/lib.rs",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+
+    let refusal = closure::key_for_crate(&ws, root, &tracked, "a", "clippy", &[])
+        .expect("could not look")
+        .expect_err("an untracked read cannot be keyed by widening anything");
+    let shown = refusal.to_string();
+    assert!(shown.contains("sdks/pkg/w.wasm"), "{shown}");
+    assert!(
+        shown.contains("does not track"),
+        "the refusal must say why no closure can fix it: {shown}"
+    );
 }

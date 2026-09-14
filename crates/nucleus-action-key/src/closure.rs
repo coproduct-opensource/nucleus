@@ -262,15 +262,51 @@ pub fn key_for_crate(
     crate_name: &str,
     gate: &str,
     gate_files: &[ReadEntry],
-) -> Result<crate::ActionKey> {
-    let read_set = ws.read_set(root, tracked, crate_name)?;
-    Ok(crate::ActionKey::derive(&crate::Inputs {
+) -> Result<Result<crate::ActionKey, crate::Refusal>> {
+    let context = format!("{gate}::{crate_name}");
+    let mut read_set = ws.read_set(root, tracked, crate_name)?;
+
+    // A crate's compile-time reads are part of what it reads, and the closure's
+    // directory prefixes do not always contain them. `escapes` resolves each
+    // `include_str!`/`include_bytes!` target from the source, so folding those
+    // targets in keeps the read-set *derived*: nothing is declared here, so
+    // nothing can be declared wrongly, which is the one property the `paths:`
+    // filter never had.
+    //
+    // A target the repository does not track cannot join the set at all —
+    // `read_set` is built from tracked files, so its bytes could change with
+    // nothing in the key noticing. That is a refusal, not a narrower key.
+    let scan = crate::escapes::scan(ws, root, tracked, crate_name)?;
+    if let Some(unresolvable) = scan.unresolvable.first() {
+        return Ok(Err(crate::Refusal::UnresolvableRead {
+            context,
+            site: unresolvable.site.clone(),
+            argument: unresolvable.argument.clone(),
+        }));
+    }
+    for escape in &scan.escapes {
+        if !escape.tracked {
+            return Ok(Err(crate::Refusal::UntrackedRead {
+                context,
+                site: escape.site.clone(),
+                target: escape.target.clone(),
+            }));
+        }
+        read_set.push(ReadEntry {
+            path: escape.target.clone(),
+            digest: digest_of(root, &escape.target)?,
+        });
+    }
+    read_set.sort();
+    read_set.dedup();
+
+    Ok(Ok(crate::ActionKey::derive(&crate::Inputs {
         // The context is the (gate, crate) pair: `clippy` over `portcullis` is
         // a different obligation from `clippy` over `nucleus-node`, and a key
         // that conflated them would answer one with the other's receipt.
-        context: format!("{gate}::{crate_name}"),
+        context,
         read_set,
         gate: gate_files.to_vec(),
         toolchain: Vec::new(),
-    }))
+    })))
 }
