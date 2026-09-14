@@ -18,11 +18,21 @@
 # a comment: a tracked digest nothing verifies is a lie that reads like a
 # promise.
 #
-# VERIFIED REPRODUCIBLE 2026-09-14: two clean wasm-pack 0.13.1 builds of the
-# same source produced byte-identical output. A pin would be meaningless
-# otherwise.
+# REPRODUCIBLE ON ONE MACHINE, NOT ACROSS PLATFORMS. Measured 2026-09-14: two
+# clean wasm-pack 0.13.1 builds of the same source on one host produced
+# byte-identical output, so a pin is meaningful. The SAME source and the SAME
+# wasm-pack on a different platform did not: macOS aarch64 gave
+# 839c9e74299669cb..., Linux x86_64 in CI gave 8b4ca42f7cc88a74...
 #
-# Regenerate after an intentional SDK change:
+# So these digests track ONE canonical builder, and that builder is CI, because
+# CI produces what ships. A local rebuild on another platform will differ and
+# the build will refuse -- correctly, since the bytes really are not the ones
+# that were reviewed. What this pin catches is drift on the canonical builder;
+# it is not a claim of cross-platform reproducibility, and the difference is
+# worth knowing rather than papering over.
+#
+# Regenerate from a CI run after an intentional SDK change; build.rs reports
+# every mismatching artifact at once so one run supplies them all:
 #   wasm-pack build sdks/verifier-js --target web --release
 #   shasum -a 256 sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm \
 #     sdks/verifier-js/pkg/nucleus_verifier_wasm.js

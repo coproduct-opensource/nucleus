@@ -35,6 +35,7 @@ fn main() {
         .unwrap_or_else(|e| panic!("reading {}: {e}", pins_path.display()));
 
     let mut checked = 0usize;
+    let mut mismatches: Vec<String> = Vec::new();
     for (number, line) in pins.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -58,16 +59,27 @@ fn main() {
             )
         });
         let actual = hex(&Sha256::digest(&bytes));
-        assert!(
-            actual == expected,
-            "{relative} does not match its pin.\n  pinned: {expected}\n  actual: {actual}\n\nIf \
-             the SDK changed on purpose, rebuild it and update \
-             crates/nucleus-verifier-service/embedded-wasm.pins:\n    wasm-pack build \
-             sdks/verifier-js --target web --release\n    shasum -a 256 {relative}\n\nIf it did \
-             not, the artifact this verifier would embed is not the one that was reviewed."
-        );
+        if actual != expected {
+            // Collected rather than asserted one at a time: a build that stops
+            // at the first mismatch makes updating a multi-artifact pin take one
+            // CI round trip per file.
+            mismatches.push(format!("  {relative}\n    pinned: {expected}\n    actual: {actual}"));
+        }
         checked = checked.saturating_add(1);
     }
+
+    assert!(
+        mismatches.is_empty(),
+        "{} embedded artifact(s) do not match their pins:\n{}\n\nIf the SDK changed on purpose, \
+         rebuild and update crates/nucleus-verifier-service/embedded-wasm.pins:\n    wasm-pack \
+         build sdks/verifier-js --target web --release\n    shasum -a 256 \
+         sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm \
+         sdks/verifier-js/pkg/nucleus_verifier_wasm.js\n\nNote that wasm-pack output is NOT \
+         reproducible across platforms -- measured, macOS aarch64 and Linux x86_64 differ for the \
+         same source and the same wasm-pack. The pins track the canonical builder, which is CI.",
+        mismatches.len(),
+        mismatches.join("\n")
+    );
 
     assert!(
         checked > 0,
