@@ -6464,8 +6464,10 @@ dependencies = [
  "anyhow",
  "ci-spec",
  "hex",
+ "proc-macro2",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]
