@@ -7,7 +7,6 @@ license = "MIT OR Apache-2.0"
 description = "A quotient lattice for AI agent permissions that prevents the 'uninhabitable state'"
 repository = "https://github.com/coproduct-opensource/nucleus"
 documentation = "https://docs.rs/portcullis"
-readme = "README.md"
 keywords = ["ai", "security", "permissions", "agents", "lattice"]
 categories = ["authentication", "development-tools"]
 

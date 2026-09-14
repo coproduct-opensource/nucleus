@@ -44,3 +44,16 @@ name = "workload_api_command"
 path = "fuzz_targets/workload_api_command.rs"
 test = false
 doc = false
+
+# `cargo fuzz run <target>` takes these names verbatim, and cargo-fuzz generates
+# snake_case targets by convention, so the binary names are externally
+# controlled. Cargo's own lint documentation gives that as the reason this lint
+# is allowable: "a binary may need to conform to externally controlled
+# conventions which can include a different naming convention."
+#
+# Surfaced by actions-rust-lang/setup-rust-toolchain v2, which denies warnings
+# through `build.warnings` instead of `RUSTFLAGS=-D warnings`. RUSTFLAGS only
+# reaches rustc, so cargo's manifest lints were never denied before; this job is
+# also the only one on a toolchain new enough to implement the config at all.
+[lints.cargo]
+non_kebab_case_bins = "allow"
