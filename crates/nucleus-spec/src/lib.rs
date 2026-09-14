@@ -327,6 +327,32 @@ pub struct DeniedDimensionInfo {
     pub price_usd: f64,
 }
 
+/// Page size backing the guest's memory.
+///
+/// Firecracker maps guest RAM from a memfd, and Linux offers no way to enable
+/// transparent huge pages for a memfd region, so the default is 4 KiB pages
+/// with no promotion. For a workload whose resident set is gigabytes that is a
+/// great many stage-2 translations, and under nested virtualisation each costs
+/// more. Measured: two pristine microVMs differing only in this field, 4 KiB
+/// still building past twelve minutes where 2 MiB finished in eighty-four
+/// seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HugePages {
+    /// 2 MiB hugetlbfs pages.
+    #[serde(rename = "2M")]
+    TwoMib,
+}
+
+impl HugePages {
+    /// The spelling Firecracker's `machine-config` expects.
+    #[must_use]
+    pub fn as_firecracker(self) -> &'static str {
+        match self {
+            Self::TwoMib => "2M",
+        }
+    }
+}
+
 /// Resource hints for the pod.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -335,6 +361,10 @@ pub struct ResourceSpec {
     pub cpu_cores: Option<u32>,
     /// Memory size in MiB.
     pub memory_mib: Option<u64>,
+    /// Page size backing guest memory; absent means Firecracker's 4 KiB default.
+    /// Skipped when absent so an unchanged spec canonicalises as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huge_pages: Option<HugePages>,
 }
 
 /// Network hints for the pod.

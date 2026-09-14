@@ -73,6 +73,7 @@ fn a_read_only_data_image_does_not_count_as_writable_scratch() {
             vcpu_count: 1,
             mem_size_mib: 256,
             smt: false,
+            huge_pages: None,
         },
         network_interfaces: Vec::new(),
         vsock: None,
@@ -137,6 +138,7 @@ fn full_config() -> FirecrackerConfig {
             vcpu_count: 2,
             mem_size_mib: 512,
             smt: false,
+            huge_pages: None,
         },
         network_interfaces: vec![NetworkInterface {
             iface_id: "eth0".into(),
@@ -1243,6 +1245,7 @@ fn firecracker_device_surface_is_exactly_pinned() {
             vcpu_count: 1,
             mem_size_mib: 128,
             smt: false,
+            huge_pages: None,
         },
         network_interfaces: vec![NetworkInterface {
             iface_id: "eth0".to_string(),
