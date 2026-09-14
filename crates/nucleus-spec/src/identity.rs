@@ -101,10 +101,19 @@ fn policy_identity(policy: &crate::PolicySpec) -> PolicyIdentity<'_> {
     match policy {
         crate::PolicySpec::Profile { name } => PolicyIdentity::Profile { name },
         // Certificate verification recomputes meets and therefore provenance
-        // UUIDs/timestamps. PermissionLattice::checksum already defines the
-        // semantic identity used by equality and the permission audit chain.
+        // UUIDs/timestamps. `program_checksum` is that semantic identity with
+        // the validity window left out: a window says WHEN a pod may run, not
+        // what it computes, which is the argument that already excludes
+        // `pod_id`, `session_id` and `cgroup` below.
+        //
+        // Keeping it in was not a nuance. `resolve_policy` mints a fresh window
+        // per call, so two invocations of one recipe got two program
+        // identities and every cache keyed on the digest missed by
+        // construction. `checksum` still includes the window, and certificates
+        // still use it, because for an authorization the interval IS the
+        // meaning.
         crate::PolicySpec::Inline { lattice } => PolicyIdentity::Inline {
-            checksum: lattice.checksum(),
+            checksum: lattice.program_checksum(),
         },
     }
 }
