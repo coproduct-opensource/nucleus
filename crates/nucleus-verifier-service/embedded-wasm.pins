@@ -1,0 +1,32 @@
+# Digests of the wasm-pack artifacts this crate embeds with include_bytes!/include_str!.
+#
+# WHY THIS FILE EXISTS
+#
+# sdks/verifier-js/pkg/ is gitignored: it is a wasm-pack build product, not a
+# source. So the bytes this crate compiles in are invisible to git, which means
+# invisible to any read-set built from tracked files -- nucleus-action-key's
+# closure refuses to key this crate for exactly that reason. The artifact could
+# change with nothing in the tree noticing, and this crate is the relying-party
+# verifier.
+#
+# Tracking the bytes themselves was the alternative and was rejected: 1.29 MB of
+# unmergeable binary churning on every rebuild, in a project whose own records
+# cite a 15.8-minute checkout caused by 3.3 GiB of committed build artifacts.
+#
+# A digest is ~70 bytes and moves whenever the artifact moves. build.rs refuses
+# to compile on a mismatch, which is what makes the pin a guarantee rather than
+# a comment: a tracked digest nothing verifies is a lie that reads like a
+# promise.
+#
+# VERIFIED REPRODUCIBLE 2026-09-14: two clean wasm-pack 0.13.1 builds of the
+# same source produced byte-identical output. A pin would be meaningless
+# otherwise.
+#
+# Regenerate after an intentional SDK change:
+#   wasm-pack build sdks/verifier-js --target web --release
+#   shasum -a 256 sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm \
+#     sdks/verifier-js/pkg/nucleus_verifier_wasm.js
+#
+# Format: <sha256>  <repo-relative path>, as shasum -a 256 emits.
+839c9e74299669cbe033d0efe1cd3f3d9526ee31963706f4e2672137abcc5e16  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
