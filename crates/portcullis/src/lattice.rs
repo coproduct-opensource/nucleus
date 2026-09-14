@@ -644,10 +644,48 @@ impl PermissionLattice {
     /// same projection, so the two builds agree on what a policy hashes to.
     #[must_use]
     pub fn checksum(&self) -> String {
+        self.checksum_of(self.digest_parts())
+    }
+
+    /// The same semantic identity with the validity window left out.
+    ///
+    /// For a certificate the window IS semantic: a permission valid over a
+    /// different interval is a different permission, and accepting a signature
+    /// for one interval as authority over another is the defect signatures
+    /// exist to prevent. [`Self::checksum`] therefore keeps it.
+    ///
+    /// A *program* identity answers a different question — what does this pod
+    /// compute — and a window says when it may run, not what it computes. Two
+    /// pods differing only in their interval compute the same thing; the
+    /// shorter one may be cut off partway, which is a liveness difference, not
+    /// a semantic one. That is the same argument `nucleus_spec::identity`
+    /// already makes for `pod_id`, `session_id` and `cgroup`.
+    ///
+    /// The distinction is load-bearing rather than tidy. `resolve_policy` mints
+    /// a fresh window on every call, so a program digest that includes it gives
+    /// two identities to two invocations of one recipe — and every cache keyed
+    /// on that digest misses by construction, which is what
+    /// gatehouse's `result-cache-misses` probe was recording.
+    ///
+    /// Nothing is loosened by the omission: the window is still carried in the
+    /// execution expectation and still checked there, and the runtime still
+    /// enforces it. Only the question "is this the same program" stops
+    /// depending on the clock.
+    #[must_use]
+    pub fn program_checksum(&self) -> String {
+        self.checksum_of(
+            self.digest_parts()
+                .into_iter()
+                .filter(|(tag, _)| *tag != "time")
+                .collect(),
+        )
+    }
+
+    fn checksum_of(&self, parts: Vec<(&'static str, String)>) -> String {
         let mut hasher = Sha256::new();
         // Field-tagged and length-prefixed: without the tags, moving a byte from
         // one field to the next would leave the digest unchanged.
-        for (tag, part) in self.digest_parts() {
+        for (tag, part) in parts {
             hasher.update(tag.as_bytes());
             hasher.update(b"\x00");
             hasher.update((part.len() as u64).to_be_bytes());
@@ -2466,5 +2504,53 @@ mod tests {
             Decimal::from(50),
             "orchestrator should have $50 budget"
         );
+    }
+}
+
+#[cfg(test)]
+mod program_checksum_tests {
+    use super::*;
+
+    /// Two policies alike but for their window are the same program and
+    /// different certificates. Both halves matter: dropping the first leaves
+    /// caching impossible, dropping the second would let a signature for one
+    /// interval speak for another.
+    #[test]
+    fn the_window_leaves_the_program_identity_and_stays_in_the_certificate_one() {
+        let a = PermissionLattice::default();
+        let mut b = PermissionLattice::default();
+        b.time.valid_until = a
+            .time
+            .valid_until
+            .checked_add_signed(chrono::Duration::seconds(3600))
+            .expect("shift");
+
+        assert_eq!(
+            a.program_checksum(),
+            b.program_checksum(),
+            "a different interval is the same program: it computes the same thing"
+        );
+        assert_ne!(
+            a.checksum(),
+            b.checksum(),
+            "a different interval is a different authorization and must stay one"
+        );
+    }
+
+    /// The omission is exactly one field. Anything else that decides behaviour
+    /// must still separate two programs, or the identity has been hollowed out
+    /// to buy cache hits.
+    #[test]
+    fn everything_but_the_window_still_separates_two_programs() {
+        let base = PermissionLattice::default();
+        let mut cmds = PermissionLattice::default();
+        cmds.commands.allowed.insert("rm".to_string());
+        assert_ne!(base.program_checksum(), cmds.program_checksum());
+
+        let iso = PermissionLattice {
+            uninhabitable_constraint: !base.uninhabitable_constraint,
+            ..PermissionLattice::default()
+        };
+        assert_ne!(base.program_checksum(), iso.program_checksum());
     }
 }
