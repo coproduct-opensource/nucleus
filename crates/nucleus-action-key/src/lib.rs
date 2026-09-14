@@ -145,6 +145,34 @@ pub enum Refusal {
     /// *everything except*, which is unbounded in the same way as no filter at
     /// all: a file added anywhere outside the ignore list silently joins it.
     IgnoreOnly { context: String, workflow: String },
+    /// A crate reads a tracked file at compile time that its closure does not
+    /// contain. The key is narrow: widening the closure to cover the target
+    /// would complete it. See [`crate::escapes`].
+    EscapingRead {
+        context: String,
+        site: String,
+        target: String,
+    },
+    /// A crate reads a file at compile time that the repository does not track.
+    ///
+    /// Not a narrow key — an incompletable one. `read_set` iterates tracked
+    /// files, so no widening of the closure can bring an untracked file's
+    /// digest into the key, and its bytes can change with no change to any
+    /// tracked file in the tree.
+    UntrackedRead {
+        context: String,
+        site: String,
+        target: String,
+    },
+    /// A compile-time read whose path a token walk cannot settle — built by
+    /// `concat!`, by `env!`, or otherwise not a single string literal. Refused
+    /// rather than assumed covered: a read this could not resolve is not a read
+    /// it showed to be safe.
+    UnresolvableRead {
+        context: String,
+        site: String,
+        argument: String,
+    },
 }
 
 impl std::fmt::Display for Refusal {
@@ -169,6 +197,36 @@ impl std::fmt::Display for Refusal {
                 "{context}: {workflow} declares only `paths-ignore:`. A read-set of \
                  everything-except grows silently whenever a file is added outside the ignore \
                  list, so it cannot key a receipt."
+            ),
+            Refusal::EscapingRead {
+                context,
+                site,
+                target,
+            } => write!(
+                f,
+                "{context}: {site} reads {target} at compile time, which is outside the crate's \
+                 closure. The key would answer green after {target} changed. Widen the closure to \
+                 cover it, or move it under a crate the closure contains."
+            ),
+            Refusal::UntrackedRead {
+                context,
+                site,
+                target,
+            } => write!(
+                f,
+                "{context}: {site} reads {target} at compile time, and the repository does not \
+                 track it. No closure can key this: a read-set is built from tracked files, so \
+                 {target}'s bytes can change with no change to anything the key can see."
+            ),
+            Refusal::UnresolvableRead {
+                context,
+                site,
+                argument,
+            } => write!(
+                f,
+                "{context}: {site} has a compile-time read whose path is not a string literal \
+                 ({argument}). What it reads cannot be settled by reading the source, so whether \
+                 the closure covers it is unknown."
             ),
         }
     }
@@ -254,3 +312,4 @@ impl std::fmt::Display for ActionKey {
 pub mod census;
 pub mod closure;
 pub mod derive;
+pub mod escapes;

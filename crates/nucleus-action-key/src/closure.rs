@@ -53,7 +53,7 @@ use std::path::Path;
 
 /// Files every crate's closure contains, because a change to one of them
 /// changes what every crate compiles to.
-const WORKSPACE_WIDE: &[&str] = &["Cargo.lock", "rust-toolchain.toml"];
+pub const WORKSPACE_WIDE: &[&str] = &["Cargo.lock", "rust-toolchain.toml"];
 
 /// The workspace's crates and the internal dependency graph between them.
 #[derive(Debug, Default)]
