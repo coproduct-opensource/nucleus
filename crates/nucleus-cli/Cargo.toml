@@ -29,7 +29,7 @@ nucleus-bundle-cas = { path = "../nucleus-bundle-cas" }
 
 # Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
 # pre-1.0; see nucleus-bundle-cas for version pins + rationale.
-iroh = "=1.1.0"
+iroh = "=1.2.0"
 iroh-blobs = "=0.103.0"
 
 # gRPC client
@@ -63,7 +63,7 @@ base64 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 shellexpand = "3.1"
-dirs = "6.0"
+dirs = "7.0"
 uuid = { workspace = true }
 ureq = { workspace = true }
 # mTLS against nucleus-node's HTTP listener (Move A step 5; mandatory on the
