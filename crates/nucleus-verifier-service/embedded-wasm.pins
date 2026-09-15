@@ -24,6 +24,14 @@
 # wasm-pack on a different platform did not: macOS aarch64 gave
 # 839c9e74299669cb..., Linux x86_64 in CI gave 8b4ca42f7cc88a74...
 #
+# Both digests below moved on 2026-09-15 because the SOURCE changed, not the
+# platform: nucleus-recompute depends on nucleus-receipt, which gained 7 lines,
+# and the wasm embeds it. The .js shim did NOT move (e12ff811... on both
+# platforms, before and after), which is a second measurement of the claim
+# above and the reason one line still suffices for it. The stale digests were
+# REPLACED, not appended: a pin that still accepts a wasm built from superseded
+# source accepts exactly the drift it exists to catch.
+#
 # So these digests track ONE canonical builder, and that builder is CI, because
 # CI produces what ships. A local rebuild on another platform will differ and
 # the build will refuse -- correctly, since the bytes really are not the ones
@@ -45,6 +53,6 @@
 #
 # Notably only the .wasm differs by platform: the .js shim came out identical on
 # both, so one line suffices for it.
-839c9e74299669cbe033d0efe1cd3f3d9526ee31963706f4e2672137abcc5e16  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+6bc098ff2a4e91677a7c657691506713af7f174384d7db14639d3d80c5e37988  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
-8b4ca42f7cc88a744e4936cf353a03c9c9ffecf6aa37108f3fd8d565f58cde13  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+af5bfe18c91ffdc070eb2acc67b8414a781b2780d2d3b981ed3e8e776fd5ac6e  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
