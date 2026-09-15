@@ -167,6 +167,37 @@ pub enum BondError {
     /// Commons routing rejected the shares.
     #[error("commons routing: {0}")]
     Commons(String),
+    /// An escrow attestation names an agent other than the authenticated one.
+    /// Distinct from a bad signature: the signature may be perfectly valid and
+    /// still be a lock for somebody else (ADR 0007 **A-1** — two facts, two
+    /// variants).
+    #[error("escrow attests agent {attested:?}, authenticated as {authenticated:?}")]
+    LockIdentityMismatch {
+        /// The agent the attestation names.
+        attested: String,
+        /// The identity that actually signed the registration request.
+        authenticated: String,
+    },
+    /// The lock is pinned to a root that is not the canonical one — the
+    /// non-portability rule [`Bond::pinned_root`] exists for, applied to a
+    /// registered lock.
+    #[error("escrow is pinned to a non-canonical root; it is not recognised here")]
+    LockNotOnCanonicalRoot,
+    /// The locked amount is below the proven `required_bond` for the ceiling
+    /// the attestation names. Carries all three numbers: a refusal a poster
+    /// cannot act on is a refusal it will retry blindly.
+    #[error(
+        "escrow locks {locked_micro} micro but {required_micro} is required to \
+         deter a {bid_ceiling_micro} micro ceiling at this reputation"
+    )]
+    UnderCollateralized {
+        /// What the attestation locks.
+        locked_micro: u64,
+        /// What `required_bond` says is needed, given reputation.
+        required_micro: u64,
+        /// The ceiling that was priced.
+        bid_ceiling_micro: u64,
+    },
 }
 
 impl From<CommonsError> for BondError {
@@ -647,6 +678,201 @@ pub fn required_bond(max_defection_gain_micro: u64, reputation_micro: u64) -> Am
     }
 }
 
+// ── The registered external lock ────────────────────────────────────────────
+//
+// `required_bond` above prices a bond. Nothing in this file collected one: the
+// gain it prices against arrived as a caller-supplied scalar on every
+// `/v1/credit*` endpoint, which is the same shape the module header calls the
+// load-bearing defect — "slashing authority comes only from AUTHENTICATED,
+// DERIVED evidence — never from caller-supplied scalars" — applied one layer
+// out, to the number that decides how much collateral is enough.
+//
+// ## Why this is not a `Bond`
+//
+// The obvious move is to reuse [`Bond`], and #2524 originally proposed exactly
+// that (as a `BondRef`). It does not fit: `Bond` is **per-task** — it carries
+// `task_spec_hash`, and `slash` requires the refuted witness, agent, *spec* and
+// root to line up. Registration is **per-agent**: an agent posts collateral
+// before it knows which task it will bid on. Forcing a `Bond` here would need a
+// sentinel `task_spec_hash` meaning "any spec", which is a default that grants
+// (ADR 0007 **B-2**) sitting on the object that decides collateral.
+//
+// So the two are different granularities of the same money, and both exist:
+// [`EscrowAttestation`] is the agent-level lock, `Bond` remains the per-task
+// commitment the slashing path consumes. Neither is derivable from the other.
+//
+// ## What "verified external lock" does and does not mean
+//
+// **The rail is not consulted.** Nothing here reaches a chain, a card network
+// or a bank to confirm `escrow_ref` exists or holds what it claims. This is the
+// same boundary `nucleus-recompute::settlement_attestation` draws, in the same
+// words and for the same reason: a verifier that silently did network I/O would
+// be worse than one that admits it cannot, and nucleus is non-custodial by
+// mandate (module header, and `AmountMicro`'s own doc).
+//
+// What registration removes is the poster's freedom to **misreport** its lock:
+// the attestation is signed, domain-tagged, bound to one `agent_id` and one
+// `LedgerRoot`, and commits to the ceiling it is collateral for. What it does
+// NOT establish is that the lock exists. Saying so here, rather than in a
+// commit message, is the difference between a boundary and a gap — `FINDINGS.md`
+// F-52 is what the other shape costs.
+
+pub const ESCROW_DOMAIN: &[u8] = b"nucleus/witness-olog/escrow-attestation/v1\0";
+
+/// An agent's signed statement that collateral is locked on an external rail,
+/// pinned to the canonical ledger root and to the bid ceiling it backs.
+///
+/// A wire type with public fields, like [`Bond`]: it is what crosses the
+/// network and it is inert. Nothing reads it as evidence — that is
+/// [`RegisteredLock`]'s job, and the only way to obtain one is
+/// [`register_lock`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EscrowAttestation {
+    /// The agent this collateral backs. Checked against the authenticated
+    /// identity at registration — an attestation naming another agent is
+    /// refused, not silently re-pointed.
+    pub agent_id: String,
+    /// The lock protocol: `"x402-evm"`, `"stripe-connect"`, `"ach"`, …. Free
+    /// form, and deliberately so: a typed enum would put per-rail knowledge in
+    /// a crate that has kept it out, and `SettlementAttestation.rail` set this
+    /// precedent for the payout path.
+    pub rail: String,
+    /// The rail-side lock reference — an escrow contract address, a hold id.
+    /// Opaque here; see the boundary note above.
+    pub escrow_ref: String,
+    /// Collateral locked, micro-USD.
+    pub amount_micro: AmountMicro,
+    /// The canonical ledger root this lock is recognised on. A lock pinned to
+    /// another root buys nothing here, for the same non-portability reason
+    /// [`Bond::pinned_root`] exists.
+    pub pinned_root: LedgerRoot,
+    /// The worst-case one-shot defection gain this collateral is posted
+    /// against — the agent's **registered bid ceiling**. This is the number
+    /// that used to arrive as a request parameter; committing it to a signature
+    /// is the point of the type.
+    pub bid_ceiling_micro: u64,
+    pub kid: String,
+    pub sig_b64: String,
+}
+
+pub fn canonical_escrow_bytes(e: &EscrowAttestation) -> Vec<u8> {
+    let mut out = Vec::with_capacity(192);
+    out.extend_from_slice(ESCROW_DOMAIN);
+    push_field(&mut out, e.agent_id.as_bytes());
+    push_field(&mut out, e.rail.as_bytes());
+    push_field(&mut out, e.escrow_ref.as_bytes());
+    out.extend_from_slice(&e.amount_micro.0.to_be_bytes());
+    push_field(&mut out, &e.pinned_root.0);
+    out.extend_from_slice(&e.bid_ceiling_micro.to_be_bytes());
+    push_field(&mut out, e.kid.as_bytes());
+    out
+}
+
+pub fn sign_escrow(sk: &SigningKey, mut e: EscrowAttestation) -> EscrowAttestation {
+    e.sig_b64 = sign_bytes(sk, &canonical_escrow_bytes(&e));
+    e
+}
+
+pub fn verify_escrow(e: &EscrowAttestation, vk: &VerifyingKey) -> Result<(), BondError> {
+    verify_bytes(vk, &canonical_escrow_bytes(e), &e.sig_b64)
+}
+
+/// Evidence that a lock was registered: the agent's signature verified, the
+/// attestation bound to that agent and to the canonical root, and the locked
+/// amount at or above the proven [`required_bond`] for the ceiling it names.
+///
+/// **Private fields and a private [`Seal`] — no struct literal, no
+/// `Default`, no `Deserialize`** (ADR 0007 **C-3**). The only constructor is
+/// [`register_lock`], which is the checker. A type whose constructor is public
+/// is not evidence, and this one decides how much collateral counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredLock {
+    agent_id: String,
+    amount_micro: AmountMicro,
+    bid_ceiling_micro: u64,
+    pinned_root: LedgerRoot,
+    _seal: Seal,
+}
+
+/// Unconstructible outside this module, which is what makes every field above
+/// unwritable from outside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seal;
+
+impl RegisteredLock {
+    /// The agent whose signature was verified — never a caller-supplied string.
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+    /// Collateral locked, as attested.
+    pub fn amount_micro(&self) -> AmountMicro {
+        self.amount_micro
+    }
+    /// **The registered ceiling.** This is what `required_bond` is priced
+    /// against once a lock exists, replacing the request parameter. It is
+    /// readable only from a lock that passed [`register_lock`], so a caller
+    /// cannot name its own gain by naming a bigger number.
+    pub fn bid_ceiling_micro(&self) -> u64 {
+        self.bid_ceiling_micro
+    }
+    /// The root this lock is recognised on.
+    pub fn pinned_root(&self) -> LedgerRoot {
+        self.pinned_root
+    }
+}
+
+/// Register an external lock for `expected_agent_id` on `canonical_root`,
+/// given the reputation that already substitutes for capital.
+///
+/// Fails closed at every step and mints no [`RegisteredLock`] for an
+/// attestation that did not clear all of them:
+///
+/// 1. the agent's signature verifies over the canonical bytes (`verify_strict`,
+///    via [`verify_escrow`]);
+/// 2. `agent_id` is the authenticated identity — a lock cannot be registered
+///    for someone else;
+/// 3. `pinned_root` is the canonical root — a lock on a fork buys nothing;
+/// 4. `amount_micro >= required_bond(bid_ceiling_micro, reputation_micro)` —
+///    the proven kernel decides sufficiency, not this function.
+///
+/// Step 4 is where reputation substitutes for capital: an agent with enough
+/// standing can register a lock of zero and still clear its ceiling, which is
+/// [`required_bond`]'s whole point. A fresh identity pays the full amount
+/// (`sybil_no_discount`).
+pub fn register_lock(
+    att: &EscrowAttestation,
+    vk: &VerifyingKey,
+    expected_agent_id: &str,
+    canonical_root: LedgerRoot,
+    reputation_micro: u64,
+) -> Result<RegisteredLock, BondError> {
+    verify_escrow(att, vk)?;
+    if att.agent_id != expected_agent_id {
+        return Err(BondError::LockIdentityMismatch {
+            attested: att.agent_id.clone(),
+            authenticated: expected_agent_id.to_string(),
+        });
+    }
+    if att.pinned_root != canonical_root {
+        return Err(BondError::LockNotOnCanonicalRoot);
+    }
+    let required = required_bond(att.bid_ceiling_micro, reputation_micro);
+    if att.amount_micro.0 < required.0 {
+        return Err(BondError::UnderCollateralized {
+            locked_micro: att.amount_micro.0,
+            required_micro: required.0,
+            bid_ceiling_micro: att.bid_ceiling_micro,
+        });
+    }
+    Ok(RegisteredLock {
+        agent_id: att.agent_id.clone(),
+        amount_micro: att.amount_micro,
+        bid_ceiling_micro: att.bid_ceiling_micro,
+        pinned_root: att.pinned_root,
+        _seal: Seal,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,6 +945,204 @@ mod tests {
         // zero edge: bond == gain == 0 is on the floor (deters, not strict).
         assert!(deters(AmountMicro(0), 0, 0));
         assert_eq!(deviate_payoff(0, 0), 0);
+    }
+
+    // ── Registered external lock ─────────────────────────────────────────────
+
+    fn escrow_sk() -> SigningKey {
+        SigningKey::from_bytes(&[5u8; 32])
+    }
+
+    /// An attestation signed by `escrow_sk`, for `agent`, on `ROOT_R`, locking
+    /// `amount` against ceiling `ceiling`.
+    fn escrow(agent: &str, amount: u64, ceiling: u64, root: LedgerRoot) -> EscrowAttestation {
+        sign_escrow(
+            &escrow_sk(),
+            EscrowAttestation {
+                agent_id: agent.to_string(),
+                rail: "x402-evm".into(),
+                escrow_ref: "0xlock".into(),
+                amount_micro: AmountMicro(amount),
+                pinned_root: root,
+                bid_ceiling_micro: ceiling,
+                kid: "escrow-1".into(),
+                sig_b64: String::new(),
+            },
+        )
+    }
+
+    /// The happy path, and the property the type exists for: the ceiling a
+    /// caller can later be priced against is the one it SIGNED, readable only
+    /// off the checked lock.
+    #[test]
+    fn a_fully_collateralized_lock_registers_and_carries_its_own_ceiling() {
+        let att = escrow("agent-a", 1_000_000, 1_000_000, ROOT_R);
+        let lock = register_lock(&att, &escrow_sk().verifying_key(), "agent-a", ROOT_R, 0)
+            .expect("registers");
+        assert_eq!(lock.agent_id(), "agent-a");
+        assert_eq!(lock.amount_micro(), AmountMicro(1_000_000));
+        assert_eq!(lock.bid_ceiling_micro(), 1_000_000);
+        assert_eq!(lock.pinned_root(), ROOT_R);
+    }
+
+    /// Reputation substitutes for capital — `required_bond`'s whole point,
+    /// reached through the registration path rather than restated beside it.
+    /// 700k of standing against a 1M ceiling leaves a 300k floor.
+    #[test]
+    fn reputation_substitutes_for_locked_capital_down_to_the_proven_floor() {
+        let att = escrow("agent-a", 300_000, 1_000_000, ROOT_R);
+        assert!(
+            register_lock(
+                &att,
+                &escrow_sk().verifying_key(),
+                "agent-a",
+                ROOT_R,
+                700_000
+            )
+            .is_ok(),
+            "300k locked + 700k reputation covers a 1M ceiling"
+        );
+        // One micro short of the floor is refused, with all three numbers.
+        let short = escrow("agent-a", 299_999, 1_000_000, ROOT_R);
+        match register_lock(
+            &short,
+            &escrow_sk().verifying_key(),
+            "agent-a",
+            ROOT_R,
+            700_000,
+        ) {
+            Err(BondError::UnderCollateralized {
+                locked_micro,
+                required_micro,
+                bid_ceiling_micro,
+            }) => {
+                assert_eq!(
+                    (locked_micro, required_micro, bid_ceiling_micro),
+                    (299_999, 300_000, 1_000_000)
+                );
+            }
+            other => panic!("expected UnderCollateralized, got {other:?}"),
+        }
+    }
+
+    /// A fresh identity pays the full ceiling — no Sybil discount, reached
+    /// through registration (`sybil_no_discount` in kernel terms).
+    #[test]
+    fn a_fresh_identity_cannot_register_a_discounted_lock() {
+        let att = escrow("fresh", 999_999, 1_000_000, ROOT_R);
+        assert!(matches!(
+            register_lock(&att, &escrow_sk().verifying_key(), "fresh", ROOT_R, 0),
+            Err(BondError::UnderCollateralized { .. })
+        ));
+    }
+
+    /// **The defect this type exists for.** An agent cannot register a lock
+    /// that names a ceiling its collateral does not cover — which is the
+    /// caller-supplied `max_defection_gain_micro` defect stated as a type: the
+    /// gain and the collateral are now committed by ONE signature and checked
+    /// against each other, instead of arriving as independent scalars.
+    #[test]
+    fn a_ceiling_the_collateral_does_not_cover_is_refused() {
+        let att = escrow("agent-a", 1, u64::MAX, ROOT_R);
+        assert!(matches!(
+            register_lock(&att, &escrow_sk().verifying_key(), "agent-a", ROOT_R, 0),
+            Err(BondError::UnderCollateralized { .. })
+        ));
+    }
+
+    /// A lock for somebody else does not register, even though its signature is
+    /// perfectly valid. The distinct error variant is the point: "bad
+    /// signature" and "valid signature, wrong agent" are different facts.
+    #[test]
+    fn a_lock_naming_another_agent_is_refused_with_its_own_reason() {
+        let att = escrow("agent-b", 1_000_000, 1_000_000, ROOT_R);
+        match register_lock(&att, &escrow_sk().verifying_key(), "agent-a", ROOT_R, 0) {
+            Err(BondError::LockIdentityMismatch {
+                attested,
+                authenticated,
+            }) => {
+                assert_eq!(
+                    (attested.as_str(), authenticated.as_str()),
+                    ("agent-b", "agent-a")
+                );
+            }
+            other => panic!("expected LockIdentityMismatch, got {other:?}"),
+        }
+    }
+
+    /// Non-portability: collateral locked against a fork is not collateral
+    /// here. Same rule `Bond::pinned_root` carries, applied to registration.
+    #[test]
+    fn a_lock_on_a_forked_root_is_not_recognised() {
+        let att = escrow("agent-a", 1_000_000, 1_000_000, ROOT_FORK);
+        assert!(matches!(
+            register_lock(&att, &escrow_sk().verifying_key(), "agent-a", ROOT_R, 0),
+            Err(BondError::LockNotOnCanonicalRoot)
+        ));
+    }
+
+    /// Every field is inside the signature: mutating any one of them after
+    /// signing invalidates it. This is what stops a poster raising its ceiling
+    /// (or its claimed amount) on a captured attestation. Checked field by
+    /// field rather than once, because `canonical_escrow_bytes` omitting a
+    /// field is exactly the defect that would pass a single-field test —
+    /// `nucleus-lineage`'s `settlement_tx_ref_and_attrs_are_outside_the_signature`
+    /// records the same omission being real.
+    #[test]
+    fn no_field_can_be_altered_after_signing() {
+        let vk = escrow_sk().verifying_key();
+        let base = escrow("agent-a", 1_000_000, 1_000_000, ROOT_R);
+        assert!(
+            verify_escrow(&base, &vk).is_ok(),
+            "the unmodified attestation verifies"
+        );
+
+        let mutate: Vec<(&str, Box<dyn Fn(&mut EscrowAttestation)>)> = vec![
+            (
+                "agent_id",
+                Box::new(|e: &mut EscrowAttestation| e.agent_id = "agent-b".into()),
+            ),
+            (
+                "rail",
+                Box::new(|e: &mut EscrowAttestation| e.rail = "ach".into()),
+            ),
+            (
+                "escrow_ref",
+                Box::new(|e: &mut EscrowAttestation| e.escrow_ref = "0xother".into()),
+            ),
+            (
+                "amount_micro",
+                Box::new(|e: &mut EscrowAttestation| e.amount_micro = AmountMicro(2)),
+            ),
+            (
+                "pinned_root",
+                Box::new(|e: &mut EscrowAttestation| e.pinned_root = ROOT_FORK),
+            ),
+            (
+                "bid_ceiling_micro",
+                Box::new(|e: &mut EscrowAttestation| e.bid_ceiling_micro = u64::MAX),
+            ),
+            (
+                "kid",
+                Box::new(|e: &mut EscrowAttestation| e.kid = "escrow-2".into()),
+            ),
+        ];
+        for (field, apply) in mutate {
+            let mut tampered = base.clone();
+            apply(&mut tampered);
+            assert!(
+                verify_escrow(&tampered, &vk).is_err(),
+                "{field} is outside the signature — it can be altered after signing"
+            );
+        }
+    }
+
+    /// A forged signature registers nothing.
+    #[test]
+    fn a_lock_signed_by_another_key_is_refused() {
+        let att = escrow("agent-a", 1_000_000, 1_000_000, ROOT_R);
+        let attacker = SigningKey::from_bytes(&[42u8; 32]);
+        assert!(register_lock(&att, &attacker.verifying_key(), "agent-a", ROOT_R, 0).is_err());
     }
 
     fn witness_sk() -> SigningKey {
