@@ -460,6 +460,49 @@ fn maybe_sign(secret: Option<&[u8]>, actor: &str, body: &[u8]) -> Vec<(String, S
     }
 }
 
+/// The reason the node gave, out of a non-2xx body.
+///
+/// `nucleus-node` renders every `ApiError` as `{"error": "..."}`
+/// (`nucleus-node/src/api_error.rs`), so the `error` field is the diagnosis and
+/// the envelope is not. Three outcomes are kept apart rather than collapsed into
+/// one string, because they call for different next steps (ADR 0007 A-3): an
+/// empty body means the node said nothing, an unparseable body means it said
+/// something we do not model, and a parsed body means we can name the reason.
+fn node_error_detail(body: &[u8]) -> String {
+    if body.is_empty() {
+        return "<no body>".to_string();
+    }
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(value) => match value.get("error").and_then(serde_json::Value::as_str) {
+            Some(reason) => reason.to_string(),
+            // Valid JSON the node did not shape as an ApiError: show it whole
+            // rather than reporting "<no body>" for a body that exists.
+            None => String::from_utf8_lossy(body).trim().to_string(),
+        },
+        Err(_) => String::from_utf8_lossy(body).trim().to_string(),
+    }
+}
+
+/// Fail on a non-2xx, naming the reason the node gave.
+///
+/// The body is the whole value here, and `verify.rs` already says why: the
+/// node's 400s name the actual reason — `missing spec.image`, a policy it
+/// cannot resolve, a rootfs it cannot open. Reporting only "status 400" turns a
+/// precise diagnosis into a guess, which is #2902, measured at about an hour of
+/// someone reading nucleus's source to find out what their spec was missing.
+///
+/// One function rather than a copy at each call site: five copies of a
+/// formatting decision drift, and the drift is silent (ADR 0007 G-1).
+fn ensure_ok(status: u16, body: &[u8], what: &str) -> Result<()> {
+    if status < 300 {
+        return Ok(());
+    }
+    bail!(
+        "{what} failed with status {status}: {}",
+        node_error_detail(body)
+    );
+}
+
 async fn health(client: &HttpClient, url: &str, secret: Option<&[u8]>, actor: &str) -> Result<()> {
     let endpoint = format!("{url}/v1/health");
     let headers = maybe_sign(secret, actor, b"");
@@ -468,9 +511,7 @@ async fn health(client: &HttpClient, url: &str, secret: Option<&[u8]>, actor: &s
         .send(reqwest::Method::GET, &endpoint, &headers, b"")
         .await
         .context("Health check failed")?;
-    if status >= 300 {
-        bail!("Health check failed with status {status}");
-    }
+    ensure_ok(status, &body, "Health check")?;
     let value: serde_json::Value = serde_json::from_slice(&body)?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
@@ -489,9 +530,7 @@ async fn list_pods(
         .send(reqwest::Method::GET, &endpoint, &headers, b"")
         .await
         .context("List pods failed")?;
-    if status >= 300 {
-        bail!("List pods failed with status {status}");
-    }
+    ensure_ok(status, &body, "List pods")?;
     let value: serde_json::Value = serde_json::from_slice(&body)?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
@@ -527,9 +566,7 @@ async fn create_pod(
         .send(reqwest::Method::POST, &endpoint, &headers, body.as_bytes())
         .await
         .context("Create pod failed")?;
-    if status >= 300 {
-        bail!("Create pod failed with status {status}");
-    }
+    ensure_ok(status, &resp_body, "Create pod")?;
     let value: serde_json::Value = serde_json::from_slice(&resp_body)?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
@@ -545,7 +582,7 @@ async fn cancel_pod(
     let endpoint = format!("{url}/v1/pods/{pod_id}/cancel");
     let headers = maybe_sign(secret, actor, b"");
 
-    let (status, _) = client
+    let (status, resp_body) = client
         .send(reqwest::Method::POST, &endpoint, &headers, b"")
         .await
         .context("Cancel pod failed")?;
@@ -554,8 +591,10 @@ async fn cancel_pod(
             println!("Cancelled pod {pod_id}");
             Ok(())
         }
+        // 404 keeps its own arm: "no such pod" is a complete diagnosis already,
+        // and the node's body for it adds nothing the caller did not ask.
         404 => bail!("Pod {pod_id} not found"),
-        s => bail!("Cancel pod failed with status {s}"),
+        s => ensure_ok(s, &resp_body, "Cancel pod"),
     }
 }
 
@@ -1048,5 +1087,52 @@ mod tests {
         );
 
         server_handle.await.unwrap();
+    }
+
+    /// #2902: `Create pod failed with status 400` cost about an hour of reading
+    /// nucleus's source to discover the spec was missing `image`. The node had
+    /// already produced the reason; the CLI discarded it.
+    #[test]
+    fn a_node_error_body_is_reported_as_the_reason() {
+        assert_eq!(
+            node_error_detail(br#"{"error":"driver error: missing spec.image"}"#),
+            "driver error: missing spec.image"
+        );
+    }
+
+    /// The three non-2xx shapes stay apart (ADR 0007 A-3). Collapsing them is
+    /// how "the node said nothing" becomes indistinguishable from "the node
+    /// said something we could not parse", which is the same absence-of-
+    /// evidence error one level up in the client.
+    #[test]
+    fn the_three_body_shapes_are_distinguishable() {
+        assert_eq!(node_error_detail(b""), "<no body>");
+        assert_eq!(
+            node_error_detail(b"upstream proxy refused"),
+            "upstream proxy refused"
+        );
+        // Valid JSON the node did not shape as an ApiError: shown whole, never
+        // reported as "<no body>" for a body that plainly exists.
+        assert_eq!(
+            node_error_detail(br#"{"detail":"nope"}"#),
+            r#"{"detail":"nope"}"#
+        );
+    }
+
+    /// `ensure_ok` is the guard the five call sites share; a 2xx must pass and a
+    /// non-2xx must carry the reason into the message the user sees.
+    #[test]
+    fn ensure_ok_passes_success_and_names_the_reason_on_failure() {
+        assert!(ensure_ok(200, b"", "Create pod").is_ok());
+        assert!(ensure_ok(299, b"", "Create pod").is_ok());
+
+        let err = ensure_ok(400, br#"{"error":"missing spec.image"}"#, "Create pod")
+            .expect_err("a 400 must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing spec.image"),
+            "reason absent from: {msg}"
+        );
+        assert!(msg.contains("400"), "status absent from: {msg}");
     }
 }

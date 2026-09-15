@@ -59,3 +59,44 @@ impl IntoResponse for ApiError {
         (status, body).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    /// #2902: `nucleus node create` reported `status 400` and nothing else, so
+    /// `missing spec.image` — a complete diagnosis the node had already
+    /// produced — never reached the caller. The CLI half is fixed in
+    /// `nucleus-cli/src/node.rs`; this is the other half.
+    ///
+    /// That half was asserted by this file's own header comment and checked by
+    /// nothing: the CLI can only print a reason the node actually sends. A
+    /// claim about a body, with no test that reads one, is a gate whose green
+    /// is indistinguishable from vacuity (ADR 0007 I-1). This fails if
+    /// `into_response` ever returns to a status without a reason.
+    #[tokio::test]
+    async fn driver_error_renders_the_reason_in_the_body() {
+        let response = ApiError::Driver("missing spec.image".to_string()).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("the error response body must be readable")
+            .to_bytes();
+        assert!(
+            !bytes.is_empty(),
+            "a 400 with a zero-length body is exactly the #2902 defect"
+        );
+
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("the body must be the JSON the CLI parses");
+        assert_eq!(
+            parsed.get("error").and_then(serde_json::Value::as_str),
+            Some("driver error: missing spec.image"),
+            "the body must name the reason, not merely exist"
+        );
+    }
+}
