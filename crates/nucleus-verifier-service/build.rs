@@ -11,10 +11,30 @@
 //! digest that nothing verifies is a lie that reads like a promise, so the pin
 //! and this file only make sense together.
 //!
-//! This adds no failure mode that did not already exist: `include_bytes!` of a
-//! missing file is already a compile error, so this crate already could not
-//! build without wasm-pack having run. What changes is that building against
-//! the *wrong* artifact stops being silent.
+//! This adds no failure mode that did not already exist **when the artifacts are
+//! actually embedded**: `include_bytes!` of a missing file is already a compile
+//! error. That qualifier was missing, and the check was unconditional, so it did
+//! add one — see below.
+//!
+//! # Why this is gated on `embedded-wasm`
+//!
+//! The embed is behind the `embedded-wasm` feature, which is OFF by default.
+//! #2730 made it optional for a specific reason, recorded in `Cargo.toml`: an
+//! unconditional embed "made a clean checkout fail to compile this crate — and
+//! one crate failing takes every other crate's test targets down with it".
+//!
+//! This build script then re-introduced exactly that failure. With the default
+//! feature set the `include_bytes!` in `routes.rs` is `#[cfg]`'d out and nothing
+//! reads the artifacts, but the script demanded them anyway, so a clean checkout
+//! could not build this crate — the script was the sole cause, which is why the
+//! header's reasoning from `include_bytes!` did not catch it. Measured
+//! 2026-09-15 on a tree with no `sdks/verifier-js/pkg/`: `cargo build -p
+//! nucleus-verifier-service` panicked in this script; gated, the crate builds
+//! and its 97 tests pass.
+//!
+//! Pins guard what is embedded. With nothing embedded there is nothing to
+//! guard, and a gate that fires where its subject is absent is not a stricter
+//! gate — it is a broken one.
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -27,6 +47,13 @@ fn main() {
         .and_then(Path::parent)
         .expect("crates/<name> sits two levels below the repository root")
         .to_path_buf();
+
+    // Nothing is embedded without the feature, so there is nothing to pin-check.
+    // Cargo sets CARGO_FEATURE_<NAME> (uppercased, `-` → `_`) for each enabled
+    // feature; its absence is the feature being off.
+    if std::env::var_os("CARGO_FEATURE_EMBEDDED_WASM").is_none() {
+        return;
+    }
 
     let pins_path = crate_dir.join("embedded-wasm.pins");
     println!("cargo:rerun-if-changed={}", pins_path.display());
