@@ -630,7 +630,11 @@ pub mod envelope {
         signed: &nucleus_receipt::Receipt,
         verifying_key_bytes: &[u8; 32],
     ) -> Result<crate::RecomputeWitness, SignedClearingVerdict> {
-        if signed.verify(verifying_key_bytes).is_err() {
+        // `verify_strict`, not the `verify` compatibility spelling its sibling
+        // above still uses: this function MINTS evidence, and the M-3 gate
+        // counts a permissive `.verify(` on a signature path as a regression.
+        // Spelled explicitly rather than inherited by copy from the line above.
+        if signed.verify_strict(verifying_key_bytes).is_err() {
             return Err(SignedClearingVerdict::BadSignature);
         }
         match signed.projections.first() {
