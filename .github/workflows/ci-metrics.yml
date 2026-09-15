@@ -60,7 +60,7 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::CI_OTEL_ENDPOINT is not set: there is no collector to export to (see the header of this workflow)"
           fi
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         if: ${{ steps.where.outputs.run == 'true' }}
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
