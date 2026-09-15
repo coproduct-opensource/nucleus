@@ -34,7 +34,7 @@ nucleus-witness-olog = { path = "../../crates/nucleus-witness-olog" }
 # Creditworthiness: fold an agent's recompute-verified receipts into a credit
 # file (honest builds standing, a caught lie burns it) and price its bond — the
 # whole receipt→recompute→credit-file→bond flywheel, in-browser. Default
-# features include the `recompute` mint bridge.
+# the recompute mint bridge (unconditional since #2509 removed its feature flag).
 nucleus-creditworthiness = { path = "../../crates/nucleus-creditworthiness" }
 # The colimit receipt envelope (Session + Projection[] + Ed25519/BLAKE3 over
 # RFC 8785 canonical bytes). verifyReceipt runs the SAME Receipt::verify the

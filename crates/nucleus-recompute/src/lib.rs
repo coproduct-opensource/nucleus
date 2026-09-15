@@ -291,6 +291,170 @@ pub fn content_hash_hex(receipt: &ClearingReceipt) -> String {
     hex::encode(h.finalize())
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Sealed recompute witnesses (ADR 0007 C-1/C-3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Private sentinel. Cannot be named outside this crate, so no witness below
+/// can be built by a struct literal anywhere else — the same mechanism
+/// `nucleus-ifc-kernel`'s `Seal` uses for `DischargedBundle`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seal;
+
+/// Which proven kernel family recomputed a receipt. Carried on the witness so a
+/// downstream consumer reads the dimension off the evidence rather than
+/// re-deciding it from a receipt it was handed separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiptKind {
+    /// `classify` / `seller_gross` / `refund` — `SettlementDecision.lean`.
+    Settlement,
+    /// `route_to_commons` — `Commons.lean`'s `routed_conserves`.
+    Commons,
+    /// `run_vcg` — truthful/IR-proven.
+    Vcg,
+}
+
+impl ReceiptKind {
+    fn of(receipt: &ClearingReceipt) -> Self {
+        match receipt {
+            ClearingReceipt::Settlement(_) => ReceiptKind::Settlement,
+            ClearingReceipt::Commons(_) => ReceiptKind::Commons,
+            ClearingReceipt::Vcg(_) => ReceiptKind::Vcg,
+        }
+    }
+}
+
+/// The economic magnitude of a receipt, micro-USD, taken from its **declared
+/// inputs** — never a claimed output, so the weight cannot be inflated by the
+/// very lie a recompute is catching.
+pub fn economic_magnitude(receipt: &ClearingReceipt) -> u64 {
+    match receipt {
+        ClearingReceipt::Settlement(c) => c.price_micro,
+        ClearingReceipt::Commons(c) => c.pool_micro,
+        ClearingReceipt::Vcg(c) => c.budget_micro_usd,
+    }
+}
+
+/// [`content_hash_hex`] as raw bytes — the provenance binding a witness carries.
+pub fn receipt_hash_bytes(receipt: &ClearingReceipt) -> [u8; 32] {
+    let hex_str = content_hash_hex(receipt);
+    let mut out = [0u8; 32];
+    // `content_hash_hex` is a sha256 hex digest → exactly 32 bytes. Decode
+    // defensively: fail closed to all-zero rather than panic on the impossible.
+    let _ = hex::decode_to_slice(hex_str.as_bytes(), &mut out);
+    out
+}
+
+/// **Evidence that a recompute ran and every claimed output matched.**
+///
+/// Minted only by [`witness_receipt`] / [`witness_signed_clearing`]: the `_seal`
+/// field is unnameable outside this crate, so no struct literal for it compiles
+/// elsewhere. Holding one is proof the proven kernels re-derived this receipt's
+/// numbers — which is why it, and not a caller-supplied `(weight, hash)` pair,
+/// is what mints financial standing downstream.
+///
+/// It carries the magnitude and the content hash **it** computed. A caller
+/// cannot substitute a different weight for the receipt that was checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecomputeMatch {
+    kind: ReceiptKind,
+    receipt_hash: [u8; 32],
+    magnitude_micro: u64,
+    _seal: Seal,
+}
+
+/// **Evidence that a recompute ran and a claimed output diverged** — a caught
+/// defection. The recompute *is* the fraud proof, so this is evidence in exactly
+/// the sense [`RecomputeMatch`] is, and is sealed identically.
+///
+/// Kept a distinct type rather than a flag on [`RecomputeMatch`] because the two
+/// authorize opposite things (a credit and a debit). A `bool` inside one witness
+/// would let a mis-read field turn a caught lie into standing — the A-family
+/// error, one step from the C-family seal that motivates this module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecomputeDivergence {
+    kind: ReceiptKind,
+    receipt_hash: [u8; 32],
+    magnitude_micro: u64,
+    field: &'static str,
+    _seal: Seal,
+}
+
+macro_rules! witness_accessors {
+    ($t:ty) => {
+        impl $t {
+            /// Which proven kernel family recomputed the receipt.
+            pub fn kind(&self) -> ReceiptKind {
+                self.kind
+            }
+            /// The recomputed receipt's content hash — the provenance binding.
+            pub fn receipt_hash(&self) -> [u8; 32] {
+                self.receipt_hash
+            }
+            /// Declared-input magnitude in micro-USD (never a claimed output).
+            pub fn magnitude_micro(&self) -> u64 {
+                self.magnitude_micro
+            }
+        }
+    };
+}
+witness_accessors!(RecomputeMatch);
+witness_accessors!(RecomputeDivergence);
+
+impl RecomputeDivergence {
+    /// Which claimed field diverged from the recomputed value.
+    pub fn field(&self) -> &'static str {
+        self.field
+    }
+}
+
+/// What a recompute established about a receipt, as sealed evidence.
+///
+/// This is [`verify_receipt`]'s verdict with the two attributable outcomes
+/// promoted to unforgeable witnesses. [`RecomputeOutcome`] remains the plain
+/// *report* — it is shared with `payout::verify_payout`, a different check that
+/// must never be able to mint clearing evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecomputeWitness {
+    /// Every claimed output re-derived.
+    Matched(RecomputeMatch),
+    /// A claimed output diverged — the recompute is the fraud proof.
+    Diverged(RecomputeDivergence),
+    /// The declared inputs were rejected by the kernel: there is no established
+    /// baseline, so nothing is attributable in either direction.
+    Invalid(String),
+}
+
+/// Recompute a receipt and mint the sealed witness of what happened.
+///
+/// The single mint site for [`RecomputeMatch`] / [`RecomputeDivergence`]. It
+/// delegates the arithmetic to [`verify_receipt`] verbatim — one decider for
+/// "do these numbers re-derive" (**G-1**) — and adds only the provenance the
+/// evidence must carry.
+pub fn witness_receipt(receipt: &ClearingReceipt) -> RecomputeWitness {
+    let kind = ReceiptKind::of(receipt);
+    let receipt_hash = receipt_hash_bytes(receipt);
+    let magnitude_micro = economic_magnitude(receipt);
+    match verify_receipt(receipt) {
+        RecomputeOutcome::Match => RecomputeWitness::Matched(RecomputeMatch {
+            kind,
+            receipt_hash,
+            magnitude_micro,
+            _seal: Seal,
+        }),
+        RecomputeOutcome::Mismatch { field, .. } => {
+            RecomputeWitness::Diverged(RecomputeDivergence {
+                kind,
+                receipt_hash,
+                magnitude_micro,
+                field,
+                _seal: Seal,
+            })
+        }
+        RecomputeOutcome::Invalid(why) => RecomputeWitness::Invalid(why),
+    }
+}
+
 /// Lift/narrow between [`ClearingReceipt`] and `nucleus-receipt`'s signed
 /// colimit envelope (feature `envelope`, off by default).
 ///
@@ -450,6 +614,33 @@ pub mod envelope {
                 Err(e) => SignedClearingVerdict::Malformed(e),
             },
             None => SignedClearingVerdict::Malformed(NarrowError::NotEconomic { found: "none" }),
+        }
+    }
+
+    /// The signed-envelope mint site: verify the Ed25519 signature, narrow to a
+    /// [`ClearingReceipt`], and mint the sealed
+    /// [`RecomputeWitness`](crate::RecomputeWitness).
+    ///
+    /// The signature is checked FIRST and a bad one mints nothing: an
+    /// unauthenticated envelope establishes no attributable outcome, not even a
+    /// divergence, so there is no witness to hand out. Same ordering as
+    /// [`verify_signed_clearing`], which this delegates the recompute to via
+    /// [`witness_receipt`](crate::witness_receipt).
+    pub fn witness_signed_clearing(
+        signed: &nucleus_receipt::Receipt,
+        verifying_key_bytes: &[u8; 32],
+    ) -> Result<crate::RecomputeWitness, SignedClearingVerdict> {
+        if signed.verify(verifying_key_bytes).is_err() {
+            return Err(SignedClearingVerdict::BadSignature);
+        }
+        match signed.projections.first() {
+            Some(p) => match clearing_from_projection(p) {
+                Ok(receipt) => Ok(crate::witness_receipt(&receipt)),
+                Err(e) => Err(SignedClearingVerdict::Malformed(e)),
+            },
+            None => Err(SignedClearingVerdict::Malformed(NarrowError::NotEconomic {
+                found: "none",
+            })),
         }
     }
 }

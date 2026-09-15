@@ -142,7 +142,7 @@ impl CreditLedgerStore {
             let mut seen = w.open_table(SEEN)?;
 
             if seen
-                .get((identity, event.receipt_hash.as_slice()))?
+                .get((identity, event.receipt_hash().as_slice()))?
                 .is_some()
             {
                 // Already counted this receipt for this identity — skip.
@@ -172,7 +172,7 @@ impl CreditLedgerStore {
                 let entry = LedgerEntry::new(identity.to_string(), seq, event, ts_unix_secs, prev);
                 let bytes = serde_json::to_vec(&entry)?;
                 entries.insert((identity, seq), bytes.as_slice())?;
-                seen.insert((identity, event.receipt_hash.as_slice()), seq)?;
+                seen.insert((identity, event.receipt_hash().as_slice()), seq)?;
                 appended = Some(entry);
             }
         }
@@ -235,7 +235,20 @@ impl CreditLedgerStore {
     pub fn credit_file(&self, identity: &str) -> Result<CreditFile, StoreError> {
         let entries = self.entries(identity)?;
         verify_chain(&entries)?;
-        let events: Vec<CreditEvent> = entries.iter().map(|e| e.event).collect();
+        // `verify_chain` above already re-derived every entry hash, so each
+        // crossing here succeeds. Going through `LedgerEntry::event` anyway is
+        // what makes that a TYPE fact rather than a call-order convention: this
+        // function cannot be edited into folding unverified rows, because a
+        // `CreditEvent` is the only thing `from_events` accepts and the only way
+        // to get one from a row is the check. Belt and braces, where the braces
+        // are the part a future edit cannot quietly remove.
+        let mut events: Vec<CreditEvent> = Vec::with_capacity(entries.len());
+        for e in &entries {
+            match e.event() {
+                Some(ev) => events.push(ev),
+                None => return Err(crate::ledger::ChainError::BadHash { seq: e.seq }.into()),
+            }
+        }
         Ok(CreditFile::from_events(&events))
     }
 }
@@ -257,13 +270,22 @@ mod tests {
         {
             let store = CreditLedgerStore::open(&path).unwrap();
             store
-                .append("agent-a", CreditEvent::honest_settlement(400_000, rh(1)))
+                .append(
+                    "agent-a",
+                    CreditEvent::test_honest_settlement(400_000, rh(1)),
+                )
                 .unwrap();
             store
-                .append("agent-a", CreditEvent::honest_settlement(300_000, rh(2)))
+                .append(
+                    "agent-a",
+                    CreditEvent::test_honest_settlement(300_000, rh(2)),
+                )
                 .unwrap();
             store
-                .append("agent-b", CreditEvent::honest_settlement(50_000, rh(3)))
+                .append(
+                    "agent-b",
+                    CreditEvent::test_honest_settlement(50_000, rh(3)),
+                )
                 .unwrap();
             assert_eq!(
                 store.credit_file("agent-a").unwrap().reputation_micro(),
@@ -294,7 +316,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credit.redb");
         let store = CreditLedgerStore::open(&path).unwrap();
-        let ev = CreditEvent::honest_settlement(500_000, rh(7));
+        let ev = CreditEvent::test_honest_settlement(500_000, rh(7));
 
         let first = store.append("agent-a", ev).unwrap();
         assert!(first.is_some());
@@ -325,7 +347,10 @@ mod tests {
         let path = dir.path().join("credit.redb");
         let store = CreditLedgerStore::open(&path).unwrap();
         store
-            .append("agent-a", CreditEvent::honest_settlement(100_000, rh(1)))
+            .append(
+                "agent-a",
+                CreditEvent::test_honest_settlement(100_000, rh(1)),
+            )
             .unwrap();
 
         // agent-b has no rows, no standing, no head.
@@ -346,12 +371,12 @@ mod tests {
         let store = CreditLedgerStore::open(&path).unwrap();
         assert_eq!(store.head("agent-a").unwrap(), None);
         let e0 = store
-            .append("agent-a", CreditEvent::honest_settlement(1, rh(1)))
+            .append("agent-a", CreditEvent::test_honest_settlement(1, rh(1)))
             .unwrap()
             .unwrap();
         assert_eq!(store.head("agent-a").unwrap(), Some((0, e0.this_hash)));
         let e1 = store
-            .append("agent-a", CreditEvent::honest_settlement(2, rh(2)))
+            .append("agent-a", CreditEvent::test_honest_settlement(2, rh(2)))
             .unwrap()
             .unwrap();
         assert_eq!(store.head("agent-a").unwrap(), Some((1, e1.this_hash)));
@@ -365,7 +390,10 @@ mod tests {
         {
             let store = CreditLedgerStore::open(&path).unwrap();
             store
-                .append("agent-a", CreditEvent::honest_settlement(100_000, rh(1)))
+                .append(
+                    "agent-a",
+                    CreditEvent::test_honest_settlement(100_000, rh(1)),
+                )
                 .unwrap();
         }
         // Hand-corrupt entry seq 0: flip the event weight but keep the STALE
@@ -399,7 +427,6 @@ mod tests {
     // Needs the `recompute` feature for the mint bridge + receipt types; on by
     // default, so present under the usual `cargo test --features persist`.
 
-    #[cfg(feature = "recompute")]
     fn honest_settlement(
         price_micro: u64,
         delivered_bps: u64,
@@ -414,7 +441,6 @@ mod tests {
         })
     }
 
-    #[cfg(feature = "recompute")]
     #[test]
     fn mint_through_store_credits_honest_debits_caught_skips_invalid() {
         use crate::mint::mint_event;
@@ -466,7 +492,6 @@ mod tests {
         assert_eq!(store.entries("agent-a").unwrap().len(), 2);
     }
 
-    #[cfg(feature = "recompute")]
     #[test]
     fn durable_refold_matches_stateless_mint() {
         use crate::mint::{credit_file_from_receipts, mint_events};

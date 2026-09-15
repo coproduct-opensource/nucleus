@@ -431,8 +431,8 @@ mod tests {
         let a = chain(
             "a",
             &[
-                CreditEvent::caught_defection(500, rh(1)),
-                CreditEvent::caught_defection(500, rh(2)),
+                CreditEvent::test_caught_defection(500, rh(1)),
+                CreditEvent::test_caught_defection(500, rh(2)),
             ],
         );
         let alloc = eligibility_snapshot(&[("a", &a)], &flat_params(1));
@@ -445,8 +445,8 @@ mod tests {
         let a = chain(
             "a",
             &[
-                CreditEvent::honest_settlement(1000, rh(1)),
-                CreditEvent::honest_settlement(1000, rh(2)),
+                CreditEvent::test_honest_settlement(1000, rh(1)),
+                CreditEvent::test_honest_settlement(1000, rh(2)),
             ],
         );
         let alloc = eligibility_snapshot(&[("a", &a)], &flat_params(1));
@@ -459,15 +459,15 @@ mod tests {
         let a = chain(
             "a",
             &[
-                CreditEvent::honest_settlement(1000, rh(1)),
-                CreditEvent::honest_settlement(1000, rh(2)),
+                CreditEvent::test_honest_settlement(1000, rh(1)),
+                CreditEvent::test_honest_settlement(1000, rh(2)),
             ],
         );
         let b = chain(
             "b",
             &[
-                CreditEvent::honest_settlement(1000, rh(3)),
-                CreditEvent::honest_settlement(1000, rh(4)),
+                CreditEvent::test_honest_settlement(1000, rh(3)),
+                CreditEvent::test_honest_settlement(1000, rh(4)),
             ],
         );
         let alloc = eligibility_snapshot(&[("a", &a), ("b", &b)], &flat_params(1));
@@ -482,8 +482,8 @@ mod tests {
         let a = chain(
             "a",
             &[
-                CreditEvent::honest_settlement(1000, rh(7)),
-                CreditEvent::honest_settlement(1000, rh(7)),
+                CreditEvent::test_honest_settlement(1000, rh(7)),
+                CreditEvent::test_honest_settlement(1000, rh(7)),
             ],
         );
         // floor=2 excludes it; floor=1 admits it.
@@ -499,15 +499,15 @@ mod tests {
         let a = chain(
             "a",
             &[
-                CreditEvent::honest_settlement(1000, rh(1)),
-                CreditEvent::caught_defection(800, rh(2)),
+                CreditEvent::test_honest_settlement(1000, rh(1)),
+                CreditEvent::test_caught_defection(800, rh(2)),
             ],
         );
         let b = chain(
             "b",
             &[
-                CreditEvent::honest_settlement(1000, rh(3)),
-                CreditEvent::honest_settlement(0, rh(4)),
+                CreditEvent::test_honest_settlement(1000, rh(3)),
+                CreditEvent::test_honest_settlement(0, rh(4)),
             ],
         );
         let alloc = eligibility_snapshot(&[("a", &a), ("b", &b)], &flat_params(1));
@@ -525,15 +525,15 @@ mod tests {
         let early = chain(
             "early",
             &[
-                CreditEvent::honest_settlement(1_000_000, rh(1)),
-                CreditEvent::honest_settlement(1, rh(2)),
+                CreditEvent::test_honest_settlement(1_000_000, rh(1)),
+                CreditEvent::test_honest_settlement(1, rh(2)),
             ],
         );
         let late = chain(
             "late",
             &[
-                CreditEvent::honest_settlement(1, rh(3)),
-                CreditEvent::honest_settlement(1_000_000, rh(4)),
+                CreditEvent::test_honest_settlement(1, rh(3)),
+                CreditEvent::test_honest_settlement(1_000_000, rh(4)),
             ],
         );
         let params = SnapshotParams {
@@ -557,15 +557,15 @@ mod tests {
         let fin = chain(
             "fin",
             &[
-                CreditEvent::honest_settlement(1000, rh(1)),
-                CreditEvent::honest_settlement(1000, rh(2)),
+                CreditEvent::test_honest_settlement(1000, rh(1)),
+                CreditEvent::test_honest_settlement(1000, rh(2)),
             ],
         );
         let ext = chain(
             "ext",
             &[
-                CreditEvent::externality_internalized(1000, rh(3)),
-                CreditEvent::externality_internalized(1000, rh(4)),
+                CreditEvent::test_externality_internalized(1000, rh(3)),
+                CreditEvent::test_externality_internalized(1000, rh(4)),
             ],
         );
         let mut dim = BTreeMap::new();
@@ -587,8 +587,8 @@ mod tests {
         let a = chain(
             "a",
             &[
-                CreditEvent::honest_settlement(1, rh(1)),
-                CreditEvent::honest_settlement(1, rh(2)),
+                CreditEvent::test_honest_settlement(1, rh(1)),
+                CreditEvent::test_honest_settlement(1, rh(2)),
             ],
         );
         let alloc = eligibility_snapshot(&[("a", &a)], &flat_params(1));
@@ -649,8 +649,8 @@ mod tests {
             for i in 0..n {
                 let id = format!("id{i}");
                 let evs = vec![
-                    CreditEvent::honest_settlement(100 * (i as u64 + 1), rh(i as u8)),
-                    CreditEvent::honest_settlement(50, rh((i as u8).wrapping_add(100))),
+                    CreditEvent::test_honest_settlement(100 * (i as u64 + 1), rh(i as u8)),
+                    CreditEvent::test_honest_settlement(50, rh((i as u8).wrapping_add(100))),
                 ];
                 chains.push((id.clone(), chain(&id, &evs)));
             }
@@ -701,7 +701,7 @@ mod tests {
                 time_root_half_life: 0,
             };
             let distinct: std::collections::BTreeSet<[u8;32]> =
-                evs.iter().map(|e| e.receipt_hash).collect();
+                evs.iter().map(|e| e.receipt_hash()).collect();
             let alloc = eligibility_snapshot(&[("solo", c.as_slice())], &p);
             if distinct.len() < floor as usize {
                 prop_assert!(alloc.is_empty());
@@ -721,7 +721,7 @@ mod tests {
             let p = SnapshotParams::default();
             let before = fold_identity(&chain("x", &evs), &p).weight;
             let mut evs2 = evs.clone();
-            evs2.push(CreditEvent::honest_settlement(extra, [seed; 32]));
+            evs2.push(CreditEvent::test_honest_settlement(extra, [seed; 32]));
             let after = fold_identity(&chain("x", &evs2), &p).weight;
             prop_assert!(after >= before);
         }
@@ -736,7 +736,7 @@ mod tests {
             let p = SnapshotParams::default();
             let before = fold_identity(&chain("x", &evs), &p).weight;
             let mut evs2 = evs.clone();
-            evs2.push(CreditEvent::caught_defection(extra, [seed; 32]));
+            evs2.push(CreditEvent::test_caught_defection(extra, [seed; 32]));
             let after = fold_identity(&chain("x", &evs2), &p).weight;
             prop_assert!(after <= before);
         }
@@ -756,7 +756,7 @@ mod tests {
             let evs: Vec<CreditEvent> = weights
                 .iter()
                 .enumerate()
-                .map(|(i, w)| CreditEvent::caught_defection(*w, rh(i as u8)))
+                .map(|(i, w)| CreditEvent::test_caught_defection(*w, rh(i as u8)))
                 .collect();
             let p = SnapshotParams::default();
             let raw = fold_identity(&chain("x", &evs), &p);
