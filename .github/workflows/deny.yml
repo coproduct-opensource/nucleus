@@ -57,7 +57,7 @@ jobs:
       # rust-toolchain.toml pins 1.96.1; modern rustup does not install a
       # toolchain file's channel implicitly, so hosted runners set it up here
       # (the runner image bakes it).
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
       - run: cargo deny check advisories bans licenses sources

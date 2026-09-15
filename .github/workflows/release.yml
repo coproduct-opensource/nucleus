@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # No cache restore here: this job publishes release binaries, so it must
       # build from scratch to avoid cache-poisoning of trust-bearing artifacts.
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: false
       - name: Add cross-compilation target
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # No cache restore here: this job publishes release binaries/rootfs, so it
       # must build from scratch to avoid cache-poisoning of trust-bearing artifacts.
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: false
       - name: Install cross
@@ -411,7 +411,7 @@ jobs:
         if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
       # No cache restore here: this job publishes to crates.io, so it must
       # build from scratch to avoid cache-poisoning of trust-bearing artifacts.
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
         with:
           cache: false
