@@ -13,6 +13,7 @@
 - [Integration Endpoints](integration-endpoints.md)
 - [Split-Trust Deployment](split-trust.md)
 - [Architecture](architecture/overview.md)
+  - [A Command Grammar](design/command-grammar.md)
   - [Security Architecture](architecture/security.md)
   - [Isolation Levels](architecture/isolation-levels.md)
   - [Landscape and Rationale](architecture/landscape.md)

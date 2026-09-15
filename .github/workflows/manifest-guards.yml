@@ -185,6 +185,17 @@ jobs:
       - name: No crate sits outside the workspace
         run: cargo run -q -p xtask -- workspace-members
 
+      # Every operator command declares the authority band it demands, and the declaration
+      # is total both ways -- no command without an entry, no entry without a command. The
+      # thing it stops is a command joining the surface with its authority written nowhere,
+      # which is the state ALL 52 leaves were in until docs/design/command-grammar.md:
+      # measured 2026-09-15, `grep -rn "Act::\|preflight_action" crates/nucleus-cli/src/`
+      # returned zero. It checks TOTALITY, not correctness -- a leaf declared `observe`
+      # that boots a VM passes -- and the design doc says so rather than letting the green
+      # light imply more.
+      - name: Every command declares its authority band
+        run: cargo run -q -p xtask -- command-grammar
+
       # Seven scan-vs-allowlist gates lived in four shell scripts, each with its own copy
       # of the same `#[cfg(test)]`-stripping awk program -- five copies, four of them
       # differing byte-for-byte, one carrying a false negative its own comment names. This
