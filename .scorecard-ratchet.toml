@@ -320,5 +320,19 @@ population_floor = 23
 # mandate reaches them at all.
 #
 # 2026-09-11: seeded at the measurement.
-floor_bp = 373
-population_floor = 134
+# Raised 444 -> 652 and population 135 -> 138 on 2026-09-14, second pass: the
+# three numeric casts the telemetry needs to observe integer counters as f64
+# metrics. They were tripping the CLIPPY ratchet, and #[expect] is what removes
+# a violation there — so one gate's fix feeds the other, and both move the way
+# they are supposed to.
+#
+# Raised 373 -> 444 and population 134 -> 135 on 2026-09-14. The telemetry test
+# that isolates the exporter's global state in a child process needs
+# clippy::disallowed_methods waived. Written as #[expect(..., reason = ...)]
+# rather than #[allow]: it should stop compiling the day the exporter no longer
+# needs isolating, which is exactly the property this family measures. So the
+# suppression RAISED the ratio rather than diluting it -- 5 of 134 became 6 of
+# 135 -- and the floor follows the measurement, because a floor with slack
+# under it has already stopped gating.
+floor_bp = 652
+population_floor = 138
