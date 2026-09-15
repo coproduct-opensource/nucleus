@@ -1,0 +1,50 @@
+# Digests of the wasm-pack artifacts this crate embeds with include_bytes!/include_str!.
+#
+# WHY THIS FILE EXISTS
+#
+# sdks/verifier-js/pkg/ is gitignored: it is a wasm-pack build product, not a
+# source. So the bytes this crate compiles in are invisible to git, which means
+# invisible to any read-set built from tracked files -- nucleus-action-key's
+# closure refuses to key this crate for exactly that reason. The artifact could
+# change with nothing in the tree noticing, and this crate is the relying-party
+# verifier.
+#
+# Tracking the bytes themselves was the alternative and was rejected: 1.29 MB of
+# unmergeable binary churning on every rebuild, in a project whose own records
+# cite a 15.8-minute checkout caused by 3.3 GiB of committed build artifacts.
+#
+# A digest is ~70 bytes and moves whenever the artifact moves. build.rs refuses
+# to compile on a mismatch, which is what makes the pin a guarantee rather than
+# a comment: a tracked digest nothing verifies is a lie that reads like a
+# promise.
+#
+# REPRODUCIBLE ON ONE MACHINE, NOT ACROSS PLATFORMS. Measured 2026-09-14: two
+# clean wasm-pack 0.13.1 builds of the same source on one host produced
+# byte-identical output, so a pin is meaningful. The SAME source and the SAME
+# wasm-pack on a different platform did not: macOS aarch64 gave
+# 839c9e74299669cb..., Linux x86_64 in CI gave 8b4ca42f7cc88a74...
+#
+# So these digests track ONE canonical builder, and that builder is CI, because
+# CI produces what ships. A local rebuild on another platform will differ and
+# the build will refuse -- correctly, since the bytes really are not the ones
+# that were reviewed. What this pin catches is drift on the canonical builder;
+# it is not a claim of cross-platform reproducibility, and the difference is
+# worth knowing rather than papering over.
+#
+# Regenerate from a CI run after an intentional SDK change; build.rs reports
+# every mismatching artifact at once so one run supplies them all:
+#   wasm-pack build sdks/verifier-js --target web --release
+#   shasum -a 256 sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm \
+#     sdks/verifier-js/pkg/nucleus_verifier_wasm.js
+#
+# Format: <sha256>  <repo-relative path>, as shasum -a 256 emits. A path may be
+# listed more than once; the build accepts any digest listed for it, because
+# wasm-pack output is not reproducible across platforms and a single-digest pin
+# would break whichever platform did not mint it. An artifact matching NO listed
+# digest still fails, which is the property worth keeping.
+#
+# Notably only the .wasm differs by platform: the .js shim came out identical on
+# both, so one line suffices for it.
+839c9e74299669cbe033d0efe1cd3f3d9526ee31963706f4e2672137abcc5e16  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
+8b4ca42f7cc88a744e4936cf353a03c9c9ffecf6aa37108f3fd8d565f58cde13  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
