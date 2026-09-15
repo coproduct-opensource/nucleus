@@ -245,24 +245,21 @@ fn deserialize_rejects_hostile_uuid_without_panicking() {
     let mut bad2 = base.clone();
     bad2["id"] = serde_json::Value::String("definitely-not-a-uuid".to_string());
     assert!(
-        serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&bad2).unwrap())
-            .is_err()
+        serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&bad2).unwrap()).is_err()
     );
 
     // A non-ASCII derived_from is also rejected cleanly (Option path).
     let mut bad3 = base.clone();
     bad3["derived_from"] = serde_json::Value::String("é-bad".to_string());
     assert!(
-        serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&bad3).unwrap())
-            .is_err()
+        serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&bad3).unwrap()).is_err()
     );
 
     // A valid uuid still round-trips successfully.
     let mut good = base;
     good["id"] = serde_json::Value::String("00000000-0000-0000-0000-000000000001".to_string());
     assert!(
-        serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&good).unwrap())
-            .is_ok()
+        serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&good).unwrap()).is_ok()
     );
 }
 
