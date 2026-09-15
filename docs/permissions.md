@@ -17,6 +17,34 @@ from stealing secrets.
 
 ---
 
+## Paths: both spellings name the same file
+
+A path you give the sandbox is interpreted **against the sandbox root**. Two
+spellings are accepted and mean the same file:
+
+```
+read  { "path": "hello.txt" }        # relative to the root
+read  { "path": "/work/hello.txt" }  # absolute, under the root
+```
+
+An absolute path that is **not** under the root is refused as a sandbox escape,
+including one that traverses out through it (`/work/../etc/passwd`). Stripping
+the root does not widen what is reachable: what survives is fed through exactly
+the checks a relative path already faced, and `cap-std`'s directory handle
+refuses `..` and symlinks out at the point of I/O.
+
+**`/work` is the conventional root, not a constant.** It is whatever the pod
+spec's `work_dir` says. Do not hardcode `/work`-stripping in an integration —
+send the path the agent produced and let the sandbox interpret it, or the
+integration breaks silently the day a spec sets `work_dir` to anything else.
+
+Before #2787 the absolute spelling was refused outright, with a message claiming
+the path "resolves outside sandbox root" — which was untrue, because the root
+was never consulted. Both spellings work now; the refusal text is only used when
+the root really was consulted and the path really was outside it.
+
+---
+
 ## The Problem: Uninhabitable State
 
 When an AI agent has all three of these capabilities at autonomous levels:
