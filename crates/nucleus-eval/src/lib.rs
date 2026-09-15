@@ -51,8 +51,6 @@
 
 #![forbid(unsafe_code)]
 
-use nucleus_creditworthiness::CreditEvent;
-pub use nucleus_creditworthiness::{CreditEvent as MintedEvent, CreditFile};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -232,10 +230,10 @@ pub fn receipt_hash_hex(run: &EvalRun) -> String {
     s
 }
 
-/// Pass-rate-scaled credit weight, integer micro-USD: `floor(M * passed / total)`.
+/// Pass-rate-scaled magnitude, integer micro-USD: `floor(M * passed / total)`.
 /// `total == 0` yields `0` (a no-case honest run earns nothing). `u128`
 /// intermediates avoid overflow; no floating point.
-fn scaled_weight(declared_magnitude_micro: u64, passed: u64, total: u64) -> u64 {
+pub fn scaled_weight(declared_magnitude_micro: u64, passed: u64, total: u64) -> u64 {
     if total == 0 {
         return 0;
     }
@@ -244,47 +242,35 @@ fn scaled_weight(declared_magnitude_micro: u64, passed: u64, total: u64) -> u64 
     scaled as u64
 }
 
-/// Mint a real [`nucleus_creditworthiness::CreditEvent`] from one eval receipt by
-/// recomputing it.
-///
-/// * `Mismatch` (overclaim / tampered output) ⇒ [`CreditEvent::caught_defection`]
-///   — a **debit** of the full DECLARED magnitude (the lie can't shrink its own
-///   penalty by under-declaring the recompute).
-/// * `Match` ⇒ [`CreditEvent::honest_settlement`] — a **credit** of
-///   `floor(declared_magnitude_micro * passed / total)`.
-///
-/// Attested fields (cost / tokens / latency / judge) do not enter this function's
-/// result.
-pub fn mint_event(run: &EvalRun) -> CreditEvent {
-    let hash = receipt_hash(run);
-    match verify_run(run) {
-        EvalOutcome::Match { passed, total } => {
-            let weight = scaled_weight(run.declared_magnitude_micro, passed, total);
-            CreditEvent::honest_settlement(weight, hash)
-        }
-        EvalOutcome::Mismatch { .. } => {
-            CreditEvent::caught_defection(run.declared_magnitude_micro, hash)
-        }
-    }
-}
-
-/// Mint events from a batch of eval receipts.
-pub fn mint_events(runs: &[EvalRun]) -> Vec<CreditEvent> {
-    runs.iter().map(mint_event).collect()
-}
-
-/// Fold a batch of eval receipts straight into a real
-/// [`nucleus_creditworthiness::CreditFile`] — the whole
-/// `receipt → recompute → CreditEvent → CreditFile` pipeline in one call.
-/// Order-independent (inherited from [`CreditFile`]).
-pub fn credit_file_from_runs(runs: &[EvalRun]) -> CreditFile {
-    CreditFile::from_events(&mint_events(runs))
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// The minters were REMOVED here (#2509). Read this before adding one back.
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// This crate used to expose `mint_event`, `mint_events` and
+// `credit_file_from_runs`, each building a `CreditEvent` from an `EvalRun`.
+// `CreditEvent` is now sealed: it is mintable only from a `nucleus-recompute`
+// witness over a `ClearingReceipt`, and an `EvalRun` is not one.
+//
+// That is not an oversight in the seal. #2500 records this crate as one of the
+// paths that "opts out of the recompute gate", and `verify_run` is why: it
+// recomputes an aggregate over `produced`/`expected` strings the CALLER
+// supplied, so a run that agrees with itself mints standing without anything
+// independent ever having checked the work. The old `mint_event` was the step
+// that turned that into money.
+//
+// `verify_run` / `EvalOutcome` are untouched and still exported — recomputing an
+// eval is a real and useful thing to do. What is gone is the leap from that to
+// bond-substituting credit.
+//
+// Restoring a path here is #2502's job (grading integrity through to
+// settlement), not a local fix: its decision routes minting through
+// `nucleus-oracle::grade` with the magnitude bound to a clearing price. A
+// `CreditEvent::from_eval` added here would re-open exactly the hole the seal
+// closed, whatever it was called.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nucleus_creditworthiness::Polarity;
 
     /// Build a run whose recorded cases genuinely yield `passed` of `total`, with
     /// the claimed counts set to whatever the agent asserts.
@@ -322,92 +308,85 @@ mod tests {
         }
     }
 
-    #[test]
-    fn full_pass_honest_mints_full_credit() {
-        let run = run_with(10, 10, 10, 10, 1_000_000);
-        assert!(verify_run(&run).is_match());
-        let e = mint_event(&run);
-        assert_eq!(e.polarity, Polarity::Credit);
-        assert_eq!(e.weight_micro, 1_000_000); // full declared magnitude
-        assert_eq!(e.receipt_hash, receipt_hash(&run));
-    }
-
-    #[test]
-    fn partial_pass_mints_strictly_smaller_credit() {
-        let full = mint_event(&run_with(10, 10, 10, 10, 1_000_000));
-        let partial = mint_event(&run_with(7, 10, 7, 10, 1_000_000));
-        assert_eq!(partial.polarity, Polarity::Credit);
-        // floor(1_000_000 * 7 / 10) = 700_000
-        assert_eq!(partial.weight_micro, 700_000);
-        assert!(partial.weight_micro < full.weight_micro);
-    }
-
-    #[test]
-    fn overclaim_is_caught_as_a_debit_not_a_fat_credit() {
-        // Only 5 of 10 cases actually pass, but the agent CLAIMS all 10 passed.
-        // A handler that read back claimed_passed would mint a 1M credit; recompute
-        // catches the lie and mints a debit instead.
-        let run = run_with(5, 10, 10, 10, 1_000_000);
-        assert!(!verify_run(&run).is_match());
-        let e = mint_event(&run);
-        assert_eq!(e.polarity, Polarity::Debit);
-        // Weight is the DECLARED magnitude — the lie can't inflate its own penalty.
-        assert_eq!(e.weight_micro, 1_000_000);
-        // Stacked on prior honest standing it burns reputation, not builds it.
-        let f = CreditFile::from_events(&[CreditEvent::honest_settlement(1_000_000, [0u8; 32]), e]);
-        assert_eq!(f.reputation_micro(), 0);
-    }
-
-    #[test]
-    fn inflating_only_the_claim_never_increases_the_credit() {
-        // Recomputed produced/expected fixed at 7/10. Sweep the claimed_passed.
-        let honest = mint_event(&run_with(7, 10, 7, 10, 1_000_000));
-        assert_eq!(honest.polarity, Polarity::Credit);
-        assert_eq!(honest.weight_micro, 700_000);
-        for claimed in [8, 9, 10] {
-            let e = mint_event(&run_with(7, 10, claimed, 10, 1_000_000));
-            // Overclaiming flips to a debit; it never yields a bigger credit.
-            assert_eq!(e.polarity, Polarity::Debit);
-            assert!(!(e.polarity == Polarity::Credit && e.weight_micro > honest.weight_micro));
+    /// What a run RECOMPUTES to, kept as a measurement now that nothing here
+    /// mints. Each test below is the old minting test with its assertion moved
+    /// off the `CreditEvent` and onto the recompute that used to justify one —
+    /// the properties were about `verify_run`, not about the mint.
+    fn recomputed(run: &EvalRun) -> (bool, u64) {
+        match verify_run(run) {
+            EvalOutcome::Match { passed, total } => (
+                true,
+                scaled_weight(run.declared_magnitude_micro, passed, total),
+            ),
+            EvalOutcome::Mismatch { .. } => (false, run.declared_magnitude_micro),
         }
     }
 
     #[test]
-    fn attested_fields_do_not_move_the_mint() {
+    fn full_pass_recomputes_to_the_full_declared_magnitude() {
+        let run = run_with(10, 10, 10, 10, 1_000_000);
+        assert!(verify_run(&run).is_match());
+        assert_eq!(recomputed(&run), (true, 1_000_000));
+    }
+
+    #[test]
+    fn partial_pass_recomputes_strictly_smaller() {
+        let (full_ok, full) = recomputed(&run_with(10, 10, 10, 10, 1_000_000));
+        let (part_ok, partial) = recomputed(&run_with(7, 10, 7, 10, 1_000_000));
+        assert!(full_ok && part_ok);
+        assert_eq!(partial, 700_000); // floor(1_000_000 * 7 / 10)
+        assert!(partial < full);
+    }
+
+    #[test]
+    fn overclaim_is_caught_rather_than_believed() {
+        // Only 5 of 10 cases actually pass, but the agent CLAIMS all 10 passed.
+        // A handler that read back claimed_passed would treat this as a full
+        // success; the recompute catches the lie.
+        let run = run_with(5, 10, 10, 10, 1_000_000);
+        assert!(!verify_run(&run).is_match());
+        assert_eq!(recomputed(&run), (false, 1_000_000));
+    }
+
+    #[test]
+    fn inflating_only_the_claim_never_increases_the_recomputed_weight() {
+        // Recomputed produced/expected fixed at 7/10. Sweep the claimed_passed.
+        let (ok, honest) = recomputed(&run_with(7, 10, 7, 10, 1_000_000));
+        assert!(ok);
+        assert_eq!(honest, 700_000);
+        for claimed in [8, 9, 10] {
+            let (matched, w) = recomputed(&run_with(7, 10, claimed, 10, 1_000_000));
+            // Overclaiming is caught; it never yields a bigger honest weight.
+            assert!(!matched);
+            assert!(!(matched && w > honest));
+        }
+    }
+
+    #[test]
+    fn attested_fields_do_not_move_the_recompute() {
         let base = run_with(8, 10, 8, 10, 1_000_000);
         let mut twiddled = base.clone();
         twiddled.cost_micro_usd = 999_999_999;
         twiddled.tokens = 1;
         twiddled.latency_ms = 0;
         twiddled.attested.llm_judge_score = Some(0);
-        let a = mint_event(&base);
-        let b = mint_event(&twiddled);
-        // Same deterministic check ⇒ identical minted event (weight + polarity).
-        assert_eq!(a.weight_micro, b.weight_micro);
-        assert_eq!(a.polarity, b.polarity);
-        assert_eq!(a.dimension, b.dimension);
+        assert_eq!(recomputed(&base), recomputed(&twiddled));
     }
 
     #[test]
     fn attested_fields_do_change_the_receipt_hash_but_not_the_verdict() {
-        // The hash commits to the WHOLE receipt (provenance), even attested fields,
-        // yet the mint VERDICT ignores them — these are independent guarantees.
+        // The hash commits to the WHOLE receipt (provenance), even attested
+        // fields, yet the VERDICT ignores them — independent guarantees.
         let base = run_with(8, 10, 8, 10, 1_000_000);
         let mut twiddled = base.clone();
         twiddled.cost_micro_usd += 1;
         assert_ne!(receipt_hash(&base), receipt_hash(&twiddled));
-        assert_eq!(
-            mint_event(&base).weight_micro,
-            mint_event(&twiddled).weight_micro
-        );
+        assert_eq!(recomputed(&base).1, recomputed(&twiddled).1);
     }
 
     #[test]
-    fn zero_pass_honest_mints_a_zero_weight_credit() {
-        let e = mint_event(&run_with(0, 10, 0, 10, 1_000_000));
-        assert_eq!(e.polarity, Polarity::Credit);
-        assert_eq!(e.weight_micro, 0);
-        assert_eq!(CreditFile::from_events(&[e]).reputation_micro(), 0);
+    fn zero_pass_honest_recomputes_to_zero() {
+        assert_eq!(recomputed(&run_with(0, 10, 0, 10, 1_000_000)), (true, 0));
     }
 
     #[test]
@@ -419,19 +398,20 @@ mod tests {
     }
 
     #[test]
-    fn batch_folds_into_a_real_credit_file() {
-        let runs = vec![
-            run_with(10, 10, 10, 10, 400_000),  // +400_000
-            run_with(5, 10, 5, 10, 200_000),    // +100_000
-            run_with(3, 10, 10, 10, 1_000_000), // overclaim ⇒ −1_000_000
+    fn a_batch_recomputes_independently_per_run() {
+        // Was `batch_folds_into_a_real_credit_file`, which asserted the fold into
+        // a `CreditFile` saturated at 0. The fold is gone with the minters; what
+        // it was really pinning — that each run's verdict and weight is decided
+        // by its own recompute and not by its neighbours — is kept here.
+        let runs = [
+            run_with(10, 10, 10, 10, 400_000),  // honest, full
+            run_with(5, 10, 5, 10, 200_000),    // honest, half
+            run_with(3, 10, 10, 10, 1_000_000), // overclaim
         ];
-        let evs = mint_events(&runs);
-        assert_eq!(evs.len(), 3);
-        let file = credit_file_from_runs(&runs);
-        // 400_000 + 100_000 − 1_000_000 saturates at 0 (reputation never negative).
-        assert_eq!(file.reputation_micro(), 0);
-
-        let honest_only = credit_file_from_runs(&runs[..2]);
-        assert_eq!(honest_only.reputation_micro(), 500_000);
+        let got: Vec<(bool, u64)> = runs.iter().map(recomputed).collect();
+        assert_eq!(
+            got,
+            vec![(true, 400_000), (true, 100_000), (false, 1_000_000)]
+        );
     }
 }

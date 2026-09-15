@@ -69,7 +69,30 @@ use crate::{CreditDimension, CreditEvent, CreditFile};
 /// Reputation is a deterministic fold over the set values, reusing the proven
 /// [`CreditFile`] monoid — so two replicas with identical membership compute
 /// identical reputation.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// ```compile_fail
+/// // Does NOT compile: a peer's bytes cannot become set membership directly.
+/// use nucleus_creditworthiness::crdt::ReputationSet;
+/// let forged: ReputationSet = serde_json::from_str(r#"{"events":{}}"#).unwrap();
+/// ```
+///
+/// Unlike the snippets on [`CreditEvent`] and [`CreditFile`], this one is **not**
+/// isolable by perturbation, and that is worth stating rather than implying a
+/// check that was not run: restoring `Deserialize` to this derive alone does not
+/// compile, because the map value is a `CreditEvent`, which has no `Deserialize`
+/// either. Two independent causes hold the snippet down. What was measured is
+/// the cascade (2026-09-15) — re-deriving here fails on `CreditEvent`'s missing
+/// impl — so the snippet's failure is pinned to the seal, just not to one layer
+/// of it. The sibling `CreditFile` perturbation is what rules out the boring
+/// alternative explanation (an unresolved `serde_json` in the doctest scope),
+/// since both snippets are the same shape.
+///
+/// `Deserialize` is deliberately absent. A replica that could parse a peer's
+/// bytes straight into a `ReputationSet` would be trusting SET MEMBERSHIP, which
+/// is precisely what this module's header says never to do — the admission gates
+/// below re-mint from the receipt because the recompute is the authority. Gossip
+/// therefore ships `(claimed event, receipt)` pairs through
+/// [`ReputationSet::verified_admit`], and a forged event has nowhere to enter.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ReputationSet {
     /// Events keyed by `receipt_hash`. A [`BTreeMap`] gives a canonical,
     /// insertion-order-independent layout (so structural equality is order-free)
@@ -181,17 +204,16 @@ impl ReputationSet {
     /// ([`Self::verified_insert`] / [`Self::verified_admit`]) call this only
     /// AFTER re-minting from a receipt. Idempotent; fails closed (panics) if the
     /// same key arrives bound to a different event.
-    #[cfg(feature = "recompute")]
     fn admit(&mut self, event: CreditEvent) -> bool {
-        match self.events.get(&event.receipt_hash) {
+        match self.events.get(&event.receipt_hash()) {
             Some(existing) if *existing == event => true, // idempotent
             Some(existing) => panic!(
                 "CRDT invariant violation: receipt_hash {} re-admitted with a different \
                  event ({existing:?} vs {event:?}); deterministic mint broken. Failing closed.",
-                hex32(&event.receipt_hash)
+                hex32(&event.receipt_hash())
             ),
             None => {
-                self.events.insert(event.receipt_hash, event);
+                self.events.insert(event.receipt_hash(), event);
                 true
             }
         }
@@ -209,7 +231,6 @@ impl ReputationSet {
     ///
     /// Note a recompute **Mismatch** is still admitted — it mints a *debit*
     /// (caught defection / externality dumped), which correctly burns standing.
-    #[cfg(feature = "recompute")]
     pub fn verified_insert(&mut self, receipt: &nucleus_recompute::ClearingReceipt) -> bool {
         match crate::mint::mint_event(receipt) {
             Some(event) => self.admit(event),
@@ -227,7 +248,6 @@ impl ReputationSet {
     ///
     /// Returns `true` iff the claim was verified against its receipt and admitted
     /// (or was an idempotent duplicate); `false` otherwise (set unchanged).
-    #[cfg(feature = "recompute")]
     pub fn verified_admit(
         &mut self,
         claimed: &CreditEvent,
@@ -255,7 +275,7 @@ mod tests {
     fn set_from(events: &[CreditEvent]) -> ReputationSet {
         let mut s = ReputationSet::new();
         for e in events {
-            s.events.insert(e.receipt_hash, *e);
+            s.events.insert(e.receipt_hash(), *e);
         }
         s
     }
@@ -384,11 +404,11 @@ mod tests {
             let down_key = [0xFEu8; 32];
 
             let mut up = a.clone();
-            up.events.insert(up_key, CreditEvent::honest_settlement(weight, up_key));
+            up.events.insert(up_key, CreditEvent::test_honest_settlement(weight, up_key));
             prop_assert!(up.reputation_micro() >= before);
 
             let mut down = a.clone();
-            down.events.insert(down_key, CreditEvent::caught_defection(weight, down_key));
+            down.events.insert(down_key, CreditEvent::test_caught_defection(weight, down_key));
             prop_assert!(down.reputation_micro() <= before);
         }
     }
@@ -406,8 +426,8 @@ mod tests {
 
     #[test]
     fn join_unions_distinct_events() {
-        let e1 = CreditEvent::honest_settlement(100_000, [1u8; 32]);
-        let e2 = CreditEvent::caught_defection(50_000, [2u8; 32]);
+        let e1 = CreditEvent::test_honest_settlement(100_000, [1u8; 32]);
+        let e2 = CreditEvent::test_caught_defection(50_000, [2u8; 32]);
         let merged = set_from(&[e1]).join(&set_from(&[e2]));
         assert_eq!(merged.len(), 2);
         // 100k credit − 50k debit on the financial dimension.
@@ -416,7 +436,7 @@ mod tests {
 
     #[test]
     fn duplicate_key_equal_value_is_silent() {
-        let e = CreditEvent::honest_settlement(100_000, [1u8; 32]);
+        let e = CreditEvent::test_honest_settlement(100_000, [1u8; 32]);
         let merged = set_from(&[e]).join(&set_from(&[e]));
         assert_eq!(merged.len(), 1);
         assert_eq!(merged.reputation_micro(), 100_000);
@@ -426,17 +446,17 @@ mod tests {
     #[should_panic(expected = "CRDT invariant violation")]
     fn duplicate_key_unequal_value_fails_closed() {
         // Same receipt_hash, different weight — a forged/tampered event in gossip.
-        let honest = CreditEvent::honest_settlement(100_000, [7u8; 32]);
-        let forged = CreditEvent::honest_settlement(200_000, [7u8; 32]);
+        let honest = CreditEvent::test_honest_settlement(100_000, [7u8; 32]);
+        let forged = CreditEvent::test_honest_settlement(200_000, [7u8; 32]);
         let _ = set_from(&[honest]).join(&set_from(&[forged]));
     }
 
     #[test]
     fn credit_file_reconstruction_is_deterministic() {
         let evs = [
-            CreditEvent::honest_settlement(400_000, [1u8; 32]),
-            CreditEvent::caught_defection(100_000, [2u8; 32]),
-            CreditEvent::externality_internalized(300_000, [3u8; 32]),
+            CreditEvent::test_honest_settlement(400_000, [1u8; 32]),
+            CreditEvent::test_caught_defection(100_000, [2u8; 32]),
+            CreditEvent::test_externality_internalized(300_000, [3u8; 32]),
         ];
         let file = set_from(&evs).credit_file();
         // (400k − 100k) financial + 300k externality = 600k.
@@ -454,10 +474,10 @@ mod tests {
     #[test]
     fn exhaustive_small_semilattice_laws() {
         let universe = [
-            CreditEvent::honest_settlement(10, [1u8; 32]),
-            CreditEvent::caught_defection(20, [2u8; 32]),
-            CreditEvent::externality_internalized(30, [3u8; 32]),
-            CreditEvent::externality_dumped(40, [4u8; 32]),
+            CreditEvent::test_honest_settlement(10, [1u8; 32]),
+            CreditEvent::test_caught_defection(20, [2u8; 32]),
+            CreditEvent::test_externality_internalized(30, [3u8; 32]),
+            CreditEvent::test_externality_dumped(40, [4u8; 32]),
         ];
         // All 16 subsets as sets.
         let subsets: Vec<ReputationSet> = (0u8..16)
@@ -491,7 +511,7 @@ mod tests {
 
 // ── Recompute-gated admission tests ──────────────────────────────────────────
 
-#[cfg(all(test, feature = "recompute"))]
+#[cfg(test)]
 mod recompute_tests {
     use super::*;
     use nucleus_econ_kernels::{CommonsShare, classify, refund, route_to_commons, seller_gross};
@@ -591,7 +611,8 @@ mod recompute_tests {
         if let ClearingReceipt::Settlement(ref mut c) = r {
             c.seller_gross += 1;
         }
-        let forged_claim = CreditEvent::honest_settlement(500_000, crate::mint::receipt_hash(&r));
+        let forged_claim =
+            CreditEvent::test_honest_settlement(500_000, nucleus_recompute::receipt_hash_bytes(&r));
         let mut set = ReputationSet::new();
         // The recompute mints a debit, not the claimed credit ⇒ refused.
         assert!(!set.verified_admit(&forged_claim, &r));
@@ -609,8 +630,10 @@ mod recompute_tests {
             }],
             allocations: vec![],
         });
-        let forged_claim =
-            CreditEvent::externality_internalized(1_000, crate::mint::receipt_hash(&invalid));
+        let forged_claim = CreditEvent::test_externality_internalized(
+            1_000,
+            nucleus_recompute::receipt_hash_bytes(&invalid),
+        );
         let mut set = ReputationSet::new();
         assert!(!set.verified_admit(&forged_claim, &invalid));
         assert!(set.is_empty());

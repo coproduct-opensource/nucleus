@@ -16,12 +16,12 @@
 //!
 //! Run: `cargo run -p nucleus-oracle --example dogfood_coalition_settlement`
 
-use nucleus_creditworthiness::{CreditEvent, CreditFile};
 use nucleus_eval::EvalCase;
 use nucleus_oracle::{
     DeterminismPinning, GradingBundle, HeldOutRecompute, MutationAdequacy, grade,
     grade_rubric_inputs,
 };
+use nucleus_witness_olog::required_bond;
 
 /// Exact Shapley value for an `n`-player game given a value function over
 /// coalitions encoded as bitmasks. Mirrors `axelrod-equilibrium::shapley_value`
@@ -125,21 +125,18 @@ fn main() {
         "Shapley is budget-balanced (efficiency)"
     );
 
-    // ── 3. Mint durable CreditEvents into each agent's published CreditFile ────
-    let receipt_hash = receipt.receipt_hash();
-    let mut file_s = CreditFile::new();
-    file_s.observe(&CreditEvent::honest_settlement(phi_s, receipt_hash));
-    let mut file_i = CreditFile::new();
-    file_i.observe(&CreditEvent::honest_settlement(phi_i, receipt_hash));
+    // ── 3. What each agent's Shapley share would BUY as standing ──────────────
+    // Runs the proven `required_bond` kernel on the share directly. It no longer
+    // mints a `CreditEvent` first: #2509 sealed that type behind a recompute
+    // witness, and a Shapley split of a grade receipt is not one.
 
     // What standing buys: a lower required anti-grief bond (capital substitution).
     let max_gain = 2_000_000; // worst-case defection gain this round would protect
     println!("\n=== durable reputation (nucleus-creditworthiness) ===");
-    for (who, f) in [("S (tests)", &file_s), ("I (impl)", &file_i)] {
+    for (who, rep) in [("S (tests)", phi_s), ("I (impl)", phi_i)] {
         println!(
-            "  {who:10}  reputation = {} µUSD   required_bond = {} µUSD",
-            f.reputation_micro(),
-            f.required_bond(max_gain).0
+            "  {who:10}  reputation = {rep} µUSD   required_bond = {} µUSD",
+            required_bond(max_gain, rep).0
         );
     }
     println!(
