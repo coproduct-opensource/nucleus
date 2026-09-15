@@ -45,4 +45,7 @@
 - [Temporal Workflow](temporal.md)
 - [Theoretical Foundations](THEORY.md)
 - [Category Theory](theory/index.md)
+  - [Algebraic Structures](theory/algebraic-structures.md)
   - [Repair Algebra](theory/repair-algebra.md)
+  - [GKAT's Fixed Point](theory/gkat-fixed-point.md)
+  - [GKAT Inexpressibility](theory/gkat-inexpressibility-plan.md)

@@ -94,14 +94,32 @@ The one real instance in the tree is `verify.rs`'s `--here` flag, which guards o
 — `p +_b q` written by hand.
 
 **Guarded iteration is deliberately absent, and its absence is a decision rather
-than a backlog.** Nothing in the surface loops over a permission test, and this
-repository already knows what a loop costs: `docs/theory/gkat-fixed-point.md`
-records that GKAT's `while` is a unique fixed point only under a guardedness side
-condition and that completeness is open, and
-`docs/theory/gkat-inexpressibility-plan.md` records the frontier. Paying a side
-condition and an open question to express nothing that exists is the definition
-of decoration. The loop-free fragment is also the fragment where the repo's own
-caveats never bite.
+than a backlog.** Nothing in the surface loops over a permission test. The cheap
+argument stops there — an operator with no inhabitants is decoration — but this
+repository can make the stronger one, because it has mechanized both sides of the
+line. `crates/portcullis-core/lean/` holds **23 `Gkat*.lean` files, ~5600
+lines**, in the *proven* tier. That is a checked status, not a label: all 23 are
+on the `lake build` list of `.github/workflows/portcullis-core-proven-lean.yml`,
+and none appears between the `GATE-ALLOWLIST` markers in
+`crates/portcullis-core/lean/CONJECTURES.md` — the research tier, the only place
+a `sorry` is permitted. Read against that body, the line between the loop-free
+fragment and the loop is not taste:
+
+- **Loop-free sits inside the proved region.** `GkatKleeneProofs.lean:995`
+  (`acyclic_expressible`) synthesizes an expression for every acyclic automaton
+  via `buildSol` — in the file's own words, *"with no `wh`, no fixpoint, no
+  UA"* — and `:1007` (`acyclic_flat_expressible`) discharges even the assumed
+  rank, deriving strict descent across every live edge from acyclicity via the
+  SCC rank `reachCount`.
+- **The loop is where the open questions are.** `wh` is a *unique* fixed point
+  only under a guardedness side condition, and completeness is open —
+  `docs/theory/gkat-fixed-point.md`, with the inexpressibility frontier in
+  `docs/theory/gkat-inexpressibility-plan.md`.
+
+So the fragment proposed here is the fragment whose expressibility this
+repository has already machine-checked, and the operator it omits is the one
+carrying every caveat. That is a better reason than "nothing loops today", and
+it is the reason worth recording.
 
 ## Laws that hold
 
@@ -161,12 +179,30 @@ is the live counterexample, where a grant issued on macOS would silently cover
 the Linux branch's pod boot. And there is no order on `Cmd` at all: `⊔` above is
 the join on `Authority`, not on terms.
 
-**¬A3 — term equality is not observational equality.** GKAT's equational theory
-is over *uninterpreted* actions. Atoms here are not pure: `Write{path}` twice
-leaves a different world than once if anything appends or rotates. So `p ; p ≡ p`
-does not hold and **the algebra may not justify de-duplication, caching, or
-skipping a step.** This is where it differs from build-ops, whose L1 *does*
-license `admit` answering one request with another's evidence.
+**¬A3 — term equality is not observational equality, and two in-house theorems
+say a rewriter may not pretend otherwise.** GKAT's equational theory is over
+*uninterpreted* actions. Atoms here are not pure: `Write{path}` twice leaves a
+different world than once if anything appends or rotates. So `p ; p ≡ p` does not
+hold and **the algebra may not justify de-duplication, caching, or skipping a
+step.** This is where it differs from build-ops, whose L1 *does* license `admit`
+answering one request with another's evidence.
+
+Two proved results push this past an argument from prudence, and each refutes a
+rewrite an optimizer reaches for first:
+
+- **A prefix may not be pushed past a guard.**
+  `GkatGuardedStringProofs.lean:509` (`left_distrib_not_gkat_theorem`) proves
+  `p·(1 +_c 0) ≢ (p·1) +_c (p·0)`, from a two-atom countermodel at `:484`: on the
+  left the guard `c` is read at the *end* atom, on the right at the *start*. A
+  guard reads the state the prefix just changed. Here that is `verify --here`,
+  which guards on "am I already inside the VM" — hoisting any step across that
+  guard changes the world the guard sees. C2 is this fact stated forward; this is
+  its proof.
+- **A precondition is not a test.** `GkatObservationProofs.lean:113`
+  (`wp_not_definable`) exhibits a weakest precondition that no GKAT test denotes,
+  because it splits two observationally equivalent states. "Compute what this
+  command would need and fold it into the guard" is therefore not expressible in
+  general — and that is exactly the shape of a `req`-aware optimizer.
 
 **¬A4 — the band does not bound the blast radius.** `Observe` contains both "read
 a tool manifest" and "read a private key": `SinkClass::SecretRead` is a read,
@@ -192,6 +228,18 @@ The measured instance is next door: gatehouse's `assure all`
 { 1 }`, so seven clean gates plus one that *could not look* reports **1
 (violation)** — contradicting the contract documented four lines above it in the
 same file. Found by writing this law down.
+
+**¬A8 — a set of guarded strings is not a command denotation.** The tempting
+shortcut is to model a command by the traces it admits and compare sets. Two
+proved results say that map is not onto. `GkatCoequationProofs.lean:228`
+(`W_not_subset_den`) exhibits a behavior in the nesting coequation `W` that no
+expression denotes — it both halts and steps at one atom, which an expression
+cannot do — so the characterization holds only over *deterministic* behaviors.
+And `:338` (`halt_not_bexp_not_den`) shows expressibility forces the halt-set to
+be `BExp`-definable, so a behavior halting on a non-definable set of atoms is
+denoted by nothing at all. The consequence for this document is concrete:
+**`req` is defined on terms, never on trace sets.** A trace set has no term to
+recurse on, and may correspond to no term.
 
 ## What the grammar should refuse to express
 
@@ -301,10 +349,22 @@ forbid the analogous move. **Authority is not a cache.**
   makes authority *derivable and stated*; it does not make it *decided*. Wiring
   `preflight_action` into operator commands is a separate change with its own
   unanswered question — whose grant does an operator at a terminal hold.
-- **It does not claim GKAT's guarantees.** The proposed fragment is loop-free, so
-  GKAT's decision procedure, its open completeness question, and its
-  inexpressibility frontier are all unused. Borrowing the name without the loop
-  borrows nothing but the shape of `+_b`.
+- **It does not claim a decision procedure, or completeness.** These are the two
+  things a reader would assume from the name, and neither is available. There is
+  decidable **membership** — `GkatDecisionProofs.lean:44` (`den_run`) turns "does
+  `⟦e⟧` accept `(a,w)`?" into following a deterministic derivative run — but
+  **no assembled decision procedure for equivalence**: that file's own header
+  calls bounding emptiness and equivalence by the finiteness of `derivs e` *"the
+  remaining engineering"*, and no `Decidable (⟦e⟧ = ⟦f⟧)` instance is written.
+  GKAT **equational** completeness is likewise neither proved here nor assumed
+  here; what is proved is the coalgebraic bisimulation characterization, in both
+  directions. `req` is a fold, not a solver, so nothing here needs either — but
+  "we use GKAT" must not be read as "equivalence is decided for us".
+- **It does not claim the Lean development is wired to anything.** Measured
+  2026-09-15: `grep -rn "Gkat\|GKAT\|guarded_string" crates --include='*.rs'`
+  returns **zero** lines. The proofs and the Rust tree do not touch. This
+  document proposes a grammar *shaped by* the proved fragment; it proposes no
+  extraction path from one to the other, and contains none.
 - **No proof.** There is no Lean or Kani artifact behind C1–C5.
 - **No migration.** This decides the shape; renaming 51 leaves is a breaking
   change to a public-but-unfrozen surface and needs its own compatibility call.
@@ -327,6 +387,7 @@ sorts need them to be coherent; they should be *constructed* the day the first
 composite command is written in Rust, and not before.
 
 What is load-bearing today, and is the whole of v1: each leaf declares its band;
-one gate checks that declaration is total and that no head word collides with a
-sink name; the exit contract is adopted from `ci-spec`; and the renames above
-follow.
+one gate checks that declaration is total in both directions; the exit contract
+is adopted from `ci-spec`; and the renames above follow. The head-word/sink-name
+rule is *not* in that gate — it is review-tier, for the reason given under
+Enforcement.
