@@ -3,6 +3,7 @@
 pub mod identity;
 pub mod tier2_artifacts;
 pub mod vmm_version;
+pub mod workload_result;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -51,6 +52,31 @@ pub struct PodSpec {
 }
 
 impl PodSpec {
+    /// Record the backend's resolved isolation declaration. Shared by node
+    /// admission and controllers predicting the admitted program identity;
+    /// these labels alone are not evidence of actual backend execution.
+    pub fn record_isolation(&mut self, isolation: portcullis::enforcement::EnforcedIsolation) {
+        let portcullis::enforcement::EnforcedIsolation {
+            requested,
+            enforced,
+            backend,
+        } = isolation;
+        self.metadata.labels.extend([
+            (
+                "isolation.coproduct.one/requested".into(),
+                requested.to_string(),
+            ),
+            (
+                "isolation.coproduct.one/enforced".into(),
+                enforced.to_string(),
+            ),
+            (
+                "isolation.coproduct.one/backend".into(),
+                backend.to_string(),
+            ),
+        ]);
+    }
+
     /// Create a new PodSpec with defaults for version and kind.
     pub fn new(spec: PodSpecInner) -> Self {
         Self {
@@ -301,6 +327,36 @@ pub struct DeniedDimensionInfo {
     pub price_usd: f64,
 }
 
+/// Page size backing the guest's memory.
+///
+/// Firecracker maps guest RAM from a memfd, and Linux offers no way to enable
+/// transparent huge pages for a memfd region, so the default is 4 KiB pages
+/// with no promotion — whatever the host's THP setting says. For a workload
+/// whose resident set is measured in gigabytes that is a great many stage-2
+/// translations, and under nested virtualisation each one is dearer still.
+///
+/// Requesting 2 MiB asks Firecracker for hugetlbfs pages instead, which are
+/// reserved from a distinct pool the operator must provision
+/// (`vm.nr_hugepages`) rather than promoted opportunistically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HugePages {
+    /// 2 MiB hugetlbfs pages.
+    #[serde(rename = "2M")]
+    TwoMib,
+}
+
+impl HugePages {
+    /// The spelling Firecracker's `machine-config` expects. A spelling it does
+    /// not know is a silently ignored request for the thing that decides
+    /// whether a build takes 84 seconds or does not finish.
+    #[must_use]
+    pub fn as_firecracker(self) -> &'static str {
+        match self {
+            Self::TwoMib => "2M",
+        }
+    }
+}
+
 /// Resource hints for the pod.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -309,6 +365,14 @@ pub struct ResourceSpec {
     pub cpu_cores: Option<u32>,
     /// Memory size in MiB.
     pub memory_mib: Option<u64>,
+    /// Page size backing guest memory. Absent means Firecracker's default of
+    /// 4 KiB pages.
+    ///
+    /// Skipped when absent so that a spec which does not ask for huge pages
+    /// canonicalises exactly as it did before this field existed, leaving every
+    /// program identity minted to date unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huge_pages: Option<HugePages>,
 }
 
 /// Network hints for the pod.
@@ -1045,6 +1109,11 @@ pub struct WorkloadSpec {
     /// key — see `workload_env`.
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Outputs made available to receipt readers after execution: artifact name
+    /// to relative workspace path. Undeclared files cannot be collected through
+    /// the node's receipt API. Included in the declared program identity.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub artifacts: std::collections::BTreeMap<String, String>,
     /// UID to run the workload as.
     ///
     /// # Why this matters more than it looks

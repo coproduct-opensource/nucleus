@@ -36,7 +36,5 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 regex = { workspace = true }
-
-[dev-dependencies]
-# `clippy-config` builds throwaway trees to drive its own gate red.
+# Throwaway test trees for workspace gates.
 tempfile = { workspace = true }

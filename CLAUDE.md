@@ -7,6 +7,18 @@ Nucleus is an **open source, vendor-agnostic** secure execution runtime for AI a
 **License**: MIT
 **Repository**: Public (github.com/coproduct-opensource/nucleus)
 
+## Runtime and control-plane ownership
+
+Nucleus stays open source: pod admission and isolation, workload execution,
+node/workload identity, runtime signing, receipt formats, artifact retrieval,
+and independent receipt verification. Runtime key persistence belongs here.
+
+Gatehouse owns the proprietary build control plane: durable queues and attempt
+leases, retries/recovery, image and successor orchestration, cache admission and
+retention policy, GitHub reconciliation/publication and App credentials. Keep
+those implementations in Gatehouse. Public Nucleus builds and runtime checks
+must not depend on a private Gatehouse controller checkout.
+
 ## Vendor Neutrality Rules
 
 ### NEVER include in nucleus:

@@ -36,7 +36,9 @@ use sha2::{Digest, Sha256};
 use crate::{ImageSpec, PodSpec, PodSpecInner};
 
 /// Domain separator. Versioned, so a later change of shape cannot be confused with this one.
-const PROGRAM_DOMAIN: &[u8] = b"nucleus.pod-program.v1\n";
+// V2 hashes inline policy semantics, not certificate-reissuance provenance.
+// Old program/snapshot identities must miss rather than silently change meaning.
+const PROGRAM_DOMAIN: &[u8] = b"nucleus.pod-program.v2\n";
 
 /// Why a spec has no program identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +80,7 @@ struct Program<'a> {
     labels: &'a std::collections::BTreeMap<String, String>,
     work_dir: &'a std::path::PathBuf,
     timeout_seconds: u64,
-    policy: &'a crate::PolicySpec,
+    policy: PolicyIdentity<'a>,
     budget_model: Option<&'a crate::BudgetModelSpec>,
     resources: Option<&'a crate::ResourceSpec>,
     network: Option<&'a crate::NetworkSpec>,
@@ -86,6 +88,25 @@ struct Program<'a> {
     credentialed_egress: &'a [crate::CredentialedEgressSpec],
     workload: Option<&'a crate::WorkloadSpec>,
     seccomp: Option<&'a crate::SeccompSpec>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PolicyIdentity<'a> {
+    Profile { name: &'a str },
+    Inline { checksum: String },
+}
+
+fn policy_identity(policy: &crate::PolicySpec) -> PolicyIdentity<'_> {
+    match policy {
+        crate::PolicySpec::Profile { name } => PolicyIdentity::Profile { name },
+        // Certificate verification recomputes meets and therefore provenance
+        // UUIDs/timestamps. PermissionLattice::checksum already defines the
+        // semantic identity used by equality and the permission audit chain.
+        crate::PolicySpec::Inline { lattice } => PolicyIdentity::Inline {
+            checksum: lattice.checksum(),
+        },
+    }
 }
 
 fn image_identity(image: &ImageSpec) -> Result<ImageIdentity<'_>, IdentityError> {
@@ -182,7 +203,7 @@ pub fn program_digest(spec: &PodSpec) -> Result<String, IdentityError> {
         labels,
         work_dir,
         timeout_seconds: *timeout_seconds,
-        policy,
+        policy: policy_identity(policy),
         budget_model: budget_model.as_ref(),
         resources: resources.as_ref(),
         network: network.as_ref(),
@@ -203,6 +224,41 @@ pub fn program_digest(spec: &PodSpec) -> Result<String, IdentityError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exported_artifact_paths_are_part_of_the_program_identity() {
+        let mut spec =
+            pinned(r#", "workload": {"command":"cargo", "artifacts":{"binary":"target/a"}}"#);
+        let before = program_digest(&spec).unwrap();
+        spec.spec
+            .workload
+            .as_mut()
+            .unwrap()
+            .artifacts
+            .insert("binary".into(), "private/b".into());
+        assert_ne!(before, program_digest(&spec).unwrap());
+    }
+
+    #[test]
+    fn reissued_policy_provenance_does_not_change_the_program_but_permissions_do() {
+        let mut spec = pinned("");
+        let policy = spec.spec.resolve_policy().unwrap();
+        let reissued = policy.meet(&policy);
+        assert_eq!(policy, reissued);
+        assert_ne!(policy.id, reissued.id);
+        spec.spec.policy = crate::PolicySpec::Inline {
+            lattice: Box::new(policy),
+        };
+        let original = program_digest(&spec).unwrap();
+        spec.spec.policy = crate::PolicySpec::Inline {
+            lattice: Box::new(reissued),
+        };
+        assert_eq!(original, program_digest(&spec).unwrap());
+        if let crate::PolicySpec::Inline { lattice } = &mut spec.spec.policy {
+            lattice.capabilities.run_bash = portcullis::CapabilityLevel::Always;
+        }
+        assert_ne!(original, program_digest(&spec).unwrap());
+    }
 
     fn spec_from(json: &str) -> PodSpec {
         serde_json::from_str(json).expect("test spec parses")
@@ -398,5 +454,88 @@ mod tests {
             hex::encode(h.finalize())
         };
         assert_ne!(d, program_only);
+    }
+}
+
+#[cfg(test)]
+mod huge_pages_identity_tests {
+    use crate::{HugePages, PodSpec};
+
+    fn spec_json(extra: &str) -> PodSpec {
+        let resources = if extra.is_empty() {
+            r#"{"cpu_cores":2,"memory_mib":12288}"#.to_string()
+        } else {
+            format!(r#"{{"cpu_cores":2,"memory_mib":12288,{extra}}}"#)
+        };
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "nucleus/v1", "kind": "Pod",
+            "metadata": { "name": "p" },
+            "spec": {
+                "work_dir": "/work", "timeout_seconds": 60,
+                "resources": serde_json::from_str::<serde_json::Value>(&resources).unwrap(),
+                "policy": {"type": "profile", "name": "demo"},
+                "network": {"allow": [], "deny": []},
+                "image": {"kernel_path": "/k", "rootfs_path": "/r", "read_only": true,
+                          "kernel_digest": format!("sha-256:{}", "a".repeat(64)),
+                          "rootfs_digest": format!("sha-256:{}", "b".repeat(64))}
+            }
+        }))
+        .expect("spec")
+    }
+
+    /// The whole point of `skip_serializing_if`: a spec that does not ask for
+    /// huge pages must canonicalise exactly as it did before the field existed,
+    /// so every program identity minted to date is still the same program.
+    #[test]
+    fn absent_huge_pages_leaves_the_program_digest_untouched() {
+        let without = spec_json("");
+        assert!(
+            without
+                .spec
+                .resources
+                .as_ref()
+                .unwrap()
+                .huge_pages
+                .is_none(),
+            "absent must deserialise as None, not a default variant"
+        );
+        let canonical = serde_json_canonicalizer::to_vec(&without.spec.resources).expect("json");
+        let text = String::from_utf8(canonical).expect("utf8");
+        assert!(
+            !text.contains("huge_pages"),
+            "an absent option must not appear in the canonical form: {text}"
+        );
+    }
+
+    /// And asking for them IS a different program, because it is a different
+    /// machine configuration producing a differently-performing execution.
+    #[test]
+    fn requesting_huge_pages_changes_the_program_digest() {
+        let without = super::program_digest(&spec_json("")).expect("digest");
+        let with = super::program_digest(&spec_json(r#""huge_pages":"2M""#)).expect("digest");
+        assert_ne!(
+            without, with,
+            "asking for a different page size is a different machine configuration and so a \
+             different program; a cache keyed on the digest must not answer one with the other"
+        );
+    }
+
+    #[test]
+    fn the_wire_name_is_firecrackers_own() {
+        let s = spec_json(r#""huge_pages":"2M""#);
+        assert_eq!(
+            s.spec.resources.as_ref().unwrap().huge_pages,
+            Some(HugePages::TwoMib)
+        );
+        let round = serde_json::to_string(&s.spec.resources).expect("json");
+        assert!(round.contains(r#""huge_pages":"2M""#), "{round}");
+    }
+
+    #[test]
+    fn an_unknown_page_size_is_refused() {
+        let bad = serde_json::from_str::<crate::ResourceSpec>(
+            r#"{"cpu_cores":1,"memory_mib":512,"huge_pages":"1G"}"#,
+        );
+        assert!(bad.is_err(), "only sizes the runtime supports may be named");
     }
 }

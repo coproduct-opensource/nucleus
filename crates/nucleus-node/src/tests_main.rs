@@ -706,3 +706,29 @@ fn create_pod_internal_still_consults_the_authority_gate() {
     assert!(src.contains("pod_authority::Admission::from_http("));
     assert!(src.contains("pod_authority::Admission::from_grpc("));
 }
+
+#[test]
+fn pod_listing_reports_root_lineage_explicitly() {
+    let mut info = PodInfo {
+        id: Uuid::new_v4(),
+        name: Some("probe".into()),
+        created_at_unix: 1,
+        state: PodState::Running,
+        proxy_addr: None,
+        labels: BTreeMap::new(),
+        parent_pod_id: None,
+        posture: None,
+    };
+    let value = serde_json::to_value(&info).unwrap();
+    assert_eq!(
+        value.get("parent_pod_id"),
+        Some(&serde_json::Value::Null),
+        "missing lineage is not evidence of a root pod"
+    );
+    let parent = Uuid::new_v4();
+    info.parent_pod_id = Some(parent);
+    assert_eq!(
+        serde_json::to_value(&info).unwrap()["parent_pod_id"],
+        parent.to_string()
+    );
+}

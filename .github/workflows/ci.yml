@@ -101,7 +101,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
       # Deliberately NOT overriding rustflags: the default `-D warnings` is the
@@ -115,7 +115,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           components: rustfmt
           cache: ${{ runner.environment == 'github-hosted' }}
@@ -242,7 +242,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: The discharge seal is not reachable from any shipping build
@@ -272,7 +272,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: A token releases only the committed value, once, on the live graph
@@ -300,7 +300,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: Every merge-queue invariant holds over the workflow model
@@ -347,7 +347,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           target: wasm32-unknown-unknown
           cache: ${{ runner.environment == 'github-hosted' }}
@@ -361,7 +361,7 @@ jobs:
       # there was no point at which they could be checked. 0.13.1 is the version
       # docs.yml already pins. install-action is the same SHA-pinned action this
       # workflow uses for cargo-nextest.
-      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: wasm-pack@0.13.1
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
@@ -405,7 +405,7 @@ jobs:
       # wall clock of `cargo test` on a workspace this size (nexte.st
       # benchmarks); baked into the self-hosted image, installed on hosted.
       # Doctests are not nextest's — they stay on `cargo test --doc` below.
-      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         if: ${{ runner.environment == 'github-hosted' }}
         with:
           tool: cargo-nextest
@@ -509,7 +509,7 @@ jobs:
       gates: ${{ steps.gates.outcome }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: A token clears its node for its signed sinks and only those
@@ -707,7 +707,7 @@ jobs:
     if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           components: clippy
           target: wasm32-unknown-unknown
@@ -718,7 +718,7 @@ jobs:
       # there was no point at which they could be checked. 0.13.1 is the version
       # docs.yml already pins. install-action is the same SHA-pinned action this
       # workflow uses for cargo-nextest.
-      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: wasm-pack@0.13.1
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
@@ -795,7 +795,7 @@ jobs:
           else
             echo "A2A example not affected by this pull request"; echo "run=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         if: ${{ steps.skip.outcome == 'skipped' || steps.skip.outputs.run == 'true' }}
         with:
           components: rustfmt, clippy
@@ -856,7 +856,7 @@ jobs:
         id: skip
         if: ${{ steps.affected.outputs.full != 'true' && !contains(steps.affected.outputs.list, ' nucleus-node ') && !contains(steps.affected.outputs.list, ' nucleus-tool-proxy ') }}
         run: echo "musl type-check not needed for this pull request"
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         if: ${{ steps.skip.outcome == 'skipped' }}
         with:
           target: x86_64-unknown-linux-musl
@@ -910,30 +910,33 @@ jobs:
     if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
-          toolchain: nightly
+          toolchain: 1.96.1, nightly
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: install cargo-fuzz
-        # 0.13.2, not 0.13.1. Dropping --locked was supposed to let cargo
-        # resolve past the rustix 0.36.5 that 0.11.x-0.13.1 bundle, and it did
-        # not: every run still compiled 0.36.5 and died on `attributes starting
-        # with `rustc` are reserved for use by the `rustc` compiler`. 0.13.1
-        # reaches rustix through `tempfile ^3.3.0` and `cargo_metadata ^0.18.1`,
-        # and that graph still admits the old one.
+        # 0.13.2, not 0.13.1, and no pinned compiler.
         #
-        # 0.13.2 moves to `cargo_metadata ^0.23` and `tempfile ^3.4.0`, which
-        # resolves tempfile 3.27 and a current rustix. Verified by installing
-        # both locally: 0.13.2 builds clean and lists all four targets this job
-        # runs. --locked stays off; the version is what changed.
+        # Two fixes for one bug met here. This branch pinned the COMPILER --
+        # `cargo +1.96.1 ... --version 0.13.1 --locked` -- because current
+        # nightly rejects rustix 0.36.5's internal attributes
+        # (rust-lang/rust#156510). main bumped the DEPENDENCY instead: 0.13.2
+        # declares `cargo_metadata ^0.23` and `tempfile ^3.4.0`, which resolve a
+        # current rustix, so nothing needs an older compiler to swallow an old
+        # one.
+        #
+        # Taking the version bump. It removes the cause rather than arranging
+        # for the cause to be tolerated, needs no second toolchain in this job,
+        # and is what main runs -- so this branch converges with main instead of
+        # carrying a second answer to a question already settled there.
         run: cargo install cargo-fuzz --version 0.13.2
       - name: run fuzz targets
         run: |
           cd fuzz
-          cargo fuzz run command_can_execute -- -max_total_time=30
-          cargo fuzz run path_can_access -- -max_total_time=30
-          cargo fuzz run permission_serde -- -max_total_time=30
-          cargo fuzz run workload_api_command -- -max_total_time=30
+          cargo +nightly fuzz run command_can_execute -- -max_total_time=30
+          cargo +nightly fuzz run path_can_access -- -max_total_time=30
+          cargo +nightly fuzz run permission_serde -- -max_total_time=30
+          cargo +nightly fuzz run workload_api_command -- -max_total_time=30
 
   verify-strict:
     name: Ed25519 verify_strict gate (M-3)

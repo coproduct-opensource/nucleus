@@ -38,10 +38,10 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
-      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: cargo-hack
       # Scope: on pull_request, the crates the diff touches closed under
@@ -94,7 +94,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           # Must match [workspace.package] rust-version. Set by wasmtime 48
           # (cranelift needs 1.95) behind the optional wasm-sandbox / host
@@ -149,7 +149,7 @@ jobs:
     if: ${{ github.event.pull_request.draft != true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           # Must match the rustc that kani-verifier bundles; bump with Kani.
           toolchain: "1.93"

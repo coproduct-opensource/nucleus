@@ -34,8 +34,16 @@ pub const NOTHING_ALLOWED: &str = "\u{0}nothing-allowed";
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct CommandLattice {
     /// Allowed commands (whitelist). Empty means check blocked only.
+    #[cfg_attr(
+        feature = "serde",
+        serde(serialize_with = "crate::serde_sets::ordered")
+    )]
     pub allowed: HashSet<String>,
     /// Blocked commands (blacklist). Union in meet operation.
+    #[cfg_attr(
+        feature = "serde",
+        serde(serialize_with = "crate::serde_sets::ordered")
+    )]
     pub blocked: HashSet<String>,
     /// Structured allowlist rules (program + args).
     #[cfg_attr(feature = "serde", serde(default))]

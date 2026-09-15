@@ -1671,7 +1671,13 @@ mod tests {
         assert_ne!(budget.checksum(), d, "budget");
 
         let mut commands = base.clone();
-        commands.commands = PermissionLattice::permissive().commands;
+        // Both constructors have the same command policy. Random HashSet wire
+        // order used to make their checksums differ and hide this inert probe.
+        commands
+            .commands
+            .blocked
+            .insert("newly-blocked-command".into());
+        assert_ne!(commands.commands, base.commands);
         assert_ne!(commands.checksum(), d, "commands");
 
         let mut time = base.clone();

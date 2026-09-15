@@ -85,3 +85,7 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+[build-dependencies]
+# Verifies embedded-wasm.pins at compile time; see build.rs.
+sha2 = { workspace = true }

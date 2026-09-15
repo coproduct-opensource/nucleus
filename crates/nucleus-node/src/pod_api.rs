@@ -884,6 +884,10 @@ mod ownership_tests {
 // `--all-features`, which compiles this.
 #[cfg(all(test, feature = "local-driver"))]
 mod handler_tests {
+    mod boot_identity {
+        use super::*;
+        include!("pod_boot_identity_tests.rs");
+    }
     use super::*;
     use std::collections::HashMap;
     use std::sync::Arc;
