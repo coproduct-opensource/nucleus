@@ -37,6 +37,14 @@
 #   shasum -a 256 sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm \
 #     sdks/verifier-js/pkg/nucleus_verifier_wasm.js
 #
-# Format: <sha256>  <repo-relative path>, as shasum -a 256 emits.
+# Format: <sha256>  <repo-relative path>, as shasum -a 256 emits. A path may be
+# listed more than once; the build accepts any digest listed for it, because
+# wasm-pack output is not reproducible across platforms and a single-digest pin
+# would break whichever platform did not mint it. An artifact matching NO listed
+# digest still fails, which is the property worth keeping.
+#
+# Notably only the .wasm differs by platform: the .js shim came out identical on
+# both, so one line suffices for it.
 839c9e74299669cbe033d0efe1cd3f3d9526ee31963706f4e2672137abcc5e16  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
+8b4ca42f7cc88a744e4936cf353a03c9c9ffecf6aa37108f3fd8d565f58cde13  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm

@@ -20,9 +20,8 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let crate_dir = PathBuf::from(
-        std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"),
-    );
+    let crate_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
     let repo_root = crate_dir
         .parent()
         .and_then(Path::parent)
@@ -35,7 +34,14 @@ fn main() {
         .unwrap_or_else(|e| panic!("reading {}: {e}", pins_path.display()));
 
     let mut checked = 0usize;
-    let mut mismatches: Vec<String> = Vec::new();
+    // path -> every digest accepted for it. wasm-pack output is not
+    // reproducible across platforms (measured: macOS aarch64 and Linux x86_64
+    // differ for one source and one wasm-pack), so a single-digest pin would
+    // break whichever platform did not mint it. Listing the artifacts actually
+    // accepted keeps the gate meaningful -- an unknown blob still fails -- while
+    // admitting that "the" artifact is a set of one per builder.
+    let mut accepted: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     for (number, line) in pins.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -48,6 +54,15 @@ fn main() {
                 number + 1
             )
         });
+        accepted
+            .entry(relative.to_string())
+            .or_default()
+            .push(expected.to_string());
+        checked = checked.saturating_add(1);
+    }
+
+    let mut mismatches: Vec<String> = Vec::new();
+    for (relative, expected) in &accepted {
         let target = repo_root.join(relative);
         println!("cargo:rerun-if-changed={}", target.display());
 
@@ -59,13 +74,15 @@ fn main() {
             )
         });
         let actual = hex(&Sha256::digest(&bytes));
-        if actual != expected {
+        if !expected.contains(&actual) {
             // Collected rather than asserted one at a time: a build that stops
             // at the first mismatch makes updating a multi-artifact pin take one
             // CI round trip per file.
-            mismatches.push(format!("  {relative}\n    pinned: {expected}\n    actual: {actual}"));
+            mismatches.push(format!(
+                "  {relative}\n    accepted: {}\n    actual:   {actual}",
+                expected.join("\n              ")
+            ));
         }
-        checked = checked.saturating_add(1);
     }
 
     assert!(
