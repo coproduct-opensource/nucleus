@@ -660,6 +660,42 @@ impl PermissionLattice {
             .collect::<String>()
     }
 
+    /// The checksum of what a policy COMPUTES, with the validity window left out.
+    ///
+    /// [`Self::checksum`] answers "is this the same certificate", and a window
+    /// belongs in that answer: a permission good until Tuesday is not the same
+    /// grant as one good until Friday. `program_digest` asks a different
+    /// question — "would this compute the same thing" — and a window says WHEN a
+    /// pod may run, never WHAT it computes.
+    ///
+    /// Folding it in made every launch a distinct program, because the window is
+    /// minted per launch at nanosecond precision, so a cross-execution cache
+    /// could never hit. Measured on the acceptance host: two identical builds
+    /// digested 7fda8773... and 6f095fc2..., and with this in place both digested
+    /// 466842e6... and the second was admitted from the cache in 2.95s instead of
+    /// rebuilding for 98s.
+    ///
+    /// Every other field still enters, so two policies that differ in what they
+    /// permit remain different programs.
+    #[must_use]
+    pub fn program_checksum(&self) -> String {
+        let mut hasher = Sha256::new();
+        for (tag, part) in self.digest_parts() {
+            if tag == "time" {
+                continue;
+            }
+            hasher.update(tag.as_bytes());
+            hasher.update(b"\x00");
+            hasher.update((part.len() as u64).to_be_bytes());
+            hasher.update(part.as_bytes());
+        }
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    }
+
     /// The policy fields, in a fixed order, each as a stable string.
     ///
     /// Exactly the fields [`PartialEq`] compares — the two must not drift apart,
