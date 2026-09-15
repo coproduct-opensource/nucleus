@@ -1,0 +1,19 @@
+{
+  "formal_verification": {
+    "extracted_proofs": 6, "handmodel_proofs": 1,
+    "extraction_ratio_pct": 85,
+    "sorry_admit": 24, "vacuous_lean": 3,
+    "lean_theorems_GUARD": 1028, "clean_axiom_footprint": "n/a"
+  },
+  "rust_craft": {
+    "permissive_verify": 50, "verify_calls_GUARD": 77,
+    "unsafe_blocks": 4,
+    "crates_total": 72, "crates_lints_workspace": 45,
+    "lints_adoption_pct": 62
+  },
+  "sandboxing": {
+    "mediation_drift": 0, "bypass_sites": 2,
+    "disallow_sites": 2, "effect_stubs": 9
+  },
+  "hygiene": { "stale_verus_dirs": 0 }
+}
