@@ -63,9 +63,8 @@ tokio = { workspace = true, features = ["process", "fs", "io-util", "time"], opt
 # Shell parsing for command validation
 shell-words = { workspace = true }
 
-# Linux-only guest hardening: no-new-privs + rlimits via pre_exec (most-paranoid #2).
-# (seccomp-bpf / Landlock are a tracked follow-up requiring Linux CI validation.)
-[target.'cfg(target_os = "linux")'.dependencies]
+# Unix nonblocking artifact reads; Linux also uses this for guest hardening.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]

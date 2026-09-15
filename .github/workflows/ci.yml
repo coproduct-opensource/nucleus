@@ -912,28 +912,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
-          toolchain: nightly
+          toolchain: 1.96.1, nightly
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: install cargo-fuzz
-        # 0.13.2, not 0.13.1. Dropping --locked was supposed to let cargo
-        # resolve past the rustix 0.36.5 that 0.11.x-0.13.1 bundle, and it did
-        # not: every run still compiled 0.36.5 and died on `attributes starting
-        # with `rustc` are reserved for use by the `rustc` compiler`. 0.13.1
-        # reaches rustix through `tempfile ^3.3.0` and `cargo_metadata ^0.18.1`,
-        # and that graph still admits the old one.
+        # 0.13.2, not 0.13.1, and no pinned compiler.
         #
-        # 0.13.2 moves to `cargo_metadata ^0.23` and `tempfile ^3.4.0`, which
-        # resolves tempfile 3.27 and a current rustix. Verified by installing
-        # both locally: 0.13.2 builds clean and lists all four targets this job
-        # runs. --locked stays off; the version is what changed.
+        # Two fixes for one bug met here. This branch pinned the COMPILER --
+        # `cargo +1.96.1 ... --version 0.13.1 --locked` -- because current
+        # nightly rejects rustix 0.36.5's internal attributes
+        # (rust-lang/rust#156510). main bumped the DEPENDENCY instead: 0.13.2
+        # declares `cargo_metadata ^0.23` and `tempfile ^3.4.0`, which resolve a
+        # current rustix, so nothing needs an older compiler to swallow an old
+        # one.
+        #
+        # Taking the version bump. It removes the cause rather than arranging
+        # for the cause to be tolerated, needs no second toolchain in this job,
+        # and is what main runs -- so this branch converges with main instead of
+        # carrying a second answer to a question already settled there.
         run: cargo install cargo-fuzz --version 0.13.2
       - name: run fuzz targets
         run: |
           cd fuzz
-          cargo fuzz run command_can_execute -- -max_total_time=30
-          cargo fuzz run path_can_access -- -max_total_time=30
-          cargo fuzz run permission_serde -- -max_total_time=30
-          cargo fuzz run workload_api_command -- -max_total_time=30
+          cargo +nightly fuzz run command_can_execute -- -max_total_time=30
+          cargo +nightly fuzz run path_can_access -- -max_total_time=30
+          cargo +nightly fuzz run permission_serde -- -max_total_time=30
+          cargo +nightly fuzz run workload_api_command -- -max_total_time=30
 
   verify-strict:
     name: Ed25519 verify_strict gate (M-3)

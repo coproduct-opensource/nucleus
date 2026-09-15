@@ -134,8 +134,16 @@ pub const AGENT_HARNESS_CONFIG: &[&str] = &[
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PathLattice {
     /// Allowed paths (glob patterns). Empty means "all allowed".
+    #[cfg_attr(
+        feature = "serde",
+        serde(serialize_with = "crate::serde_sets::ordered")
+    )]
     pub allowed: HashSet<String>,
     /// Blocked paths (glob patterns). Union in meet operation.
+    #[cfg_attr(
+        feature = "serde",
+        serde(serialize_with = "crate::serde_sets::ordered")
+    )]
     pub blocked: HashSet<String>,
     /// Optional sandbox root directory. When set, all paths must be within this directory.
     #[cfg_attr(feature = "serde", serde(default))]

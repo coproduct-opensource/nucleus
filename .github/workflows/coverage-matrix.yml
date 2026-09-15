@@ -290,6 +290,28 @@ jobs:
               git diff "origin/$base...HEAD" > git.diff
               if grep -qE '^\+\+\+ b/crates/portcullis/src/(capability|guard|lattice|certificate|delegation|trust)\.rs$' git.diff; then
                 in_diff="--in-diff git.diff"
+                # A filename in the diff is COARSER than cargo-mutants' own scope:
+                # a change confined to `mod tests` names the file but yields no
+                # mutants, so cargo-mutants exits 0 writing no outcomes.json and
+                # check-mutants-report.sh then fails a run that had nothing to do
+                # (#2884). Ask the tool what it would generate and stand down when
+                # the answer is nothing — the same "no mutants in diff" pass the
+                # untouched-file case already gets, decided by the tool's scope
+                # rather than by a filename. Only the EMPTY answer stands down; a
+                # listing failure leaves the gate armed, so this cannot quietly
+                # skip a run it should have made.
+                if ! cargo mutants --package portcullis --all-features \
+                      --in-diff git.diff \
+                      --file crates/portcullis/src/capability.rs \
+                      --file crates/portcullis/src/guard.rs \
+                      --file crates/portcullis/src/lattice.rs \
+                      --file crates/portcullis/src/certificate.rs \
+                      --file crates/portcullis/src/delegation.rs \
+                      --file crates/portcullis/src/trust.rs \
+                      --list 2>/dev/null | grep -q .; then
+                  run=false; in_diff=""
+                  echo "mutants: the six files are named in the diff but cargo-mutants generates no mutants from it (test-only change); standing down"
+                fi
               else
                 run=false
               fi

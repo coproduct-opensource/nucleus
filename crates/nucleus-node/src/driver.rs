@@ -138,19 +138,7 @@ pub(crate) fn clamp_isolation_to(
         }
     };
 
-    let labels = &mut spec.metadata.labels;
-    labels.insert(
-        "isolation.coproduct.one/requested".to_string(),
-        enforced.requested.to_string(),
-    );
-    labels.insert(
-        "isolation.coproduct.one/enforced".to_string(),
-        enforced.enforced.to_string(),
-    );
-    labels.insert(
-        "isolation.coproduct.one/backend".to_string(),
-        backend.name.to_string(),
-    );
+    spec.record_isolation(enforced);
 
     if enforced.was_strengthened() {
         warn!(
