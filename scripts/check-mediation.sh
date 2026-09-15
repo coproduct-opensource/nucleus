@@ -99,15 +99,29 @@ load_allowlist() {
     done < "$f"
 }
 
-# List in-scope .rs files containing the literal PAT, excluding tests/benches
-# directories (never the agent runtime path).
+# List in-scope .rs files containing the literal PAT, excluding tests and
+# benches (never the agent runtime path).
+#
+# Test code lives in two shapes here and the filter has to know both: a
+# `tests/` or `benches/` DIRECTORY, and a `#[cfg(test)]` module in its own
+# FILE under src/ — `tests.rs` or `<module>_tests.rs`, which is this
+# codebase's own convention (certificate_tests.rs, kernel_tests.rs,
+# firecracker_config_tests.rs, 13 files in all). Matching only the directory
+# shape scanned every one of those as if it were the agent path, and a test
+# that spawns a child to observe a fresh process — which is the only way to
+# observe process-global telemetry init — was reported as un-migrated
+# agent-path debt.
+#
+# This does not open a hole: `test-helpers is not reachable from a shipping
+# build` is its own gate, so what keeps test code off the agent path is
+# reachability, checked there, not this scan's blindness to it.
 list_files() {
     local pat="$1"
     if command -v rg >/dev/null 2>&1; then
         rg -l -F --glob '*.rs' "$pat" "${SCOPE_DIRS[@]}"
     else
         grep -rlF --include='*.rs' "$pat" "${SCOPE_DIRS[@]}"
-    fi | grep -vE '/(tests|benches)/' || true
+    fi | grep -vE '/(tests|benches)/|(/|_)tests\.rs$' || true
 }
 
 # Run one pattern; sets the global FAILED on any un-allowlisted hit.
