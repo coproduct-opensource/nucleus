@@ -279,9 +279,17 @@ why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a productio
 file = "crates/portcullis/src/lattice.rs"
 attr = "#[cfg(not(kani))]"
 guards = "extensions: std::collections::BTreeMap::new(),"
-count = 16
+count = 15
 class = "extensions-omitted-ctor"
 why = "Struct-literal consequence of `CapabilityLattice::extensions` being `cfg(not(kani))` (see capability.rs field entry). Adds no divergence of its own: it initialises a field that does not exist in the verified model."
+
+[[site]]
+file = "crates/portcullis/src/lattice_tests.rs"
+attr = "#[cfg(not(kani))]"
+guards = "extensions: std::collections::BTreeMap::new(),"
+count = 1
+class = "extensions-omitted-ctor"
+why = "The same struct-literal consequence as the lattice.rs entry above, in the one construction that moved with the test module when it was extracted to keep lattice.rs under the sweep ceiling. 16 sites became 15 + 1: the total is unchanged, and this file is test-only, so nothing new diverges."
 
 [[site]]
 file = "crates/portcullis/src/lib.rs"
