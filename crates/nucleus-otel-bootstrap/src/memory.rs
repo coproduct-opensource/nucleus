@@ -54,6 +54,10 @@ pub(crate) fn register(provider: &SdkMeterProvider) {
         .with_unit("%")
         .with_callback(|observer| {
             for point in collect().into_iter().filter(|p| p.kind == Kind::Pressure) {
+                #[expect(clippy::cast_precision_loss, reason = "OpenTelemetry observes f64; these come from integer counters (microseconds, \
+              centi-percent) whose magnitudes are far below 2^53, so the conversion is exact in \
+              the range that occurs. An #[expect] rather than an #[allow] so it stops compiling \
+              if the source type ever changes out from under the bound.")]
                 observer.observe(point.value as f64 / 100.0, &point.attributes());
             }
         })
@@ -291,13 +295,16 @@ fn pressure(out: &mut Vec<Point>, scope: &str, path: &Path) {
             push(out, Kind::Success, scope, &key, u64::from(value.is_some()));
             // Basis points preserve sub-percent pressure without float gauges.
             if let Some(value) = value {
-                push(
-                    out,
-                    Kind::Pressure,
-                    scope,
-                    &key,
-                    (value * 100.0).round() as u64,
-                );
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a PSI percentage is 0..=100 and rounded before conversion, so it \
+                              neither truncates meaningfully nor goes negative. An #[expect] \
+                              rather than an #[allow] so it stops compiling if the source ever \
+                              stops being a bounded percentage."
+                )]
+                let centi_percent = (value * 100.0).round() as u64;
+                push(out, Kind::Pressure, scope, &key, centi_percent);
             }
         }
     }

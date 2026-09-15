@@ -52,6 +52,10 @@ pub(crate) fn register(provider: &SdkMeterProvider) {
         .with_description("Cumulative CPU or stall time; fields overlap and must not be summed")
         .with_callback(|observer| {
             for p in collect().into_iter().filter(|p| p.kind == Kind::Time) {
+                #[expect(clippy::cast_precision_loss, reason = "OpenTelemetry observes f64; these come from integer counters (microseconds, \
+              centi-percent) whose magnitudes are far below 2^53, so the conversion is exact in \
+              the range that occurs. An #[expect] rather than an #[allow] so it stops compiling \
+              if the source type ever changes out from under the bound.")]
                 observer.observe(p.value as f64 / 1_000_000.0, &p.attributes());
             }
         })
