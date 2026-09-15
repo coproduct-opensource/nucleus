@@ -780,7 +780,12 @@ pub mod envelope {
             return CountersignVerdict::NotTwoParties;
         }
 
-        if signed.receipt.verify(&issuer).is_err() {
+        // `verify_strict` on both signatures. The countersignature below already
+        // used it; this line said `verify`, the compatibility spelling, which is
+        // sound (it calls `verify_strict`) but leaves the two halves of a
+        // two-party check spelled differently on a path that mints evidence —
+        // and the M-3 gate counts the permissive spelling.
+        if signed.receipt.verify_strict(&issuer).is_err() {
             return CountersignVerdict::BadIssuerSignature;
         }
 
