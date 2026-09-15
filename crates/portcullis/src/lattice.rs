@@ -662,21 +662,14 @@ impl PermissionLattice {
 
     /// The checksum of what a policy COMPUTES, with the validity window left out.
     ///
-    /// [`Self::checksum`] answers "is this the same certificate", and a window
-    /// belongs in that answer: a permission good until Tuesday is not the same
-    /// grant as one good until Friday. `program_digest` asks a different
-    /// question — "would this compute the same thing" — and a window says WHEN a
-    /// pod may run, never WHAT it computes.
-    ///
-    /// Folding it in made every launch a distinct program, because the window is
-    /// minted per launch at nanosecond precision, so a cross-execution cache
-    /// could never hit. Measured on the acceptance host: two identical builds
-    /// digested 7fda8773... and 6f095fc2..., and with this in place both digested
-    /// 466842e6... and the second was admitted from the cache in 2.95s instead of
-    /// rebuilding for 98s.
-    ///
-    /// Every other field still enters, so two policies that differ in what they
-    /// permit remain different programs.
+    /// [`Self::checksum`] answers "is this the same certificate" and a window
+    /// belongs there: a grant good until Tuesday is not one good until Friday.
+    /// `program_digest` asks "would this compute the same thing", and a window
+    /// says WHEN a pod runs, never WHAT it computes. Minted per launch at
+    /// nanosecond precision, it made every run a distinct program and a
+    /// cross-execution cache could never hit (measured: 7fda8773.../6f095fc2...
+    /// for two identical builds; 466842e6... for both with this). Every other
+    /// field still enters, so policies differing in what they permit differ.
     #[must_use]
     pub fn program_checksum(&self) -> String {
         let mut hasher = Sha256::new();
