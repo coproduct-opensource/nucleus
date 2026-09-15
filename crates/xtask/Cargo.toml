@@ -28,7 +28,7 @@ ci-spec = { path = "../ci-spec" }
 ci-fly-runner = { path = "../ci-fly-runner" }
 
 # Parse the actual Rust attributes and workflow arguments for Kani coverage.
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 toml = { workspace = true }
 # `schedule-liveness` compares a run timestamp against now.
 chrono = { workspace = true }
