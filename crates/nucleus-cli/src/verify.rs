@@ -256,10 +256,15 @@ async fn verify_here() -> Result<()> {
     let admission = mint_admission()?;
     let started = Instant::now();
     let pod = create_pod(&admission).await?;
+    // The parenthetical here used to read "(verified admission provisioned)".
+    // That is what the pod was ASKED for, not what arrived: whether the labels
+    // reached the proxy as NUCLEUS_DLC_* env is `check_admission_gate`'s
+    // question, four lines below. When provisioning did not arrive, this line
+    // reported it as done and the later check contradicted it — two deciders
+    // for one fact, and the unverified one printed first (ADR 0007 G-1, #2903).
     println!(
-        "  [OK] pod created in {} ms, tool-proxy at {} (verified admission provisioned)",
-        started.elapsed().as_millis(),
-        pod.proxy
+        "{}",
+        pod_created_line(started.elapsed().as_millis(), &pod.proxy)
     );
 
     check_sandbox_proof(&pod)?;
@@ -596,6 +601,47 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 /// on the live path could only fail, and `main` was red for two and a half hours
 /// before anything said so. The marker is now BUILT from that same producer, so a
 /// reworded sentence moves this with it instead of silently disarming it.
+/// The line printed once the pod exists.
+///
+/// Returned as a string rather than printed inline so a test can read it —
+/// the pattern `start.rs::success_message` established after its banner
+/// advertised endpoints nobody could reach.
+///
+/// It says "admission requested", not "provisioned". Those are different facts
+/// and this line is printed before anything has checked the second one:
+/// `check_admission_gate` is what decides it, four checks later. When
+/// provisioning did not arrive, the old wording reported it as done and the
+/// later check contradicted it — two deciders for one fact, with the
+/// unverified one printed first (ADR 0007 G-1, #2903).
+fn pod_created_line(elapsed_ms: u128, proxy: &str) -> String {
+    format!("  [OK] pod created in {elapsed_ms} ms, tool-proxy at {proxy} (admission requested)")
+}
+
+/// What to say when admission was asked for and never armed.
+///
+/// Names what still holds before what failed. The checks above this one print
+/// [OK] and establish the Tier 2 boundary; a bare `Error:` after them reads as
+/// "Tier 2 is broken", which is a different fact (ADR 0007 A-8).
+fn admission_not_armed_message(armed: Option<&str>) -> String {
+    format!(
+        "verified admission was requested but never armed: the pod's tool-proxy \
+         reports dlc_admission={armed:?}, expected \"provisioned\".\n\n\
+         What this does NOT mean: the checks that printed [OK] above still hold. \
+         The pod booted, proved its identity to its own tool-proxy, served an \
+         allowed operation from inside the sandbox and had a forbidden one \
+         denied. The Tier 2 boundary is not what failed here.\n\n\
+         What it does mean: the PodSpec's dlc_* labels did not reach the proxy \
+         as NUCLEUS_DLC_* env, so the admission gate is inert and this run \
+         cannot prove anything about it. The break is in the \
+         labels->node->guest->proxy chain, not in the gate.\n\n\
+         Next: `nucleus node pods` shows whether the labels are on the pod. If \
+         they are, the break is downstream of the registry — the node serves \
+         them over the workload API (FETCH_DLC_ADMISSION, logged at debug) and \
+         guest-init exports them, so the node's log splits those two halves in \
+         one observation."
+    )
+}
+
 fn check_admission_gate(pod: &Pod) -> Result<()> {
     // First: was the gate ARMED at all? The proxy's health endpoint reports
     // whether NUCLEUS_DLC_* provisioning reached it — without this, a refusal
@@ -612,11 +658,14 @@ fn check_admission_gate(pod: &Pod) -> Result<()> {
         .context("health response was not JSON")?;
     let armed = health_body.get("dlc_admission").and_then(|v| v.as_str());
     if armed != Some("provisioned") {
-        bail!(
-            "the pod's tool-proxy reports dlc_admission={armed:?}, expected \
-             \"provisioned\" — the PodSpec labels did not arrive as NUCLEUS_DLC_* \
-             env. The break is in the labels→node→spawn-env chain, not the gate."
-        );
+        // What still holds is as much of the diagnosis as what failed. The
+        // checks above this one print [OK] and establish the Tier 2 boundary --
+        // a real pod, a sandboxed read, a policy denial. A bare `Error:` after
+        // them reads as "Tier 2 is broken", which is a different fact and not
+        // this one: the boundary worked and an optional credential chain
+        // layered on top did not arrive (ADR 0007 A-8 -- two outcomes with
+        // different consequences must not share one report). #2903.
+        bail!("{}", admission_not_armed_message(armed));
     }
 
     let (status, body) = proxy_post(
@@ -1217,8 +1266,49 @@ mod leak_sweep {
 
 #[cfg(test)]
 mod admission_marker_tests {
+    use super::{admission_not_armed_message, pod_created_line};
     use portcullis::gate_class::deny_code;
     use portcullis::kernel::DenyReason;
+
+    /// The pod-created line must not report a fact nothing has checked.
+    ///
+    /// It used to read "(verified admission provisioned)", printed immediately
+    /// after `create_pod` — four checks before `check_admission_gate` asks
+    /// whether provisioning actually arrived. When it had not, #2903 saw both:
+    /// an [OK] saying provisioned, then an Error saying dlc_admission=None.
+    #[test]
+    fn the_pod_created_line_does_not_claim_provisioning_arrived() {
+        let line = pod_created_line(7630, "http://127.0.0.1:44141");
+        assert!(
+            !line.contains("provisioned"),
+            "this line is printed before anything checks provisioning: {line}"
+        );
+        assert!(line.contains("admission requested"), "{line}");
+    }
+
+    /// A failure here must not read as "Tier 2 is broken". The [OK] lines above
+    /// it establish the boundary; what failed is a credential chain layered on
+    /// top, and the message has to tell those two apart (ADR 0007 A-8).
+    #[test]
+    fn the_not_armed_message_says_what_still_holds() {
+        let msg = admission_not_armed_message(None);
+        assert!(
+            msg.contains("still hold"),
+            "what survived is missing: {msg}"
+        );
+        assert!(
+            msg.contains("Tier 2 boundary is not what failed"),
+            "the message lets a reader conclude the boundary broke: {msg}"
+        );
+        // And it still names the actual break, with a next step.
+        assert!(msg.contains("NUCLEUS_DLC_"), "{msg}");
+        assert!(msg.contains("nucleus node pods"), "no next step: {msg}");
+        // The observed value is reported, not swallowed.
+        assert!(
+            admission_not_armed_message(Some("unprovisioned")).contains("unprovisioned"),
+            "the observed dlc_admission value must appear"
+        );
+    }
 
     /// The body a real refusal produced, copied verbatim from the job log of the
     /// run that went red on 2026-09-11 (nucleus #2798, quickstart-boot) — before
