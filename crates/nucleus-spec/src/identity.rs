@@ -104,7 +104,11 @@ fn policy_identity(policy: &crate::PolicySpec) -> PolicyIdentity<'_> {
         // UUIDs/timestamps. PermissionLattice::checksum already defines the
         // semantic identity used by equality and the permission audit chain.
         crate::PolicySpec::Inline { lattice } => PolicyIdentity::Inline {
-            checksum: lattice.checksum(),
+            // program_checksum, NOT checksum: the validity window says when a pod
+            // may run, never what it computes, and a window minted per launch
+            // made every run a different program — which a cache keyed on the
+            // digest can never hit.
+            checksum: lattice.program_checksum(),
         },
     }
 }
