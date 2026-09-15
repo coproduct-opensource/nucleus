@@ -349,7 +349,7 @@ jobs:
           filter: blob:none
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          targets: wasm32-unknown-unknown
+          target: wasm32-unknown-unknown
           cache: ${{ runner.environment == 'github-hosted' }}
       # PREREQUISITE, not boilerplate. `nucleus-verifier-service` vendors the
       # wasm SDK with `include_str!`/`include_bytes!` on sdks/verifier-js/pkg/*,
@@ -710,7 +710,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           components: clippy
-          targets: wasm32-unknown-unknown
+          target: wasm32-unknown-unknown
           cache: ${{ runner.environment == 'github-hosted' }}
       # Pinned prebuilt binary with a checksum, not `curl … init.sh | sh`: that
       # piped an unpinned remote script straight into a shell on every run, so
@@ -859,7 +859,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         if: ${{ steps.skip.outcome == 'skipped' }}
         with:
-          targets: x86_64-unknown-linux-musl
+          target: x86_64-unknown-linux-musl
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: Install musl-gcc (hosted x86 only)
         if: ${{ steps.skip.outcome == 'skipped' && runner.environment == 'github-hosted' }}
@@ -915,11 +915,21 @@ jobs:
           toolchain: 1.96.1, nightly
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: install cargo-fuzz
-        # Build the CLI with the pinned stable compiler; only fuzz targets need
-        # nightly. Removing --locked still selected rustix 0.36.5 in run
-        # 34732139070, whose internal attributes current nightly rejects:
-        # https://github.com/rust-lang/rust/issues/156510
-        run: cargo +1.96.1 install cargo-fuzz --version 0.13.1 --locked
+        # 0.13.2, not 0.13.1, and no pinned compiler.
+        #
+        # Two fixes for one bug met here. This branch pinned the COMPILER --
+        # `cargo +1.96.1 ... --version 0.13.1 --locked` -- because current
+        # nightly rejects rustix 0.36.5's internal attributes
+        # (rust-lang/rust#156510). main bumped the DEPENDENCY instead: 0.13.2
+        # declares `cargo_metadata ^0.23` and `tempfile ^3.4.0`, which resolve a
+        # current rustix, so nothing needs an older compiler to swallow an old
+        # one.
+        #
+        # Taking the version bump. It removes the cause rather than arranging
+        # for the cause to be tolerated, needs no second toolchain in this job,
+        # and is what main runs -- so this branch converges with main instead of
+        # carrying a second answer to a question already settled there.
+        run: cargo install cargo-fuzz --version 0.13.2
       - name: run fuzz targets
         run: |
           cd fuzz

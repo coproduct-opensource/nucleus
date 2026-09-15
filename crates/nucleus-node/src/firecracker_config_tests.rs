@@ -73,6 +73,7 @@ fn a_read_only_data_image_does_not_count_as_writable_scratch() {
             vcpu_count: 1,
             mem_size_mib: 256,
             smt: false,
+            huge_pages: None,
         },
         network_interfaces: Vec::new(),
         vsock: None,
@@ -137,6 +138,7 @@ fn full_config() -> FirecrackerConfig {
             vcpu_count: 2,
             mem_size_mib: 512,
             smt: false,
+            huge_pages: None,
         },
         network_interfaces: vec![NetworkInterface {
             iface_id: "eth0".into(),
@@ -1243,6 +1245,7 @@ fn firecracker_device_surface_is_exactly_pinned() {
             vcpu_count: 1,
             mem_size_mib: 128,
             smt: false,
+            huge_pages: None,
         },
         network_interfaces: vec![NetworkInterface {
             iface_id: "eth0".to_string(),
@@ -1585,4 +1588,82 @@ fn no_scratch_means_no_drive_rather_than_a_broken_one() {
         "a declared drive with no file behind it would fail the boot"
     );
     assert_eq!(drives.len(), 1, "only the rootfs remains: {drives:?}");
+}
+
+/// The wire contract for guest page size.
+///
+/// Firecracker reads `huge_pages` from `machine-config`. Omitting the key is
+/// not the same as sending a default: an unchanged spec must produce a
+/// byte-identical request to the one it produced before the field existed, or
+/// every pinned program identity moves for a pod nobody asked to change.
+///
+/// Serialization is tested rather than `from_spec`, which is Linux-only —
+/// the lowering being pure is what makes the contract checkable anywhere.
+#[test]
+fn huge_pages_is_omitted_unless_asked_for_and_named_as_firecracker_names_it() {
+    let base = MachineConfig {
+        vcpu_count: 2,
+        mem_size_mib: 12288,
+        smt: false,
+        huge_pages: None,
+    };
+    let off = serde_json::to_string(&base).expect("json");
+    assert!(
+        !off.contains("huge_pages"),
+        "an unasked-for page size must not appear in the request: {off}"
+    );
+
+    let on = serde_json::to_string(&MachineConfig {
+        huge_pages: Some("2M"),
+        ..base
+    })
+    .expect("json");
+    assert!(
+        on.contains(r#""huge_pages":"2M""#),
+        "Firecracker spells it 2M, and a spelling it does not know is a silently ignored \
+         request for the thing that made a build 20x slower: {on}"
+    );
+}
+
+/// The spec-to-request wiring, which the serialization test above cannot reach.
+///
+/// Linux-gated because `from_spec` is. Worth the gate: hardcoding `None` at the
+/// construction site compiles and passes every other test in this crate on
+/// macOS, so without this the wiring is unguarded on the only platform that
+/// runs it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_spec_asking_for_huge_pages_reaches_the_machine_config() {
+    let lower = |pages: Option<nucleus_spec::HugePages>| {
+        let mut spec = base_spec();
+        spec.spec.resources = Some(nucleus_spec::ResourceSpec {
+            cpu_cores: Some(2),
+            memory_mib: Some(12288),
+            huge_pages: pages,
+        });
+        FirecrackerConfig::from_spec(
+            &spec,
+            std::path::Path::new("/unused/firecracker.log"),
+            std::path::Path::new("/unused/vsock.sock"),
+            &image(true, false),
+            None,
+            "aa00bb11-approval-pubkeys",
+            None,
+            None,
+        )
+        .machine_config
+        .huge_pages
+    };
+
+    assert_eq!(
+        lower(None),
+        None,
+        "absent must stay absent all the way down"
+    );
+    assert_eq!(
+        lower(Some(nucleus_spec::HugePages::TwoMib)),
+        Some("2M"),
+        "a request for 2 MiB pages that never reaches Firecracker is the difference between an \
+         84-second build and one that does not finish"
+    );
 }
