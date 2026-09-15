@@ -1203,7 +1203,36 @@ perturb_bound_dropped_witness() {
 # not a verdict, and it would prove the scorecard reds when a DEPENDENCY errors
 # rather than when its own decision procedure fires.
 perturb_scorecard_slack() {
-    append_line "$1" 'fn _gate_of_gates_scorecard(authority: Authority) {}'
+    # The perturbation has to SCALE WITH THE FAMILY. One witness moved a basis
+    # point when `bound` sat at 171/172; #2884 took it to 173/174, where one
+    # witness is worth 0.33bp and truncation swallows it -- 174/175 still reads
+    # 9942, the ratio never RISES above the floor, `Slack` never fires, and this
+    # probe read a working gate as a broken one.
+    #
+    # k witnesses take d/p to (d+k)/(p+k); crossing one basis point needs
+    #   (d+k)*10000 >= (F+1)*(p+k)   i.e.   k >= ((F+1)p - 10000d) / (9999-F)
+    # F and p are read from the pin, and d is what a TIGHT pin implies
+    # (ceil(F*p/10000)), so this tracks the family as it grows instead of baking
+    # in a count that expires the next time the population moves. At 9942/174 it
+    # asks for 2; it asked for 1 at 9941/172, which is what used to be hardcoded.
+    local n i=0
+    n=$(awk '
+        /^\[family\.bound\]/ { inb = 1; next }
+        /^\[/                  { inb = 0 }
+        inb && /^floor_bp/         { split($0, a, "="); F = a[2] + 0 }
+        inb && /^population_floor/ { split($0, a, "="); P = a[2] + 0 }
+        END {
+            if (F <= 0 || P <= 0 || F >= 9999) { print 1; exit }
+            d    = int((F * P + 9999) / 10000)
+            need = ((F + 1) * P) - (10000 * d)
+            den  = 9999 - F
+            k    = (need <= 0) ? 1 : int((need + den - 1) / den)
+            print (k < 1) ? 1 : k
+        }' .scorecard-ratchet.toml)
+    while [ "$i" -lt "$n" ]; do
+        append_line "$1" "fn _gate_of_gates_scorecard_${i}(authority: Authority) {}"
+        i=$((i + 1))
+    done
 }
 
 # One more law-bearing trait impl with no `lattice_laws!` declaration beside it:
