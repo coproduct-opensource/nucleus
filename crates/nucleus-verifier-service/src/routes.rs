@@ -8,6 +8,7 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{Html, IntoResponse, Response};
 use nucleus_envelope::{Bundle, TrustAnchor, canonical_bundle_hash, verify_bundle};
 use nucleus_lineage::Jwks;
+use nucleus_recompute::envelope::CountersignVerdict;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
@@ -1139,9 +1140,14 @@ pub async fn credit(Json(req): Json<CreditRequest>) -> Json<CreditResponse> {
 /// Request body for [`credit_accrue`].
 #[derive(Debug, Deserialize)]
 pub struct CreditAccrueRequest {
-    /// The agent's clearing receipts to recompute and accrue — the same type
-    /// the stateless [`credit`] endpoint takes.
-    pub receipts: Vec<nucleus_recompute::ClearingReceipt>,
+    /// The clearings to recompute and accrue, each signed by **both** parties.
+    ///
+    /// Was `Vec<ClearingReceipt>` — a bare, unsigned receipt that
+    /// `verify_receipt` accepts whenever it is internally self-consistent, so a
+    /// key could fabricate arbitrary high-value clearings and farm standing
+    /// (#2510). A `CountersignedClearing` cannot be built without the
+    /// counterparty's signature over the same canonical bytes.
+    pub receipts: Vec<nucleus_recompute::envelope::CountersignedClearing>,
     /// The worst-case one-shot defection gain to price the post-accrual bond
     /// against, micro-USD.
     pub max_defection_gain_micro: u64,
@@ -1198,12 +1204,26 @@ pub struct StandingQuery {
 /// - `x-nucleus-signature`: STANDARD base64 of the 64-byte signature over the
 ///   body.
 ///
-/// The signer's own key IS the identity: the ledger is keyed by the DERIVED
-/// `canonical_id = hex(vk)`, never by a caller-chosen string. The `{agent_id}`
-/// path segment is retained for a self-documenting route but MUST equal the
-/// derived id — a mismatch is the confused-deputy case and returns 403 with
-/// nothing written. Missing / malformed / forged signatures return 401 with
-/// nothing written (fail closed).
+/// **`{agent_id}` is the SUBJECT of the accrual, not necessarily the submitter**
+/// (#2510). It was required to equal the submitter's derived id, which made the
+/// ledger self-write: only a key-holder could append to its own history, so no
+/// counterparty could ever record a defection and the caught-defection debit was
+/// adversarially unreachable. Now:
+///
+/// * every clearing must be countersigned by two distinct parties;
+/// * `{agent_id}` must be one of those two parties, on **every** clearing in the
+///   batch;
+/// * the authenticated submitter must also be one of those two parties.
+///
+/// So either party may submit, and a counterparty can record the other's
+/// defection — but only by presenting a clearing that party itself signed. The
+/// authority to write someone's ledger comes from their signature on the
+/// clearing, never from holding their key. A third party who signed nothing can
+/// still write nothing.
+///
+/// Missing / malformed / forged submitter signatures return 401 with nothing
+/// written (fail closed); a batch where any clearing fails the above returns 422
+/// with nothing written.
 ///
 /// Because the id is derived from the verifying key (not chosen), an attacker
 /// can mint keys but CANNOT accrue under an identity it does not control, and
@@ -1218,17 +1238,30 @@ pub struct StandingQuery {
 /// peer-sth` ships), NOT an RFC-7515 JWS, and adds no new dependency. Returns
 /// 503 when `--credit-db` is unset.
 ///
-/// **Standing is NOT yet safe to price real money.** Authenticated identity
-/// closes the *spoofing* gap (you can only accrue under a key you hold), but it
-/// is necessary, not sufficient. A [`nucleus_recompute::ClearingReceipt`] carries
-/// no provenance: `verify_receipt` accepts any *internally self-consistent*
-/// receipt, so a key can fabricate arbitrary high-value receipts and farm
-/// standing without limit. And under this self-write binding the caught-defection
-/// debit is adversarially unreachable (only the key-holder writes its own ledger,
-/// so no counterparty can record its defection). Therefore `required_bond` from
-/// this endpoint MUST NOT price real funds until receipts are provenance-bound
-/// (counterparty-signed or transparency-log/settlement-anchored) and
-/// authenticated defection evidence can debit standing.
+/// **Standing is still NOT safe to price real money, for a shorter list than
+/// before.** #2510 closed two of the three gaps this block used to name:
+///
+/// * *Fabrication.* A bare `ClearingReceipt` carried no provenance —
+///   `verify_receipt` accepts anything internally self-consistent, so a key could
+///   mint arbitrary high-value clearings and farm standing. A countersignature
+///   from a distinct party is now required, so the numbers are agreed, not just
+///   asserted.
+/// * *Unreachable debits.* The caught-defection debit is now reachable: a
+///   counterparty submits a clearing the defector signed, and the recompute
+///   convicts it.
+///
+/// What remains, and why this still must not price real funds:
+///
+/// * **No log anchoring.** Nothing orders or publishes the clearing set, so a
+///   party can withhold its own unfavourable clearings and submit only the
+///   favourable ones. Countersigning makes each submitted clearing true; it does
+///   not make the submitted set complete. (#2500's log-anchoring work.)
+/// * **No external lock.** A bond is still advisory — nucleus verifies evidence
+///   and is non-custodial, so nothing is actually at stake behind the standing
+///   this prices. (#2500's `BondRef` work.)
+/// * **No replay window.** As before, there is no nonce or expiry; accrual is
+///   replay-safe-by-idempotence (per-identity `receipt_hash` dedup), not
+///   replay-prevented.
 pub async fn credit_accrue(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
@@ -1268,26 +1301,61 @@ pub async fn credit_accrue(
     let vk = crate::auth::verify_detached_ed25519(pubkey_hex, sig_b64, &body)?;
     let canonical_id = crate::auth::canonical_id(&vk);
 
-    // Confused-deputy guard: authenticated as key K, but the path names another
-    // identity. 403, write NOTHING. Equality is over public data — no
-    // constant-time compare needed.
-    if agent_id != canonical_id {
-        return Err(VerifyApiError::Forbidden(format!(
-            "path identity {agent_id:?} does not match the signing key's identity {canonical_id:?}"
-        )));
-    }
-
     // Signature verified over these exact bytes — now parse the request body.
     let req: CreditAccrueRequest = serde_json::from_slice(&body)
         .map_err(|e| VerifyApiError::BadRequest(format!("invalid accrue body: {e}")))?;
 
-    // Reuse the proven mint bridge — no economic logic lives in the handler.
-    // The store key is the DERIVED, authenticated identity — never the raw path.
-    let events = nucleus_creditworthiness::mint::mint_events(&req.receipts);
+    // The subject of the accrual, normalised the same way `parties()` reports.
+    // This is a caller-supplied path string, so it is CHECKED below against the
+    // signatures on every clearing — never trusted because it was in the URL.
+    let subject = agent_id.trim().to_ascii_lowercase();
+
+    // ── Two-party admission (fail closed before any write) ──
+    // Verify EVERY clearing first and collect the events; a batch where any one
+    // fails writes nothing at all, so a caller cannot smuggle a bad clearing in
+    // behind good ones and keep the partial effect.
+    let mut events = Vec::with_capacity(req.receipts.len());
+    for (i, signed) in req.receipts.iter().enumerate() {
+        // The subject must be a party: this is what lets `{agent_id}` name
+        // someone other than the submitter without becoming a confused deputy.
+        if !signed.is_party(&subject) {
+            return Err(VerifyApiError::VerificationFailed(format!(
+                "clearing {i}: {agent_id:?} is not a signing party"
+            )));
+        }
+        // The submitter must be a party too. Without this, anyone holding any
+        // key could replay two strangers' countersigned clearing into one of
+        // their ledgers — true, but nobody's business to submit.
+        if !signed.is_party(&canonical_id) {
+            return Err(VerifyApiError::VerificationFailed(format!(
+                "clearing {i}: the submitting key is not a signing party"
+            )));
+        }
+        match nucleus_recompute::envelope::witness_countersigned(signed) {
+            CountersignVerdict::Witnessed(witness) => {
+                // `Invalid` mints nothing (no baseline to attribute) and is
+                // skipped, exactly as the stateless endpoint skips it.
+                if let Some(event) = nucleus_creditworthiness::mint::mint_from_witness(&witness) {
+                    events.push(event);
+                }
+            }
+            // Every refusal is named rather than flattened: "nobody
+            // countersigned" and "the countersignature was forged" read
+            // differently in an operator's log, and only one of them is an
+            // attack.
+            other => {
+                return Err(VerifyApiError::VerificationFailed(format!(
+                    "clearing {i}: {other:?}"
+                )));
+            }
+        }
+    }
+
+    // The store key is the CHECKED subject — a party to every clearing above.
     let mut appended = 0u64;
     for event in events {
         if store
-            .append(&canonical_id, event)
+            .append(&subject, event)
             .map_err(|e| VerifyApiError::Internal(format!("credit store append: {e}")))?
             .is_some()
         {
@@ -1298,10 +1366,10 @@ pub async fn credit_accrue(
     // Re-fold the persisted chain (verify_chain runs inside) = post-accrual
     // standing.
     let file = store
-        .credit_file(&canonical_id)
+        .credit_file(&subject)
         .map_err(|e| VerifyApiError::Internal(format!("credit store read: {e}")))?;
     let head_hash_hex = store
-        .head(&canonical_id)
+        .head(&subject)
         .map_err(|e| VerifyApiError::Internal(format!("credit store head: {e}")))?
         .map(|(_, h)| hex::encode(h));
 

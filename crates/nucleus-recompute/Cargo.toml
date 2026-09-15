@@ -35,6 +35,12 @@ portcullis-core = { path = "../portcullis-core", version = "1.0.0", default-feat
 # wasm closure). nucleus-receipt itself is wasm-capable (the verifier-js WASM
 # SDK depends on it), so turning the feature on does not break wasm consumers.
 nucleus-receipt = { path = "../nucleus-receipt", version = "1.0.0", optional = true }
+# `envelope` only: verifying a COUNTERSIGNATURE needs detached Ed25519 directly
+# (nucleus-receipt verifies its own single signature, not a second party's).
+# nucleus-receipt already depends on both, so `envelope` was already pulling them
+# transitively — naming them here adds nothing to the closure.
+ed25519-dalek = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 
 [features]
 # Travel as a signed receipt: `to_economic_projection` / `clearing_from_projection`
@@ -42,7 +48,7 @@ nucleus-receipt = { path = "../nucleus-receipt", version = "1.0.0", optional = t
 # envelope carries BOTH guarantees — Ed25519 signature (who emitted it) and
 # recompute (the numbers re-derive). OFF by default: pure recompute consumers
 # (and the wasm-pure default build) pay nothing for it.
-envelope = ["dep:nucleus-receipt"]
+envelope = ["dep:nucleus-receipt", "dep:ed25519-dalek", "dep:base64"]
 
 # Travel an IFC decision as a signed receipt: lift a `ConformanceCertificate`
 # (nucleus-ifc's proof-carrying IFC-down-flow decision) into nucleus-receipt's
