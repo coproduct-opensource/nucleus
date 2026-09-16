@@ -490,6 +490,8 @@ pub(crate) async fn get_receipt(
         Err(e @ ReceiptError::NotExited) => Err(ApiError::Driver(e.to_string())),
         Err(ReceiptError::NoExitReport(_)) => Err(ApiError::NotFound),
         Err(e @ ReceiptError::Malformed(_)) => Err(ApiError::Driver(e.to_string())),
+        // Named, not NotFound: the report IS there, and it is not the supervisor's.
+        Err(e @ ReceiptError::Unauthenticated(_)) => Err(ApiError::Authority(e.to_string())),
     }
 }
 

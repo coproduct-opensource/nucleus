@@ -478,6 +478,9 @@ struct LocalPod {
 #[derive(Debug)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct FirecrackerPod {
+    /// The host-owned pod dir: where teardown preserves the exit report and where
+    /// the node's record of the pod's mediation key lives (`pod_receipt`).
+    pod_dir: PathBuf,
     child: Arc<Mutex<tokio::process::Child>>,
     bridge: Mutex<Option<vsock_bridge::VsockBridge>>,
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
@@ -1287,6 +1290,7 @@ impl FirecrackerPod {
         // After the kill, never before: pulling files out from under a live VMM is
         // its own failure mode.
         if let Some(layout) = self.jail.lock().await.take() {
+            pod_receipt::preserve_exit_report(&layout, &self.pod_dir);
             firecracker_config::cleanup_jail(&layout);
         }
         Ok(())
@@ -1315,6 +1319,7 @@ impl FirecrackerPod {
             let _ = net::cleanup_netns(&name).await;
         }
         if let Some(layout) = self.jail.lock().await.take() {
+            pod_receipt::preserve_exit_report(&layout, &self.pod_dir);
             firecracker_config::cleanup_jail(&layout);
         }
     }
@@ -2851,6 +2856,7 @@ async fn spawn_firecracker_pod(
         } = prepared_identity.into_parts();
 
         let handle = FirecrackerPod {
+            pod_dir: pod_dir.to_path_buf(),
             jail: Mutex::new(jail_layout.clone()),
             child,
             bridge: Mutex::new(Some(bridge)),
@@ -3392,6 +3398,9 @@ impl NodeService for GrpcService {
                 pod_receipt::ReceiptError::NotExited => Status::failed_precondition(e.to_string()),
                 pod_receipt::ReceiptError::NoExitReport(_) => Status::not_found(e.to_string()),
                 pod_receipt::ReceiptError::Malformed(_) => Status::internal(e.to_string()),
+                pod_receipt::ReceiptError::Unauthenticated(_) => {
+                    Status::permission_denied(e.to_string())
+                }
             })?;
         // The outward-facing report stays on this transport only; see `pod_receipt`'s module docs
         // for why the HTTP route deliberately does not inherit it.
