@@ -83,7 +83,17 @@ const IDENTITY_VARS: &[&str] = &[
 /// still reported as a boolean; the full secret is never echoed.
 const CANARY_PREFIX: &str = "nucleus-e2e-canary-";
 
+mod transcript;
+
 fn main() {
+    // `transcript`: talk to the host at random and print one fixed line — A6/A7
+    // of the command walk. See `transcript.rs`. Every other invocation is the
+    // containment campaign below, unchanged.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("transcript") {
+        std::process::exit(transcript::run(args.get(1..).unwrap_or_default()));
+    }
+
     let mut breaches: Vec<&'static str> = Vec::new();
     let timeout = Duration::from_millis(
         env_var("NUCLEUS_ADVERSARY_TIMEOUT_MS")
