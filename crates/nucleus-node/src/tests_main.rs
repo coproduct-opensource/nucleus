@@ -732,3 +732,63 @@ fn pod_listing_reports_root_lineage_explicitly() {
         parent.to_string()
     );
 }
+
+/// A cancelled container pod reports the state it exited in, not an error.
+///
+/// Cancel used to remove the container without caching its exit state first
+/// (exit cleanup did), so every later `status()` inspected a container that no
+/// longer existed and read `Error` — and the reaper audited the exit as "No such
+/// container". Needs a real Docker daemon, so it is ignored by default:
+/// `NUCLEUS_TEST_DOCKER_IMAGE=<local image> cargo test -p nucleus-node --bin nucleus-node -- --ignored a_cancelled_container`.
+#[tokio::test]
+#[ignore = "needs a Docker daemon and a local image in NUCLEUS_TEST_DOCKER_IMAGE"]
+async fn a_cancelled_container_reports_its_exit_not_an_error() {
+    let image = std::env::var("NUCLEUS_TEST_DOCKER_IMAGE")
+        .expect("NUCLEUS_TEST_DOCKER_IMAGE names an image already present locally");
+    let docker = bollard::Docker::connect_with_local_defaults().expect("a Docker daemon");
+    let created = docker
+        .create_container(
+            None::<bollard::query_parameters::CreateContainerOptions>,
+            bollard::models::ContainerCreateBody {
+                image: Some(image),
+                cmd: Some(vec!["sleep".to_string(), "300".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create container");
+    docker
+        .start_container(
+            &created.id,
+            None::<bollard::query_parameters::StartContainerOptions>,
+        )
+        .await
+        .expect("start container");
+    let pod = ContainerPod {
+        container_id: created.id.clone(),
+        docker,
+        signed_proxy: Mutex::new(None),
+        permit: Mutex::new(None),
+        cached_exit: Mutex::new(None),
+    };
+    // Non-vacuity: it was running, so the cancel had something to stop.
+    assert!(matches!(pod.status().await, PodState::Running));
+
+    let handle = PodHandle {
+        id: uuid::Uuid::new_v4(),
+        spec: serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            .expect("minimal spec"),
+        created_at: 1_757_000_000,
+        log_path: std::env::temp_dir().join("container-cancel-test.log"),
+        proxy_addr: Mutex::new(None),
+        driver_state: DriverState::Container(Box::new(pod)),
+        parent_pod_id: None,
+        posture_stamp: None,
+    };
+    handle.cancel().await.expect("cancel");
+    let after = handle.status().await;
+    assert!(
+        matches!(after, PodState::Exited { .. }),
+        "a cancelled container reports {after:?}, not the state it exited in"
+    );
+}
