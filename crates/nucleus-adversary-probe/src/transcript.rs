@@ -314,4 +314,49 @@ mod tests {
         assert!(r.starts_with('{') && r.ends_with('}'));
         assert!(r.contains(FORGED_WORKSPACE_HASH));
     }
+
+    /// Every step kind has a wire form, each ending in a newline: the host frames by
+    /// line, and a missing one would be read as the start of the next command.
+    #[test]
+    fn every_step_puts_newline_terminated_frames_on_the_wire() {
+        let steps = [
+            Step::Command("PING"),
+            Step::Unknown,
+            Step::Oversized,
+            Step::Ship(Body::Garbage),
+            Step::Ship(Body::Truncated),
+            Step::Ship(Body::ForgedSignature),
+            Step::Ship(Body::Oversized),
+        ];
+        for step in &steps {
+            let f = frames(step);
+            assert!(!f.is_empty(), "{step:?}");
+            assert!(f.iter().all(|x| x.ends_with(b"\n")), "{step:?}");
+        }
+        assert_eq!(frames(&Step::Command("PING")), vec![b"PING\n".to_vec()]);
+        // Longer than the host's 256-byte command bound, and its 16 KiB body bound.
+        assert!(frames(&Step::Oversized)[0].len() > 256);
+        assert!(frames(&Step::Ship(Body::Oversized))[1].len() > 16 * 1024);
+        assert!(
+            String::from_utf8_lossy(&frames(&Step::Ship(Body::ForgedSignature))[1])
+                .contains("\"signature\"")
+        );
+    }
+
+    #[test]
+    fn the_generator_is_deterministic_and_zero_bound_is_safe() {
+        assert_eq!(draw(42), draw(42));
+        assert!(draw(42).len() as u64 <= MAX_STEPS);
+        let mut rng = XorShift(7);
+        assert_eq!(rng.below(0), 0);
+        assert!(rng.below(5) < 5);
+        assert!(seed_from_kernel().is_some());
+    }
+
+    /// Without a host to talk to, the transcript mode still completes and prints
+    /// its fixed line: the guest's output must not depend on what the host did.
+    #[test]
+    fn the_transcript_mode_completes_without_a_host() {
+        assert_eq!(run(&[]), 0);
+    }
 }
