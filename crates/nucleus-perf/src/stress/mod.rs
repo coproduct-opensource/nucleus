@@ -20,6 +20,7 @@
 //! `0` held; `1` violated; `2` could not look (the proxy did not start, a window
 //! was too large to search, or nothing was exercised).
 
+pub mod hyper;
 pub mod linearize;
 pub mod mock_web;
 pub mod model;
@@ -56,6 +57,18 @@ pub struct Args {
     /// local server, which is where information flow control has to decide.
     #[arg(long, value_enum, default_value = "grant")]
     pub policy: Policy,
+    /// `linearize`: concurrent calls against a model. `hyper`: noninterference —
+    /// the same program twice with different private file contents, compared by
+    /// what the network and the verdict stream saw.
+    #[arg(long, value_enum, default_value = "linearize")]
+    pub mode: Mode,
+    /// `--mode hyper` only: which input is high. `web`: the untrusted page body
+    /// (integrity). `files`: workspace file contents (confidentiality).
+    #[arg(long, value_enum, default_value = "web")]
+    pub high: hyper::High,
+    /// `--mode hyper` only: how many programs, from consecutive seeds.
+    #[arg(long, default_value_t = 20)]
+    pub trials: u64,
     /// On a violation, write every call of the history here (one line each:
     /// invoke, return, op, status, code) so the counterexample can be analysed —
     /// a concurrent failure does not reproduce on demand.
@@ -66,6 +79,23 @@ pub struct Args {
     pub verbose: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Mode {
+    Linearize,
+    Hyper,
+}
+
+/// `research-web` plus writing and editing: private data, untrusted content and an
+/// exfiltration vector in one session.
+pub(crate) fn trifecta_lattice() -> Result<portcullis::PermissionLattice> {
+    let mut lattice = portcullis::profile::ProfileRegistry::default()
+        .resolve("research-web")
+        .context("the research-web profile")?;
+    lattice.capabilities.write_files = portcullis::CapabilityLevel::Always;
+    lattice.capabilities.edit_files = portcullis::CapabilityLevel::Always;
+    Ok(lattice)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, clap::ValueEnum)]
 pub enum Policy {
     Grant,
@@ -74,13 +104,13 @@ pub enum Policy {
 
 /// A tiny deterministic generator (xorshift64*): reproducible from `--seed`, and no
 /// dependency for four random choices.
-struct Rng(u64);
+pub(crate) struct Rng(u64);
 
 impl Rng {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
-    fn below(&mut self, n: u64) -> u64 {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
@@ -129,28 +159,29 @@ fn request(op: &Op) -> Option<(&'static str, serde_json::Value)> {
     })
 }
 
+/// Why the proxy refused, from its reply body: `kind`, qualified by `deny_code` for
+/// a kernel decision. Two refusals for different reasons are different results.
+pub(crate) fn refusal_code(v: &serde_json::Value) -> Option<String> {
+    let error = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
+    // Before #2945 the denial circuit breaker's lockdown was reported as `400
+    // body_error` ("request body error: LOCKDOWN ACTIVE ..."); classified by its
+    // message so the model can name it on either proxy.
+    if error.contains("LOCKDOWN ACTIVE") {
+        return Some("lockdown".to_owned());
+    }
+    match (
+        v.get("kind").and_then(|c| c.as_str()),
+        v.get("deny_code").and_then(|c| c.as_str()),
+    ) {
+        (Some(kind), Some(deny)) => Some(format!("{kind}/{deny}")),
+        (Some(kind), None) => Some(kind.to_owned()),
+        (None, _) => None,
+    }
+}
+
 fn normalise(op: &Op, status: u16, body: &str) -> Out {
     let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
-    // The proxy's refusal carries `kind` (e.g. `kernel_denied`) and, for a kernel
-    // decision, a `deny_code` naming the obligation that failed. Both are part of
-    // the result: two refusals for different reasons are different results.
-    let error = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
-    // The denial circuit breaker's lockdown is reported as `400 body_error`
-    // ("request body error: LOCKDOWN ACTIVE ...") — a security refusal wearing a
-    // malformed-request status. Classified by its message here so the model can
-    // name it; the status itself is a defect to fix in the proxy, not in this harness.
-    let code = if error.contains("LOCKDOWN ACTIVE") {
-        Some("lockdown".to_owned())
-    } else {
-        match (
-            v.get("kind").and_then(|c| c.as_str()),
-            v.get("deny_code").and_then(|c| c.as_str()),
-        ) {
-            (Some(kind), Some(deny)) => Some(format!("{kind}/{deny}")),
-            (Some(kind), None) => Some(kind.to_owned()),
-            (None, _) => None,
-        }
-    };
+    let code = refusal_code(&v);
     let contents = match op {
         Op::Read(_) if (200..300).contains(&status) => v
             .get("contents")
@@ -181,6 +212,9 @@ fn nanos_since(t0: std::time::Instant) -> u64 {
 }
 
 pub fn run(a: Args) -> Result<i32> {
+    if a.mode == Mode::Hyper {
+        return hyper::run(&a);
+    }
     let work = workspace().context("building the workspace")?;
     let web = mock_web::MockWeb::start().context("starting the local web server")?;
     model::set_mock_addr(web.addr);
@@ -201,12 +235,7 @@ pub fn run(a: Args) -> Result<i32> {
             )
         }
         Policy::Trifecta => {
-            let mut lattice = portcullis::profile::ProfileRegistry::default()
-                .resolve("research-web")
-                .context("the research-web profile")?;
-            // Writing a new file and overwriting one are different capabilities.
-            lattice.capabilities.write_files = portcullis::CapabilityLevel::Always;
-            lattice.capabilities.edit_files = portcullis::CapabilityLevel::Always;
+            let lattice = trifecta_lattice()?;
             let run = crate::agency::spawn_local_proxy(&crate::agency::LocalProxyConfig {
                 run_id: format!("stress-{}", std::process::id()),
                 name: "stress-trifecta",
