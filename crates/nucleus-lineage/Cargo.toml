@@ -71,6 +71,8 @@ reqwest = { workspace = true, features = ["blocking", "json", "rustls"], optiona
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# A9 of the command walk: chain lengths and tamper positions (tests/lineage_is_append_only.rs).
+proptest = { workspace = true }
 ureq = { workspace = true, features = ["json"] }
 # HTTP mocking for HttpWitnessClient integration tests. `wiremock`'s
 # async runtime requires tokio; we already use it elsewhere.

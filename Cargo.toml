@@ -284,3 +284,18 @@ opt-level = 3
 
 [profile.dev.package.salsa20]
 opt-level = 3
+
+# Same reasoning for signature verification. The A8/A9 walks
+# (nucleus-envelope/tests/verification_is_exact.rs,
+# nucleus-lineage/tests/lineage_is_append_only.rs) verify an artifact once per
+# tampered byte. Unoptimized, the curve arithmetic and SHA-512 make that minutes of
+# CPU on a CI runner, and nextest's 120 s limit killed both. Optimizing the
+# primitives, not the walks, keeps the walks exhaustive over the production code.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3

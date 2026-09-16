@@ -85,7 +85,22 @@ const NOT_FOUND: &[&str] = &["File not found", "not found by ext2_lookup"];
 /// `guest_path` is the path INSIDE the filesystem — the guest mounts the image
 /// at `/work`, so `/work/.nucleus-exit-report.json` in the guest is
 /// `/.nucleus-exit-report.json` here.
+///
+/// # Precondition: no VMM has the image open
+///
+/// The journal is replayed IN PLACE first. A microVM is ended by being killed, so
+/// what the guest last wrote — including a report it `fsync`ed — can sit committed
+/// in the ext4 journal and not yet checkpointed into the filesystem, with
+/// `needs_recovery` set. `debugfs` does not replay the journal: measured on a
+/// live pod (2026-09-16), it either refused the image ("Inode bitmap checksum
+/// does not match") or, while the guest ran, listed the root as the template
+/// left it, and the signed report appeared only after `e2fsck -E journal_only`.
+/// Every caller reads after the VMM is gone — `pod_receipt::build` requires an
+/// exited pod, and teardown preserves after the kill and before the jail is
+/// removed — and the image is scratch that teardown deletes, so replaying in
+/// place costs nothing and copying a multi-GiB image to spare it would.
 pub(crate) fn read_file(image: &Path, guest_path: &str) -> Result<Vec<u8>, ReadbackError> {
+    replay_journal(image)?;
     let out_dir =
         tempfile_dir().map_err(|e| ReadbackError::Failed(format!("staging directory: {e}")))?;
     let staged = out_dir.join("readback");
@@ -117,6 +132,26 @@ pub(crate) fn read_file(image: &Path, guest_path: &str) -> Result<Vec<u8>, Readb
     });
     let _ = std::fs::remove_dir_all(&out_dir);
     bytes
+}
+
+/// Replay the ext4 journal of `image`, changing nothing else.
+///
+/// `e2fsck -E journal_only` exits 0 (nothing to do), 1 (replayed) or 2 (replayed,
+/// "reboot" — meaningless for an image file); 4 and up mean it could not. A
+/// missing `e2fsck` is `ToolMissing`, never "the pod wrote nothing".
+fn replay_journal(image: &Path) -> Result<(), ReadbackError> {
+    let out = std::process::Command::new("e2fsck")
+        .args(["-y", "-E", "journal_only"])
+        .arg(image)
+        .output()
+        .map_err(|e| ReadbackError::ToolMissing(format!("e2fsck: {e}")))?;
+    match out.status.code() {
+        Some(0..=2) => Ok(()),
+        code => Err(ReadbackError::Failed(format!(
+            "replaying the scratch disk's journal (e2fsck exit {code:?}): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+    }
 }
 
 /// A private staging directory, named by pid and a counter.
