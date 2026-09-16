@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8469d429e9f6bbee26c7746a6182716029b45f93574d6d2451d2be1045658743 # shrinks to cmds = [Observe(0, []), Observe(0, []), Quarantine(Existing(2157954866849172752)), Observe(0, []), Observe(0, []), Observe(0, []), Act(0, []), Quarantine(Existing(421517358406255362))]
+cc 8b9584d1ebcd37141e4791ef42e9e820b68ed510bc5febe6db71fb9281d50c54 # shrinks to cmds = [Observe(0, []), Observe(0, []), Observe(1, []), Act(1, [Existing(858898801920597932)]), Observe(0, []), Observe(0, [Existing(3850140956948463898)])]
