@@ -7538,6 +7538,7 @@ dependencies = [
  "nucleus-otel-bootstrap",
  "nucleus-receipt",
  "nucleus-recompute",
+ "nucleus-witness-olog",
  "rand 0.10.2",
  "ring",
  "serde",

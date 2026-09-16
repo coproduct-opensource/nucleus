@@ -70,6 +70,14 @@ struct Cli {
     /// `/data/credit.redb`.
     #[arg(long, env = "NUCLEUS_CREDIT_DB_PATH")]
     credit_db: Option<String>,
+
+    /// Canonical ledger root that registered bonds are pinned to, 64-char hex.
+    ///
+    /// Required for `POST /v1/bond/{agent_id}`; without it that route 503s and
+    /// no ceiling can be registered. See `AppState::credit_ledger_root` for why
+    /// this has no default.
+    #[arg(long, env = "NUCLEUS_CREDIT_LEDGER_ROOT")]
+    credit_ledger_root: Option<String>,
 }
 
 #[tokio::main]
@@ -155,6 +163,31 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Parse the canonical ledger root. A malformed value is a STARTUP FAILURE,
+    // not a warning that degrades to `None`: an operator who passed a root
+    // meant registration checked against it, and silently running with the
+    // check disabled is the failure mode the field exists to prevent.
+    let credit_ledger_root = match cli.credit_ledger_root.as_deref() {
+        Some(hex_root) if !hex_root.is_empty() => {
+            let raw = hex::decode(hex_root)
+                .with_context(|| "--credit-ledger-root must be 64-char hex".to_string())?;
+            let bytes: [u8; 32] = raw.as_slice().try_into().map_err(|_| {
+                anyhow::anyhow!(
+                    "--credit-ledger-root must be 32 bytes (64 hex chars), got {}",
+                    raw.len()
+                )
+            })?;
+            tracing::info!(root = %hex_root, "bond registration enabled");
+            Some(nucleus_witness_olog::LedgerRoot(bytes))
+        }
+        _ => {
+            tracing::info!(
+                "bond registration disabled; pass --credit-ledger-root to enable POST /v1/bond/{{agent_id}}"
+            );
+            None
+        }
+    };
+
     let state = AppState {
         db: db.clone(),
         signer,
@@ -163,6 +196,7 @@ async fn main() -> Result<()> {
         witness: None,    // iter-1: configurable via CLI in iter-2
         agent_card: None, // configurable via CLI in a later iteration
         credit_store,
+        credit_ledger_root,
     };
 
     // Retention sweeper — spawned only when persistence is enabled.

@@ -1138,7 +1138,14 @@ pub async fn credit(Json(req): Json<CreditRequest>) -> Json<CreditResponse> {
 // pubkey hex, so a reader queries standing by that same hex id.
 
 /// Request body for [`credit_accrue`].
+/// `deny_unknown_fields` because this type LOST a field. Until #2524 it carried
+/// `max_defection_gain_micro`, and that field decided the bond. A client that
+/// still sends it must get a 400 rather than have it silently dropped:
+/// "I asked to be priced against 1M" and "I said nothing about pricing" are
+/// different requests, and serde's default would make them the same one
+/// (ADR 0007 **A-1**). The loud failure is the migration notice.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreditAccrueRequest {
     /// The clearings to recompute and accrue, each signed by **both** parties.
     ///
@@ -1148,25 +1155,52 @@ pub struct CreditAccrueRequest {
     /// (#2510). A `CountersignedClearing` cannot be built without the
     /// counterparty's signature over the same canonical bytes.
     pub receipts: Vec<nucleus_recompute::envelope::CountersignedClearing>,
-    /// The worst-case one-shot defection gain to price the post-accrual bond
-    /// against, micro-USD.
-    pub max_defection_gain_micro: u64,
 }
 
 /// Response for [`credit_accrue`]: the post-accrual standing (the
 /// [`CreditResponse`] fields) plus how many events were newly appended and the
 /// identity's new portable head commitment.
+/// What an agent's registered lock prices out to at its current reputation.
+///
+/// Every number here is derived: the ceiling from the agent's own signed
+/// attestation, the requirement from the proven `required_bond`, the verdict
+/// from the proven `deters`. None of them is a request parameter, which is the
+/// whole of #2524.
+#[derive(Debug, Serialize)]
+pub struct BondPricing {
+    /// The agent's **registered** bid ceiling — the worst-case one-shot
+    /// defection gain its collateral is posted against. Signed by the agent at
+    /// registration; it was a request field until #2524.
+    pub bid_ceiling_micro: u64,
+    /// Collateral the agent attests is locked on an external rail, micro-USD.
+    /// Attested, NOT confirmed — see the registration endpoint's docs.
+    pub locked_micro: u64,
+    /// Minimum bond to deter that ceiling at this reputation — the proven
+    /// `required_bond`, micro-USD.
+    pub required_bond_micro: u64,
+    /// Whether locked collateral plus reputation deters the ceiling — the
+    /// proven `deters`. Re-evaluated on every read, because standing falls when
+    /// a defection is caught: a lock that cleared its ceiling last week may not
+    /// clear it now.
+    pub deters: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CreditAccrueResponse {
     /// Bond-substituting reputation after this accrual, micro-USD.
     pub reputation_micro: u64,
     /// Total events folded into the identity's persisted file.
     pub event_count: u64,
-    /// Minimum bond to deter `max_defection_gain_micro` at this reputation —
-    /// the proven `required_bond`, micro-USD.
-    pub required_bond_micro: u64,
-    /// The defection gain the bond was priced against (echoed for auditability).
-    pub max_defection_gain_micro: u64,
+    /// The agent's bond, priced against its **registered** ceiling — or `None`
+    /// when it has registered no lock.
+    ///
+    /// `None` means *not priced*, and is deliberately not a zero
+    /// [`BondPricing`]: "no ceiling on record" and "a ceiling of zero, fully
+    /// covered" are different facts, and collapsing them onto one number is
+    /// ADR 0007 **A-1** — the shape where a default reads as an answer. A
+    /// caller that treats `None` as "no bond required" has made that mistake
+    /// itself, having been told.
+    pub bond: Option<BondPricing>,
     /// How many submitted receipts minted a NEW ledger entry. Already-seen
     /// receipt hashes are deduped (counted 0), so re-POSTing the same receipts
     /// is idempotent.
@@ -1177,12 +1211,210 @@ pub struct CreditAccrueResponse {
     pub head_hash_hex: Option<String>,
 }
 
-/// Query string for [`credit_standing`].
-#[derive(Debug, Deserialize)]
-pub struct StandingQuery {
-    /// The worst-case one-shot defection gain to price the bond against,
-    /// micro-USD.
-    pub max_defection_gain_micro: u64,
+/// Standing response: reputation plus the registered-ceiling pricing.
+///
+/// Separate from [`CreditResponse`], which the stateless `POST /v1/credit`
+/// keeps verbatim. The two endpoints answer different questions now — "what
+/// would I owe against a gain of N" versus "what do I owe against the ceiling I
+/// registered" — and one struct serving both would have to carry a gain field
+/// that means different things depending on the route (ADR 0007 **A-1**).
+#[derive(Debug, Serialize)]
+pub struct CreditStandingResponse {
+    /// Bond-substituting reputation, micro-USD.
+    pub reputation_micro: u64,
+    /// Events folded into the identity's persisted file.
+    pub event_count: u64,
+    /// Priced against the registered ceiling, or `None` if no lock is
+    /// registered. Same meaning as [`CreditAccrueResponse::bond`].
+    pub bond: Option<BondPricing>,
+}
+
+/// Price `identity`'s registered lock at its current standing, or `None` if it
+/// has none.
+///
+/// **One decider** (ADR 0007 **G-1**): `accrue` and `GET standing` both call
+/// this rather than each re-deriving the pricing, because two copies of "read
+/// the lock, re-check it, price it" is how the two endpoints drift into
+/// disagreeing about the same agent's bond.
+///
+/// The stored attestation is re-checked here, not trusted: `register_lock` runs
+/// again against the agent's key, the configured canonical root, and the
+/// agent's **current** reputation. A lock that passed at registration can fail
+/// now — reputation falls when a defection is caught — and this returns `None`
+/// in that case rather than a stale pass, which is the direction that fails
+/// closed.
+fn price_registered_lock(
+    state: &AppState,
+    store: &nucleus_creditworthiness::store::CreditLedgerStore,
+    identity: &str,
+    file: &nucleus_creditworthiness::CreditFile,
+) -> Result<Option<BondPricing>, VerifyApiError> {
+    // No configured root ⇒ non-portability cannot be checked ⇒ nothing prices.
+    let Some(root) = state.credit_ledger_root else {
+        return Ok(None);
+    };
+    let Some(att) = store
+        .lock(identity)
+        .map_err(|e| VerifyApiError::Internal(format!("credit store lock read: {e}")))?
+    else {
+        return Ok(None);
+    };
+    // The identity IS the agent's pubkey hex (see `crate::auth::canonical_id`),
+    // so the key to verify the attestation against is derivable from the key it
+    // is stored under — no second lookup, and no way to pair one agent's
+    // attestation with another's key.
+    let Some(vk) = crate::auth::verifying_key_from_id(identity) else {
+        return Ok(None);
+    };
+    let reputation = file.reputation_micro();
+    match nucleus_witness_olog::register_lock(&att, &vk, identity, root, reputation) {
+        Ok(lock) => Ok(Some(BondPricing {
+            bid_ceiling_micro: lock.bid_ceiling_micro(),
+            locked_micro: lock.amount_micro().0,
+            required_bond_micro: file.required_bond(lock.bid_ceiling_micro()).0,
+            deters: file.deters(lock.amount_micro(), lock.bid_ceiling_micro()),
+        })),
+        // A stored lock that no longer checks out prices as nothing. It is not
+        // an error: standing legitimately falls, and a 500 here would make a
+        // caught defection look like an outage.
+        Err(_) => Ok(None),
+    }
+}
+
+/// `POST /v1/bond/{agent_id}` — register a verified external lock.
+///
+/// The agent signs an [`nucleus_witness_olog::EscrowAttestation`] naming the
+/// rail, the lock reference, the amount, the canonical ledger root, and the
+/// **bid ceiling** the collateral is posted against. Registration verifies that
+/// signature, that the attestation names the authenticated identity, that it is
+/// pinned to this service's canonical root, and that the amount meets the
+/// proven `required_bond` for that ceiling at the agent's current reputation.
+///
+/// Authenticated exactly as `accrue` is: a detached Ed25519 signature over the
+/// exact body bytes, with the signer's key deriving the identity. The
+/// `{agent_id}` path segment must equal it (403 otherwise). The attestation's
+/// own `agent_id` must equal it too — a valid signature over a lock for
+/// somebody else is refused with its own reason, since "forged" and "not
+/// yours" are different facts.
+///
+/// Re-registering replaces the previous lock. Lowering a ceiling is as
+/// available as raising one, deliberately: an agent that cannot reduce its
+/// exposure will stop registering instead.
+///
+/// # What registration does NOT establish
+///
+/// **The rail is not consulted.** Nothing here reaches a chain, a card network
+/// or a bank to confirm `escrow_ref` exists or holds `amount_micro`. This is
+/// the same boundary `nucleus-recompute::settlement_attestation` draws, for the
+/// same reason — nucleus is non-custodial and an offline verifier that silently
+/// did network I/O would be worse than one that admits it cannot.
+///
+/// So what a registered lock proves is **attribution and immutability**: this
+/// agent, and no other, committed to this ceiling with this claimed collateral,
+/// and cannot restate either afterwards. It does not prove the money is there.
+/// Pricing real funds against it needs rail confirmation, which is not in this
+/// repository and may never be.
+///
+/// Returns 503 when `--credit-db` or `--credit-ledger-root` is unset.
+pub async fn bond_register(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<BondRegisterResponse>, VerifyApiError> {
+    let store = state.credit_store.as_ref().ok_or_else(|| {
+        VerifyApiError::PersistenceDisabled(
+            "bond registration requires --credit-db (NUCLEUS_CREDIT_DB_PATH); service is stateless"
+                .into(),
+        )
+    })?;
+    let root = state.credit_ledger_root.ok_or_else(|| {
+        VerifyApiError::PersistenceDisabled(
+            "bond registration requires --credit-ledger-root (NUCLEUS_CREDIT_LEDGER_ROOT);              without a canonical root a lock's non-portability cannot be checked"
+                .into(),
+        )
+    })?;
+
+    // Same authenticated binding as `accrue`, fail closed before any write.
+    let pubkey_hex = headers
+        .get(crate::auth::PUBKEY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            VerifyApiError::Unauthorized(format!(
+                "missing or non-ASCII {} header",
+                crate::auth::PUBKEY_HEADER
+            ))
+        })?;
+    let sig_b64 = headers
+        .get(crate::auth::SIGNATURE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            VerifyApiError::Unauthorized(format!(
+                "missing or non-ASCII {} header",
+                crate::auth::SIGNATURE_HEADER
+            ))
+        })?;
+    let vk = crate::auth::verify_detached_ed25519(pubkey_hex, sig_b64, &body)?;
+    let canonical_id = crate::auth::canonical_id(&vk);
+    if agent_id != canonical_id {
+        return Err(VerifyApiError::Forbidden(format!(
+            "path identity {agent_id:?} does not match the signing key's identity {canonical_id:?}"
+        )));
+    }
+
+    let att: nucleus_witness_olog::EscrowAttestation = serde_json::from_slice(&body)
+        .map_err(|e| VerifyApiError::BadRequest(format!("invalid escrow attestation: {e}")))?;
+
+    // Price against the standing the agent has NOW.
+    let file = store
+        .credit_file(&canonical_id)
+        .map_err(|e| VerifyApiError::Internal(format!("credit store read: {e}")))?;
+
+    // The checker. Nothing below can run without the token it mints.
+    let checked = nucleus_witness_olog::register_lock(
+        &att,
+        &vk,
+        &canonical_id,
+        root,
+        file.reputation_micro(),
+    )
+    .map_err(|e| VerifyApiError::VerificationFailed(format!("lock not registered: {e}")))?;
+
+    store
+        .put_lock(&canonical_id, &checked, &att)
+        .map_err(|e| VerifyApiError::Internal(format!("credit store lock write: {e}")))?;
+
+    Ok(Json(BondRegisterResponse {
+        agent_id: canonical_id,
+        rail: att.rail.clone(),
+        escrow_ref: att.escrow_ref.clone(),
+        bond: BondPricing {
+            bid_ceiling_micro: checked.bid_ceiling_micro(),
+            locked_micro: checked.amount_micro().0,
+            required_bond_micro: file.required_bond(checked.bid_ceiling_micro()).0,
+            deters: file.deters(checked.amount_micro(), checked.bid_ceiling_micro()),
+        },
+        rail_confirmed: false,
+    }))
+}
+
+/// Response for [`bond_register`].
+#[derive(Debug, Serialize)]
+pub struct BondRegisterResponse {
+    /// The authenticated identity the lock was registered for.
+    pub agent_id: String,
+    /// Echoed from the attestation.
+    pub rail: String,
+    /// Echoed from the attestation.
+    pub escrow_ref: String,
+    /// The registered lock priced at the agent's current reputation.
+    pub bond: BondPricing,
+    /// **Always `false`.** The rail was not consulted; see this endpoint's
+    /// docs. Serialized rather than omitted so a client reading this response
+    /// has to see the word, instead of inferring confirmation from a 200. It
+    /// becomes meaningful only if rail confirmation is ever built, and until
+    /// then a constant that says so out loud beats a field that is absent.
+    pub rail_confirmed: bool,
 }
 
 /// `POST /v1/credit/{agent_id}/accrue` — append an agent's recompute-verified
@@ -1373,11 +1605,12 @@ pub async fn credit_accrue(
         .map_err(|e| VerifyApiError::Internal(format!("credit store head: {e}")))?
         .map(|(_, h)| hex::encode(h));
 
+    let bond = price_registered_lock(&state, store, &canonical_id, &file)?;
+
     Ok(Json(CreditAccrueResponse {
         reputation_micro: file.reputation_micro(),
         event_count: file.event_count(),
-        required_bond_micro: file.required_bond(req.max_defection_gain_micro).0,
-        max_defection_gain_micro: req.max_defection_gain_micro,
+        bond,
         appended,
         head_hash_hex,
     }))
@@ -1397,8 +1630,7 @@ pub async fn credit_accrue(
 pub async fn credit_standing(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
-    Query(q): Query<StandingQuery>,
-) -> Result<Json<CreditResponse>, VerifyApiError> {
+) -> Result<Json<CreditStandingResponse>, VerifyApiError> {
     let store = state.credit_store.as_ref().ok_or_else(|| {
         VerifyApiError::PersistenceDisabled(
             "credit standing requires --credit-db (NUCLEUS_CREDIT_DB_PATH); service is stateless"
@@ -1410,11 +1642,12 @@ pub async fn credit_standing(
         .credit_file(&agent_id)
         .map_err(|e| VerifyApiError::Internal(format!("credit store read: {e}")))?;
 
-    Ok(Json(CreditResponse {
+    let bond = price_registered_lock(&state, store, &agent_id, &file)?;
+
+    Ok(Json(CreditStandingResponse {
         reputation_micro: file.reputation_micro(),
         event_count: file.event_count(),
-        required_bond_micro: file.required_bond(q.max_defection_gain_micro).0,
-        max_defection_gain_micro: q.max_defection_gain_micro,
+        bond,
     }))
 }
 
