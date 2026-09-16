@@ -75,7 +75,7 @@ use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{ApiError, NodeState, trust_gate};
+use crate::{ApiError, NodeState, keys};
 
 /// Header an external caller presents its own chain in (an
 /// [`AttenuationToken`], base64). Same spelling the tool-proxy uses.
@@ -270,7 +270,7 @@ impl PodAuthority {
     /// Build the authority for this node. The root signing key is persisted
     /// under `state_dir` like the node's other role keys (`trust_gate`).
     pub fn new(args: &AuthorityArgs, trust_domain: &str, state_dir: &Path) -> Self {
-        let dalek = trust_gate::load_or_create_cert_root_signing_key(state_dir);
+        let dalek = keys::load_or_create_cert_root_signing_key(state_dir);
         // ring's keypair cannot be built from PKCS#8 v2 DER reliably across
         // encoders; seed + public key is the unambiguous form.
         let root_key = Ed25519KeyPair::from_seed_and_public_key(

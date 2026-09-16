@@ -39,6 +39,7 @@ mod guest_diagnosis;
 mod http_serve;
 mod identity;
 mod image_identity;
+mod keys;
 mod lockdown;
 mod mediation;
 mod mediation_receipt_collector;
@@ -426,7 +427,10 @@ struct NodeState {
     container_pool: Option<Arc<Semaphore>>,
     /// Docker client (initialized at startup when container driver is active).
     docker: Option<Arc<bollard::Docker>>,
-    /// Trust gate configuration for reputation-scoped sandboxes.
+    /// Execution-receipt reporting config: the trust API base URL, the
+    /// executor identity and the role-separated keys that sign receipts.
+    /// Nothing here scopes a sandbox — the reputation lookup that once did was
+    /// deleted in #2512.
     trust_gate: trust_gate::TrustGateConfig,
     /// Per-pod certificate authority: proof of caller authority at
     /// pod-create, budget conserved across spawn (pod_authority.rs).
@@ -746,7 +750,7 @@ async fn main() -> Result<(), ApiError> {
             std::sync::Arc::new(k)
         },
         proxy_approval_secret: args.proxy_approval_secret.clone(),
-        approval_signer: std::sync::Arc::new(trust_gate::load_or_create_approval_signing_key(
+        approval_signer: std::sync::Arc::new(keys::load_or_create_approval_signing_key(
             &args.state_dir,
         )),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
@@ -1143,12 +1147,10 @@ async fn create_pod_internal(
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
 
-    // ── Backend clamp, then the trust gate. Since #2438 the gate only OBSERVES
-    // reputation; what the pod MAY do comes from the certificate below. ──────
+    // ── Backend clamp. The reputation lookup that used to run here was
+    // deleted in #2512: it wrote labels and authorised nothing, and what a pod
+    // MAY do comes from the certificate below. ───────────────────────────────
     driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
-    if state.trust_gate.is_enabled() {
-        trust_gate::observe(&state.trust_gate, &mut spec, &state.http_client).await;
-    }
 
     let pod_dir = state.state_dir.join("pods").join(id.to_string());
     tokio::fs::create_dir_all(&pod_dir).await?;
