@@ -54,8 +54,12 @@
 # they are reported as `undeclared` rather than counted against the ratio.
 # 2026-09-12: bounded artifact reads require both the decision and discharged
 # authority. The additional covered boundary raises the measured ratio.
-floor_bp = 9942
-population_floor = 174
+# 2026-09-16: WorkloadApiServer and its two clients were deleted -- no caller since
+# #2197 -- taking 3 bound witness-accepting sites with them (174 -> 171). A
+# deletion, not a regression: the one undischarged site (`trait CaClient`) is
+# unchanged, so the ratio moves only because the denominator shrank. 170/171.
+floor_bp = 9941
+population_floor = 171
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -344,5 +348,10 @@ population_floor = 23
 # four suppressions added, the reputation module's two removed -- and the pins are
 # set to what that tree measures (9 of 136 discharged = 6.61%), not to either
 # branch's number, since neither branch's number describes the merged tree.
-floor_bp = 661
-population_floor = 136
+#
+# 2026-09-16: deleting WorkloadApiServer and its clients removed 3 undischarged
+# `#[allow]`s with the code they excused (136 -> 133). The ratio rises because the
+# denominator shrank, not because anything was discharged; pinned at the
+# measurement so it does not read as progress. 9/133 = 6.76%.
+floor_bp = 676
+population_floor = 133

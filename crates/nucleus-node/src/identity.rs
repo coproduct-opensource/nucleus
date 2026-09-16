@@ -13,7 +13,6 @@
 
 use nucleus_identity::{
     CaClient, Identity, LaunchAttestation, SecretManager, SelfSignedCa, VmRegistry,
-    WorkloadApiClient,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,8 +24,8 @@ use uuid::Uuid;
 
 /// Identity manager for the node daemon.
 ///
-/// Wraps the SecretManager and WorkloadApiServer to provide SPIFFE identities
-/// to Firecracker VMs over Unix sockets (which bridge to vsock).
+/// Wraps the SecretManager to provide SPIFFE identities to Firecracker VMs, served
+/// over each pod's own vsock bridge.
 #[derive(Clone)]
 pub struct IdentityManager {
     /// The secret manager for certificate operations.
@@ -637,12 +636,6 @@ impl IdentityManager {
                 self.fetch_certificate(identity).await
             }
         }
-    }
-
-    /// Creates a Workload API client for the given socket path.
-    #[allow(dead_code)]
-    pub fn client(socket_path: impl Into<std::path::PathBuf>) -> WorkloadApiClient {
-        WorkloadApiClient::new(socket_path)
     }
 }
 

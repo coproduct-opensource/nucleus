@@ -1960,9 +1960,11 @@ pub fn workload_api_port_for(
 /// The identity manager to register a pod with, or `None`.
 ///
 /// Serving-side mirror of [`workload_api_port_for`]. Withholding the port hides
-/// the endpoint; withholding the REGISTRATION means there is nothing to serve
-/// even to a guest that found it anyway — `WorkloadApiServer` issues against
-/// registered connections, so an unregistered pod has nothing to fetch.
+/// the endpoint; withholding the MANAGER means there is nothing to serve even to a
+/// guest that found it anyway: without one, `pod_boot_identity` starts no workload
+/// API bridge for the pod and mints it no certificate. (This used to say the
+/// node-wide `WorkloadApiServer` issued only against registered connections. That
+/// server had no caller after #2197 and has since been deleted.)
 ///
 /// Generic over the manager type so this composition is compiled and tested on
 /// any host, rather than living only inside the Linux-gated spawn path where a

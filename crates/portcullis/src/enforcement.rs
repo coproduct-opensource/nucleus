@@ -19,10 +19,6 @@
 //! that *claims* `Filtered` while the platform silently allows the whole
 //! internet through NAT.
 //!
-//! Pairing the isolation gate with a verified authority ([`require_enforced`])
-//! yields the fabric's invariant: **no action without (a) a verified authority
-//! and (b) an enforceable isolation posture.**
-//!
 //! This module is pure and `ring`-free, so it compiles on WASM and into a zkVM
 //! guest alongside the rest of the portable decision layer.
 
@@ -312,38 +308,6 @@ pub fn require_isolation(
     })
 }
 
-/// An authority that has cleared the enforcement gate: a verified authority
-/// `A` (a `DecisionToken`, a portcullis `VerifiedPermissions`, or a PCA
-/// `Certificate`'s verified outcome) **and** an enforceable isolation posture.
-///
-/// Constructing one is the fabric's act-gate: you cannot obtain `Authorized`
-/// without both halves, so an enforcement point that requires it cannot act on
-/// a decision whose isolation the platform can't back.
-#[derive(Debug, Clone, Copy)]
-pub struct Authorized<A> {
-    /// The verified authority (proof that the action is permitted).
-    pub authority: A,
-    /// The enforcement posture the backend will apply (≥ requested).
-    pub isolation: EnforcedIsolation,
-}
-
-/// The fabric act-gate: combine an already-**verified** authority with an
-/// enforceable isolation posture. Backend-agnostic — `authority` may be any
-/// verified-permission proof (portcullis `VerifiedPermissions`, a kernel
-/// `DecisionToken`, or a PCA certificate's `VerifiedAuthority`). Returns
-/// [`Authorized`] only when the backend can enforce a posture ≥ the request.
-pub fn require_enforced<A>(
-    authority: A,
-    requested: IsolationLattice,
-    backend: &BackendCapability,
-) -> Result<Authorized<A>, EnforcementError> {
-    let isolation = require_isolation(requested, backend)?;
-    Ok(Authorized {
-        authority,
-        isolation,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,99 +474,5 @@ mod tests {
                 backend: "host-only",
             }
         );
-    }
-
-    // ── The act-gate ties a verified authority to an enforceable posture ──
-
-    #[test]
-    fn require_enforced_carries_authority_and_posture() {
-        // The authority stands in for any verified-permission proof.
-        let authority = "verified:spiffe://agent/coder-042";
-        let authorized = require_enforced(
-            authority,
-            IsolationLattice::sandboxed(),
-            &BackendCapability::APPLE_VZ,
-        )
-        .expect("apple can enforce a posture ≥ sandboxed (by strengthening)");
-        assert_eq!(authorized.authority, "verified:spiffe://agent/coder-042");
-        assert_eq!(
-            authorized.isolation.enforced.network,
-            NetworkIsolation::Airgapped
-        );
-    }
-
-    /// End-to-end: a **verified portcullis delegation** (the "who-may" answer,
-    /// portcullis's own `VerifiedPermissions`) flows through the act-gate and
-    /// emerges as an [`Authorized`] carrying both the delegation and the
-    /// enforceable posture — on Apple, the secure default's `Filtered` egress
-    /// is strengthened to `Airgapped`, never weakened. This is the unification:
-    /// one gate consumes a capability delegation exactly as it would a PCA
-    /// policy decision.
-    #[test]
-    fn require_enforced_accepts_a_verified_portcullis_delegation() {
-        use crate::certificate::{verify_certificate, LatticeCertificate};
-        use crate::PermissionLattice;
-        use chrono::{Duration, Utc};
-        use ring::rand::SystemRandom;
-        use ring::signature::{Ed25519KeyPair, KeyPair};
-
-        // `VerifiedPermissions` is sealed (#2450): only `verify_certificate`
-        // produces one, so this test mints and delegates a REAL two-hop
-        // chain instead of constructing a `VerifiedPermissions` directly.
-        let rng = SystemRandom::new();
-        let root_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
-        let root_key = Ed25519KeyPair::from_pkcs8(root_pkcs8.as_ref()).unwrap();
-        let root_pub = root_key.public_key().as_ref().to_vec();
-        let not_after = Utc::now() + Duration::hours(8);
-
-        let (cert, holder_key) = LatticeCertificate::mint(
-            PermissionLattice::restrictive(),
-            "spiffe://nucleus.local/human/alice".to_string(),
-            not_after,
-            &root_key,
-            &rng,
-        );
-        let (cert, intermediate_key) = cert
-            .delegate(
-                &PermissionLattice::restrictive(),
-                "spiffe://nucleus.local/agent/intermediate".to_string(),
-                not_after,
-                &holder_key,
-                &rng,
-            )
-            .unwrap();
-        let (cert, _leaf_key) = cert
-            .delegate(
-                &PermissionLattice::restrictive(),
-                "spiffe://nucleus.local/agent/coder-042".to_string(),
-                not_after,
-                &intermediate_key,
-                &rng,
-            )
-            .unwrap();
-        let delegation = verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap();
-
-        let authorized = require_enforced(
-            delegation,
-            IsolationLattice::sandboxed(),
-            &BackendCapability::APPLE_VZ,
-        )
-        .expect("a verified delegation + an enforceable posture → authorized");
-
-        // The delegation rides through intact …
-        assert_eq!(authorized.authority.chain_depth(), 2);
-        assert_eq!(
-            authorized.authority.leaf_identity(),
-            "spiffe://nucleus.local/agent/coder-042"
-        );
-        // … and the posture was strengthened (Filtered → Airgapped), not weakened.
-        assert_eq!(
-            authorized.isolation.enforced.network,
-            NetworkIsolation::Airgapped
-        );
-        assert!(authorized
-            .isolation
-            .enforced
-            .at_least(&authorized.isolation.requested));
     }
 }
