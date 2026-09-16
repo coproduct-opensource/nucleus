@@ -97,7 +97,7 @@ pub use wallet::{InMemoryWalletRegistry, WalletAddress, WalletMapping};
 pub use webfinger::{
     WebFingerLink, WebFingerResource, WebFingerResponse, parse_webfinger_resource,
 };
-pub use workload_api::{MtlsWorkloadApiClient, VmRegistry, WorkloadApiClient, WorkloadApiServer};
+pub use workload_api::VmRegistry;
 
 /// Errors that can occur in nucleus-identity operations.
 #[derive(Debug, thiserror::Error)]

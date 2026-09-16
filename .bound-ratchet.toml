@@ -62,5 +62,10 @@
 
 # 2026-09-12: the self-build branch measures net D=174, B=173, dropped=1.
 # Raise both floors to that census; the one remaining dropped site is unchanged.
-floor_bp = 9942
-declared_floor = 174
+# 2026-09-16: #2939 deletes WorkloadApiServer, its clients, and Authorized<A> /
+# require_enforced. Those were three witness-accepting sites on a server nothing
+# constructed, so they leave the surface with the code: D=171, B=170, dropped=1
+# (still CaClient). B/D moves from 173/174 to 170/171 by arithmetic, with no
+# binding lost. Decided by the owner's LOC plan (T1).
+floor_bp = 9941
+declared_floor = 171

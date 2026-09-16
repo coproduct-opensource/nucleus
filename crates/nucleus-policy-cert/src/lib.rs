@@ -1121,43 +1121,6 @@ pub mod portcullis_bridge {
                 other => panic!("expected a delegation outcome, got {other:?}"),
             }
         }
-
-        /// The full fabric loop: a verified portcullis **delegation** →
-        /// projected into the unified [`VerifiedAuthority`] → through the same
-        /// `portcullis::enforcement` act-gate a PCA policy decision would use.
-        /// On Apple the secure default's `Filtered` egress is strengthened to
-        /// `Airgapped`, never weakened. This is the cross-crate unification
-        /// running end-to-end (spiffy `policy-cert` ⇄ nucleus `portcullis`).
-        #[test]
-        fn delegation_flows_through_enforcement_gate_end_to_end() {
-            use portcullis::enforcement::{BackendCapability, require_enforced};
-            use portcullis::isolation::{IsolationLattice, NetworkIsolation};
-
-            let authority = verified_authority(&verified(2), vec![7u8; 32]);
-
-            let authorized = require_enforced(
-                authority,
-                IsolationLattice::sandboxed(),
-                &BackendCapability::APPLE_VZ,
-            )
-            .expect("a verified delegation + an enforceable posture → authorized");
-
-            match authorized.authority.outcome {
-                AuthorityOutcome::Delegation { chain_depth, .. } => assert_eq!(chain_depth, 2),
-                other => panic!("expected a delegation outcome, got {other:?}"),
-            }
-            // Filtered → Airgapped, and never weaker than requested.
-            assert_eq!(
-                authorized.isolation.enforced.network,
-                NetworkIsolation::Airgapped
-            );
-            assert!(
-                authorized
-                    .isolation
-                    .enforced
-                    .at_least(&authorized.isolation.requested)
-            );
-        }
     }
 }
 
