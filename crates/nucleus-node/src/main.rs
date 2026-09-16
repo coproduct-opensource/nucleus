@@ -3008,70 +3008,85 @@ fn build_github_oidc(args: &Args) -> Option<Arc<oidc::GitHubOidcValidator>> {
 
 fn start_pod_reaper(state: NodeState) {
     tokio::spawn(async move {
+        let mut reaped = std::collections::HashSet::new();
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            let pods: Vec<Arc<PodHandle>> = {
-                let guard = state.pods.lock().await;
-                guard.values().cloned().collect()
-            };
+            reap_once(&state, &mut reaped).await;
+        }
+    });
+}
 
-            if pods.is_empty() {
+/// One pass of the pod reaper.
+///
+/// `reaped` is the reaper's own record of the pods it has already handled, and the
+/// one thing that decides it. Exited pods stay in the registry (their status, logs
+/// and receipts are still served), so without it every pass redid the exit: another
+/// `pod_exited` lifecycle audit entry every 10 s — six for one exit on a live node —
+/// and another identity release, which warned that the registry keys had drifted
+/// apart because the first release had already removed them. The cascade is NOT
+/// gated on it: a running child of any exited parent is cancelled on every pass, so
+/// a cascade that failed is retried.
+async fn reap_once(state: &NodeState, reaped: &mut std::collections::HashSet<Uuid>) {
+    let pods: Vec<Arc<PodHandle>> = {
+        let guard = state.pods.lock().await;
+        guard.values().cloned().collect()
+    };
+    // Forget pods no longer registered, so the set is bounded by the registry.
+    reaped.retain(|id| pods.iter().any(|p| p.id == *id));
+
+    if pods.is_empty() {
+        return;
+    }
+
+    // Collect IDs of exited/errored pods for cascading cancel
+    let mut exited_ids = Vec::new();
+
+    for pod in &pods {
+        let pod_state = pod.status().await;
+        if matches!(pod_state, PodState::Exited { .. } | PodState::Error { .. }) {
+            exited_ids.push(pod.id);
+            if !reaped.insert(pod.id) {
                 continue;
             }
-
-            // Collect IDs of exited/errored pods for cascading cancel
-            let mut exited_ids = Vec::new();
-
-            for pod in &pods {
-                let pod_state = pod.status().await;
-                if matches!(pod_state, PodState::Exited { .. } | PodState::Error { .. }) {
-                    // Write lifecycle audit for pod exit
-                    let detail = match &pod_state {
-                        PodState::Exited { code } => {
-                            format!("exit_code={}", code.unwrap_or(-1))
-                        }
-                        PodState::Error { message } => {
-                            format!("error={}", message)
-                        }
-                        _ => "unknown".to_string(),
-                    };
-                    let pod_dir = pod.log_path.parent().unwrap_or(Path::new("."));
-                    lifecycle::write_lifecycle_audit(
-                        pod_dir,
-                        "pod_exited",
-                        &pod.id.to_string(),
-                        &detail,
-                    )
-                    .await;
-
-                    exited_ids.push(pod.id);
-                    pod.cleanup_after_exit().await;
-                    // Hand the child's budget allocation back to its parent.
-                    state.authority.release_child(pod.id).await;
+            // Write lifecycle audit for pod exit
+            let detail = match &pod_state {
+                PodState::Exited { code } => {
+                    format!("exit_code={}", code.unwrap_or(-1))
                 }
-            }
+                PodState::Error { message } => {
+                    format!("error={}", message)
+                }
+                _ => "unknown".to_string(),
+            };
+            let pod_dir = pod.log_path.parent().unwrap_or(Path::new("."));
+            lifecycle::write_lifecycle_audit(pod_dir, "pod_exited", &pod.id.to_string(), &detail)
+                .await;
 
-            // Cascade cancel: kill children of exited parent pods
-            if !exited_ids.is_empty() {
-                for pod in &pods {
-                    if let Some(parent_id) = pod.parent_pod_id
-                        && exited_ids.contains(&parent_id)
-                    {
-                        let child_state = pod.status().await;
-                        if matches!(child_state, PodState::Running) {
-                            info!(
-                                "cascading cancel: killing child pod {} (parent {} exited)",
-                                pod.id, parent_id
-                            );
-                            if let Err(e) = pod.cancel().await {
-                                error!("failed to cascade cancel pod {}: {}", pod.id, e);
-                            }
-                        }
+            pod.cleanup_after_exit().await;
+            // Hand the child's budget allocation back to its parent.
+            state.authority.release_child(pod.id).await;
+        }
+    }
+
+    // Cascade cancel: kill children of exited parent pods
+    if !exited_ids.is_empty() {
+        for pod in &pods {
+            if let Some(parent_id) = pod.parent_pod_id
+                && exited_ids.contains(&parent_id)
+            {
+                let child_state = pod.status().await;
+                if matches!(child_state, PodState::Running) {
+                    info!(
+                        "cascading cancel: killing child pod {} (parent {} exited)",
+                        pod.id, parent_id
+                    );
+                    if let Err(e) = pod.cancel().await {
+                        error!("failed to cascade cancel pod {}: {}", pod.id, e);
                     }
                 }
             }
         }
-    });
+    }
 }
 
 #[cfg(target_os = "linux")]
