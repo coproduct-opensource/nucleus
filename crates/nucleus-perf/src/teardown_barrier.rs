@@ -46,7 +46,7 @@
 //! `0` held on every run; `1` violated on any; `2` could not look (the guest never
 //! got going, the node never logged the shutdown, or a request failed).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -158,19 +158,28 @@ pub fn verdict(log: &str, pod: &str, min_before: usize) -> Verdict {
     }
 }
 
-fn log_len(a: &Args) -> Result<u64> {
-    Ok(std::fs::metadata(&a.node_log)
-        .with_context(|| format!("reading {}", a.node_log.display()))?
+fn log_len(log: &Path) -> Result<u64> {
+    Ok(std::fs::metadata(log)
+        .with_context(|| format!("reading {}", log.display()))?
         .len())
 }
 
-fn log_since(a: &Args, offset: u64) -> Result<String> {
-    let bytes =
-        std::fs::read(&a.node_log).with_context(|| format!("reading {}", a.node_log.display()))?;
+/// The log written since `offset` — this run's lines, not an earlier run's.
+fn log_since(log: &Path, offset: u64) -> Result<String> {
+    let bytes = std::fs::read(log).with_context(|| format!("reading {}", log.display()))?;
     let from = usize::try_from(offset)
         .unwrap_or(usize::MAX)
         .min(bytes.len());
     Ok(String::from_utf8_lossy(&bytes[from..]).into_owned())
+}
+
+/// Commands the node has logged serving `pod` since `offset`.
+fn served_since(log: &Path, offset: u64, pod: &str) -> Result<usize> {
+    Ok(log_since(log, offset)?
+        .lines()
+        .map(message)
+        .filter(|l| command_for_pod(l, pod).is_some())
+        .count())
 }
 
 fn one_run(node: &Node, a: &Args, spec: &Value) -> Result<(String, Verdict)> {
@@ -181,7 +190,7 @@ fn one_run(node: &Node, a: &Args, spec: &Value) -> Result<(String, Verdict)> {
         std::fs::copy(template, scratch)
             .with_context(|| format!("restoring {scratch} from {template}"))?;
     }
-    let offset = log_len(a)?;
+    let offset = log_len(&a.node_log)?;
     let id = node.create_pod(&serde_json::to_string(spec)?)?;
 
     let deadline = Instant::now() + Duration::from_secs(a.timeout_secs);
@@ -198,18 +207,14 @@ fn one_run(node: &Node, a: &Args, spec: &Value) -> Result<(String, Verdict)> {
             ));
         }
         std::thread::sleep(Duration::from_millis(100));
-        served = log_since(a, offset)?
-            .lines()
-            .map(message)
-            .filter(|l| command_for_pod(l, &id).is_some())
-            .count();
+        served = served_since(&a.node_log, offset, &id)?;
     }
 
     node.cancel_pod(&id)?;
     // `cancel` returns after teardown, but the log is written by another thread:
     // give it a moment to land before reading.
     std::thread::sleep(Duration::from_secs(2));
-    let v = verdict(&log_since(a, offset)?, &id, a.min_before);
+    let v = verdict(&log_since(&a.node_log, offset)?, &id, a.min_before);
     Ok((id, v))
 }
 
@@ -281,6 +286,55 @@ mod tests {
     }
     fn log(parts: &[String]) -> String {
         parts.join("\n")
+    }
+
+    fn json_line(level: &str, msg: &str) -> String {
+        serde_json::json!({"timestamp": "2026-09-16T19:18:37Z", "level": level,
+            "fields": {"message": msg}, "target": "nucleus_node::workload_api_vsock"})
+        .to_string()
+    }
+
+    /// A run reads only what the node wrote after it started: an earlier run's
+    /// commands for another pod, or its shutdown line, are not this run's.
+    #[test]
+    fn a_run_reads_only_the_log_written_since_it_started() {
+        let dir = std::env::temp_dir().join(format!("teardown-barrier-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let log = dir.join("node.log");
+        let earlier: Vec<String> = (0..50)
+            .map(|_| json_line("DEBUG", &format!("workload API FETCH_SVID for pod {POD}")))
+            .collect();
+        std::fs::write(&log, earlier.join("\n") + "\n").expect("write");
+        let offset = log_len(&log).expect("len");
+        assert_eq!(served_since(&log, offset, POD).expect("read"), 0);
+
+        let mut now: Vec<String> = (0..7)
+            .map(|_| json_line("DEBUG", &format!("workload API FETCH_SVID for pod {POD}")))
+            .collect();
+        now.push(json_line(
+            "INFO",
+            &format!("workload API vsock bridge shutting down for pod {POD}"),
+        ));
+        now.push(json_line(
+            "DEBUG",
+            &format!("workload API FETCH_SVID for pod {POD}"),
+        ));
+        let mut all = std::fs::read_to_string(&log).expect("read");
+        all.push_str(&(now.join("\n") + "\n"));
+        std::fs::write(&log, all).expect("append");
+
+        assert_eq!(served_since(&log, offset, POD).expect("read"), 8);
+        assert_eq!(
+            verdict(&log_since(&log, offset).expect("read"), POD, 5),
+            Verdict::Held {
+                before: 7,
+                after: 1
+            }
+        );
+        // An offset past the end (a rotated log) reads nothing rather than panicking.
+        assert_eq!(served_since(&log, u64::MAX, POD).expect("read"), 0);
+        assert!(log_len(&dir.join("missing.log")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
