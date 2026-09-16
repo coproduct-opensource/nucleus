@@ -48,6 +48,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 
 use super::*;
+use crate::effect_footprint::{self, Footprint};
 
 /// One axis of the cube.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -338,29 +339,78 @@ async fn take_census() -> Census {
     census
 }
 
-/// The sequencing laws of the guest API, as hollow faces. Written from the
-/// design (`command-walk.md` A2, A5); the census must agree exactly.
+/// What the host keeps about a guest, as resources a letter reads or writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Resource {
+    /// Whether anything that names this pod has been handed over.
+    Personalized,
+    /// Whether the guest announced its snapshot barrier.
+    AtBarrier,
+    /// Whether a one-shot has been served.
+    Served(OneShot),
+    /// The collected receipt log.
+    ReceiptLog,
+}
+
+/// Each letter's footprint. Personalisation is read from the production
+/// `personalizes_the_vm`, so the code stays the one decider of that fact; the rest
+/// is an exhaustive match, so a new command is a decision here.
+fn footprint(letter: Letter) -> Footprint<Resource> {
+    match letter {
+        Letter::Guest(i) => {
+            let Some(cmd) = COMMANDS.get(i) else {
+                return Footprint::pure();
+            };
+            let fp = if cmd.personalizes_the_vm() {
+                Footprint::pure().set(Resource::Personalized)
+            } else {
+                Footprint::pure()
+            };
+            match cmd {
+                Cmd::SnapshotReady => fp.set(Resource::AtBarrier),
+                Cmd::FetchBrokerSecret => fp.update(Resource::Served(OneShot::BrokerSecret)),
+                Cmd::FetchMediationKey => fp.update(Resource::Served(OneShot::MediationKey)),
+                Cmd::FetchAuditCredentials => {
+                    fp.update(Resource::Served(OneShot::AuditCredentials))
+                }
+                Cmd::ShipReceipt => fp.update(Resource::ReceiptLog),
+                Cmd::FetchSvid
+                | Cmd::FetchBundle
+                | Cmd::Ping
+                | Cmd::FetchPodCallerToken
+                | Cmd::FetchTaskToken
+                | Cmd::FetchPodCertificate
+                | Cmd::FetchDlcAdmission
+                | Cmd::FetchPodSpec
+                | Cmd::PodList => fp,
+            }
+        }
+        Letter::Unknown => Footprint::pure(),
+        // A5: the snapshot decision reads both facts it decides on.
+        Letter::HostSnapshotQuery => Footprint::pure()
+            .read(Resource::Personalized)
+            .read(Resource::AtBarrier),
+    }
+}
+
+/// The order-dependent faces, DERIVED from the footprints (see `effect_footprint`).
 ///
-/// A5: the host's snapshot decision does not commute with anything that changes
-/// what it reads — every personalising command, and the barrier announcement.
+/// A5 falls out: the host's snapshot decision reads what every personalising
+/// command and the barrier announcement write.
 fn declared_hollow() -> BTreeSet<(&'static str, &'static str)> {
-    let personalising = COMMANDS
-        .iter()
-        .filter(|c| c.personalizes_the_vm())
-        .map(|c| wire_name(*c));
-    personalising
-        .chain(["SNAPSHOT_READY"])
-        .map(|g| (g, "host:snapshot?"))
+    effect_footprint::hollow_faces(&Letter::all(), footprint)
+        .into_iter()
+        .map(|(a, b)| (a.name(), b.name()))
         .collect()
 }
 
-/// A2 and the receipt log: what may not be repeated without the host noticing.
-const DECLARED_NOT_IDEMPOTENT: &[&str] = &[
-    "FETCH_BROKER_SECRET",
-    "FETCH_MEDIATION_KEY",
-    "FETCH_AUDIT_CREDENTIALS",
-    "SHIP_RECEIPT",
-];
+/// A2 and the receipt log, derived: the letters that update what they read.
+fn declared_not_idempotent() -> BTreeSet<&'static str> {
+    effect_footprint::not_idempotent(&Letter::all(), footprint)
+        .into_iter()
+        .map(Letter::name)
+        .collect()
+}
 
 /// Partial-order reduction of the guest walk, grounded on this census.
 mod por;
@@ -424,7 +474,7 @@ fn the_guest_api_commutes_exactly_where_the_design_says() {
     );
 
     let measured: BTreeSet<&str> = census.not_idempotent.keys().map(|l| l.name()).collect();
-    let declared: BTreeSet<&str> = DECLARED_NOT_IDEMPOTENT.iter().copied().collect();
+    let declared = declared_not_idempotent();
     assert_eq!(
         measured, declared,
         "non-idempotent commands differ from the declaration"

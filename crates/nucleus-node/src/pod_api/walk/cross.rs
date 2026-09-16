@@ -36,12 +36,12 @@
 //!
 //! # The declaration
 //!
-//! [`declared_hollow`] derives the cross faces from two facts: every guest letter
-//! observes whether `P` is cancelled (the barrier), and `POD_LIST` additionally
-//! observes `P`'s lineage (itself and its direct children, as in the pod census). A
-//! face is hollow exactly when the host letter changes something the guest letter
-//! observes. Guest letters change nothing a host letter here observes — the one-shot
-//! latch and the certificate cache are checked in the record instead.
+//! [`declared_hollow`] derives the cross faces from each letter's [`footprint`]
+//! (`effect_footprint`): a face is hollow exactly when one letter writes what the
+//! other reads. Every guest letter reads `P`'s liveness — its scope — so the barrier
+//! is a consequence, and `POD_LIST` also reads what `P` is shown (`K`'s liveness,
+//! `P`'s children). Guest letters write only what no host letter here reads — the
+//! one-shot latch and the certificate cache, which are checked in the record instead.
 //!
 //! Only cross faces are asserted. Host×host is the pod census's; guest×guest is the
 //! guest census's; declaring them again here would be a second decider for each.
@@ -68,6 +68,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Mutex;
 
 use super::*;
+use crate::effect_footprint::{self, Footprint};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Host {
@@ -420,38 +421,78 @@ async fn run(k_cancelled: bool, broker_served: bool, letters: &[Letter]) -> (Vec
     (seen, run.finish().await)
 }
 
-/// What a host letter changes: whether `P` is cancelled, or `P`'s lineage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Change {
-    PLiveness,
-    PLineage,
+/// What the host holds about `P`, as resources a letter reads or writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Resource {
+    /// Whether `P` is running. Every guest letter is scoped to it.
+    LiveP,
+    /// Whether `K` is running.
+    LiveK,
+    /// The pods created under `P`.
+    ChildrenOfP,
+    /// `P`'s certificate in the node's cache.
+    CertCacheP,
+    /// `P`'s broker one-shot.
+    BrokerServed,
 }
 
-fn changes(h: Host) -> Option<Change> {
-    match h {
-        Host::CancelP => Some(Change::PLiveness),
-        Host::CancelK | Host::CreateUnderP => Some(Change::PLineage),
-        Host::List => None,
-    }
-}
-
-/// What a guest letter observes: every one observes the barrier; the pod list
-/// also observes `P`'s lineage.
-fn observes(command: Command, change: Change) -> bool {
-    match (change, command) {
-        (Change::PLiveness, _) => true,
-        (Change::PLineage, Command::PodList) => true,
-        (Change::PLineage, Command::Ping | Command::FetchSvid | Command::FetchBrokerSecret) => {
-            false
+/// Each letter's footprint.
+///
+/// **The barrier is a read.** A guest letter is only valid while `P` lives, so every
+/// one reads `LiveP`, and a cancel of `P` writes it: that is the whole of "cancel is
+/// a barrier", and it is why every guest letter is hollow against `CancelP` without
+/// a rule saying so. `POD_LIST` also reads what `P` is shown: `K`'s liveness and
+/// `P`'s children.
+fn footprint(letter: Letter) -> Footprint<Resource> {
+    match letter {
+        Letter::Host(Host::CancelP) => Footprint::pure().set(Resource::LiveP),
+        Letter::Host(Host::CancelK) => Footprint::pure().set(Resource::LiveK),
+        Letter::Host(Host::CreateUnderP) => Footprint::pure().update(Resource::ChildrenOfP),
+        Letter::Host(Host::List) => Footprint::pure()
+            .read(Resource::LiveP)
+            .read(Resource::LiveK)
+            .read(Resource::ChildrenOfP),
+        Letter::Guest(_, command) => {
+            let scoped = Footprint::pure().read(Resource::LiveP);
+            match command {
+                Command::Ping => scoped,
+                Command::FetchSvid => scoped.update(Resource::CertCacheP),
+                Command::FetchBrokerSecret => scoped.update(Resource::BrokerServed),
+                Command::PodList => scoped.read(Resource::LiveK).read(Resource::ChildrenOfP),
+            }
         }
     }
 }
 
+/// The cross faces, DERIVED from the footprints (see `effect_footprint`). Letters are
+/// ordered hosts first, so every cross face comes out as (host, guest).
 fn declared_hollow() -> BTreeSet<(Host, (Conn, Command))> {
-    HOST.iter()
-        .flat_map(|&h| GUEST.iter().map(move |&g| (h, g)))
-        .filter(|&(h, (_, command))| changes(h).is_some_and(|c| observes(command, c)))
+    let letters: Vec<Letter> = HOST
+        .iter()
+        .map(|h| Letter::Host(*h))
+        .chain(GUEST.iter().map(|(c, g)| Letter::Guest(*c, *g)))
+        .collect();
+    effect_footprint::hollow_faces(&letters, footprint)
+        .into_iter()
+        .filter_map(|face| match face {
+            (Letter::Host(h), Letter::Guest(c, g)) => Some((h, (c, g))),
+            (Letter::Host(_) | Letter::Guest(..), _) => None,
+        })
         .collect()
+}
+
+/// Whether host letter `h` ends the scope guest letter `g` depends on: it writes a
+/// liveness `g` is scoped to. The barrier assertion below runs for exactly these
+/// pairs, derived rather than listed.
+fn ends_scope_of(h: Host, g: (Conn, Command)) -> bool {
+    // `P` is the pod whose guest these letters come from; `K`'s liveness is data a
+    // listing shows, not a scope.
+    // Against a footprint touching only `LiveP`, a conflict is exactly "writes it"
+    // (for the host) and "reads it" (for the guest).
+    footprint(Letter::Host(h)).conflicts_with(&Footprint::pure().read(Resource::LiveP))
+        && Footprint::pure()
+            .set(Resource::LiveP)
+            .conflicts_with(&footprint(Letter::Guest(g.0, g.1)))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -484,7 +525,7 @@ async fn cancel_is_a_barrier_and_the_cross_faces_are_the_declared_ones() {
                 // The law, stated directly and not only as a face: after a cancel
                 // of P, the guest is told nothing but that it is gone, and P's
                 // certificate is not in the cache.
-                if h == Host::CancelP {
+                if ends_scope_of(h, (conn, command)) {
                     if hg_seen[1] != Seen::Gone {
                         served_after_cancel
                             .push(format!("{conn:?} {command:?} got {:?} ({at})", hg_seen[1]));
@@ -530,6 +571,16 @@ async fn cancel_is_a_barrier_and_the_cross_faces_are_the_declared_ones() {
     }
 
     assert!(hung.is_empty(), "a guest letter hung: {hung:?}");
+    // Non-vacuity: the barrier assertion ran for the pairs the footprints scope.
+    let scoped = HOST
+        .iter()
+        .flat_map(|h| GUEST.iter().map(move |g| (*h, *g)))
+        .filter(|(h, g)| ends_scope_of(*h, *g))
+        .count();
+    assert!(
+        scoped > 0,
+        "no host letter ends any guest letter's scope: the barrier checked nothing"
+    );
     // Non-vacuity: a guest that is never served makes every face look like a barrier.
     assert!(
         guest_served > 0,
