@@ -13,40 +13,40 @@
         "child": "spiffe://prod.example.com/ns/agents/sa/summarizer",
         "parents": [],
         "kind": "pod_admit",
-        "ts": "2026-06-02T22:34:55.102938Z",
+        "ts": "2026-09-16T17:36:42.070809Z",
         "proof": {
-          "kid": "0XLRa1I622CSeni9",
+          "kid": "ttvfMiG793VoX9CP",
           "alg": "EdDSA",
-          "sig": "0MEr5BEdPOmPdy4DUm4xborKGkwiS83bCHgOevBfPv3MxUMGd5lKuGYooNS7fcxlbWzoUyMoT251qhBlWzA3Aw=="
+          "sig": "anxqfxCIPsy4DpPqx3LhAGM9xjOCAt/9cONohJWfDlmSKxBpmGUtYvpQMB5y/xsAZKbTNDUG7+lXO6WnXVkqAQ=="
         }
       },
       {
-        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer/call/09c74409-5e99-455d-82ea-1931129fac43/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf",
+        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer/call/6f1673d7-2ebf-4bfa-97c2-6f807d664361/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf",
         "parents": [
           "spiffe://prod.example.com/ns/agents/sa/summarizer"
         ],
         "kind": "tool_call",
         "tool": "Read",
-        "ts": "2026-06-02T22:34:55.103236Z",
+        "ts": "2026-09-16T17:36:42.071267Z",
         "proof": {
-          "kid": "0XLRa1I622CSeni9",
+          "kid": "ttvfMiG793VoX9CP",
           "alg": "EdDSA",
-          "sig": "jK5f9Yw+aBgXdaGHQmpWjbXmaaV7heXYRikv5nwm6FAYSGP4HKVLwRBthBre/YWVPQlcZsWUYOXmIz8pcqMeAw==",
-          "prev_hash": "2cdf4583cbd3b0473ae80d344cea030a1850af02b54d6964358b9d154053f331"
+          "sig": "GqdKAJ7PDyAfxWBJBcf7r8tMDlDDoTns/JaE4N1mlgs3U89Ora6vqg6YQtwD+I+eju7f+mu5KZ0QIi0sV0/7Dw==",
+          "prev_hash": "05d34433090f15f3bdf6369ea1683512f516267bebaac458950da0538bd400a0"
         }
       },
       {
-        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer/call/09c74409-5e99-455d-82ea-1931129fac43/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf/call/6e42568b-2e1a-4272-816d-ec5b38535d5b/derived/sha256:c0725d90980c6551fb9cede618e33b0fea19613278df950aee10f72b334572ed",
+        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer/call/6f1673d7-2ebf-4bfa-97c2-6f807d664361/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf/call/c039faa3-1b63-43e2-8044-c14674f9f89d/derived/sha256:c0725d90980c6551fb9cede618e33b0fea19613278df950aee10f72b334572ed",
         "parents": [
-          "spiffe://prod.example.com/ns/agents/sa/summarizer/call/09c74409-5e99-455d-82ea-1931129fac43/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf"
+          "spiffe://prod.example.com/ns/agents/sa/summarizer/call/6f1673d7-2ebf-4bfa-97c2-6f807d664361/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf"
         ],
         "kind": "artifact_produced",
-        "ts": "2026-06-02T22:34:55.103531Z",
+        "ts": "2026-09-16T17:36:42.071647Z",
         "proof": {
-          "kid": "0XLRa1I622CSeni9",
+          "kid": "ttvfMiG793VoX9CP",
           "alg": "EdDSA",
-          "sig": "WNuUfiNtKgm6YYRhZxF0u/Jo/y8MwP5IXFcLkuFR7xE67W8aWpX3KLUit8/Mb53KRmIvsItcBxzpAvVBaC5/Bg==",
-          "prev_hash": "7c47cb4021f1ac5674b38d43ba93b66c25d43b6e6d2de4b62e22d522f34c0b9f"
+          "sig": "lrpUJDpFbPTTSuNEGRz8EJLbWl6R9j6c9iD9jJ9vp3UqIZLUVj9vwRvcNf3kiYn7Xhrj2+vhD5v/3Sj+EXsvDA==",
+          "prev_hash": "0f0d13448f5823c9364f82a050d5d7bbfcdeda6b67b3fd394f97b4abe79a4112"
         }
       }
     ],
@@ -55,8 +55,8 @@
         {
           "kty": "OKP",
           "crv": "Ed25519",
-          "kid": "0XLRa1I622CSeni9",
-          "x": "JpvG_RLe8o5IU8ArVr2DglJa1oVgTEinUgssgLfQlcM",
+          "kid": "ttvfMiG793VoX9CP",
+          "x": "8J28jx3XhMqQSqeJMs4fq04m4ovEj7927dGa6xDiTmU",
           "alg": "EdDSA",
           "use": "sig"
         }
@@ -64,8 +64,8 @@
     },
     "checkpoints": [],
     "meta": {
-      "schema_version": 1,
-      "created_at": "2026-06-02T22:34:55.103912Z"
+      "schema_version": 2,
+      "created_at": "2026-09-16T17:36:42.072383Z"
     }
   }
 }

@@ -32,18 +32,23 @@
 //!    edge's content hash. Splicing/reordering breaks the chain.
 //! 3. **Signed tree heads** (from `nucleus-lineage::SignedTreeHead`) — the
 //!    witness's Ed25519 signature over `(tree_size, timestamp_ms, root_hash)`
-//!    attests "at this moment, the log had N entries." STHs are wire-included
-//!    but their full-log Merkle binding is not enforced in v1 (see crate
-//!    docs §"Scope limits").
+//!    attests "at this moment, the log had N entries." The Merkle anchor's
+//!    STH binds the session edges by inclusion proof; `checkpoints` are
+//!    verified against the same witness key, against the anchor, and — when
+//!    the bundle carries the whole log — against roots recomputed from its
+//!    edges ([`CheckpointVerification`]).
+//! 4. **Payload binding** — the producer's signature over the canonical
+//!    payload hash, the chain head, the Merkle root and the envelope
+//!    metadata ([`binding`]).
 //!
-//! # Scope limits (v1)
+//! # Scope limits
 //!
-//! Per-STH **inclusion proofs** binding session edges to the signed root
-//! are NOT in v1. The envelope ships the STH as a contemporaneous time
-//! attestation; cryptographic linkage between session edges and the STH
-//! root requires audit-path generation from the Merkle tree (a v2 follow-up
-//! tracked against `MemoryBackedTree::prove_inclusion`). Today's edge-level
-//! and chain-level integrity remain fully enforced.
+//! Checkpoints of a log larger than the session cannot be recomputed from
+//! the bundle, which does not carry the other sessions' edges or a
+//! consistency proof: they are checked for signature, equivocation and
+//! agreement with the anchor only. A bundle without a payload binding has
+//! no producer signature over its payload or its metadata; require one with
+//! [`TrustAnchor::require_payload_binding`].
 //!
 //! # Example
 //!
@@ -90,8 +95,11 @@ pub use binding::{
     signed_bytes as binding_signed_bytes,
 };
 pub use bundle::{
-    Bundle, BundleBuilder, BundleError, EdgeInclusionProof, Envelope, EnvelopeAttestation,
-    EnvelopeMeta, MerkleAnchor, canonical_bundle_hash,
+    Bundle, BundleBuilder, BundleError, ENVELOPE_SCHEMA_VERSION, EdgeInclusionProof, Envelope,
+    EnvelopeAttestation, EnvelopeMeta, MIN_SUPPORTED_ENVELOPE_SCHEMA_VERSION, MerkleAnchor,
+    canonical_bundle_hash,
 };
 pub use extract::{SessionSubgraph, extract_session_subgraph};
-pub use verify::{TrustAnchor, VerificationReport, VerifyBundleError, verify_bundle};
+pub use verify::{
+    CheckpointVerification, TrustAnchor, VerificationReport, VerifyBundleError, verify_bundle,
+};

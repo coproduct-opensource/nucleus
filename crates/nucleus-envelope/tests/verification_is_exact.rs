@@ -41,21 +41,28 @@
 //! region is named by the type, not guessed from a byte offset.
 //!
 //! What is written down is [`UNCOVERED`]: the regions verification does not
-//! cover, each with the reason, each marked [`Why::ByDesign`] or [`Why::Finding`].
-//! A by-design entry cites the code or doc that says so. A finding is a region
-//! nothing says should be unauthenticated; its `#[ignore]`d test asserts the law
-//! over it and is red today. Both are stale-checked: an entry no accepted tamper
-//! reaches fails the walk, so a fix cannot leave its allowlist line behind.
+//! cover by design, each citing the code or doc that says so. Every entry is
+//! stale-checked: an entry no accepted tamper reaches fails the walk, so a fix
+//! cannot leave its allowlist line behind.
 //!
-//! # Found along the way, and not asserted
+//! # Closed
 //!
-//! Reversing the keys of every object is the same artifact, and the receipt verifies
-//! it in every build. The bundle does not in all of them: the payload binding hashes
-//! `serde_json::to_vec(&payload)`, whose key order follows `serde_json/preserve_order`.
-//! Under `--all-features` that feature is unified on and a reordered payload is
-//! refused (`BadPayloadBinding`); in a package-only build it verifies. That is a
-//! false refusal, not a false acceptance, so the walk records either outcome — but
-//! it is the signer/verifier split `nucleus-receipt` moved to RFC 8785 to escape.
+//! The first run of this walk found three regions nothing said should be
+//! unauthenticated, and they are now in [`CLOSED`]: a closed region must have no
+//! accepted tamper AND at least one tamper refused by verification, so the test
+//! cannot pass by the fixture losing the region.
+//!
+//! - `envelope.checkpoints` — never verified; now signed, equivocation-free,
+//!   consistent with the anchor and recomputed from the edges;
+//! - `envelope.meta` — unsigned, `schema_version` downgradable; now field 3 of the
+//!   payload binding (schema version 2) and bounded below;
+//! - a receipt's `version` — never compared with the constant it signs.
+//!
+//! The same run noticed the payload binding hashed `serde_json::to_vec(&payload)`,
+//! whose key order follows `serde_json/preserve_order`: a key-reordered payload was
+//! refused in `--all-features` builds and accepted in package-only ones. It now
+//! hashes RFC 8785, so "object: keys reversed" must be the same artifact for both
+//! artifacts, in every build, and is asserted to be.
 //!
 //! # What is NOT reached
 //!
@@ -70,7 +77,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
 use ed25519_dalek::SigningKey;
-use nucleus_envelope::{Bundle, BundleBuilder, TrustAnchor, verify_bundle};
+use nucleus_envelope::{Bundle, BundleBuilder, CheckpointVerification, TrustAnchor, verify_bundle};
 use nucleus_lineage::{
     CallSpiffeId, Ed25519Witness, EdgeKind, EdgeSigner, InMemorySink, InProcessWitness, Jwks,
     LineageEdge, LineageSink, LocalIssuer, MerkleConfig, MerkleSink, Proof, VerifierAttestation,
@@ -84,103 +91,70 @@ use serde_json::Value;
 // ─────────────────────────────────────────────────────────────────────────────
 // What verification does not cover
 
-/// Why a region is outside verification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Why {
-    /// The code or its documentation says so, deliberately.
-    ByDesign(&'static str),
-    /// Nothing says so. The `#[ignore]`d `finding_*` test is red over it.
-    Finding(&'static str),
-}
-
-/// A region of an artifact, as a JSON-pointer prefix with `*` for any array index.
+/// A region of an artifact, as a JSON-pointer prefix with `*` for any array
+/// index, and why verification does not cover it — the code or doc that says so.
 struct Uncovered {
     artifact: &'static str,
     prefix: &'static str,
-    why: Why,
+    why: &'static str,
 }
 
 const UNCOVERED: &[Uncovered] = &[
     Uncovered {
         artifact: "bundle",
         prefix: "/envelope/jwks",
-        why: Why::ByDesign(
-            "the embedded JWKS is producer-controlled; out-of-band trust mode verifies \
+        why: "the embedded JWKS is producer-controlled; out-of-band trust mode verifies \
              against the anchor's JWKS and ignores this one (verify.rs, trust model)",
-        ),
     },
     Uncovered {
         artifact: "bundle",
         prefix: "/envelope/edges/*/tool",
-        why: Why::ByDesign(
-            "canonical_edge_bytes signs the kind tag, not the kind's payload \
+        why: "canonical_edge_bytes signs the kind tag, not the kind's payload \
              (proof.rs; pinned by settlement_tx_ref_and_attrs_are_outside_the_signature)",
-        ),
     },
     Uncovered {
         artifact: "bundle",
         prefix: "/envelope/edges/*/attrs",
-        why: Why::ByDesign(
-            "attrs is free-form metadata, intentionally outside canonical_edge_bytes (proof.rs)",
-        ),
+        why: "attrs is free-form metadata, intentionally outside canonical_edge_bytes (proof.rs)",
     },
     Uncovered {
         artifact: "bundle",
         prefix: "/envelope/edges/*/proof/prev_hash",
-        why: Why::ByDesign(
-            "a redundant claim: verify_proof signs over the prev hash it recomputes, and \
+        why: "a redundant claim: verify_proof signs over the prev hash it recomputes, and \
              checks this field only when present, so dropping it leaves the signed bytes \
              unchanged (a changed value is refused)",
-        ),
     },
     Uncovered {
         artifact: "bundle",
         prefix: "/envelope/merkle_anchor/sth/cosignatures/*/timestamp_ms",
-        why: Why::ByDesign("\"Metadata only — NOT covered by `signature`\" (cosign.rs)"),
+        why: "\"Metadata only — NOT covered by `signature`\" (cosign.rs)",
     },
     Uncovered {
         artifact: "bundle",
         prefix: "/envelope/merkle_anchor/sth/cosignatures/*/witness_kid",
-        why: Why::ByDesign(
-            "a label the verifier never reads: a cosignature counts by verifying against \
+        why: "a label the verifier never reads: a cosignature counts by verifying against \
              each trusted witness key in turn (verify_merkle_anchor)",
-        ),
-    },
-    Uncovered {
-        artifact: "bundle",
-        prefix: "/envelope/checkpoints",
-        why: Why::Finding(
-            "verify_bundle never verifies a checkpoint's signature or root; it only counts \
-             them into VerificationReport::checkpoint_count, while the crate doc lists signed \
-             tree heads as a composition layer",
-        ),
-    },
-    Uncovered {
-        artifact: "bundle",
-        prefix: "/envelope/meta",
-        why: Why::Finding(
-            "created_at is unauthenticated, and schema_version is compared only with `>`, so \
-             a downgrade verifies",
-        ),
-    },
-    Uncovered {
-        artifact: "receipt",
-        prefix: "/version",
-        why: Why::Finding(
-            "canonical_signing_bytes signs the RECEIPT_VERSION constant and verify_strict \
-             never compares the wire field with it, so any version verifies",
-        ),
     },
 ];
 
+/// Regions this walk once found unauthenticated, now verified. `(artifact, prefix)`.
+const CLOSED: &[(&str, &str)] = &[
+    ("bundle", "/envelope/checkpoints"),
+    ("bundle", "/envelope/meta"),
+    ("receipt", "/version"),
+];
+
+fn under(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 fn uncovered(artifact: &str, path: &str) -> Option<&'static Uncovered> {
-    UNCOVERED.iter().find(|u| {
-        u.artifact == artifact
-            && (path == u.prefix
-                || path
-                    .strip_prefix(u.prefix)
-                    .is_some_and(|rest| rest.starts_with('/')))
-    })
+    UNCOVERED
+        .iter()
+        .find(|u| u.artifact == artifact && under(path, u.prefix))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -192,7 +166,8 @@ enum Outcome {
     Syntax,
     Schema,
     SameArtifact,
-    Refused(String),
+    /// Refused by verification, with the paths the tamper changed.
+    Refused(String, BTreeSet<String>),
     /// Verified, over a different artifact. The paths are where it differs.
     Accepted(BTreeSet<String>),
 }
@@ -223,7 +198,7 @@ impl<T: Serialize + DeserializeOwned> Subject<'_, T> {
         let mut changed = BTreeSet::new();
         diff(&self.original(), &seen, String::new(), &mut changed);
         match (self.verify)(&parsed) {
-            Err(reason) => Outcome::Refused(reason),
+            Err(reason) => Outcome::Refused(reason, changed),
             Ok(()) if changed.is_empty() => Outcome::SameArtifact,
             Ok(()) => Outcome::Accepted(changed),
         }
@@ -264,6 +239,7 @@ struct Tally {
     schema: usize,
     same: usize,
     refused: BTreeMap<String, usize>,
+    refused_paths: BTreeMap<String, usize>,
     accepted: BTreeMap<String, usize>,
 }
 
@@ -274,7 +250,12 @@ impl Tally {
             Outcome::Syntax => self.syntax += 1,
             Outcome::Schema => self.schema += 1,
             Outcome::SameArtifact => self.same += 1,
-            Outcome::Refused(reason) => *self.refused.entry(reason).or_default() += 1,
+            Outcome::Refused(reason, paths) => {
+                *self.refused.entry(reason).or_default() += 1;
+                for p in paths {
+                    *self.refused_paths.entry(p).or_default() += 1;
+                }
+            }
             Outcome::Accepted(paths) => {
                 for p in paths {
                     *self.accepted.entry(p).or_default() += 1;
@@ -350,13 +331,21 @@ fn semantic_tampers(root: &Value) -> Vec<(&'static str, Value)> {
                 }
             }
             Value::Number(n) => {
-                let bumped = match (n.as_u64(), n.as_i64(), n.as_f64()) {
-                    (Some(u), _, _) => Value::from(u.wrapping_add(1)),
-                    (_, Some(i), _) => Value::from(i.wrapping_add(1)),
-                    (_, _, Some(f)) => Value::from(f + 1.0),
+                // Up and down: a version bound has a floor as well as a ceiling.
+                let (up, down) = match (n.as_u64(), n.as_i64(), n.as_f64()) {
+                    (Some(u), _, _) => (
+                        Value::from(u.wrapping_add(1)),
+                        Value::from(u.wrapping_sub(1)),
+                    ),
+                    (_, Some(i), _) => (
+                        Value::from(i.wrapping_add(1)),
+                        Value::from(i.wrapping_sub(1)),
+                    ),
+                    (_, _, Some(f)) => (Value::from(f + 1.0), Value::from(f - 1.0)),
                     _ => return,
                 };
-                out.push(("leaf: number", rebuild(bumped)));
+                out.push(("leaf: number", rebuild(up)));
+                out.push(("leaf: number", rebuild(down)));
             }
             Value::Bool(b) => out.push(("leaf: bool", rebuild(Value::Bool(!b)))),
             Value::Null => {}
@@ -492,15 +481,15 @@ fn assert_exact(name: &str, passes: &[(&'static str, Tally)]) {
         violations.join("\n")
     );
 
-    let stale: Vec<&str> = UNCOVERED
+    let stale: Vec<(&str, &str)> = UNCOVERED
         .iter()
         .filter(|u| u.artifact == name && !reached.contains(u.prefix))
-        .map(|u| u.prefix)
+        .map(|u| (u.prefix, u.why))
         .collect();
     assert!(
         stale.is_empty(),
         "{name}: declared uncovered but no tamper verified there — covered now? remove the \
-         entry (and un-ignore its finding test): {stale:?}"
+         entry: {stale:?}"
     );
 
     let refused: usize = passes.iter().map(|(_, t)| t.refused()).sum();
@@ -515,18 +504,50 @@ fn assert_exact(name: &str, passes: &[(&'static str, Tally)]) {
     );
 }
 
-/// Every tamper that verified inside a [`Why::Finding`] region.
-fn findings(name: &str, passes: &[(&'static str, Tally)]) -> Vec<String> {
-    passes
+/// Every [`CLOSED`] region of `name`: no tamper there verified, and verification
+/// refused at least one — so the region is still in the fixture and still walked.
+fn assert_closed(name: &str, passes: &[(&'static str, Tally)]) {
+    let regions: Vec<&str> = CLOSED
         .iter()
-        .flat_map(|(pass, t)| t.accepted.iter().map(move |(p, n)| (pass, p, n)))
-        .filter_map(
-            |(pass, path, n)| match uncovered(name, path).map(|u| u.why) {
-                Some(Why::Finding(why)) => Some(format!("{pass}: {n} at {path} VERIFIED — {why}")),
-                _ => None,
-            },
-        )
-        .collect()
+        .filter(|(artifact, _)| *artifact == name)
+        .map(|(_, prefix)| *prefix)
+        .collect();
+    assert!(!regions.is_empty(), "{name}: no closed regions to check");
+    for prefix in regions {
+        let accepted: Vec<String> = passes
+            .iter()
+            .flat_map(|(pass, t)| t.accepted.iter().map(move |(p, n)| (pass, p, n)))
+            .filter(|(_, path, _)| under(path, prefix))
+            .map(|(pass, path, n)| format!("{pass}: {n} at {path} VERIFIED"))
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "{name}: {prefix} is closed, yet:\n{}",
+            accepted.join("\n")
+        );
+        let refused: usize = passes
+            .iter()
+            .flat_map(|(_, t)| t.refused_paths.iter())
+            .filter(|(path, _)| under(path, prefix))
+            .map(|(_, n)| n)
+            .sum();
+        assert!(
+            refused > 0,
+            "{name}: no tamper of {prefix} reached verification — the closed check is vacuous"
+        );
+        eprintln!("{name:<8} closed {prefix}: {refused} tampers refused by verification");
+    }
+    // Canonical forms: a reordered object is the same artifact, and verifies, in
+    // whatever build this is.
+    let reversed = passes
+        .iter()
+        .find(|(p, _)| *p == "object: keys reversed")
+        .map(|(_, t)| (t.same, t.tampers));
+    assert_eq!(
+        reversed,
+        Some((1, 1)),
+        "{name}: reversing every object's keys must verify as the same artifact"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -623,6 +644,14 @@ fn bundle_passes() -> Vec<(&'static str, Tally)> {
             // A bundle that verifies without exercising the layers proves less than it
             // looks like; the control would be vacuous for them.
             assert!(report.merkle_verified && report.payload_binding_verified);
+            assert_eq!(
+                report.checkpoints,
+                CheckpointVerification::Verified {
+                    count: 1,
+                    recomputed_from_edges: 1,
+                },
+                "the checkpoint is verified, and its root recomputed from the edges"
+            );
             Ok(())
         }
         Err(e) => Err(variant(&e)),
@@ -685,24 +714,18 @@ fn a8_receipt_verification_is_exact() {
     assert_exact("receipt", &receipt_passes());
 }
 
-/// FINDING: see the [`Why::Finding`] entries for `bundle` in [`UNCOVERED`]. Red
-/// until `verify_bundle` authenticates the checkpoints it reports and the envelope
-/// metadata — or until the design says they are unauthenticated, at which point
-/// the entries become [`Why::ByDesign`] and this test is deleted.
+/// Formerly the `#[ignore]`d finding: checkpoints and envelope metadata verified
+/// when tampered. See [`CLOSED`].
 #[test]
-#[ignore = "FINDING: bundle checkpoints and meta verify when tampered"]
-fn finding_bundle_checkpoints_and_meta_are_unauthenticated() {
-    let found = findings("bundle", &bundle_passes());
-    assert!(found.is_empty(), "{}", found.join("\n"));
+fn closed_bundle_checkpoints_and_meta_are_authenticated() {
+    assert_closed("bundle", &bundle_passes());
 }
 
-/// FINDING: a receipt's wire `version` is not bound by its signature. Red until
-/// `verify_strict` refuses a version other than the one it signs.
+/// Formerly the `#[ignore]`d finding: a receipt's wire `version` verified when
+/// tampered. See [`CLOSED`].
 #[test]
-#[ignore = "FINDING: receipt version field verifies when tampered"]
-fn finding_receipt_version_is_unauthenticated() {
-    let found = findings("receipt", &receipt_passes());
-    assert!(found.is_empty(), "{}", found.join("\n"));
+fn closed_receipt_version_is_authenticated() {
+    assert_closed("receipt", &receipt_passes());
 }
 
 #[test]
@@ -718,6 +741,6 @@ fn walk_classifies_outcomes_by_type_not_by_bytes() {
     let mut d = BTreeSet::new();
     diff(&a, &c, String::new(), &mut d);
     assert_eq!(d, BTreeSet::from(["/x".to_string()]));
-    assert!(uncovered("bundle", "/envelope/metadata").is_none());
-    assert!(uncovered("bundle", "/envelope/meta/created_at").is_some());
+    assert!(uncovered("bundle", "/envelope/jwksx").is_none());
+    assert!(uncovered("bundle", "/envelope/jwks/keys/*/x").is_some());
 }

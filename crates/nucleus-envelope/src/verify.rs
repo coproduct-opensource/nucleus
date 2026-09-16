@@ -54,8 +54,7 @@ const MAX_COSIGNATURES_PER_STH: usize = 64;
 const MAX_ENVELOPE_EDGES: usize = 10_000;
 
 /// **CRIT-3 (#1648) fix.** Defense-in-depth cap on `Envelope.checkpoints`
-/// length. Each checkpoint carries a `SignedTreeHead` which a future
-/// extension may verify (today: stored but not validated per-element).
+/// length. Each checkpoint costs one Ed25519 verify (see `checkpoints`).
 /// 64 is the same bound used for cosignatures — a session that emits
 /// more than ~64 STH-worthy events is a producer bug.
 const MAX_ENVELOPE_CHECKPOINTS: usize = 64;
@@ -69,7 +68,10 @@ const MAX_ENVELOPE_CHECKPOINTS: usize = 64;
 /// `ct_merkle::InclusionProof::try_from_bytes` (hex decode + verify).
 const MAX_INCLUSION_PROOF_AUDIT_PATH_LEN: usize = 1024;
 
-use crate::bundle::{Bundle, ENVELOPE_SCHEMA_VERSION};
+use crate::bundle::{Bundle, ENVELOPE_SCHEMA_VERSION, MIN_SUPPORTED_ENVELOPE_SCHEMA_VERSION};
+
+mod checkpoints;
+pub use checkpoints::CheckpointVerification;
 
 /// What the verifier trusts. See module docs for why this is required.
 #[derive(Debug, Clone)]
@@ -298,6 +300,51 @@ pub enum VerifyBundleError {
     /// Envelope schema version is newer than this verifier understands.
     #[error("envelope schema version {got} > supported {supported}")]
     UnsupportedSchema { got: u32, supported: u32 },
+    /// Envelope schema version is older than this verifier accepts. A
+    /// version-1 binding signs neither the envelope metadata nor a canonical
+    /// payload hash; accepting it would let anyone rewrite `schema_version`
+    /// to 1 and edit what version 2 signs.
+    #[error("envelope schema version {got} < minimum supported {minimum}; re-emit the bundle")]
+    SchemaTooOld { got: u32, minimum: u32 },
+    /// The bundle carries checkpoints but the trust anchor has no witness key
+    /// to verify them with. Refused rather than reported as unverified.
+    #[error(
+        "bundle carries {count} checkpoint(s) but trust anchor has no witness_pubkey \
+         (call TrustAnchor::with_witness_pubkey to verify them)"
+    )]
+    CheckpointWithoutWitnessKey { count: usize },
+    /// A checkpoint's witness signature (or kid) did not verify.
+    #[error("checkpoint #{index} signature verification failed: {detail}")]
+    CheckpointBadSignature { index: usize, detail: String },
+    /// A checkpoint carries cosignatures, which the verifier does not check.
+    #[error("checkpoint #{index} carries cosignatures, which are not verified on checkpoints")]
+    CheckpointCosignaturesUnsupported { index: usize },
+    /// Two checkpoints of one tree size carry different roots: a split view.
+    #[error(
+        "checkpoint #{index} and #{other} both sign tree size {tree_size} with different roots"
+    )]
+    CheckpointEquivocation {
+        index: usize,
+        other: usize,
+        tree_size: u64,
+    },
+    /// A checkpoint claims a larger tree than the Merkle anchor sealed.
+    #[error(
+        "checkpoint #{index} has tree size {tree_size}, past the Merkle anchor's {anchor_tree_size}"
+    )]
+    CheckpointBeyondAnchor {
+        index: usize,
+        tree_size: u64,
+        anchor_tree_size: u64,
+    },
+    /// A checkpoint's root disagrees with the anchored root at the same size,
+    /// or with the root recomputed from the bundle's own edges.
+    #[error("checkpoint #{index} root for tree size {tree_size} is not {expected_root_hex}")]
+    CheckpointRootMismatch {
+        index: usize,
+        tree_size: u64,
+        expected_root_hex: String,
+    },
     /// Session root SPIFFE id is not a pod-shaped id (it carries a
     /// `/call/` suffix). A pod root has no call segments.
     #[error("session root {root} is not a pod-shaped SPIFFE id (must have no /call/ suffix)")]
@@ -425,8 +472,11 @@ pub struct VerificationReport {
     /// hex-encoded. Pin this in your downstream system to detect bundle
     /// substitution — a different log produces a different head.
     pub head_edge_hash_hex: String,
-    /// Number of signed tree heads attached to the envelope.
+    /// Number of signed tree heads attached to the envelope. What was done
+    /// with them is [`Self::checkpoints`].
     pub checkpoint_count: usize,
+    /// Whether the checkpoints were verified — see [`CheckpointVerification`].
+    pub checkpoints: CheckpointVerification,
     /// `true` if the caller chose [`TrustAnchor::self_check_only`] —
     /// the report attests *internal consistency*, not provenance.
     /// Downstream code MUST refuse to treat this as a provenance claim
@@ -489,7 +539,8 @@ pub struct VerificationReport {
 ///
 /// Performs (in order):
 ///
-/// 1. **Schema check** — refuses envelopes from a future schema version.
+/// 1. **Schema check** — refuses envelopes from a future schema version,
+///    and from one older than [`crate::bundle::MIN_SUPPORTED_ENVELOPE_SCHEMA_VERSION`].
 /// 2. **Session-root shape** — root must be a pod-shaped SPIFFE id (no
 ///    `/call/` segment); otherwise the envelope's claimed "session"
 ///    semantic is nonsense.
@@ -506,9 +557,10 @@ pub struct VerificationReport {
 ///    every edge's signature and `prev_hash` linkage against the *trust
 ///    anchor's* JWKS, NOT the JWKS embedded in the bundle (except in
 ///    explicit self-check-only mode).
-///
-/// STH signatures and Merkle inclusion proofs are not in v1; see crate
-/// docs §"Scope limits."
+/// 8. **Merkle anchor** — STH signature, inclusion proofs, cosignature quorum.
+/// 9. **Checkpoints** — see [`CheckpointVerification`].
+/// 10. **Payload binding** — payload hash, chain head, Merkle root and
+///     envelope metadata under the producer's signature.
 pub fn verify_bundle(
     bundle: &Bundle,
     trust: &TrustAnchor,
@@ -564,6 +616,12 @@ pub fn verify_bundle(
             supported: ENVELOPE_SCHEMA_VERSION,
         });
     }
+    if env.meta.schema_version < MIN_SUPPORTED_ENVELOPE_SCHEMA_VERSION {
+        return Err(VerifyBundleError::SchemaTooOld {
+            got: env.meta.schema_version,
+            minimum: MIN_SUPPORTED_ENVELOPE_SCHEMA_VERSION,
+        });
+    }
 
     // 2) Session root must be a pod (no /call/ segments). `is_call()` is
     // load-bearing here — a non-pod root would let an attacker claim a
@@ -580,12 +638,14 @@ pub fn verify_bundle(
     // 3) Empty envelopes authenticate nothing.
     if env.edges.is_empty() {
         if trust.allow_empty {
+            let checkpoints = checkpoints::verify_checkpoints(&[], &env.checkpoints, None, trust)?;
             return Ok(VerificationReport {
                 edge_count: 0,
                 kids: Vec::new(),
                 trust_domain,
                 head_edge_hash_hex: String::new(),
                 checkpoint_count: env.checkpoints.len(),
+                checkpoints,
                 trust_mode_self_check_only: trust.is_self_check_only(),
                 merkle_verified: false,
                 cosignatures_verified: 0,
@@ -699,6 +759,15 @@ pub fn verify_bundle(
         (false, 0, Vec::new(), 0, 0)
     };
 
+    // 7b) Checkpoints: signed by the witness, consistent with the anchor and,
+    //     where the bundle carries the whole log, with its own edges.
+    let checkpoints = checkpoints::verify_checkpoints(
+        &env.edges,
+        &env.checkpoints,
+        env.merkle_anchor.as_ref(),
+        trust,
+    )?;
+
     // 8) Report.
     let mut kids: Vec<String> = env
         .edges
@@ -732,6 +801,7 @@ pub fn verify_bundle(
         trust_domain,
         head_edge_hash_hex,
         checkpoint_count: env.checkpoints.len(),
+        checkpoints,
         trust_mode_self_check_only: trust.is_self_check_only(),
         merkle_verified,
         cosignatures_verified,
@@ -846,12 +916,18 @@ fn verify_payload_binding(
             .ok()
             .and_then(|v| <[u8; 32]>::try_from(v.as_slice()).ok())
     });
+    // The metadata is field 3: an edited `created_at` or `schema_version`
+    // changes these bytes and the signature below refuses it.
     let to_verify = signed_bytes(
         &binding.payload_type,
         &p_hash,
         &envelope_head_bytes,
         merkle_root_bytes.as_ref(),
-    );
+        &bundle.envelope.meta,
+    )
+    .map_err(|e| VerifyBundleError::BadPayloadBinding {
+        detail: format!("signed bytes: {e}"),
+    })?;
 
     if binding.signature.len() != 64 {
         return Err(VerifyBundleError::BadPayloadBinding {

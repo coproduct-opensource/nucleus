@@ -16,16 +16,26 @@
 //! length, so two distinct JSON formattings of the same value
 //! produce the same signed bytes.
 //!
-//! The signed bytes are:
+//! The signed bytes (schema version 2) are:
 //!
 //! ```text
-//! PAE("DSSEv1", payload_type, sha256(canonical_payload) || envelope_head_hash || merkle_root_or_empty)
+//! PAE("DSSEv1", payload_type,
+//!     sha256(JCS(payload)), envelope_head_hash, merkle_root_or_empty, JCS(meta))
 //! ```
 //!
-//! Where `canonical_payload` is the payload serialized via
-//! `serde_json::to_vec` (deterministic per-field-order for objects
-//! that derive `Serialize` — the producer and verifier must use the
-//! same serializer; today both use serde_json's default).
+//! `JCS` is RFC 8785, the canonicalization `nucleus-receipt` signs. Two
+//! consequences, both deliberate:
+//!
+//! - key order and whitespace do not change the hash, in any build — plain
+//!   `serde_json::to_vec` (schema version 1) followed
+//!   `serde_json/preserve_order`, so a producer and a verifier built with
+//!   different feature sets disagreed about the same payload;
+//! - JSON numbers are compared as values: `1` and `1.0` are one number. An
+//!   integer JCS cannot represent exactly (beyond ±2^53 − 1) is refused rather
+//!   than hashed, because it would collide with its neighbours.
+//!
+//! `meta` is [`crate::EnvelopeMeta`] — `schema_version` and `created_at`,
+//! which version 1 left unauthenticated.
 //!
 //! # Signing identity
 //!
@@ -39,6 +49,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::bundle::EnvelopeMeta;
+
 /// Detached binding signature over `(payload_hash, envelope_head_hash,
 /// optional merkle_root)`. When present on a [`crate::Bundle`], it
 /// proves the payload and envelope were assembled together by a
@@ -50,7 +62,8 @@ pub struct PayloadBinding {
     /// this against an expected value before treating the signature
     /// as authoritative.
     pub payload_type: String,
-    /// SHA-256 of `serde_json::to_vec(&payload)`, hex-encoded.
+    /// SHA-256 of the payload's RFC 8785 canonical form, hex-encoded (see
+    /// [`payload_hash`]).
     pub payload_hash_hex: String,
     /// Hash of the envelope's chain head — matches
     /// [`crate::VerificationReport::head_edge_hash_hex`].
@@ -96,6 +109,10 @@ pub enum BindingError {
     BadSignature,
     #[error("binding signature length {got} != 64 bytes (Ed25519)")]
     BadSignatureLength { got: usize },
+    /// The payload holds an integer RFC 8785 cannot represent exactly, so its
+    /// canonical form would collide with a neighbouring integer's.
+    #[error("payload integer at {path:?} is beyond ±(2^53 − 1) and has no exact canonical form")]
+    InexactInteger { path: String },
 }
 
 /// DSSE Pre-Authentication Encoding. Per the spec:
@@ -127,31 +144,54 @@ pub fn pae_bytes(payload_type: &str, body_fields: &[&[u8]]) -> Vec<u8> {
     out
 }
 
-/// Compute the SHA-256 of `serde_json::to_vec(payload)` — the payload
+/// SHA-256 of the payload's RFC 8785 (JCS) canonical form — the payload
 /// hash field the binding covers.
+///
+/// Canonical, so the hash does not depend on key order, on
+/// `serde_json/preserve_order`, or on which binary serialized the payload.
+///
+/// **Refuses integers JCS cannot represent exactly.** JCS writes every number
+/// as an IEEE-754 double, so `9007199254740993` and `9007199254740992`
+/// canonicalize identically: a payload carrying either would verify with the
+/// other substituted. Such a payload is refused rather than hashed.
 pub fn payload_hash(payload: &serde_json::Value) -> Result<[u8; 32], BindingError> {
-    let bytes = serde_json::to_vec(payload)?;
+    if let Some(path) = nucleus_receipt::jcs_inexact_integer(payload) {
+        return Err(BindingError::InexactInteger { path });
+    }
+    let bytes = serde_json_canonicalizer::to_vec(payload)?;
     let mut h = Sha256::new();
     h.update(&bytes);
     Ok(h.finalize().into())
 }
 
 /// Build the byte string a binding signature covers, given the
-/// pre-computed component hashes / strings.
+/// pre-computed component hashes and the envelope metadata.
+///
+/// Schema version 2 added field 3, the RFC 8785 form of [`EnvelopeMeta`].
+/// A version-1 signature covers three fields and cannot verify against these
+/// bytes.
 pub fn signed_bytes(
     payload_type: &str,
     payload_hash_bytes: &[u8; 32],
     envelope_head_hash_bytes: &[u8; 32],
     merkle_root_bytes: Option<&[u8; 32]>,
-) -> Vec<u8> {
-    // Field 0: payload SHA-256
+    meta: &EnvelopeMeta,
+) -> Result<Vec<u8>, BindingError> {
+    // Field 0: payload SHA-256 (over JCS)
     // Field 1: envelope head hash
     // Field 2: merkle root (when present) — explicitly absent (zero-len) when not
+    // Field 3: JCS(meta) — schema_version and created_at
     let merkle_field: &[u8] = merkle_root_bytes.map(|m| &m[..]).unwrap_or(&[]);
-    pae_bytes(
+    let meta_field = serde_json_canonicalizer::to_vec(meta)?;
+    Ok(pae_bytes(
         payload_type,
-        &[payload_hash_bytes, envelope_head_hash_bytes, merkle_field],
-    )
+        &[
+            payload_hash_bytes,
+            envelope_head_hash_bytes,
+            merkle_field,
+            &meta_field,
+        ],
+    ))
 }
 
 mod base64_bytes {
@@ -190,29 +230,101 @@ mod tests {
         assert_eq!(&out, b"DSSEv1 2 ct 3 aaa 2 bb");
     }
 
+    fn meta() -> EnvelopeMeta {
+        EnvelopeMeta {
+            schema_version: crate::bundle::ENVELOPE_SCHEMA_VERSION,
+            created_at: "2026-09-16T00:00:00.123456Z".parse().unwrap(),
+        }
+    }
+
+    fn signed(
+        payload: &[u8; 32],
+        head: &[u8; 32],
+        root: Option<&[u8; 32]>,
+        m: &EnvelopeMeta,
+    ) -> Vec<u8> {
+        signed_bytes("t", payload, head, root, m).unwrap()
+    }
+
     #[test]
     fn signed_bytes_changes_when_payload_changes() {
-        let a = signed_bytes("t", &[0u8; 32], &[1u8; 32], None);
+        let a = signed(&[0u8; 32], &[1u8; 32], None, &meta());
         let mut altered = [0u8; 32];
         altered[0] = 0xFF;
-        let b = signed_bytes("t", &altered, &[1u8; 32], None);
+        let b = signed(&altered, &[1u8; 32], None, &meta());
         assert_ne!(a, b);
     }
 
     #[test]
     fn signed_bytes_changes_when_envelope_changes() {
-        let a = signed_bytes("t", &[0u8; 32], &[1u8; 32], None);
+        let a = signed(&[0u8; 32], &[1u8; 32], None, &meta());
         let mut altered = [1u8; 32];
         altered[0] = 0xFF;
-        let b = signed_bytes("t", &[0u8; 32], &altered, None);
+        let b = signed(&[0u8; 32], &altered, None, &meta());
         assert_ne!(a, b);
     }
 
     #[test]
     fn signed_bytes_changes_when_merkle_root_added() {
-        let a = signed_bytes("t", &[0u8; 32], &[1u8; 32], None);
-        let b = signed_bytes("t", &[0u8; 32], &[1u8; 32], Some(&[2u8; 32]));
-        assert_ne!(a, b, "v1 and v2 bindings over same payload must differ");
+        let a = signed(&[0u8; 32], &[1u8; 32], None, &meta());
+        let b = signed(&[0u8; 32], &[1u8; 32], Some(&[2u8; 32]), &meta());
+        assert_ne!(a, b, "anchored and unanchored bindings must differ");
+    }
+
+    /// Schema version 2: the metadata is signed, both of its fields.
+    #[test]
+    fn signed_bytes_change_when_either_meta_field_changes() {
+        let base = signed(&[0u8; 32], &[1u8; 32], None, &meta());
+        let mut older = meta();
+        older.schema_version = 1;
+        let mut later = meta();
+        later.created_at += chrono::Duration::nanoseconds(1);
+        assert_ne!(base, signed(&[0u8; 32], &[1u8; 32], None, &older));
+        assert_ne!(base, signed(&[0u8; 32], &[1u8; 32], None, &later));
+    }
+
+    /// The hash is RFC 8785: key order on the wire does not reach it, even when
+    /// `serde_json/preserve_order` keeps that order in the `Value`.
+    #[test]
+    fn payload_hash_ignores_key_order() {
+        let a: serde_json::Value =
+            serde_json::from_str(r#"{"b":{"y":1,"x":[2,{"q":0,"p":1}]},"a":true}"#).unwrap();
+        let b: serde_json::Value =
+            serde_json::from_str(r#"{"a":true,"b":{"x":[2,{"p":1,"q":0}],"y":1}}"#).unwrap();
+        assert_eq!(payload_hash(&a).unwrap(), payload_hash(&b).unwrap());
+    }
+
+    /// Pinned to the RFC 8785 bytes, so a regression shows in every build — not
+    /// only in one where `preserve_order` happens to be unified on. `15.0` is where
+    /// JCS (`15`) and `serde_json` (`15.0`) disagree even with sorted keys.
+    #[test]
+    fn payload_hash_is_sha256_of_the_rfc8785_bytes() {
+        let p: serde_json::Value = serde_json::from_str(r#"{"z":15.0,"a":"x"}"#).unwrap();
+        let expected: [u8; 32] = Sha256::digest(br#"{"a":"x","z":15}"#).into();
+        assert_eq!(payload_hash(&p).unwrap(), expected);
+    }
+
+    /// Integers JCS would round to a neighbour are refused, not hashed:
+    /// otherwise `2^53 + 1` would verify where the producer signed `2^53`.
+    #[test]
+    fn payload_hash_refuses_integers_without_an_exact_canonical_form() {
+        let limit = nucleus_receipt::MAX_EXACT_JSON_INTEGER;
+        let negative_limit = -(limit as i64);
+        payload_hash(&serde_json::json!({"n": limit, "m": negative_limit}))
+            .expect("±(2^53 − 1) is exact");
+        for beyond in [
+            serde_json::json!({"n": limit + 1}),
+            serde_json::json!({"deep": [0, {"n": negative_limit - 1}]}),
+            serde_json::json!(u64::MAX),
+        ] {
+            assert!(
+                matches!(
+                    payload_hash(&beyond),
+                    Err(BindingError::InexactInteger { .. })
+                ),
+                "{beyond} must be refused"
+            );
+        }
     }
 
     #[test]

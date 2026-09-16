@@ -183,6 +183,21 @@ impl Receipt {
     pub fn verify_strict(&self, verifying_key_bytes: &[u8; 32]) -> Result<(), ReceiptError> {
         let vk = ed25519_dalek::VerifyingKey::from_bytes(verifying_key_bytes)
             .map_err(|e| ReceiptError::InvalidKey(e.to_string()))?;
+        // The signature covers RECEIPT_VERSION, not this field: without the
+        // comparison any wire `version` verifies.
+        if self.version != RECEIPT_VERSION {
+            return Err(ReceiptError::UnsupportedVersion {
+                got: self.version,
+                supported: RECEIPT_VERSION,
+            });
+        }
+        // JCS writes numbers as doubles: an integer past ±(2^53 − 1) shares its
+        // canonical form with a neighbour, so the signature could not tell them
+        // apart.
+        let signed = signing_value(&self.session, &self.projections);
+        if let Some(path) = jcs_inexact_integer(&signed) {
+            return Err(ReceiptError::InexactInteger { path });
+        }
         let canonical = canonical_signing_bytes(&self.session, &self.projections);
         let computed_hash_hex = hex::encode(blake3::hash(&canonical).as_bytes());
         if computed_hash_hex != self.root_hash_hex {
@@ -215,13 +230,54 @@ impl Receipt {
 /// signed by one binary verifies in every other binary built from any
 /// subset of the workspace.
 pub fn canonical_signing_bytes(session: &Session, projections: &[Projection]) -> Vec<u8> {
-    let envelope = serde_json::json!({
+    serde_json_canonicalizer::to_vec(&signing_value(session, projections))
+        .expect("envelope canonicalizes deterministically (Value cannot hold NaN/Inf)")
+}
+
+/// The JSON value [`canonical_signing_bytes`] canonicalizes.
+fn signing_value(session: &Session, projections: &[Projection]) -> serde_json::Value {
+    serde_json::json!({
         "version": RECEIPT_VERSION,
         "session": session,
         "projections": projections,
-    });
-    serde_json_canonicalizer::to_vec(&envelope)
-        .expect("envelope canonicalizes deterministically (Value cannot hold NaN/Inf)")
+    })
+}
+
+/// The largest integer magnitude RFC 8785 represents exactly (2^53 − 1).
+pub const MAX_EXACT_JSON_INTEGER: u64 = (1 << 53) - 1;
+
+/// The JSON-pointer path of the first integer in `v` that RFC 8785 (JCS)
+/// cannot represent exactly, if any.
+///
+/// JCS serializes every number as an IEEE-754 double, so `2^53` and `2^53 + 1`
+/// canonicalize to the same bytes. Anything that signs JCS bytes must refuse
+/// such a value, or a signature over one verifies the other. Floats are exact
+/// by construction: JCS and `serde_json` both write a double's shortest form.
+/// `nucleus-envelope`'s payload binding uses this too — one decider.
+pub fn jcs_inexact_integer(v: &serde_json::Value) -> Option<String> {
+    first_inexact_integer(v, "")
+}
+
+fn first_inexact_integer(v: &serde_json::Value, path: &str) -> Option<String> {
+    use serde_json::Value;
+    match v {
+        Value::Number(n) => {
+            let exact = match (n.as_u64(), n.as_i64()) {
+                (Some(u), _) => u <= MAX_EXACT_JSON_INTEGER,
+                (None, Some(i)) => i.unsigned_abs() <= MAX_EXACT_JSON_INTEGER,
+                (None, None) => true,
+            };
+            (!exact).then(|| path.to_string())
+        }
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(i, item)| first_inexact_integer(item, &format!("{path}/{i}"))),
+        Value::Object(map) => map
+            .iter()
+            .find_map(|(k, item)| first_inexact_integer(item, &format!("{path}/{k}"))),
+        Value::Null | Value::Bool(_) | Value::String(_) => None,
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -235,6 +291,13 @@ pub enum ReceiptError {
     RootHashMismatch { expected: String, actual: String },
     #[error("signature did not verify: {0}")]
     SignatureMismatch(String),
+    /// The wire `version` is not the version the signature covers.
+    #[error("receipt version {got} is not the signed version {supported}")]
+    UnsupportedVersion { got: u32, supported: u32 },
+    /// A signed integer has no exact RFC 8785 form, so a neighbouring value
+    /// would verify in its place.
+    #[error("integer at {path} is beyond ±(2^53 − 1) and has no exact canonical form")]
+    InexactInteger { path: String },
 }
 
 #[cfg(test)]
@@ -289,6 +352,53 @@ mod tests {
             receipt.verify(&vk),
             Err(ReceiptError::RootHashMismatch { .. })
         ));
+    }
+
+    /// The signature covers `RECEIPT_VERSION`, so the wire field must equal it:
+    /// otherwise any version verifies.
+    #[test]
+    fn a_version_other_than_the_signed_one_is_refused() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+        let signed = Receipt::sign(dummy_session(), dummy_projections(), &sk);
+        signed.verify(&vk).expect("the signed version verifies");
+        for version in [0, RECEIPT_VERSION + 1, u32::MAX] {
+            let mut receipt = signed.clone();
+            receipt.version = version;
+            assert!(
+                matches!(
+                    receipt.verify(&vk),
+                    Err(ReceiptError::UnsupportedVersion { got, .. }) if got == version
+                ),
+                "version {version} must be refused"
+            );
+        }
+    }
+
+    /// JCS writes numbers as doubles, so `2^53` and `2^53 + 1` share canonical
+    /// bytes: a receipt signed over one would verify with the other in its place.
+    #[test]
+    fn an_integer_without_an_exact_canonical_form_is_refused() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+        let body = |n: u64| vec![Projection::Economic(serde_json::json!({"amount": n}))];
+        Receipt::sign(dummy_session(), body(MAX_EXACT_JSON_INTEGER), &sk)
+            .verify(&vk)
+            .expect("2^53 − 1 is exact");
+        let signed = Receipt::sign(dummy_session(), body(1 << 53), &sk);
+        let mut swapped = signed.clone();
+        swapped.projections = body((1 << 53) + 1);
+        assert_eq!(
+            canonical_signing_bytes(&signed.session, &signed.projections),
+            canonical_signing_bytes(&swapped.session, &swapped.projections),
+            "the collision this check exists for"
+        );
+        for receipt in [signed, swapped] {
+            assert!(matches!(
+                receipt.verify(&vk),
+                Err(ReceiptError::InexactInteger { ref path }) if path == "/projections/0/body/amount"
+            ));
+        }
     }
 
     #[test]

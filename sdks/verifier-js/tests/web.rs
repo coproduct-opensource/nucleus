@@ -42,7 +42,7 @@ fn verify_bundle_rejects_malformed_bundle_json() {
 
 #[wasm_bindgen_test]
 fn verify_bundle_rejects_malformed_trust_anchor_json() {
-    let valid_bundle = r#"{"payload":{},"envelope":{"session_root":"spiffe://t/ns/a/sa/b","edges":[],"jwks":{"keys":[]},"meta":{"schema_version":1,"created_at":"2026-05-29T00:00:00Z"}}}"#;
+    let valid_bundle = r#"{"payload":{},"envelope":{"session_root":"spiffe://t/ns/a/sa/b","edges":[],"jwks":{"keys":[]},"meta":{"schema_version":2,"created_at":"2026-05-29T00:00:00Z"}}}"#;
     let result = verify_bundle_js(valid_bundle, "definitely not json");
     assert!(
         result.is_err(),
@@ -202,7 +202,7 @@ fn verify_bundle_rejects_empty_envelope_under_strict_anchor() {
             "session_root": "spiffe://prod.example.com/ns/agents/sa/x",
             "edges": [],
             "jwks": {"keys": []},
-            "meta": {"schema_version": 1, "created_at": "2026-05-29T00:00:00Z"}
+            "meta": {"schema_version": 2, "created_at": "2026-05-29T00:00:00Z"}
         }
     }"#;
     let anchor = r#"{}"#; // self_check_only mode, allow_empty=false

@@ -448,8 +448,10 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "nucleus-lineage",
+ "nucleus-receipt",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2",
  "thiserror",
 ]
