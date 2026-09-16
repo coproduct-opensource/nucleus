@@ -770,12 +770,21 @@ where
     // `nucleus-audit verify-mediation-receipts`, not re-implemented on the hot path.
     let line = String::from_utf8_lossy(&body);
     match crate::mediation_receipt_collector::append_receipt(dir, line.trim_end()).await {
-        Ok(()) => Ok(r#"{"status":"collected"}"#.to_string()),
+        Ok(kept) => receipt_collected(kept),
         Err(e) => {
             tracing::error!(error = %e, "could not collect a shipped MediationReceipt");
             Err(Refusal::ReceiptStorageFailed)
         }
     }
+}
+
+/// The reply that tells a guest its receipt is kept.
+///
+/// Built only from the [`nucleus_jsonl::Durable`] proof a synced append returns, and
+/// taking it by value, so the host cannot tell a pod a receipt was witnessed that it
+/// did not durably store.
+fn receipt_collected(_kept: nucleus_jsonl::Durable) -> Reply {
+    Ok(r#"{"status":"collected"}"#.to_string())
 }
 
 fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> Reply {

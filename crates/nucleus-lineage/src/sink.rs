@@ -141,7 +141,7 @@ impl LineageSink for JsonlSink {
         // mutex: whole within this process, but the CLI and the control-plane server
         // both append to one log, and across processes the two halves could
         // interleave. See `nucleus_jsonl`.
-        nucleus_jsonl::append_line(&self.path, &line, nucleus_jsonl::Durability::PageCache)?;
+        nucleus_jsonl::append_line_unsynced(&self.path, &line)?;
         Ok(())
     }
 
@@ -263,8 +263,8 @@ mod tests {
         let sink = JsonlSink::open(&path).unwrap();
         sink.emit(LineageEdge::pod_admit(pod())).unwrap();
         // Append a blank line directly.
-        nucleus_jsonl::append_line(&path, "", nucleus_jsonl::Durability::PageCache).unwrap();
-        nucleus_jsonl::append_line(&path, "", nucleus_jsonl::Durability::PageCache).unwrap();
+        nucleus_jsonl::append_line_unsynced(&path, "").unwrap();
+        nucleus_jsonl::append_line_unsynced(&path, "").unwrap();
         sink.emit(LineageEdge::pod_admit(pod())).unwrap();
         assert_eq!(sink.iter().unwrap().len(), 2);
     }

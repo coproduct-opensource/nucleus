@@ -55,15 +55,13 @@ pub fn receipt_log_path(pod_dir: &Path) -> PathBuf {
 /// # Errors
 /// If the directory cannot be created or the append fails — the caller must NOT
 /// ack the pod on error.
-pub async fn append_receipt(pod_dir: &Path, line: &str) -> Result<(), std::io::Error> {
+pub async fn append_receipt(
+    pod_dir: &Path,
+    line: &str,
+) -> Result<nucleus_jsonl::Durable, std::io::Error> {
     // One O_APPEND write per receipt, synced: see `nucleus_jsonl` for the tearing
     // this replaced.
-    nucleus_jsonl::append_line_async(
-        receipt_log_path(pod_dir),
-        line.to_owned(),
-        nucleus_jsonl::Durability::Synced,
-    )
-    .await
+    nucleus_jsonl::append_line_synced_async(receipt_log_path(pod_dir), line.to_owned()).await
 }
 
 #[cfg(test)]
@@ -75,8 +73,8 @@ mod tests {
         let pod_dir = tempfile::tempdir().unwrap();
         let r1 = r#"{"schema_version":1,"verdict":"allow"}"#;
         let r2 = r#"{"schema_version":1,"verdict":"deny"}"#;
-        append_receipt(pod_dir.path(), r1).await.unwrap();
-        append_receipt(pod_dir.path(), r2).await.unwrap();
+        let _kept = append_receipt(pod_dir.path(), r1).await.unwrap();
+        let _kept = append_receipt(pod_dir.path(), r2).await.unwrap();
 
         let stored = std::fs::read_to_string(receipt_log_path(pod_dir.path())).unwrap();
         let lines: Vec<&str> = stored.lines().collect();
@@ -90,7 +88,7 @@ mod tests {
     #[tokio::test]
     async fn a_trailing_newline_in_the_shipped_line_is_normalized() {
         let pod_dir = tempfile::tempdir().unwrap();
-        append_receipt(pod_dir.path(), "{\"verdict\":\"allow\"}\n")
+        let _kept = append_receipt(pod_dir.path(), "{\"verdict\":\"allow\"}\n")
             .await
             .unwrap();
         let stored = std::fs::read_to_string(receipt_log_path(pod_dir.path())).unwrap();
@@ -104,8 +102,8 @@ mod tests {
     async fn different_pods_collect_into_their_own_dirs() {
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
-        append_receipt(a.path(), "{\"a\":1}").await.unwrap();
-        append_receipt(b.path(), "{\"b\":1}").await.unwrap();
+        let _kept = append_receipt(a.path(), "{\"a\":1}").await.unwrap();
+        let _kept = append_receipt(b.path(), "{\"b\":1}").await.unwrap();
         assert!(receipt_log_path(a.path()).exists());
         assert!(receipt_log_path(b.path()).exists());
         assert_ne!(

@@ -65,14 +65,13 @@ pub async fn append_record(
     state_dir: &Path,
     session_id: &str,
     line: &str,
-) -> Result<(), std::io::Error> {
+) -> Result<nucleus_jsonl::Durable, std::io::Error> {
     // One O_APPEND write per record (see `nucleus_jsonl` for the tearing this
     // replaced), and synced: an accepted record that is only in the page cache is
     // lost by a host crash, and the pod has already been told it is safe.
-    nucleus_jsonl::append_line_async(
+    nucleus_jsonl::append_line_synced_async(
         session_log_path(state_dir, session_id),
         line.to_owned(),
-        nucleus_jsonl::Durability::Synced,
     )
     .await
 }
@@ -266,12 +265,21 @@ pub async fn accept(
     }
 
     match append_record(state_dir, &session_id, body).await {
-        Ok(()) => (StatusCode::NO_CONTENT, ""),
+        Ok(kept) => record_accepted(kept),
         Err(e) => {
             tracing::error!(%session_id, error = %e, "could not store an Article 12 record");
             (StatusCode::INTERNAL_SERVER_ERROR, "storage failed")
         }
     }
+}
+
+/// The reply that tells a pod its record is kept.
+///
+/// Built only from the [`nucleus_jsonl::Durable`] proof a synced append returns, and
+/// taking it by value, so this node cannot acknowledge a record it did not durably
+/// store. The pod carries on believing it was witnessed once it sees this.
+fn record_accepted(_kept: nucleus_jsonl::Durable) -> (axum::http::StatusCode, &'static str) {
+    (axum::http::StatusCode::NO_CONTENT, "")
 }
 
 /// Whether a shipped record names the certificate this node issued its pod.
@@ -311,7 +319,7 @@ mod tests {
             let d = dir.path().to_path_buf();
             tasks.push(tokio::spawn(async move {
                 let line = format!(r#"{{"seq":{t},"pad":"{}"}}"#, "x".repeat(4096));
-                append_record(&d, "s1", &line).await.unwrap();
+                let _kept = append_record(&d, "s1", &line).await.unwrap();
             }));
         }
         for t in tasks {
@@ -400,10 +408,10 @@ mod tests {
     #[tokio::test]
     async fn records_accumulate_in_order() {
         let dir = tempfile::tempdir().unwrap();
-        append_record(dir.path(), "s1", "{\"seq\":1}")
+        let _kept = append_record(dir.path(), "s1", "{\"seq\":1}")
             .await
             .unwrap();
-        append_record(dir.path(), "s1", "{\"seq\":2}")
+        let _kept = append_record(dir.path(), "s1", "{\"seq\":2}")
             .await
             .unwrap();
         let body = std::fs::read_to_string(session_log_path(dir.path(), "s1")).unwrap();
@@ -415,8 +423,8 @@ mod tests {
     #[tokio::test]
     async fn sessions_are_kept_apart() {
         let dir = tempfile::tempdir().unwrap();
-        append_record(dir.path(), "s1", "{\"a\":1}").await.unwrap();
-        append_record(dir.path(), "s2", "{\"b\":2}").await.unwrap();
+        let _kept = append_record(dir.path(), "s1", "{\"a\":1}").await.unwrap();
+        let _kept = append_record(dir.path(), "s2", "{\"b\":2}").await.unwrap();
         let one = std::fs::read_to_string(session_log_path(dir.path(), "s1")).unwrap();
         assert!(!one.contains("\"b\""), "s2's record leaked into s1's log");
     }

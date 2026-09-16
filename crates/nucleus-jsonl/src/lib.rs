@@ -13,7 +13,9 @@
 //! corruption the node produced itself.
 //!
 //! Each was fixed by making the record one write on a file opened `O_APPEND`, which
-//! positions and writes atomically. Four copies of that would be four places to get
+//! positions and writes atomically. A record whose acceptance is acknowledged is
+//! also synced, and the acknowledgement is built from the [`Durable`] proof that
+//! only [`append_line_synced`] returns. Four copies of that would be four places to get
 //! it wrong again, so it is here once, and `clippy.toml` refuses
 //! `OpenOptions::append` everywhere else (ADR 0007 G-1: one decider per fact).
 //!
@@ -47,26 +49,25 @@ use std::path::Path;
 #[cfg(feature = "async")]
 use std::path::PathBuf;
 
-/// Whether an append is synced to disk before it returns.
+/// Proof that a record was appended AND synced to disk.
 ///
-/// No default (ADR 0007 B-1): a record the caller acknowledges to someone — a
-/// receipt a pod was told was collected — must be `Synced`, and the choice is made
-/// at each call site where that is known.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Durability {
-    /// `fdatasync` before returning. For records whose acceptance is acknowledged.
-    Synced,
-    /// Written to the page cache only. Lost by a host crash.
-    PageCache,
+/// Only [`append_line_synced`] makes one: the field is private (ADR 0007 C-1), and it
+/// is neither `Clone` nor `Copy`, so one proof acknowledges one record. A collector
+/// that tells a peer "your record is kept" builds that reply from this value, so
+/// acknowledging a record that was never appended — or only reached the page cache,
+/// which a host crash loses — does not compile.
+///
+/// ```compile_fail
+/// // Outside this crate a `Durable` cannot be made without appending.
+/// let forged = nucleus_jsonl::Durable { _sealed: () };
+/// ```
+#[must_use = "a Durable is the proof an acknowledgement is built from; dropping it acknowledges nothing"]
+#[derive(Debug)]
+pub struct Durable {
+    _sealed: (),
 }
 
-/// Append `line` (trailing whitespace trimmed) and one newline to `path` as a single
-/// `O_APPEND` write, creating the file and its parent directory if needed.
-///
-/// # Errors
-/// If the directory or file cannot be created, the write fails or is short, or the
-/// sync fails. The record must then be treated as not written.
-pub fn append_line(path: &Path, line: &str, durability: Durability) -> std::io::Result<()> {
+fn append(path: &Path, line: &str, sync: bool) -> std::io::Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -85,23 +86,51 @@ pub fn append_line(path: &Path, line: &str, durability: Durability) -> std::io::
         .append(true)
         .open(path)?;
     file.write_all(&record)?;
-    match durability {
-        Durability::Synced => file.sync_data(),
-        Durability::PageCache => Ok(()),
+    if sync {
+        file.sync_data()?;
     }
+    Ok(())
 }
 
-/// [`append_line`] on tokio's blocking pool.
-#[cfg(feature = "async")]
+/// Append `line` (trailing whitespace trimmed) and one newline to `path` as a single
+/// `O_APPEND` write, then `fdatasync`. For records whose acceptance is acknowledged.
 ///
 /// # Errors
-/// As [`append_line`], or if the blocking task panicked.
-pub async fn append_line_async(
-    path: PathBuf,
-    line: String,
-    durability: Durability,
-) -> std::io::Result<()> {
-    tokio::task::spawn_blocking(move || append_line(&path, &line, durability))
+/// If the directory or file cannot be created, or the write or sync fails or is
+/// short. No [`Durable`] is returned, so nothing can be acknowledged.
+pub fn append_line_synced(path: &Path, line: &str) -> std::io::Result<Durable> {
+    append(path, line, true)?;
+    Ok(Durable { _sealed: () })
+}
+
+/// As [`append_line_synced`], without the sync: the record is in the page cache and
+/// a host crash loses it. Returns no [`Durable`], so it cannot back an
+/// acknowledgement.
+///
+/// # Errors
+/// If the directory or file cannot be created, or the write fails or is short.
+pub fn append_line_unsynced(path: &Path, line: &str) -> std::io::Result<()> {
+    append(path, line, false)
+}
+
+/// [`append_line_synced`] on tokio's blocking pool.
+///
+/// # Errors
+/// As [`append_line_synced`], or if the blocking task panicked.
+#[cfg(feature = "async")]
+pub async fn append_line_synced_async(path: PathBuf, line: String) -> std::io::Result<Durable> {
+    tokio::task::spawn_blocking(move || append_line_synced(&path, &line))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+/// [`append_line_unsynced`] on tokio's blocking pool.
+///
+/// # Errors
+/// As [`append_line_unsynced`], or if the blocking task panicked.
+#[cfg(feature = "async")]
+pub async fn append_line_unsynced_async(path: PathBuf, line: String) -> std::io::Result<()> {
+    tokio::task::spawn_blocking(move || append_line_unsynced(&path, &line))
         .await
         .map_err(std::io::Error::other)?
 }
@@ -121,7 +150,7 @@ mod tests {
                 let path = path.clone();
                 std::thread::spawn(move || {
                     let line = format!(r#"{{"n":{t},"pad":"{}"}}"#, "x".repeat(4096));
-                    append_line(&path, &line, Durability::PageCache).unwrap();
+                    append_line_unsynced(&path, &line).unwrap();
                 })
             })
             .collect();
@@ -146,8 +175,8 @@ mod tests {
     fn a_trailing_newline_is_not_doubled_and_the_file_is_created() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log.jsonl");
-        append_line(&path, "{\"a\":1}\n", Durability::Synced).unwrap();
-        append_line(&path, "{\"a\":2}", Durability::Synced).unwrap();
+        let _kept = append_line_synced(&path, "{\"a\":1}\n").unwrap();
+        let _kept = append_line_synced(&path, "{\"a\":2}").unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "{\"a\":1}\n{\"a\":2}\n"
@@ -160,6 +189,7 @@ mod tests {
         // A directory where the file should be.
         let path = dir.path().join("log.jsonl");
         std::fs::create_dir(&path).unwrap();
-        assert!(append_line(&path, "{}", Durability::PageCache).is_err());
+        assert!(append_line_unsynced(&path, "{}").is_err());
+        assert!(append_line_synced(&path, "{}").is_err());
     }
 }
