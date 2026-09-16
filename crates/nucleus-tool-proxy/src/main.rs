@@ -1267,6 +1267,8 @@ async fn main() -> Result<(), ApiError> {
             .init();
     }
     st.mark("tracing_init");
+    #[cfg(feature = "otel")]
+    let _memory_metrics = telemetry::init_memory_metrics().map_err(ApiError::Spec)?;
 
     let args = Args::parse();
     st.mark("args_parse");

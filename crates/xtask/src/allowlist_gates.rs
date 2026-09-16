@@ -116,9 +116,14 @@ struct Gate {
     /// exclude `/(tests|benches)/` only; `check-ingest-hashed.sh` also excludes src-level
     /// whole-file test modules (`tests_x.rs`, `x_tests.rs`), and its comment says why: a
     /// `#[cfg(test)] mod tests_main;` puts the attribute in ANOTHER file, so the in-file stripper
-    /// never sees it. The hazard is identical for the other three and undefended there. Unifying
-    /// it here would be a behaviour change wearing a refactor's clothes, so it is a finding with
-    /// its own change (`FINDINGS.md` F-36) and this table stays faithful.
+    /// never sees it. The hazard was identical for the other three and undefended there — F-36.
+    ///
+    /// DISCHARGED for the three mediation gates on 2026-09-16, in the same change that fixed
+    /// `check-mediation.sh`: both sides now read the `mod` DECLARATION for a `#[cfg(..test..)]`
+    /// attribute instead of pattern-matching a filename. `telemetry/tests.rs` was the case that
+    /// forced it — a `Command::new(current_exe())` re-exec, which is a test harness spawning
+    /// itself and not an agent effect. The remaining `DirsAndTestModules` entries stay by name,
+    /// because that is still what their scripts do and this table is faithful to them.
     exclude: Exclude,
 }
 
@@ -127,8 +132,16 @@ struct Gate {
 enum Exclude {
     /// `/(tests|benches)/` — the mediation-gate convention.
     Dirs,
-    /// The above, plus src-level whole-file test modules.
+    /// The above, plus src-level whole-file test modules, BY NAME
+    /// (`tests_x.rs`, `x_tests.rs`) — `check-ingest-hashed.sh`'s convention.
     DirsAndTestModules,
+    /// The above dirs, plus any file whose `mod` declaration in the parent
+    /// module carries a `#[cfg(..test..)]` attribute.
+    ///
+    /// Reads the DECLARATION rather than the filename, which is the difference
+    /// that matters: a name-based rule exempts anything named to match, and a
+    /// file is test-only because of how it is reached, not what it is called.
+    DirsAndCfgTestModules,
 }
 
 /// The seven, transcribed from the scripts rather than re-invented.
@@ -152,7 +165,7 @@ const GATES: &[Gate] = &[
         matcher: Matcher::Literal("Command::new"),
         allowlist: Some("scripts/mediation-allowlist.txt"),
         population: Population::NonEmpty,
-        exclude: Exclude::Dirs,
+        exclude: Exclude::DirsAndCfgTestModules,
     },
     Gate {
         script: "scripts/check-mediation.sh",
@@ -167,7 +180,7 @@ const GATES: &[Gate] = &[
         matcher: Matcher::Literal(".send()"),
         allowlist: Some("scripts/mediation-net-allowlist.txt"),
         population: Population::NonEmpty,
-        exclude: Exclude::Dirs,
+        exclude: Exclude::DirsAndCfgTestModules,
     },
     Gate {
         script: "scripts/check-mediation.sh",
@@ -182,7 +195,7 @@ const GATES: &[Gate] = &[
         matcher: Matcher::Literal("VsockStream::connect"),
         allowlist: Some("scripts/mediation-vsock-allowlist.txt"),
         population: Population::NonEmpty,
-        exclude: Exclude::Dirs,
+        exclude: Exclude::DirsAndCfgTestModules,
     },
     Gate {
         script: "scripts/check-sealed-home.sh",
@@ -423,6 +436,9 @@ fn rust_files(root: &Path, dirs: &[&str], exclude: Exclude) -> Vec<PathBuf> {
         if exclude == Exclude::Dirs {
             return true;
         }
+        if exclude == Exclude::DirsAndCfgTestModules {
+            return !declared_under_cfg_test(p);
+        }
         // `tests_x.rs` / `test_x.rs` / `x_tests.rs` / `x_test.rs`, matching the script's
         // `/tests?_[^/]*\.rs$|_tests?\.rs$`.
         let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
@@ -435,6 +451,40 @@ fn rust_files(root: &Path, dirs: &[&str], exclude: Exclude) -> Vec<PathBuf> {
             || stem.ends_with("_test"))
     });
     out
+}
+
+/// Does the parent module declare this file's `mod` under a `#[cfg(..test..)]`?
+///
+/// `src/a/b.rs` is declared by `mod b;` in `src/a.rs` or `src/a/mod.rs`. The
+/// attribute sits on the line above it, so the parent is read and the two lines
+/// matched as a pair. A file nobody declares (a crate root, say) is production.
+fn declared_under_cfg_test(file: &Path) -> bool {
+    let (Some(dir), Some(stem)) = (file.parent(), file.file_stem().and_then(|s| s.to_str())) else {
+        return false;
+    };
+    let decl = format!("mod {stem};");
+    for parent in [dir.with_extension("rs"), dir.join("mod.rs")] {
+        let Ok(src) = std::fs::read_to_string(&parent) else {
+            continue;
+        };
+        let mut gated = false;
+        for line in src.lines() {
+            let t = line.trim();
+            if t.starts_with("#[cfg(") && t.contains("test") {
+                gated = true;
+            } else if t.ends_with(&decl)
+                && (t == decl || t.starts_with("pub ") || t.starts_with("mod "))
+            {
+                if gated {
+                    return true;
+                }
+                gated = false;
+            } else if !t.is_empty() {
+                gated = false;
+            }
+        }
+    }
+    false
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
