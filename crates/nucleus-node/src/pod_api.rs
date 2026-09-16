@@ -877,6 +877,10 @@ mod ownership_tests {
 //
 // It turns out `NodeState` is built almost entirely from parsed `Args`, so a
 // test can parse the same defaults an operator would get and assemble the rest.
+// The command walk over this surface, on the same fixture below.
+#[cfg(all(test, feature = "local-driver"))]
+mod walk;
+
 // No subsystem is faked: this is the real `PodAuthority`, the real
 // `NetworkAllocator`, the real signing key loaded off disk.
 //
@@ -913,7 +917,7 @@ mod handler_tests {
     /// Mirrors `main()`'s construction. A field added to `NodeState` breaks this
     /// at compile time, which is the right failure: the fixture should not drift
     /// silently away from what the node actually runs with.
-    fn state(dir: &tempfile::TempDir) -> NodeState {
+    pub(super) fn state(dir: &tempfile::TempDir) -> NodeState {
         // `main()` installs this before building any client; this crate takes
         // reqwest with `rustls-no-provider`, so `Client::new()` PANICS without
         // it. Idempotent, so every test may call it.
@@ -970,7 +974,7 @@ mod handler_tests {
     }
 
     /// A registered pod, running, optionally owned by `parent`.
-    async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
+    pub(super) async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
         let dir = st.state_dir.join("w");
         std::fs::create_dir_all(&dir).expect("work dir");
         let mut spec: nucleus_spec::PodSpec =
