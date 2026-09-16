@@ -116,6 +116,24 @@ pub(crate) struct ReceiptSigner {
     receipt_log: Option<ReceiptLog>,
 }
 
+/// The pod's mediation signing seed, from `NUCLEUS_MEDIATION_SIGNING_KEY` (64 hex
+/// chars). `None` when unset or malformed; a malformed key is a warn, never the
+/// value. The one parser for this variable: mediation receipts and the signed exit
+/// report (`exit_report`) both sign with it.
+pub(crate) fn mediation_seed_from_env() -> Option<[u8; 32]> {
+    let key_hex = std::env::var("NUCLEUS_MEDIATION_SIGNING_KEY").ok()?;
+    match hex::decode(key_hex.trim()) {
+        Ok(b) => <[u8; 32]>::try_from(b.as_slice()).ok().or_else(|| {
+            tracing::warn!("NUCLEUS_MEDIATION_SIGNING_KEY is not 32 hex-encoded bytes — ignored");
+            None
+        }),
+        Err(_) => {
+            tracing::warn!("NUCLEUS_MEDIATION_SIGNING_KEY is not 32 hex-encoded bytes — ignored");
+            None
+        }
+    }
+}
+
 impl ReceiptSigner {
     /// Build from the environment, opt-in and fail-closed:
     /// `NUCLEUS_MEDIATION_SIGNING_KEY` (64 hex chars = a 32-byte ed25519 seed) and
@@ -128,22 +146,8 @@ impl ReceiptSigner {
     /// warn and degrades to no durable log, never a refusal — the receipt is a
     /// layer atop the fail-closed Article 12 record, not the record itself.
     pub(crate) fn from_env(receipt_log_path: Option<&Path>) -> Option<Self> {
-        let key_hex = std::env::var("NUCLEUS_MEDIATION_SIGNING_KEY").ok()?;
+        let seed = mediation_seed_from_env()?;
         let mediator_spiffe_id = std::env::var("NUCLEUS_MEDIATION_SPIFFE_ID").ok()?;
-        let seed = match hex::decode(key_hex.trim()) {
-            Ok(b) if b.len() == 32 => {
-                let mut s = [0u8; 32];
-                s.copy_from_slice(&b);
-                s
-            }
-            _ => {
-                tracing::warn!(
-                    "NUCLEUS_MEDIATION_SIGNING_KEY is not 32 hex-encoded bytes — \
-                     mediation receipts disabled"
-                );
-                return None;
-            }
-        };
         // Opened only now that a key is confirmed present, so a keyless pod
         // never creates an empty receipts file. A failure to open degrades to
         // no durable log rather than dropping the whole signer.

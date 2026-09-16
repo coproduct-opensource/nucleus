@@ -2041,8 +2041,21 @@ async fn main() -> Result<(), ApiError> {
         // serve, so its proxy URL names a socket that exists); before run 4's
         // diagnosis it started only below, and an in-guest pod's workload never
         // ran at all.
-        let _workload =
-            workload_supervisor::start(&spec, bound.proxy(), &args.auth_secret, completion_writer)?;
+        let _workload = workload_supervisor::start(
+            &spec,
+            bound.proxy(),
+            &args.auth_secret,
+            completion_writer,
+            Some(exit_report::on_workload_exit(
+                exit_audit.clone(),
+                exit_work_dir.clone(),
+                exit_exposure.clone(),
+                exit_monitor.clone(),
+                exit_art12.clone(),
+                exit_kernel.clone(),
+                exit_grant.clone(),
+            )),
+        )?;
         st.report();
         bound.serve(app).await?;
         exit_report::write_exit_report(
@@ -2075,6 +2088,15 @@ async fn main() -> Result<(), ApiError> {
         workload::BoundProxy::Tcp(addr),
         &args.auth_secret,
         completion_writer,
+        Some(exit_report::on_workload_exit(
+            exit_audit.clone(),
+            exit_work_dir.clone(),
+            exit_exposure.clone(),
+            exit_monitor.clone(),
+            exit_art12.clone(),
+            exit_kernel.clone(),
+            exit_grant.clone(),
+        )),
     )?;
 
     let shutdown = async {

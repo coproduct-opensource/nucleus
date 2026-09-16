@@ -67,6 +67,12 @@ fn log(reader: &Reader, stderr: bool) -> Result<Response, StatusCode> {
         .into_response())
 }
 
+/// Runs once when the workload has exited, BEFORE that exit is published, so a
+/// published exit implies the hook finished. Used to write the exit report at the
+/// moment nothing further is mediated (`exit_report::on_workload_exit`).
+pub(crate) type ExitHook =
+    Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>;
+
 /// Dropping the server's guard cancels observation and drops the child whose
 /// admitted spawn set `kill_on_drop`. A detached observer would outlive a pod.
 pub(crate) struct Supervisor(tokio::task::JoinHandle<()>);
@@ -82,6 +88,7 @@ pub(crate) fn start(
     bound: workload::BoundProxy,
     auth_secret: &str,
     writer: Writer,
+    on_exit: Option<ExitHook>,
 ) -> Result<Option<Supervisor>, ApiError> {
     let program = match nucleus_spec::identity::program_digest(spec) {
         Ok(digest) => ProgramBinding::Bound { digest },
@@ -124,6 +131,13 @@ pub(crate) fn start(
                 logs: None,
             },
         };
+        // The hook (the exit report) runs BEFORE the exit is published. A caller
+        // that sees `Exited` may end the pod at once — the node ends a microVM by
+        // killing it — and a report still being written then is lost. Measured:
+        // one run in five produced no receipt while the order was the other way.
+        if let Some(hook) = on_exit {
+            hook().await;
+        }
         writer.0.send_replace(observed);
     }))))
 }
