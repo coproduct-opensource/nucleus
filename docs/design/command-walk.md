@@ -438,12 +438,34 @@ must preserve the pod's completion, or it will shrink to "the pod never ran".
   program from one that does not, and the walk has no way to reach a timeout
   cheaply. Either timeouts get a scaled clock or that branch stays untested.
 
+## Commutation census
+
+The laws above were written down; the census measures them. Treat the command
+alphabet as the axes of a cube: a 2-face `(a, b)` is *filled* when `a ; b` and
+`b ; a` are indistinguishable to the host from every reachable state, and
+*hollow* otherwise. This is the higher-dimensional-automaton view of effects
+(Pratt 1991): independent effects fill squares, conflicts leave them hollow.
+Hollow faces are sequencing laws; filled faces are orderings a walk need only
+explore once (partial-order reduction).
+
+For the guest surface (`workload_api_vsock/walk/census.rs`), with the host's
+snapshot decision added as a letter — guest commands alone barely conflict —
+the census finds exactly 10 hollow faces of 120: every personalising command,
+and `SNAPSHOT_READY`, against the snapshot decision. That is A5, rediscovered
+rather than restated. It is asserted both ways: an undeclared hollow face (a
+new law) fails, and so does a declared one that filled. The non-idempotent
+commands are exactly A2's one-shots plus `SHIP_RECEIPT`. Each face is hollow
+from some states and filled from others — once a VM is personalised, a further
+personalising fetch and the snapshot decision commute — so a law is about where
+state changes, not about a fixed pair.
+
 ## Status
 
-Draft. Nothing here is implemented yet; the harness described above is the next
-step, not a description of code that exists. The classifications it reads
-(`caller_may_manage`, `personalizes_the_vm`) do exist and are already
-compiler-enforced, which is why the model state can be small.
+The guest-surface walk (A2, A5) and the pod-surface walk (A3, lineage scoping)
+are property tests in `nucleus-node`; A4 is a leaf walk in `nucleus-spec`; A8
+and A9 are artifact walks in `nucleus-envelope` and `nucleus-lineage`; A6 and
+A7 are a live harness, `nucleus-perf guest-transcript`, which needs a KVM host
+and runs in no workflow. The commutation census covers the guest surface only.
 
 ## Sources
 
