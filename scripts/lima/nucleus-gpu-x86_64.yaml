@@ -60,6 +60,11 @@ provision:
       #!/bin/bash
       set -euo pipefail
 
+      # A boot must not stop to ask for a manual fsck (see nucleus-aarch64.yaml).
+      echo 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT fsck.repair=yes"' \
+        > /etc/default/grub.d/60-nucleus-boot.cfg
+      update-grub
+
       apt-get update
       apt-get install -y \
         ca-certificates \

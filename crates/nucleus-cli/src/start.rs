@@ -57,10 +57,20 @@ fn ensure_lima_vm_running(args: &StartArgs) -> Result<()> {
     let status = get_lima_vm_status(&args.vm_name)?;
 
     match status.as_str() {
-        "Running" => {
-            println!("Lima VM '{}' is running", args.vm_name);
-            Ok(())
-        }
+        "Running" => match crate::lima_boot::diagnose(&args.vm_name) {
+            crate::lima_boot::BootDiagnosis::Reachable => {
+                println!("Lima VM '{}' is running", args.vm_name);
+                Ok(())
+            }
+            // Lima's "Running" includes a guest stopped at a boot prompt; every
+            // step after this one would fail on `limactl shell` without saying why.
+            unreachable => bail!(
+                "Lima VM '{}' is running but unreachable: {}\n{}",
+                args.vm_name,
+                unreachable.summary(),
+                unreachable.remedy(&args.vm_name)
+            ),
+        },
         "Stopped" => {
             if args.auto_start_vm {
                 println!("Starting Lima VM '{}'...", args.vm_name);
@@ -115,7 +125,13 @@ fn start_lima_vm(name: &str) -> Result<()> {
         .context("Failed to start Lima VM")?;
 
     if !status.success() {
-        bail!("Failed to start Lima VM '{}'", name);
+        let diagnosis = crate::lima_boot::diagnose(name);
+        bail!(
+            "Failed to start Lima VM '{}': {}\n{}",
+            name,
+            diagnosis.summary(),
+            diagnosis.remedy(name)
+        );
     }
     Ok(())
 }

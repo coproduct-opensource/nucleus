@@ -496,7 +496,15 @@ async fn setup_lima_vm(args: &SetupArgs, chip: &AppleChip) -> Result<()> {
         .context("Failed to start Lima VM")?;
 
     if !status.success() {
-        bail!("Lima VM failed to start. Check: limactl list");
+        // `limactl start` fails the same way ("did not receive an event with the
+        // running status") whether the guest is still provisioning or stopped at
+        // a prompt forever. Say which.
+        let diagnosis = crate::lima_boot::diagnose(&args.vm_name);
+        bail!(
+            "Lima VM failed to start: {}\n{}",
+            diagnosis.summary(),
+            diagnosis.remedy(&args.vm_name)
+        );
     }
 
     println!("Lima VM '{}' is running", args.vm_name);
@@ -1050,6 +1058,42 @@ mod tests {
                 "{chip:?} template must disable BOTH system and user containerd; got:{block}"
             );
         }
+    }
+
+    /// A boot must neither stop to ask for a manual fsck nor ask invisibly.
+    ///
+    /// On 2026-09-16 both happened at once: the initramfs refused to repair an
+    /// ext4 left dirty by an unclean stop, and waited at a BusyBox shell on
+    /// `ttyAMA0`, a console VZ does not have. Lima said "running" for ten
+    /// minutes and the VM was unreachable. `fsck.repair=yes` removes the
+    /// question; `console=hvc0` (VZ's only console) makes any other one visible
+    /// to `nucleus doctor`. QEMU already serves the image's `ttyS0`.
+    #[test]
+    fn the_templates_boot_unattended_and_visibly() {
+        for (chip, template) in [
+            (AppleChip::M3, lima_template(&AppleChip::M3)),
+            (AppleChip::Intel, lima_template(&AppleChip::Intel)),
+        ] {
+            let line = template
+                .lines()
+                .find(|l| l.contains("GRUB_CMDLINE_LINUX_DEFAULT="))
+                .unwrap_or_else(|| panic!("{chip:?} template sets no kernel cmdline"));
+            assert!(
+                line.contains("fsck.repair=yes"),
+                "{chip:?} template must let the initramfs repair the root fs: {line}"
+            );
+            // Appended to the image's defaults, not replacing them.
+            assert!(line.contains("$GRUB_CMDLINE_LINUX_DEFAULT "), "{line}");
+            assert!(
+                template.contains("> /etc/default/grub.d/") && template.contains("update-grub"),
+                "{chip:?} template must write a grub.d drop-in AND regenerate grub.cfg"
+            );
+        }
+        let arm = lima_template(&AppleChip::M3);
+        assert!(
+            arm.contains("console=hvc0"),
+            "the VZ template must put the console where VZ can capture it"
+        );
     }
 
     /// Each template must still describe the right machine.

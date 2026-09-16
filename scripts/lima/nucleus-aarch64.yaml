@@ -79,6 +79,30 @@ provision:
       #!/bin/bash
       set -euo pipefail
 
+      # A boot that stops to ask a question must be SEEN asking it, and should
+      # not have to ask. Both halves failed together on 2026-09-16: an unclean
+      # stop left the root ext4 with a corrupted orphan list, the initramfs
+      # `fsck -a` refused to repair it, and the boot dropped to a BusyBox
+      # `(initramfs)` shell. Lima reported "running", SSH never came up, the VM
+      # sat at 0% CPU, and serialv.log stayed EMPTY, because the cloud image
+      # boots with `console=ttyAMA0` and Apple's VZ has no PL011 UART, only the
+      # virtio console `hvc0`. It took a direct-kernel boot to read the error.
+      #
+      #   console=hvc0     puts kernel and initramfs output in serialv.log, so
+      #                    `nucleus doctor` can read why a boot stopped.
+      #   fsck.repair=yes  makes the initramfs run `fsck -y` instead of refusing
+      #                    and waiting for a human at a console nobody can reach.
+      #                    It may discard what fsck cannot save; on a VM whose
+      #                    state is re-installable by `nucleus setup`, a boot that
+      #                    repairs itself is the right trade.
+      #
+      # This runs on every boot; rewriting the drop-in and update-grub are
+      # idempotent. It takes effect from the NEXT boot, so it also protects the
+      # boot after an unclean stop, which is the one that needs it.
+      echo 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0 fsck.repair=yes"' \
+        > /etc/default/grub.d/60-nucleus-boot.cfg
+      update-grub
+
       apt-get update
 
       # ca-certificates is load-bearing, not hygiene: the guest rootfs is built
