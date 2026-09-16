@@ -6473,6 +6473,9 @@ dependencies = [
 [[package]]
 name = "nucleus-adversary-probe"
 version = "1.0.0"
+dependencies = [
+ "vsock",
+]
 
 [[package]]
 name = "nucleus-agent-card"
@@ -7200,7 +7203,10 @@ dependencies = [
  "nucleus-spec",
  "nucleus-task-compiler",
  "portcullis",
+ "reqwest 0.13.5",
  "ring",
+ "rustls",
+ "serde",
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",

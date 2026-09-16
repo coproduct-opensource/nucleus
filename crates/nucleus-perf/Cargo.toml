@@ -36,3 +36,8 @@ nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 ring = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
+# `guest-transcript` reaches the node over mTLS, which ureq cannot present a
+# SPIFFE client identity for (see nucleus-cli's reqwest note).
+reqwest = { workspace = true, features = ["rustls-no-provider", "json", "blocking"] }
+rustls = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
