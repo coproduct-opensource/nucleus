@@ -413,7 +413,9 @@ must preserve the pod's completion, or it will shrink to "the pod never ran".
 ## Status
 
 Draft. Nothing here is implemented yet; the harness described above is the next
-step, not a description of code that exists.
+step, not a description of code that exists. The classifications it reads
+(`caller_may_manage`, `personalizes_the_vm`) do exist and are already
+compiler-enforced, which is why the model state can be small.
 
 ## Sources
 
