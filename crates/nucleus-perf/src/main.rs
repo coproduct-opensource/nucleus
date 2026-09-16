@@ -18,6 +18,7 @@
 mod agency;
 mod guest_transcript;
 mod node_mtls;
+mod stress;
 mod symmetry;
 mod teardown_barrier;
 
@@ -46,6 +47,9 @@ enum Cli {
     /// Cancel is a barrier: a guest mid-stream on the workload API is served
     /// nothing once its pod's teardown has begun, read from the node's own log.
     TeardownBarrier(teardown_barrier::Args),
+    /// Stress the tool-proxy as an IFC-enforcing web server; every mode has an
+    /// oracle (`--clients 1` calibrates the model).
+    Stress(stress::Args),
     /// Measure one point on the safely-delegatable-agency frontier: how much
     /// useful work a pod completes, and what the authority cost (ADR 0005).
     Agency(AgencyArgs),
@@ -177,6 +181,7 @@ fn main() -> Result<()> {
         Cli::Agency(a) => agency_run(a),
         Cli::GuestTranscript(g) => std::process::exit(guest_transcript::run(g)?),
         Cli::TeardownBarrier(t) => std::process::exit(teardown_barrier::run(t)?),
+        Cli::Stress(s) => std::process::exit(stress::run(s)?),
     }
 }
 
