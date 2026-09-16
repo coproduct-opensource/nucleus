@@ -921,6 +921,61 @@ fn honest_settlement_receipt(
     })
 }
 
+/// The counterparty every accrual test countersigns with. A DISTINCT key from
+/// any submitter, so the two-party admission check is genuinely exercised rather
+/// than satisfied by a self-countersignature.
+fn peer() -> ed25519_dalek::SigningKey {
+    test_key(200)
+}
+
+/// A fixed session for countersigned test clearings.
+fn test_session() -> nucleus_receipt::Session {
+    nucleus_receipt::Session {
+        session_id: "spiffe://test/countersigned".into(),
+        issuer_kid: "test-kid".into(),
+        issued_at_micros: 1_717_000_000_000_000,
+        parent_chain: vec![],
+    }
+}
+
+/// A genuinely countersigned clearing: `issuer` signs the receipt, `counter`
+/// signs the SAME canonical bytes. Both signatures are real, so a Match is real.
+fn countersigned(
+    r: &nucleus_recompute::ClearingReceipt,
+    issuer: &ed25519_dalek::SigningKey,
+    counter: &ed25519_dalek::SigningKey,
+) -> nucleus_recompute::envelope::CountersignedClearing {
+    use ed25519_dalek::Signer as _;
+    let receipt = nucleus_receipt::Receipt::sign(
+        test_session(),
+        vec![nucleus_recompute::envelope::to_economic_projection(r)],
+        issuer,
+    );
+    let canonical =
+        nucleus_receipt::canonical_signing_bytes(&receipt.session, &receipt.projections);
+    let sig = counter.sign(&canonical);
+    nucleus_recompute::envelope::CountersignedClearing {
+        receipt,
+        issuer_pubkey_hex: hex::encode(issuer.verifying_key().to_bytes()),
+        countersigner_pubkey_hex: hex::encode(counter.verifying_key().to_bytes()),
+        countersignature_b64: base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            sig.to_bytes(),
+        ),
+    }
+}
+
+/// A countersigned honest settlement, as the JSON the accrue endpoint takes.
+fn countersigned_json(
+    price_micro: u64,
+    delivered_bps: u64,
+    issuer: &ed25519_dalek::SigningKey,
+    counter: &ed25519_dalek::SigningKey,
+) -> serde_json::Value {
+    let r = honest_settlement_receipt(price_micro, delivered_bps);
+    serde_json::to_value(countersigned(&r, issuer, counter)).expect("serialize")
+}
+
 /// An `AppState` whose credit ledger is a fresh store opened at `path`.
 /// Returned by value; `.oneshot()` consumes the router so the store handle drops
 /// before the next call reopens the same path (redb is single-handle).
@@ -1020,8 +1075,8 @@ async fn credit_accrue_then_standing_persists_across_reopen() {
     let sk = test_key(1);
     let id = key_id(&sk);
     let receipts = vec![
-        honest_settlement_receipt(400_000, 10_000),
-        honest_settlement_receipt(300_000, 10_000),
+        countersigned_json(400_000, 10_000, &sk, &peer()),
+        countersigned_json(300_000, 10_000, &sk, &peer()),
     ];
     let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
     let resp = build_app(credit_state(&path))
@@ -1120,7 +1175,7 @@ async fn credit_accrue_replay_idempotent_under_auth() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let receipts = vec![honest_settlement_receipt(400_000, 10_000)];
+    let receipts = vec![countersigned_json(400_000, 10_000, &sk, &peer())];
     let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
     // Sign ONCE; the captured (bytes, pk, sig) is replayed verbatim below.
     let bytes = serde_json::to_vec(&body).unwrap();
@@ -1169,7 +1224,7 @@ async fn credit_standing_is_isolated_per_identity() {
     // Accrue under identity A only (signed by A).
     let sk_a = test_key(1);
     let id_a = key_id(&sk_a);
-    let receipts = vec![honest_settlement_receipt(600_000, 10_000)];
+    let receipts = vec![countersigned_json(600_000, 10_000, &sk_a, &peer())];
     let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
     let resp = build_app(state.clone())
         .oneshot(signed_accrue_request(&sk_a, &id_a, &body))
@@ -1197,29 +1252,157 @@ async fn credit_accrue_caught_defection_burns_standing_through_the_api() {
     let path = dir.path().join("credit.redb");
     let state = shared_credit_state(&path);
 
-    // One honest 1M settlement and one tampered settlement (seller_gross + 1)
-    // that recompute catches as a defection — the recompute IS the fraud proof.
-    // The agent signs its OWN history; recompute is the judge, so a caught
-    // defection still burns the (authenticated) standing.
-    let sk = test_key(1);
-    let id = key_id(&sk);
+    // The defection is submitted BY THE COUNTERPARTY, against the defector's
+    // ledger. This is #2510's whole point: under the old self-write binding only
+    // the key-holder could append to its own history, so this debit was
+    // adversarially unreachable — a defector simply never submitted the receipt
+    // that convicted it. The counterparty can now, because it holds a clearing
+    // the defector signed.
+    let defector = test_key(1);
+    let defector_id = key_id(&defector);
+    let counterparty = test_key(2);
+
+    let honest = honest_settlement_receipt(1_000_000, 10_000);
     let mut tampered = honest_settlement_receipt(1_000_000, 10_000);
     if let nucleus_recompute::ClearingReceipt::Settlement(ref mut c) = tampered {
-        c.seller_gross += 1;
+        c.seller_gross += 1; // the defector inflates its own take
     }
-    let receipts = vec![honest_settlement_receipt(1_000_000, 10_000), tampered];
+    // The defector ISSUES both (it signs its own claims); the counterparty
+    // countersigns. Recompute, not either signature, decides which is a lie.
+    let receipts = vec![
+        serde_json::to_value(countersigned(&honest, &defector, &counterparty)).unwrap(),
+        serde_json::to_value(countersigned(&tampered, &defector, &counterparty)).unwrap(),
+    ];
     let body = json!({ "receipts": receipts, "max_defection_gain_micro": 2_000_000 });
-    let resp = build_app(state)
-        .oneshot(signed_accrue_request(&sk, &id, &body))
+
+    // Submitted by the COUNTERPARTY's key, against the DEFECTOR's id.
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&counterparty, &defector_id, &body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let j = read_json(resp.into_body()).await;
-    // 1,000,000 honest credit − 1,000,000 caught-defection debit = 0 standing;
-    // both receipts minted an event.
+    // 1,000,000 honest credit − 1,000,000 caught-defection debit = 0 standing.
     assert_eq!(j["reputation_micro"], 0);
     assert_eq!(j["event_count"], 2);
     assert_eq!(j["appended"], 2);
+
+    // And it is visible on the defector's public standing — acceptance
+    // criterion: "a counterparty-submitted defection appears in GET /v1/credit/{id}".
+    let resp = build_app(state)
+        .oneshot(standing_request(&defector_id))
+        .await
+        .unwrap();
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["event_count"], 2);
+    assert_eq!(j["reputation_micro"], 0);
+}
+
+/// A single-signed receipt is refused: 422, nothing written.
+#[tokio::test]
+async fn credit_accrue_single_signed_receipt_is_422() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let state = shared_credit_state(&path);
+
+    let sk = test_key(1);
+    let id = key_id(&sk);
+    // The OLD wire shape: a bare, unsigned ClearingReceipt.
+    let body = json!({
+        "receipts": [honest_settlement_receipt(400_000, 10_000)],
+        "max_defection_gain_micro": 1_000_000
+    });
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&sk, &id, &body))
+        .await
+        .unwrap();
+    // It cannot even deserialize into a two-party envelope.
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // A well-formed envelope whose countersignature is absent is the sharper
+    // case: it parses, and is refused on the signature.
+    let mut unsigned = countersigned(&honest_settlement_receipt(400_000, 10_000), &sk, &peer());
+    unsigned.countersignature_b64 =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 64]);
+    let body = json!({
+        "receipts": [serde_json::to_value(unsigned).unwrap()],
+        "max_defection_gain_micro": 1_000_000
+    });
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&sk, &id, &body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["error"], "verification_failed");
+
+    // Nothing written by either attempt.
+    let resp = build_app(state)
+        .oneshot(standing_request(&id))
+        .await
+        .unwrap();
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["event_count"], 0);
+}
+
+/// A self-countersigned clearing is refused — the self-write hole wearing a
+/// second signature.
+#[tokio::test]
+async fn credit_accrue_self_countersigned_is_422() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let state = shared_credit_state(&path);
+
+    let sk = test_key(1);
+    let id = key_id(&sk);
+    let body = json!({
+        "receipts": [countersigned_json(400_000, 10_000, &sk, &sk)],
+        "max_defection_gain_micro": 1_000_000
+    });
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&sk, &id, &body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let resp = build_app(state)
+        .oneshot(standing_request(&id))
+        .await
+        .unwrap();
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["event_count"], 0);
+}
+
+/// A third party who signed nothing can write nobody's ledger, even holding a
+/// genuinely countersigned clearing between two other parties.
+#[tokio::test]
+async fn credit_accrue_by_a_non_party_is_422() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let state = shared_credit_state(&path);
+
+    let alice = test_key(1);
+    let bob = test_key(2);
+    let mallory = test_key(3);
+    let alice_id = key_id(&alice);
+
+    // A real clearing between Alice and Bob, replayed by Mallory.
+    let body = json!({
+        "receipts": [countersigned_json(400_000, 10_000, &alice, &bob)],
+        "max_defection_gain_micro": 1_000_000
+    });
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&mallory, &alice_id, &body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let resp = build_app(state)
+        .oneshot(standing_request(&alice_id))
+        .await
+        .unwrap();
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["event_count"], 0, "Mallory wrote nothing");
 }
 
 // ── Authenticated-identity binding: the gap this change closes ──
@@ -1232,7 +1415,7 @@ async fn credit_accrue_unsigned_is_401_and_writes_nothing() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let receipts = vec![honest_settlement_receipt(400_000, 10_000)];
+    let receipts = vec![countersigned_json(400_000, 10_000, &sk, &peer())];
     let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
     let bytes = serde_json::to_vec(&body).unwrap();
 
@@ -1272,7 +1455,7 @@ async fn credit_accrue_bad_signature_is_401() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let body = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk, &peer())], "max_defection_gain_micro": 1_000_000 });
     let bytes = serde_json::to_vec(&body).unwrap();
     let pk = hex::encode(sk.verifying_key().to_bytes());
 
@@ -1321,8 +1504,8 @@ async fn credit_accrue_tampered_body_is_401() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let body_a = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
-    let body_b = json!({ "receipts": [honest_settlement_receipt(999_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body_a = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk, &peer())], "max_defection_gain_micro": 1_000_000 });
+    let body_b = json!({ "receipts": [countersigned_json(999_000, 10_000, &sk, &peer())], "max_defection_gain_micro": 1_000_000 });
     let bytes_a = serde_json::to_vec(&body_a).unwrap();
     let bytes_b = serde_json::to_vec(&body_b).unwrap();
     let (pk, sig_over_a) = sign_bytes(&sk, &bytes_a);
@@ -1349,26 +1532,33 @@ async fn credit_accrue_tampered_body_is_401() {
 }
 
 #[tokio::test]
-async fn credit_accrue_confused_deputy_path_mismatch_is_403() {
-    // Authenticated as K, but the path names a DIFFERENT identity → 403, and
-    // nothing is written under EITHER id.
+async fn credit_accrue_confused_deputy_non_party_subject_is_422() {
+    // Was `..._path_mismatch_is_403`, asserting that the path had to equal the
+    // submitter's own id. #2510 deliberately relaxes that — `{agent_id}` may now
+    // name the OTHER party, which is what lets a counterparty record a
+    // defection. The property it was really guarding is unchanged and asserted
+    // here in its new form: you cannot write the ledger of someone who did not
+    // sign the clearing. The check moved from "is it your own id" to "is it a
+    // party's id", which is strictly what the signatures support.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credit.redb");
     let state = shared_credit_state(&path);
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let other_id = key_id(&test_key(2));
-    let body = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    // A third identity, party to nothing.
+    let other_id = key_id(&test_key(42));
+    // A real clearing between K and its peer — K is a party, `other_id` is not.
+    let body = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk, &peer())], "max_defection_gain_micro": 1_000_000 });
 
-    // Valid signature by K, but POST to the OTHER id's path → 403.
+    // Valid signature by K, but the path names an identity that signed nothing.
     let resp = build_app(state.clone())
         .oneshot(signed_accrue_request(&sk, &other_id, &body))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let j = read_json(resp.into_body()).await;
-    assert_eq!(j["error"], "forbidden");
+    assert_eq!(j["error"], "verification_failed");
 
     // Neither the signer's id nor the targeted id got any entry.
     for q in [&id, &other_id] {
@@ -1383,17 +1573,19 @@ async fn credit_accrue_confused_deputy_path_mismatch_is_403() {
 
 #[tokio::test]
 async fn credit_accrue_cross_identity_double_claim_is_prevented() {
-    // The Sybil/double-claim case, now PREVENTED at the API: capture identity
-    // A's fully-valid signed accrue and try to replay it under a DIFFERENT id.
-    // It cannot inflate B's standing — re-pointing requires re-signing (the
-    // attacker lacks B's key) and the path/id mismatch 403s.
+    // The Sybil/double-claim case, still PREVENTED: capture identity A's
+    // fully-valid signed accrue and replay it under a DIFFERENT id. It cannot
+    // inflate B's standing. The refusal reason changed with #2510 — B is not a
+    // signing party to A's clearing, rather than B simply not being the
+    // submitter — but the guarantee is the same, and now rests on the
+    // signatures rather than on the path.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credit.redb");
     let state = shared_credit_state(&path);
 
     let sk_a = test_key(1);
     let id_a = key_id(&sk_a);
-    let body = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk_a, &peer())], "max_defection_gain_micro": 1_000_000 });
     let bytes = serde_json::to_vec(&body).unwrap();
     let (pk_a, sig_a) = sign_bytes(&sk_a, &bytes);
 
@@ -1409,8 +1601,8 @@ async fn credit_accrue_cross_identity_double_claim_is_prevented() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Replay A's captured envelope verbatim under B's id → 403 (path != derived
-    // id A). The same receipt cannot be claimed a second time under B.
+    // Replay A's captured envelope verbatim under B's id → 422 (B signed
+    // nothing). The same receipt cannot be claimed a second time under B.
     let id_b = key_id(&test_key(2));
     let resp = build_app(state.clone())
         .oneshot(accrue_with_headers(
@@ -1421,7 +1613,7 @@ async fn credit_accrue_cross_identity_double_claim_is_prevented() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     // B's standing is untouched; A's is intact.
     let resp = build_app(state.clone())
@@ -1446,7 +1638,7 @@ async fn credit_accrue_invalid_pubkey_is_401() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let body = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk, &peer())], "max_defection_gain_micro": 1_000_000 });
     let bytes = serde_json::to_vec(&body).unwrap();
     let (_, sig) = sign_bytes(&sk, &bytes);
 
@@ -1510,7 +1702,7 @@ async fn credit_standing_read_requires_no_signature() {
 
     let sk = test_key(3);
     let id = key_id(&sk);
-    let body = json!({ "receipts": [honest_settlement_receipt(500_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body = json!({ "receipts": [countersigned_json(500_000, 10_000, &sk, &peer())], "max_defection_gain_micro": 1_000_000 });
     let resp = build_app(state.clone())
         .oneshot(signed_accrue_request(&sk, &id, &body))
         .await
@@ -1536,13 +1728,22 @@ async fn credit_authenticated_standing_matches_stateless_post() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credit.redb");
 
-    let receipts = vec![
+    // The SAME two clearings in both wire shapes: bare for the stateless
+    // recompute endpoint, countersigned for the authenticated accrue path. The
+    // standing must agree — the fold does not care how the clearing was
+    // authenticated, only what it recomputes to.
+    let sk = test_key(1);
+    let bare = vec![
         honest_settlement_receipt(400_000, 10_000),
         honest_settlement_receipt(300_000, 10_000),
     ];
+    let receipts: Vec<serde_json::Value> = bare
+        .iter()
+        .map(|r| serde_json::to_value(countersigned(r, &sk, &peer())).unwrap())
+        .collect();
     let max = 1_000_000u64;
 
-    // Stateless recompute (no auth, no store).
+    // Stateless recompute (no auth, no store) — takes the BARE receipts.
     let resp = build_app(AppState::default())
         .oneshot(
             Request::builder()
@@ -1551,7 +1752,7 @@ async fn credit_authenticated_standing_matches_stateless_post() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(
-                        &json!({ "receipts": receipts, "max_defection_gain_micro": max }),
+                        &json!({ "receipts": bare, "max_defection_gain_micro": max }),
                     )
                     .unwrap(),
                 ))
@@ -1562,8 +1763,8 @@ async fn credit_authenticated_standing_matches_stateless_post() {
     assert_eq!(resp.status(), StatusCode::OK);
     let stateless = read_json(resp.into_body()).await;
 
-    // Authenticated durable accrue.
-    let sk = test_key(7);
+    // Authenticated durable accrue — takes the COUNTERSIGNED ones, submitted by
+    // the issuing party (a party to every clearing, as the route requires).
     let id = key_id(&sk);
     let resp = build_app(credit_state(&path))
         .oneshot(signed_accrue_request(

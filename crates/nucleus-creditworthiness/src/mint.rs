@@ -25,14 +25,24 @@ use nucleus_recompute::{ClearingReceipt, RecomputeWitness, witness_receipt};
 
 use crate::{CreditEvent, CreditFile};
 
+/// Mint a [`CreditEvent`] from a sealed recompute witness, however that witness
+/// was obtained — a bare receipt, a signed envelope, or a countersigned one.
+///
+/// The single decider for "which witness means which event" (**G-1**). A caller
+/// holding a witness from a two-party envelope mints through this same function,
+/// so the countersigned path cannot drift from the bare one.
+pub fn mint_from_witness(witness: &RecomputeWitness) -> Option<CreditEvent> {
+    match witness {
+        RecomputeWitness::Matched(m) => Some(CreditEvent::from_match(m)),
+        RecomputeWitness::Diverged(d) => Some(CreditEvent::from_divergence(d)),
+        RecomputeWitness::Invalid(_) => None,
+    }
+}
+
 /// Mint a [`CreditEvent`] from one receipt by recomputing it. Returns `None` for
 /// a receipt whose declared inputs the kernel rejects (nothing to attribute).
 pub fn mint_event(receipt: &ClearingReceipt) -> Option<CreditEvent> {
-    match witness_receipt(receipt) {
-        RecomputeWitness::Matched(m) => Some(CreditEvent::from_match(&m)),
-        RecomputeWitness::Diverged(d) => Some(CreditEvent::from_divergence(&d)),
-        RecomputeWitness::Invalid(_) => None,
-    }
+    mint_from_witness(&witness_receipt(receipt))
 }
 
 /// Mint events from a batch of receipts, skipping un-recomputable ones.

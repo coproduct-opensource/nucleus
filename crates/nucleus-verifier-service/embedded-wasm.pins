@@ -72,5 +72,17 @@
 # construction — what verifies it is build.rs recomputing the digest from the
 # artifact CI just built: if this line were wrong, the build refuses. The pin is
 # confirmed by the run that consumes it, not by the hand that wrote it.
-20b10eb3ad439d51382bae160c4afe208072d744e35127ab0c30faf8642f9ab4  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+#
+# 2026-09-15 (#2510): and again, for the same reason one layer out. The
+# countersigned-clearing envelope changed `nucleus-recompute`, which
+# `sdks/verifier-js` also compiles in, so the bytes moved past #2509's
+# `20b10eb3…`. That digest is REPLACED rather than kept alongside, on the rule
+# above: it is the pre-countersignature artifact, and accepting it would accept a
+# verifier built from source without the two-party check. The .js shim did not
+# move for this change either — two independent source changes now, and it has
+# held both times.
+#
+# Same provenance caveat as #2509's: taken from the CI run on this branch, so
+# unverified at the point of writing and verified by the run that consumes it.
+ac2e82e00098467bd5d78896c7f15e54f1327cfae818a45f4cc4cb9089941565  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
