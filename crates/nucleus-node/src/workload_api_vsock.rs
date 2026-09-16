@@ -40,6 +40,104 @@ use crate::workload_api_protocol::{MAX_COMMAND_LEN, WorkloadApiCommand, parse_co
 /// only the handler uses would read as dead.
 const MAX_RECEIPT_BODY_LEN: usize = 8192;
 
+/// What one command frame produces: an encoded success body, or a named refusal.
+type Reply = Result<String, Refusal>;
+
+/// Why the workload API declined a request — a value, not a sentence.
+///
+/// The command walk (`walk.rs`) asserts the *specific* refusal for every command
+/// the model says must be refused: the disabled set is the oracle
+/// (`docs/design/command-walk.md`). A free-text `{"error": "..."}` cannot carry
+/// that without matching on prose, and prose can be reworded into a different
+/// meaning without anything noticing.
+///
+/// # The wire text is protocol
+///
+/// [`Display`](std::fmt::Display) reproduces, byte for byte, the strings these
+/// replies carried before they were typed. `nucleus-guest-init` reads them, and
+/// `fetch_audit_credentials` there branches on `"no audit credentials
+/// provisioned"`. `the_wire_text_of_every_refusal_is_unchanged` pins each one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// The host holds nothing of this kind for this pod. Never consumes a one-shot.
+    NotProvisioned(Material),
+    /// A once-only value was already served. The reply carries none of it.
+    AlreadyServed(OneShot),
+    ReceiptCollectionNotConfigured,
+    NoReceiptBody,
+    ReceiptBodyUnreadable,
+    ReceiptStorageFailed,
+    PodListEncodingFailed,
+    SerializationFailed(String),
+    /// The identity manager could not issue; its message, escaped on the wire.
+    Identity(String),
+    /// The frame named no command.
+    Parse(crate::workload_api_protocol::CommandParseError),
+}
+
+/// Per-pod material a pod may or may not have been provisioned with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Material {
+    BrokerSecret,
+    MediationKey,
+    AuditCredentials,
+    PodSpec,
+    DlcAdmission,
+    PodCertificate,
+    TaskToken,
+    CallerToken,
+}
+
+/// The values whose possession IS the capability, and so are served once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OneShot {
+    BrokerSecret,
+    MediationKey,
+    AuditCredentials,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::NotProvisioned(m) => f.write_str(match m {
+                Material::BrokerSecret => "no broker secret provisioned for this pod",
+                Material::MediationKey => "no mediation key provisioned for this pod",
+                Material::AuditCredentials => "no audit credentials provisioned for this pod",
+                Material::PodSpec => "no pod spec provisioned for this pod",
+                Material::DlcAdmission => "no dlc admission provisioned for this pod",
+                Material::PodCertificate => "no certificate was issued for this pod",
+                Material::TaskToken => "no task token was minted for this pod",
+                Material::CallerToken => "no caller token minted for this pod",
+            }),
+            Refusal::AlreadyServed(o) => f.write_str(match o {
+                OneShot::BrokerSecret => "broker secret already served",
+                OneShot::MediationKey => "mediation key already served",
+                OneShot::AuditCredentials => "audit credentials already served",
+            }),
+            Refusal::ReceiptCollectionNotConfigured => {
+                f.write_str("receipt collection not configured for this pod")
+            }
+            Refusal::NoReceiptBody => f.write_str("no receipt body after SHIP_RECEIPT"),
+            Refusal::ReceiptBodyUnreadable => f.write_str("receipt body too long or unreadable"),
+            Refusal::ReceiptStorageFailed => f.write_str("receipt storage failed"),
+            Refusal::PodListEncodingFailed => f.write_str("failed to encode pod list"),
+            Refusal::SerializationFailed(e) => write!(f, "serialization failed: {e}"),
+            Refusal::Identity(e) => f.write_str(e),
+            Refusal::Parse(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// Encode a reply for the wire. The one place a refusal becomes bytes, and it
+/// goes through serde, so no refusal text — including an identity error or an
+/// echoed unknown command — can break the JSON framing.
+fn wire(reply: &Reply) -> String {
+    match reply {
+        Ok(body) => body.clone(),
+        Err(refusal) => serde_json::json!({ "error": refusal.to_string() }).to_string(),
+    }
+}
+
 /// Default port for the Workload API vsock server.
 #[allow(dead_code)]
 pub const DEFAULT_WORKLOAD_API_PORT: u32 = 15012;
@@ -556,19 +654,19 @@ fn handle_fetch_broker_secret(
     secret: Option<&str>,
     port: u32,
     already_served: &std::sync::atomic::AtomicBool,
-) -> String {
+) -> Reply {
     use std::sync::atomic::Ordering;
     let Some(secret) = secret else {
-        return r#"{"error":"no broker secret provisioned for this pod"}"#.to_string();
+        return Err(Refusal::NotProvisioned(Material::BrokerSecret));
     };
     if already_served.swap(true, Ordering::AcqRel) {
         tracing::warn!(
             "refused a repeat FETCH_BROKER_SECRET — the capability is served once, before the \
              workload exists; a second request is a bug or an attempt to obtain it"
         );
-        return r#"{"error":"broker secret already served"}"#.to_string();
+        return Err(Refusal::AlreadyServed(OneShot::BrokerSecret));
     }
-    serde_json::json!({ "secret": secret, "port": port }).to_string()
+    Ok(serde_json::json!({ "secret": secret, "port": port }).to_string())
 }
 
 /// Serve the per-pod mediation signing key exactly once, before the workload
@@ -580,19 +678,19 @@ fn handle_fetch_mediation_key(
     signing_key: Option<&str>,
     spiffe_id: Option<&str>,
     already_served: &std::sync::atomic::AtomicBool,
-) -> String {
+) -> Reply {
     use std::sync::atomic::Ordering;
     let (Some(signing_key), Some(spiffe_id)) = (signing_key, spiffe_id) else {
-        return r#"{"error":"no mediation key provisioned for this pod"}"#.to_string();
+        return Err(Refusal::NotProvisioned(Material::MediationKey));
     };
     if already_served.swap(true, Ordering::AcqRel) {
         tracing::warn!(
             "refused a repeat FETCH_MEDIATION_KEY — the signing key is served once, before the \
              workload exists; a second request is a bug or an attempt to obtain it"
         );
-        return r#"{"error":"mediation key already served"}"#.to_string();
+        return Err(Refusal::AlreadyServed(OneShot::MediationKey));
     }
-    serde_json::json!({ "signing_key": signing_key, "spiffe_id": spiffe_id }).to_string()
+    Ok(serde_json::json!({ "signing_key": signing_key, "spiffe_id": spiffe_id }).to_string())
 }
 
 /// Handle `FETCH_POD_SPEC`: the command this pod is to run.
@@ -601,10 +699,10 @@ fn handle_fetch_mediation_key(
 /// would boot something — whatever its rootfs carries — while believing the
 /// host had spoken, and the two would disagree about what ran. The guest falls
 /// back to its baked spec only when it is told there is nothing to fetch.
-fn handle_fetch_pod_spec(spec: Option<&str>) -> String {
+fn handle_fetch_pod_spec(spec: Option<&str>) -> Reply {
     match spec {
-        Some(spec) => serde_json::json!({ "spec": spec }).to_string(),
-        None => r#"{"error":"no pod spec provisioned for this pod"}"#.to_string(),
+        Some(spec) => Ok(serde_json::json!({ "spec": spec }).to_string()),
+        None => Err(Refusal::NotProvisioned(Material::PodSpec)),
     }
 }
 
@@ -615,42 +713,42 @@ fn handle_fetch_pod_spec(spec: Option<&str>) -> String {
 /// under that pod — no session id is read from the guest. A failure returns an
 /// error the guest shipper treats as "not witnessed" (and latches degraded), so a
 /// pod whose receipts stop reaching the host stops deciding.
-async fn handle_ship_receipt<R>(reader: &mut R, receipt_dir: Option<&std::path::Path>) -> String
+async fn handle_ship_receipt<R>(reader: &mut R, receipt_dir: Option<&std::path::Path>) -> Reply
 where
     R: AsyncReadExt + Unpin,
 {
     let Some(dir) = receipt_dir else {
-        return r#"{"error":"receipt collection not configured for this pod"}"#.to_string();
+        return Err(Refusal::ReceiptCollectionNotConfigured);
     };
     let body = match read_bounded_frame(reader, MAX_RECEIPT_BODY_LEN).await {
         Ok(Some(frame)) => frame,
-        Ok(None) => return r#"{"error":"no receipt body after SHIP_RECEIPT"}"#.to_string(),
+        Ok(None) => return Err(Refusal::NoReceiptBody),
         Err(e) => {
             tracing::warn!(error = %e, "SHIP_RECEIPT body frame rejected");
-            return r#"{"error":"receipt body too long or unreadable"}"#.to_string();
+            return Err(Refusal::ReceiptBodyUnreadable);
         }
     };
     // The body is opaque here: its Ed25519 signature is verified later by
     // `nucleus-audit verify-mediation-receipts`, not re-implemented on the hot path.
     let line = String::from_utf8_lossy(&body);
     match crate::mediation_receipt_collector::append_receipt(dir, line.trim_end()).await {
-        Ok(()) => r#"{"status":"collected"}"#.to_string(),
+        Ok(()) => Ok(r#"{"status":"collected"}"#.to_string()),
         Err(e) => {
             tracing::error!(error = %e, "could not collect a shipped MediationReceipt");
-            r#"{"error":"receipt storage failed"}"#.to_string()
+            Err(Refusal::ReceiptStorageFailed)
         }
     }
 }
 
-fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> String {
+fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> Reply {
     match material {
-        Some(m) => serde_json::json!({
+        Some(m) => Ok(serde_json::json!({
             "trusted_keys": m.trusted_keys,
             "issuer": m.issuer,
             "credentials": m.credentials,
         })
-        .to_string(),
-        None => r#"{"error":"no dlc admission provisioned for this pod"}"#.to_string(),
+        .to_string()),
+        None => Err(Refusal::NotProvisioned(Material::DlcAdmission)),
     }
 }
 
@@ -667,46 +765,46 @@ fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> String
 fn handle_fetch_audit_credentials(
     creds: Option<&AuditCredentials>,
     already_served: &std::sync::atomic::AtomicBool,
-) -> String {
+) -> Reply {
     use std::sync::atomic::Ordering;
     let Some(creds) = creds else {
-        return r#"{"error":"no audit credentials provisioned for this pod"}"#.to_string();
+        return Err(Refusal::NotProvisioned(Material::AuditCredentials));
     };
     if already_served.swap(true, Ordering::AcqRel) {
         tracing::warn!(
             "refused a repeat FETCH_AUDIT_CREDENTIALS — the credentials are served once, before \
              the workload exists; a second request is a bug or an attempt to obtain them"
         );
-        return r#"{"error":"audit credentials already served"}"#.to_string();
+        return Err(Refusal::AlreadyServed(OneShot::AuditCredentials));
     }
-    serde_json::json!({
+    Ok(serde_json::json!({
         "access_key_id": creds.access_key_id,
         "secret_access_key": creds.secret_access_key,
         "session_token": creds.session_token,
     })
-    .to_string()
+    .to_string())
 }
 
-fn handle_fetch_pod_certificate(cert: Option<&crate::pod_authority::BootCertificate>) -> String {
+fn handle_fetch_pod_certificate(cert: Option<&crate::pod_authority::BootCertificate>) -> Reply {
     match cert {
-        Some(c) => serde_json::json!({
+        Some(c) => Ok(serde_json::json!({
             "certificate": c.token_b64,
             "root_pubkey": c.root_pubkey_hex,
         })
-        .to_string(),
-        None => r#"{"error":"no certificate was issued for this pod"}"#.to_string(),
+        .to_string()),
+        None => Err(Refusal::NotProvisioned(Material::PodCertificate)),
     }
 }
 
-fn handle_fetch_task_token(token: Option<&crate::session_mint::MintedTaskToken>) -> String {
+fn handle_fetch_task_token(token: Option<&crate::session_mint::MintedTaskToken>) -> Reply {
     match token {
-        Some(t) => serde_json::json!({
+        Some(t) => Ok(serde_json::json!({
             "token": t.token_json,
             "nonce": t.nonce_hex,
             "issuer": t.issuer_hex,
         })
-        .to_string(),
-        None => r#"{"error":"no task token was minted for this pod"}"#.to_string(),
+        .to_string()),
+        None => Err(Refusal::NotProvisioned(Material::TaskToken)),
     }
 }
 
@@ -726,136 +824,153 @@ async fn handle_connection(
             None => break,
         };
 
-        // ALL interpretation of guest-supplied bytes happens in the pure,
-        // fuzz- and property-tested `parse_command`. The host never branches on
-        // raw guest input directly.
-        let parsed = parse_command(&frame);
-        // Record personalisation BEFORE answering: if serving it panics or the connection dies
-        // mid-reply, the guest may still have received enough to be this pod, and a snapshot
-        // must not be able to slip through that window.
-        if let Ok(cmd) = &parsed
-            && cmd.personalizes_the_vm()
-        {
-            material
-                .personalized
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        let response = match parsed {
-            Ok(WorkloadApiCommand::FetchSvid) => {
-                debug!("workload API FETCH_SVID for pod {}", pod_id);
-                handle_fetch_svid(&manager, pod_id).await
-            }
-            Ok(WorkloadApiCommand::FetchBundle) => {
-                debug!("workload API FETCH_BUNDLE for pod {}", pod_id);
-                handle_fetch_bundle(&manager)
-            }
-            Ok(WorkloadApiCommand::Ping) => r#"{"status":"ok"}"#.to_string(),
-            Ok(WorkloadApiCommand::FetchPodCallerToken) => {
-                debug!("workload API FETCH_POD_CALLER_TOKEN for pod {}", pod_id);
-                // Served for the pod bound to THIS socket. The request carries no
-                // pod id and could not be believed if it did — so the id is served
-                // ALONGSIDE the token, from the same socket-authenticated source.
-                // Both are needed: `identify_caller` requires the (id, token) pair,
-                // and on Firecracker the guest has no other way to learn its own id
-                // (it is not on the cmdline or in the spec the guest can read).
-                match &material.caller_token {
-                    Some(t) => format!(r#"{{"caller_token":"{t}","pod_id":"{pod_id}"}}"#),
-                    None => r#"{"error":"no caller token minted for this pod"}"#.to_string(),
-                }
-            }
-            Ok(WorkloadApiCommand::FetchTaskToken) => {
-                debug!("workload API FETCH_TASK_TOKEN for pod {}", pod_id);
-                handle_fetch_task_token(material.task_token.as_ref())
-            }
-            Ok(WorkloadApiCommand::FetchPodCertificate) => {
-                debug!("workload API FETCH_POD_CERTIFICATE for pod {}", pod_id);
-                handle_fetch_pod_certificate(material.pod_certificate.as_ref())
-            }
-            Ok(WorkloadApiCommand::FetchDlcAdmission) => {
-                debug!("workload API FETCH_DLC_ADMISSION for pod {}", pod_id);
-                handle_fetch_dlc_admission(material.dlc_admission.as_ref())
-            }
-            Ok(WorkloadApiCommand::FetchBrokerSecret) => {
-                // Value never logged, at any level: this is the one workload-API
-                // payload whose possession IS the capability.
-                debug!("workload API FETCH_BROKER_SECRET for pod {}", pod_id);
-                handle_fetch_broker_secret(
-                    material.broker_secret.as_deref(),
-                    material.broker_port,
-                    &material.broker_secret_served,
-                )
-            }
-            Ok(WorkloadApiCommand::FetchAuditCredentials) => {
-                // Like the broker secret: never log the value, at any level.
-                debug!("workload API FETCH_AUDIT_CREDENTIALS for pod {}", pod_id);
-                handle_fetch_audit_credentials(
-                    material.audit_creds.as_ref(),
-                    &material.audit_creds_served,
-                )
-            }
-            Ok(WorkloadApiCommand::FetchMediationKey) => {
-                // Like the broker secret: the signing key value is never logged.
-                debug!("workload API FETCH_MEDIATION_KEY for pod {}", pod_id);
-                handle_fetch_mediation_key(
-                    material.mediation_signing_key.as_deref(),
-                    material.mediation_spiffe_id.as_deref(),
-                    &material.mediation_key_served,
-                )
-            }
-            Ok(WorkloadApiCommand::FetchPodSpec) => {
-                // Not a secret and not once-only: it is this pod's own command,
-                // and a guest re-reading it learns nothing it did not already
-                // run. The mediation key's `*_served` latch is about a value
-                // whose POSSESSION is the capability; this is not that.
-                debug!("workload API FETCH_POD_SPEC for pod {}", pod_id);
-                handle_fetch_pod_spec(material.pod_spec_yaml.as_deref())
-            }
-            Ok(WorkloadApiCommand::SnapshotReady) => {
-                debug!("workload API SNAPSHOT_READY for pod {}", pod_id);
-                // Recorded, not acted on. Taking the snapshot here would make every boot wait on
-                // a decision only the operator has, so the guest is told to carry on and the
-                // host keeps the fact for whoever asks to snapshot later.
-                material
-                    .at_snapshot_barrier
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                r#"{"status":"ok"}"#.to_string()
-            }
-            Ok(WorkloadApiCommand::PodList) => {
-                debug!("workload API POD_LIST for pod {}", pod_id);
-                // Bound to THIS socket's pod id — the guest names no pod, and
-                // could not be believed if it did. `PodListView` holds only a
-                // read-only registry clone (no node secret) and applies the same
-                // `caller_may_manage` lineage filter `/v1/pods` uses, so the reply
-                // is this pod's own row and its direct children; a sibling is not
-                // in it. Encoding cannot leak on failure — a fixed error string.
-                let view = crate::pod_api::PodListView::for_pod(
-                    std::sync::Arc::clone(&material.pod_registry),
-                    pod_id,
-                );
-                let infos = view.scoped_infos().await;
-                serde_json::to_string(&infos)
-                    .unwrap_or_else(|_| r#"{"error":"failed to encode pod list"}"#.to_string())
-            }
-            Ok(WorkloadApiCommand::ShipReceipt) => {
-                // Followed by a second frame (the receipt body), read under its own
-                // larger bound. The connection already binds this to `pod_id`.
-                handle_ship_receipt(&mut reader, material.receipt_dir.as_deref()).await
-            }
-            Err(err) => {
-                debug!("workload API rejected command for pod {}: {err}", pod_id);
-                // Build the error response via serde so the (attacker-controlled)
-                // error text — e.g. an unknown-command token echoed back — is
-                // JSON-escaped and cannot inject into the response framing.
-                serde_json::json!({ "error": err.to_string() }).to_string()
-            }
-        };
-
-        writer.write_all(response.as_bytes()).await?;
+        let reply = serve_frame(&frame, &mut reader, &manager, pod_id, &material).await;
+        writer.write_all(wire(&reply).as_bytes()).await?;
         writer.write_all(b"\n").await?;
         writer.flush().await?;
     }
 
     Ok(())
+}
+
+/// One command frame in, one reply out: parse, record personalisation, dispatch.
+///
+/// Everything [`handle_connection`] does except moving bytes, so the command walk
+/// drives exactly the code a guest reaches, and observes the typed [`Reply`]
+/// before it is flattened to JSON. `reader` is the connection's own, because
+/// `SHIP_RECEIPT` reads a second frame from it.
+async fn serve_frame<R>(
+    frame: &[u8],
+    reader: &mut R,
+    manager: &IdentityManager,
+    pod_id: uuid::Uuid,
+    material: &PodMaterial,
+) -> Reply
+where
+    R: AsyncReadExt + Unpin,
+{
+    // ALL interpretation of guest-supplied bytes happens in the pure,
+    // fuzz- and property-tested `parse_command`. The host never branches on
+    // raw guest input directly.
+    let parsed = parse_command(frame);
+    // Record personalisation BEFORE answering: if serving it panics or the connection dies
+    // mid-reply, the guest may still have received enough to be this pod, and a snapshot
+    // must not be able to slip through that window.
+    if let Ok(cmd) = &parsed
+        && cmd.personalizes_the_vm()
+    {
+        material
+            .personalized
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    match parsed {
+        Ok(WorkloadApiCommand::FetchSvid) => {
+            debug!("workload API FETCH_SVID for pod {}", pod_id);
+            handle_fetch_svid(manager, pod_id).await
+        }
+        Ok(WorkloadApiCommand::FetchBundle) => {
+            debug!("workload API FETCH_BUNDLE for pod {}", pod_id);
+            handle_fetch_bundle(manager)
+        }
+        Ok(WorkloadApiCommand::Ping) => Ok(r#"{"status":"ok"}"#.to_string()),
+        Ok(WorkloadApiCommand::FetchPodCallerToken) => {
+            debug!("workload API FETCH_POD_CALLER_TOKEN for pod {}", pod_id);
+            // Served for the pod bound to THIS socket. The request carries no
+            // pod id and could not be believed if it did — so the id is served
+            // ALONGSIDE the token, from the same socket-authenticated source.
+            // Both are needed: `identify_caller` requires the (id, token) pair,
+            // and on Firecracker the guest has no other way to learn its own id
+            // (it is not on the cmdline or in the spec the guest can read).
+            match &material.caller_token {
+                Some(t) => Ok(format!(r#"{{"caller_token":"{t}","pod_id":"{pod_id}"}}"#)),
+                None => Err(Refusal::NotProvisioned(Material::CallerToken)),
+            }
+        }
+        Ok(WorkloadApiCommand::FetchTaskToken) => {
+            debug!("workload API FETCH_TASK_TOKEN for pod {}", pod_id);
+            handle_fetch_task_token(material.task_token.as_ref())
+        }
+        Ok(WorkloadApiCommand::FetchPodCertificate) => {
+            debug!("workload API FETCH_POD_CERTIFICATE for pod {}", pod_id);
+            handle_fetch_pod_certificate(material.pod_certificate.as_ref())
+        }
+        Ok(WorkloadApiCommand::FetchDlcAdmission) => {
+            debug!("workload API FETCH_DLC_ADMISSION for pod {}", pod_id);
+            handle_fetch_dlc_admission(material.dlc_admission.as_ref())
+        }
+        Ok(WorkloadApiCommand::FetchBrokerSecret) => {
+            // Value never logged, at any level: this is the one workload-API
+            // payload whose possession IS the capability.
+            debug!("workload API FETCH_BROKER_SECRET for pod {}", pod_id);
+            handle_fetch_broker_secret(
+                material.broker_secret.as_deref(),
+                material.broker_port,
+                &material.broker_secret_served,
+            )
+        }
+        Ok(WorkloadApiCommand::FetchAuditCredentials) => {
+            // Like the broker secret: never log the value, at any level.
+            debug!("workload API FETCH_AUDIT_CREDENTIALS for pod {}", pod_id);
+            handle_fetch_audit_credentials(
+                material.audit_creds.as_ref(),
+                &material.audit_creds_served,
+            )
+        }
+        Ok(WorkloadApiCommand::FetchMediationKey) => {
+            // Like the broker secret: the signing key value is never logged.
+            debug!("workload API FETCH_MEDIATION_KEY for pod {}", pod_id);
+            handle_fetch_mediation_key(
+                material.mediation_signing_key.as_deref(),
+                material.mediation_spiffe_id.as_deref(),
+                &material.mediation_key_served,
+            )
+        }
+        Ok(WorkloadApiCommand::FetchPodSpec) => {
+            // Not a secret and not once-only: it is this pod's own command,
+            // and a guest re-reading it learns nothing it did not already
+            // run. The mediation key's `*_served` latch is about a value
+            // whose POSSESSION is the capability; this is not that.
+            debug!("workload API FETCH_POD_SPEC for pod {}", pod_id);
+            handle_fetch_pod_spec(material.pod_spec_yaml.as_deref())
+        }
+        Ok(WorkloadApiCommand::SnapshotReady) => {
+            debug!("workload API SNAPSHOT_READY for pod {}", pod_id);
+            // Recorded, not acted on. Taking the snapshot here would make every boot wait on
+            // a decision only the operator has, so the guest is told to carry on and the
+            // host keeps the fact for whoever asks to snapshot later.
+            material
+                .at_snapshot_barrier
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(r#"{"status":"ok"}"#.to_string())
+        }
+        Ok(WorkloadApiCommand::PodList) => {
+            debug!("workload API POD_LIST for pod {}", pod_id);
+            // Bound to THIS socket's pod id — the guest names no pod, and
+            // could not be believed if it did. `PodListView` holds only a
+            // read-only registry clone (no node secret) and applies the same
+            // `caller_may_manage` lineage filter `/v1/pods` uses, so the reply
+            // is this pod's own row and its direct children; a sibling is not
+            // in it. Encoding cannot leak on failure — a fixed error string.
+            let view = crate::pod_api::PodListView::for_pod(
+                std::sync::Arc::clone(&material.pod_registry),
+                pod_id,
+            );
+            let infos = view.scoped_infos().await;
+            serde_json::to_string(&infos).map_err(|_| Refusal::PodListEncodingFailed)
+        }
+        Ok(WorkloadApiCommand::ShipReceipt) => {
+            // Followed by a second frame (the receipt body), read under its own
+            // larger bound. The connection already binds this to `pod_id`.
+            handle_ship_receipt(reader, material.receipt_dir.as_deref()).await
+        }
+        Err(err) => {
+            debug!("workload API rejected command for pod {}: {err}", pod_id);
+            // The (attacker-controlled) error text — e.g. an unknown-command
+            // token echoed back — is JSON-escaped by `wire`, so it cannot
+            // inject into the response framing.
+            Err(Refusal::Parse(err))
+        }
+    }
 }
 
 /// Reads one newline-delimited command frame from the guest, bounding the
@@ -914,7 +1029,7 @@ where
 /// Each pod gets a unique SPIFFE identity based on its pod_id:
 /// `spiffe://{trust_domain}/ns/pods/sa/{pod_id}`
 #[allow(dead_code)]
-async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> String {
+async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> Reply {
     // THE pod identity — the same function the spawn path registers and caches
     // the attested certificate under. These used to be two spellings: this
     // served `ns/pods/sa/<uuid>` while the spawn path registered the
@@ -941,18 +1056,21 @@ async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> Str
             };
 
             serde_json::to_string(&response)
-                .unwrap_or_else(|e| format!(r#"{{"error":"serialization failed: {}"}}"#, e))
+                .map_err(|e| Refusal::SerializationFailed(e.to_string()))
         }
         Err(e) => {
             error!("failed to fetch certificate for pod {}: {}", pod_id, e);
-            format!(r#"{{"error":"{}"}}"#, e)
+            // Was `format!(r#"{{"error":"{}"}}"#, e)`: the message unescaped inside a
+            // JSON string, so an error containing a quote produced a reply the guest
+            // could not parse. `wire` escapes it.
+            Err(Refusal::Identity(e.to_string()))
         }
     }
 }
 
 /// Handles FETCH_BUNDLE command - returns the trust bundle (CA certificates).
 #[allow(dead_code)]
-fn handle_fetch_bundle(manager: &IdentityManager) -> String {
+fn handle_fetch_bundle(manager: &IdentityManager) -> Reply {
     #[derive(serde::Serialize)]
     struct BundleResponse {
         trust_domain: String,
@@ -971,8 +1089,7 @@ fn handle_fetch_bundle(manager: &IdentityManager) -> String {
         bundle_pem: pem,
     };
 
-    serde_json::to_string(&response)
-        .unwrap_or_else(|e| format!(r#"{{"error":"serialization failed: {}"}}"#, e))
+    serde_json::to_string(&response).map_err(|e| Refusal::SerializationFailed(e.to_string()))
 }
 
 #[cfg(test)]
@@ -994,7 +1111,7 @@ mod task_token_serving_tests {
     /// tool-proxy cannot verify, which fails at startup rather than at use.
     #[test]
     fn the_served_token_carries_the_three_values_the_guest_needs() {
-        let body = handle_fetch_task_token(Some(&minted()));
+        let body = wire(&handle_fetch_task_token(Some(&minted())));
         let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(v["token"], r#"{"task":"demo"}"#);
         assert_eq!(v["nonce"], "0011223344556677");
@@ -1008,7 +1125,7 @@ mod task_token_serving_tests {
     /// misconfiguration into a confusing runtime denial.
     #[test]
     fn a_pod_without_a_token_is_refused_rather_than_given_an_empty_one() {
-        let body = handle_fetch_task_token(None);
+        let body = wire(&handle_fetch_task_token(None));
         let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert!(
             v.get("token").is_none(),
@@ -1027,12 +1144,12 @@ mod task_token_serving_tests {
             root_pubkey_hex: "ab".repeat(32),
         };
         let v: serde_json::Value =
-            serde_json::from_str(&handle_fetch_pod_certificate(Some(&boot))).unwrap();
+            serde_json::from_str(&wire(&handle_fetch_pod_certificate(Some(&boot)))).unwrap();
         assert_eq!(v["certificate"], "dG9rZW4=");
         assert_eq!(v["root_pubkey"], "ab".repeat(32));
 
         let v: serde_json::Value =
-            serde_json::from_str(&handle_fetch_pod_certificate(None)).unwrap();
+            serde_json::from_str(&wire(&handle_fetch_pod_certificate(None))).unwrap();
         assert!(v.get("certificate").is_none());
         assert!(v["error"].is_string());
         use crate::workload_api_protocol::{WorkloadApiCommand, parse_command};
@@ -1377,11 +1494,11 @@ mod tests {
     #[test]
     fn the_broker_secret_is_served_exactly_once() {
         let served = AtomicBool::new(false);
-        let first = handle_fetch_broker_secret(Some("cap"), 1027, &served);
+        let first = wire(&handle_fetch_broker_secret(Some("cap"), 1027, &served));
         let v: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(v["secret"], "cap", "the first request must be served");
 
-        let second = handle_fetch_broker_secret(Some("cap"), 1027, &served);
+        let second = wire(&handle_fetch_broker_secret(Some("cap"), 1027, &served));
         assert!(
             second.contains("already served"),
             "a second request must be refused: {second}"
@@ -1398,8 +1515,11 @@ mod tests {
     #[test]
     fn the_mediation_key_is_served_exactly_once() {
         let served = AtomicBool::new(false);
-        let first =
-            handle_fetch_mediation_key(Some("deadbeef"), Some("spiffe://td/mediator/p"), &served);
+        let first = wire(&handle_fetch_mediation_key(
+            Some("deadbeef"),
+            Some("spiffe://td/mediator/p"),
+            &served,
+        ));
         let v: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(
             v["signing_key"], "deadbeef",
@@ -1407,8 +1527,11 @@ mod tests {
         );
         assert_eq!(v["spiffe_id"], "spiffe://td/mediator/p");
 
-        let second =
-            handle_fetch_mediation_key(Some("deadbeef"), Some("spiffe://td/mediator/p"), &served);
+        let second = wire(&handle_fetch_mediation_key(
+            Some("deadbeef"),
+            Some("spiffe://td/mediator/p"),
+            &served,
+        ));
         assert!(
             second.contains("already served"),
             "a second request must be refused: {second}"
@@ -1425,7 +1548,11 @@ mod tests {
     #[test]
     fn the_mediation_key_is_withheld_when_unprovisioned() {
         let served = AtomicBool::new(false);
-        let none = handle_fetch_mediation_key(None, Some("spiffe://td/x"), &served);
+        let none = wire(&handle_fetch_mediation_key(
+            None,
+            Some("spiffe://td/x"),
+            &served,
+        ));
         assert!(none.contains("error"), "no key ⇒ error: {none}");
         assert!(
             !served.load(std::sync::atomic::Ordering::Acquire),
@@ -1440,7 +1567,7 @@ mod tests {
     #[test]
     fn the_reply_carries_the_port_as_well_as_the_secret() {
         let served = AtomicBool::new(false);
-        let reply = handle_fetch_broker_secret(Some("cap"), 4242, &served);
+        let reply = wire(&handle_fetch_broker_secret(Some("cap"), 4242, &served));
         let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v["secret"], "cap");
         assert_eq!(
@@ -1454,7 +1581,7 @@ mod tests {
     #[test]
     fn the_served_port_is_whatever_the_node_was_configured_with() {
         let served = AtomicBool::new(false);
-        let reply = handle_fetch_broker_secret(Some("cap"), 9999, &served);
+        let reply = wire(&handle_fetch_broker_secret(Some("cap"), 9999, &served));
         let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v["port"], 9999);
     }
@@ -1466,7 +1593,7 @@ mod tests {
     #[test]
     fn an_absent_secret_does_not_consume_the_one_shot() {
         let served = AtomicBool::new(false);
-        let r = handle_fetch_broker_secret(None, 1027, &served);
+        let r = wire(&handle_fetch_broker_secret(None, 1027, &served));
         assert!(r.contains("error"), "got: {r}");
         assert!(
             !served.load(std::sync::atomic::Ordering::Acquire),
@@ -1500,13 +1627,19 @@ mod tests {
     #[test]
     fn the_audit_credentials_are_served_exactly_once() {
         let served = AtomicBool::new(false);
-        let first = handle_fetch_audit_credentials(Some(&audit_creds()), &served);
+        let first = wire(&handle_fetch_audit_credentials(
+            Some(&audit_creds()),
+            &served,
+        ));
         let v: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(v["access_key_id"], "AKIAEXAMPLE");
         assert_eq!(v["secret_access_key"], "hunter2secret");
         assert_eq!(v["session_token"], "ststoken");
 
-        let second = handle_fetch_audit_credentials(Some(&audit_creds()), &served);
+        let second = wire(&handle_fetch_audit_credentials(
+            Some(&audit_creds()),
+            &served,
+        ));
         assert!(
             second.contains("already served"),
             "a second request must be refused: {second}"
@@ -1523,13 +1656,13 @@ mod tests {
     #[test]
     fn static_credentials_serve_a_null_session_token() {
         let served = AtomicBool::new(false);
-        let reply = handle_fetch_audit_credentials(
+        let reply = wire(&handle_fetch_audit_credentials(
             Some(&AuditCredentials {
                 session_token: None,
                 ..audit_creds()
             }),
             &served,
-        );
+        ));
         let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
         assert!(v["session_token"].is_null(), "got: {reply}");
         assert_eq!(v["access_key_id"], "AKIAEXAMPLE");
@@ -1541,7 +1674,7 @@ mod tests {
     #[test]
     fn an_absent_credential_set_does_not_consume_the_one_shot() {
         let served = AtomicBool::new(false);
-        let r = handle_fetch_audit_credentials(None, &served);
+        let r = wire(&handle_fetch_audit_credentials(None, &served));
         assert!(r.contains("error"), "got: {r}");
         assert!(
             !served.load(std::sync::atomic::Ordering::Acquire),
@@ -1627,5 +1760,126 @@ mod spiffe_bridge_tests {
         // What we serve must survive the validator we reject with.
         nucleus_identity::spiffe_uri_from_svid(svid.leaf().as_bytes())
             .expect("the SVID served over vsock must pass X.509-SVID validation");
+    }
+}
+
+#[cfg(test)]
+mod walk;
+
+#[cfg(test)]
+mod refusal_wire_tests {
+    use super::*;
+    use crate::workload_api_protocol::CommandParseError;
+
+    /// **The typed refusals kept the protocol's bytes.** Each expected string is
+    /// the literal a handler returned before `Refusal` existed; `nucleus-guest-init`
+    /// reads these, and `fetch_audit_credentials` there matches on one. A reworded
+    /// `Display` arm fails here, not in a booted guest.
+    ///
+    /// The match makes the list total: a new `Refusal` variant does not compile
+    /// until its wire text is pinned below.
+    #[test]
+    fn the_wire_text_of_every_refusal_is_unchanged() {
+        let cases: Vec<(Refusal, &str)> = vec![
+            (
+                Refusal::NotProvisioned(Material::BrokerSecret),
+                r#"{"error":"no broker secret provisioned for this pod"}"#,
+            ),
+            (
+                Refusal::NotProvisioned(Material::MediationKey),
+                r#"{"error":"no mediation key provisioned for this pod"}"#,
+            ),
+            (
+                Refusal::NotProvisioned(Material::AuditCredentials),
+                r#"{"error":"no audit credentials provisioned for this pod"}"#,
+            ),
+            (
+                Refusal::NotProvisioned(Material::PodSpec),
+                r#"{"error":"no pod spec provisioned for this pod"}"#,
+            ),
+            (
+                Refusal::NotProvisioned(Material::DlcAdmission),
+                r#"{"error":"no dlc admission provisioned for this pod"}"#,
+            ),
+            (
+                Refusal::NotProvisioned(Material::PodCertificate),
+                r#"{"error":"no certificate was issued for this pod"}"#,
+            ),
+            (
+                Refusal::NotProvisioned(Material::TaskToken),
+                r#"{"error":"no task token was minted for this pod"}"#,
+            ),
+            (
+                Refusal::NotProvisioned(Material::CallerToken),
+                r#"{"error":"no caller token minted for this pod"}"#,
+            ),
+            (
+                Refusal::AlreadyServed(OneShot::BrokerSecret),
+                r#"{"error":"broker secret already served"}"#,
+            ),
+            (
+                Refusal::AlreadyServed(OneShot::MediationKey),
+                r#"{"error":"mediation key already served"}"#,
+            ),
+            (
+                Refusal::AlreadyServed(OneShot::AuditCredentials),
+                r#"{"error":"audit credentials already served"}"#,
+            ),
+            (
+                Refusal::ReceiptCollectionNotConfigured,
+                r#"{"error":"receipt collection not configured for this pod"}"#,
+            ),
+            (
+                Refusal::NoReceiptBody,
+                r#"{"error":"no receipt body after SHIP_RECEIPT"}"#,
+            ),
+            (
+                Refusal::ReceiptBodyUnreadable,
+                r#"{"error":"receipt body too long or unreadable"}"#,
+            ),
+            (
+                Refusal::ReceiptStorageFailed,
+                r#"{"error":"receipt storage failed"}"#,
+            ),
+            (
+                Refusal::PodListEncodingFailed,
+                r#"{"error":"failed to encode pod list"}"#,
+            ),
+            (
+                Refusal::SerializationFailed("x".into()),
+                r#"{"error":"serialization failed: x"}"#,
+            ),
+            (Refusal::Identity("no CA".into()), r#"{"error":"no CA"}"#),
+            (
+                Refusal::Parse(CommandParseError::Unknown("NOPE".into())),
+                r#"{"error":"unknown command: NOPE"}"#,
+            ),
+        ];
+        for (refusal, want) in &cases {
+            match refusal {
+                Refusal::NotProvisioned(_)
+                | Refusal::AlreadyServed(_)
+                | Refusal::ReceiptCollectionNotConfigured
+                | Refusal::NoReceiptBody
+                | Refusal::ReceiptBodyUnreadable
+                | Refusal::ReceiptStorageFailed
+                | Refusal::PodListEncodingFailed
+                | Refusal::SerializationFailed(_)
+                | Refusal::Identity(_)
+                | Refusal::Parse(_) => {}
+            }
+            assert_eq!(&wire(&Err(refusal.clone())), want);
+        }
+        // 8 materials + 3 one-shots + 8 others: nothing silently skipped.
+        assert_eq!(cases.len(), 19);
+    }
+
+    /// The defect the old identity-error path had: its message was spliced into
+    /// a JSON string unescaped, so a quote in it broke the reply's framing.
+    #[test]
+    fn an_identity_error_with_a_quote_is_still_one_json_object() {
+        let bytes = wire(&Err(Refusal::Identity(r#"bad "trust" domain"#.into())));
+        let v: serde_json::Value = serde_json::from_str(&bytes).expect("valid JSON");
+        assert_eq!(v["error"], r#"bad "trust" domain"#);
     }
 }
