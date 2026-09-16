@@ -83,6 +83,7 @@ const IDENTITY_VARS: &[&str] = &[
 /// still reported as a boolean; the full secret is never echoed.
 const CANARY_PREFIX: &str = "nucleus-e2e-canary-";
 
+mod barrier;
 mod transcript;
 
 fn main() {
@@ -92,6 +93,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("transcript") {
         std::process::exit(transcript::run(args.get(1..).unwrap_or_default()));
+    }
+    // `barrier`: hold a workload-API connection and send FETCH_SVID until killed —
+    // the guest half of `nucleus-perf teardown-barrier`. See `barrier.rs`.
+    if args.first().map(String::as_str) == Some("barrier") {
+        std::process::exit(barrier::run());
     }
 
     let mut breaches: Vec<&'static str> = Vec::new();

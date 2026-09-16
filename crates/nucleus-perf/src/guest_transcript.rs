@@ -63,6 +63,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
+use crate::node_mtls::Node;
+
 /// Fields per-launch by construction, as JSON-pointer suffixes, removed before
 /// comparing. Everything else a conclusion carries must match across runs.
 const PER_LAUNCH: &[&str] = &[
@@ -87,15 +89,8 @@ pub struct Args {
     /// Node base URL (mTLS).
     #[arg(long, default_value = "https://127.0.0.1:8080")]
     pub url: String,
-    /// Client certificate PEM (a SPIFFE client identity the node trusts).
-    #[arg(long)]
-    pub tls_cert: PathBuf,
-    /// Client private key PEM.
-    #[arg(long)]
-    pub tls_key: PathBuf,
-    /// The node's CA bundle PEM.
-    #[arg(long)]
-    pub trust_bundle: PathBuf,
+    #[command(flatten)]
+    pub tls: crate::node_mtls::NodeTls,
     /// Pod spec (YAML or JSON) whose workload is `nucleus-adversary-probe transcript`.
     #[arg(long)]
     pub spec: PathBuf,
@@ -161,12 +156,12 @@ pub fn run(a: Args) -> Result<i32> {
     if a.runs < 3 {
         bail!("--runs must be at least 3: two runs agreeing is too easy to be luck");
     }
-    let client = client(&a)?;
+    let node = Node::connect(&a.url, &a.tls)?;
     let spec = read_spec(&a.spec)?;
 
     let mut runs = Vec::new();
     for i in 0..a.runs {
-        let r = one_run(&client, &a, &spec).with_context(|| format!("run {i}"));
+        let r = one_run(&node, &a, &spec).with_context(|| format!("run {i}"));
         match r {
             Ok(r) => {
                 println!(
@@ -188,7 +183,7 @@ pub fn run(a: Args) -> Result<i32> {
     }
 
     if let Some(forge) = &a.forge_spec {
-        let r = one_run(&client, &a, &read_spec(forge)?).context("forge run")?;
+        let r = one_run(&node, &a, &read_spec(forge)?).context("forge run")?;
         let (outcome, violated) = forge_outcome(&r.pod_receipt);
         if violated {
             verdict = 1;
@@ -205,29 +200,6 @@ pub fn run(a: Args) -> Result<i32> {
             .with_context(|| format!("writing {}", out.display()))?;
     }
     Ok(verdict)
-}
-
-fn client(a: &Args) -> Result<reqwest::blocking::Client> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut identity =
-        std::fs::read(&a.tls_cert).with_context(|| format!("reading {}", a.tls_cert.display()))?;
-    identity.push(b'\n');
-    identity.extend(
-        std::fs::read(&a.tls_key).with_context(|| format!("reading {}", a.tls_key.display()))?,
-    );
-    let roots = reqwest::Certificate::from_pem_bundle(
-        &std::fs::read(&a.trust_bundle)
-            .with_context(|| format!("reading {}", a.trust_bundle.display()))?,
-    )?;
-    // Same shape as `nucleus node`'s client: the chain is verified against the
-    // node's own CA and nothing else; only hostname matching is skipped, because
-    // the node's certificate names a SPIFFE URI, never a host.
-    Ok(reqwest::blocking::Client::builder()
-        .identity(reqwest::Identity::from_pem(&identity)?)
-        .tls_certs_only(roots)
-        .danger_accept_invalid_hostnames(true)
-        .timeout(Duration::from_secs(60))
-        .build()?)
 }
 
 /// What the runs say: the verdict before any forge run (`0`/`1`/`2`), the report's
@@ -348,17 +320,7 @@ fn read_spec(path: &Path) -> Result<Value> {
     serde_yaml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
-fn get_json(client: &reqwest::blocking::Client, url: &str) -> Result<Value, String> {
-    let resp = client.get(url).send().map_err(|e| format!("{url}: {e}"))?;
-    let status = resp.status();
-    let text = resp.text().map_err(|e| format!("{url}: body: {e}"))?;
-    if !status.is_success() {
-        return Err(format!("{url}: HTTP {status}: {}", text.trim()));
-    }
-    serde_json::from_str(&text).map_err(|e| format!("{url}: not JSON: {e}"))
-}
-
-fn one_run(client: &reqwest::blocking::Client, a: &Args, spec: &Value) -> Result<Run> {
+fn one_run(node: &Node, a: &Args, spec: &Value) -> Result<Run> {
     if let Some(pair) = &a.fresh_scratch {
         let (scratch, template) = pair
             .split_once('=')
@@ -366,28 +328,14 @@ fn one_run(client: &reqwest::blocking::Client, a: &Args, spec: &Value) -> Result
         std::fs::copy(template, scratch)
             .with_context(|| format!("restoring {scratch} from {template}"))?;
     }
-    let resp = client
-        .post(format!("{}/v1/pods", a.url))
-        .json(spec)
-        .send()
-        .context("create pod")?;
-    let status = resp.status();
-    let text = resp.text().unwrap_or_default();
-    if !status.is_success() {
-        bail!("create pod: HTTP {status}: {}", text.trim());
-    }
-    let created: Value = serde_json::from_str(&text).context("create pod: response")?;
-    let id = created
-        .get("id")
-        .and_then(Value::as_str)
-        .context("create pod: no id")?
-        .to_string();
+    let id = node.create_pod(&serde_json::to_string(spec)?)?;
 
     // The microVM outlives its workload — the supervisor stays up to serve the
     // result — so "done" is the WORKLOAD's exit, read from the supervisor's own
     // observation, and the pod is then cancelled for the receipt that needs it.
-    wait_for_workload(client, a, &id)?;
-    let claim = get_json(client, &format!("{}/v1/pods/{id}/execution-receipt", a.url))
+    wait_for_workload(node, a, &id)?;
+    let claim = node
+        .get_json(&format!("/v1/pods/{id}/execution-receipt"))
         .map_err(anyhow::Error::msg)
         .context("execution receipt")?;
     let claim = find_claim(&claim).context("execution receipt carries no claim")?;
@@ -396,15 +344,9 @@ fn one_run(client: &reqwest::blocking::Client, a: &Args, spec: &Value) -> Result
         .and_then(Value::as_i64)
         .map(|c| c as i32);
 
-    let cancel = client
-        .post(format!("{}/v1/pods/{id}/cancel", a.url))
-        .send()
-        .context("cancel pod")?;
-    if !cancel.status().is_success() {
-        bail!("cancel pod {id}: HTTP {}", cancel.status());
-    }
-    wait_for_exit(client, a, &id)?;
-    let pod_receipt = get_json(client, &format!("{}/v1/pods/{id}/receipt", a.url));
+    node.cancel_pod(&id)?;
+    wait_for_exit(node, a, &id)?;
+    let pod_receipt = node.get_json(&format!("/v1/pods/{id}/receipt"));
     finish(a, id, exit_code, claim, pod_receipt)
 }
 
@@ -440,11 +382,11 @@ fn finish(
 
 /// Wait until the supervisor reports the workload exited. `Unavailable` and
 /// `NotConfigured` are not waited out: they say the walk cannot look.
-fn wait_for_workload(client: &reqwest::blocking::Client, a: &Args, id: &str) -> Result<()> {
+fn wait_for_workload(node: &Node, a: &Args, id: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(a.timeout_secs);
     let mut last = String::new();
     while Instant::now() < deadline {
-        match get_json(client, &format!("{}/v1/pods/{id}/workload-result", a.url)) {
+        match node.get_json(&format!("/v1/pods/{id}/workload-result")) {
             Ok(v) if find_key(&v, "stdout_sha256") => return Ok(()),
             Ok(v) => {
                 let s = v.to_string();
@@ -472,10 +414,10 @@ fn find_key(v: &Value, key: &str) -> bool {
     }
 }
 
-fn wait_for_exit(client: &reqwest::blocking::Client, a: &Args, id: &str) -> Result<()> {
+fn wait_for_exit(node: &Node, a: &Args, id: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(a.timeout_secs);
     while Instant::now() < deadline {
-        let pods = get_json(client, &format!("{}/v1/pods", a.url)).map_err(anyhow::Error::msg)?;
+        let pods = node.get_json("/v1/pods").map_err(anyhow::Error::msg)?;
         let state = pods
             .as_array()
             .and_then(|ps| {
