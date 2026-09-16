@@ -459,6 +459,18 @@ struct PodHandle {
     posture_stamp: Option<String>,
 }
 
+/// Whether a teardown has to stop the pod's process, or it already exited.
+///
+/// Cancel and exit cleanup used to be two copies of each driver's teardown, and they
+/// drifted: a local pod that exited on its own kept its signed proxy running, and a
+/// cancelled container lost its exit state. Now each driver has ONE teardown, and
+/// this is the only thing that differs between the two paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    Kill,
+    AlreadyExited,
+}
+
 #[derive(Debug)]
 enum DriverState {
     #[cfg(feature = "local-driver")]
@@ -1202,20 +1214,20 @@ impl PodHandle {
     }
 
     async fn cancel(&self) -> Result<(), ApiError> {
-        match &self.driver_state {
-            #[cfg(feature = "local-driver")]
-            DriverState::Local(local) => local.cancel().await,
-            DriverState::Firecracker(firecracker) => firecracker.cancel().await,
-            DriverState::Container(container) => container.cancel().await,
-        }
+        self.teardown(Stop::Kill).await
     }
 
     async fn cleanup_after_exit(&self) {
+        // Nothing to kill, so nothing can fail: the error arm is the kill's.
+        let _ = self.teardown(Stop::AlreadyExited).await;
+    }
+
+    async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
         match &self.driver_state {
             #[cfg(feature = "local-driver")]
-            DriverState::Local(local) => local.cleanup().await,
-            DriverState::Firecracker(firecracker) => firecracker.cleanup().await,
-            DriverState::Container(container) => container.cleanup().await,
+            DriverState::Local(local) => local.teardown(stop).await,
+            DriverState::Firecracker(firecracker) => firecracker.teardown(stop).await,
+            DriverState::Container(container) => container.teardown(stop).await,
         }
     }
 }
@@ -1235,17 +1247,14 @@ impl LocalPod {
         }
     }
 
-    async fn cancel(&self) -> Result<(), ApiError> {
+    async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
         }
-        let mut child = self.child.lock().await;
-        child.kill().await.map_err(ApiError::Io)?;
+        if stop == Stop::Kill {
+            self.child.lock().await.kill().await.map_err(ApiError::Io)?;
+        }
         Ok(())
-    }
-
-    async fn cleanup(&self) {
-        // Nothing to clean up for local pods beyond process exit.
     }
 }
 
@@ -1263,7 +1272,9 @@ impl FirecrackerPod {
         }
     }
 
-    async fn cancel(&self) -> Result<(), ApiError> {
+    async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
+        // Identity first: the workload API bridge drains before the identity is
+        // released, so nothing is served for an identity that is gone.
         self.cleanup_identity().await;
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
@@ -1285,8 +1296,9 @@ impl FirecrackerPod {
         } else if let Some(name) = self.netns.lock().await.take() {
             let _ = net::cleanup_netns(&name).await;
         }
-        let mut child = self.child.lock().await;
-        child.kill().await.map_err(ApiError::Io)?;
+        if stop == Stop::Kill {
+            self.child.lock().await.kill().await.map_err(ApiError::Io)?;
+        }
         // After the kill, never before: pulling files out from under a live VMM is
         // its own failure mode.
         if let Some(layout) = self.jail.lock().await.take() {
@@ -1294,34 +1306,6 @@ impl FirecrackerPod {
             firecracker_config::cleanup_jail(&layout);
         }
         Ok(())
-    }
-
-    async fn cleanup(&self) {
-        self.cleanup_identity().await;
-        if let Some(proxy) = self.signed_proxy.lock().await.take() {
-            proxy.shutdown().await;
-        }
-        if let Some(mut dns_proxy) = self.dns_proxy.lock().await.take() {
-            let _ = dns_proxy.child.kill().await;
-        }
-        self.drift_stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.drift_monitor.lock().await.take() {
-            handle.abort();
-        }
-        self.permit.lock().await.take();
-        if let Some(bridge) = self.bridge.lock().await.take() {
-            bridge.shutdown().await;
-        }
-        if let Some(plan) = self.net_plan.lock().await.take() {
-            self.network_allocator.release(plan.index);
-            let _ = net::cleanup_network(&plan).await;
-        } else if let Some(name) = self.netns.lock().await.take() {
-            let _ = net::cleanup_netns(&name).await;
-        }
-        if let Some(layout) = self.jail.lock().await.take() {
-            pod_receipt::preserve_exit_report(&layout, &self.pod_dir);
-            firecracker_config::cleanup_jail(&layout);
-        }
     }
 
     /// Cleans up identity resources (unregister from VM registry, forget certificate).
@@ -1389,20 +1373,29 @@ impl ContainerPod {
         }
     }
 
-    async fn cancel(&self) -> Result<(), ApiError> {
+    async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
         }
-        let _ = self
-            .docker
-            .stop_container(
-                &self.container_id,
-                Some(bollard::query_parameters::StopContainerOptions {
-                    t: Some(5),
-                    signal: Some("SIGTERM".to_string()),
-                }),
-            )
-            .await;
+        if stop == Stop::Kill {
+            let _ = self
+                .docker
+                .stop_container(
+                    &self.container_id,
+                    Some(bollard::query_parameters::StopContainerOptions {
+                        t: Some(5),
+                        signal: Some("SIGTERM".to_string()),
+                    }),
+                )
+                .await;
+        }
+        // Cache the exit state BEFORE removal, on both paths: once the container is
+        // gone `status()` cannot inspect it and would report an error. Cancel used to
+        // skip this, so a cancelled pod read as `Error` and the reaper audited its
+        // exit as "No such container".
+        if self.cached_exit.lock().await.is_none() {
+            let _ = self.status().await;
+        }
         let _ = self
             .docker
             .remove_container(
@@ -1415,27 +1408,6 @@ impl ContainerPod {
             .await;
         self.permit.lock().await.take();
         Ok(())
-    }
-
-    async fn cleanup(&self) {
-        // Cache exit state before removing the container so status() still works.
-        if self.cached_exit.lock().await.is_none() {
-            let _ = self.status().await; // populates cached_exit
-        }
-        if let Some(proxy) = self.signed_proxy.lock().await.take() {
-            proxy.shutdown().await;
-        }
-        let _ = self
-            .docker
-            .remove_container(
-                &self.container_id,
-                Some(bollard::query_parameters::RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
-            )
-            .await;
-        self.permit.lock().await.take();
     }
 }
 

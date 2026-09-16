@@ -1005,6 +1005,61 @@ mod handler_tests {
         id
     }
 
+    /// A local pod that exits on its own is cleaned up by the reaper
+    /// (`cleanup_after_exit`), not cancelled. Its signed proxy must stop either way.
+    /// Local cleanup used to do nothing while cancel shut the proxy down, so a pod
+    /// that finished normally left its proxy listening for the node's lifetime.
+    #[tokio::test]
+    async fn a_local_pod_that_exits_on_its_own_stops_its_signed_proxy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let target: std::net::SocketAddr = "127.0.0.1:9".parse().expect("addr");
+        let proxy = crate::signed_proxy::SignedProxy::start(
+            target,
+            Arc::new(b"test-secret".to_vec()),
+            None,
+            None,
+        )
+        .await
+        .expect("signed proxy starts");
+        let listening = proxy.listen_addr();
+        // Non-vacuity: the proxy is up before the pod exits.
+        assert!(tokio::net::TcpStream::connect(listening).await.is_ok());
+
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("a child spawns");
+        let _ = child.wait().await;
+        let mut spec: nucleus_spec::PodSpec =
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+                .expect("minimal spec");
+        spec.spec.work_dir = dir.path().to_path_buf();
+        let handle = crate::PodHandle {
+            id: uuid::Uuid::new_v4(),
+            spec,
+            created_at: 1_757_000_000,
+            log_path: st.state_dir.join("pod.log"),
+            proxy_addr: Mutex::new(None),
+            driver_state: crate::DriverState::Local(Box::new(crate::LocalPod {
+                child: Mutex::new(child),
+                signed_proxy: Mutex::new(Some(proxy)),
+            })),
+            parent_pod_id: None,
+            posture_stamp: None,
+        };
+        assert!(matches!(
+            handle.status().await,
+            crate::PodState::Exited { .. }
+        ));
+
+        handle.cleanup_after_exit().await;
+        assert!(
+            tokio::net::TcpStream::connect(listening).await.is_err(),
+            "the signed proxy of a pod that exited on its own is still listening"
+        );
+    }
+
     async fn cancel_all(st: &NodeState) {
         for (_, h) in st.pods.lock().await.iter() {
             let _ = h.cancel().await;
