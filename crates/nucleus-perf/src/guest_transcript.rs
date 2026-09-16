@@ -394,7 +394,8 @@ fn one_run(client: &reqwest::blocking::Client, a: &Args, spec: &Value) -> Result
     let exit_code = claim
         .get("exit_code")
         .and_then(Value::as_i64)
-        .map(|c| c as i32);
+        // An exit code outside i32 is not one a process reports: absent, not wrapped.
+        .and_then(|c| i32::try_from(c).ok());
 
     let cancel = client
         .post(format!("{}/v1/pods/{id}/cancel", a.url))

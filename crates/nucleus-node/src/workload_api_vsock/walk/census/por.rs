@@ -295,13 +295,16 @@ fn the_reduced_walk_checks_every_class_and_the_reduction_is_exact() {
             }
         }
 
-        let naive: usize = (0..=DEPTH).map(|d| n.pow(d as u32)).sum();
+        let naive: usize = (0..=DEPTH)
+            .map(|d| n.pow(u32::try_from(d).expect("a walk depth fits in u32")))
+            .sum();
         let reduced = sleep_set_words(n, DEPTH, &ind).len();
         eprintln!(
             "por: {n} letters; depth {DEPTH}: {naive} words, {reduced} classes \
-             ({:.1}x); {classes_checked} class checks; {words_run} words run to validate at depth \
+             ({}.{}x); {classes_checked} class checks; {words_run} words run to validate at depth \
              {VALIDATE_DEPTH}",
-            naive as f64 / reduced as f64
+            naive / reduced,
+            naive * 10 / reduced % 10
         );
 
         // Non-vacuity: a reduction that reduces nothing is not the claim.

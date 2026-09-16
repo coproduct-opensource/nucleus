@@ -539,7 +539,7 @@ proptest! {
         more in 1usize..=6,
     ) {
         let mut log = Log::new(interval);
-        log.extend(interval as usize * periods + remainder);
+        log.extend(usize::try_from(interval).expect("a small interval") * periods + remainder);
         let (lines, cps) = (log.lines(), log.checkpoints());
         prop_assert!(cps.len() >= 2, "non-vacuity: {} checkpoint(s)", cps.len());
         vchain(&lines, &cps).expect("the generated log must verify");
@@ -570,7 +570,7 @@ fn a9_every_tamper_is_refused() {
     runner
         .run(&strategy, |(interval, periods, remainder, p)| {
             let mut log = Log::new(interval);
-            log.extend(interval as usize * periods + remainder);
+            log.extend(usize::try_from(interval).expect("a small interval") * periods + remainder);
             let cps = log.checkpoints();
             prop_assert!(cps.len() >= 2, "non-vacuity: {} checkpoint(s)", cps.len());
             vchain(&log.lines(), &cps).expect("the untampered log must verify");
