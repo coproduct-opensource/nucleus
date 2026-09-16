@@ -362,6 +362,9 @@ const DECLARED_NOT_IDEMPOTENT: &[&str] = &[
     "SHIP_RECEIPT",
 ];
 
+/// Partial-order reduction of the guest walk, grounded on this census.
+mod por;
+
 #[test]
 fn the_guest_api_commutes_exactly_where_the_design_says() {
     let runtime = tokio::runtime::Builder::new_current_thread()
