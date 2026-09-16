@@ -1,0 +1,15 @@
+diff --git a/crates/nucleus-tool-proxy/src/main.rs b/crates/nucleus-tool-proxy/src/main.rs
+index 874f7faca..8e1b67c4a 100644
+--- a/crates/nucleus-tool-proxy/src/main.rs
++++ b/crates/nucleus-tool-proxy/src/main.rs
+@@ -759,10 +759,6 @@ impl ApprovalRegistry {
+                 return false;
+             }
+             if entry.count > 0 {
+-                entry.count -= 1;
+-                if entry.count == 0 {
+-                    guard.remove(operation);
+-                }
+                 return true;
+             }
+         }
