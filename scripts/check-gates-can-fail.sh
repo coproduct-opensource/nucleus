@@ -1320,7 +1320,7 @@ probe_xtask_partial gatehouse-pin "--gatehouse gatehouse" \
 probe_xtask portability scripts/check-gates-can-fail.sh \
     "a BSD-only shell construct reintroduced" perturb_portability_bsd_only
 probe_xtask action-inputs .github/workflows/gatehouse-shadow.yml \
-    "a `with:` key the action does not declare" perturb_action_inputs_undeclared_key
+    "a \`with:\` key the action does not declare" perturb_action_inputs_undeclared_key
 probe_xtask workspace-members Cargo.toml \
     "a crate dropped from the workspace members list" perturb_workspace_member_dropped
 probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
