@@ -434,3 +434,5 @@ compiler-enforced, which is why the model state can be small.
 <!-- run 4 -->
 
 <!-- hugepages run -->
+
+<!-- hugepages-aware guest -->
