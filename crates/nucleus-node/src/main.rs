@@ -17,7 +17,6 @@ use nucleus_client::drand::{DrandConfig, DrandFailMode};
 #[cfg(target_os = "linux")]
 use nucleus_spec::NetworkSpec;
 use nucleus_spec::PodSpec;
-use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 #[cfg(any(feature = "local-driver", target_os = "linux"))]
 use tokio::process::Command;
@@ -40,6 +39,7 @@ mod http_serve;
 mod identity;
 mod image_identity;
 mod keys;
+mod pod_view;
 mod lockdown;
 mod mediation;
 mod mediation_receipt_collector;
@@ -537,52 +537,7 @@ struct ContainerPod {
     cached_exit: Mutex<Option<PodState>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PodState {
-    Running,
-    Exited { code: Option<i32> },
-    Error { message: String },
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct PodInfo {
-    id: Uuid,
-    name: Option<String>,
-    created_at_unix: u64,
-    state: PodState,
-    proxy_addr: Option<String>,
-    labels: BTreeMap<String, String>,
-    /// The pod that created this one (its lineage parent), or `null` for a
-    /// node/orchestrator-created top-level pod. Surfaced because it is the fact
-    /// the management API's cross-pod scoping (`pod_api::caller_may_manage`) reads:
-    /// an operator can see the lineage the filter enforces, and a running-node
-    /// test can assert the create path recorded it. Not agent-controlled — the
-    /// node establishes it from the authenticated caller at creation.
-    /// Explicit null distinguishes a root from a node that does not report lineage.
-    parent_pod_id: Option<Uuid>,
-    /// The verified proof-carrying posture (`<posture>:verified`), present only
-    /// when the pod carried a `dlc_posture` claim that passed admission against
-    /// the host-measured rootfs and the trusted-posture registry. Absent means
-    /// the pod made no such claim — a pod whose claim FAILED never reaches this
-    /// list, because admission refused it. See `posture.rs`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    posture: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct CreatePodResponse {
-    id: Uuid,
-    proxy_addr: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreatePodRequest {
-    #[serde(default)]
-    spec: Option<PodSpec>,
-    #[serde(default)]
-    yaml: Option<String>,
-}
+pub(crate) use pod_view::{CreatePodRequest, CreatePodResponse, PodInfo, PodState};
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {

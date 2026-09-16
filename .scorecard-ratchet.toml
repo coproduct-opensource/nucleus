@@ -320,5 +320,15 @@ population_floor = 23
 # mandate reaches them at all.
 #
 # 2026-09-11: seeded at the measurement.
-floor_bp = 373
-population_floor = 134
+# 373 -> 378 on 2026-09-16 (#2914). The reputation module's removal deleted
+# production suppressions, which RAISES the discharged ratio without discharging
+# anything -- the arithmetic improves because the denominator shrank. Raising the
+# floor to the measured value is what stops that reading as progress: the pin now
+# sits on the number the tree actually has, so the next edit has to beat 3.78%
+# rather than coast on 3.73%.
+floor_bp = 378
+# 134 -> 132 on 2026-09-16 (#2914). Two production suppressions went with the
+# reputation module. The gate requires this lowering to be deliberate and dated
+# in the same edit as the floor raise, for exactly the reason above: a shrinking
+# surface is a decision, and an undated one is indistinguishable from drift.
+population_floor = 132
