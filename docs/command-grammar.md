@@ -410,6 +410,11 @@ must preserve the pod's completion, or it will shrink to "the pod never ran".
   program from one that does not, and the walk has no way to reach a timeout
   cheaply. Either timeouts get a scaled clock or that branch stays untested.
 
+## Status
+
+Draft. Nothing here is implemented yet; the harness described above is the next
+step, not a description of code that exists.
+
 ## Sources
 
 * [Specification of generic APIs, or: why algebraic may be better than pre/post](https://dl.acm.org/doi/10.1145/2692956.2663183)
