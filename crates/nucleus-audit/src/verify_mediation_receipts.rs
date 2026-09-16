@@ -33,8 +33,6 @@
 //!    leaves no receipt to miss here.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use ed25519_dalek::VerifyingKey;
@@ -123,7 +121,7 @@ pub fn verify_receipt_log(
     path: &Path,
     mediator_pubkey: Option<&VerifyingKey>,
 ) -> Result<ReceiptReport, AuditError> {
-    let reader = BufReader::new(File::open(path)?);
+    let mut lines = crate::record_lines::open(path)?;
     let mut report = ReceiptReport {
         receipts: 0,
         verified: 0,
@@ -137,18 +135,9 @@ pub fn verify_receipt_log(
     };
     let mut hashes: BTreeSet<String> = BTreeSet::new();
 
-    for (idx, line) in reader.lines().enumerate() {
-        let line = line?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let line_no = idx + 1;
-        let rec: MediationReceipt =
-            serde_json::from_str(line).map_err(|source| AuditError::Json {
-                line: line_no,
-                source,
-            })?;
+    for item in &mut lines {
+        let (line_no, line) = item?;
+        let rec: MediationReceipt = crate::record_lines::parse(line_no, &line)?;
 
         report.receipts += 1;
         *report.verdicts.entry(rec.verdict.clone()).or_insert(0) += 1;
@@ -170,6 +159,7 @@ pub fn verify_receipt_log(
         }
     }
 
+    lines.finish(usize::try_from(report.receipts).unwrap_or(usize::MAX))?;
     report.distinct_record_hashes = hashes.len() as u64;
     Ok(report)
 }
@@ -180,6 +170,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use portcullis::art12_record::{Actor, Art12Record};
     use std::collections::BTreeMap as Map;
+    use std::fs::File;
     use std::io::Write;
 
     fn art12_record(session: &str, op: &str, verdict: &str, hash: &str) -> Art12Record {
@@ -386,7 +377,39 @@ mod tests {
         let key = SigningKey::from_bytes(&[7u8; 32]);
         let err = verify_receipt_log(&path, Some(&key.verifying_key())).unwrap_err();
         assert!(
-            matches!(err, AuditError::Json { line: 1, .. }),
+            matches!(err, AuditError::NotARecord { line: 1, .. }),
+            "got: {err}"
+        );
+    }
+
+    /// A crash mid-append leaves the last receipt without its newline. The receipts
+    /// before it still verify, and the tear is named as a torn tail — not the same
+    /// error as an altered line, which it used to be.
+    #[test]
+    fn a_torn_last_receipt_is_a_torn_tail_after_the_whole_ones_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("receipts.jsonl");
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let whole = serde_json::to_string(&receipt(&key, "s1", "run_bash", "allow", "h1")).unwrap();
+        let torn = &whole[..whole.len() / 2];
+        std::fs::write(&path, format!("{whole}\n{whole}\n{torn}")).unwrap();
+        let err = verify_receipt_log(&path, Some(&key.verifying_key())).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AuditError::TornTail {
+                    line: 3,
+                    verified: 2
+                }
+            ),
+            "got: {err}"
+        );
+        // The same bytes with a newline after them are a whole line that is not a
+        // record: an altered log, not a crash.
+        std::fs::write(&path, format!("{whole}\n{torn}\n{whole}\n")).unwrap();
+        let err = verify_receipt_log(&path, Some(&key.verifying_key())).unwrap_err();
+        assert!(
+            matches!(err, AuditError::NotARecord { line: 2, .. }),
             "got: {err}"
         );
     }

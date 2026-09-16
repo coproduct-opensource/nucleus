@@ -1,5 +1,6 @@
 mod discover;
 mod finding;
+mod record_lines;
 mod report;
 mod sarif;
 mod scan_agent_settings;
@@ -10,6 +11,9 @@ mod tool_pattern;
 mod verify_art12;
 mod verify_build;
 mod verify_mediation_receipts;
+mod verify_tool_proxy;
+
+use verify_tool_proxy::verify_tool_proxy_log;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -342,6 +346,19 @@ pub enum AuditError {
         line: usize,
         source: serde_json::Error,
     },
+    #[error(
+        "line {line} is whole but is not a record ({source}): no writer appends that since \
+         appends became atomic, so it was altered, or written before that"
+    )]
+    NotARecord {
+        line: usize,
+        source: serde_json::Error,
+    },
+    #[error(
+        "the log ends in a torn record at line {line}: a write cut off part way (a crash \
+         mid-append). The {verified} records before it verified; that record is absent"
+    )]
+    TornTail { line: usize, verified: usize },
     #[error("invalid audit log at line {line}: {message}")]
     Invalid { line: usize, message: String },
     #[error("error: {0}")]
@@ -905,73 +922,6 @@ fn resolve_secret(
         return Ok(s.to_string());
     }
     Err(AuditError::MissingSecret)
-}
-
-fn verify_tool_proxy_log(path: &Path, secret: &[u8]) -> Result<usize, AuditError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut prev_hash = String::new();
-    let mut count = 0usize;
-
-    for (idx, line) in reader.lines().enumerate() {
-        let line = line?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let line_no = idx + 1;
-        let entry: ToolProxyEntry =
-            serde_json::from_str(line).map_err(|source| AuditError::Json {
-                line: line_no,
-                source,
-            })?;
-        if entry.prev_hash != prev_hash {
-            return Err(AuditError::Invalid {
-                line: line_no,
-                message: format!(
-                    "prev_hash mismatch (expected {}, got {})",
-                    prev_hash, entry.prev_hash
-                ),
-            });
-        }
-        let actor = entry.actor.clone().unwrap_or_default();
-        // MUST mirror the writer's preimage exactly (`AuditLog::log` in
-        // nucleus-tool-proxy): the drand round, when present, is appended as
-        // `|drand:{round}` and IS signed. Reconstructing without it is what made
-        // every drand-anchored log fail verification.
-        let drand_part = entry
-            .drand_round
-            .map(|r| format!("|drand:{r}"))
-            .unwrap_or_default();
-        let message = format!(
-            "{}|{}|{}|{}|{}|{}{}",
-            entry.timestamp_unix,
-            actor,
-            entry.event,
-            entry.subject,
-            entry.result,
-            prev_hash,
-            drand_part
-        );
-        let signature = sign_message(secret, message.as_bytes());
-        if signature != entry.signature {
-            return Err(AuditError::Invalid {
-                line: line_no,
-                message: "signature mismatch".to_string(),
-            });
-        }
-        let hash = sha256_hex(&format!("{}|{}", message, signature));
-        if hash != entry.hash {
-            return Err(AuditError::Invalid {
-                line: line_no,
-                message: "hash mismatch".to_string(),
-            });
-        }
-        prev_hash = entry.hash.clone();
-        count += 1;
-    }
-
-    Ok(count)
 }
 
 // --- verify-chain (portcullis) ---
@@ -2325,6 +2275,43 @@ mod tests {
         assert_eq!(
             verify_tool_proxy_log(&path2, secret).expect("plain log must verify"),
             2
+        );
+    }
+
+    /// A crash mid-append tears the last entry: the chain before it verifies and the
+    /// tear is named as a torn tail, not as the altered line it would be mid-log.
+    #[test]
+    fn verify_tool_proxy_log_names_a_torn_tail() {
+        let secret = b"art12-regression-secret";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("torn.log");
+        let spec = |ts, prev_hash| LineSpec {
+            ts,
+            event: "call",
+            subject: "s",
+            prev_hash,
+            drand_round: None,
+        };
+        let (p1, h1) = tool_proxy_line(secret, spec(100, ""));
+        let (p2, _) = tool_proxy_line(secret, spec(101, &h1));
+        let torn = &p2[..p2.len() / 2];
+        std::fs::write(&path, format!("{p1}\n{torn}")).expect("write");
+        let err = verify_tool_proxy_log(&path, secret).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AuditError::TornTail {
+                    line: 2,
+                    verified: 1
+                }
+            ),
+            "{err}"
+        );
+        std::fs::write(&path, format!("{p1}\n{torn}\n{p2}\n")).expect("write");
+        let err = verify_tool_proxy_log(&path, secret).unwrap_err();
+        assert!(
+            matches!(err, AuditError::NotARecord { line: 2, .. }),
+            "{err}"
         );
     }
 
