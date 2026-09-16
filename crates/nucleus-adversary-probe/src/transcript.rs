@@ -183,16 +183,45 @@ pub fn forged_exit_report() -> String {
     )
 }
 
+/// Replace the exit report with a forged one every 100 ms for 30 s, durably, so
+/// whatever instant the host kills the VM after the supervisor writes, the file
+/// on disk is the forgery.
+fn forge_repeatedly(dir: &std::path::Path) {
+    let target = dir.join(".nucleus-exit-report.json");
+    let tmp = dir.join(".nucleus-forged.tmp");
+    for _ in 0..300 {
+        let wrote = std::fs::write(&tmp, forged_exit_report())
+            .and_then(|()| std::fs::File::open(&tmp).and_then(|f| f.sync_all()))
+            .and_then(|()| std::fs::rename(&tmp, &target))
+            .and_then(|()| std::fs::File::open(dir).and_then(|d| d.sync_all()));
+        let _ = wrote;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Run the transcript mode. Returns the process exit code.
 pub fn run(args: &[String]) -> i32 {
+    let dir = std::env::var("NUCLEUS_TRANSCRIPT_WORK_DIR").unwrap_or_else(|_| "/work".into());
+    if args.iter().any(|a| a == "--forger") {
+        forge_repeatedly(std::path::Path::new(&dir));
+        return 0;
+    }
     if args.iter().any(|a| a == "--forge-exit-report") {
-        let dir = std::env::var("NUCLEUS_TRANSCRIPT_WORK_DIR").unwrap_or_else(|_| "/work".into());
-        // Whether this succeeds is the host's to find out, not this line's to
-        // announce: nothing about it goes to stdout.
-        let _ = std::fs::write(
-            std::path::Path::new(&dir).join(".nucleus-exit-report.json"),
-            forged_exit_report(),
-        );
+        // A forgery written BEFORE the workload exits is replaced by the
+        // supervisor's own report, so it tests nothing about the node. The attack
+        // that does is a process left behind that rewrites the report AFTER the
+        // supervisor has written it. It must not hold the workload's stdout or
+        // stderr, or the supervisor would wait for it to exit before writing.
+        // Whether any of this succeeds is the host's to find out: nothing about it
+        // goes to stdout.
+        if let Ok(me) = std::env::current_exe() {
+            let _ = std::process::Command::new(me)
+                .args(["transcript", "--forger"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
     }
     let Some(seed) = seed_from_kernel() else {
         println!("{DONE}");

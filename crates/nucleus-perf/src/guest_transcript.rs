@@ -70,6 +70,11 @@ const PER_LAUNCH: &[&str] = &[
     "/environment_complete_sha256",
     // Pod receipt.
     "/timestamp_unix",
+    // Hash-chained audit entries carry their own timestamps and a per-pod key.
+    "/audit_tail_hash",
+    // A hash of the spec as ADMITTED, whose policy is the issued certificate
+    // lattice with a fresh id and validity window each launch.
+    "/manifest_hash",
     "/v1_content_hash",
     "/signature",
     "/signer_pubkey",
@@ -243,6 +248,11 @@ pub fn run(a: Args) -> Result<i32> {
         // Three outcomes, not two: no receipt at all is neither a repeated
         // forgery nor a refused one.
         let outcome = match &r.pod_receipt {
+            // Refused by name: the node would not sign a report that is not the
+            // supervisor's. That is the law holding, not a failure to look.
+            Err(e) if e.contains("not the supervisor") => {
+                format!("held: the node refused the forged report ({e})")
+            }
             Err(e) => format!("NOT CHECKED: no pod receipt was produced ({e})"),
             Ok(v)
                 if v.get("workspace_hash").and_then(Value::as_str)
