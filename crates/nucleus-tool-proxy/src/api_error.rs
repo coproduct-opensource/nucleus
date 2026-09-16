@@ -80,6 +80,12 @@ pub(crate) enum ApiError {
     Auth(#[from] AuthError),
     #[error("request body error: {0}")]
     Body(String),
+    /// The proxy is in lockdown (operator signal, node stream, or the denial
+    /// circuit breaker) and refuses mutating operations. A refusal — 403 — not a
+    /// malformed request: it used to be reported as `400 body_error`, which the
+    /// SDK classifies as the caller's own spec error.
+    #[error("lockdown: {0}")]
+    Lockdown(String),
     #[error("rate limited: too many approval requests")]
     RateLimited,
     #[error("web fetch error: {0}")]
@@ -242,6 +248,7 @@ impl ApiError {
             ApiError::Serde(_) => (StatusCode::BAD_REQUEST, "serde_error", None, None),
             ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None, None),
             ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None, None),
+            ApiError::Lockdown(_) => (StatusCode::FORBIDDEN, "lockdown", None, None),
             ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None, None),
             ApiError::WebFetch(_) => (StatusCode::BAD_GATEWAY, "web_fetch_error", None, None),
             ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None, None),
@@ -314,5 +321,18 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, body) = self.response_body();
         (status, Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod lockdown_status_tests {
+    use super::*;
+
+    /// Lockdown is a refusal. Reported as `400 body_error` it read, to the SDK,
+    /// as the caller's own malformed request.
+    #[test]
+    fn lockdown_is_a_403_refusal_named_lockdown() {
+        let (status, kind, _, _) = ApiError::Lockdown("LOCKDOWN ACTIVE".into()).classify();
+        assert_eq!((status, kind), (StatusCode::FORBIDDEN, "lockdown"));
     }
 }

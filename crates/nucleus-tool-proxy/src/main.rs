@@ -2258,7 +2258,7 @@ async fn auth_middleware(
     // Read-only operations (read, glob, grep) continue working during lockdown
     // to enable forensic investigation. All mutating operations are blocked.
     if is_locked(&state) && !is_allowed_during_lockdown(parts.uri.path()) {
-        return Err(ApiError::Body(
+        return Err(ApiError::Lockdown(
             "LOCKDOWN ACTIVE: mutating operations are blocked (read/glob/grep still allowed). \
              Use `nucleus lockdown --restore` to lift the lockdown."
                 .to_string(),
