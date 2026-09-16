@@ -310,6 +310,77 @@ mod tests {
         proptest::collection::vec(any_event(), 0..24).prop_map(|evs| set_from(&evs))
     }
 
+    // ── Parity bridge: Cooperation/ReputationSet.lean ⇔ the shipped join ─────
+    //
+    // `Nucleus.Cooperation.ReputationSet` (#2511) proves the semilattice laws
+    // over `Store K V := K → Option V`, the DENOTATION of the `BTreeMap` below,
+    // with `join` left-biased exactly as this module's is. What the Lean adds
+    // to the three proptests that follow is the part a proptest cannot show:
+    //
+    //   * `join_assoc` and `join_idem` hold UNCONDITIONALLY;
+    //   * `join_comm` does NOT — it carries `Coherent s t`, and
+    //     `join_not_comm_without_coherence` exhibits the countermodel.
+    //
+    // That distinction is invisible here BY CONSTRUCTION: `any_event` derives
+    // each `receipt_hash` from the event's content, so the generator can never
+    // produce an incoherent pair and `crdt_commutative` never meets the case
+    // the law excludes. The generator is right to do that — an incoherent pair
+    // panics, as it should — but it means the proptest is evidence about
+    // coherent inputs only, and the Lean is where the hypothesis is visible.
+    //
+    // So this is not a restatement of the proptests. It is the reason the
+    // `join` panic is a precondition rather than a defensive check: swallowing
+    // the conflict and picking a side would make merge order observable, and
+    // two honest replicas would disagree about an agent's standing.
+
+    /// The parity direction a test CAN carry: the Lean's `Coherent` predicate,
+    /// evaluated on the real `ReputationSet`, holds for every pair the strategy
+    /// generates — so `crdt_commutative` below is exactly the Lean's
+    /// `join_comm` instantiated at its hypothesis, not a stronger claim.
+    fn coherent(a: &ReputationSet, b: &ReputationSet) -> bool {
+        a.events
+            .iter()
+            .all(|(k, v)| b.events.get(k).is_none_or(|w| v == w))
+    }
+
+    proptest! {
+        /// `join_comm`'s hypothesis is satisfied by every generated pair, which
+        /// is what makes the commutativity proptest sound evidence rather than
+        /// a lucky sample. If this ever fails, `crdt_commutative` is testing
+        /// something the Lean does not prove.
+        #[test]
+        fn generated_pairs_satisfy_the_lean_coherence_hypothesis(
+            a in any_set(), b in any_set()
+        ) {
+            prop_assert!(coherent(&a, &b));
+        }
+    }
+
+    /// The countermodel `join_not_comm_without_coherence` proves in Lean,
+    /// reached in Rust: two sets binding ONE key to different events cannot be
+    /// joined at all. The Rust does not return a different answer in each
+    /// order — it refuses, which is the stronger of the two behaviours and the
+    /// reason the divergence never reaches a reputation number.
+    #[test]
+    fn an_incoherent_pair_is_refused_rather_than_ordered() {
+        let hash = [7u8; 32];
+        let credit = CreditEvent {
+            dimension: CreditDimension::ALL[0],
+            polarity: Polarity::Credit,
+            weight_micro: 1_000,
+            receipt_hash: hash,
+        };
+        let debit = CreditEvent {
+            polarity: Polarity::Debit,
+            ..credit
+        };
+        let a = set_from(&[credit]);
+        let b = set_from(&[debit]);
+        // Both orders panic; neither silently converges on a lie.
+        assert!(std::panic::catch_unwind(|| a.join(&b)).is_err());
+        assert!(std::panic::catch_unwind(|| b.join(&a)).is_err());
+    }
+
     // ── CRDT laws: join is a join-semilattice ────────────────────────────────
 
     proptest! {

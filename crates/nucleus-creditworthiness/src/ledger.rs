@@ -283,6 +283,75 @@ mod tests {
         [seed; 32]
     }
 
+    // ── Parity bridge: Cooperation/LedgerChain.lean ⇔ verify_chain ──────────
+    //
+    // `Nucleus.Cooperation.LedgerChain` (#2511) models this function's two
+    // halves separately, and the separation found something the doc comment
+    // above does not say.
+    //
+    //   * `seqsOk` mirrors the `expected_seq` loop verbatim. `seqsOk_take`
+    //     proves, in general, that a chain TRUNCATED AT THE TAIL still passes
+    //     it — contiguity from 0 survives dropping trailing entries.
+    //   * `interior_deletion_is_caught` proves the middle-deletion case does
+    //     NOT survive, so the check is not vacuous; it just does not cover this.
+    //   * `truncation_is_caught_by_a_retained_head` is what does cover it, and
+    //     it needs `NoStepFixpoint` — a SECOND crypto assumption that
+    //     injectivity does not imply.
+    //
+    // The tests below carry that to the shipped code: `verify_chain` alone
+    // accepts a rolled-back ledger, and the caller's retained `head_hash_hex`
+    // is the only thing that rejects it. That is a real property of this
+    // function, not a modelling artefact, which is why it is pinned here.
+
+    /// **The gap, on the real function.** A prefix of a valid chain is a valid
+    /// chain, so `verify_chain` cannot distinguish a fresh short ledger from a
+    /// truncated long one. A server that dropped its most recent entries would
+    /// pass every check in this file.
+    #[test]
+    fn verify_chain_accepts_a_tail_truncation() {
+        let full = build_chain("agent-a", 5);
+        assert!(verify_chain(&full).is_ok(), "the full chain verifies");
+        for keep in 0..full.len() {
+            assert!(
+                verify_chain(&full[..keep]).is_ok(),
+                "truncating to {keep} entries still verifies — seq contiguity \
+                 cannot see a rollback"
+            );
+        }
+    }
+
+    /// And the interior case, which it DOES catch — so the test above is a
+    /// statement about truncation specifically, not about the check being
+    /// useless.
+    #[test]
+    fn verify_chain_catches_an_interior_deletion() {
+        let full = build_chain("agent-a", 5);
+        let mut gapped = full.clone();
+        gapped.remove(2);
+        assert!(matches!(
+            verify_chain(&gapped),
+            Err(ChainError::SeqGap { .. })
+        ));
+    }
+
+    /// **What closes it**: the head commitment a caller retains. The truncated
+    /// chain verifies, but its head is not the head the caller was given —
+    /// which is `truncation_is_caught_by_a_retained_head`, reached in Rust.
+    #[test]
+    fn a_retained_head_rejects_the_truncation_that_verify_chain_accepts() {
+        let full = build_chain("agent-a", 5);
+        let retained = full.last().expect("non-empty").this_hash;
+        for keep in 0..full.len() {
+            let short = &full[..keep];
+            assert!(verify_chain(short).is_ok());
+            assert_ne!(
+                short.last().map(|e| e.this_hash),
+                Some(retained),
+                "a chain truncated to {keep} must not reproduce the retained head"
+            );
+        }
+    }
+
     /// Build a well-formed chain of `n` honest-settlement entries for `id`,
     /// linking each to its predecessor (exactly what the store does).
     fn build_chain(id: &str, n: u64) -> Vec<LedgerEntry> {
