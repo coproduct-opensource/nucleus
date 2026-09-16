@@ -378,6 +378,12 @@ its `ReferenceStateMachine` — `Sigma` is the state, `pre` is
 `preconditions`, `eff` is `apply`, `obs` is the postcondition check. The mapping
 is close enough that the doc and the impl should share the names.
 
+The harness belongs in `crates/nucleus-spec/tests/`, not beside the node: the
+model is a statement about the spec's surfaces, and putting it there keeps it
+compiling against the same `PodSpec` and `WorkloadApiCommand` the classifications
+come from, so a field added without classification breaks the walk as well as the
+build.
+
 Shrinking matters more here than in a typical state-machine test because A6 and
 A7 fail as *pairs of executions*, and an unshrunk counterexample to A6 is a
 200-command guest transcript nobody can read. Shrinking must be over `G`, and it
