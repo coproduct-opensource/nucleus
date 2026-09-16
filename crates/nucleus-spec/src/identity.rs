@@ -226,6 +226,9 @@ pub fn program_digest(spec: &PodSpec) -> Result<String, IdentityError> {
 }
 
 #[cfg(test)]
+mod leaf_walk;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

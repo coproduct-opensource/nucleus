@@ -397,6 +397,9 @@ fn walk(provision: Provision, ops: &[Op]) -> Result<(), String> {
     })
 }
 
+/// The commutation census over this walk's alphabet.
+mod census;
+
 proptest! {
     // Each case builds an identity manager (a CA); 128 cases of up to 40 steps
     // keeps the walk to a few seconds while reaching every one-shot repeatedly.
