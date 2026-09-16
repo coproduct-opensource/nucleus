@@ -944,7 +944,7 @@ mod handler_tests {
             proxy_auth_secret: a.proxy_auth_secret.clone(),
             caller_secret: Arc::new([7u8; 32]),
             proxy_approval_secret: a.proxy_approval_secret.clone(),
-            approval_signer: Arc::new(crate::trust_gate::load_or_create_approval_signing_key(
+            approval_signer: Arc::new(crate::keys::load_or_create_approval_signing_key(
                 &a.state_dir,
             )),
             proxy_actor: None,

@@ -150,8 +150,6 @@ impl std::fmt::Display for ReceiptError {
 pub(crate) struct Built {
     pub receipt: Receipt,
     pub report: nucleus_spec::ExitReport,
-    pub trust_bracket: Option<String>,
-    pub trust_profile: Option<String>,
     pub agent_identity: String,
     pub exit_code: i32,
 }
@@ -215,8 +213,6 @@ pub(crate) async fn build(
         crate::trust_gate::compute_v1_content_hash(&id.to_string(), &manifest_hash, &report);
 
     let labels = &handle.spec.metadata.labels;
-    let trust_bracket = labels.get("trust.coproduct.one/bracket").cloned();
-    let trust_profile = labels.get("trust.coproduct.one/profile").cloned();
     let agent_identity = labels
         .get("trust.coproduct.one/agent-id")
         .or_else(|| labels.get("spiffe.io/identity"))
@@ -235,7 +231,19 @@ pub(crate) async fn build(
         audit_entry_count: report.audit_entry_count,
         timestamp_unix: report.timestamp_unix,
         manifest_hash,
-        sandbox_tier: trust_profile.clone().unwrap_or_default(),
+        // EMPTY, and deliberately so since #2512. This field's only producer
+        // was `trust.coproduct.one/profile`, a label the deleted reputation
+        // lookup wrote from an external service's letter bracket. With that
+        // path gone nothing produces a tier, and an empty string is the honest
+        // report of that — the alternative was leaving a label read that can
+        // never match, which reads like a live source.
+        //
+        // The field stays in the signed content (`absorb("sandbox_tier", …)`)
+        // rather than being removed: it is in `nucleus-sdk`'s public `Receipt`
+        // and dropping it is a wire change this issue did not scope. Feeding it
+        // from the isolation level the pod ACTUALLY got would be better data
+        // and is the natural follow-up; it is new behaviour, not a deletion.
+        sandbox_tier: String::new(),
         spiffe_id,
         version: 1,
         v1_content_hash,
@@ -257,8 +265,6 @@ pub(crate) async fn build(
     Ok(Built {
         receipt,
         report,
-        trust_bracket,
-        trust_profile,
         agent_identity,
         exit_code: code.unwrap_or(-1),
     })
@@ -279,9 +285,6 @@ pub(crate) fn report_to_trust_gate(state: &NodeState, built: &Built) {
         tool_call_count: r.audit_entry_count,
         workspace_hash: r.workspace_hash.clone(),
         audit_tail_hash: r.audit_tail_hash.clone(),
-        trust_bracket: built.trust_bracket.clone(),
-        trust_profile: built.trust_profile.clone(),
-        attested_execution: built.trust_bracket.is_some(),
         // Verified exposure from the tool proxy's GradedExposureGuard, written to
         // .nucleus-exit-report.json at shutdown.
         observed_exposure_labels: r.observed_exposure_labels.clone(),
@@ -723,7 +726,7 @@ mod tests {
         /// service keys on it, so a receipt that dropped it would silently
         /// downgrade the session.
         #[tokio::test]
-        async fn trust_labels_reach_the_receipt() {
+        async fn identity_labels_reach_the_receipt_and_reputation_ones_do_not() {
             let dir = tempfile::tempdir().expect("tempdir");
             write_report(dir.path(), REPORT);
             let handle = pod(
@@ -739,16 +742,15 @@ mod tests {
             .await;
             let built = build(&handle, &authority(dir.path())).await.expect("built");
 
-            assert_eq!(built.trust_bracket.as_deref(), Some("B2"));
-            assert_eq!(built.trust_profile.as_deref(), Some("restricted"));
             assert_eq!(built.agent_identity, "agent-7");
             assert_eq!(
                 built.receipt.spiffe_id,
                 "spiffe://nucleus.local/ns/pods/sa/7"
             );
-            assert_eq!(
-                built.receipt.sandbox_tier, "restricted",
-                "the tier is the trust profile, not a separate label"
+            assert!(
+                built.receipt.sandbox_tier.is_empty(),
+                "since #2512 no reputation label feeds the tier, even when one \
+                 is present on the spec — the producer is gone, not ignored"
             );
         }
 
@@ -770,7 +772,7 @@ mod tests {
                 built.receipt.spiffe_id.is_empty(),
                 "no SPIFFE label means no SPIFFE id, not a fabricated one"
             );
-            assert!(built.trust_bracket.is_none());
+            assert!(built.receipt.sandbox_tier.is_empty());
         }
     }
 }
