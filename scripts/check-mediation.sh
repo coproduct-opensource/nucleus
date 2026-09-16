@@ -99,15 +99,54 @@ load_allowlist() {
     done < "$f"
 }
 
+# Is `$1` a file reachable ONLY through a `#[cfg(test)]`-gated `mod X;`?
+#
+# The awk below already strips `#[cfg(test)]` BLOCKS, and it explicitly handles
+# the attribute landing on a non-block item (`mod tests;`) by clearing its
+# pending flag -- correct for the declaration, which really does have no block.
+# But the FILE that declaration pulls in is then scanned as production code,
+# and it is exactly as unreachable from a running agent as an inline block
+# would be. `telemetry/tests.rs` is that case: a `Command::new(current_exe())`
+# re-exec, which is a test harness spawning itself and not an agent effect.
+#
+# The check is deliberately not "the file is called tests.rs". That is a naming
+# convention, and a gate resting on one exempts anything named to match. This
+# reads the DECLARATION: a cfg attribute mentioning `test` immediately above
+# `mod <name>;` in the parent module. If the parent does not gate it, the file
+# is production and stays in scope.
+is_cfg_test_module() {
+    local f="$1" dir base parent
+    dir="$(dirname "$f")"
+    base="$(basename "$f" .rs)"
+    for parent in "$dir.rs" "$dir/mod.rs"; do
+        [[ -f "$parent" ]] || continue
+        if awk -v m="$base" '
+            /^[[:space:]]*#\[cfg\(.*test.*\)\]/ { pend = 1; next }
+            $0 ~ "^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+" m "[[:space:]]*;" {
+                if (pend) found = 1
+                pend = 0; next
+            }
+            /[^[:space:]]/ { pend = 0 }
+            END { exit(found ? 0 : 1) }
+        ' "$parent"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # List in-scope .rs files containing the literal PAT, excluding tests/benches
-# directories (never the agent runtime path).
+# directories and cfg(test)-gated module files (never the agent runtime path).
 list_files() {
-    local pat="$1"
+    local pat="$1" f
     if command -v rg >/dev/null 2>&1; then
         rg -l -F --glob '*.rs' "$pat" "${SCOPE_DIRS[@]}"
     else
         grep -rlF --include='*.rs' "$pat" "${SCOPE_DIRS[@]}"
-    fi | grep -vE '/(tests|benches)/' || true
+    fi | grep -vE '/(tests|benches)/' | while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        is_cfg_test_module "$f" || printf '%s\n' "$f"
+    done || true
 }
 
 # Run one pattern; sets the global FAILED on any un-allowlisted hit.
