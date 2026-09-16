@@ -138,6 +138,12 @@ fn workspace() -> Result<std::path::PathBuf> {
     Ok(dir)
 }
 
+/// Nanoseconds since `t0`. A u64 of nanoseconds is 584 years; saturating keeps
+/// the order of any two readings, which is all a history uses.
+fn nanos_since(t0: std::time::Instant) -> u64 {
+    u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
 pub fn run(a: Args) -> Result<i32> {
     let work = workspace().context("building the workspace")?;
     let proxy = crate::agency::spawn_local_under_grant(
@@ -164,10 +170,10 @@ pub fn run(a: Args) -> Result<i32> {
                 for _ in 0..ops {
                     let op = random_op(&mut rng);
                     let (route, body) = request(&op);
-                    let invoke = t0.elapsed().as_nanos() as u64;
+                    let invoke = nanos_since(t0);
                     let (status, text, _) =
                         crate::signed_tool_call(&url, &secret, "nucleus-stress", route, body)?;
-                    let ret = t0.elapsed().as_nanos() as u64;
+                    let ret = nanos_since(t0);
                     let out = normalise(&op, status, &text);
                     if verbose {
                         println!(
