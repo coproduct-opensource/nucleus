@@ -37,6 +37,8 @@ c2pa = ["dep:c2pa"]
 [dev-dependencies]
 nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
 tempfile = { workspace = true }
+# A8 walks a receipt through the same harness as a bundle (tests/verification_is_exact.rs).
+nucleus-receipt = { path = "../nucleus-receipt" }
 
 [lints]
 workspace = true
