@@ -21,6 +21,7 @@
 //! was too large to search, or nothing was exercised).
 
 pub mod linearize;
+pub mod mock_web;
 pub mod model;
 
 use std::sync::Arc;
@@ -49,9 +50,26 @@ pub struct Args {
     /// Path to the tool-proxy binary.
     #[arg(long, default_value = "nucleus-tool-proxy")]
     pub proxy_bin: String,
+    /// What the proxy runs under. `grant`: a compiled, sealed grant (no taint
+    /// source reachable). `trifecta`: `research-web` plus writes — private data,
+    /// untrusted content AND an exfiltration vector in one session, fetching from a
+    /// local server, which is where information flow control has to decide.
+    #[arg(long, value_enum, default_value = "grant")]
+    pub policy: Policy,
+    /// On a violation, write every call of the history here (one line each:
+    /// invoke, return, op, status, code) so the counterexample can be analysed —
+    /// a concurrent failure does not reproduce on demand.
+    #[arg(long)]
+    pub history: Option<std::path::PathBuf>,
     /// Print every call and its result.
     #[arg(long)]
     pub verbose: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, clap::ValueEnum)]
+pub enum Policy {
+    Grant,
+    Trifecta,
 }
 
 /// A tiny deterministic generator (xorshift64*): reproducible from `--seed`, and no
@@ -70,7 +88,10 @@ impl Rng {
     }
 }
 
-fn random_op(rng: &mut Rng) -> Op {
+fn random_op(rng: &mut Rng, fetch: bool) -> Op {
+    if fetch && rng.below(8) == 0 {
+        return Op::Fetch;
+    }
     let file = |r: &mut Rng| match r.below(3) {
         0 => File::A,
         1 => File::B,
@@ -87,19 +108,25 @@ fn random_op(rng: &mut Rng) -> Op {
     }
 }
 
-fn request(op: &Op) -> (&'static str, serde_json::Value) {
-    match op {
+/// The request an op is sent as; `None` for a model-only event, never sent.
+fn request(op: &Op) -> Option<(&'static str, serde_json::Value)> {
+    Some(match op {
         Op::Read(f) => ("read", serde_json::json!({"path": f.path()})),
         Op::Write(f, v) => (
             "write",
             serde_json::json!({"path": f.path(), "contents": model::contents(*v)}),
         ),
         Op::Glob => ("glob", serde_json::json!({"pattern": "*.txt"})),
+        Op::Fetch => (
+            "web_fetch",
+            serde_json::json!({"url": format!("http://{}/page", model::mock_addr())}),
+        ),
+        Op::Delivered => return None,
         Op::Run => (
             "run",
             serde_json::json!({"args": ["echo", "nucleus-stress"]}),
         ),
-    }
+    })
 }
 
 fn normalise(op: &Op, status: u16, body: &str) -> Out {
@@ -107,20 +134,29 @@ fn normalise(op: &Op, status: u16, body: &str) -> Out {
     // The proxy's refusal carries `kind` (e.g. `kernel_denied`) and, for a kernel
     // decision, a `deny_code` naming the obligation that failed. Both are part of
     // the result: two refusals for different reasons are different results.
-    let code = match (
-        v.get("kind").and_then(|c| c.as_str()),
-        v.get("deny_code").and_then(|c| c.as_str()),
-    ) {
-        (Some(kind), Some(deny)) => Some(format!("{kind}/{deny}")),
-        (Some(kind), None) => Some(kind.to_owned()),
-        (None, _) => None,
+    let error = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
+    // The denial circuit breaker's lockdown is reported as `400 body_error`
+    // ("request body error: LOCKDOWN ACTIVE ...") — a security refusal wearing a
+    // malformed-request status. Classified by its message here so the model can
+    // name it; the status itself is a defect to fix in the proxy, not in this harness.
+    let code = if error.contains("LOCKDOWN ACTIVE") {
+        Some("lockdown".to_owned())
+    } else {
+        match (
+            v.get("kind").and_then(|c| c.as_str()),
+            v.get("deny_code").and_then(|c| c.as_str()),
+        ) {
+            (Some(kind), Some(deny)) => Some(format!("{kind}/{deny}")),
+            (Some(kind), None) => Some(kind.to_owned()),
+            (None, _) => None,
+        }
     };
     let contents = match op {
         Op::Read(_) if (200..300).contains(&status) => v
             .get("contents")
             .and_then(|c| c.as_str())
             .map(str::to_owned),
-        Op::Read(_) | Op::Write(..) | Op::Glob | Op::Run => None,
+        Op::Read(_) | Op::Write(..) | Op::Glob | Op::Run | Op::Fetch | Op::Delivered => None,
     };
     Out {
         status,
@@ -140,16 +176,52 @@ fn workspace() -> Result<std::path::PathBuf> {
 
 pub fn run(a: Args) -> Result<i32> {
     let work = workspace().context("building the workspace")?;
-    let proxy = crate::agency::spawn_local_under_grant(
-        &a.goal,
-        &a.ceiling,
-        &a.proxy_bin,
-        &work,
-        &std::collections::BTreeSet::new(),
-    )
-    .context("spawning the tool-proxy")?;
-    let url = Arc::new(proxy.proxy_url.clone());
-    let secret = Arc::new(proxy.auth_secret.clone());
+    let web = mock_web::MockWeb::start().context("starting the local web server")?;
+    model::set_mock_addr(web.addr);
+    let (proxy_url, auth_secret, _keep) = match a.policy {
+        Policy::Grant => {
+            let run = crate::agency::spawn_local_under_grant(
+                &a.goal,
+                &a.ceiling,
+                &a.proxy_bin,
+                &work,
+                &std::collections::BTreeSet::new(),
+            )
+            .context("spawning the tool-proxy")?;
+            (
+                run.proxy_url.clone(),
+                run.auth_secret.clone(),
+                Box::new(run) as Box<dyn std::any::Any>,
+            )
+        }
+        Policy::Trifecta => {
+            let mut lattice = portcullis::profile::ProfileRegistry::default()
+                .resolve("research-web")
+                .context("the research-web profile")?;
+            // Writing a new file and overwriting one are different capabilities.
+            lattice.capabilities.write_files = portcullis::CapabilityLevel::Always;
+            lattice.capabilities.edit_files = portcullis::CapabilityLevel::Always;
+            let run = crate::agency::spawn_local_proxy(&crate::agency::LocalProxyConfig {
+                run_id: format!("stress-{}", std::process::id()),
+                name: "stress-trifecta",
+                proxy_bin: &a.proxy_bin,
+                work_dir: &work,
+                lattice,
+                network: serde_json::json!({ "dns_allow": [web.addr.to_string()] }),
+                duration_secs: 600,
+                certificate: None,
+            })
+            .context("spawning the tool-proxy")?;
+            (
+                run.proxy_url.clone(),
+                run.auth_secret.clone(),
+                Box::new(run) as Box<dyn std::any::Any>,
+            )
+        }
+    };
+    let url = Arc::new(proxy_url);
+    let secret = Arc::new(auth_secret);
+    let fetch = a.policy == Policy::Trifecta;
     let t0 = Instant::now();
 
     let handles: Vec<_> = (0..a.clients)
@@ -162,8 +234,10 @@ pub fn run(a: Args) -> Result<i32> {
                 let mut rng = Rng::new(seed);
                 let mut calls = Vec::with_capacity(ops);
                 for _ in 0..ops {
-                    let op = random_op(&mut rng);
-                    let (route, body) = request(&op);
+                    let op = random_op(&mut rng, fetch);
+                    let Some((route, body)) = request(&op) else {
+                        continue;
+                    };
                     let invoke = t0.elapsed().as_nanos() as u64;
                     let (status, text, _) =
                         crate::signed_tool_call(&url, &secret, "nucleus-stress", route, body)?;
@@ -186,7 +260,7 @@ pub fn run(a: Args) -> Result<i32> {
             })
         })
         .collect();
-    let mut history = Vec::new();
+    let mut history: Vec<Call<Op, Out>> = Vec::new();
     for h in handles {
         match h.join() {
             Ok(Ok(calls)) => history.extend(calls),
@@ -201,6 +275,13 @@ pub fn run(a: Args) -> Result<i32> {
         }
     }
     let _ = std::fs::remove_dir_all(&work);
+    if let Ok(reqs) = web.requests.lock() {
+        println!(
+            "egress: {} request(s) reached the local web server",
+            reqs.len()
+        );
+    }
+    drop(_keep);
 
     // What was exercised, by operation and result.
     let mut tally: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -223,7 +304,22 @@ pub fn run(a: Args) -> Result<i32> {
         println!("{n:>5}  {k}");
     }
 
-    match linearize::check(&Session::initial(), &history) {
+    // Each admitted fetch also delivers untrusted content, somewhere in its own
+    // interval: the model's taint event.
+    let delivered: Vec<Call<Op, Out>> = history
+        .iter()
+        .filter(|c| matches!(c.op, Op::Fetch) && (200..300).contains(&c.out.status))
+        .map(|c| Call {
+            invoke: c.invoke,
+            ret: c.ret,
+            op: Op::Delivered,
+            out: c.out.clone(),
+        })
+        .collect();
+    let admitted_fetches = delivered.len();
+    history.extend(delivered);
+    println!("fetches admitted: {admitted_fetches}");
+    match linearize::check(&Session::initial(a.policy), &history) {
         Verdict::Linearizable => {
             println!(
                 "linearizable: {} calls from {} client(s) explained by the model",
@@ -233,6 +329,25 @@ pub fn run(a: Args) -> Result<i32> {
             Ok(0)
         }
         Verdict::NotLinearizable { window, explained } => {
+            if let Some(path) = &a.history {
+                let mut lines: Vec<&Call<Op, Out>> = history.iter().collect();
+                lines.sort_by_key(|c| c.invoke);
+                let text: String = lines
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "{} {} {:?} {} {} {}\n",
+                            c.invoke,
+                            c.ret,
+                            c.op,
+                            c.out.status,
+                            c.out.code.as_deref().unwrap_or("-"),
+                            c.out.contents.as_deref().unwrap_or("-")
+                        )
+                    })
+                    .collect();
+                std::fs::write(path, text).context("writing the history")?;
+            }
             println!(
                 "NOT LINEARIZABLE: a window of {} calls, at most {explained} explained by any order:",
                 window.len()

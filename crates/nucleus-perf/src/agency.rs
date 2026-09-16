@@ -751,7 +751,57 @@ pub(crate) fn spawn_local_under_grant(
         .context("encoding the sealed certificate")?;
 
     let run_id = format!("agency-{}-{}", std::process::id(), grant.id.simple());
-    let tmp = std::env::temp_dir().join(format!("nucleus-{run_id}"));
+    let proxy = spawn_local_proxy(&LocalProxyConfig {
+        run_id,
+        name: "agency-local",
+        proxy_bin,
+        work_dir,
+        // The spec carries the SEALED permissions, so the on-disk policy and the
+        // certificate agree; the proxy warns when they do not and runs under the
+        // certificate either way.
+        lattice: grant.sealed_permissions(),
+        network: serde_json::Value::Null,
+        duration_secs: grant.limits.duration_secs,
+        certificate: Some((cert_b64, root_pubkey)),
+    })?;
+    Ok(LocalGrantRun {
+        proxy_url: proxy.proxy_url,
+        grant,
+        auth_secret: proxy.auth_secret,
+        _proxy: proxy._proxy,
+        _tmp: proxy._tmp,
+    })
+}
+
+/// A local proxy and what a client needs to reach it.
+pub(crate) struct LocalProxy {
+    pub proxy_url: String,
+    pub auth_secret: Vec<u8>,
+    _proxy: ProxyChild,
+    _tmp: TempDir,
+}
+
+/// What distinguishes one locally spawned proxy from another. Everything else —
+/// the sandbox token, the session task token scoped to the lattice's granted
+/// operations, the audit log in the run's own directory, the announce handshake —
+/// is the same for every caller, and lives in [`spawn_local_proxy`] once.
+pub(crate) struct LocalProxyConfig<'a> {
+    pub run_id: String,
+    pub name: &'a str,
+    pub proxy_bin: &'a str,
+    pub work_dir: &'a std::path::Path,
+    /// The policy the spec carries (and the task token is scoped to).
+    pub lattice: portcullis::PermissionLattice,
+    /// The spec's `network` block, or `null` for none.
+    pub network: serde_json::Value,
+    pub duration_secs: u64,
+    /// A sealed certificate and its pinned root, when the policy is a grant.
+    pub certificate: Option<(String, String)>,
+}
+
+/// Spawn a `nucleus-tool-proxy` exactly as `nucleus run --local` does.
+pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy> {
+    let tmp = std::env::temp_dir().join(format!("nucleus-{}", cfg.run_id));
     std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
     let tmp_guard = TempDir(tmp.clone());
 
@@ -762,11 +812,12 @@ pub(crate) fn spawn_local_under_grant(
     let spec = serde_json::json!({
         "apiVersion": "nucleus/v1",
         "kind": "Pod",
-        "metadata": { "name": "agency-local" },
+        "metadata": { "name": cfg.name },
         "spec": {
-            "work_dir": work_dir,
+            "work_dir": cfg.work_dir,
             "timeout_seconds": 600,
-            "policy": { "type": "inline", "lattice": grant.sealed_permissions() },
+            "policy": { "type": "inline", "lattice": cfg.lattice },
+            "network": cfg.network,
         }
     });
     std::fs::write(&spec_path, serde_yaml::to_string(&spec)?)
@@ -780,7 +831,7 @@ pub(crate) fn spawn_local_under_grant(
         hex::encode(Sha256::digest(spec_contents.as_bytes()))
     };
     let sandbox_token =
-        nucleus_client::generate_sandbox_token(auth_secret.as_bytes(), &run_id, &spec_hash);
+        nucleus_client::generate_sandbox_token(auth_secret.as_bytes(), &cfg.run_id, &spec_hash);
 
     // The session capability token. Without one the proxy's discharge gate has
     // `verified_scope == None`, and `InScopeWithTask` denies EVERY operation
@@ -802,20 +853,28 @@ pub(crate) fn spawn_local_under_grant(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let scope =
-        nucleus_provenance_memory::TokenScope::new(grant.lattice.granted_operations(), Vec::new());
+        nucleus_provenance_memory::TokenScope::new(cfg.lattice.granted_operations(), Vec::new());
     let task_token = nucleus_provenance_memory::SignedTaskRef::issue(
-        run_id.clone(),
+        cfg.run_id.clone(),
         scope,
         nonce,
         now_unix,
-        grant.limits.duration_secs.max(600),
+        cfg.duration_secs.max(600),
         &task_key,
     );
     let task_token_json =
         serde_json::to_string(&task_token).context("serialising the session task token")?;
 
     let announce = tmp.join("proxy.addr");
-    let child = std::process::Command::new(proxy_bin)
+    let mut command = std::process::Command::new(cfg.proxy_bin);
+    if let Some((cert_b64, root_pubkey)) = &cfg.certificate {
+        command
+            .arg("--pod-cert")
+            .arg(cert_b64)
+            .arg("--cert-root-pubkey")
+            .arg(root_pubkey);
+    }
+    let child = command
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")
@@ -826,10 +885,6 @@ pub(crate) fn spawn_local_under_grant(
         .arg(&auth_secret)
         .arg("--approval-secret")
         .arg(&approval_secret)
-        .arg("--pod-cert")
-        .arg(&cert_b64)
-        .arg("--cert-root-pubkey")
-        .arg(&root_pubkey)
         // Keep the audit log inside the run's own directory. The default is
         // `/var/log/nucleus`, which a non-root local run cannot create, and the
         // proxy refuses to start without somewhere to record verdicts — as it
@@ -847,7 +902,7 @@ pub(crate) fn spawn_local_under_grant(
         .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .stdout(std::process::Stdio::null())
         .spawn()
-        .with_context(|| format!("spawning {proxy_bin}"))?;
+        .with_context(|| format!("spawning {}", cfg.proxy_bin))?;
     let proxy = ProxyChild(child);
 
     // The announce file is the proxy's own readiness signal, so waiting on it
@@ -866,9 +921,8 @@ pub(crate) fn spawn_local_under_grant(
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
 
-    Ok(LocalGrantRun {
+    Ok(LocalProxy {
         proxy_url: format!("http://{addr}"),
-        grant,
         auth_secret: auth_secret.clone().into_bytes(),
         _proxy: proxy,
         _tmp: tmp_guard,

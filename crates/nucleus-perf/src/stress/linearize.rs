@@ -41,7 +41,7 @@ pub trait SeqModel: Clone + Eq + Hash {
     /// Which independent part of the state `op` touches. Calls in different
     /// partitions are checked separately; `None` touches nothing, so each such call
     /// is checked alone against the initial state.
-    fn partition(op: &Self::Op) -> Option<u64>;
+    fn partition(&self, op: &Self::Op) -> Option<u64>;
 }
 
 /// One completed call. Times are any monotonic unit; only their order matters.
@@ -95,7 +95,7 @@ pub fn check<M: SeqModel>(init: &M, calls: &[Call<M::Op, M::Out>]) -> Verdict<M:
     let mut parts: BTreeMap<Option<u64>, Vec<Call<M::Op, M::Out>>> = BTreeMap::new();
     for c in calls {
         parts
-            .entry(M::partition(&c.op))
+            .entry(init.partition(&c.op))
             .or_default()
             .push(c.clone());
     }
@@ -215,7 +215,7 @@ mod tests {
                 }
             }
         }
-        fn partition(_: &Op) -> Option<u64> {
+        fn partition(&self, _: &Op) -> Option<u64> {
             Some(0)
         }
     }
