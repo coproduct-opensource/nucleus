@@ -334,6 +334,10 @@ pub async fn start_dns_proxy(
     let config = dnsmasq_config(plan.gateway_ip, &entries);
     tokio::fs::write(&config_path, config).await?;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "ADR 0007 G-1 does not apply: a byte stream (dnsmasq's log), not a record log"
+    )]
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

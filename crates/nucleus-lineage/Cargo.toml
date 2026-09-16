@@ -18,7 +18,7 @@ default = ["sink-io"]
 # disable via `default-features = false` for wasm targets. The `InMemorySink`
 # + `LineageSink` trait + `SinkError` (minus the `Io` variant) remain
 # available unconditionally.
-sink-io = []
+sink-io = ["dep:nucleus-jsonl"]
 # Demo-only in-process Ed25519 JWT-SVID issuer + edge signer. NOT FOR
 # PRODUCTION USE. Production callers should write a SPIFFE-Workload-API-
 # backed `IdentityFetcher` impl and never enable this feature in release
@@ -37,6 +37,7 @@ dev = ["insecure-local-issuer"]
 http = ["dep:reqwest"]
 
 [dependencies]
+nucleus-jsonl = { path = "../nucleus-jsonl", version = "1.0.0", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

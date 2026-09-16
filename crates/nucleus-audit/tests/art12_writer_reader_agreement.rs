@@ -227,6 +227,10 @@ fn the_signed_head_round_trips_through_the_cli() {
     );
 
     // A rewritten log fails: the recomputed head no longer matches.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: plays a tamperer appending to the log behind the writer's back"
+    )]
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(&log_path)

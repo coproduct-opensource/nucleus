@@ -29,6 +29,7 @@ remote-audit = ["dep:aws-sdk-s3", "dep:aws-config"]
 otel = ["dep:nucleus-otel-bootstrap", "dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [dependencies]
+nucleus-jsonl = { path = "../nucleus-jsonl", version = "1.0.0", features = ["async"] }
 nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap", optional = true }
 # Wire types only. The guest must NOT link nucleus-cred-broker: that crate holds
 # Credential/CredentialStore, and deny.toml refuses it outside the composition

@@ -13,15 +13,11 @@
 //! available unconditionally.
 
 #[cfg(feature = "sink-io")]
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 #[cfg(feature = "sink-io")]
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader};
 #[cfg(feature = "sink-io")]
 use std::path::PathBuf;
-// Mutex guards the sink-io JsonlSink's writer; without that feature
-// only the RwLock-backed InMemorySink remains.
-#[cfg(feature = "sink-io")]
-use std::sync::Mutex;
 use std::sync::RwLock;
 
 use thiserror::Error;
@@ -116,18 +112,20 @@ impl LineageSink for InMemorySink {
 #[cfg(feature = "sink-io")]
 pub struct JsonlSink {
     path: PathBuf,
-    writer: Mutex<BufWriter<File>>,
 }
 
 #[cfg(feature = "sink-io")]
 impl JsonlSink {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, SinkError> {
         let path = path.into();
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        Ok(Self {
-            path,
-            writer: Mutex::new(BufWriter::new(file)),
-        })
+        // Created now, so `iter` on a sink nothing was emitted to reads an empty log
+        // rather than failing to open one.
+        let _created = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
+        Ok(Self { path })
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -139,10 +137,11 @@ impl JsonlSink {
 impl LineageSink for JsonlSink {
     fn emit(&self, edge: LineageEdge) -> Result<(), SinkError> {
         let line = serde_json::to_string(&edge)?;
-        let mut w = self.writer.lock().map_err(|_| SinkError::Poisoned)?;
-        w.write_all(line.as_bytes())?;
-        w.write_all(b"\n")?;
-        w.flush()?;
+        // One O_APPEND write per edge. It was a buffered line then a newline behind a
+        // mutex: whole within this process, but the CLI and the control-plane server
+        // both append to one log, and across processes the two halves could
+        // interleave. See `nucleus_jsonl`.
+        nucleus_jsonl::append_line(&self.path, &line, nucleus_jsonl::Durability::PageCache)?;
         Ok(())
     }
 
@@ -264,12 +263,8 @@ mod tests {
         let sink = JsonlSink::open(&path).unwrap();
         sink.emit(LineageEdge::pod_admit(pod())).unwrap();
         // Append a blank line directly.
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all(b"\n\n")
-            .unwrap();
+        nucleus_jsonl::append_line(&path, "", nucleus_jsonl::Durability::PageCache).unwrap();
+        nucleus_jsonl::append_line(&path, "", nucleus_jsonl::Durability::PageCache).unwrap();
         sink.emit(LineageEdge::pod_admit(pod())).unwrap();
         assert_eq!(sink.iter().unwrap().len(), 2);
     }

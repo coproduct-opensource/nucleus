@@ -6925,6 +6925,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-jsonl"
+version = "1.0.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "nucleus-lineage"
 version = "1.0.0"
 dependencies = [
@@ -6934,6 +6943,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "jsonwebtoken",
+ "nucleus-jsonl",
  "proptest",
  "rand 0.10.2",
  "reqwest 0.13.5",
@@ -7047,6 +7057,7 @@ dependencies = [
  "nucleus-cred-protocol",
  "nucleus-identity",
  "nucleus-ifc-kernel",
+ "nucleus-jsonl",
  "nucleus-otel-bootstrap",
  "nucleus-proto",
  "nucleus-provenance-memory",
@@ -7458,6 +7469,7 @@ dependencies = [
  "nucleus-cred-protocol",
  "nucleus-identity",
  "nucleus-ifc-kernel",
+ "nucleus-jsonl",
  "nucleus-otel-bootstrap",
  "nucleus-permission-market",
  "nucleus-proto",
@@ -8408,6 +8420,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "kani",
+ "nucleus-jsonl",
  "portcullis-core",
  "proptest",
  "regex",

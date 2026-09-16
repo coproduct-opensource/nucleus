@@ -1,0 +1,27 @@
+[package]
+name = "nucleus-jsonl"
+version.workspace = true
+edition.workspace = true
+# Kani 0.67 bundles rustc 1.93; nucleus-lineage depends on this and is in the
+# welfare-proof dependency closure.
+rust-version = "1.93"
+license.workspace = true
+repository = "https://github.com/coproduct-opensource/nucleus"
+description = "Append one record to a line-oriented log as one atomic write"
+keywords = ["jsonl", "append", "audit", "log"]
+categories = ["filesystem"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# `append_line_async`, on tokio's blocking pool.
+async = ["dep:tokio"]
+
+[dependencies]
+tokio = { workspace = true, features = ["rt"], optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

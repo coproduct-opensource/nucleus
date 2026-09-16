@@ -21,8 +21,6 @@
 
 use std::path::{Path, PathBuf};
 
-use tokio::io::AsyncWriteExt;
-
 /// Where a session's collected records live on the host.
 ///
 /// Under the node's state dir, never under the pod's work dir: this is the
@@ -68,22 +66,15 @@ pub async fn append_record(
     session_id: &str,
     line: &str,
 ) -> Result<(), std::io::Error> {
-    let path = session_log_path(state_dir, session_id);
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let mut f = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .await?;
-    f.write_all(line.trim_end().as_bytes()).await?;
-    f.write_all(b"\n").await?;
-    // Flushed AND synced: an accepted record that is only in the page cache is
+    // One O_APPEND write per record (see `nucleus_jsonl` for the tearing this
+    // replaced), and synced: an accepted record that is only in the page cache is
     // lost by a host crash, and the pod has already been told it is safe.
-    f.flush().await?;
-    f.sync_data().await?;
-    Ok(())
+    nucleus_jsonl::append_line_async(
+        session_log_path(state_dir, session_id),
+        line.to_owned(),
+        nucleus_jsonl::Durability::Synced,
+    )
+    .await
 }
 
 /// What the HOST observed of a session's Article 12 records.
@@ -310,6 +301,35 @@ pub fn provision_container_env(env: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Records from concurrent requests on one session must each land whole.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_records_never_tear_a_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tasks = Vec::new();
+        for t in 0..64 {
+            let d = dir.path().to_path_buf();
+            tasks.push(tokio::spawn(async move {
+                let line = format!(r#"{{"seq":{t},"pad":"{}"}}"#, "x".repeat(4096));
+                append_record(&d, "s1", &line).await.unwrap();
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let raw = std::fs::read_to_string(session_log_path(dir.path(), "s1")).unwrap();
+        let mut seqs: Vec<u64> = raw
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .unwrap_or_else(|_| panic!("a torn line: {}", &l[..l.len().min(60)]))["seq"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, (0..64).collect::<Vec<u64>>());
+    }
 
     /// **The cross-session replay, refused.** A record legitimately signed for
     /// session A must not be accepted into session B's chain. Before the

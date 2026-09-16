@@ -13,8 +13,8 @@
 //! {"entry":{...},"hmac":"<hex-encoded HMAC-SHA256>"}
 //! ```
 
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use hmac::{digest::KeyInit, Hmac, Mac};
@@ -111,8 +111,6 @@ struct SignedLine {
 pub struct FileAuditBackend {
     path: PathBuf,
     secret: Vec<u8>,
-    /// Open file handle for appending (None until first write).
-    writer: Option<File>,
 }
 
 impl FileAuditBackend {
@@ -124,23 +122,9 @@ impl FileAuditBackend {
         Self {
             path: path.into(),
             secret: secret.into(),
-            writer: None,
         }
     }
 
-    /// Open or re-open the file for appending.
-    fn ensure_writer(&mut self) -> Result<&mut File, AuditBackendError> {
-        if self.writer.is_none() {
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)?;
-            self.writer = Some(file);
-        }
-        Ok(self.writer.as_mut().unwrap())
-    }
-
-    /// Compute HMAC-SHA256 over a message.
     fn hmac_hex(&self, message: &[u8]) -> String {
         let mut mac =
             HmacSha256::new_from_slice(&self.secret).expect("HMAC key length is always valid");
@@ -177,9 +161,10 @@ impl AuditBackend for FileAuditBackend {
         let line_str = serde_json::to_string(&line)
             .map_err(|e| AuditBackendError::Serialization(e.to_string()))?;
 
-        let writer = self.ensure_writer()?;
-        writeln!(writer, "{}", line_str)?;
-        writer.flush()?;
+        // One O_APPEND write per line: `writeln!` on a `File` is several writes, and
+        // two backends on one path (two processes) could interleave them. See
+        // `nucleus_jsonl`.
+        nucleus_jsonl::append_line(&self.path, &line_str, nucleus_jsonl::Durability::PageCache)?;
 
         Ok(())
     }

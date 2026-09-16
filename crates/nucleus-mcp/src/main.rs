@@ -594,6 +594,10 @@ impl TraceWriter {
     fn open(path: Option<&Path>) -> Result<Self> {
         match path {
             Some(p) => {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "ADR 0007 G-1: a record log with ONE writer on one thread (RefCell); a candidate for RecordLog"
+                )]
                 let file = fs::OpenOptions::new()
                     .create(true)
                     .append(true)

@@ -490,6 +490,11 @@ impl FileEffect for RealEffects {
     fn append(&self, path: &Path, content: &[u8], authority: Authority) -> Result<(), EffectError> {
         drop(authority);
         use std::io::Write as _;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 G-1 does not apply: the agent's own file append, arbitrary bytes \
+                      in one write, not a record log the node or proxy keeps"
+        )]
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

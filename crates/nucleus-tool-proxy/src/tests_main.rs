@@ -2061,3 +2061,65 @@ mod approval_naming_parity {
         assert_ne!(write, other, "subject must be part of the name");
     }
 }
+
+/// Tool calls are served concurrently, and every one writes an audit entry. Each
+/// entry must land whole, and the file must be in CHAIN order — `nucleus-audit
+/// verify` walks it top to bottom requiring each `prev_hash` to be the line above's
+/// `hash`. The chain used to be extended under a lock that was released before the
+/// write, so two entries could land in the opposite order to the one they were
+/// hashed in, and the write itself was two writes (line, then newline) that
+/// concurrent entries could interleave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_audit_entries_land_whole_and_in_chain_order() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = Arc::new(AuditLog {
+        path: dir.path().join("audit.log"),
+        secret: b"test-secret".to_vec(),
+        last_hash: Mutex::new(String::new()),
+        append_order: tokio::sync::Mutex::new(()),
+        entry_count: std::sync::atomic::AtomicU64::new(0),
+        webhook: None,
+        drand_client: None,
+        #[cfg(feature = "remote-audit")]
+        s3_sink: None,
+    });
+    let mut tasks = Vec::new();
+    for i in 0..64 {
+        let log = Arc::clone(&log);
+        tasks.push(tokio::spawn(async move {
+            log.log(AuditEntry {
+                timestamp_unix: 1_757_000_000,
+                actor: Some("test".into()),
+                event: format!("event-{i}"),
+                subject: "x".repeat(4096),
+                result: "ok".into(),
+                prev_hash: String::new(),
+                hash: String::new(),
+                signature: String::new(),
+                drand_round: None,
+                spiffe_id: None,
+                policy_rule: None,
+            })
+            .await
+            .expect("audit entry written");
+        }));
+    }
+    for t in tasks {
+        t.await.expect("task");
+    }
+    let raw = std::fs::read_to_string(dir.path().join("audit.log")).expect("read");
+    let mut prev = String::new();
+    let mut n = 0;
+    for (i, line) in raw.lines().enumerate() {
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|_| panic!("line {i} is torn: {}", &line[..line.len().min(60)]));
+        assert_eq!(
+            v["prev_hash"].as_str(),
+            Some(prev.as_str()),
+            "line {i} is out of chain order"
+        );
+        prev = v["hash"].as_str().expect("hash").to_owned();
+        n += 1;
+    }
+    assert_eq!(n, 64, "every entry exactly once");
+}
