@@ -59,4 +59,3 @@ pub(crate) struct CreatePodRequest {
     #[serde(default)]
     pub(crate) yaml: Option<String>,
 }
-
