@@ -78,6 +78,13 @@ provision:
       #!/bin/bash
       set -euo pipefail
 
+      # A boot must not stop to ask for a manual fsck — see the aarch64 template.
+      # QEMU already gives the image's `console=ttyS0` a serial.log, so only the
+      # repair half is needed here.
+      echo 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT fsck.repair=yes"' \
+        > /etc/default/grub.d/60-nucleus-boot.cfg
+      update-grub
+
       apt-get update
 
       # ca-certificates is load-bearing, not hygiene — see the aarch64 template.

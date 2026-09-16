@@ -311,8 +311,26 @@ fn check_lima() -> bool {
         ),
     };
 
-    // Check KVM inside VM (if running)
-    if nucleus_vm == Some("Running") {
+    // "Running" is Lima's word for "the hypervisor started", not "the guest
+    // booted". A guest stopped at an initramfs prompt is Running forever, and
+    // every `limactl shell` probe below would fail — which this function used to
+    // report as components MISSING, ending in "nucleus setup --force": a
+    // destructive fix for a VM that needed one fsck. Establish reachability
+    // first; if it fails, say why the boot stopped and probe nothing inside.
+    let reachable = match nucleus_vm {
+        Some("Running") => match crate::lima_boot::diagnose(&vm_name()) {
+            crate::lima_boot::BootDiagnosis::Reachable => true,
+            unreachable => {
+                print_check("VM boot", Status::Error, &unreachable.summary());
+                println!("{}", unreachable.remedy(&vm_name()));
+                return false;
+            }
+        },
+        _ => false,
+    };
+
+    // Check KVM inside VM (if reachable)
+    if reachable {
         let kvm_check = Command::new("limactl")
             .args(["shell", &vm_name(), "--", "test", "-e", "/dev/kvm"])
             .status()
@@ -569,7 +587,7 @@ fn check_tier2_components() -> bool {
         print_check(
             "Tier 2 host",
             Status::Warning,
-            "none on this platform - Tier 0/1 only",
+            "none reachable (on macOS, see the Lima VM checks above) - Tier 0/1 only",
         );
         return true;
     };
@@ -620,13 +638,10 @@ fn doctor_tier2_host() -> Option<provision::Tier2Host> {
     if cfg!(target_os = "linux") {
         return Some(provision::Tier2Host::Local);
     }
-    let running = Command::new("limactl")
-        .args(["list", "--format", "{{.Name}} {{.Status}}"])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("nucleus Running"))
-        .unwrap_or(false);
-    running.then(|| provision::Tier2Host::Lima("nucleus".to_string()))
+    // Reachable, not merely Running: probing an unbootable VM reports every
+    // component as missing (see `check_lima`).
+    let name = vm_name();
+    crate::lima_boot::ssh_reachable(&name).then_some(provision::Tier2Host::Lima(name))
 }
 
 fn check_config() -> bool {

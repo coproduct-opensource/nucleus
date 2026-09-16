@@ -33,6 +33,7 @@ mod grant;
 mod guard;
 mod identity;
 mod keychain;
+mod lima_boot;
 mod lineage;
 mod lineage_verify;
 mod lockdown;
