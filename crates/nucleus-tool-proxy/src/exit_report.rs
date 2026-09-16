@@ -24,9 +24,25 @@ use crate::AuditLog;
 /// Skips:
 /// - Hidden files/directories (starting with `.`)
 /// - The `.nucleus-exit-report.json` file itself
+#[cfg(test)]
 pub async fn hash_workspace(root: &Path) -> Result<String, std::io::Error> {
+    hash_workspace_excluding(root, &[]).await
+}
+
+/// [`hash_workspace`], leaving out the files at `exclude`.
+///
+/// The supervisor's own audit log lives in the work dir on a microVM (the rootfs
+/// is read-only), so it was hashed as if it were the workload's output. It is
+/// timestamped and keyed per launch, which made `workspace_hash` differ on every
+/// run of one program — measured by the A6 walk — and it is attested separately
+/// by `audit_tail_hash`. The workload cannot write it (its directory is the
+/// supervisor's), so excluding it hides nothing the workload produced.
+pub async fn hash_workspace_excluding(
+    root: &Path,
+    exclude: &[&Path],
+) -> Result<String, std::io::Error> {
     let mut entries: Vec<(String, String)> = Vec::new();
-    collect_file_hashes(root, root, &mut entries).await?;
+    collect_file_hashes(root, root, exclude, &mut entries).await?;
     entries.sort();
 
     let mut hasher = Sha256::new();
@@ -43,6 +59,7 @@ pub async fn hash_workspace(root: &Path) -> Result<String, std::io::Error> {
 async fn collect_file_hashes(
     root: &Path,
     dir: &Path,
+    exclude: &[&Path],
     entries: &mut Vec<(String, String)>,
 ) -> Result<(), std::io::Error> {
     let mut read_dir = tokio::fs::read_dir(dir).await?;
@@ -56,10 +73,13 @@ async fn collect_file_hashes(
         }
 
         let path = entry.path();
+        if exclude.contains(&path.as_path()) {
+            continue;
+        }
         let file_type = entry.file_type().await?;
 
         if file_type.is_dir() {
-            Box::pin(collect_file_hashes(root, &path, entries)).await?;
+            Box::pin(collect_file_hashes(root, &path, exclude, entries)).await?;
         } else if file_type.is_file() {
             let relative = path
                 .strip_prefix(root)
@@ -239,13 +259,17 @@ pub async fn write_exit_report(
     kernel: &Arc<tokio::sync::Mutex<Kernel>>,
     task_grant_id: Option<String>,
 ) {
-    let workspace_hash = match hash_workspace(work_dir_path).await {
-        Ok(h) => h,
-        Err(e) => {
-            warn!("failed to hash workspace for exit report: {e}");
-            return;
-        }
-    };
+    let workspace_hash =
+        match hash_workspace_excluding(work_dir_path, &[audit.path.as_path()]).await {
+            Ok(h) => h,
+            Err(e) => {
+                warn!("failed to hash workspace for exit report: {e}");
+                crate::console_line(&format!(
+                    "[exit-report] not written: hashing the workspace failed: {e}"
+                ));
+                return;
+            }
+        };
 
     let (tail_hash, count) = audit.tail_hash_and_count();
     let mut report = build_exit_report(workspace_hash, tail_hash, count, None, monitor);
@@ -267,25 +291,142 @@ pub async fn write_exit_report(
         apply_exposure(&mut report, exposure_guard, kernel.exposure());
     }
 
-    let report_path = work_dir_path.join(".nucleus-exit-report.json");
-    match serde_json::to_string_pretty(&report) {
-        Ok(json) => {
-            if let Err(e) = tokio::fs::write(&report_path, json).await {
-                warn!(
-                    "failed to write exit report to {}: {e}",
-                    report_path.display()
-                );
-            } else {
-                info!(
-                    path = %report_path.display(),
-                    entries = count,
-                    event = "exit_report_written",
-                    "exit report written"
-                );
-            }
+    let report_path = work_dir_path.join(nucleus_spec::exit_report_auth::EXIT_REPORT_FILE);
+    let signed = crate::art12_sink::mediation_seed_from_env().map(|seed| {
+        sign(
+            report.clone(),
+            &ed25519_dalek::SigningKey::from_bytes(&seed),
+        )
+    });
+    let is_signed = signed.is_some();
+    let json = match signed {
+        // Signed whenever the pod has a mediation key — every node-launched
+        // microVM does. See `nucleus_spec::exit_report_auth` for why the node
+        // refuses an unsigned report on that path.
+        Some(Ok(signed)) => serde_json::to_string_pretty(&signed),
+        Some(Err(e)) => {
+            warn!("failed to sign exit report: {e}");
+            crate::console_line("[exit-report] not written: signing failed");
+            return;
         }
-        Err(e) => warn!("failed to serialize exit report: {e}"),
+        None => serde_json::to_string_pretty(&report),
+    };
+    let json = match json {
+        Ok(json) => json,
+        Err(e) => {
+            warn!("failed to serialize exit report: {e}");
+            return;
+        }
+    };
+    match write_replacing(work_dir_path, &report_path, json.as_bytes()).await {
+        Ok(()) => {
+            // On the guest console, which the host keeps: tracing does not reach it,
+            // and a missing receipt was invisible until this line existed.
+            crate::console_line(&format!(
+                "[exit-report] written (signed={is_signed}, entries={count})"
+            ));
+            info!(
+                path = %report_path.display(),
+                entries = count,
+                event = "exit_report_written",
+                "exit report written"
+            )
+        }
+        Err(e) => {
+            crate::console_line(&format!("[exit-report] not written: {e}"));
+            warn!(
+                "failed to write exit report to {}: {e}",
+                report_path.display()
+            )
+        }
     }
+}
+
+/// Write the exit report as soon as the workload exits.
+///
+/// On a microVM the report used to be written only after the proxy stopped
+/// serving, and nothing stops it: the VM outlives its workload, and the node ends
+/// a pod by killing it. So the report — and the pod receipt built from it — was
+/// never produced for a Firecracker pod. The workload's exit is the point after
+/// which nothing it does is mediated, which makes it the right moment. The
+/// shutdown write stays, and overwrites this one where shutdown is reached.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn on_workload_exit(
+    audit: Arc<AuditLog>,
+    work_dir: std::path::PathBuf,
+    exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>>,
+    monitor: Arc<TraceMonitor>,
+    art12_log: Option<Arc<crate::art12::Art12Log>>,
+    kernel: Arc<tokio::sync::Mutex<Kernel>>,
+    task_grant_id: Option<String>,
+) -> crate::workload_supervisor::ExitHook {
+    Box::new(move || {
+        Box::pin(async move {
+            write_exit_report(
+                &audit,
+                &work_dir,
+                &exposure_guard,
+                &monitor,
+                art12_log.as_ref(),
+                &kernel,
+                task_grant_id,
+            )
+            .await;
+        })
+    })
+}
+
+/// Sign `report` for the node, which verifies against its own record of the key.
+pub(crate) fn sign(
+    report: ExitReport,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<nucleus_spec::exit_report_auth::SignedExitReport, serde_json::Error> {
+    use ed25519_dalek::Signer;
+    let bytes = nucleus_spec::exit_report_auth::signing_bytes(&report)?;
+    Ok(nucleus_spec::exit_report_auth::SignedExitReport {
+        signature: hex::encode(key.sign(&bytes).to_bytes()),
+        signer_pubkey: hex::encode(key.verifying_key().to_bytes()),
+        report,
+    })
+}
+
+/// Write `path` without following anything the workload planted there.
+///
+/// The work dir belongs to the workload's uid and this process is the
+/// supervisor, so a plain write would follow a symlink the workload placed at
+/// `path` and write, with the supervisor's authority, wherever it points. The
+/// bytes go to a fresh temp file opened `O_CREAT|O_EXCL|O_NOFOLLOW` (an existing
+/// file or link at that name fails the open), then are renamed over `path`;
+/// rename replaces a link rather than following it.
+async fn write_replacing(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let tmp = dir.join(format!(
+        ".nucleus-exit-report.{}.{nanos}.tmp",
+        std::process::id()
+    ));
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let mut file = options.open(&tmp).await?;
+    let written = async {
+        use tokio::io::AsyncWriteExt;
+        file.write_all(bytes).await?;
+        file.sync_all().await
+    }
+    .await;
+    if let Err(e) = written {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    tokio::fs::rename(&tmp, path).await?;
+    // The rename is a directory entry; without syncing the directory it can be
+    // lost if the VM is killed before the journal commits, and a microVM is
+    // ended by being killed.
+    tokio::fs::File::open(dir).await?.sync_all().await
 }
 
 #[cfg(test)]
@@ -596,5 +737,61 @@ mod tests {
         assert_eq!(report.output_tokens, 500);
         assert_eq!(report.cache_read_tokens, 200);
         assert!((report.cost_usd - 0.42).abs() < f64::EPSILON);
+    }
+}
+
+#[cfg(test)]
+mod signed_report_tests {
+    use super::*;
+
+    /// What the supervisor writes is what the node's verifier accepts: the same
+    /// preimage, the same key.
+    #[test]
+    fn a_signed_report_verifies_against_the_signing_key() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+        let report: ExitReport = serde_json::from_str(
+            r#"{"workspace_hash":"w","audit_tail_hash":"t","audit_entry_count":1,"timestamp_unix":2}"#,
+        )
+        .unwrap();
+        let signed = sign(report, &key).unwrap();
+        assert_eq!(
+            signed.signer_pubkey,
+            hex::encode(key.verifying_key().to_bytes())
+        );
+        let sig: [u8; 64] = hex::decode(&signed.signature).unwrap().try_into().unwrap();
+        let bytes = nucleus_spec::exit_report_auth::signing_bytes(&signed.report).unwrap();
+        key.verifying_key()
+            .verify_strict(&bytes, &ed25519_dalek::Signature::from_bytes(&sig))
+            .expect("verifies");
+    }
+
+    /// The workload owns the work dir and plants a symlink where the report goes.
+    /// The supervisor's write must replace the link, never write through it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_planted_at_the_report_path_is_replaced_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"untouched").unwrap();
+        let path = dir
+            .path()
+            .join(nucleus_spec::exit_report_auth::EXIT_REPORT_FILE);
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+
+        write_replacing(dir.path(), &path, b"{\"report\":1}")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"untouched",
+            "the link was followed"
+        );
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert!(
+            meta.file_type().is_file(),
+            "the link must be replaced by a file"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"report\":1}");
     }
 }
