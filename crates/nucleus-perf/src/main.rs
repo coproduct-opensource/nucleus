@@ -17,6 +17,7 @@
 
 mod agency;
 mod guest_transcript;
+mod node_mtls;
 mod symmetry;
 
 use std::collections::BTreeMap;
@@ -49,12 +50,12 @@ enum Cli {
 #[derive(Parser)]
 struct AgencyArgs {
     /// Node base URL.
-    #[arg(long, default_value = "http://127.0.0.1:8080")]
+    #[arg(long, default_value = "https://127.0.0.1:8080")]
     url: String,
-    /// Hex-encoded auth secret for request signing. Required to reach a node;
-    /// `--local` needs none, because it spawns its own proxy.
-    #[arg(long, env = "NUCLEUS_AUTH_SECRET")]
-    auth_secret: Option<String>,
+    /// The client identity. Required to reach a node; `--local` needs none,
+    /// because it spawns its own proxy.
+    #[command(flatten)]
+    tls: node_mtls::NodeTls,
     /// Actor name recorded on each signed request.
     #[arg(long, default_value = "nucleus-agency")]
     actor: String,
@@ -115,12 +116,11 @@ struct SymmetryArgs {
 #[derive(Parser)]
 struct ToolCall {
     /// Node base URL.
-    #[arg(long, default_value = "http://127.0.0.1:8080")]
+    #[arg(long, default_value = "https://127.0.0.1:8080")]
     url: String,
-    /// Hex-encoded auth secret for request signing.
-    #[arg(long, env = "NUCLEUS_AUTH_SECRET")]
-    auth_secret: String,
-    /// Actor name recorded on each signed request.
+    #[command(flatten)]
+    tls: node_mtls::NodeTls,
+    /// Actor named on approvals the harness signs as the approver.
     #[arg(long, default_value = "nucleus-perf")]
     actor: String,
     /// Pod spec used as the template.
@@ -139,14 +139,10 @@ struct ToolCall {
 #[derive(Parser)]
 struct Burst {
     /// Node base URL.
-    #[arg(long, default_value = "http://127.0.0.1:8080")]
+    #[arg(long, default_value = "https://127.0.0.1:8080")]
     url: String,
-    /// Hex-encoded auth secret for request signing.
-    #[arg(long, env = "NUCLEUS_AUTH_SECRET")]
-    auth_secret: String,
-    /// Actor name recorded on each signed request.
-    #[arg(long, default_value = "nucleus-perf")]
-    actor: String,
+    #[command(flatten)]
+    tls: node_mtls::NodeTls,
     /// Pod spec used as the template for every pod in the burst.
     #[arg(long)]
     spec: String,
@@ -184,15 +180,12 @@ fn agency_run(a: AgencyArgs) -> Result<()> {
     if a.local {
         return agency_local(a);
     }
-    let secret_str = a
-        .auth_secret
-        .as_deref()
-        .context("--auth-secret is required to reach a node (or pass --local)")?;
+    let node =
+        node_mtls::Node::connect(&a.url, &a.tls).context("reaching a node (or pass --local)")?;
     let spec_path = a
         .spec
         .as_deref()
         .context("--spec is required to reach a node (or pass --local --goal)")?;
-    let secret = secret_str.trim().as_bytes().to_vec();
     let mut spec: serde_json::Value = {
         let raw = std::fs::read_to_string(spec_path)
             .with_context(|| format!("reading spec {spec_path}"))?;
@@ -240,7 +233,7 @@ fn agency_run(a: AgencyArgs) -> Result<()> {
     );
 
     let body = serde_json::to_string(&spec)?;
-    let (id, proxy) = create_pod_with_proxy(&a.url, &secret, &a.actor, &body)?;
+    let (id, proxy) = node.create_pod_with_proxy(&body)?;
     println!("pod {id} up, proxy {proxy}");
 
     let key = match a.approval_key.as_deref() {
@@ -261,7 +254,7 @@ fn agency_run(a: AgencyArgs) -> Result<()> {
         a.commit,
     );
 
-    let _ = cancel_pod(&a.url, &secret, &a.actor, &id);
+    let _ = node.cancel_pod(&id);
     agency::write_report(&report?, a.out.as_deref())
 }
 
@@ -340,10 +333,7 @@ fn agency_local(a: AgencyArgs) -> Result<()> {
 }
 
 fn podburst(b: Burst) -> Result<()> {
-    // The node uses the hex secret string DIRECTLY as HMAC key bytes -- it does
-    // not decode it (see nucleus-cli load_auth_secret). Decoding here yields a
-    // 32-byte key against the node's 64-byte one and every request 401s.
-    let secret = b.auth_secret.trim().as_bytes().to_vec();
+    let node = node_mtls::Node::connect(&b.url, &b.tls)?;
     let template: serde_json::Value = {
         let raw = std::fs::read_to_string(&b.spec)
             .with_context(|| format!("reading spec {}", &b.spec))?;
@@ -387,17 +377,17 @@ fn podburst(b: Burst) -> Result<()> {
     // Preflight: prove the credential works on a GET with an empty body BEFORE
     // launching a burst. Without this, a bad secret is indistinguishable from a
     // host that cannot boot pods -- every pod just "fails" and the table lies.
-    match list_pods(&b.url, &secret, &b.actor) {
+    match node.list_pods() {
         Ok(p) => println!(
             "preflight: authenticated, {} pod(s) already present\n",
             p.len()
         ),
-        Err(e) => bail!("preflight failed -- the node rejected a signed request: {e}"),
+        Err(e) => bail!("preflight failed -- the node rejected this client identity: {e}"),
     }
 
     let mut rows = Vec::new();
     for n in counts {
-        let row = run_level(&b, &secret, &template, n, configured_mib)?;
+        let row = run_level(&b, &node, &template, n, configured_mib)?;
         println!(
             "{:>5} {:>8} {:>9} {:>8}m {:>8}m {:>8}m {:>8}m {:>9}M {:>8}M",
             row.n,
@@ -452,7 +442,7 @@ impl Row {
 
 fn run_level(
     b: &Burst,
-    secret: &[u8],
+    node: &node_mtls::Node,
     template: &serde_json::Value,
     n: usize,
     configured_mib: u64,
@@ -491,13 +481,11 @@ fn run_level(
     let start = Instant::now();
     let mut handles = Vec::new();
     for (name, body) in specs {
-        let url = format!("{}/v1/pods", b.url);
-        let actor = b.actor.clone();
-        let secret = secret.to_vec();
+        let node = node.clone();
         let tx = tx.clone();
         handles.push(std::thread::spawn(move || {
             let t0 = Instant::now();
-            let res = post_pod(&url, &secret, &actor, &body);
+            let res = node.create_pod(&body);
             let submit_ms = t0.elapsed().as_millis();
             let _ = tx.send((name, res, submit_ms));
         }));
@@ -531,7 +519,7 @@ fn run_level(
     let mut running_at: BTreeMap<String, u128> = BTreeMap::new();
     let deadline = Instant::now() + Duration::from_secs(b.timeout_secs);
     while running_at.len() < ids.len() && Instant::now() < deadline {
-        if let Ok(list) = list_pods(&b.url, secret, &b.actor) {
+        if let Ok(list) = node.list_pods() {
             for p in list {
                 let (Some(id), Some(state)) = (
                     p.get("id").and_then(|v| v.as_str()),
@@ -558,7 +546,7 @@ fn run_level(
 
     // Tear down before the next level so memory and CPU return to baseline.
     for id in ids.keys() {
-        let _ = cancel_pod(&b.url, secret, &b.actor, id);
+        let _ = node.cancel_pod(id);
     }
     wait_for_drain(Duration::from_secs(60));
 
@@ -629,79 +617,6 @@ fn agent() -> ureq::Agent {
         .http_status_as_error(false)
         .build()
         .into()
-}
-
-fn signed_request(
-    req: ureq::RequestBuilder<ureq::typestate::WithBody>,
-    secret: &[u8],
-    actor: &str,
-    body: &[u8],
-) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
-    let signed = nucleus_client::sign_http_headers(secret, Some(actor), body);
-    let mut req = req;
-    for (k, v) in &signed.headers {
-        req = req.header(k, v);
-    }
-    req
-}
-
-fn post_pod(url: &str, secret: &[u8], actor: &str, body: &str) -> Result<String> {
-    let req = agent().post(url).header("content-type", "application/json");
-    let mut resp = signed_request(req, secret, actor, body.as_bytes())
-        .send(body)
-        .map_err(|e| anyhow::anyhow!("create pod: {e}"))?;
-    let status = resp.status();
-    let text = resp.body_mut().read_to_string().unwrap_or_default();
-    if !status.is_success() {
-        bail!("create pod: HTTP {status}: {}", text.trim());
-    }
-    let v: serde_json::Value = serde_json::from_str(&text)
-        .with_context(|| format!("create pod: unparseable response: {text}"))?;
-    v.get("id")
-        .or_else(|| v.get("pod_id"))
-        .and_then(|x| x.as_str())
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("no pod id in response: {v}"))
-}
-
-fn list_pods(url: &str, secret: &[u8], actor: &str) -> Result<Vec<serde_json::Value>> {
-    let endpoint = format!("{url}/v1/pods");
-    let signed = nucleus_client::sign_http_headers(secret, Some(actor), b"");
-    let mut req = agent().get(&endpoint);
-    for (k, v) in &signed.headers {
-        req = req.header(k, v);
-    }
-    let mut resp = req.call().map_err(|e| anyhow::anyhow!("list pods: {e}"))?;
-    // `http_status_as_error(false)` means a 401 arrives as a normal response.
-    // Parsing it as JSON and finding no "pods" key yields an empty list, which
-    // reads as "the node is up and idle" -- a false pass that turns an auth
-    // failure into a plausible zero. Check the status.
-    let status = resp.status();
-    let text = resp.body_mut().read_to_string().unwrap_or_default();
-    if !status.is_success() {
-        bail!("list pods: HTTP {status}: {}", text.trim());
-    }
-    let v: serde_json::Value = serde_json::from_str(&text)
-        .with_context(|| format!("list pods: unparseable response: {text}"))?;
-    Ok(v.get("pods")
-        .and_then(|p| p.as_array())
-        .cloned()
-        .or_else(|| v.as_array().cloned())
-        .unwrap_or_default())
-}
-
-fn cancel_pod(url: &str, secret: &[u8], actor: &str, id: &str) -> Result<()> {
-    let endpoint = format!("{url}/v1/pods/{id}/cancel");
-    let req = agent().post(&endpoint);
-    let mut resp = signed_request(req, secret, actor, b"")
-        .send("")
-        .map_err(|e| anyhow::anyhow!("cancel: {e}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.body_mut().read_to_string().unwrap_or_default();
-        bail!("cancel: HTTP {status}: {}", text.trim());
-    }
-    Ok(())
 }
 
 // ---- host observation ------------------------------------------------------
@@ -923,7 +838,7 @@ const FORBIDDEN_READ: &str = ".ssh/id_rsa";
 /// reads it back, and the host compares. That proves the read path returns real
 /// bytes from the sandbox rather than a plausible-looking empty success.
 fn toolcall(t: ToolCall) -> Result<()> {
-    let secret = t.auth_secret.trim().as_bytes().to_vec();
+    let node = node_mtls::Node::connect(&t.url, &t.tls)?;
     let mut spec: serde_json::Value = {
         let raw = std::fs::read_to_string(&t.spec)
             .with_context(|| format!("reading spec {}", &t.spec))?;
@@ -956,7 +871,7 @@ fn toolcall(t: ToolCall) -> Result<()> {
 
     let body = serde_json::to_string(&spec)?;
     let created = Instant::now();
-    let (id, proxy) = create_pod_with_proxy(&t.url, &secret, &t.actor, &body)?;
+    let (id, proxy) = node.create_pod_with_proxy(&body)?;
     println!(
         "pod {id} up in {} ms, proxy {proxy}\n",
         created.elapsed().as_millis()
@@ -1099,7 +1014,7 @@ fn toolcall(t: ToolCall) -> Result<()> {
     let ok = !(200..300).contains(&st);
     report("uncredentialed refused", st, ms, ok, &b, &mut failures);
 
-    let _ = cancel_pod(&t.url, &secret, &t.actor, &id);
+    let _ = node.cancel_pod(&id);
 
     if failures.is_empty() {
         println!("\nall checks passed");
@@ -1125,40 +1040,6 @@ fn report(name: &str, status: u16, ms: u128, ok: bool, body: &str, failures: &mu
         println!("      {}", body.trim());
         failures.push(name.to_string());
     }
-}
-
-/// Create a pod and return both its id and the address of its own tool-proxy.
-fn create_pod_with_proxy(
-    url: &str,
-    secret: &[u8],
-    actor: &str,
-    body: &str,
-) -> Result<(String, String)> {
-    let endpoint = format!("{url}/v1/pods");
-    let req = agent()
-        .post(&endpoint)
-        .header("content-type", "application/json");
-    let mut resp = signed_request(req, secret, actor, body.as_bytes())
-        .send(body)
-        .map_err(|e| anyhow::anyhow!("create pod: {e}"))?;
-    let status = resp.status();
-    let text = resp.body_mut().read_to_string().unwrap_or_default();
-    if !status.is_success() {
-        bail!("create pod: HTTP {status}: {}", text.trim());
-    }
-    let v: serde_json::Value = serde_json::from_str(&text)
-        .with_context(|| format!("create pod: unparseable response: {text}"))?;
-    let id = v
-        .get("id")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| anyhow::anyhow!("no pod id in response: {v}"))?
-        .to_string();
-    let proxy = v
-        .get("proxy_addr")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| anyhow::anyhow!("no proxy_addr in response: {v}"))?
-        .to_string();
-    Ok((id, proxy))
 }
 
 /// Report how many cross-pod checks isolation needs at N pods, and why.
