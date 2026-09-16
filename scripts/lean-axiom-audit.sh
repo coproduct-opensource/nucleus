@@ -44,6 +44,14 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
+# READS COMPILED OLEANS, NOT SOURCES. It audits what `lake build` last produced,
+# so running it against a stale build silently reports the OLD verdict: a `sorry`
+# added since that build passes. Measured 2026-09-16 while driving this gate red
+# for #2511 — the perturbation reported `ok` until `lake build` was re-run, and
+# the A-19 result was nearly recorded from that false green. CI is not exposed
+# (every caller builds first, and the workflows' grep-based `sorry` ban runs
+# ahead of this step), but a local invocation is: build before you believe it.
+
 PROJECT=${1:?project dir}
 MODE=${2:?root list or --self-test}
 cd "$PROJECT"
