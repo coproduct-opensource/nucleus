@@ -118,7 +118,7 @@ impl Art12Log {
     /// If the file cannot be opened for appending.
     #[expect(
         clippy::disallowed_methods,
-        reason = "#1216: writes the proxy's own Article 12 record, not agent-directed I/O"
+        reason = "#1216: writes the proxy's own Article 12 record, not agent-directed I/O. ADR 0007 G-1: a record log with ONE writer serialised by a mutex; a candidate for RecordLog"
     )]
     pub fn open(
         path: &Path,

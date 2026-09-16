@@ -52,6 +52,7 @@ dlc = ["dep:dlc-d", "dep:dlc-core", "crypto"]
 testing = []
 
 [dependencies]
+nucleus-jsonl = { path = "../nucleus-jsonl", version = "1.0.0" }
 portcullis-core = { path = "../portcullis-core", features = ["serde", "envelope"] }
 # DLC-D admission (feature `dlc`) — rev-pinned to delegation_calc main. The pin
 # is the U3 state: gated mint + one-atom binding (see says_admission module docs).

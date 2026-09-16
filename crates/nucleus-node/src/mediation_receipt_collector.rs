@@ -35,8 +35,6 @@
 
 use std::path::{Path, PathBuf};
 
-use tokio::io::AsyncWriteExt;
-
 /// The collected-receipts log inside a pod's node-side directory.
 ///
 /// `pod_dir` is `<state>/pods/<pod_id>` — already per-pod and host-private (the
@@ -58,20 +56,14 @@ pub fn receipt_log_path(pod_dir: &Path) -> PathBuf {
 /// If the directory cannot be created or the append fails — the caller must NOT
 /// ack the pod on error.
 pub async fn append_receipt(pod_dir: &Path, line: &str) -> Result<(), std::io::Error> {
-    let path = receipt_log_path(pod_dir);
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let mut f = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .await?;
-    f.write_all(line.trim_end().as_bytes()).await?;
-    f.write_all(b"\n").await?;
-    f.flush().await?;
-    f.sync_data().await?;
-    Ok(())
+    // One O_APPEND write per receipt, synced: see `nucleus_jsonl` for the tearing
+    // this replaced.
+    nucleus_jsonl::append_line_async(
+        receipt_log_path(pod_dir),
+        line.to_owned(),
+        nucleus_jsonl::Durability::Synced,
+    )
+    .await
 }
 
 #[cfg(test)]

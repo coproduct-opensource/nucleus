@@ -26,6 +26,7 @@ local-driver = []
 otel = ["dep:nucleus-otel-bootstrap"]
 
 [dependencies]
+nucleus-jsonl = { path = "../nucleus-jsonl", version = "1.0.0", features = ["async"] }
 axum = { workspace = true }
 clap = { workspace = true }
 http-body-util = "0.1"
