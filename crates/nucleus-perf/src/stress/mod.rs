@@ -69,6 +69,10 @@ pub struct Args {
     /// `--mode hyper` only: how many programs, from consecutive seeds.
     #[arg(long, default_value_t = 20)]
     pub trials: u64,
+    /// `--mode hyper` only: whether the pod declares the local web server as an
+    /// egress host (`declared`) or declares none (`open`).
+    #[arg(long, value_enum, default_value = "declared")]
+    pub hosts: hyper::Hosts,
     /// On a violation, write every call of the history here (one line each:
     /// invoke, return, op, status, code) so the counterexample can be analysed —
     /// a concurrent failure does not reproduce on demand.

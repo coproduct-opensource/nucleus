@@ -7,9 +7,15 @@
 #
 #  Uninhabitable state analysis:
 #   - Private data: read_files=low_risk (present)
-#   - Untrusted content: web_search=low_risk, web_fetch=low_risk (present)
-#   - Exfiltration: git_push=never, run_bash=never, create_pr=never (absent)
-#   => Two of three components. No exfil vectors, safe by construction.
+#   - Untrusted content: web_search=low_risk, web_fetch=low_risk (present), and
+#     any workspace file the principal did not write (README/AGENTS.md injection)
+#   - Exfiltration: git_push=never, run_bash=never, create_pr=never, but
+#     web_fetch/web_search ARE a vector: the agent chooses the URL, and a query
+#     string carries whatever it has read (sink_max_conf_for admits Internal).
+#   => Not safe by construction. What bounds the web vector is the host: a host
+#      declared in network.dns_allow may receive workspace-derived data. With no
+#      allowlist, once the session has read private data, an undeclared host
+#      needs a human approval (`web_egress <host>:<port>`; web_fetch_policy::admit_host).
 
 name: research-web
 description: "Web research — read files, search/fetch web, no writes or execution"

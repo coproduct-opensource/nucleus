@@ -18,6 +18,10 @@
 //!   content is in the session — so a read followed by a first fetch is expected to
 //!   leak, and this instantiation measures that window rather than a claim.
 //!
+//!   With `--hosts open` (no allowlist) the window is closed: once the session
+//!   holds private data, an undeclared host needs a human decision
+//!   (`web_fetch_policy::admit_host`), so `--high files --hosts open` must hold.
+//!
 //! Equal lengths across each pair: a size difference is a channel outside the
 //! termination-insensitive stance, so it is excluded rather than tested by accident.
 
@@ -27,6 +31,17 @@ use anyhow::{Context, Result};
 
 use super::mock_web::MockWeb;
 use super::{Args, Rng};
+
+/// Which hosts the pod declares for egress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Hosts {
+    /// `network.dns_allow` names the local web server: sending workspace-derived
+    /// data there is the principal's declared choice.
+    Declared,
+    /// No allowlist. After a private read, an undeclared host needs a human, so
+    /// `--high files` must hold.
+    Open,
+}
 
 /// Which input is high.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -94,7 +109,10 @@ fn run_once(a: &Args, high: High, steps: &[Step], variant: usize) -> Result<Obse
         proxy_bin: &a.proxy_bin,
         work_dir: &work,
         lattice: super::trifecta_lattice()?,
-        network: serde_json::json!({ "dns_allow": [web.addr.to_string()] }),
+        network: match a.hosts {
+            Hosts::Declared => serde_json::json!({ "dns_allow": [web.addr.to_string()] }),
+            Hosts::Open => serde_json::json!({}),
+        },
         duration_secs: 600,
         certificate: None,
     })

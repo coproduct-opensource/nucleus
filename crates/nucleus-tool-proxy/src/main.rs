@@ -3451,7 +3451,9 @@ async fn web_fetch(
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("web_fetch {}", url_str));
 
-        if !policy_allows && !state.approvals.consume("web_fetch") {
+        // One binding for the name a human approves and the name spent.
+        let approval_key = format!("web_fetch {}", url_str);
+        if !policy_allows && !state.approvals.consume(&approval_key) {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: url_str.clone(),
@@ -3465,7 +3467,7 @@ async fn web_fetch(
                 warn!(error = %e, "verdict recording failed -- audit gap");
             }
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                operation: format!("web_fetch {}", url_str),
+                operation: approval_key,
             }));
         }
     }
@@ -3474,14 +3476,46 @@ async fn web_fetch(
     let url =
         url::Url::parse(&url_str).map_err(|e| ApiError::WebFetch(format!("invalid URL: {e}")))?;
 
-    // Check DNS allow list (if configured) — shared with MCP path
+    // Host admission — shared with MCP path. The session's confidentiality ceiling
+    // decides whether it holds private data, honoring declassification scopes.
     {
         let host = url
             .host_str()
             .ok_or_else(|| ApiError::WebFetch("URL has no host".into()))?;
         let port = url.port_or_known_default().unwrap_or(443);
-        web_fetch_policy::check_dns_allowlist(&state.dns_allow, host, port)
-            .map_err(ApiError::DnsNotAllowed)?;
+        let holds_private = state
+            .flow_graph
+            .lock()
+            .await
+            .effective_exfiltration_check(
+                Operation::WebFetch,
+                nucleus_ifc_kernel::ConfLevel::Public,
+            )
+            .is_denied();
+        match web_fetch_policy::admit_host(&state.dns_allow, host, port, holds_private)
+            .map_err(ApiError::DnsNotAllowed)?
+        {
+            web_fetch_policy::HostAdmission::Declared | web_fetch_policy::HostAdmission::Open => {}
+            web_fetch_policy::HostAdmission::NeedsApproval(key) => {
+                if !state.approvals.consume(&key) {
+                    if let Err(e) = sink.record(VerdictContext {
+                        operation,
+                        subject: url_str.clone(),
+                        outcome: VerdictOutcome::Deny {
+                            reason: "approval_required".to_string(),
+                        },
+                        actor: actor.clone(),
+                        policy_rule: None,
+                        extensions: BTreeMap::new(),
+                    }) {
+                        warn!(error = %e, "verdict recording failed -- audit gap");
+                    }
+                    return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                        operation: key,
+                    }));
+                }
+            }
+        }
     }
 
     // Check URL allow list (if configured) — shared with MCP path
@@ -3685,7 +3719,9 @@ async fn glob_search(
     if policy.requires_approval(Operation::GlobSearch) {
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("glob {}", req.pattern));
-        if !policy_allows && !state.approvals.consume("glob_search") {
+        // One binding for the name a human approves and the name spent.
+        let approval_key = format!("glob {}", req.pattern);
+        if !policy_allows && !state.approvals.consume(&approval_key) {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.pattern.clone(),
@@ -3699,7 +3735,7 @@ async fn glob_search(
                 warn!(error = %e, "verdict recording failed -- audit gap");
             }
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                operation: format!("glob {}", req.pattern),
+                operation: approval_key,
             }));
         }
     }
@@ -3852,7 +3888,9 @@ async fn grep_search(
     if policy.requires_approval(Operation::GrepSearch) {
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("grep {}", req.pattern));
-        if !policy_allows && !state.approvals.consume("grep_search") {
+        // One binding for the name a human approves and the name spent.
+        let approval_key = format!("grep {}", req.pattern);
+        if !policy_allows && !state.approvals.consume(&approval_key) {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.pattern.clone(),
@@ -3866,7 +3904,7 @@ async fn grep_search(
                 warn!(error = %e, "verdict recording failed -- audit gap");
             }
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                operation: format!("grep {}", req.pattern),
+                operation: approval_key,
             }));
         }
     }
@@ -4061,7 +4099,9 @@ async fn web_search(
             auth_ctx.as_ref(),
             &format!("web_search {}", req.query),
         );
-        if !policy_allows && !state.approvals.consume("web_search") {
+        // One binding for the name a human approves and the name spent.
+        let approval_key = format!("web_search {}", req.query);
+        if !policy_allows && !state.approvals.consume(&approval_key) {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.query.clone(),
@@ -4075,7 +4115,7 @@ async fn web_search(
                 warn!(error = %e, "verdict recording failed -- audit gap");
             }
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                operation: format!("web_search {}", req.query),
+                operation: approval_key,
             }));
         }
     }
