@@ -2066,5 +2066,9 @@ impl Default for FlowGraph {
 mod tests;
 
 #[cfg(test)]
+#[path = "flow_graph_walk.rs"]
+mod walk;
+
+#[cfg(test)]
 #[path = "flow_graph_quarantine_tests.rs"]
 mod quarantine_tests;
