@@ -17,7 +17,6 @@ use nucleus_client::drand::{DrandConfig, DrandFailMode};
 #[cfg(target_os = "linux")]
 use nucleus_spec::NetworkSpec;
 use nucleus_spec::PodSpec;
-use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 #[cfg(any(feature = "local-driver", target_os = "linux"))]
 use tokio::process::Command;
@@ -39,6 +38,7 @@ mod guest_diagnosis;
 mod http_serve;
 mod identity;
 mod image_identity;
+mod keys;
 mod lockdown;
 mod mediation;
 mod mediation_receipt_collector;
@@ -48,6 +48,7 @@ mod pod_authority;
 mod pod_boot_identity;
 mod pod_caller_identity;
 mod pod_receipt;
+mod pod_view;
 mod production_confinement;
 mod workload_api_protocol;
 mod workload_api_vsock;
@@ -426,7 +427,10 @@ struct NodeState {
     container_pool: Option<Arc<Semaphore>>,
     /// Docker client (initialized at startup when container driver is active).
     docker: Option<Arc<bollard::Docker>>,
-    /// Trust gate configuration for reputation-scoped sandboxes.
+    /// Execution-receipt reporting config: the trust API base URL, the
+    /// executor identity and the role-separated keys that sign receipts.
+    /// Nothing here scopes a sandbox — the reputation lookup that once did was
+    /// deleted in #2512.
     trust_gate: trust_gate::TrustGateConfig,
     /// Per-pod certificate authority: proof of caller authority at
     /// pod-create, budget conserved across spawn (pod_authority.rs).
@@ -533,52 +537,7 @@ struct ContainerPod {
     cached_exit: Mutex<Option<PodState>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PodState {
-    Running,
-    Exited { code: Option<i32> },
-    Error { message: String },
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct PodInfo {
-    id: Uuid,
-    name: Option<String>,
-    created_at_unix: u64,
-    state: PodState,
-    proxy_addr: Option<String>,
-    labels: BTreeMap<String, String>,
-    /// The pod that created this one (its lineage parent), or `null` for a
-    /// node/orchestrator-created top-level pod. Surfaced because it is the fact
-    /// the management API's cross-pod scoping (`pod_api::caller_may_manage`) reads:
-    /// an operator can see the lineage the filter enforces, and a running-node
-    /// test can assert the create path recorded it. Not agent-controlled — the
-    /// node establishes it from the authenticated caller at creation.
-    /// Explicit null distinguishes a root from a node that does not report lineage.
-    parent_pod_id: Option<Uuid>,
-    /// The verified proof-carrying posture (`<posture>:verified`), present only
-    /// when the pod carried a `dlc_posture` claim that passed admission against
-    /// the host-measured rootfs and the trusted-posture registry. Absent means
-    /// the pod made no such claim — a pod whose claim FAILED never reaches this
-    /// list, because admission refused it. See `posture.rs`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    posture: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct CreatePodResponse {
-    id: Uuid,
-    proxy_addr: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreatePodRequest {
-    #[serde(default)]
-    spec: Option<PodSpec>,
-    #[serde(default)]
-    yaml: Option<String>,
-}
+pub(crate) use pod_view::{CreatePodRequest, CreatePodResponse, PodInfo, PodState};
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
@@ -746,7 +705,7 @@ async fn main() -> Result<(), ApiError> {
             std::sync::Arc::new(k)
         },
         proxy_approval_secret: args.proxy_approval_secret.clone(),
-        approval_signer: std::sync::Arc::new(trust_gate::load_or_create_approval_signing_key(
+        approval_signer: std::sync::Arc::new(keys::load_or_create_approval_signing_key(
             &args.state_dir,
         )),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
@@ -1143,12 +1102,10 @@ async fn create_pod_internal(
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
 
-    // ── Backend clamp, then the trust gate. Since #2438 the gate only OBSERVES
-    // reputation; what the pod MAY do comes from the certificate below. ──────
+    // ── Backend clamp. The reputation lookup that used to run here was
+    // deleted in #2512: it wrote labels and authorised nothing, and what a pod
+    // MAY do comes from the certificate below. ───────────────────────────────
     driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
-    if state.trust_gate.is_enabled() {
-        trust_gate::observe(&state.trust_gate, &mut spec, &state.http_client).await;
-    }
 
     let pod_dir = state.state_dir.join("pods").join(id.to_string());
     tokio::fs::create_dir_all(&pod_dir).await?;

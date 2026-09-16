@@ -1,34 +1,60 @@
-//! Trust Gate — verifies agent attestations against the Coproduct Trust API
-//! and records the resulting reputation on the pod. **Observational only.**
+//! Execution-receipt reporting to the external trust API.
 //!
-//! Reputation is not a capability check (#2438). What a pod MAY do is decided
-//! once, from the caller's certificate, in `pod_authority::PodAuthority::admit`;
-//! this module never reads or writes the pod's policy. It also owns the node's
-//! role-separated signing keys and the executor's receipt reporting, which
-//! are unrelated to reputation and unaffected by that change.
+//! **There is no reputation here any more (#2512).** This module used to look
+//! an agent up against the Coproduct Trust API, map a grade to an f64
+//! discount, and record the result on the pod. All of that is deleted. What
+//! remains is receipt reporting: after a pod exits, the node POSTs a signed
+//! execution receipt so the receipt is externally anchored.
 //!
-//! # Flow
+//! # What was deleted, and what had already gone
 //!
-//! ```text
-//! PodSpec arrives (create_pod_internal, before admission)
-//!   → extract agent identity from metadata labels
-//!   → call POST trust_api_url/api/trust/verify (if attestation JWT present)
-//!   → or call POST trust_api_url/api/trust/discount (identity lookup)
-//!   → map bracket → bracket_to_profile()
-//!   → record bracket / profile / score as metadata labels; log
-//!   → the spec's policy is untouched
-//! ```
+//! #2512 describes `apply_trust_enforcement` as narrowing `spec.spec.policy`
+//! before `PodAuthority::admit` — "the last live economics→authority path".
+//! **That path was already closed**, by #2438 in commit `0aa77e0a`; the
+//! function did not exist when this change was written. What was still here
+//! was the OBSERVATIONAL half: an external HTTP lookup that wrote three
+//! `trust.coproduct.one/*` labels onto the spec and nothing else. It authorised
+//! nothing, and it was a standing invitation to re-wire — a reputation number
+//! already on the spec is one edit away from being read by something that
+//! matters.
+//!
+//! (The label names are not spelled here on purpose.
+//! `test_trust_gate_has_no_authorization_path` greps this file's production
+//! half for them, and a doc comment that quoted them would red the gate. That
+//! is the gate working, not a false positive: the cheapest way to keep a
+//! deleted path deleted is to make its vocabulary unwritable here.)
+//!
+//! So this change removes a hazard, not a live vulnerability, and saying which
+//! is the difference between a fix and a cleanup wearing a fix's label.
+//!
+//! # The keys moved out
+//!
+//! The node's four role-separated signing keys now live in [`crate::keys`].
+//! They were never reputation; they were here because this file was where the
+//! node's `state_dir` handling accreted, and `pod_authority` reaching into a
+//! module named "trust gate" for the certificate root was the clearest sign
+//! the boundary was wrong. Moving them is also what made the deletion above
+//! possible: the file could not go while it held the certificate anchor.
+//!
+//! # What this module does NOT do
+//!
+//! It does not decide, narrow, or influence what any pod may do. Authority is
+//! decided once, from the caller's certificate, in
+//! `pod_authority::PodAuthority::admit`. `test_trust_gate_has_no_authorization_path`
+//! pins that structurally, and is kept even though the reputation path it was
+//! written against is gone — it now guards against the path coming back.
 
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::keys::{
+    generate_signing_key, load_or_create_signing_key, load_or_create_task_issuer_signing_key,
+};
 use base64::Engine as _;
-use ed25519_dalek::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
 use ed25519_dalek::{Signer as _, SigningKey};
 use hmac::{Hmac, Mac, digest::KeyInit};
-use nucleus_spec::PodSpec;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::Sha256;
 use tracing::{debug, info, warn};
 
@@ -37,8 +63,6 @@ use tracing::{debug, info, warn};
 pub struct TrustGateConfig {
     /// URL of the Coproduct Trust API (e.g., "https://trust.coproduct.one")
     pub trust_api_url: String,
-    /// Default bracket for agents without attestations
-    pub default_bracket: String,
     /// HMAC-SHA256 key for signing X-Nucleus-Signature on receipt POSTs.
     /// Must match TRUST_RECEIPT_SECRET on the trust-service side.
     /// When None, report_receipt() skips signing and the server will reject
@@ -65,8 +89,7 @@ pub struct TrustGateConfig {
 impl Default for TrustGateConfig {
     fn default() -> Self {
         Self {
-            trust_api_url: String::new(),     // Disabled by default
-            default_bracket: "C".to_string(), // Adequate — tenant profile
+            trust_api_url: String::new(), // Disabled by default
             receipt_secret: None,
             executor_signing_key: Arc::new(generate_signing_key()),
             executor_id: format!("nucleus-executor/{}", uuid_hex()),
@@ -88,157 +111,6 @@ fn uuid_hex() -> String {
             .to_le_bytes(),
     );
     hex::encode(&hasher.finalize()[..8])
-}
-
-/// Filename (under `state_dir`) holding the persisted executor signing key.
-const EXECUTOR_KEY_FILE: &str = "executor_signing_key.der";
-
-/// Filename (under `state_dir`) holding the persisted **task-issuer** signing
-/// key — the root that signs live-path session capability tokens. DISTINCT from
-/// [`EXECUTOR_KEY_FILE`] so the two trust roles never share a key.
-const TASK_ISSUER_KEY_FILE: &str = "task_issuer_signing_key.der";
-
-/// Filename (under `state_dir`) holding the persisted **approval** signing
-/// key — the key whose signatures the guest tool-proxy accepts on
-/// `/v1/approve`, verified against the PUBLIC half delivered as
-/// `nucleus.approval_pubkeys`. DISTINCT from the other two role keys: the
-/// approval authority must not double as the executor's receipt identity or
-/// the task-token root.
-const APPROVAL_SIGNING_KEY_FILE: &str = "approval_signing_key.der";
-
-/// Filename (under `state_dir`) holding the persisted **certificate-root**
-/// signing key — the trust anchor every pod's `LatticeCertificate` chains
-/// to (`pod_authority`). DISTINCT from the three role keys above: the
-/// authority that says what a pod MAY do must not double as the executor's
-/// receipt identity, the task-token root, or the approval authority.
-const CERT_ROOT_KEY_FILE: &str = "cert_root_signing_key.der";
-
-/// Generate a fresh Ed25519 signing key from the OS CSPRNG.
-///
-/// Samples 32 raw bytes via `rand_core 0.6`'s `fill_bytes` and feeds
-/// `SigningKey::from_bytes` — equivalent to `SigningKey::generate(&mut rng)` but
-/// avoids the cross-version `CryptoRng`/`rand_core` trait-identity mismatch that
-/// breaks `generate` when multiple rand_core majors coexist (dalek 3 tracks a
-/// newer rand_core than the 0.6 we depend on). Mirrors the pattern in
-/// `nucleus-verifier-service::signing::VerifierSigner::random`.
-fn generate_signing_key() -> SigningKey {
-    use rand_core::RngCore as _;
-    let mut seed = [0u8; 32];
-    rand_core::OsRng.fill_bytes(&mut seed);
-    SigningKey::from_bytes(&seed)
-}
-
-/// Load the per-executor Ed25519 signing key from `state_dir`, creating and
-/// persisting a fresh one on first run.
-///
-/// Without persistence, every node restart mints a brand-new identity, which
-/// silently invalidates any prior `register_executor_pubkey` enrollment — the
-/// threat-model claim that registration survives an HMAC compromise is only
-/// true if the executor's signing key is stable across restarts (#1630).
-///
-/// The key is stored as PKCS#8 DER (same encoding as
-/// [`nucleus_lineage::LocalIssuer`]) with `0o400` permissions on Unix. A
-/// missing file is created; a present-but-unreadable file is logged and
-/// replaced rather than crashing the node (fail-open on *availability*, not on
-/// identity — a corrupt key was never a valid enrollment anyway).
-pub fn load_or_create_signing_key(state_dir: &Path) -> SigningKey {
-    load_or_create_key_file(state_dir, EXECUTOR_KEY_FILE, "executor signing key")
-}
-
-/// Load the dedicated **task-issuer** Ed25519 signing key from `state_dir`,
-/// creating and persisting a fresh one on first run.
-///
-/// Uses the identical persistence discipline as
-/// [`load_or_create_signing_key`] (PKCS#8 DER, `0o400`, fail-open on
-/// availability) but a DISTINCT file ([`TASK_ISSUER_KEY_FILE`]). This is the
-/// root that signs live-path session capability tokens; keeping it separate
-/// from the executor key enforces role separation — a compromise or rotation
-/// of one identity does not implicate the other, and the executor key (which
-/// is also the executor's receipt identity) never doubles as a token root.
-pub fn load_or_create_task_issuer_signing_key(state_dir: &Path) -> SigningKey {
-    load_or_create_key_file(state_dir, TASK_ISSUER_KEY_FILE, "task issuer signing key")
-}
-
-/// Load the dedicated **approval** Ed25519 signing key from `state_dir`,
-/// creating and persisting a fresh one on first run.
-///
-/// Same persistence discipline as the other role keys, and persistence
-/// matters MORE here: a running pod verifies approvals against the public key
-/// it booted with, so a node that minted a fresh key on every restart could
-/// no longer approve anything for pods launched before the restart.
-pub fn load_or_create_approval_signing_key(state_dir: &Path) -> SigningKey {
-    load_or_create_key_file(state_dir, APPROVAL_SIGNING_KEY_FILE, "approval signing key")
-}
-
-/// Load the dedicated **certificate-root** Ed25519 signing key from
-/// `state_dir`, creating and persisting a fresh one on first run.
-///
-/// Persistence is load-bearing: every running pod's certificate chains to
-/// this key, and a pod's sub-pod requests are verified against it, so a node
-/// that minted a fresh root on every restart would orphan every chain it had
-/// issued.
-pub fn load_or_create_cert_root_signing_key(state_dir: &Path) -> SigningKey {
-    load_or_create_key_file(
-        state_dir,
-        CERT_ROOT_KEY_FILE,
-        "certificate root signing key",
-    )
-}
-
-/// Shared implementation for the persisted per-node Ed25519 keys. `filename` is
-/// the basename under `state_dir`; `label` is used only in log lines.
-fn load_or_create_key_file(state_dir: &Path, filename: &str, label: &str) -> SigningKey {
-    let path = state_dir.join(filename);
-
-    if path.exists() {
-        match std::fs::read(&path) {
-            Ok(bytes) => match SigningKey::from_pkcs8_der(&bytes) {
-                Ok(key) => {
-                    debug!(path = %path.display(), "loaded persisted {label}");
-                    return key;
-                }
-                Err(e) => warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "{label} file is unreadable; regenerating"
-                ),
-            },
-            Err(e) => warn!(
-                path = %path.display(),
-                error = %e,
-                "failed to read {label} file; regenerating"
-            ),
-        }
-    }
-
-    let key = generate_signing_key();
-    match key.to_pkcs8_der() {
-        Ok(der) => {
-            if let Err(e) = write_key_file(&path, der.as_bytes()) {
-                warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "failed to persist {label}; identity will not survive restart"
-                );
-            } else {
-                info!(path = %path.display(), "generated and persisted new {label}");
-            }
-        }
-        Err(e) => warn!(error = %e, "failed to PKCS#8-encode {label}; not persisting"),
-    }
-    key
-}
-
-/// Write `bytes` to `path`, restricting permissions to owner-read-only (`0o400`)
-/// on Unix so the private key is not world/group readable.
-fn write_key_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400))?;
-    }
-    Ok(())
 }
 
 /// Derive a stable executor id from the persistent public key, so the id no
@@ -271,8 +143,6 @@ impl TrustGateConfig {
 
         Self {
             trust_api_url: std::env::var("TRUST_API_URL").unwrap_or_default(),
-            default_bracket: std::env::var("TRUST_DEFAULT_BRACKET")
-                .unwrap_or_else(|_| "C".to_string()),
             receipt_secret,
             executor_signing_key: Arc::new(executor_signing_key),
             executor_id,
@@ -285,298 +155,6 @@ impl TrustGateConfig {
         !self.trust_api_url.is_empty()
     }
 }
-
-/// Result of trust verification for a pod.
-#[derive(Debug, Clone, Serialize)]
-pub struct TrustVerification {
-    /// Agent identity used for lookup
-    pub agent_identity: String,
-    /// Attestation bracket (A-F)
-    pub bracket: String,
-    /// Trust profile name derived from bracket (a label, not a policy)
-    pub profile_name: String,
-    /// Continuous reputation score in [0.0, 1.0] when available from the
-    /// discount endpoint. Preserves full precision of the discount_factor
-    /// rather than double-discretizing through bracket → score bracket mapping.
-    /// Falls back to bracket-derived discrete values in
-    /// `record_trust_observation` when None (e.g., when the score was derived
-    /// from an attestation JWT).
-    pub continuous_score: Option<f64>,
-}
-
-/// Response from the trust API discount endpoint.
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct DiscountResponse {
-    discount_factor: f64,
-    reputation_context: ReputationContext,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct ReputationContext {
-    execution_score: f64,
-    reviewer_score: f64,
-    total_completions: u64,
-    total_reviews: u64,
-}
-
-/// Response from the trust API verify endpoint.
-#[derive(Debug, Deserialize)]
-struct VerifyResponse {
-    verified: bool,
-    brackets: Option<Brackets>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Brackets {
-    overall: String,
-}
-
-/// Verify an agent's trust status and return the observation to record.
-///
-/// If the trust API is unreachable or returns an error, falls back to
-/// the default bracket (never blocks execution due to trust API failure).
-#[tracing::instrument(skip_all, fields(boot.stage = "trust_gate.verify"))]
-pub async fn verify_agent_trust(
-    config: &TrustGateConfig,
-    spec: &PodSpec,
-    http_client: &reqwest::Client,
-) -> TrustVerification {
-    // Extract agent identity from pod metadata
-    let agent_identity = extract_agent_identity(spec);
-
-    // Check for attestation JWT in metadata labels
-    let attestation_jwt = spec
-        .metadata
-        .labels
-        .get("trust.coproduct.one/attestation")
-        .cloned();
-
-    let mut continuous_score: Option<f64> = None;
-
-    let bracket = if let Some(jwt) = attestation_jwt {
-        // Verify the attestation JWT
-        match verify_attestation(config, &jwt, http_client).await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(
-                    agent = %agent_identity,
-                    error = %e,
-                    "Trust gate: attestation verification failed, using default"
-                );
-                config.default_bracket.clone()
-            }
-        }
-    } else {
-        // No attestation — look up by identity. Returns (bracket, continuous_score)
-        // so the continuous discount_factor is preserved without double-discretization.
-        match lookup_reputation(config, &agent_identity, http_client).await {
-            Ok((b, score)) => {
-                continuous_score = Some(score);
-                b
-            }
-            Err(e) => {
-                debug!(
-                    agent = %agent_identity,
-                    error = %e,
-                    "Trust gate: reputation lookup failed, using default"
-                );
-                config.default_bracket.clone()
-            }
-        }
-    };
-
-    let profile_name = bracket_to_profile(&bracket).to_string();
-
-    info!(
-        agent = %agent_identity,
-        bracket = %bracket,
-        profile = %profile_name,
-        continuous_score = ?continuous_score,
-        "Trust gate: agent verified"
-    );
-
-    TrustVerification {
-        agent_identity,
-        bracket,
-        profile_name,
-        continuous_score,
-    }
-}
-
-/// Record the trust observation on the PodSpec as metadata labels.
-///
-/// This is the whole of what reputation does to a pod (#2438): the bracket,
-/// the profile name and the score are written as labels for dashboards,
-/// receipts and audit, and logged. **Nothing about the pod's authority is
-/// touched.** What a pod MAY do is decided once, from the caller's
-/// certificate, in `pod_authority::PodAuthority::admit`; a score from an
-/// external service is not a capability check and must never narrow — or,
-/// by being absent, fail to narrow — what that certificate grants.
-pub fn record_trust_observation(verification: &TrustVerification, spec: &mut PodSpec) {
-    // Continuous discount-derived score when available; bracket-derived
-    // otherwise (attestation-JWT paths). Observability only.
-    let reputation_score =
-        verification
-            .continuous_score
-            .unwrap_or(match verification.bracket.as_str() {
-                "A" => 0.95,
-                "B" => 0.82,
-                "C" => 0.65,
-                "D" => 0.45,
-                _ => 0.2,
-            });
-
-    let labels = &mut spec.metadata.labels;
-    labels.insert(
-        "trust.coproduct.one/bracket".to_string(),
-        verification.bracket.clone(),
-    );
-    labels.insert(
-        "trust.coproduct.one/profile".to_string(),
-        verification.profile_name.clone(),
-    );
-    labels.insert(
-        "trust.coproduct.one/reputation-score".to_string(),
-        format!("{reputation_score:.4}"),
-    );
-
-    info!(
-        agent = %verification.agent_identity,
-        bracket = %verification.bracket,
-        profile = %verification.profile_name,
-        score = reputation_score,
-        "Trust gate: reputation observed (not an authorization input)"
-    );
-}
-
-/// Look the agent up and record the observation on the spec. The one call
-/// site is `create_pod_internal`, before admission; the pod's authority is
-/// unaffected.
-pub async fn observe(config: &TrustGateConfig, spec: &mut PodSpec, http_client: &reqwest::Client) {
-    let verification = verify_agent_trust(config, spec, http_client).await;
-    record_trust_observation(&verification, spec);
-}
-
-/// Map attestation bracket to a portcullis trust profile NAME.
-///
-/// Used for logging and metadata labels only. No profile is applied to the
-/// pod (#2438); the name is a coarse summary for dashboards and receipts.
-fn bracket_to_profile(bracket: &str) -> &'static str {
-    match bracket.to_uppercase().as_str() {
-        "A" => "operator",
-        "B" | "C" => "tenant",
-        "D" => "untrusted",
-        _ => "airgapped",
-    }
-}
-
-/// Map discount factor to a continuous reputation score.
-///
-/// The trust API's discount_factor is in [0.5, 1.0] where lower = better.
-/// We invert to [0.0, 1.0] where higher = better for portcullis scoring.
-pub fn discount_to_reputation_score(discount_factor: f64) -> f64 {
-    // discount_factor 0.5 → reputation 1.0 (best)
-    // discount_factor 1.0 → reputation 0.0 (worst)
-    ((1.0 - discount_factor) * 2.0).clamp(0.0, 1.0)
-}
-
-/// Extract agent identity from PodSpec metadata.
-fn extract_agent_identity(spec: &PodSpec) -> String {
-    // Priority: explicit SPIFFE label > agent-id label > namespace/name > "anonymous"
-    spec.metadata
-        .labels
-        .get("spiffe.io/identity")
-        .or_else(|| spec.metadata.labels.get("trust.coproduct.one/agent-id"))
-        .cloned()
-        .unwrap_or_else(|| {
-            let ns = spec.metadata.namespace.as_deref().unwrap_or("default");
-            let name = spec.metadata.name.as_deref().unwrap_or("anonymous");
-            format!("{ns}/{name}")
-        })
-}
-
-/// Verify an attestation JWT against the trust API.
-async fn verify_attestation(
-    config: &TrustGateConfig,
-    jwt: &str,
-    client: &reqwest::Client,
-) -> Result<String, String> {
-    let url = format!("{}/api/trust/verify", config.trust_api_url);
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "attestation_jwt": jwt,
-        }))
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|e| format!("HTTP error: {e}"))?;
-
-    let body: VerifyResponse = resp.json().await.map_err(|e| format!("JSON error: {e}"))?;
-
-    if body.verified {
-        Ok(body
-            .brackets
-            .map(|b| b.overall)
-            .unwrap_or_else(|| config.default_bracket.clone()))
-    } else {
-        Err(body
-            .error
-            .unwrap_or_else(|| "Verification failed".to_string()))
-    }
-}
-
-/// Look up reputation by identity (no attestation JWT available).
-///
-/// Returns `(bracket, continuous_score)` where `continuous_score` is derived
-/// directly from `discount_to_reputation_score(discount_factor)` — preserving
-/// the full continuous resolution of the trust API's discount_factor without
-/// losing precision through a second discretization step.
-async fn lookup_reputation(
-    config: &TrustGateConfig,
-    identity: &str,
-    client: &reqwest::Client,
-) -> Result<(String, f64), String> {
-    let url = format!("{}/api/trust/discount", config.trust_api_url);
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "executor_identity": identity,
-        }))
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|e| format!("HTTP error: {e}"))?;
-
-    let body: DiscountResponse = resp.json().await.map_err(|e| format!("JSON error: {e}"))?;
-
-    // Preserve the continuous reputation score directly from the discount_factor.
-    // The bracket is used only for logging/labels; enforcement uses the continuous score.
-    let continuous_score = discount_to_reputation_score(body.discount_factor);
-
-    // Map discount factor to bracket for backward-compatible labelling.
-    // discount_factor is in [0.5, 1.0] — lower = better reputation.
-    let bracket = if body.discount_factor <= 0.6 {
-        "A" // Exceptional discount = exceptional reputation
-    } else if body.discount_factor <= 0.75 {
-        "B"
-    } else if body.discount_factor <= 0.9 {
-        "C"
-    } else if body.discount_factor <= 0.98 {
-        "D"
-    } else {
-        "F" // No discount = no reputation
-    };
-
-    Ok((bracket.to_string(), continuous_score))
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// RECEIPT BRIDGE — feed execution results back to trust API
-// ═══════════════════════════════════════════════════════════════════════════
 
 /// Execution receipt data to send to the trust API.
 #[derive(Debug, Serialize)]
@@ -595,12 +173,6 @@ pub struct ReceiptReport {
     pub workspace_hash: String,
     /// Hash of audit log tail (integrity proof)
     pub audit_tail_hash: String,
-    /// Trust bracket that was applied to this execution
-    pub trust_bracket: Option<String>,
-    /// Trust profile that scoped the sandbox
-    pub trust_profile: Option<String>,
-    /// Whether the sandbox was reputation-scoped
-    pub attested_execution: bool,
 
     // ── Verified exposure (from McpMediator, not claims) ──────────
     /// Observed exposure legs during execution.
@@ -982,8 +554,6 @@ pub async fn report_receipt(
                 success = report.success,
                 cost = report.cost_usd,
                 tools = report.tool_call_count,
-                bracket = report.trust_bracket.as_deref().unwrap_or("-"),
-                attested = report.attested_execution,
                 "Trust gate: execution receipt reported"
             );
         }
@@ -1013,7 +583,6 @@ pub async fn report_receipt(
                 "audit_tail_hash": report.audit_tail_hash,
                 "tool_call_count": report.tool_call_count,
                 "cost_usd": report.cost_usd,
-                "attested": report.attested_execution,
                 // Verified exposure: from actual sandbox observation, not claims
                 "verified_exposure": {
                     "observed_labels": report.observed_exposure_labels,
@@ -1426,9 +995,6 @@ mod tests {
             tool_call_count: 3,
             workspace_hash: "abc123def456".to_string(),
             audit_tail_hash: "fed654cba321".to_string(),
-            trust_bracket: Some("B".to_string()),
-            trust_profile: Some("tenant".to_string()),
-            attested_execution: true,
             observed_exposure_labels: vec!["NetworkEgress".to_string(), "WriteFiles".to_string()],
             observed_risk_tier: "medium".to_string(),
             uninhabitable_reached: false,
@@ -1593,139 +1159,6 @@ mod tests {
     fn test_config_from_env_defaults() {
         let config = TrustGateConfig::default();
         assert!(!config.is_enabled());
-        assert_eq!(config.default_bracket, "C");
-    }
-
-    // ── Executor signing-key persistence (#1630) ──────────────────────────
-
-    #[test]
-    fn test_signing_key_persists_across_calls() {
-        // The core property: a "restart" (a second load from the same
-        // state_dir) must yield the SAME executor identity.
-        let dir = tempfile::tempdir().unwrap();
-        let k1 = load_or_create_signing_key(dir.path());
-        let k2 = load_or_create_signing_key(dir.path());
-        assert_eq!(
-            k1.verifying_key().as_bytes(),
-            k2.verifying_key().as_bytes(),
-            "executor signing key must be stable across restarts"
-        );
-        assert!(dir.path().join(EXECUTOR_KEY_FILE).exists());
-    }
-
-    /// Role separation: the task-issuer key must be a DIFFERENT key from the
-    /// executor key in the same state_dir (distinct files), yet each must be
-    /// stable across restarts. Reusing the executor key as the token root would
-    /// conflate the executor identity with the capability-token issuer.
-    #[test]
-    fn test_task_issuer_key_is_distinct_from_executor_and_persists() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let exec = load_or_create_signing_key(dir.path());
-        let issuer = load_or_create_task_issuer_signing_key(dir.path());
-        assert_ne!(
-            exec.verifying_key().as_bytes(),
-            issuer.verifying_key().as_bytes(),
-            "task-issuer key must not equal the executor key (role separation)"
-        );
-
-        // Distinct files on disk.
-        assert!(dir.path().join(EXECUTOR_KEY_FILE).exists());
-        assert!(dir.path().join(TASK_ISSUER_KEY_FILE).exists());
-
-        // Stable across a "restart" (second load from the same dir).
-        let issuer2 = load_or_create_task_issuer_signing_key(dir.path());
-        assert_eq!(
-            issuer.verifying_key().as_bytes(),
-            issuer2.verifying_key().as_bytes(),
-            "task-issuer key must be stable across restarts"
-        );
-    }
-
-    /// `from_env` provisions BOTH keys and they are role-separated.
-    #[test]
-    fn test_from_env_provisions_role_separated_task_issuer_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = TrustGateConfig::from_env(dir.path());
-        assert_ne!(
-            config.executor_signing_key.verifying_key().as_bytes(),
-            config.task_issuer_signing_key.verifying_key().as_bytes(),
-            "from_env must provision a task-issuer key distinct from the executor key"
-        );
-    }
-
-    #[test]
-    fn test_signing_key_distinct_per_state_dir() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
-        let ka = load_or_create_signing_key(a.path());
-        let kb = load_or_create_signing_key(b.path());
-        assert_ne!(
-            ka.verifying_key().as_bytes(),
-            kb.verifying_key().as_bytes(),
-            "separate state dirs must have independent identities"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_persisted_key_is_owner_read_only() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        load_or_create_signing_key(dir.path());
-        let mode = std::fs::metadata(dir.path().join(EXECUTOR_KEY_FILE))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o400, "private key must be mode 0400");
-    }
-
-    #[test]
-    fn test_corrupt_key_file_regenerates_without_panic() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(EXECUTOR_KEY_FILE), b"not valid pkcs8 der").unwrap();
-        // Must not panic; must produce a usable, persisted key.
-        let k = load_or_create_signing_key(dir.path());
-        let reloaded = load_or_create_signing_key(dir.path());
-        assert_eq!(
-            k.verifying_key().as_bytes(),
-            reloaded.verifying_key().as_bytes(),
-            "after regeneration the new key must itself persist"
-        );
-    }
-
-    #[test]
-    fn test_executor_id_from_key_is_deterministic_and_keyed() {
-        let dir = tempfile::tempdir().unwrap();
-        let key = load_or_create_signing_key(dir.path());
-        let id1 = executor_id_from_key(&key);
-        let id2 = executor_id_from_key(&key);
-        assert_eq!(id1, id2, "id must be a deterministic function of the key");
-        assert!(id1.starts_with("nucleus-executor/"));
-        // A different key yields a different id.
-        let other = tempfile::tempdir().unwrap();
-        let id_other = executor_id_from_key(&load_or_create_signing_key(other.path()));
-        assert_ne!(id1, id_other);
-    }
-
-    #[test]
-    fn test_discount_to_reputation_score() {
-        // Best discount (0.5) → highest reputation (1.0)
-        assert!((discount_to_reputation_score(0.5) - 1.0).abs() < 0.01);
-        // No discount (1.0) → zero reputation
-        assert!((discount_to_reputation_score(1.0) - 0.0).abs() < 0.01);
-        // Middle discount (0.75) → middle reputation (0.5)
-        assert!((discount_to_reputation_score(0.75) - 0.5).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_bracket_to_profile_mapping() {
-        assert_eq!(bracket_to_profile("A"), "operator");
-        assert_eq!(bracket_to_profile("B"), "tenant");
-        assert_eq!(bracket_to_profile("C"), "tenant");
-        assert_eq!(bracket_to_profile("D"), "untrusted");
-        assert_eq!(bracket_to_profile("F"), "airgapped");
-        assert_eq!(bracket_to_profile("Z"), "airgapped");
     }
 
     #[test]
@@ -1763,7 +1196,6 @@ mod tests {
         let secret_bytes = b"my-receipt-secret-32-bytes-long!!";
         let config = TrustGateConfig {
             trust_api_url: "https://trust.example.com".to_string(),
-            default_bracket: "C".to_string(),
             receipt_secret: Some(Arc::new(secret_bytes.to_vec())),
             ..Default::default()
         };
@@ -1888,91 +1320,30 @@ mod tests {
         assert!(compute_session_score(&best) <= 1.0);
     }
 
-    fn spec_with_profile(name: &str) -> PodSpec {
-        use nucleus_spec::{PodSpecInner, PolicySpec};
-        use std::path::PathBuf;
-        PodSpec::new(PodSpecInner {
-            work_dir: PathBuf::from("/workspace"),
-            timeout_seconds: 3600,
-            policy: PolicySpec::Profile {
-                name: name.to_string(),
-            },
-            budget_model: None,
-            resources: None,
-            network: None,
-            image: None,
-            credentialed_egress: Vec::new(),
-            workload: None,
-            vsock: None,
-            seccomp: None,
-            cgroup: None,
-            audit_sink: None,
-            credentials: None,
-        })
-    }
-
-    fn verified_as(bracket: &str, profile: &str, score: Option<f64>) -> TrustVerification {
-        TrustVerification {
-            agent_identity: "spiffe://nucleus/test".to_string(),
-            bracket: bracket.to_string(),
-            profile_name: profile.to_string(),
-            continuous_score: score,
-        }
-    }
-
-    /// The observation is recorded as labels: bracket, profile and score.
-    /// There is no `enforced` label any more — there is nothing to enforce.
     #[test]
-    fn test_record_trust_observation_writes_labels() {
-        let mut spec = spec_with_profile("default");
-        record_trust_observation(&verified_as("D", "untrusted", None), &mut spec);
-
-        let labels = &spec.metadata.labels;
-        assert_eq!(
-            labels
-                .get("trust.coproduct.one/bracket")
-                .map(String::as_str),
-            Some("D")
-        );
-        assert_eq!(
-            labels
-                .get("trust.coproduct.one/profile")
-                .map(String::as_str),
-            Some("untrusted")
-        );
-        assert_eq!(
-            labels
-                .get("trust.coproduct.one/reputation-score")
-                .map(String::as_str),
-            Some("0.4500")
-        );
-        assert!(
-            !labels.contains_key("trust.coproduct.one/enforced"),
-            "no enforcement label: reputation is observed, not enforced (#2438)"
+    fn test_from_env_provisions_role_separated_task_issuer_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = TrustGateConfig::from_env(dir.path());
+        assert_ne!(
+            config.executor_signing_key.verifying_key().as_bytes(),
+            config.task_issuer_signing_key.verifying_key().as_bytes(),
+            "from_env must provision a task-issuer key distinct from the executor key"
         );
     }
 
-    /// #2438: the lowest reputation against the most permissive profile leaves
-    /// the policy exactly as requested. Before this change a score of 0.45
-    /// against `local_dev` rewrote the policy to an inline lattice with
-    /// `write_files = Never`; authority now comes only from the certificate
-    /// (`pod_authority`), so a score can neither narrow nor fail to narrow it.
     #[test]
-    fn test_reputation_never_narrows_the_policy() {
-        use nucleus_spec::PolicySpec;
-
-        let mut spec = spec_with_profile("local_dev");
-        record_trust_observation(&verified_as("F", "airgapped", Some(0.0)), &mut spec);
-
-        match &spec.spec.policy {
-            PolicySpec::Profile { name } => assert_eq!(name, "local_dev"),
-            PolicySpec::Inline { .. } => panic!("reputation rewrote the policy"),
-        }
+    fn test_executor_id_from_key_is_deterministic_and_keyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = load_or_create_signing_key(dir.path());
+        let id1 = executor_id_from_key(&key);
+        let id2 = executor_id_from_key(&key);
+        assert_eq!(id1, id2, "id must be a deterministic function of the key");
+        assert!(id1.starts_with("nucleus-executor/"));
+        // A different key yields a different id.
+        let other = tempfile::tempdir().unwrap();
+        let id_other = executor_id_from_key(&load_or_create_signing_key(other.path()));
+        assert_ne!(id1, id_other);
     }
-
-    /// Structural pin for #2438's acceptance criterion: no production code in
-    /// this module assigns the pod's policy, consults a trust profile, or
-    /// clamps isolation. Only the test half of the file may name these.
     #[test]
     fn test_trust_gate_has_no_authorization_path() {
         let src = include_str!("trust_gate.rs");
@@ -1980,34 +1351,26 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("the module has a test half");
+        // The first four predate #2512 and guarded the OBSERVATIONAL gate
+        // against regaining an authorization path. The rest are #2512's: the
+        // reputation lookup itself is gone, and these names are how it would
+        // come back. A pin that only forbids the old enforcement would let the
+        // whole lookup return and call itself observational again.
         for needle in [
             "spec.spec.policy =",
             "TrustProfile",
             "require_isolation",
             "TRUST_GATE_ENFORCE",
+            "api/trust/discount",
+            "api/trust/verify",
+            "reputation-score",
+            "discount_factor",
+            "bracket",
         ] {
             assert!(
                 !production.contains(needle),
                 "trust_gate.rs must not contain {needle:?} outside its tests"
             );
         }
-    }
-
-    /// Verify continuous_score from discount lookup bypasses bracket discretization.
-    #[test]
-    fn test_continuous_score_bypasses_bracket_discretization() {
-        // A discount_factor of 0.85 → continuous_score = (1 - 0.85) * 2 = 0.30
-        // That's bracket D in the lookup (0.75 < 0.85 ≤ 0.90), which would
-        // naively map to score 0.45. The continuous path preserves 0.30.
-        let continuous = discount_to_reputation_score(0.85);
-        assert!((continuous - 0.30).abs() < 0.01, "continuous: {continuous}");
-
-        // Bracket D hardcoded score would be 0.45 — significantly different.
-        // This test documents the precision gain from using the continuous path.
-        let bracket_d_score = 0.45_f64;
-        assert!(
-            (continuous - bracket_d_score).abs() > 0.10,
-            "continuous score {continuous} should differ meaningfully from bracket-D score {bracket_d_score}"
-        );
     }
 }
