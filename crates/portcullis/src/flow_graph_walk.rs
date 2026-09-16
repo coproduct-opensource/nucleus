@@ -110,6 +110,14 @@ struct Seen {
     labels_joined: usize,
 }
 
+/// The model's vector slot for a live id (ids are 1-based). An id with no slot maps
+/// past the end, so indexing it panics exactly as an out-of-range id would.
+fn slot(id: NodeId) -> usize {
+    id.checked_sub(1)
+        .and_then(|i| usize::try_from(i).ok())
+        .unwrap_or(usize::MAX)
+}
+
 impl Model {
     fn len(&self) -> NodeId {
         self.parents.len() as NodeId
@@ -129,10 +137,10 @@ impl Model {
 
     fn ancestors(&self, id: NodeId) -> BTreeSet<NodeId> {
         let mut out = BTreeSet::new();
-        let mut stack: Vec<NodeId> = self.parents[(id - 1) as usize].clone();
+        let mut stack: Vec<NodeId> = self.parents[slot(id)].clone();
         while let Some(p) = stack.pop() {
             if out.insert(p) {
-                stack.extend(self.parents[(p - 1) as usize].iter().copied());
+                stack.extend(self.parents[slot(p)].iter().copied());
             }
         }
         out
@@ -166,7 +174,7 @@ impl Model {
     fn joined(&self, intrinsic: IFCLabel, parents: &[NodeId]) -> IFCLabel {
         parents
             .iter()
-            .fold(intrinsic, |acc, p| acc.join(self.labels[(*p - 1) as usize]))
+            .fold(intrinsic, |acc, p| acc.join(self.labels[slot(*p)]))
     }
 
     fn add(&mut self, parents: Vec<NodeId>, label: IFCLabel) -> NodeId {
@@ -275,7 +283,12 @@ fn run(cmds: &[Cmd]) -> Result<Seen, TestCaseError> {
         }
 
         // The whole observable structure, after every step.
-        prop_assert_eq!(g.len(), m.len() as usize, "step {}: len", step);
+        prop_assert_eq!(
+            NodeId::try_from(g.len()).ok(),
+            Some(m.len()),
+            "step {}: len",
+            step
+        );
         let log: Vec<(NodeId, u64)> = g
             .quarantine_releases()
             .iter()
@@ -300,7 +313,7 @@ fn run(cmds: &[Cmd]) -> Result<Seen, TestCaseError> {
                 .ok_or_else(|| TestCaseError::fail(format!("node {id} missing")))?;
             prop_assert_eq!(
                 node.label,
-                m.labels[(id - 1) as usize],
+                m.labels[slot(id)],
                 "step {}: label of {}",
                 step,
                 id
