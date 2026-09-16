@@ -97,6 +97,24 @@ pub fn canonical_id(vk: &VerifyingKey) -> String {
     hex::encode(vk.to_bytes())
 }
 
+/// The inverse of [`canonical_id`]: recover the verifying key an identity was
+/// derived from, or `None` if the string is not one this service minted.
+///
+/// Sound only because `canonical_id` is injective — it is the key's 32 raw
+/// bytes, hex-encoded, so the round trip loses nothing. That makes a stored
+/// record's own key the thing its signature is checked against, with no second
+/// lookup and no table mapping identities to keys that could disagree with the
+/// identities (ADR 0007 **G-1**).
+///
+/// Returns `Option`, not `Result`: the only caller reads an identity that is
+/// already a store key, so a `None` here means the store holds a row under a
+/// key this service could not have written, and the caller's job is to decline
+/// to price it — not to explain it.
+pub fn verifying_key_from_id(id: &str) -> Option<VerifyingKey> {
+    let bytes: [u8; 32] = hex::decode(id).ok()?.as_slice().try_into().ok()?;
+    VerifyingKey::from_bytes(&bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

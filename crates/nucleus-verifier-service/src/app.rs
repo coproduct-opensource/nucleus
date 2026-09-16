@@ -96,6 +96,17 @@ pub struct AppState {
     /// /v1/credit` has behavior). `redb::Database` is `Send + Sync` but not
     /// `Clone`, so it is shared behind `Arc`.
     pub credit_store: Option<Arc<nucleus_creditworthiness::store::CreditLedgerStore>>,
+    /// The canonical ledger root registered bonds are pinned to
+    /// (`--credit-ledger-root` / `NUCLEUS_CREDIT_LEDGER_ROOT`, 64-char hex).
+    ///
+    /// `None` makes `POST /v1/bond/{agent_id}` return 503, and with it every
+    /// endpoint that prices against a registered ceiling. That is deliberate:
+    /// a lock's non-portability is the check that collateral posted against a
+    /// fork is not collateral here, and an unconfigured root cannot perform it.
+    /// Defaulting to a zero root would make the check pass for everyone — a
+    /// default that grants (ADR 0007 **B-2**), on the value that decides how
+    /// much money is at stake.
+    pub credit_ledger_root: Option<nucleus_witness_olog::LedgerRoot>,
 }
 
 /// Max request body size in bytes. Provenance bundles are bounded by
@@ -181,6 +192,7 @@ pub fn build_app(state: AppState) -> Router {
         // Stateful credit ledger (503 unless --credit-db is set). `accrue`
         // appends an agent's recompute-verified events to its durable,
         // hash-chained ledger; the GET returns its persisted standing.
+        .route("/v1/bond/{agent_id}", post(routes::bond_register))
         .route("/v1/credit/{agent_id}/accrue", post(routes::credit_accrue))
         .route("/v1/credit/{agent_id}", get(routes::credit_standing))
         .route(

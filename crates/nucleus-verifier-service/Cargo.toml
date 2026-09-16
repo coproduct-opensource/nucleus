@@ -40,6 +40,12 @@ nucleus-receipt = { path = "../nucleus-receipt" }
 # the stateful /v1/credit/{agent_id}/accrue + GET standing endpoints. The
 # stateless POST /v1/credit and the mint bridge stay on (default features kept).
 nucleus-creditworthiness = { path = "../nucleus-creditworthiness", features = ["persist"] }
+# The bond layer: `EscrowAttestation` is the `POST /v1/bond/{agent_id}` wire type
+# and `register_lock` is the checker that mints the `RegisteredLock` a ceiling is
+# read from. Reached only transitively before (through creditworthiness, for
+# `required_bond`); registering a lock needs the types by name, so the dependency
+# is now direct and declared rather than borrowed through a re-export.
+nucleus-witness-olog = { path = "../nucleus-witness-olog" }
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }
 tower = { version = "0.5", features = ["util", "limit"] }
