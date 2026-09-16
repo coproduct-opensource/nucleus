@@ -265,7 +265,7 @@ pub async fn accept(
     }
 
     match append_record(state_dir, &session_id, body).await {
-        Ok(kept) => record_accepted(kept),
+        Ok(kept) => record_accepted(kept, &session_log_path(state_dir, &session_id), body),
         Err(e) => {
             tracing::error!(%session_id, error = %e, "could not store an Article 12 record");
             (StatusCode::INTERNAL_SERVER_ERROR, "storage failed")
@@ -278,7 +278,19 @@ pub async fn accept(
 /// Built only from the [`nucleus_jsonl::Durable`] proof a synced append returns, and
 /// taking it by value, so this node cannot acknowledge a record it did not durably
 /// store. The pod carries on believing it was witnessed once it sees this.
-fn record_accepted(_kept: nucleus_jsonl::Durable) -> (axum::http::StatusCode, &'static str) {
+fn record_accepted(
+    kept: nucleus_jsonl::Durable,
+    log: &Path,
+    body: &str,
+) -> (axum::http::StatusCode, &'static str) {
+    // And only for THIS record in THIS session's log.
+    if !kept.proves(log, body) {
+        tracing::error!("an Article 12 acknowledgement was built from another record's proof");
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "storage failed",
+        );
+    }
     (axum::http::StatusCode::NO_CONTENT, "")
 }
 
@@ -309,6 +321,29 @@ pub fn provision_container_env(env: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 204 a pod reads as "your record is kept" is built only from the proof for
+    /// THAT record in THAT session's log.
+    #[tokio::test]
+    async fn an_acknowledgement_needs_the_proof_for_its_own_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = session_log_path(dir.path(), "s1");
+        let kept = append_record(dir.path(), "s1", "{\"seq\":1}")
+            .await
+            .unwrap();
+        assert_eq!(
+            record_accepted(kept, &log, "{\"seq\":2}").0,
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "one record's proof acknowledged another"
+        );
+        let kept = append_record(dir.path(), "s1", "{\"seq\":3}")
+            .await
+            .unwrap();
+        assert_eq!(
+            record_accepted(kept, &log, "{\"seq\":3}").0,
+            axum::http::StatusCode::NO_CONTENT
+        );
+    }
 
     /// Records from concurrent requests on one session must each land whole.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

@@ -770,7 +770,11 @@ where
     // `nucleus-audit verify-mediation-receipts`, not re-implemented on the hot path.
     let line = String::from_utf8_lossy(&body);
     match crate::mediation_receipt_collector::append_receipt(dir, line.trim_end()).await {
-        Ok(kept) => receipt_collected(kept),
+        Ok(kept) => receipt_collected(
+            kept,
+            &crate::mediation_receipt_collector::receipt_log_path(dir),
+            line.trim_end(),
+        ),
         Err(e) => {
             tracing::error!(error = %e, "could not collect a shipped MediationReceipt");
             Err(Refusal::ReceiptStorageFailed)
@@ -782,8 +786,12 @@ where
 ///
 /// Built only from the [`nucleus_jsonl::Durable`] proof a synced append returns, and
 /// taking it by value, so the host cannot tell a pod a receipt was witnessed that it
-/// did not durably store.
-fn receipt_collected(_kept: nucleus_jsonl::Durable) -> Reply {
+/// did not durably store — and only if that proof is for THIS receipt in THIS log.
+fn receipt_collected(kept: nucleus_jsonl::Durable, log: &std::path::Path, line: &str) -> Reply {
+    if !kept.proves(log, line) {
+        tracing::error!("a receipt acknowledgement was built from another record's proof");
+        return Err(Refusal::ReceiptStorageFailed);
+    }
     Ok(r#"{"status":"collected"}"#.to_string())
 }
 
@@ -1145,6 +1153,29 @@ fn handle_fetch_bundle(manager: &IdentityManager) -> Reply {
     };
 
     serde_json::to_string(&response).map_err(|e| Refusal::SerializationFailed(e.to_string()))
+}
+
+#[cfg(test)]
+mod receipt_ack_tests {
+    use super::*;
+
+    /// A guest is told "collected" only from the proof for THAT receipt in THAT log.
+    #[tokio::test]
+    async fn collected_needs_the_proof_for_its_own_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = crate::mediation_receipt_collector::receipt_log_path(dir.path());
+        let kept = crate::mediation_receipt_collector::append_receipt(dir.path(), "{\"r\":1}")
+            .await
+            .unwrap();
+        assert!(
+            receipt_collected(kept, &log, "{\"r\":2}").is_err(),
+            "one receipt's proof acknowledged another"
+        );
+        let kept = crate::mediation_receipt_collector::append_receipt(dir.path(), "{\"r\":3}")
+            .await
+            .unwrap();
+        assert!(receipt_collected(kept, &log, "{\"r\":3}").is_ok());
+    }
 }
 
 #[cfg(test)]

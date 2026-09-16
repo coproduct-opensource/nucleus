@@ -49,22 +49,46 @@ use std::path::Path;
 #[cfg(feature = "async")]
 use std::path::PathBuf;
 
-/// Proof that a record was appended AND synced to disk.
+/// Proof that ONE record was appended AND synced to one log.
 ///
 /// Only [`append_line_synced`] makes one: the field is private (ADR 0007 C-1), and it
-/// is neither `Clone` nor `Copy`, so one proof acknowledges one record. A collector
-/// that tells a peer "your record is kept" builds that reply from this value, so
+/// is neither `Clone` nor `Copy`, so one proof acknowledges once. A collector that
+/// tells a peer "your record is kept" builds that reply from this value, so
 /// acknowledging a record that was never appended — or only reached the page cache,
 /// which a host crash loses — does not compile.
 ///
+/// It also names WHICH record it proves ([`Durable::proves`]). Without that, a proof
+/// from appending one record could acknowledge a different one: the type said
+/// "something was kept", not "this was kept".
+///
 /// ```compile_fail
 /// // Outside this crate a `Durable` cannot be made without appending.
-/// let forged = nucleus_jsonl::Durable { _sealed: () };
+/// let forged = nucleus_jsonl::Durable { state_hash: 0 };
 /// ```
 #[must_use = "a Durable is the proof an acknowledgement is built from; dropping it acknowledges nothing"]
 #[derive(Debug)]
 pub struct Durable {
-    _sealed: (),
+    /// Fingerprint of the log and the record this proves were kept. In-process
+    /// identity, not a cryptographic commitment: the proof never leaves the process
+    /// that appended.
+    state_hash: u64,
+}
+
+fn fingerprint(path: &Path, line: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    path.hash(&mut h);
+    line.trim_end().hash(&mut h);
+    h.finish()
+}
+
+impl Durable {
+    /// Whether this proves that `line` was kept in the log at `path`. An
+    /// acknowledgement for any other record must not be built from it.
+    #[must_use]
+    pub fn proves(&self, path: &Path, line: &str) -> bool {
+        self.state_hash == fingerprint(path, line)
+    }
 }
 
 fn append(path: &Path, line: &str, sync: bool) -> std::io::Result<()> {
@@ -100,7 +124,9 @@ fn append(path: &Path, line: &str, sync: bool) -> std::io::Result<()> {
 /// short. No [`Durable`] is returned, so nothing can be acknowledged.
 pub fn append_line_synced(path: &Path, line: &str) -> std::io::Result<Durable> {
     append(path, line, true)?;
-    Ok(Durable { _sealed: () })
+    Ok(Durable {
+        state_hash: fingerprint(path, line),
+    })
 }
 
 /// As [`append_line_synced`], without the sync: the record is in the page cache and
@@ -169,6 +195,22 @@ mod tests {
             .collect();
         ns.sort_unstable();
         assert_eq!(ns, (0..128).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn a_proof_names_the_record_and_the_log_it_proves() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.jsonl"), dir.path().join("b.jsonl"));
+        let kept = append_line_synced(&a, "{\"n\":1}\n").unwrap();
+        assert!(
+            kept.proves(&a, "{\"n\":1}"),
+            "trailing whitespace is not the record"
+        );
+        assert!(!kept.proves(&a, "{\"n\":2}"), "a different record");
+        assert!(
+            !kept.proves(&b, "{\"n\":1}"),
+            "the same record in a different log"
+        );
     }
 
     #[test]
