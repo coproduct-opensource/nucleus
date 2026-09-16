@@ -32,23 +32,25 @@
 //! — `PING` and a frame refused before parsing are not logged — so the walk
 //! requires the counts to DIFFER across runs, not to match the transcript.
 //!
-//! # What a live run found (nucleus-kvm, 2026-09-16)
+//! # What live runs found (nucleus-kvm, 2026-09-16)
 //!
-//! - **The pod receipt is unreachable for a Firecracker pod through this API.**
-//!   The microVM does not exit when its workload does, and `timeout_seconds`
-//!   bounds the pod certificate, not the VM. On the guest path the supervisor
-//!   writes the exit report only after it stops serving, and the node's only
-//!   way to end the pod, cancel, kills the VM first and then removes the jail
-//!   the receipt would be read back from. `GET /v1/pods/{id}/receipt` is
-//!   therefore `404 pod not found` on every run, so A6 over the pod receipt is
-//!   reported NOT CHECKED, never as agreement.
-//! - **The exit-report forgery could not be tested for the same reason.** A
-//!   workload can write `/work/.nucleus-exit-report.json` (the scratch root is
-//!   its uid), and `pod_receipt` reads that file back and signs it; no receipt
-//!   is produced on this path, so whether the node would repeat the forgery is
-//!   open. `--forge-spec` reports it as NOT CHECKED until a receipt exists.
+//! - **The pod receipt was unreachable for a Firecracker pod** — the microVM
+//!   outlives its workload, the supervisor wrote the exit report only when it
+//!   stopped serving, and cancel removed the jail the report was read from — so
+//!   `GET /v1/pods/{id}/receipt` was 404 on every run. A6 over the pod receipt
+//!   was reported NOT CHECKED, never as agreement. Fixed in #2925; with it, every
+//!   run produces a signed pod receipt and A6 holds over it.
+//! - **A workload could forge the report the node signs.** The scratch root is
+//!   the workload's uid. A forgery written before the workload exits tests
+//!   nothing — the supervisor's report replaces it — so `--forge-spec` runs a
+//!   workload that leaves a detached process rewriting the report every 100 ms
+//!   after the supervisor has written. Without #2925 the node's signed receipt
+//!   repeats the forgery (verdict 1); with it the node refuses the report by
+//!   name, which this harness reports as held.
+//! - Some pod-receipt fields differ on every run by construction, not by anything
+//!   the guest said; they are in [`PER_LAUNCH`], each with its reason.
 //!
-//! //! # Exit status
+//! # Exit status
 //!
 //! `0` both laws held on a non-vacuous run; `1` a law was violated; `2` could
 //! not look (a pod did not finish, a receipt could not be fetched, or the
