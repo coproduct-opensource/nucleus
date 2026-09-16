@@ -80,8 +80,10 @@ pub struct LedgerEntry {
     pub identity: String,
     /// Position in this identity's chain, starting at 0.
     pub seq: u64,
-    /// The recompute-verified outcome this entry records.
-    pub event: CreditEvent,
+    /// The outcome this entry records, in its inert wire form. Read it through
+    /// [`LedgerEntry::event`], which crosses to a real [`CreditEvent`] only
+    /// after the chain hash over these bytes has been re-derived.
+    pub event: crate::UnverifiedCreditEvent,
     /// Entry timestamp, seconds since the Unix epoch.
     pub ts_unix_secs: i64,
     /// The predecessor's [`LedgerEntry::this_hash`]; `None` for the genesis
@@ -102,6 +104,7 @@ impl LedgerEntry {
         ts_unix_secs: i64,
         prev_hash: Option<[u8; 32]>,
     ) -> Self {
+        let event = crate::UnverifiedCreditEvent::of(&event);
         let this_hash = entry_hash(&identity, seq, &event, ts_unix_secs, prev_hash);
         Self {
             identity,
@@ -112,6 +115,24 @@ impl LedgerEntry {
             this_hash,
         }
     }
+
+    /// This entry's event as a real [`CreditEvent`], **after** re-deriving the
+    /// chain hash over its stored bytes. `None` if the bytes were edited.
+    ///
+    /// This is the only crossing from the deserializable wire form back to the
+    /// sealed type, and it is a `Result`-shaped one: a row that fails its own
+    /// hash yields no event rather than a default or a zeroed one (**A-1**:
+    /// "could not verify" is not "verified").
+    pub fn event(&self) -> Option<CreditEvent> {
+        let recomputed = entry_hash(
+            &self.identity,
+            self.seq,
+            &self.event,
+            self.ts_unix_secs,
+            self.prev_hash,
+        );
+        (recomputed == self.this_hash).then(|| self.event.assume_chain_verified())
+    }
 }
 
 /// The exact preimage [`entry_hash`] digests. Deterministic and total: every
@@ -120,7 +141,7 @@ impl LedgerEntry {
 pub fn canonical_entry_bytes(
     identity: &str,
     seq: u64,
-    event: &CreditEvent,
+    event: &crate::UnverifiedCreditEvent,
     ts_unix_secs: i64,
     prev_hash: Option<[u8; 32]>,
 ) -> Vec<u8> {
@@ -144,7 +165,7 @@ pub fn canonical_entry_bytes(
 pub fn entry_hash(
     identity: &str,
     seq: u64,
-    event: &CreditEvent,
+    event: &crate::UnverifiedCreditEvent,
     ts_unix_secs: i64,
     prev_hash: Option<[u8; 32]>,
 ) -> [u8; 32] {
@@ -262,13 +283,82 @@ mod tests {
         [seed; 32]
     }
 
+    // ── Parity bridge: Cooperation/LedgerChain.lean ⇔ verify_chain ──────────
+    //
+    // `Nucleus.Cooperation.LedgerChain` (#2511) models this function's two
+    // halves separately, and the separation found something the doc comment
+    // above does not say.
+    //
+    //   * `seqsOk` mirrors the `expected_seq` loop verbatim. `seqsOk_take`
+    //     proves, in general, that a chain TRUNCATED AT THE TAIL still passes
+    //     it — contiguity from 0 survives dropping trailing entries.
+    //   * `interior_deletion_is_caught` proves the middle-deletion case does
+    //     NOT survive, so the check is not vacuous; it just does not cover this.
+    //   * `truncation_is_caught_by_a_retained_head` is what does cover it, and
+    //     it needs `NoStepFixpoint` — a SECOND crypto assumption that
+    //     injectivity does not imply.
+    //
+    // The tests below carry that to the shipped code: `verify_chain` alone
+    // accepts a rolled-back ledger, and the caller's retained `head_hash_hex`
+    // is the only thing that rejects it. That is a real property of this
+    // function, not a modelling artefact, which is why it is pinned here.
+
+    /// **The gap, on the real function.** A prefix of a valid chain is a valid
+    /// chain, so `verify_chain` cannot distinguish a fresh short ledger from a
+    /// truncated long one. A server that dropped its most recent entries would
+    /// pass every check in this file.
+    #[test]
+    fn verify_chain_accepts_a_tail_truncation() {
+        let full = build_chain("agent-a", 5);
+        assert!(verify_chain(&full).is_ok(), "the full chain verifies");
+        for keep in 0..full.len() {
+            assert!(
+                verify_chain(&full[..keep]).is_ok(),
+                "truncating to {keep} entries still verifies — seq contiguity \
+                 cannot see a rollback"
+            );
+        }
+    }
+
+    /// And the interior case, which it DOES catch — so the test above is a
+    /// statement about truncation specifically, not about the check being
+    /// useless.
+    #[test]
+    fn verify_chain_catches_an_interior_deletion() {
+        let full = build_chain("agent-a", 5);
+        let mut gapped = full.clone();
+        gapped.remove(2);
+        assert!(matches!(
+            verify_chain(&gapped),
+            Err(ChainError::SeqGap { .. })
+        ));
+    }
+
+    /// **What closes it**: the head commitment a caller retains. The truncated
+    /// chain verifies, but its head is not the head the caller was given —
+    /// which is `truncation_is_caught_by_a_retained_head`, reached in Rust.
+    #[test]
+    fn a_retained_head_rejects_the_truncation_that_verify_chain_accepts() {
+        let full = build_chain("agent-a", 5);
+        let retained = full.last().expect("non-empty").this_hash;
+        for keep in 0..full.len() {
+            let short = &full[..keep];
+            assert!(verify_chain(short).is_ok());
+            assert_ne!(
+                short.last().map(|e| e.this_hash),
+                Some(retained),
+                "a chain truncated to {keep} must not reproduce the retained head"
+            );
+        }
+    }
+
     /// Build a well-formed chain of `n` honest-settlement entries for `id`,
     /// linking each to its predecessor (exactly what the store does).
     fn build_chain(id: &str, n: u64) -> Vec<LedgerEntry> {
         let mut out: Vec<LedgerEntry> = Vec::new();
         for seq in 0..n {
             let prev = out.last().map(|e| e.this_hash);
-            let event = CreditEvent::honest_settlement(1_000 * (seq + 1), rh(seq as u8));
+            let event = CreditEvent::test_honest_settlement(1_000 * (seq + 1), rh(seq as u8));
             out.push(LedgerEntry::new(
                 id.to_string(),
                 seq,
@@ -300,29 +390,37 @@ mod tests {
     #[test]
     fn entry_hash_is_deterministic_and_field_sensitive() {
         let id = "agent-a";
-        let ev = CreditEvent::honest_settlement(1_000, rh(1));
-        let h = entry_hash(id, 0, &ev, 100, None);
+        let w = |e: &CreditEvent| crate::UnverifiedCreditEvent::of(e);
+        let ev = CreditEvent::test_honest_settlement(1_000, rh(1));
+        let h = entry_hash(id, 0, &w(&ev), 100, None);
         // Identical inputs → identical hash.
-        assert_eq!(h, entry_hash(id, 0, &ev, 100, None));
+        assert_eq!(h, entry_hash(id, 0, &w(&ev), 100, None));
         // Each field independently changes the hash.
-        assert_ne!(h, entry_hash("agent-b", 0, &ev, 100, None)); // identity
-        assert_ne!(h, entry_hash(id, 1, &ev, 100, None)); // seq
-        assert_ne!(h, entry_hash(id, 0, &ev, 101, None)); // ts
-        assert_ne!(h, entry_hash(id, 0, &ev, 100, Some(rh(7)))); // prev
-        let ev_w = CreditEvent::honest_settlement(1_001, rh(1));
-        assert_ne!(h, entry_hash(id, 0, &ev_w, 100, None)); // weight
-        let ev_p = CreditEvent::caught_defection(1_000, rh(1));
-        assert_ne!(h, entry_hash(id, 0, &ev_p, 100, None)); // polarity/dimension
-        let ev_r = CreditEvent::honest_settlement(1_000, rh(2));
-        assert_ne!(h, entry_hash(id, 0, &ev_r, 100, None)); // receipt_hash
+        assert_ne!(h, entry_hash("agent-b", 0, &w(&ev), 100, None)); // identity
+        assert_ne!(h, entry_hash(id, 1, &w(&ev), 100, None)); // seq
+        assert_ne!(h, entry_hash(id, 0, &w(&ev), 101, None)); // ts
+        assert_ne!(h, entry_hash(id, 0, &w(&ev), 100, Some(rh(7)))); // prev
+        let ev_w = CreditEvent::test_honest_settlement(1_001, rh(1));
+        assert_ne!(h, entry_hash(id, 0, &w(&ev_w), 100, None)); // weight
+        let ev_p = CreditEvent::test_caught_defection(1_000, rh(1));
+        assert_ne!(h, entry_hash(id, 0, &w(&ev_p), 100, None)); // polarity/dimension
+        let ev_r = CreditEvent::test_honest_settlement(1_000, rh(2));
+        assert_ne!(h, entry_hash(id, 0, &w(&ev_r), 100, None)); // receipt_hash
     }
 
     #[test]
     fn absent_prev_uses_32_zero_bytes() {
         let id = "agent-a";
-        let ev = CreditEvent::honest_settlement(1_000, rh(1));
-        let absent = canonical_entry_bytes(id, 0, &ev, 100, None);
-        let zeroed = canonical_entry_bytes(id, 0, &ev, 100, Some([0u8; 32]));
+        let ev = CreditEvent::test_honest_settlement(1_000, rh(1));
+        let absent =
+            canonical_entry_bytes(id, 0, &crate::UnverifiedCreditEvent::of(&ev), 100, None);
+        let zeroed = canonical_entry_bytes(
+            id,
+            0,
+            &crate::UnverifiedCreditEvent::of(&ev),
+            100,
+            Some([0u8; 32]),
+        );
         // A genesis (None prev) hashes identically to an explicit all-zero prev:
         // the canonical encoding substitutes 32 zero bytes for an absent prev.
         assert_eq!(absent, zeroed);
@@ -398,7 +496,7 @@ mod tests {
         let a0 = LedgerEntry::new(
             "agent-a".into(),
             0,
-            CreditEvent::honest_settlement(1, rh(0)),
+            CreditEvent::test_honest_settlement(1, rh(0)),
             100,
             None,
         );
@@ -406,7 +504,7 @@ mod tests {
         let b1 = LedgerEntry::new(
             "agent-b".into(),
             1,
-            CreditEvent::honest_settlement(1, rh(1)),
+            CreditEvent::test_honest_settlement(1, rh(1)),
             101,
             Some(a0.this_hash),
         );

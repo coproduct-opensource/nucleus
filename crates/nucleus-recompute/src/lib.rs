@@ -291,6 +291,170 @@ pub fn content_hash_hex(receipt: &ClearingReceipt) -> String {
     hex::encode(h.finalize())
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Sealed recompute witnesses (ADR 0007 C-1/C-3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Private sentinel. Cannot be named outside this crate, so no witness below
+/// can be built by a struct literal anywhere else — the same mechanism
+/// `nucleus-ifc-kernel`'s `Seal` uses for `DischargedBundle`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seal;
+
+/// Which proven kernel family recomputed a receipt. Carried on the witness so a
+/// downstream consumer reads the dimension off the evidence rather than
+/// re-deciding it from a receipt it was handed separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiptKind {
+    /// `classify` / `seller_gross` / `refund` — `SettlementDecision.lean`.
+    Settlement,
+    /// `route_to_commons` — `Commons.lean`'s `routed_conserves`.
+    Commons,
+    /// `run_vcg` — truthful/IR-proven.
+    Vcg,
+}
+
+impl ReceiptKind {
+    fn of(receipt: &ClearingReceipt) -> Self {
+        match receipt {
+            ClearingReceipt::Settlement(_) => ReceiptKind::Settlement,
+            ClearingReceipt::Commons(_) => ReceiptKind::Commons,
+            ClearingReceipt::Vcg(_) => ReceiptKind::Vcg,
+        }
+    }
+}
+
+/// The economic magnitude of a receipt, micro-USD, taken from its **declared
+/// inputs** — never a claimed output, so the weight cannot be inflated by the
+/// very lie a recompute is catching.
+pub fn economic_magnitude(receipt: &ClearingReceipt) -> u64 {
+    match receipt {
+        ClearingReceipt::Settlement(c) => c.price_micro,
+        ClearingReceipt::Commons(c) => c.pool_micro,
+        ClearingReceipt::Vcg(c) => c.budget_micro_usd,
+    }
+}
+
+/// [`content_hash_hex`] as raw bytes — the provenance binding a witness carries.
+pub fn receipt_hash_bytes(receipt: &ClearingReceipt) -> [u8; 32] {
+    let hex_str = content_hash_hex(receipt);
+    let mut out = [0u8; 32];
+    // `content_hash_hex` is a sha256 hex digest → exactly 32 bytes. Decode
+    // defensively: fail closed to all-zero rather than panic on the impossible.
+    let _ = hex::decode_to_slice(hex_str.as_bytes(), &mut out);
+    out
+}
+
+/// **Evidence that a recompute ran and every claimed output matched.**
+///
+/// Minted only by [`witness_receipt`] / [`witness_signed_clearing`]: the `_seal`
+/// field is unnameable outside this crate, so no struct literal for it compiles
+/// elsewhere. Holding one is proof the proven kernels re-derived this receipt's
+/// numbers — which is why it, and not a caller-supplied `(weight, hash)` pair,
+/// is what mints financial standing downstream.
+///
+/// It carries the magnitude and the content hash **it** computed. A caller
+/// cannot substitute a different weight for the receipt that was checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecomputeMatch {
+    kind: ReceiptKind,
+    receipt_hash: [u8; 32],
+    magnitude_micro: u64,
+    _seal: Seal,
+}
+
+/// **Evidence that a recompute ran and a claimed output diverged** — a caught
+/// defection. The recompute *is* the fraud proof, so this is evidence in exactly
+/// the sense [`RecomputeMatch`] is, and is sealed identically.
+///
+/// Kept a distinct type rather than a flag on [`RecomputeMatch`] because the two
+/// authorize opposite things (a credit and a debit). A `bool` inside one witness
+/// would let a mis-read field turn a caught lie into standing — the A-family
+/// error, one step from the C-family seal that motivates this module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecomputeDivergence {
+    kind: ReceiptKind,
+    receipt_hash: [u8; 32],
+    magnitude_micro: u64,
+    field: &'static str,
+    _seal: Seal,
+}
+
+macro_rules! witness_accessors {
+    ($t:ty) => {
+        impl $t {
+            /// Which proven kernel family recomputed the receipt.
+            pub fn kind(&self) -> ReceiptKind {
+                self.kind
+            }
+            /// The recomputed receipt's content hash — the provenance binding.
+            pub fn receipt_hash(&self) -> [u8; 32] {
+                self.receipt_hash
+            }
+            /// Declared-input magnitude in micro-USD (never a claimed output).
+            pub fn magnitude_micro(&self) -> u64 {
+                self.magnitude_micro
+            }
+        }
+    };
+}
+witness_accessors!(RecomputeMatch);
+witness_accessors!(RecomputeDivergence);
+
+impl RecomputeDivergence {
+    /// Which claimed field diverged from the recomputed value.
+    pub fn field(&self) -> &'static str {
+        self.field
+    }
+}
+
+/// What a recompute established about a receipt, as sealed evidence.
+///
+/// This is [`verify_receipt`]'s verdict with the two attributable outcomes
+/// promoted to unforgeable witnesses. [`RecomputeOutcome`] remains the plain
+/// *report* — it is shared with `payout::verify_payout`, a different check that
+/// must never be able to mint clearing evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecomputeWitness {
+    /// Every claimed output re-derived.
+    Matched(RecomputeMatch),
+    /// A claimed output diverged — the recompute is the fraud proof.
+    Diverged(RecomputeDivergence),
+    /// The declared inputs were rejected by the kernel: there is no established
+    /// baseline, so nothing is attributable in either direction.
+    Invalid(String),
+}
+
+/// Recompute a receipt and mint the sealed witness of what happened.
+///
+/// The single mint site for [`RecomputeMatch`] / [`RecomputeDivergence`]. It
+/// delegates the arithmetic to [`verify_receipt`] verbatim — one decider for
+/// "do these numbers re-derive" (**G-1**) — and adds only the provenance the
+/// evidence must carry.
+pub fn witness_receipt(receipt: &ClearingReceipt) -> RecomputeWitness {
+    let kind = ReceiptKind::of(receipt);
+    let receipt_hash = receipt_hash_bytes(receipt);
+    let magnitude_micro = economic_magnitude(receipt);
+    match verify_receipt(receipt) {
+        RecomputeOutcome::Match => RecomputeWitness::Matched(RecomputeMatch {
+            kind,
+            receipt_hash,
+            magnitude_micro,
+            _seal: Seal,
+        }),
+        RecomputeOutcome::Mismatch { field, .. } => {
+            RecomputeWitness::Diverged(RecomputeDivergence {
+                kind,
+                receipt_hash,
+                magnitude_micro,
+                field,
+                _seal: Seal,
+            })
+        }
+        RecomputeOutcome::Invalid(why) => RecomputeWitness::Invalid(why),
+    }
+}
+
 /// Lift/narrow between [`ClearingReceipt`] and `nucleus-receipt`'s signed
 /// colimit envelope (feature `envelope`, off by default).
 ///
@@ -452,6 +616,230 @@ pub mod envelope {
             None => SignedClearingVerdict::Malformed(NarrowError::NotEconomic { found: "none" }),
         }
     }
+
+    /// The signed-envelope mint site: verify the Ed25519 signature, narrow to a
+    /// [`ClearingReceipt`], and mint the sealed
+    /// [`RecomputeWitness`](crate::RecomputeWitness).
+    ///
+    /// The signature is checked FIRST and a bad one mints nothing: an
+    /// unauthenticated envelope establishes no attributable outcome, not even a
+    /// divergence, so there is no witness to hand out. Same ordering as
+    /// [`verify_signed_clearing`], which this delegates the recompute to via
+    /// [`witness_receipt`](crate::witness_receipt).
+    pub fn witness_signed_clearing(
+        signed: &nucleus_receipt::Receipt,
+        verifying_key_bytes: &[u8; 32],
+    ) -> Result<crate::RecomputeWitness, SignedClearingVerdict> {
+        // `verify_strict`, not the `verify` compatibility spelling its sibling
+        // above still uses: this function MINTS evidence, and the M-3 gate
+        // counts a permissive `.verify(` on a signature path as a regression.
+        // Spelled explicitly rather than inherited by copy from the line above.
+        if signed.verify_strict(verifying_key_bytes).is_err() {
+            return Err(SignedClearingVerdict::BadSignature);
+        }
+        match signed.projections.first() {
+            Some(p) => match clearing_from_projection(p) {
+                Ok(receipt) => Ok(crate::witness_receipt(&receipt)),
+                Err(e) => Err(SignedClearingVerdict::Malformed(e)),
+            },
+            None => Err(SignedClearingVerdict::Malformed(NarrowError::NotEconomic {
+                found: "none",
+            })),
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Countersigned clearings — two parties, not one (#2510)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// A clearing **both** parties signed.
+    ///
+    /// [`nucleus_receipt::Receipt`] carries exactly one `signature_b64`, so it
+    /// says who *emitted* a clearing and nothing about who *agreed* to it. A
+    /// single-signed receipt is therefore self-attested: its issuer chose every
+    /// number in it and is the only party who vouched for them. That is enough
+    /// for "these numbers re-derive" — the recompute — and not enough to price
+    /// anyone's standing, because the party who would dispute it never signed.
+    ///
+    /// This wraps a `Receipt` with a second signature over the **same canonical
+    /// bytes**, from a different key. Both parties then attest to identical
+    /// content, and the countersignature commits to the clearing rather than to
+    /// the issuer's signature over it, so signature malleability cannot decouple
+    /// them.
+    ///
+    /// Additive by construction: `Receipt`'s wire format and its `verify_strict`
+    /// path (the M-3 gate) are untouched, and an existing single-signed receipt
+    /// keeps working everywhere it already did.
+    #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct CountersignedClearing {
+        /// The issuer-signed clearing, exactly as it travels today.
+        pub receipt: nucleus_receipt::Receipt,
+        /// The issuer's 32-byte Ed25519 verifying key, lowercase hex.
+        ///
+        /// Carried rather than inferred: `Receipt::verify` takes the key from
+        /// its caller, so without this the envelope would not say whose
+        /// signature it holds — and "verified against a key someone handed us"
+        /// is not the same fact as "verified against the issuer."
+        pub issuer_pubkey_hex: String,
+        /// The counterparty's 32-byte Ed25519 verifying key, lowercase hex.
+        pub countersigner_pubkey_hex: String,
+        /// The counterparty's detached signature over the receipt's canonical
+        /// signing bytes, STANDARD base64 of 64 bytes.
+        pub countersignature_b64: String,
+    }
+
+    /// What [`witness_countersigned`] established. Every non-[`Witnessed`]
+    /// variant names a distinct reason, because collapsing them is how "nobody
+    /// countersigned" becomes indistinguishable from "the countersignature was
+    /// forged" in a log (**A-3**).
+    ///
+    /// [`Witnessed`]: CountersignVerdict::Witnessed
+    #[derive(Debug, PartialEq)]
+    pub enum CountersignVerdict {
+        /// A key was not 32 valid hex bytes / not a valid Ed25519 point.
+        MalformedKey(String),
+        /// The countersignature was not STANDARD base64 of 64 bytes.
+        MalformedSignature(String),
+        /// Both signatures are from the SAME key.
+        ///
+        /// Refused rather than treated as a degenerate countersignature: a party
+        /// countersigning itself is the self-write binding this type exists to
+        /// end, wearing a second signature. It is not a weaker form of two-party
+        /// agreement; it is none.
+        NotTwoParties,
+        /// The issuer's signature did not verify over the receipt's canonical
+        /// bytes — checked FIRST, before any recompute.
+        BadIssuerSignature,
+        /// The issuer signed, but the countersignature did not verify over those
+        /// same bytes.
+        BadCountersignature,
+        /// Both signatures verified, but the payload is not a narrowable
+        /// clearing.
+        Malformed(NarrowError),
+        /// Both parties signed the same clearing; here is what recomputing it
+        /// established.
+        Witnessed(crate::RecomputeWitness),
+    }
+
+    impl CountersignedClearing {
+        /// The two parties' key hexes, lowercased, in `(issuer, countersigner)`
+        /// order. A relying party uses this to check that whoever is being
+        /// credited is actually one of them.
+        pub fn parties(&self) -> (String, String) {
+            (
+                self.issuer_pubkey_hex.trim().to_ascii_lowercase(),
+                self.countersigner_pubkey_hex.trim().to_ascii_lowercase(),
+            )
+        }
+
+        /// Whether `pubkey_hex` is one of the two signing parties.
+        pub fn is_party(&self, pubkey_hex: &str) -> bool {
+            let needle = pubkey_hex.trim().to_ascii_lowercase();
+            let (a, b) = self.parties();
+            needle == a || needle == b
+        }
+    }
+
+    fn parse_vk(hex_str: &str, whose: &str) -> Result<[u8; 32], CountersignVerdict> {
+        let bytes = hex::decode(hex_str.trim())
+            .map_err(|_| CountersignVerdict::MalformedKey(format!("{whose} key is not hex")))?;
+        let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+            CountersignVerdict::MalformedKey(format!("{whose} key must be 32 bytes"))
+        })?;
+        // Reject a non-canonical point here rather than at verification time, so
+        // the verdict names the key rather than the signature.
+        ed25519_dalek::VerifyingKey::from_bytes(&arr).map_err(|_| {
+            CountersignVerdict::MalformedKey(format!("{whose} key is not a valid Ed25519 point"))
+        })?;
+        Ok(arr)
+    }
+
+    /// Verify both signatures and mint the sealed recompute witness.
+    ///
+    /// Order is load-bearing and fails closed at each step: malformed keys, then
+    /// two-distinct-parties, then the issuer's signature, then the
+    /// countersignature, then the narrow, then the recompute. Nothing downstream
+    /// of a failed check runs, and no witness is minted for an envelope that did
+    /// not clear every one — an unauthenticated clearing establishes no
+    /// attributable outcome, not even a divergence.
+    ///
+    /// A [`RecomputeWitness::Diverged`] result is a **countersigned** divergence:
+    /// the party who would be debited signed the clearing whose recompute
+    /// convicts it. That is what makes the caught-defection debit adversarially
+    /// reachable, which under single-signed self-write it was not.
+    pub fn witness_countersigned(signed: &CountersignedClearing) -> CountersignVerdict {
+        let issuer = match parse_vk(&signed.issuer_pubkey_hex, "issuer") {
+            Ok(k) => k,
+            Err(v) => return v,
+        };
+        let counter = match parse_vk(&signed.countersigner_pubkey_hex, "countersigner") {
+            Ok(k) => k,
+            Err(v) => return v,
+        };
+        if issuer == counter {
+            return CountersignVerdict::NotTwoParties;
+        }
+
+        // `verify_strict` on both signatures. The countersignature below already
+        // used it; this line said `verify`, the compatibility spelling, which is
+        // sound (it calls `verify_strict`) but leaves the two halves of a
+        // two-party check spelled differently on a path that mints evidence —
+        // and the M-3 gate counts the permissive spelling.
+        if signed.receipt.verify_strict(&issuer).is_err() {
+            return CountersignVerdict::BadIssuerSignature;
+        }
+
+        // The countersigner signs the SAME bytes the issuer signed — the
+        // clearing's content, not the issuer's signature over it.
+        let canonical = nucleus_receipt::canonical_signing_bytes(
+            &signed.receipt.session,
+            &signed.receipt.projections,
+        );
+        let sig_bytes = match base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            signed.countersignature_b64.trim(),
+        ) {
+            Ok(b) => b,
+            Err(_) => {
+                return CountersignVerdict::MalformedSignature(
+                    "countersignature is not valid base64".into(),
+                );
+            }
+        };
+        let sig_arr: [u8; 64] = match sig_bytes.as_slice().try_into() {
+            Ok(a) => a,
+            Err(_) => {
+                return CountersignVerdict::MalformedSignature(
+                    "countersignature must be 64 bytes".into(),
+                );
+            }
+        };
+        // `verify_strict`, not `verify`: the M-3 gate exists because the
+        // permissive form accepts small-order keys and lets one signature verify
+        // under more than one key.
+        let vk = match ed25519_dalek::VerifyingKey::from_bytes(&counter) {
+            Ok(k) => k,
+            Err(_) => {
+                return CountersignVerdict::MalformedKey(
+                    "countersigner key is not a valid Ed25519 point".into(),
+                );
+            }
+        };
+        if vk
+            .verify_strict(&canonical, &ed25519_dalek::Signature::from_bytes(&sig_arr))
+            .is_err()
+        {
+            return CountersignVerdict::BadCountersignature;
+        }
+
+        match signed.receipt.projections.first() {
+            Some(p) => match clearing_from_projection(p) {
+                Ok(receipt) => CountersignVerdict::Witnessed(crate::witness_receipt(&receipt)),
+                Err(e) => CountersignVerdict::Malformed(e),
+            },
+            None => CountersignVerdict::Malformed(NarrowError::NotEconomic { found: "none" }),
+        }
+    }
 }
 
 // The headline e2e enforcement: a real producer issues a signed clearing, a
@@ -462,7 +850,10 @@ pub mod envelope {
 #[cfg(all(test, feature = "envelope"))]
 mod e2e_enforcement_tests {
     use super::*;
-    use crate::envelope::{SignedClearingVerdict, to_economic_projection, verify_signed_clearing};
+    use crate::envelope::{
+        CountersignVerdict, CountersignedClearing, SignedClearingVerdict, to_economic_projection,
+        verify_signed_clearing, witness_countersigned,
+    };
     use nucleus_econ_kernels::CommonsShare;
     use nucleus_receipt::{Projection, Receipt, Session};
 
@@ -508,6 +899,168 @@ mod e2e_enforcement_tests {
                 "issued receipt must verify (sig + recompute) e2e: {r:?}"
             );
         }
+    }
+
+    // ── Countersigned clearings (#2510) ──────────────────────────────────────
+
+    use ed25519_dalek::Signer as _;
+
+    /// Build a genuinely countersigned clearing: issuer signs the receipt,
+    /// counterparty signs the SAME canonical bytes. Both signatures are real.
+    fn countersign(
+        r: &ClearingReceipt,
+        issuer: &ed25519_dalek::SigningKey,
+        counter: &ed25519_dalek::SigningKey,
+    ) -> CountersignedClearing {
+        let receipt = Receipt::sign(session(), vec![to_economic_projection(r)], issuer);
+        let canonical =
+            nucleus_receipt::canonical_signing_bytes(&receipt.session, &receipt.projections);
+        let sig = counter.sign(&canonical);
+        CountersignedClearing {
+            receipt,
+            issuer_pubkey_hex: hex::encode(issuer.verifying_key().to_bytes()),
+            countersigner_pubkey_hex: hex::encode(counter.verifying_key().to_bytes()),
+            countersignature_b64: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                sig.to_bytes(),
+            ),
+        }
+    }
+
+    fn seller() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[11u8; 32])
+    }
+    fn buyer() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[22u8; 32])
+    }
+
+    #[test]
+    fn a_genuinely_countersigned_honest_clearing_witnesses_a_match() {
+        let r = issue_settlement(1_000_000, 9_500);
+        let signed = countersign(&r, &seller(), &buyer());
+        match witness_countersigned(&signed) {
+            CountersignVerdict::Witnessed(crate::RecomputeWitness::Matched(m)) => {
+                assert_eq!(m.magnitude_micro(), 1_000_000);
+                assert_eq!(m.receipt_hash(), crate::receipt_hash_bytes(&r));
+            }
+            other => panic!("expected a Matched witness, got {other:?}"),
+        }
+    }
+
+    /// The point of the whole type: a countersigned DIVERGENCE is a defection
+    /// the convicted party itself signed. Under the old single-signed self-write
+    /// binding this outcome was adversarially unreachable.
+    #[test]
+    fn a_countersigned_lie_witnesses_a_divergence_the_liar_signed() {
+        let mut r = issue_settlement(1_000_000, 9_500);
+        if let ClearingReceipt::Settlement(ref mut c) = r {
+            c.seller_gross += 1; // the seller inflates its own take
+        }
+        let signed = countersign(&r, &seller(), &buyer());
+        match witness_countersigned(&signed) {
+            CountersignVerdict::Witnessed(crate::RecomputeWitness::Diverged(d)) => {
+                // Weight is the DECLARED price, so the lie cannot shrink its own
+                // penalty by under-declaring.
+                assert_eq!(d.magnitude_micro(), 1_000_000);
+                assert_eq!(d.field(), "seller_gross");
+            }
+            other => panic!("expected a Diverged witness, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_self_countersigned_receipt_is_refused() {
+        // The self-write hole wearing a second signature.
+        let r = issue_settlement(1_000_000, 9_500);
+        let signed = countersign(&r, &seller(), &seller());
+        assert_eq!(
+            witness_countersigned(&signed),
+            CountersignVerdict::NotTwoParties
+        );
+    }
+
+    #[test]
+    fn a_missing_countersignature_mints_nothing() {
+        // A real single-signed receipt, with a counterparty NAMED but not
+        // signing: the forgery an attacker would actually attempt.
+        let r = issue_settlement(1_000_000, 9_500);
+        let mut signed = countersign(&r, &seller(), &buyer());
+        signed.countersignature_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 64]);
+        assert_eq!(
+            witness_countersigned(&signed),
+            CountersignVerdict::BadCountersignature
+        );
+    }
+
+    #[test]
+    fn a_countersignature_over_a_different_clearing_does_not_transfer() {
+        // Lift a valid countersignature off one clearing onto another — the
+        // replay an attacker with one honest receipt would try.
+        let honest = issue_settlement(1_000_000, 9_500);
+        let other = issue_settlement(9_000_000, 9_500);
+        let good = countersign(&honest, &seller(), &buyer());
+        let mut forged = countersign(&other, &seller(), &buyer());
+        forged.countersignature_b64 = good.countersignature_b64.clone();
+        assert_eq!(
+            witness_countersigned(&forged),
+            CountersignVerdict::BadCountersignature
+        );
+    }
+
+    #[test]
+    fn a_post_countersign_tamper_is_caught_by_the_issuer_signature_first() {
+        let r = issue_settlement(1_000_000, 9_500);
+        let mut signed = countersign(&r, &seller(), &buyer());
+        signed.receipt.root_hash_hex = "0".repeat(64);
+        assert_eq!(
+            witness_countersigned(&signed),
+            CountersignVerdict::BadIssuerSignature
+        );
+    }
+
+    #[test]
+    fn naming_the_wrong_issuer_key_does_not_verify() {
+        let r = issue_settlement(1_000_000, 9_500);
+        let mut signed = countersign(&r, &seller(), &buyer());
+        // Claim a third party issued it.
+        let mallory = ed25519_dalek::SigningKey::from_bytes(&[33u8; 32]);
+        signed.issuer_pubkey_hex = hex::encode(mallory.verifying_key().to_bytes());
+        assert_eq!(
+            witness_countersigned(&signed),
+            CountersignVerdict::BadIssuerSignature
+        );
+    }
+
+    #[test]
+    fn malformed_keys_and_signatures_are_named_apart() {
+        let r = issue_settlement(1_000_000, 9_500);
+        let mut bad_key = countersign(&r, &seller(), &buyer());
+        bad_key.countersigner_pubkey_hex = "zz".into();
+        assert!(matches!(
+            witness_countersigned(&bad_key),
+            CountersignVerdict::MalformedKey(_)
+        ));
+
+        let mut bad_sig = countersign(&r, &seller(), &buyer());
+        bad_sig.countersignature_b64 = "!!!not base64!!!".into();
+        assert!(matches!(
+            witness_countersigned(&bad_sig),
+            CountersignVerdict::MalformedSignature(_)
+        ));
+    }
+
+    #[test]
+    fn parties_are_reported_for_the_relying_party_to_check() {
+        let r = issue_settlement(1_000_000, 9_500);
+        let signed = countersign(&r, &seller(), &buyer());
+        let s_hex = hex::encode(seller().verifying_key().to_bytes());
+        let b_hex = hex::encode(buyer().verifying_key().to_bytes());
+        assert_eq!(signed.parties(), (s_hex.clone(), b_hex.clone()));
+        assert!(signed.is_party(&s_hex));
+        assert!(signed.is_party(&b_hex));
+        assert!(signed.is_party(&s_hex.to_uppercase()), "case-insensitive");
+        assert!(!signed.is_party(&hex::encode([0u8; 32])));
     }
 
     /// A post-signing byte tamper is caught by the SIGNATURE, before recompute.

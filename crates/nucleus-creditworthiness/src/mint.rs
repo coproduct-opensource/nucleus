@@ -1,80 +1,51 @@
-//! Mint [`CreditEvent`]s directly from recompute-verified clearing receipts —
-//! the bridge that closes the pipeline
+//! Mint [`CreditEvent`]s from recompute-verified clearing receipts — the bridge
+//! that closes the pipeline
 //! `receipt → recompute → CreditEvent → CreditFile → required_bond`.
 //!
 //! The rule is the whole thesis in three lines:
-//! * a receipt that **recomputes** ([`RecomputeOutcome::Match`]) is an honest
-//!   outcome → a financial **credit**;
-//! * a receipt that **diverges** ([`RecomputeOutcome::Mismatch`]) is a caught
-//!   defection — the recompute IS the fraud proof → a financial **debit**;
-//! * a malformed/un-recomputable receipt ([`RecomputeOutcome::Invalid`]) mints
-//!   **nothing** — there is no established baseline to attribute, so it neither
-//!   builds nor burns standing.
+//! * a receipt that **recomputes** is an honest outcome → a **credit**;
+//! * a receipt that **diverges** is a caught defection — the recompute IS the
+//!   fraud proof → a **debit**;
+//! * a malformed/un-recomputable receipt mints **nothing** — there is no
+//!   established baseline to attribute, so it neither builds nor burns standing.
 //!
-//! The event's `weight_micro` is the receipt's economic magnitude taken from its
-//! **declared inputs** (price / pool / budget), never a claimed output — so the
-//! weight itself can't be inflated by the very lie being caught.
+//! # What changed when the type was sealed
+//!
+//! This module used to compute the weight and the provenance hash ITSELF and
+//! hand them to a public `CreditEvent::test_honest_settlement(weight, hash)`. The
+//! recompute and the mint were two separate steps, and only convention kept the
+//! weight passed to the second one equal to the receipt checked by the first.
+//! Any other crate could skip straight to step two.
+//!
+//! Now [`nucleus_recompute::witness_receipt`] mints a sealed witness that
+//! carries both, and [`CreditEvent`] has no other constructor. The weight is the
+//! one the recompute measured, structurally — not by agreement.
 
-use nucleus_recompute::{ClearingReceipt, RecomputeOutcome, content_hash_hex, verify_receipt};
+use nucleus_recompute::{ClearingReceipt, RecomputeWitness, witness_receipt};
 
 use crate::{CreditEvent, CreditFile};
 
-/// The economic magnitude of a receipt, micro-USD, taken from its declared
-/// inputs (sound regardless of any claimed-output lie).
-pub fn economic_magnitude(receipt: &ClearingReceipt) -> u64 {
-    match receipt {
-        ClearingReceipt::Settlement(c) => c.price_micro,
-        ClearingReceipt::Commons(c) => c.pool_micro,
-        ClearingReceipt::Vcg(c) => c.budget_micro_usd,
+/// Mint a [`CreditEvent`] from a sealed recompute witness, however that witness
+/// was obtained — a bare receipt, a signed envelope, or a countersigned one.
+///
+/// The single decider for "which witness means which event" (**G-1**). A caller
+/// holding a witness from a two-party envelope mints through this same function,
+/// so the countersigned path cannot drift from the bare one.
+pub fn mint_from_witness(witness: &RecomputeWitness) -> Option<CreditEvent> {
+    match witness {
+        RecomputeWitness::Matched(m) => Some(CreditEvent::from_match(m)),
+        RecomputeWitness::Diverged(d) => Some(CreditEvent::from_divergence(d)),
+        RecomputeWitness::Invalid(_) => None,
     }
 }
 
-/// The receipt's content hash as raw bytes — the same `sha256` the lineage
-/// edge's `content_hash_hex` commits to — used as the
-/// [`CreditEvent::receipt_hash`] provenance binding.
-pub fn receipt_hash(receipt: &ClearingReceipt) -> [u8; 32] {
-    let hex_str = content_hash_hex(receipt);
-    let mut out = [0u8; 32];
-    // `content_hash_hex` is a sha256 hex digest → exactly 32 bytes. Decode
-    // defensively: fail closed to all-zero rather than panic on the impossible.
-    let _ = hex::decode_to_slice(hex_str.as_bytes(), &mut out);
-    out
-}
-
-/// Mint a [`CreditEvent`] from one receipt by recomputing it. Returns `None`
-/// for an [`RecomputeOutcome::Invalid`] receipt (nothing to attribute).
-///
-/// The receipt KIND chooses the creditworthiness dimension:
-/// * a `Commons` receipt is the Pigouvian / `route_to_commons` path (pinned to
-///   `Commons.lean`'s `routed_conserves`), so a recompute-**Match** is true-cost
-///   dues actually routed to the commons → an **externality credit**, and a
-///   **Mismatch** is a claimed-but-unrouted routing — an externality **dumped**
-///   on the commons → an externality **debit**;
-/// * a `Settlement` / `Vcg` receipt is the financial path → a financial credit on
-///   Match, a caught-defection debit on Mismatch.
-///
-/// Both dimensions are now load-bearing on reputation (see
-/// [`CreditDimension::is_active`]) — the substrate is regenerative by default:
-/// recompute-verified commons-routing builds standing, exactly as honest
-/// settlement does, and only ever from a receipt that already recomputed.
+/// Mint a [`CreditEvent`] from one receipt by recomputing it. Returns `None` for
+/// a receipt whose declared inputs the kernel rejects (nothing to attribute).
 pub fn mint_event(receipt: &ClearingReceipt) -> Option<CreditEvent> {
-    let weight = economic_magnitude(receipt);
-    let hash = receipt_hash(receipt);
-    let is_commons = matches!(receipt, ClearingReceipt::Commons(_));
-    match verify_receipt(receipt) {
-        RecomputeOutcome::Match if is_commons => {
-            Some(CreditEvent::externality_internalized(weight, hash))
-        }
-        RecomputeOutcome::Match => Some(CreditEvent::honest_settlement(weight, hash)),
-        RecomputeOutcome::Mismatch { .. } if is_commons => {
-            Some(CreditEvent::externality_dumped(weight, hash))
-        }
-        RecomputeOutcome::Mismatch { .. } => Some(CreditEvent::caught_defection(weight, hash)),
-        RecomputeOutcome::Invalid(_) => None,
-    }
+    mint_from_witness(&witness_receipt(receipt))
 }
 
-/// Mint events from a batch of receipts, skipping `Invalid` ones.
+/// Mint events from a batch of receipts, skipping un-recomputable ones.
 pub fn mint_events(receipts: &[ClearingReceipt]) -> Vec<CreditEvent> {
     receipts.iter().filter_map(mint_event).collect()
 }
@@ -88,7 +59,10 @@ pub fn credit_file_from_receipts(receipts: &[ClearingReceipt]) -> CreditFile {
 #[cfg(test)]
 mod tests {
     use nucleus_econ_kernels::{CommonsShare, classify, refund, route_to_commons, seller_gross};
-    use nucleus_recompute::{ClearingReceipt, CommonsClaim, SettlementClaim};
+    use nucleus_recompute::{
+        ClearingReceipt, CommonsClaim, RecomputeOutcome, SettlementClaim, receipt_hash_bytes,
+        verify_receipt,
+    };
     use nucleus_witness_olog::AmountMicro;
 
     use super::*;
@@ -129,9 +103,9 @@ mod tests {
     fn honest_receipt_mints_a_financial_credit() {
         let r = honest_settlement(1_000_000, 10_000);
         let e = mint_event(&r).expect("honest receipt mints an event");
-        assert_eq!(e.dimension, CreditDimension::FinancialDefault);
-        assert_eq!(e.weight_micro, 1_000_000); // from price_micro (declared input)
-        assert_eq!(e.receipt_hash, receipt_hash(&r));
+        assert_eq!(e.dimension(), CreditDimension::FinancialDefault);
+        assert_eq!(e.weight_micro(), 1_000_000); // from price_micro (declared input)
+        assert_eq!(e.receipt_hash(), receipt_hash_bytes(&r));
         // It builds standing: a file of just this event has positive reputation.
         let f = CreditFile::from_events(&[e]);
         assert_eq!(f.reputation_micro(), 1_000_000);
@@ -148,9 +122,12 @@ mod tests {
         let e = mint_event(&r).expect("a caught lie still mints an event (a debit)");
         // Weight is the DECLARED price, not the inflated claim — the lie can't
         // inflate its own penalty's magnitude.
-        assert_eq!(e.weight_micro, 1_000_000);
+        assert_eq!(e.weight_micro(), 1_000_000);
         // It burns standing: stacked on prior honest history it lowers reputation.
-        let f = CreditFile::from_events(&[CreditEvent::honest_settlement(1_000_000, [0u8; 32]), e]);
+        let f = CreditFile::from_events(&[
+            CreditEvent::test_honest_settlement(1_000_000, [0u8; 32]),
+            e,
+        ]);
         assert_eq!(f.reputation_micro(), 0); // 1M credit − 1M debit
     }
 
@@ -160,9 +137,9 @@ mod tests {
         // build standing on the EXTERNALITY dimension — regenerative by default.
         let r = honest_commons(300_000);
         let e = mint_event(&r).expect("honest commons mints an event");
-        assert_eq!(e.dimension, CreditDimension::Externality);
-        assert_eq!(e.polarity, crate::Polarity::Credit);
-        assert_eq!(e.weight_micro, 300_000); // pool_micro (declared input)
+        assert_eq!(e.dimension(), CreditDimension::Externality);
+        assert_eq!(e.polarity(), crate::Polarity::Credit);
+        assert_eq!(e.weight_micro(), 300_000); // pool_micro (declared input)
         // It builds bond-substituting reputation now that externality is active.
         let f = CreditFile::from_events(&[e]);
         assert_eq!(f.reputation_micro(), 300_000);
@@ -178,11 +155,11 @@ mod tests {
         }
         assert!(!verify_receipt(&r).is_match());
         let e = mint_event(&r).expect("a caught dump still mints an event (a debit)");
-        assert_eq!(e.dimension, CreditDimension::Externality);
-        assert_eq!(e.polarity, crate::Polarity::Debit);
+        assert_eq!(e.dimension(), CreditDimension::Externality);
+        assert_eq!(e.polarity(), crate::Polarity::Debit);
         // Stacked on prior externality credit it lowers standing.
         let f = CreditFile::from_events(&[
-            CreditEvent::externality_internalized(300_000, [0u8; 32]),
+            CreditEvent::test_externality_internalized(300_000, [0u8; 32]),
             e,
         ]);
         assert_eq!(f.reputation_micro(), 0); // 300k credit − 300k debit

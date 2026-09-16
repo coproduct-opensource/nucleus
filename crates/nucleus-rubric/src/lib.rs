@@ -70,7 +70,6 @@
 
 #![forbid(unsafe_code)]
 
-use nucleus_creditworthiness::CreditEvent;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -559,13 +558,36 @@ impl CounterfactualReceipt {
         s
     }
 
-    /// Mint the reward: a **real** [`nucleus_creditworthiness::CreditEvent`] via
-    /// `honest_settlement(marginal, receipt_hash)`. The marginal is clamped to
-    /// `u64::MAX` (the `CreditEvent` weight domain); `u128` totals make that
-    /// effectively unreachable for realistic grades/weights.
-    pub fn mint_reward(&self) -> CreditEvent {
-        let weight = self.marginal.min(u128::from(u64::MAX)) as u64;
-        CreditEvent::honest_settlement(weight, self.receipt_hash())
+    /// The reward this counterfactual is WORTH, micro-USD — a measurement, not a
+    /// mint. Clamped to `u64::MAX`; `u128` totals make that unreachable for
+    /// realistic grades/weights.
+    ///
+    /// # `mint_reward` was removed here (#2509)
+    ///
+    /// This used to be `mint_reward(&self) -> CreditEvent`, calling
+    /// `CreditEvent::honest_settlement(marginal, receipt_hash)`. It ran **no
+    /// recompute at all**: any `CounterfactualReceipt` a caller could build minted
+    /// unconditional financial standing equal to its own `marginal` field. Of the
+    /// three minters the seal closed, this was the one with no verification in
+    /// front of it whatsoever.
+    ///
+    /// #2509 proposes migrating it to the token path, on the grounds that "its
+    /// grades come from the oracle's k-of-n recompute, so it can carry a match."
+    /// That is not true of the code as it stands, and the gap is worth naming
+    /// precisely because the premise is so plausible: `nucleus_oracle::grade`
+    /// does produce a `GradeReceipt`, and `grade_rubric_inputs` does carry it
+    /// into `RubricInputs` — but `RubricInputs` is flattened into `Scorecard`s,
+    /// which keep the grades and drop every reference to the receipt. By the time
+    /// a `CounterfactualReceipt` exists, nothing in it points at an oracle run,
+    /// so there is no honest witness to hand it. Threading one through is #2502's
+    /// grading-integrity work (its decision routes minting through
+    /// `nucleus-oracle::grade` with the magnitude bound to the clearing price),
+    /// not something this change can fake.
+    ///
+    /// The number stays available so #2502 has it; what is gone is the step that
+    /// turned it into credit without checking anything.
+    pub fn reward_micro(&self) -> u64 {
+        self.marginal.min(u128::from(u64::MAX)) as u64
     }
 }
 
@@ -582,7 +604,7 @@ pub fn grade_from_eval(run: &nucleus_eval::EvalRun) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nucleus_creditworthiness::{CreditFile, Polarity};
+
     use proptest::prelude::*;
 
     /// A fixed 5-criterion rubric: 3 RV (correctness, coverage, determinism), 1
@@ -831,10 +853,7 @@ mod tests {
         let rc_base = counterfactual(&r, &base).unwrap();
         let rc_tw = counterfactual(&r, &twiddled).unwrap();
         assert_eq!(rc_base.marginal, rc_tw.marginal);
-        assert_eq!(
-            rc_base.mint_reward().weight_micro,
-            rc_tw.mint_reward().weight_micro
-        );
+        assert_eq!(rc_base.reward_micro(), rc_tw.reward_micro());
         assert_ne!(rc_base.receipt_hash(), rc_tw.receipt_hash());
     }
 
@@ -915,13 +934,9 @@ mod tests {
         assert_eq!(receipt.runner_up_total, 95);
         assert_eq!(receipt.marginal, 5);
 
-        let ev = receipt.mint_reward();
-        assert_eq!(ev.polarity, Polarity::Credit);
-        assert_eq!(u128::from(ev.weight_micro), receipt.marginal);
-        assert_eq!(ev.receipt_hash, receipt.receipt_hash());
-
-        let file = CreditFile::from_events(&[ev]);
-        assert_eq!(u128::from(file.reputation_micro()), receipt.marginal);
+        // The reward is REPORTED, not minted: #2509 sealed `CreditEvent`, and a
+        // counterfactual receipt carries no recompute witness to mint one from.
+        assert_eq!(u128::from(receipt.reward_micro()), receipt.marginal);
     }
 
     // ── Edge cases ────────────────────────────────────────────────────────────

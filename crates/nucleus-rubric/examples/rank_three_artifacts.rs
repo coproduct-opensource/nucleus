@@ -8,7 +8,6 @@
 //!   4. the recomputable VCG-MARGINAL (winner − runner_up) + a byte-identical recompute,
 //!   5. the minted real CreditEvent + resulting CreditFile reputation.
 
-use nucleus_creditworthiness::CreditFile;
 use nucleus_rubric::{
     Criterion, Provenance, Rubric, Scorecard, counterfactual, faithful_total, pareto_front, rank,
     winner,
@@ -135,15 +134,10 @@ fn main() {
         m == receipt.marginal && wt == receipt.winner_total && rt == receipt.runner_up_total
     );
 
-    println!("\n== (5) Minted reward (real CreditEvent → CreditFile) ==");
-    let event = receipt.mint_reward();
+    println!("\n== (5) Reward the counterfactual is worth ==");
+    println!("  reward_micro = {}", receipt.reward_micro());
     println!(
-        "  CreditEvent {{ dimension: {:?}, polarity: {:?}, weight_micro: {} }}",
-        event.dimension, event.polarity, event.weight_micro
-    );
-    let file = CreditFile::from_events(&[event]);
-    println!(
-        "  CreditFile reputation_micro = {}",
-        file.reputation_micro()
+        "  (reported, not minted: a CreditEvent needs a recompute witness, and a\n   \
+         counterfactual receipt carries none — see CounterfactualReceipt::reward_micro)"
     );
 }

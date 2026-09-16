@@ -57,10 +57,10 @@
 
 use std::collections::BTreeMap;
 
+use nucleus_recompute::{ReceiptKind, RecomputeDivergence, RecomputeMatch};
 use nucleus_witness_olog::{AmountMicro, deters, required_bond};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "recompute")]
 pub mod mint;
 
 /// Conflict-free replicated set of recompute-verified [`CreditEvent`]s: a
@@ -81,7 +81,6 @@ pub mod crdt;
 /// re-derive — from the same receipts — how much reached each remediation
 /// destination. Behind the `recompute` feature (it re-verifies receipts). Purely
 /// additive: no behaviour change, no money moves.
-#[cfg(feature = "recompute")]
 pub mod commons_view;
 
 /// WASM-pure, append-only hash chain over an identity's [`CreditEvent`]s
@@ -123,6 +122,18 @@ pub enum CreditDimension {
 }
 
 impl CreditDimension {
+    /// The dimension a recomputed receipt scores, chosen by the receipt KIND.
+    ///
+    /// One decider for this mapping (**G-1**): before the seal it was spelled
+    /// out at each of `mint_event`'s four match arms, so the commons/financial
+    /// split could drift between the credit path and the debit path.
+    pub(crate) fn for_receipt_kind(kind: ReceiptKind) -> Self {
+        match kind {
+            ReceiptKind::Commons => CreditDimension::Externality,
+            ReceiptKind::Settlement | ReceiptKind::Vcg => CreditDimension::FinancialDefault,
+        }
+    }
+
     /// Every defined dimension, in canonical (sorted) order.
     pub const ALL: [CreditDimension; 2] = [
         CreditDimension::FinancialDefault,
@@ -165,64 +176,231 @@ pub enum Polarity {
 /// One recompute-verified outcome attributable to an identity, scoring a single
 /// dimension.
 ///
-/// `weight_micro` is the (already recompute-verified) economic magnitude in
-/// micro-USD; `receipt_hash` binds the event to the verified receipt that
-/// justifies it, so provenance is re-checkable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// # Sealed: only a recompute mints one
+///
+/// Every field is private and there is no public constructor. A `CreditEvent`
+/// exists only where [`nucleus_recompute`] minted a sealed witness — a
+/// [`RecomputeMatch`] or a [`RecomputeDivergence`] — and the weight and
+/// provenance hash are read **off that witness**, never supplied by a caller.
+/// So the type's presence is itself the claim that a proven kernel re-derived
+/// the receipt behind it.
+///
+/// Before this seal, four `pub fn honest_settlement(weight, hash)`-shaped
+/// constructors took an arbitrary `u64` and an arbitrary 32 bytes, so any crate
+/// in the workspace could mint unbounded standing out of nothing. That is the
+/// **C-3** shape exactly: evidence whose constructor is public is not evidence.
+///
+/// ```compile_fail
+/// // Does NOT compile: the fields are private and no literal is nameable.
+/// use nucleus_creditworthiness::{CreditEvent, CreditDimension, Polarity};
+/// let forged = CreditEvent {
+///     dimension: CreditDimension::FinancialDefault,
+///     polarity: Polarity::Credit,
+///     weight_micro: u64::MAX,
+///     receipt_hash: [0u8; 32],
+/// };
+/// ```
+///
+/// A `compile_fail` doctest passes when the snippet fails for ANY reason, so on
+/// its own it proves nothing about *why*. What establishes the reason is
+/// perturbation, and it was run rather than assumed: making the four fields
+/// `pub` again makes this exact snippet COMPILE, so the failure depends on the
+/// seal and on nothing else. (Measured 2026-09-15; the same discipline
+/// `portcullis_effects::authority::Authority` documents for its own snippets,
+/// and A-19 applied to a doctest.)
+///
+/// `Deserialize` is deliberately absent for the same reason: a derived
+/// `Deserialize` is a public constructor that accepts arbitrary bytes, which
+/// would reopen every hole the private fields just closed. The durable ledger
+/// round-trips through a private wire type instead — see [`crate::store`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub struct CreditEvent {
     /// Which creditworthiness dimension this event scores.
-    pub dimension: CreditDimension,
+    dimension: CreditDimension,
     /// Whether it builds or destroys standing.
-    pub polarity: Polarity,
+    polarity: Polarity,
     /// Recompute-verified economic magnitude, micro-USD.
-    pub weight_micro: u64,
+    weight_micro: u64,
     /// Content hash of the verified receipt this event was derived from.
-    pub receipt_hash: [u8; 32],
+    receipt_hash: [u8; 32],
 }
 
 impl CreditEvent {
-    /// An honest, recompute-matched settlement worth `weight_micro` — builds
-    /// financial standing.
-    pub fn honest_settlement(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
+    /// Which creditworthiness dimension this event scores.
+    pub fn dimension(&self) -> CreditDimension {
+        self.dimension
+    }
+
+    /// Whether this event builds or destroys standing.
+    pub fn polarity(&self) -> Polarity {
+        self.polarity
+    }
+
+    /// Recompute-verified economic magnitude, micro-USD.
+    pub fn weight_micro(&self) -> u64 {
+        self.weight_micro
+    }
+
+    /// Content hash of the verified receipt this event was derived from.
+    pub fn receipt_hash(&self) -> [u8; 32] {
+        self.receipt_hash
+    }
+
+    /// The one in-crate constructor. `pub(crate)` so the durable store can
+    /// rebuild an event from its hash-chained ledger row; every *public* path
+    /// goes through a sealed witness below.
+    pub(crate) fn from_parts(
+        dimension: CreditDimension,
+        polarity: Polarity,
+        weight_micro: u64,
+        receipt_hash: [u8; 32],
+    ) -> Self {
         Self {
-            dimension: CreditDimension::FinancialDefault,
-            polarity: Polarity::Credit,
+            dimension,
+            polarity,
             weight_micro,
             receipt_hash,
         }
     }
 
-    /// A caught defection (recompute mismatch / fraud proof) worth
-    /// `weight_micro` — destroys financial standing.
-    pub fn caught_defection(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
-        Self {
-            dimension: CreditDimension::FinancialDefault,
-            polarity: Polarity::Debit,
+    /// Mint a **credit** from proof that a receipt recomputed.
+    ///
+    /// The receipt KIND chooses the dimension: a `Commons` receipt is the
+    /// Pigouvian / `route_to_commons` path, so a match is true-cost dues actually
+    /// routed to the commons → an **externality credit**; a `Settlement` / `Vcg`
+    /// match is honest settlement → a **financial credit**.
+    pub fn from_match(matched: &RecomputeMatch) -> Self {
+        Self::from_parts(
+            CreditDimension::for_receipt_kind(matched.kind()),
+            Polarity::Credit,
+            matched.magnitude_micro(),
+            matched.receipt_hash(),
+        )
+    }
+
+    /// Mint a **debit** from proof that a receipt diverged — a caught defection
+    /// (or, on the commons path, an externality dumped rather than routed).
+    ///
+    /// The weight is the witness's declared-input magnitude, so the lie cannot
+    /// shrink its own penalty by under-declaring what it claimed.
+    pub fn from_divergence(diverged: &RecomputeDivergence) -> Self {
+        Self::from_parts(
+            CreditDimension::for_receipt_kind(diverged.kind()),
+            Polarity::Debit,
+            diverged.magnitude_micro(),
+            diverged.receipt_hash(),
+        )
+    }
+}
+
+/// Test-only minters.
+///
+/// `#[cfg(test)]` rather than a feature, so these do not exist in any shipping
+/// build and cannot be reached from outside this crate even by accident — the
+/// stronger form of the guarantee `test-helpers is not reachable from a shipping
+/// build` gates elsewhere in the workspace.
+///
+/// The property tests below need events with ARBITRARY (dimension, polarity,
+/// weight) to exercise the monoid and join-semilattice laws over membership a
+/// real recompute would never produce in one run. That is a legitimate need and
+/// a separate one from minting standing, which is why it gets a separate, unshipped door.
+#[cfg(test)]
+impl CreditEvent {
+    pub(crate) fn for_test(
+        dimension: CreditDimension,
+        polarity: Polarity,
+        weight_micro: u64,
+        receipt_hash: [u8; 32],
+    ) -> Self {
+        Self::from_parts(dimension, polarity, weight_micro, receipt_hash)
+    }
+
+    pub(crate) fn test_honest_settlement(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
+        Self::for_test(
+            CreditDimension::FinancialDefault,
+            Polarity::Credit,
             weight_micro,
             receipt_hash,
+        )
+    }
+
+    pub(crate) fn test_caught_defection(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
+        Self::for_test(
+            CreditDimension::FinancialDefault,
+            Polarity::Debit,
+            weight_micro,
+            receipt_hash,
+        )
+    }
+
+    pub(crate) fn test_externality_internalized(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
+        Self::for_test(
+            CreditDimension::Externality,
+            Polarity::Credit,
+            weight_micro,
+            receipt_hash,
+        )
+    }
+
+    pub(crate) fn test_externality_dumped(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
+        Self::for_test(
+            CreditDimension::Externality,
+            Polarity::Debit,
+            weight_micro,
+            receipt_hash,
+        )
+    }
+}
+
+/// The **only** deserializable form of a [`CreditEvent`]: inert, carries no
+/// authority, and says exactly what it is.
+///
+/// A durable ledger has to read its own rows back, so the bytes must parse into
+/// *something*. Deriving `Deserialize` on `CreditEvent` itself would make that
+/// something a public constructor accepting arbitrary input — the hole the seal
+/// exists to close. Instead the bytes parse into this, and the only way across
+/// to a real `CreditEvent` is [`crate::ledger::LedgerEntry`]'s hash-chain check,
+/// which re-derives `this_hash` over these fields and refuses a row whose bytes
+/// were edited.
+///
+/// **A-3**, in the shape this crate kept hitting: "parsed" and "verified" are
+/// different facts and must be different types, or the first silently stands in
+/// for the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnverifiedCreditEvent {
+    /// Which creditworthiness dimension the row claims to score.
+    pub dimension: CreditDimension,
+    /// Whether the row claims to build or destroy standing.
+    pub polarity: Polarity,
+    /// The row's claimed magnitude, micro-USD.
+    pub weight_micro: u64,
+    /// The row's claimed receipt provenance hash.
+    pub receipt_hash: [u8; 32],
+}
+
+impl UnverifiedCreditEvent {
+    /// Project a minted event down to its inert wire form (always safe: this
+    /// direction drops authority rather than conjuring it).
+    pub fn of(event: &CreditEvent) -> Self {
+        Self {
+            dimension: event.dimension(),
+            polarity: event.polarity(),
+            weight_micro: event.weight_micro(),
+            receipt_hash: event.receipt_hash(),
         }
     }
 
-    /// Externality dues paid to the commons worth `weight_micro` — builds
-    /// standing on the **active** externality dimension (regenerative by default).
-    pub fn externality_internalized(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
-        Self {
-            dimension: CreditDimension::Externality,
-            polarity: Polarity::Credit,
-            weight_micro,
-            receipt_hash,
-        }
-    }
-
-    /// An uncompensated externality dumped on the commons worth `weight_micro` —
-    /// destroys standing on the **active** externality dimension.
-    pub fn externality_dumped(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
-        Self {
-            dimension: CreditDimension::Externality,
-            polarity: Polarity::Debit,
-            weight_micro,
-            receipt_hash,
-        }
+    /// Cross back to a real [`CreditEvent`]. `pub(crate)` and deliberately
+    /// unexported: the single caller is the ledger's chain verification, which
+    /// has already re-derived the entry hash over exactly these bytes.
+    pub(crate) fn assume_chain_verified(self) -> CreditEvent {
+        CreditEvent::from_parts(
+            self.dimension,
+            self.polarity,
+            self.weight_micro,
+            self.receipt_hash,
+        )
     }
 }
 
@@ -258,7 +436,23 @@ impl DimAcc {
 /// [`CreditFile::default`] (empty) is the monoid identity; [`CreditFile::merge`]
 /// combines two files associatively + commutatively. Build one with
 /// [`CreditFile::from_events`] or by folding with [`CreditFile::observe`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// `Deserialize` is absent for the same reason as on [`CreditEvent`]: a credit
+/// file is a DERIVED fold over verified events, so parsing one from bytes would
+/// let a peer assert a reputation total instead of earning it. Rebuild it with
+/// [`CreditFile::from_events`] over events that were minted.
+///
+/// ```compile_fail
+/// // Does NOT compile: a reputation total cannot be parsed in.
+/// use nucleus_creditworthiness::CreditFile;
+/// let forged: CreditFile =
+///     serde_json::from_str(r#"{"dims":{},"event_count":0}"#).unwrap();
+/// ```
+///
+/// Perturbation-checked like the one on [`CreditEvent`]: restoring `Deserialize`
+/// to this derive alone makes this snippet compile (measured 2026-09-15), so the
+/// failure is the missing impl and not, say, an unresolved `serde_json` in the
+/// doctest scope — the trap a `compile_fail` that was never perturbed hides.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CreditFile {
     /// Per-dimension accumulators. Absent dimension == zero (the empty file is
     /// the empty map), so equality is canonical regardless of insertion order.
@@ -276,17 +470,17 @@ impl CreditFile {
 
     /// Fold a single recompute-verified event into the file.
     pub fn observe(&mut self, event: &CreditEvent) {
-        let acc = self.dims.entry(event.dimension).or_default();
-        match event.polarity {
+        let acc = self.dims.entry(event.dimension()).or_default();
+        match event.polarity() {
             Polarity::Credit => {
                 acc.credit_micro = acc
                     .credit_micro
-                    .saturating_add(u128::from(event.weight_micro));
+                    .saturating_add(u128::from(event.weight_micro()));
             }
             Polarity::Debit => {
                 acc.debit_micro = acc
                     .debit_micro
-                    .saturating_add(u128::from(event.weight_micro));
+                    .saturating_add(u128::from(event.weight_micro()));
             }
         }
         self.event_count = self.event_count.saturating_add(1);
@@ -383,8 +577,8 @@ mod tests {
     #[test]
     fn honest_history_substitutes_for_capital() {
         let f = CreditFile::from_events(&[
-            CreditEvent::honest_settlement(400_000, h(1)),
-            CreditEvent::honest_settlement(300_000, h(2)),
+            CreditEvent::test_honest_settlement(400_000, h(1)),
+            CreditEvent::test_honest_settlement(300_000, h(2)),
         ]);
         assert_eq!(f.reputation_micro(), 700_000);
         // 700k of clean history covers 700k of a 1M defection gain → 300k bond.
@@ -395,9 +589,9 @@ mod tests {
 
     #[test]
     fn a_caught_defection_burns_standing() {
-        let mut f = CreditFile::from_events(&[CreditEvent::honest_settlement(500_000, h(1))]);
+        let mut f = CreditFile::from_events(&[CreditEvent::test_honest_settlement(500_000, h(1))]);
         assert_eq!(f.reputation_micro(), 500_000);
-        f.observe(&CreditEvent::caught_defection(200_000, h(9)));
+        f.observe(&CreditEvent::test_caught_defection(200_000, h(9)));
         assert_eq!(f.reputation_micro(), 300_000);
     }
 
@@ -406,8 +600,8 @@ mod tests {
         // More defection than credit ⇒ reputation 0, NOT a negative that would
         // perversely raise the required bond above the bare gain.
         let f = CreditFile::from_events(&[
-            CreditEvent::honest_settlement(100_000, h(1)),
-            CreditEvent::caught_defection(900_000, h(2)),
+            CreditEvent::test_honest_settlement(100_000, h(1)),
+            CreditEvent::test_caught_defection(900_000, h(2)),
         ]);
         assert_eq!(f.reputation_micro(), 0);
         assert_eq!(f.required_bond(1_000_000), AmountMicro(1_000_000));
@@ -417,8 +611,8 @@ mod tests {
     fn externality_dimension_is_active_regenerative_by_default() {
         // Externality events accumulate on their dimension...
         let f = CreditFile::from_events(&[
-            CreditEvent::externality_internalized(1_000_000, h(1)),
-            CreditEvent::externality_dumped(250_000, h(2)),
+            CreditEvent::test_externality_internalized(1_000_000, h(1)),
+            CreditEvent::test_externality_dumped(250_000, h(2)),
         ]);
         assert_eq!(f.dimension_micro(CreditDimension::Externality), 750_000);
         // ...and now CONTRIBUTE to the bond-substituting reputation: routing
@@ -435,22 +629,34 @@ mod tests {
         // Financial + externality standing compose into one bond-substituting
         // reputation — conscience and commerce pulling the same direction.
         let f = CreditFile::from_events(&[
-            CreditEvent::honest_settlement(400_000, h(1)),
-            CreditEvent::externality_internalized(300_000, h(2)),
+            CreditEvent::test_honest_settlement(400_000, h(1)),
+            CreditEvent::test_externality_internalized(300_000, h(2)),
         ]);
         assert_eq!(f.reputation_micro(), 700_000);
     }
 
+    /// A credit file still EXPORTS, and is rebuilt by re-folding its events —
+    /// never by parsing a total back in.
+    ///
+    /// This replaced a `serde_round_trips` test that asserted
+    /// `from_str::<CreditFile>(&to_string(&f)) == f`. That round-trip was the
+    /// hole, not a feature: it is exactly the operation by which a peer asserts a
+    /// reputation instead of earning one. The half that outside code legitimately
+    /// needs (publish a file) is kept; the half that mints standing from bytes is
+    /// gone, and `credit_file_cannot_be_deserialized` below pins that it stays gone.
     #[test]
-    fn serde_round_trips() {
-        let f = CreditFile::from_events(&[
-            CreditEvent::honest_settlement(123, h(1)),
-            CreditEvent::caught_defection(45, h(2)),
-            CreditEvent::externality_internalized(9, h(3)),
-        ]);
+    fn serializes_for_export_and_rebuilds_by_refolding() {
+        let events = [
+            CreditEvent::test_honest_settlement(123, h(1)),
+            CreditEvent::test_caught_defection(45, h(2)),
+            CreditEvent::test_externality_internalized(9, h(3)),
+        ];
+        let f = CreditFile::from_events(&events);
+        // Export still works — the verifier service publishes these.
         let json = serde_json::to_string(&f).unwrap();
-        let back: CreditFile = serde_json::from_str(&json).unwrap();
-        assert_eq!(f, back);
+        assert!(json.contains("event_count"));
+        // The supported way back is a re-fold, which is value-identical.
+        assert_eq!(f, CreditFile::from_events(&events));
     }
 
     // ── Property tests: the credit file is a commutative monoid ──────────────
@@ -535,7 +741,7 @@ mod tests {
         ) {
             let before = CreditFile::from_events(&evs);
             let mut after = before.clone();
-            after.observe(&CreditEvent::honest_settlement(extra, [seed; 32]));
+            after.observe(&CreditEvent::test_honest_settlement(extra, [seed; 32]));
             prop_assert!(after.reputation_micro() >= before.reputation_micro());
             prop_assert!(after.required_bond(gain).0 <= before.required_bond(gain).0);
         }
@@ -550,7 +756,7 @@ mod tests {
         ) {
             let before = CreditFile::from_events(&evs);
             let mut after = before.clone();
-            after.observe(&CreditEvent::caught_defection(extra, [seed; 32]));
+            after.observe(&CreditEvent::test_caught_defection(extra, [seed; 32]));
             prop_assert!(after.reputation_micro() <= before.reputation_micro());
             prop_assert!(after.required_bond(gain).0 >= before.required_bond(gain).0);
         }
@@ -570,11 +776,11 @@ mod tests {
             let before = CreditFile::from_events(&evs);
             let mut after = before.clone();
             if ext_pol {
-                after.observe(&CreditEvent::externality_internalized(ext_weight, [seed; 32]));
+                after.observe(&CreditEvent::test_externality_internalized(ext_weight, [seed; 32]));
                 prop_assert!(after.reputation_micro() >= before.reputation_micro());
                 prop_assert!(after.required_bond(gain).0 <= before.required_bond(gain).0);
             } else {
-                after.observe(&CreditEvent::externality_dumped(ext_weight, [seed; 32]));
+                after.observe(&CreditEvent::test_externality_dumped(ext_weight, [seed; 32]));
                 prop_assert!(after.reputation_micro() <= before.reputation_micro());
                 prop_assert!(after.required_bond(gain).0 >= before.required_bond(gain).0);
             }

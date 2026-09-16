@@ -244,6 +244,7 @@ async fn fresh_db_state() -> AppState {
         witness: None,
         agent_card: None,
         credit_store: None,
+        credit_ledger_root: None,
     }
 }
 
@@ -562,6 +563,7 @@ async fn signed_state() -> AppState {
         witness: None,
         agent_card: None,
         credit_store: None,
+        credit_ledger_root: None,
     }
 }
 
@@ -723,6 +725,7 @@ async fn unsigned_sth_path_still_works_without_signer() {
         witness: None,
         agent_card: None,
         credit_store: None,
+        credit_ledger_root: None,
     };
     let resp = build_app(state)
         .oneshot(
@@ -921,6 +924,61 @@ fn honest_settlement_receipt(
     })
 }
 
+/// The counterparty every accrual test countersigns with. A DISTINCT key from
+/// any submitter, so the two-party admission check is genuinely exercised rather
+/// than satisfied by a self-countersignature.
+fn peer() -> ed25519_dalek::SigningKey {
+    test_key(200)
+}
+
+/// A fixed session for countersigned test clearings.
+fn test_session() -> nucleus_receipt::Session {
+    nucleus_receipt::Session {
+        session_id: "spiffe://test/countersigned".into(),
+        issuer_kid: "test-kid".into(),
+        issued_at_micros: 1_717_000_000_000_000,
+        parent_chain: vec![],
+    }
+}
+
+/// A genuinely countersigned clearing: `issuer` signs the receipt, `counter`
+/// signs the SAME canonical bytes. Both signatures are real, so a Match is real.
+fn countersigned(
+    r: &nucleus_recompute::ClearingReceipt,
+    issuer: &ed25519_dalek::SigningKey,
+    counter: &ed25519_dalek::SigningKey,
+) -> nucleus_recompute::envelope::CountersignedClearing {
+    use ed25519_dalek::Signer as _;
+    let receipt = nucleus_receipt::Receipt::sign(
+        test_session(),
+        vec![nucleus_recompute::envelope::to_economic_projection(r)],
+        issuer,
+    );
+    let canonical =
+        nucleus_receipt::canonical_signing_bytes(&receipt.session, &receipt.projections);
+    let sig = counter.sign(&canonical);
+    nucleus_recompute::envelope::CountersignedClearing {
+        receipt,
+        issuer_pubkey_hex: hex::encode(issuer.verifying_key().to_bytes()),
+        countersigner_pubkey_hex: hex::encode(counter.verifying_key().to_bytes()),
+        countersignature_b64: base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            sig.to_bytes(),
+        ),
+    }
+}
+
+/// A countersigned honest settlement, as the JSON the accrue endpoint takes.
+fn countersigned_json(
+    price_micro: u64,
+    delivered_bps: u64,
+    issuer: &ed25519_dalek::SigningKey,
+    counter: &ed25519_dalek::SigningKey,
+) -> serde_json::Value {
+    let r = honest_settlement_receipt(price_micro, delivered_bps);
+    serde_json::to_value(countersigned(&r, issuer, counter)).expect("serialize")
+}
+
 /// An `AppState` whose credit ledger is a fresh store opened at `path`.
 /// Returned by value; `.oneshot()` consumes the router so the store handle drops
 /// before the next call reopens the same path (redb is single-handle).
@@ -1003,11 +1061,73 @@ fn signed_accrue_request(
     accrue_with_headers(path_id, bytes, Some(&pk), Some(&sig))
 }
 
-/// GET the (public) standing for `id`.
+/// GET the (public) standing for `id`. No query string since #2524: the bond
+/// is priced against the agent's REGISTERED ceiling, so there is nothing left
+/// for a reader to supply.
 fn standing_request(id: &str) -> Request<Body> {
     Request::builder()
-        .uri(format!("/v1/credit/{id}?max_defection_gain_micro=1000000"))
+        .uri(format!("/v1/credit/{id}"))
         .body(Body::empty())
+        .unwrap()
+}
+
+// ── Bond registration kit (#2524) ────────────────────────────────────────────
+
+/// The canonical ledger root the test service is configured with.
+const TEST_ROOT: [u8; 32] = [7u8; 32];
+
+/// An `AppState` with a shared credit store AND a configured canonical root,
+/// so `POST /v1/bond/{id}` is live. Without the root that route 503s, which is
+/// itself asserted below.
+fn bond_state(path: &std::path::Path) -> AppState {
+    let store = std::sync::Arc::new(
+        nucleus_creditworthiness::store::CreditLedgerStore::open(path).expect("open credit ledger"),
+    );
+    AppState {
+        credit_store: Some(store),
+        credit_ledger_root: Some(nucleus_witness_olog::LedgerRoot(TEST_ROOT)),
+        ..AppState::default()
+    }
+}
+
+/// An escrow attestation signed by `sk` for its own derived identity.
+fn escrow_json(
+    sk: &ed25519_dalek::SigningKey,
+    amount_micro: u64,
+    bid_ceiling_micro: u64,
+    root: [u8; 32],
+) -> serde_json::Value {
+    let att = nucleus_witness_olog::sign_escrow(
+        sk,
+        nucleus_witness_olog::EscrowAttestation {
+            agent_id: key_id(sk),
+            rail: "x402-evm".into(),
+            escrow_ref: "0xlock".into(),
+            amount_micro: nucleus_witness_olog::AmountMicro(amount_micro),
+            pinned_root: nucleus_witness_olog::LedgerRoot(root),
+            bid_ceiling_micro,
+            kid: "escrow-1".into(),
+            sig_b64: String::new(),
+        },
+    );
+    serde_json::to_value(att).expect("serialize attestation")
+}
+
+/// `POST /v1/bond/{path_id}` with the two detached-Ed25519 auth headers.
+fn signed_bond_request(
+    sk: &ed25519_dalek::SigningKey,
+    path_id: &str,
+    body: &serde_json::Value,
+) -> Request<Body> {
+    let bytes = serde_json::to_vec(body).unwrap();
+    let (pk, sig) = sign_bytes(sk, &bytes);
+    Request::builder()
+        .method("POST")
+        .uri(format!("/v1/bond/{path_id}"))
+        .header("content-type", "application/json")
+        .header("x-nucleus-agent-pubkey", pk)
+        .header("x-nucleus-signature", sig)
+        .body(Body::from(bytes))
         .unwrap()
 }
 
@@ -1020,11 +1140,11 @@ async fn credit_accrue_then_standing_persists_across_reopen() {
     let sk = test_key(1);
     let id = key_id(&sk);
     let receipts = vec![
-        honest_settlement_receipt(400_000, 10_000),
-        honest_settlement_receipt(300_000, 10_000),
+        countersigned_json(400_000, 10_000, &sk, &peer()),
+        countersigned_json(300_000, 10_000, &sk, &peer()),
     ];
-    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
-    let resp = build_app(credit_state(&path))
+    let body = json!({ "receipts": receipts });
+    let resp = build_app(bond_state(&path))
         .oneshot(signed_accrue_request(&sk, &id, &body))
         .await
         .unwrap();
@@ -1032,15 +1152,36 @@ async fn credit_accrue_then_standing_persists_across_reopen() {
     let j = read_json(resp.into_body()).await;
     assert_eq!(j["reputation_micro"], 700_000);
     assert_eq!(j["event_count"], 2);
-    assert_eq!(j["required_bond_micro"], 300_000);
+    // No lock registered ⇒ NOT PRICED. Asserted as null rather than 0: #2524's
+    // whole point is that "no ceiling on record" is not "a ceiling of zero".
+    assert!(j["bond"].is_null(), "unpriced without a registered lock");
     assert_eq!(j["appended"], 2);
     assert_eq!(j["head_hash_hex"].as_str().unwrap().len(), 64);
     // Instance #1's router (and its store handle) is dropped at this `;`.
 
+    // Instance #1b: register a lock. 700k of standing against a 1M ceiling
+    // leaves a 300k floor, so 300k of collateral is exactly enough — the
+    // reputation-substitutes-for-capital kernel, reached end to end.
+    let resp = build_app(bond_state(&path))
+        .oneshot(signed_bond_request(
+            &sk,
+            &id,
+            &escrow_json(&sk, 300_000, 1_000_000, TEST_ROOT),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["bond"]["required_bond_micro"], 300_000);
+    assert_eq!(j["bond"]["deters"], true);
+    // The endpoint says out loud that it did not confirm the rail.
+    assert_eq!(j["rail_confirmed"], false);
+
     // Instance #2: a DIFFERENT store opened at the SAME path — the persisted
-    // standing comes back, proving the reopen survives (end-to-end durability).
-    // The GET is PUBLIC: no signature, queried by the same hex id.
-    let resp = build_app(credit_state(&path))
+    // standing AND the registered lock both come back, proving the reopen
+    // survives (end-to-end durability). The GET is PUBLIC: no signature,
+    // queried by the same hex id.
+    let resp = build_app(bond_state(&path))
         .oneshot(standing_request(&id))
         .await
         .unwrap();
@@ -1048,8 +1189,259 @@ async fn credit_accrue_then_standing_persists_across_reopen() {
     let j = read_json(resp.into_body()).await;
     assert_eq!(j["reputation_micro"], 700_000);
     assert_eq!(j["event_count"], 2);
-    assert_eq!(j["required_bond_micro"], 300_000);
-    assert_eq!(j["max_defection_gain_micro"], 1_000_000);
+    assert_eq!(j["bond"]["bid_ceiling_micro"], 1_000_000);
+    assert_eq!(j["bond"]["locked_micro"], 300_000);
+    assert_eq!(j["bond"]["required_bond_micro"], 300_000);
+    assert_eq!(j["bond"]["deters"], true);
+}
+
+// ── #2524: the bond is priced against a REGISTERED ceiling ───────────────────
+
+/// **The defect, as a test.** Before #2524 an agent named its own
+/// `max_defection_gain_micro` on the request that priced its bond — it declared
+/// the number its collateral was measured against. Now that number comes from a
+/// lock the agent SIGNED, and a request that tries to supply one is refused
+/// outright rather than quietly ignored.
+#[tokio::test]
+async fn an_agent_cannot_price_its_own_bond_by_asking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let sk = test_key(1);
+    let id = key_id(&sk);
+    let receipts = vec![countersigned_json(400_000, 10_000, &sk, &peer())];
+
+    // The pre-#2524 body shape. 400 — not a silent drop.
+    let resp = build_app(bond_state(&path))
+        .oneshot(signed_accrue_request(
+            &sk,
+            &id,
+            &json!({ "receipts": receipts, "max_defection_gain_micro": u64::MAX }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "a caller-supplied gain is refused, not ignored"
+    );
+
+    // And with the field gone the accrual works, priced at nothing until a
+    // lock exists.
+    let resp = build_app(bond_state(&path))
+        .oneshot(signed_accrue_request(
+            &sk,
+            &id,
+            &json!({ "receipts": receipts }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(read_json(resp.into_body()).await["bond"].is_null());
+}
+
+/// A lock registered for somebody else is refused, even though the request
+/// signature and the attestation signature are both valid and both the
+/// caller's. This is the confused-deputy case one layer in from the path check.
+#[tokio::test]
+async fn bond_register_for_another_agent_is_422() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let sk = test_key(1);
+    let id = key_id(&sk);
+
+    // Attestation signed by `sk`, but naming `other` as the agent.
+    let other = key_id(&test_key(2));
+    let mut att = nucleus_witness_olog::EscrowAttestation {
+        agent_id: other,
+        rail: "x402-evm".into(),
+        escrow_ref: "0xlock".into(),
+        amount_micro: nucleus_witness_olog::AmountMicro(1_000_000),
+        pinned_root: nucleus_witness_olog::LedgerRoot(TEST_ROOT),
+        bid_ceiling_micro: 1_000_000,
+        kid: "escrow-1".into(),
+        sig_b64: String::new(),
+    };
+    att = nucleus_witness_olog::sign_escrow(&sk, att);
+    let body = serde_json::to_value(att).unwrap();
+
+    let resp = build_app(bond_state(&path))
+        .oneshot(signed_bond_request(&sk, &id, &body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// Registering under a path that is not the signer's identity is the
+/// confused-deputy case, and 403s before anything is read.
+#[tokio::test]
+async fn bond_register_under_another_path_is_403() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let sk = test_key(1);
+    let victim = key_id(&test_key(2));
+
+    let resp = build_app(bond_state(&path))
+        .oneshot(signed_bond_request(
+            &sk,
+            &victim,
+            &escrow_json(&sk, 1_000_000, 1_000_000, TEST_ROOT),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// Collateral locked against a fork is not collateral here — non-portability,
+/// end to end.
+#[tokio::test]
+async fn bond_register_on_a_forked_root_is_422() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let sk = test_key(1);
+    let id = key_id(&sk);
+
+    let resp = build_app(bond_state(&path))
+        .oneshot(signed_bond_request(
+            &sk,
+            &id,
+            &escrow_json(&sk, 1_000_000, 1_000_000, [9u8; 32]),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// A fresh identity cannot register a ceiling its collateral does not cover —
+/// no Sybil discount, through the API.
+#[tokio::test]
+async fn bond_register_under_collateralized_is_422() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let sk = test_key(1);
+    let id = key_id(&sk);
+
+    let resp = build_app(bond_state(&path))
+        .oneshot(signed_bond_request(
+            &sk,
+            &id,
+            &escrow_json(&sk, 999_999, 1_000_000, TEST_ROOT),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // One micro more clears it, so the refusal above is the floor and not a
+    // blanket rejection — the boundary, not the neighbourhood.
+    let resp = build_app(bond_state(&path))
+        .oneshot(signed_bond_request(
+            &sk,
+            &id,
+            &escrow_json(&sk, 1_000_000, 1_000_000, TEST_ROOT),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// Without a configured canonical root the route 503s rather than registering
+/// locks whose non-portability nobody checked. The fail-closed direction: an
+/// unconfigured root must not read as "every root is fine".
+#[tokio::test]
+async fn bond_register_503s_without_a_configured_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let sk = test_key(1);
+    let id = key_id(&sk);
+
+    // `credit_state` has a store but no root.
+    let resp = build_app(credit_state(&path))
+        .oneshot(signed_bond_request(
+            &sk,
+            &id,
+            &escrow_json(&sk, 1_000_000, 1_000_000, TEST_ROOT),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// **A lock stops pricing when the standing behind it goes.** The lock is
+/// re-checked against CURRENT reputation on every read, so a caught defection
+/// that drops an agent below its registered floor unprices its bond — rather
+/// than leaving a pass that was true at registration time.
+#[tokio::test]
+async fn a_caught_defection_unprices_a_lock_that_leaned_on_reputation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let sk = test_key(1);
+    let id = key_id(&sk);
+    let state = bond_state(&path);
+
+    // Honest history first: 700k of standing.
+    let receipts = vec![
+        countersigned_json(400_000, 10_000, &sk, &peer()),
+        countersigned_json(300_000, 10_000, &sk, &peer()),
+    ];
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(
+            &sk,
+            &id,
+            &json!({ "receipts": receipts }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Register a 1M ceiling backed by only 300k of capital — the rest is
+    // reputation. Legitimate now.
+    let resp = build_app(state.clone())
+        .oneshot(signed_bond_request(
+            &sk,
+            &id,
+            &escrow_json(&sk, 300_000, 1_000_000, TEST_ROOT),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "leaning on reputation is allowed"
+    );
+
+    // The counterparty records a defection, burning the standing the lock
+    // leaned on. A defection is a receipt RECOMPUTE catches, not merely a poor
+    // delivery: the defector inflates its own take and the kernel disagrees.
+    let mut tampered = honest_settlement_receipt(700_000, 10_000);
+    if let nucleus_recompute::ClearingReceipt::Settlement(ref mut c) = tampered {
+        c.seller_gross += 1;
+    }
+    let defection = serde_json::to_value(countersigned(&tampered, &sk, &peer())).unwrap();
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(
+            &peer(),
+            &id,
+            &json!({ "receipts": [defection] }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "the counterparty may write this ledger"
+    );
+
+    // The SAME stored lock no longer prices: 300k of capital does not cover a
+    // 1M ceiling without the reputation that just went.
+    let resp = build_app(state)
+        .oneshot(standing_request(&id))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = read_json(resp.into_body()).await;
+    assert!(
+        j["bond"].is_null(),
+        "a lock whose reputation collapsed must stop pricing, not keep its old pass"
+    );
 }
 
 #[tokio::test]
@@ -1057,7 +1449,7 @@ async fn credit_endpoints_503_when_disabled_but_stateless_still_works() {
     // accrue → 503 persistence_disabled. The persistence check precedes auth, so
     // a disabled deployment still reports 503 (not 401) — and an unsigned probe
     // here proves the ordering.
-    let body = json!({ "receipts": [], "max_defection_gain_micro": 1_000_000 });
+    let body = json!({ "receipts": [] });
     let resp = build_app(AppState::default())
         .oneshot(
             Request::builder()
@@ -1077,7 +1469,7 @@ async fn credit_endpoints_503_when_disabled_but_stateless_still_works() {
     let resp = build_app(AppState::default())
         .oneshot(
             Request::builder()
-                .uri("/v1/credit/agent-a?max_defection_gain_micro=1000000")
+                .uri("/v1/credit/agent-a")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1120,8 +1512,8 @@ async fn credit_accrue_replay_idempotent_under_auth() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let receipts = vec![honest_settlement_receipt(400_000, 10_000)];
-    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
+    let receipts = vec![countersigned_json(400_000, 10_000, &sk, &peer())];
+    let body = json!({ "receipts": receipts });
     // Sign ONCE; the captured (bytes, pk, sig) is replayed verbatim below.
     let bytes = serde_json::to_vec(&body).unwrap();
     let (pk, sig) = sign_bytes(&sk, &bytes);
@@ -1169,8 +1561,8 @@ async fn credit_standing_is_isolated_per_identity() {
     // Accrue under identity A only (signed by A).
     let sk_a = test_key(1);
     let id_a = key_id(&sk_a);
-    let receipts = vec![honest_settlement_receipt(600_000, 10_000)];
-    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
+    let receipts = vec![countersigned_json(600_000, 10_000, &sk_a, &peer())];
+    let body = json!({ "receipts": receipts });
     let resp = build_app(state.clone())
         .oneshot(signed_accrue_request(&sk_a, &id_a, &body))
         .await
@@ -1188,7 +1580,7 @@ async fn credit_standing_is_isolated_per_identity() {
     let j = read_json(resp.into_body()).await;
     assert_eq!(j["reputation_micro"], 0);
     assert_eq!(j["event_count"], 0);
-    assert_eq!(j["required_bond_micro"], 1_000_000);
+    assert!(j["bond"].is_null(), "a stranger has no registered lock");
 }
 
 #[tokio::test]
@@ -1197,29 +1589,153 @@ async fn credit_accrue_caught_defection_burns_standing_through_the_api() {
     let path = dir.path().join("credit.redb");
     let state = shared_credit_state(&path);
 
-    // One honest 1M settlement and one tampered settlement (seller_gross + 1)
-    // that recompute catches as a defection — the recompute IS the fraud proof.
-    // The agent signs its OWN history; recompute is the judge, so a caught
-    // defection still burns the (authenticated) standing.
-    let sk = test_key(1);
-    let id = key_id(&sk);
+    // The defection is submitted BY THE COUNTERPARTY, against the defector's
+    // ledger. This is #2510's whole point: under the old self-write binding only
+    // the key-holder could append to its own history, so this debit was
+    // adversarially unreachable — a defector simply never submitted the receipt
+    // that convicted it. The counterparty can now, because it holds a clearing
+    // the defector signed.
+    let defector = test_key(1);
+    let defector_id = key_id(&defector);
+    let counterparty = test_key(2);
+
+    let honest = honest_settlement_receipt(1_000_000, 10_000);
     let mut tampered = honest_settlement_receipt(1_000_000, 10_000);
     if let nucleus_recompute::ClearingReceipt::Settlement(ref mut c) = tampered {
-        c.seller_gross += 1;
+        c.seller_gross += 1; // the defector inflates its own take
     }
-    let receipts = vec![honest_settlement_receipt(1_000_000, 10_000), tampered];
-    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 2_000_000 });
-    let resp = build_app(state)
-        .oneshot(signed_accrue_request(&sk, &id, &body))
+    // The defector ISSUES both (it signs its own claims); the counterparty
+    // countersigns. Recompute, not either signature, decides which is a lie.
+    let receipts = vec![
+        serde_json::to_value(countersigned(&honest, &defector, &counterparty)).unwrap(),
+        serde_json::to_value(countersigned(&tampered, &defector, &counterparty)).unwrap(),
+    ];
+    let body = json!({ "receipts": receipts });
+
+    // Submitted by the COUNTERPARTY's key, against the DEFECTOR's id.
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&counterparty, &defector_id, &body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let j = read_json(resp.into_body()).await;
-    // 1,000,000 honest credit − 1,000,000 caught-defection debit = 0 standing;
-    // both receipts minted an event.
+    // 1,000,000 honest credit − 1,000,000 caught-defection debit = 0 standing.
     assert_eq!(j["reputation_micro"], 0);
     assert_eq!(j["event_count"], 2);
     assert_eq!(j["appended"], 2);
+
+    // And it is visible on the defector's public standing — acceptance
+    // criterion: "a counterparty-submitted defection appears in GET /v1/credit/{id}".
+    let resp = build_app(state)
+        .oneshot(standing_request(&defector_id))
+        .await
+        .unwrap();
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["event_count"], 2);
+    assert_eq!(j["reputation_micro"], 0);
+}
+
+/// A single-signed receipt is refused: 422, nothing written.
+#[tokio::test]
+async fn credit_accrue_single_signed_receipt_is_422() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let state = shared_credit_state(&path);
+
+    let sk = test_key(1);
+    let id = key_id(&sk);
+    // The OLD wire shape: a bare, unsigned ClearingReceipt.
+    let body = json!({
+        "receipts": [honest_settlement_receipt(400_000, 10_000)]
+    });
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&sk, &id, &body))
+        .await
+        .unwrap();
+    // It cannot even deserialize into a two-party envelope.
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // A well-formed envelope whose countersignature is absent is the sharper
+    // case: it parses, and is refused on the signature.
+    let mut unsigned = countersigned(&honest_settlement_receipt(400_000, 10_000), &sk, &peer());
+    unsigned.countersignature_b64 =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 64]);
+    let body = json!({
+        "receipts": [serde_json::to_value(unsigned).unwrap()]
+    });
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&sk, &id, &body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["error"], "verification_failed");
+
+    // Nothing written by either attempt.
+    let resp = build_app(state)
+        .oneshot(standing_request(&id))
+        .await
+        .unwrap();
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["event_count"], 0);
+}
+
+/// A self-countersigned clearing is refused — the self-write hole wearing a
+/// second signature.
+#[tokio::test]
+async fn credit_accrue_self_countersigned_is_422() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let state = shared_credit_state(&path);
+
+    let sk = test_key(1);
+    let id = key_id(&sk);
+    let body = json!({
+        "receipts": [countersigned_json(400_000, 10_000, &sk, &sk)]
+    });
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&sk, &id, &body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let resp = build_app(state)
+        .oneshot(standing_request(&id))
+        .await
+        .unwrap();
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["event_count"], 0);
+}
+
+/// A third party who signed nothing can write nobody's ledger, even holding a
+/// genuinely countersigned clearing between two other parties.
+#[tokio::test]
+async fn credit_accrue_by_a_non_party_is_422() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let state = shared_credit_state(&path);
+
+    let alice = test_key(1);
+    let bob = test_key(2);
+    let mallory = test_key(3);
+    let alice_id = key_id(&alice);
+
+    // A real clearing between Alice and Bob, replayed by Mallory.
+    let body = json!({
+        "receipts": [countersigned_json(400_000, 10_000, &alice, &bob)]
+    });
+    let resp = build_app(state.clone())
+        .oneshot(signed_accrue_request(&mallory, &alice_id, &body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let resp = build_app(state)
+        .oneshot(standing_request(&alice_id))
+        .await
+        .unwrap();
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["event_count"], 0, "Mallory wrote nothing");
 }
 
 // ── Authenticated-identity binding: the gap this change closes ──
@@ -1232,8 +1748,8 @@ async fn credit_accrue_unsigned_is_401_and_writes_nothing() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let receipts = vec![honest_settlement_receipt(400_000, 10_000)];
-    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
+    let receipts = vec![countersigned_json(400_000, 10_000, &sk, &peer())];
+    let body = json!({ "receipts": receipts });
     let bytes = serde_json::to_vec(&body).unwrap();
 
     // No signature headers at all → 401.
@@ -1272,7 +1788,7 @@ async fn credit_accrue_bad_signature_is_401() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let body = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk, &peer())] });
     let bytes = serde_json::to_vec(&body).unwrap();
     let pk = hex::encode(sk.verifying_key().to_bytes());
 
@@ -1321,8 +1837,8 @@ async fn credit_accrue_tampered_body_is_401() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let body_a = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
-    let body_b = json!({ "receipts": [honest_settlement_receipt(999_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body_a = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk, &peer())] });
+    let body_b = json!({ "receipts": [countersigned_json(999_000, 10_000, &sk, &peer())] });
     let bytes_a = serde_json::to_vec(&body_a).unwrap();
     let bytes_b = serde_json::to_vec(&body_b).unwrap();
     let (pk, sig_over_a) = sign_bytes(&sk, &bytes_a);
@@ -1349,26 +1865,33 @@ async fn credit_accrue_tampered_body_is_401() {
 }
 
 #[tokio::test]
-async fn credit_accrue_confused_deputy_path_mismatch_is_403() {
-    // Authenticated as K, but the path names a DIFFERENT identity → 403, and
-    // nothing is written under EITHER id.
+async fn credit_accrue_confused_deputy_non_party_subject_is_422() {
+    // Was `..._path_mismatch_is_403`, asserting that the path had to equal the
+    // submitter's own id. #2510 deliberately relaxes that — `{agent_id}` may now
+    // name the OTHER party, which is what lets a counterparty record a
+    // defection. The property it was really guarding is unchanged and asserted
+    // here in its new form: you cannot write the ledger of someone who did not
+    // sign the clearing. The check moved from "is it your own id" to "is it a
+    // party's id", which is strictly what the signatures support.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credit.redb");
     let state = shared_credit_state(&path);
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let other_id = key_id(&test_key(2));
-    let body = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    // A third identity, party to nothing.
+    let other_id = key_id(&test_key(42));
+    // A real clearing between K and its peer — K is a party, `other_id` is not.
+    let body = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk, &peer())] });
 
-    // Valid signature by K, but POST to the OTHER id's path → 403.
+    // Valid signature by K, but the path names an identity that signed nothing.
     let resp = build_app(state.clone())
         .oneshot(signed_accrue_request(&sk, &other_id, &body))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let j = read_json(resp.into_body()).await;
-    assert_eq!(j["error"], "forbidden");
+    assert_eq!(j["error"], "verification_failed");
 
     // Neither the signer's id nor the targeted id got any entry.
     for q in [&id, &other_id] {
@@ -1383,17 +1906,19 @@ async fn credit_accrue_confused_deputy_path_mismatch_is_403() {
 
 #[tokio::test]
 async fn credit_accrue_cross_identity_double_claim_is_prevented() {
-    // The Sybil/double-claim case, now PREVENTED at the API: capture identity
-    // A's fully-valid signed accrue and try to replay it under a DIFFERENT id.
-    // It cannot inflate B's standing — re-pointing requires re-signing (the
-    // attacker lacks B's key) and the path/id mismatch 403s.
+    // The Sybil/double-claim case, still PREVENTED: capture identity A's
+    // fully-valid signed accrue and replay it under a DIFFERENT id. It cannot
+    // inflate B's standing. The refusal reason changed with #2510 — B is not a
+    // signing party to A's clearing, rather than B simply not being the
+    // submitter — but the guarantee is the same, and now rests on the
+    // signatures rather than on the path.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credit.redb");
     let state = shared_credit_state(&path);
 
     let sk_a = test_key(1);
     let id_a = key_id(&sk_a);
-    let body = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk_a, &peer())] });
     let bytes = serde_json::to_vec(&body).unwrap();
     let (pk_a, sig_a) = sign_bytes(&sk_a, &bytes);
 
@@ -1409,8 +1934,8 @@ async fn credit_accrue_cross_identity_double_claim_is_prevented() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Replay A's captured envelope verbatim under B's id → 403 (path != derived
-    // id A). The same receipt cannot be claimed a second time under B.
+    // Replay A's captured envelope verbatim under B's id → 422 (B signed
+    // nothing). The same receipt cannot be claimed a second time under B.
     let id_b = key_id(&test_key(2));
     let resp = build_app(state.clone())
         .oneshot(accrue_with_headers(
@@ -1421,7 +1946,7 @@ async fn credit_accrue_cross_identity_double_claim_is_prevented() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     // B's standing is untouched; A's is intact.
     let resp = build_app(state.clone())
@@ -1446,7 +1971,7 @@ async fn credit_accrue_invalid_pubkey_is_401() {
 
     let sk = test_key(1);
     let id = key_id(&sk);
-    let body = json!({ "receipts": [honest_settlement_receipt(400_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body = json!({ "receipts": [countersigned_json(400_000, 10_000, &sk, &peer())] });
     let bytes = serde_json::to_vec(&body).unwrap();
     let (_, sig) = sign_bytes(&sk, &bytes);
 
@@ -1510,7 +2035,7 @@ async fn credit_standing_read_requires_no_signature() {
 
     let sk = test_key(3);
     let id = key_id(&sk);
-    let body = json!({ "receipts": [honest_settlement_receipt(500_000, 10_000)], "max_defection_gain_micro": 1_000_000 });
+    let body = json!({ "receipts": [countersigned_json(500_000, 10_000, &sk, &peer())] });
     let resp = build_app(state.clone())
         .oneshot(signed_accrue_request(&sk, &id, &body))
         .await
@@ -1536,13 +2061,22 @@ async fn credit_authenticated_standing_matches_stateless_post() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credit.redb");
 
-    let receipts = vec![
+    // The SAME two clearings in both wire shapes: bare for the stateless
+    // recompute endpoint, countersigned for the authenticated accrue path. The
+    // standing must agree — the fold does not care how the clearing was
+    // authenticated, only what it recomputes to.
+    let sk = test_key(1);
+    let bare = vec![
         honest_settlement_receipt(400_000, 10_000),
         honest_settlement_receipt(300_000, 10_000),
     ];
+    let receipts: Vec<serde_json::Value> = bare
+        .iter()
+        .map(|r| serde_json::to_value(countersigned(r, &sk, &peer())).unwrap())
+        .collect();
     let max = 1_000_000u64;
 
-    // Stateless recompute (no auth, no store).
+    // Stateless recompute (no auth, no store) — takes the BARE receipts.
     let resp = build_app(AppState::default())
         .oneshot(
             Request::builder()
@@ -1551,7 +2085,7 @@ async fn credit_authenticated_standing_matches_stateless_post() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::to_vec(
-                        &json!({ "receipts": receipts, "max_defection_gain_micro": max }),
+                        &json!({ "receipts": bare, "max_defection_gain_micro": max }),
                     )
                     .unwrap(),
                 ))
@@ -1562,23 +2096,48 @@ async fn credit_authenticated_standing_matches_stateless_post() {
     assert_eq!(resp.status(), StatusCode::OK);
     let stateless = read_json(resp.into_body()).await;
 
-    // Authenticated durable accrue.
-    let sk = test_key(7);
+    // Authenticated durable accrue — takes the COUNTERSIGNED ones, submitted by
+    // the issuing party (a party to every clearing, as the route requires).
     let id = key_id(&sk);
-    let resp = build_app(credit_state(&path))
+    let state = bond_state(&path);
+    let resp = build_app(state.clone())
         .oneshot(signed_accrue_request(
             &sk,
             &id,
-            &json!({ "receipts": receipts, "max_defection_gain_micro": max }),
+            &json!({ "receipts": receipts }),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let durable = read_json(resp.into_body()).await;
-
     assert_eq!(durable["reputation_micro"], stateless["reputation_micro"]);
+
+    // Since #2524 the durable side prices against a REGISTERED ceiling, so the
+    // bond halves are only comparable once one exists. Register `max` as the
+    // ceiling, fully collateralized, and the parity holds again — which is the
+    // sharper statement: the registered-ceiling path and the stateless
+    // calculator agree on `required_bond` for the same gain and the same
+    // events, so moving the gain out of the request changed WHERE the number
+    // comes from and not WHAT it is.
+    let resp = build_app(state.clone())
+        .oneshot(signed_bond_request(
+            &sk,
+            &id,
+            &escrow_json(&sk, max, max, TEST_ROOT),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "lock registers");
+
+    let resp = build_app(state)
+        .oneshot(standing_request(&id))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let standing = read_json(resp.into_body()).await;
+    assert_eq!(standing["bond"]["bid_ceiling_micro"], max);
     assert_eq!(
-        durable["required_bond_micro"],
+        standing["bond"]["required_bond_micro"],
         stateless["required_bond_micro"]
     );
 }

@@ -41,6 +41,14 @@ enum Command {
         #[arg(long)]
         workflow: Option<std::path::PathBuf>,
     },
+    /// Every CLI leaf declares the authority band it demands, and the declaration is
+    /// total both ways. Checks totality, NOT correctness: see docs/design/command-grammar.md.
+    ///
+    /// Named explicitly because the variant may not be `CommandGrammar`: clippy's
+    /// `enum_variant_names` refuses a variant repeating its enum's name, and the
+    /// documented spelling of the gate is `command-grammar`.
+    #[command(name = "command-grammar")]
+    Grammar,
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
     /// The two pins naming gatehouse must agree: `.gatehouse/pipeline.writ`'s import
@@ -366,6 +374,7 @@ mod ci_otel;
 mod ci_spec;
 mod ci_timings;
 mod clippy_config;
+mod command_grammar;
 mod convergence;
 mod coverage_floor;
 mod fly_pools;
@@ -433,6 +442,12 @@ fn main() -> Result<()> {
             action_inputs::check(&std::env::current_dir()?, network)
         }
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
+        Command::Grammar => match command_grammar::run(&std::env::current_dir()?)? {
+            0 => Ok(()),
+            // 2 is "could not look", which is never a pass. Mapped here rather than
+            // exited from inside the check, so a unit test calling it survives.
+            code => std::process::exit(code),
+        },
         Command::AssuranceRequired => assurance_required::check(&std::env::current_dir()?),
         Command::AllowlistGates { parity } => {
             let root = std::env::current_dir()?;

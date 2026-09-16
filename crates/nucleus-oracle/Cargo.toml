@@ -36,3 +36,6 @@ nucleus-rubric = { path = "../nucleus-rubric" }
 # example to mint real CreditEvents from a verified GradeReceipt (the
 # proof→reputation flywheel, end to end). Not a runtime dependency of the crate.
 nucleus-creditworthiness = { path = "../nucleus-creditworthiness" }
+# The PROVEN required_bond kernel, used directly by the dogfood examples to show
+# what accrued standing buys without minting a CreditEvent to get there (#2509).
+nucleus-witness-olog = { path = "../nucleus-witness-olog" }

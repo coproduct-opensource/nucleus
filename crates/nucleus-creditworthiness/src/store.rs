@@ -63,6 +63,8 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use thiserror::Error;
 
 use crate::ledger::{LedgerEntry, verify_chain};
+use nucleus_witness_olog::{EscrowAttestation, RegisteredLock};
+
 use crate::{CreditEvent, CreditFile};
 
 /// `(identity, seq) -> JSON(LedgerEntry)`. Tuple keys sort lexicographically, so
@@ -70,6 +72,15 @@ use crate::{CreditEvent, CreditFile};
 const ENTRIES: TableDefinition<(&str, u64), &[u8]> = TableDefinition::new("credit_entries");
 /// `(identity, receipt_hash) -> first seq seen`. Per-identity dedup.
 const SEEN: TableDefinition<(&str, &[u8]), u64> = TableDefinition::new("credit_seen");
+/// `identity -> JSON(EscrowAttestation)`. The agent's registered external lock,
+/// at most one, last write wins (re-registering raises or lowers a ceiling).
+///
+/// What is stored is the **inert wire type**, never a checked
+/// [`nucleus_witness_olog::RegisteredLock`]. A sealed evidence type that could
+/// be deserialized would have a public constructor spelled `serde` — ADR 0007
+/// **C-3**, and the reason `UnverifiedCreditEvent` exists one module over. The
+/// crossing back to evidence re-runs the checker; see [`CreditLedgerStore::lock`].
+const LOCKS: TableDefinition<&str, &[u8]> = TableDefinition::new("credit_locks");
 
 /// Errors the credit ledger store surfaces. Mirrors the house redb
 /// error-mapping (`nucleus-auction-hub-server` / `nucleus-oauth`) so the
@@ -98,6 +109,12 @@ pub enum StoreError {
     /// a tampered ledger.
     #[error("corrupt chain: {0}")]
     CorruptChain(#[from] crate::ledger::ChainError),
+    /// `put_lock` was given a checked lock and an attestation describing
+    /// different collateral. Never reachable through the intended path; it
+    /// exists so the mismatch is a refusal rather than a silent write of
+    /// whichever argument happened to be read.
+    #[error("checked lock and attestation describe different collateral")]
+    LockEvidenceMismatch,
 }
 
 /// A durable, append-only, per-identity credit ledger.
@@ -118,6 +135,11 @@ impl CreditLedgerStore {
         {
             let _ = w.open_table(ENTRIES)?;
             let _ = w.open_table(SEEN)?;
+            // Materialized here with the others: a table created lazily on
+            // first write makes the first READ on an existing database error
+            // on a missing table, which reads as "no lock" — a default that
+            // grants (ADR 0007 **B-2**), on the record that decides collateral.
+            let _ = w.open_table(LOCKS)?;
         }
         w.commit()?;
         Ok(Self { db })
@@ -142,7 +164,7 @@ impl CreditLedgerStore {
             let mut seen = w.open_table(SEEN)?;
 
             if seen
-                .get((identity, event.receipt_hash.as_slice()))?
+                .get((identity, event.receipt_hash().as_slice()))?
                 .is_some()
             {
                 // Already counted this receipt for this identity — skip.
@@ -172,7 +194,7 @@ impl CreditLedgerStore {
                 let entry = LedgerEntry::new(identity.to_string(), seq, event, ts_unix_secs, prev);
                 let bytes = serde_json::to_vec(&entry)?;
                 entries.insert((identity, seq), bytes.as_slice())?;
-                seen.insert((identity, event.receipt_hash.as_slice()), seq)?;
+                seen.insert((identity, event.receipt_hash().as_slice()), seq)?;
                 appended = Some(entry);
             }
         }
@@ -235,8 +257,81 @@ impl CreditLedgerStore {
     pub fn credit_file(&self, identity: &str) -> Result<CreditFile, StoreError> {
         let entries = self.entries(identity)?;
         verify_chain(&entries)?;
-        let events: Vec<CreditEvent> = entries.iter().map(|e| e.event).collect();
+        // `verify_chain` above already re-derived every entry hash, so each
+        // crossing here succeeds. Going through `LedgerEntry::event` anyway is
+        // what makes that a TYPE fact rather than a call-order convention: this
+        // function cannot be edited into folding unverified rows, because a
+        // `CreditEvent` is the only thing `from_events` accepts and the only way
+        // to get one from a row is the check. Belt and braces, where the braces
+        // are the part a future edit cannot quietly remove.
+        let mut events: Vec<CreditEvent> = Vec::with_capacity(entries.len());
+        for e in &entries {
+            match e.event() {
+                Some(ev) => events.push(ev),
+                None => return Err(crate::ledger::ChainError::BadHash { seq: e.seq }.into()),
+            }
+        }
         Ok(CreditFile::from_events(&events))
+    }
+
+    // ── The registered external lock ────────────────────────────────────────
+
+    /// Record `identity`'s registered lock, replacing any previous one.
+    ///
+    /// Takes a **checked** [`RegisteredLock`], not a bare attestation: the
+    /// store cannot be handed collateral nobody verified, because the only way
+    /// to obtain the argument is `nucleus_witness_olog::register_lock`. The
+    /// attestation is stored alongside so a reader can re-run that check —
+    /// `RegisteredLock` itself is deliberately not serializable.
+    ///
+    /// Last write wins. Re-registering is how a ceiling moves in either
+    /// direction, and lowering one must be as easy as raising it: an agent that
+    /// cannot reduce its exposure will instead stop using the endpoint.
+    pub fn put_lock(
+        &self,
+        identity: &str,
+        checked: &RegisteredLock,
+        attestation: &EscrowAttestation,
+    ) -> Result<(), StoreError> {
+        // The two arguments must describe the same lock. They are separate
+        // parameters because `RegisteredLock` cannot be serialized and the
+        // attestation cannot be trusted; requiring both and checking they agree
+        // is what stops a caller pairing someone else's evidence with its own
+        // numbers — the same pairing `CreditEvent::from_match` closed for
+        // credit (#2509).
+        if checked.agent_id() != attestation.agent_id
+            || checked.amount_micro() != attestation.amount_micro
+            || checked.bid_ceiling_micro() != attestation.bid_ceiling_micro
+            || checked.pinned_root() != attestation.pinned_root
+        {
+            return Err(StoreError::LockEvidenceMismatch);
+        }
+        let bytes = serde_json::to_vec(attestation)?;
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(LOCKS)?;
+            t.insert(identity, bytes.as_slice())?;
+        }
+        w.commit()?;
+        Ok(())
+    }
+
+    /// The stored attestation for `identity`, **inert** — parsed, not verified.
+    ///
+    /// Returns the wire type rather than a [`RegisteredLock`] on purpose
+    /// (ADR 0007 **A-3**: parsed and verified are different types). The caller
+    /// re-runs `register_lock` against the agent's key, the canonical root and
+    /// the agent's *current* reputation, which is not the reputation it had at
+    /// registration. That re-check is not ceremony: standing falls when a
+    /// defection is caught, and a lock that covered its ceiling last week may
+    /// not cover it today.
+    pub fn lock(&self, identity: &str) -> Result<Option<EscrowAttestation>, StoreError> {
+        let r = self.db.begin_read()?;
+        let t = r.open_table(LOCKS)?;
+        match t.get(identity)? {
+            Some(v) => Ok(Some(serde_json::from_slice(v.value())?)),
+            None => Ok(None),
+        }
     }
 }
 
@@ -257,13 +352,22 @@ mod tests {
         {
             let store = CreditLedgerStore::open(&path).unwrap();
             store
-                .append("agent-a", CreditEvent::honest_settlement(400_000, rh(1)))
+                .append(
+                    "agent-a",
+                    CreditEvent::test_honest_settlement(400_000, rh(1)),
+                )
                 .unwrap();
             store
-                .append("agent-a", CreditEvent::honest_settlement(300_000, rh(2)))
+                .append(
+                    "agent-a",
+                    CreditEvent::test_honest_settlement(300_000, rh(2)),
+                )
                 .unwrap();
             store
-                .append("agent-b", CreditEvent::honest_settlement(50_000, rh(3)))
+                .append(
+                    "agent-b",
+                    CreditEvent::test_honest_settlement(50_000, rh(3)),
+                )
                 .unwrap();
             assert_eq!(
                 store.credit_file("agent-a").unwrap().reputation_micro(),
@@ -294,7 +398,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credit.redb");
         let store = CreditLedgerStore::open(&path).unwrap();
-        let ev = CreditEvent::honest_settlement(500_000, rh(7));
+        let ev = CreditEvent::test_honest_settlement(500_000, rh(7));
 
         let first = store.append("agent-a", ev).unwrap();
         assert!(first.is_some());
@@ -325,7 +429,10 @@ mod tests {
         let path = dir.path().join("credit.redb");
         let store = CreditLedgerStore::open(&path).unwrap();
         store
-            .append("agent-a", CreditEvent::honest_settlement(100_000, rh(1)))
+            .append(
+                "agent-a",
+                CreditEvent::test_honest_settlement(100_000, rh(1)),
+            )
             .unwrap();
 
         // agent-b has no rows, no standing, no head.
@@ -346,12 +453,12 @@ mod tests {
         let store = CreditLedgerStore::open(&path).unwrap();
         assert_eq!(store.head("agent-a").unwrap(), None);
         let e0 = store
-            .append("agent-a", CreditEvent::honest_settlement(1, rh(1)))
+            .append("agent-a", CreditEvent::test_honest_settlement(1, rh(1)))
             .unwrap()
             .unwrap();
         assert_eq!(store.head("agent-a").unwrap(), Some((0, e0.this_hash)));
         let e1 = store
-            .append("agent-a", CreditEvent::honest_settlement(2, rh(2)))
+            .append("agent-a", CreditEvent::test_honest_settlement(2, rh(2)))
             .unwrap()
             .unwrap();
         assert_eq!(store.head("agent-a").unwrap(), Some((1, e1.this_hash)));
@@ -365,7 +472,10 @@ mod tests {
         {
             let store = CreditLedgerStore::open(&path).unwrap();
             store
-                .append("agent-a", CreditEvent::honest_settlement(100_000, rh(1)))
+                .append(
+                    "agent-a",
+                    CreditEvent::test_honest_settlement(100_000, rh(1)),
+                )
                 .unwrap();
         }
         // Hand-corrupt entry seq 0: flip the event weight but keep the STALE
@@ -399,7 +509,6 @@ mod tests {
     // Needs the `recompute` feature for the mint bridge + receipt types; on by
     // default, so present under the usual `cargo test --features persist`.
 
-    #[cfg(feature = "recompute")]
     fn honest_settlement(
         price_micro: u64,
         delivered_bps: u64,
@@ -414,7 +523,6 @@ mod tests {
         })
     }
 
-    #[cfg(feature = "recompute")]
     #[test]
     fn mint_through_store_credits_honest_debits_caught_skips_invalid() {
         use crate::mint::mint_event;
@@ -466,7 +574,6 @@ mod tests {
         assert_eq!(store.entries("agent-a").unwrap().len(), 2);
     }
 
-    #[cfg(feature = "recompute")]
     #[test]
     fn durable_refold_matches_stateless_mint() {
         use crate::mint::{credit_file_from_receipts, mint_events};

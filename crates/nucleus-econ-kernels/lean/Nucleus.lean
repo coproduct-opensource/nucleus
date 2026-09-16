@@ -10,6 +10,8 @@ import Nucleus.Auctions.SettlementDecision
 import Nucleus.Auctions.VcgPigouTruthful
 import Nucleus.Auctions.VcgRevenueNonMonotone
 import Nucleus.Cooperation.BondedDeterrence
+import Nucleus.Cooperation.LedgerChain
+import Nucleus.Cooperation.ReputationSet
 import Nucleus.WitnessOlog
 import Nucleus.ReputationCapital
 import Nucleus.Commons

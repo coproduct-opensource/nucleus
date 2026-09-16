@@ -7150,6 +7150,7 @@ dependencies = [
  "nucleus-creditworthiness",
  "nucleus-eval",
  "nucleus-rubric",
+ "nucleus-witness-olog",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -7322,6 +7323,7 @@ dependencies = [
 name = "nucleus-recompute"
 version = "1.0.0"
 dependencies = [
+ "base64 0.23.1",
  "ed25519-dalek 3.0.0",
  "hex",
  "nucleus-econ-kernels",
@@ -7539,6 +7541,7 @@ dependencies = [
  "nucleus-otel-bootstrap",
  "nucleus-receipt",
  "nucleus-recompute",
+ "nucleus-witness-olog",
  "rand 0.10.2",
  "ring",
  "serde",

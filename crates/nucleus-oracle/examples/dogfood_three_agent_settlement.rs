@@ -16,12 +16,12 @@
 //!
 //! Run: `cargo run -p nucleus-oracle --example dogfood_three_agent_settlement`
 
-use nucleus_creditworthiness::{CreditEvent, CreditFile};
 use nucleus_eval::EvalCase;
 use nucleus_oracle::{
     DeterminismPinning, GradingBundle, HeldOutRecompute, MutationAdequacy, grade,
     grade_rubric_inputs,
 };
+use nucleus_witness_olog::required_bond;
 
 /// Exact Shapley value for an `n`-player game over coalitions encoded as
 /// bitmasks, apportioned to whole µUSD that sum EXACTLY to `v(N)` (no money lost
@@ -167,8 +167,9 @@ fn main() {
         "substitute verifiers symmetric up to rounding"
     );
 
-    // Mint durable CreditEvents — each agent's share, bound to the grade receipt.
-    let receipt_hash = grade(&GradingBundle {
+    // Grade the merged coalition. The receipt hash is printed as provenance
+    // below; it is NOT turned into standing here — see the note at the loop.
+    let grade_receipt = grade(&GradingBundle {
         submission_id: "coalition/merge/full".into(),
         held_out: HeldOutRecompute {
             cases: (0..(s_total + r_total))
@@ -186,22 +187,27 @@ fn main() {
         },
         mutation: MutationAdequacy { mutants: vec![] },
         held_out_expected_leaked: false,
-    })
-    .receipt_hash();
+    });
 
     println!("\n=== durable reputation (nucleus-creditworthiness) ===");
+    println!(
+        "  grade receipt (provenance): {}",
+        grade_receipt.receipt_hash_hex()
+    );
     let max_gain = 2_000_000;
     for (who, share) in [
         ("S (func)", phi[0]),
         ("I (impl)", phi[1]),
         ("R (prop)", phi[2]),
     ] {
-        let mut f = CreditFile::new();
-        f.observe(&CreditEvent::honest_settlement(share, receipt_hash));
+        // Shows what `share` of accrued standing BUYS, by running the proven
+        // `required_bond` kernel directly. It no longer mints a `CreditEvent` to
+        // get there: #2509 sealed that type behind a recompute witness, and a
+        // Shapley split of a grade receipt is not one. Minting here would have
+        // been the example teaching the exact shortcut the seal removes.
         println!(
-            "  {who:10} reputation = {:>7} µUSD   required_bond = {:>7} µUSD",
-            f.reputation_micro(),
-            f.required_bond(max_gain).0
+            "  {who:10} reputation = {share:>7} µUSD   required_bond = {:>7} µUSD",
+            required_bond(max_gain, share).0
         );
     }
     println!(
