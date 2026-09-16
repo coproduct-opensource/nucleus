@@ -1154,6 +1154,16 @@ perturb_runs_on_undeclared_var() {
 # workspace-members: a crate dropped from the members list. This is the real mistake -- the
 # list is explicit, not a glob, so forgetting one is the normal way a crate ends up outside
 # the workspace, invisible to every `--workspace` command and failing nothing.
+# command-grammar: a leaf loses its band entry. The gate's claim is TOTALITY in both
+# directions between docs/design/command-bands.toml and the clap derives, so dropping one
+# row is the smallest thing that must make it red. `config` is chosen because it is an
+# `observe` leaf with no arguments -- nothing else in the table or the CLI depends on it,
+# so the perturbation tests the gate rather than some neighbouring invariant.
+perturb_command_band_dropped() {
+    local f="$1"
+    perl -0pi -e 's/^"config" = "observe"[^\n]*\n//m' "$f"
+}
+
 perturb_workspace_member_dropped() {
     local f="$1"
     perl -0pi -e 's/^\s*"crates\/nucleus-audit",[^\n]*\n//m' "$f"
@@ -1323,6 +1333,8 @@ probe_xtask action-inputs .github/workflows/gatehouse-shadow.yml \
     "a \`with:\` key the action does not declare" perturb_action_inputs_undeclared_key
 probe_xtask workspace-members Cargo.toml \
     "a crate dropped from the workspace members list" perturb_workspace_member_dropped
+probe_xtask command-grammar docs/design/command-bands.toml \
+    "a leaf command whose authority band the table no longer declares" perturb_command_band_dropped
 probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
     "a baseline claiming a score the tree does not have" \
     "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \

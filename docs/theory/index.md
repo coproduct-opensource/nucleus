@@ -14,12 +14,27 @@ its verification status (Lean proofs, Kani BMC, or unit tests).
   retraction, Galois connection, and free-forgetful adjunction between raw
   and checked ActionTerms.
 
-- [IFC Semilattice](ifc-semilattice.md) — The `IFCLabel` join operation as
-  a bounded semilattice with covariant (confidentiality, provenance) and
-  contravariant (integrity, authority) dimensions. Lean proofs in
-  `IFCSemilatticeProofs.lean`. Implements `Lattice` trait.
+- [GKAT's fixed point](gkat-fixed-point.md) — Why the guarded fragment, what
+  the `while` axiom costs (unique fixed point + guardedness, completeness open),
+  and the bridge to the least-fixed-point exposure ratchet
+  (`GkatGuardedLoopBridge.lean`). Every `Gkat*.lean` file is in the proven
+  tier — on the `lake build` list of
+  `.github/workflows/portcullis-core-proven-lean.yml`, on no research-tier
+  allowlist, and so under the `sorry` ban.
+
+- [GKAT inexpressibility](gkat-inexpressibility-plan.md) — Research plan for the
+  first machine-checked "no GKAT expression denotes `L`" result, via the nesting
+  coequation `W`. Milestone 1 landed; 2–5 open. Sections are appended in
+  discovery order, so the later ones supersede the earlier "honest assessment".
 
 ## Implemented (not yet documented)
+
+- **IFC Semilattice** — `IFCLabel`'s join as a bounded semilattice with
+  covariant (confidentiality, provenance) and contravariant (integrity,
+  authority) dimensions. Proved in `IFCSemilatticeProofs.lean`; implements
+  `Lattice`. This list linked `ifc-semilattice.md` for as long as it has
+  existed, and that file has never been written — a dead link in a list whose
+  purpose is to say what is documented.
 
 - **Belnap Bilattice** — `Verdict` in `bilattice.rs`. Four-valued policy
   logic with truth and knowledge orderings. Implements `Lattice` (truth axis)
