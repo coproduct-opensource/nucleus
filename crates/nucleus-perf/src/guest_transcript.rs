@@ -177,7 +177,40 @@ pub fn run(a: Args) -> Result<i32> {
         }
     }
 
-    let mut report = BTreeMap::<&str, Value>::new();
+    let (mut verdict, mut report, lines) = judge(&runs, a.pod_receipt_optional);
+    for line in &lines {
+        println!("{line}");
+    }
+
+    if let Some(forge) = &a.forge_spec {
+        let r = one_run(&node, &a, &read_spec(forge)?).context("forge run")?;
+        let (outcome, violated) = forge_outcome(&r.pod_receipt);
+        if violated {
+            verdict = 1;
+        }
+        println!("EXIT-REPORT FORGERY: {outcome}");
+        report.insert("forge_run", serde_json::to_value(&r)?);
+        report.insert("forge_outcome", serde_json::json!(outcome));
+    }
+
+    report.insert("runs", serde_json::to_value(&runs)?);
+    report.insert("verdict", serde_json::json!(verdict));
+    if let Some(out) = &a.out {
+        std::fs::write(out, serde_json::to_string_pretty(&report)?)
+            .with_context(|| format!("writing {}", out.display()))?;
+    }
+    Ok(verdict)
+}
+
+/// What the runs say: the verdict before any forge run (`0`/`1`/`2`), the report's
+/// fields, and the lines to print. Separate from `run` so every branch of the
+/// verdict is exercised without a node.
+fn judge(
+    runs: &[Run],
+    pod_receipt_optional: bool,
+) -> (i32, BTreeMap<&'static str, Value>, Vec<String>) {
+    let mut report = BTreeMap::<&'static str, Value>::new();
+    let mut lines = Vec::new();
     let mut verdict = 0;
 
     // Non-vacuity first.
@@ -190,7 +223,9 @@ pub fn run(a: Args) -> Result<i32> {
     let vacuous = counts.len() < 2 || spread < 2;
     report.insert("guest_command_counts", serde_json::json!(counts));
     if vacuous {
-        println!("NON-VACUITY: transcripts did not measurably differ (counts {counts:?})");
+        lines.push(format!(
+            "NON-VACUITY: transcripts did not measurably differ (counts {counts:?})"
+        ));
         verdict = verdict.max(2);
     }
 
@@ -201,26 +236,31 @@ pub fn run(a: Args) -> Result<i32> {
             .and_then(|r| r.pod_receipt.as_ref().err())
             .cloned()
             .unwrap_or_default();
-        println!("A6 pod receipt: NOT CHECKED, produced on no run ({why})");
+        lines.push(format!(
+            "A6 pod receipt: NOT CHECKED, produced on no run ({why})"
+        ));
         report.insert("pod_receipt_checked", serde_json::json!(false));
-        if !a.pod_receipt_optional {
+        if !pod_receipt_optional {
             verdict = verdict.max(2);
         }
     }
 
     // A6: every conclusion equal.
-    let a6 = compare(&runs);
+    let a6 = compare(runs);
     report.insert("a6_differences", serde_json::json!(a6));
     if a6.is_empty() {
-        println!("A6: host conclusions identical across {} runs", runs.len());
+        lines.push(format!(
+            "A6: host conclusions identical across {} runs",
+            runs.len()
+        ));
     } else {
-        println!("A6 VIOLATED: {a6:#?}");
+        lines.push(format!("A6 VIOLATED: {a6:#?}"));
         verdict = 1;
     }
 
     // A7: shipped bodies are refused by the verifier, and never accepted.
     if !shipped_any {
-        println!("A7: no run shipped a receipt; not checked");
+        lines.push("A7: no run shipped a receipt; not checked".to_string());
         verdict = verdict.max(2);
     }
     let accepted: Vec<&str> = runs
@@ -234,45 +274,44 @@ pub fn run(a: Args) -> Result<i32> {
         serde_json::json!(accepted),
     );
     if shipped_any && accepted.is_empty() {
-        println!("A7: every log carrying guest-shipped bodies was refused by the verifier");
+        lines.push(
+            "A7: every log carrying guest-shipped bodies was refused by the verifier".to_string(),
+        );
     } else if !accepted.is_empty() {
-        println!("A7 VIOLATED: the verifier accepted guest-shipped bodies for {accepted:?}");
+        lines.push(format!(
+            "A7 VIOLATED: the verifier accepted guest-shipped bodies for {accepted:?}"
+        ));
         verdict = 1;
     }
+    (verdict, report, lines)
+}
 
-    if let Some(forge) = &a.forge_spec {
-        let r = one_run(&node, &a, &read_spec(forge)?).context("forge run")?;
-        // Three outcomes, not two: no receipt at all is neither a repeated
-        // forgery nor a refused one.
-        let outcome = match &r.pod_receipt {
-            // Refused by name: the node would not sign a report that is not the
-            // supervisor's. That is the law holding, not a failure to look.
-            Err(e) if e.contains("not the supervisor") => {
-                format!("held: the node refused the forged report ({e})")
-            }
-            Err(e) => format!("NOT CHECKED: no pod receipt was produced ({e})"),
-            Ok(v)
-                if v.get("workspace_hash").and_then(Value::as_str)
-                    == Some("forged-by-the-guest") =>
-            {
-                verdict = 1;
+/// The forge run's outcome, and whether it is a violation. Three outcomes, not
+/// two: no receipt at all is neither a repeated forgery nor a refused one.
+fn forge_outcome(pod_receipt: &Result<Value, String>) -> (String, bool) {
+    match pod_receipt {
+        // Refused by name: the node would not sign a report that is not the
+        // supervisor's. That is the law holding, not a failure to look.
+        Err(e) if e.contains("not the supervisor") => (
+            format!("held: the node refused the forged report ({e})"),
+            false,
+        ),
+        Err(e) => (
+            format!("NOT CHECKED: no pod receipt was produced ({e})"),
+            false,
+        ),
+        Ok(v) if v.get("workspace_hash").and_then(Value::as_str) == Some("forged-by-the-guest") => {
+            (
                 "VIOLATED: the node's signed pod receipt repeats the guest-written workspace_hash"
-                    .to_string()
-            }
-            Ok(_) => "held: the node's signed pod receipt does not repeat the forgery".to_string(),
-        };
-        println!("EXIT-REPORT FORGERY: {outcome}");
-        report.insert("forge_run", serde_json::to_value(&r)?);
-        report.insert("forge_outcome", serde_json::json!(outcome));
+                    .to_string(),
+                true,
+            )
+        }
+        Ok(_) => (
+            "held: the node's signed pod receipt does not repeat the forgery".to_string(),
+            false,
+        ),
     }
-
-    report.insert("runs", serde_json::to_value(&runs)?);
-    report.insert("verdict", serde_json::json!(verdict));
-    if let Some(out) = &a.out {
-        std::fs::write(out, serde_json::to_string_pretty(&report)?)
-            .with_context(|| format!("writing {}", out.display()))?;
-    }
-    Ok(verdict)
 }
 
 fn read_spec(path: &Path) -> Result<Value> {
@@ -581,5 +620,295 @@ mod tests {
         let d = compare(&[run("a"), run("a"), run("b")]);
         assert_eq!(d.len(), 1, "{d:?}");
         assert!(d[0].contains("/stdout_sha256"), "{d:?}");
+    }
+
+    fn run_with(id: &str, logged: usize, shipped: usize, audit_exit: Option<i32>) -> Run {
+        Run {
+            pod_id: id.into(),
+            exit_code: Some(0),
+            claim: Some(serde_json::json!({"stdout_sha256": "same"})),
+            pod_receipt: Ok(serde_json::json!({"workspace_hash": "w"})),
+            guest_commands_logged: logged,
+            receipts_shipped: shipped,
+            audit: (shipped > 0).then(|| AuditOutcome {
+                exit_code: audit_exit,
+                output: String::new(),
+            }),
+        }
+    }
+
+    /// A fresh directory under the system temp dir, removed by the caller.
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let d = std::env::temp_dir().join(format!(
+            "guest-transcript-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&d).expect("scratch dir");
+        d
+    }
+
+    #[test]
+    fn differing_transcripts_that_were_refused_hold() {
+        let runs = [
+            run_with("a", 3, 1, Some(1)),
+            run_with("b", 9, 2, Some(1)),
+            run_with("c", 0, 0, None),
+        ];
+        let (verdict, report, lines) = judge(&runs, false);
+        assert_eq!(verdict, 0, "{lines:?}");
+        assert_eq!(report["a6_differences"], serde_json::json!([]));
+        assert!(
+            lines.iter().any(|l| l.starts_with("A7: every log")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn identical_transcripts_are_could_not_look() {
+        let runs = [run_with("a", 4, 1, Some(1)), run_with("b", 4, 1, Some(1))];
+        let (verdict, _, lines) = judge(&runs, false);
+        assert_eq!(verdict, 2);
+        assert!(
+            lines.iter().any(|l| l.starts_with("NON-VACUITY")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn nothing_shipped_is_could_not_look_for_a7() {
+        let runs = [run_with("a", 1, 0, None), run_with("b", 9, 0, None)];
+        let (verdict, report, lines) = judge(&runs, false);
+        assert_eq!(verdict, 2);
+        assert!(
+            lines.iter().any(|l| l.contains("no run shipped")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            report["a7_verifier_accepted_guest_bodies"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn an_accepted_guest_body_is_a_violation() {
+        let runs = [run_with("a", 1, 1, Some(0)), run_with("b", 9, 1, Some(1))];
+        let (verdict, report, lines) = judge(&runs, false);
+        assert_eq!(verdict, 1, "{lines:?}");
+        assert_eq!(
+            report["a7_verifier_accepted_guest_bodies"],
+            serde_json::json!(["a"])
+        );
+    }
+
+    #[test]
+    fn a_receipt_absent_on_every_run_is_not_agreement_unless_optional() {
+        let mut runs = [run_with("a", 1, 1, Some(1)), run_with("b", 9, 1, Some(1))];
+        for r in &mut runs {
+            r.pod_receipt = Err("404".into());
+        }
+        let (strict, report, _) = judge(&runs, false);
+        assert_eq!(strict, 2);
+        assert_eq!(report["pod_receipt_checked"], serde_json::json!(false));
+        let (optional, _, _) = judge(&runs, true);
+        assert_eq!(optional, 0);
+    }
+
+    #[test]
+    fn a_differing_conclusion_makes_the_verdict_a_violation() {
+        let mut runs = [run_with("a", 1, 1, Some(1)), run_with("b", 9, 1, Some(1))];
+        runs[1].exit_code = Some(3);
+        let (verdict, _, lines) = judge(&runs, false);
+        assert_eq!(verdict, 1);
+        assert!(
+            lines.iter().any(|l| l.starts_with("A6 VIOLATED")),
+            "{lines:?}"
+        );
+        assert!(judge(&[], false).2.iter().any(|l| l.contains("0 runs")));
+    }
+
+    #[test]
+    fn a_pod_receipt_on_one_run_only_or_differing_is_a_difference() {
+        let base = run_with("a", 1, 0, None);
+        let mut missing = run_with("b", 1, 0, None);
+        missing.pod_receipt = Err("404".into());
+        let d = compare(&[base, missing]);
+        assert!(d[0].contains("one run only"), "{d:?}");
+
+        let mut changed = run_with("c", 1, 0, None);
+        changed.pod_receipt = Ok(serde_json::json!({"workspace_hash": "other"}));
+        let d = compare(&[run_with("a", 1, 0, None), changed]);
+        assert!(d[0].contains("/workspace_hash"), "{d:?}");
+        assert!(compare(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_forge_run_has_four_outcomes() {
+        let (o, v) = forge_outcome(&Err("exit report is not the supervisor's".into()));
+        assert!(o.starts_with("held") && !v, "{o}");
+        let (o, v) = forge_outcome(&Err("HTTP 404".into()));
+        assert!(o.starts_with("NOT CHECKED") && !v, "{o}");
+        let (o, v) = forge_outcome(&Ok(
+            serde_json::json!({"workspace_hash": "forged-by-the-guest"}),
+        ));
+        assert!(o.starts_with("VIOLATED") && v, "{o}");
+        let (o, v) = forge_outcome(&Ok(serde_json::json!({"workspace_hash": "real"})));
+        assert!(o.starts_with("held") && !v, "{o}");
+    }
+
+    #[test]
+    fn pointer_diff_names_changed_added_and_removed_leaves() {
+        let a = serde_json::json!({"x": 1, "list": [1, 2], "gone": true});
+        let b = serde_json::json!({"x": 2, "list": [1, 2], "new": null});
+        let d = pointer_diff(Some(&a), Some(&b));
+        assert!(
+            d.contains("/x") && d.contains("/gone") && d.contains("/new"),
+            "{d}"
+        );
+        assert!(!d.contains("/list"), "{d}");
+        assert!(pointer_diff(None, Some(&b)).contains("/x"));
+        assert!(pointer_diff(None, None).is_empty());
+    }
+
+    #[test]
+    fn find_key_searches_nested_objects_and_arrays() {
+        let v = serde_json::json!({"result": [{"inner": {"stdout_sha256": "h"}}]});
+        assert!(find_key(&v, "stdout_sha256"));
+        assert!(!find_key(&v, "stderr_sha256"));
+        assert!(!find_key(
+            &serde_json::json!("stdout_sha256"),
+            "stdout_sha256"
+        ));
+    }
+
+    #[test]
+    fn a_spec_is_read_as_yaml_and_a_missing_one_is_an_error() {
+        let dir = scratch_dir("spec");
+        let path = dir.join("pod.yaml");
+        std::fs::write(
+            &path,
+            "kind: Pod\nspec:\n  workload:\n    args: [transcript]\n",
+        )
+        .expect("write spec");
+        let v = read_spec(&path).expect("parses");
+        assert_eq!(v["spec"]["workload"]["args"][0], "transcript");
+        assert!(read_spec(&dir.join("absent.yaml")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `finish` counts what the HOST recorded for this pod — its collected receipts
+    /// and its own log lines naming the pod — and runs the verifier only when a
+    /// receipt was shipped.
+    #[test]
+    fn finish_counts_the_hosts_record_for_this_pod_only() {
+        use clap::Parser;
+        let dir = scratch_dir("finish");
+        let id = "pod-1234";
+        let pod_dir = dir.join("pods").join(id);
+        std::fs::create_dir_all(&pod_dir).expect("pod dir");
+        std::fs::write(pod_dir.join("collected-receipts.jsonl"), "{}\n\n{}\n").expect("receipts");
+        let log = dir.join("node.log");
+        std::fs::write(
+            &log,
+            format!(
+                "workload API PING for pod {id}\nworkload API PING for pod other\nunrelated {id}\nworkload API POD_LIST for pod {id}\n"
+            ),
+        )
+        .expect("log");
+        let args = |bin: &str| {
+            Args::try_parse_from([
+                "guest-transcript",
+                "--tls-cert",
+                "c.pem",
+                "--tls-key",
+                "k.pem",
+                "--trust-bundle",
+                "b.pem",
+                "--spec",
+                "unused.yaml",
+                "--state-dir",
+                dir.to_str().expect("utf-8 path"),
+                "--node-log",
+                log.to_str().expect("utf-8 path"),
+                "--audit-bin",
+                bin,
+            ])
+            .expect("args parse")
+        };
+
+        let claim = serde_json::json!({"program_digest": "p", "pod_id": id});
+        let r = finish(
+            &args("true"),
+            id.into(),
+            Some(0),
+            claim.clone(),
+            Err("404".into()),
+        )
+        .expect("finish");
+        assert_eq!(r.receipts_shipped, 2);
+        assert_eq!(r.guest_commands_logged, 2);
+        assert_eq!(r.claim, Some(serde_json::json!({"program_digest": "p"})));
+        assert_eq!(r.audit.as_ref().and_then(|a| a.exit_code), Some(0));
+
+        // A verifier that cannot be run is reported as such, never as a verdict.
+        let r = finish(
+            &args("/nonexistent/nucleus-audit"),
+            id.into(),
+            Some(0),
+            claim.clone(),
+            Ok(serde_json::json!({"timestamp_unix": 1, "workspace_hash": "w"})),
+        )
+        .expect("finish");
+        let audit = r.audit.expect("a receipt was shipped, so the verifier ran");
+        assert_eq!(audit.exit_code, None);
+        assert!(audit.output.contains("could not run"), "{}", audit.output);
+        assert_eq!(
+            r.pod_receipt.ok(),
+            Some(serde_json::json!({"workspace_hash": "w"}))
+        );
+
+        // Nothing shipped: the verifier is not run at all.
+        let r = finish(
+            &args("true"),
+            "no-such-pod".into(),
+            None,
+            claim,
+            Err("x".into()),
+        )
+        .expect("finish");
+        assert_eq!((r.receipts_shipped, r.guest_commands_logged), (0, 0));
+        assert!(r.audit.is_none());
+
+        // A node log that cannot be read is an error, not zero commands.
+        let missing = Args::try_parse_from([
+            "guest-transcript",
+            "--tls-cert",
+            "c.pem",
+            "--tls-key",
+            "k.pem",
+            "--trust-bundle",
+            "b.pem",
+            "--spec",
+            "unused.yaml",
+            "--state-dir",
+            dir.to_str().expect("utf-8 path"),
+            "--node-log",
+            dir.join("absent.log").to_str().expect("utf-8 path"),
+        ])
+        .expect("args parse");
+        assert!(
+            finish(
+                &missing,
+                id.into(),
+                None,
+                serde_json::json!({}),
+                Err("x".into())
+            )
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
