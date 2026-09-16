@@ -386,6 +386,12 @@ operators with nothing to operate on. They are written down here because the
 sorts need them to be coherent; they should be *constructed* the day the first
 composite command is written in Rust, and not before.
 
+This is a statement about CLI leaves, not about nucleus. The node API and the
+guest’s vsock protocol are used as sequences, and their laws are sequencing
+laws — one-shot absorption, cancel absorption, personalisation before snapshot.
+Those are the subject of [`command-walk.md`](command-walk.md), which checks them
+by a random walk against a model.
+
 What is load-bearing today, and is the whole of v1: each leaf declares its band;
 one gate checks that declaration is total in both directions; the exit contract
 is adopted from `ci-spec`; and the renames above follow. The head-word/sink-name

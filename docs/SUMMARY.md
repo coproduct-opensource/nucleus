@@ -14,6 +14,7 @@
 - [Split-Trust Deployment](split-trust.md)
 - [Architecture](architecture/overview.md)
   - [A Command Grammar](design/command-grammar.md)
+  - [A Command Walk](design/command-walk.md)
   - [Security Architecture](architecture/security.md)
   - [Isolation Levels](architecture/isolation-levels.md)
   - [Landscape and Rationale](architecture/landscape.md)

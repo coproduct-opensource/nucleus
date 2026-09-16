@@ -1,14 +1,22 @@
-# A unified command grammar for nucleus
+# A command walk for nucleus
 
 Draft, 2026-09-15. One many-sorted signature covering the node's HTTP API, the
 guest's vsock workload API, and the CLI's artifact operations — specified
 tightly enough that a random walk can compute the enabled set from its own model
 and use the *disabled* set as an oracle.
 
-Companion to [`build-ops-algebra.md`](build-ops-algebra.md), which does the same
-job for the gatehouse build lane. That document's sorts (`Spec`, `Tree`,
-`Scratch`, `Prog`) are imported here unchanged; this one adds the pod, the
-guest, and the artifact.
+Two companions, one on each side:
+
+- [`command-grammar.md`](command-grammar.md) indexes each *CLI leaf* by the
+  authority it demands. It finds no inhabitants for `;` among the CLI's leaves,
+  which is true of the CLI. The surfaces here are the other case: the node API
+  and the guest's vsock protocol are used as *sequences*, and every law below is
+  a law about one.
+- Gatehouse's build-ops algebra (a design document in the private gatehouse
+  repository, not linked from here) does the same job for the build lane. Its
+  sorts (`Spec`, `Tree`, `Scratch`, `Prog`) are imported here unchanged; this
+  document adds the pod, the guest, and the artifact. Nothing below depends on
+  reading it.
 
 ## Why algebraic and not pre/post
 
@@ -35,7 +43,7 @@ walk. Three carriers, one bridge:
 ```
 Pod      -- the node's live state: pods, their lineage, their served capabilities
 Artifact -- receipts, envelopes, lineage chains, bundles, manifests: bytes on disk
-Build    -- Spec x Tree x Scratch, imported from build-ops-algebra.md
+Build    -- Spec x Tree x Scratch, imported from gatehouse’s build-ops algebra
 ```
 
 `Artifact` operations never read or write `Pod`. `Pod` operations never read
@@ -378,11 +386,30 @@ its `ReferenceStateMachine` — `Sigma` is the state, `pre` is
 `preconditions`, `eff` is `apply`, `obs` is the postcondition check. The mapping
 is close enough that the doc and the impl should share the names.
 
-The harness belongs in `crates/nucleus-spec/tests/`, not beside the node: the
-model is a statement about the spec's surfaces, and putting it there keeps it
-compiling against the same `PodSpec` and `WorkloadApiCommand` the classifications
-come from, so a field added without classification breaks the walk as well as the
-build.
+The harness belongs in `nucleus-node`, beside the handlers. An earlier draft of
+this document put it in `crates/nucleus-spec/tests/`, which cannot work: every
+classification the model borrows lives in `nucleus-node` — `caller_may_manage`
+(`pod_api.rs`, private), `WorkloadApiCommand::personalizes_the_vm`
+(`workload_api_protocol.rs`) and `SnapshotSafety` (`snapshot.rs`) — and
+`nucleus-spec` sits below `nucleus-node` in the dependency graph. The goal that
+placement was chosen for still holds from inside the node crate: build the
+model's material without `..`, so a field added to `PodMaterial` or a variant
+added to `WorkloadApiCommand` stops the walk compiling until it is classified.
+
+`proptest-state-machine` earns its dependency when *generation* has to read
+state — the Pod carrier, where `cancel` must usually name a pod that exists.
+The guest surface does not need it: every command is always drawable, and the
+model alone decides whether it lands in `E` or `D`, so plain `proptest` over a
+`Vec` of commands shrinks just as well.
+
+### Refusals must be values
+
+"Assert the specific named reason" needs a reason that is a value. Where the
+host refuses with free text — the workload API replied
+`{"error":"broker secret already served"}` — a walk comparing strings breaks on
+any rewording and cannot tell whether its list of reasons is complete. A
+surface enters the walk once its refusals are an enum whose `Display` is the
+wire text, pinned byte for byte, because guests match on those strings.
 
 Shrinking matters more here than in a typical state-machine test because A6 and
 A7 fail as *pairs of executions*, and an unshrunk counterexample to A6 is a
@@ -391,7 +418,8 @@ must preserve the pod's completion, or it will shrink to "the pod never ran".
 
 ## What this grammar does not yet cover
 
-* **The CLI's 24 subcommands are not all in it.** `Audit`, `Trust`, `Guard`,
+* **The CLI's 24 top-level subcommands are not all in it** (51 leaves, counted
+  by `command-grammar.md`). `Audit`, `Trust`, `Guard`,
   `Setup`, `Lockdown`, `Observe`, `Grant`, `Node`, `Start`, `Stop` are node- and
   operator-configuration operations whose state is the node's, not a pod's, and
   `NodeRec` above is a placeholder. That carrier needs the same treatment and
@@ -425,22 +453,3 @@ compiler-enforced, which is why the model state can be small.
 * [A Random Walk Based Algorithm for Structural Test Case Generation](https://arxiv.org/pdf/1704.04772)
 * [Build Systems à la Carte](https://www.microsoft.com/en-us/research/wp-content/uploads/2018/03/build-systems.pdf)
 
-<!-- run marker -->
-
-<!-- run 2 -->
-
-<!-- run 3 -->
-
-<!-- run 4 -->
-
-<!-- hugepages run -->
-
-<!-- hugepages-aware guest -->
-
-<!-- uploads wired -->
-
-<!-- warm -->
-
-<!-- cache seed -->
-
-<!-- seed 2 -->
