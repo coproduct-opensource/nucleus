@@ -134,6 +134,9 @@ pub(crate) enum ReceiptError {
     NoExitReport(String),
     /// The report is there and unreadable.
     Malformed(String),
+    /// A report was found where the workload could have written it, and it does
+    /// not carry this pod's supervisor signature. See `nucleus_spec::exit_report_auth`.
+    Unauthenticated(String),
 }
 
 impl std::fmt::Display for ReceiptError {
@@ -142,6 +145,9 @@ impl std::fmt::Display for ReceiptError {
             Self::NotExited => write!(f, "pod has not exited yet; receipt not available"),
             Self::NoExitReport(why) => write!(f, "exit report not found: {why}"),
             Self::Malformed(why) => write!(f, "failed to parse exit report: {why}"),
+            Self::Unauthenticated(why) => {
+                write!(f, "exit report is not the supervisor's: {why}")
+            }
         }
     }
 }
@@ -169,42 +175,20 @@ pub(crate) async fn build(
         return Err(ReceiptError::NotExited);
     };
 
-    let report_path = handle.spec.spec.work_dir.join(".nucleus-exit-report.json");
-    let report_json = match tokio::fs::read_to_string(&report_path).await {
-        Ok(json) => json,
-        // A MICROVM SHARES NO DIRECTORY, so this path never existed for it.
-        //
-        // `nucleus-spec` says so outright — "A microVM has no host-directory
-        // mount and there never will be one" — which means this function has
-        // returned `NoExitReport` for every Firecracker pod since it was
-        // written. The guest's `/work` is a block device; its report is inside
-        // that image, and the host owns the image.
-        //
-        // ORDERING HAZARD, stated because it is real: the jail is removed at
-        // teardown (`FirecrackerPod::jail` is held "so teardown can remove
-        // it"). This read must happen while the jail still exists. A jail
-        // already gone reads as `Absent`, which is honest but is NOT the same
-        // as the pod having written nothing — so a receipt built too late is
-        // indistinguishable from a workload that crashed early, and that is a
-        // gap this comment is recording rather than closing.
-        Err(host_err) => match scratch_report(handle).await {
-            Some(Ok(json)) => json,
-            Some(Err(readback)) => {
-                return Err(ReceiptError::NoExitReport(format!(
-                    "{}: {host_err}; and the scratch disk: {readback}",
-                    report_path.display()
-                )));
-            }
-            None => {
-                return Err(ReceiptError::NoExitReport(format!(
-                    "{}: {host_err}",
-                    report_path.display()
-                )));
-            }
-        },
+    let report = match &handle.driver_state {
+        crate::DriverState::Firecracker(pod) => {
+            let json = firecracker_report_json(pod).await?;
+            parse_report(
+                &json,
+                &ReportSource::WorkloadOwnedImage {
+                    pod_dir: pod.pod_dir.clone(),
+                },
+            )?
+        }
+        #[cfg(feature = "local-driver")]
+        crate::DriverState::Local(_) => shared_directory_report(handle).await?,
+        crate::DriverState::Container(_) => shared_directory_report(handle).await?,
     };
-    let report: nucleus_spec::ExitReport =
-        serde_json::from_str(&report_json).map_err(|e| ReceiptError::Malformed(e.to_string()))?;
 
     let spec_yaml = serde_yaml::to_string(&handle.spec).unwrap_or_default();
     let manifest_hash =
@@ -359,30 +343,152 @@ impl From<Receipt> for crate::proto::ExecutionReceipt {
     }
 }
 
-/// The exit report read out of a Firecracker pod's scratch image, or `None`
-/// when this pod has no such image (every other driver shares a directory and
-/// never reaches here).
+/// Where the preserved copy of a Firecracker pod's report lives, in the host-owned pod dir.
+const PRESERVED_REPORT: &str = "exit-report.json";
+
+/// Read a local or container pod's report from the directory it shares with the host.
 ///
-/// The guest mounts the image at `/work`, so `/work/.nucleus-exit-report.json`
-/// in the guest is `/.nucleus-exit-report.json` in the filesystem.
-async fn scratch_report(
+/// Unchanged in what it accepts: these drivers share the work dir with the workload
+/// outright and have no per-pod mediation key to sign with, so this path never
+/// claimed more than "the file in the pod's directory". A signed report found here
+/// is unwrapped, not verified.
+async fn shared_directory_report(
     handle: &Arc<PodHandle>,
-) -> Option<Result<String, scratch_readback::ReadbackError>> {
-    let crate::DriverState::Firecracker(pod) = &handle.driver_state else {
-        return None;
-    };
+) -> Result<nucleus_spec::ExitReport, ReceiptError> {
+    let path = handle
+        .spec
+        .spec
+        .work_dir
+        .join(nucleus_spec::exit_report_auth::EXIT_REPORT_FILE);
+    let json = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| ReceiptError::NoExitReport(format!("{}: {e}", path.display())))?;
+    parse_report(&json, &ReportSource::SharedDirectory)
+}
+
+/// The Firecracker pod's report bytes: the copy preserved at teardown, else a
+/// read-back from the jail's scratch image if the jail still exists.
+///
+/// The host's `work_dir` path is NOT consulted any more. A microVM shares no
+/// directory with the host, so a file at that host path was never the guest's
+/// report — and it was accepted unsigned.
+async fn firecracker_report_json(pod: &crate::FirecrackerPod) -> Result<String, ReceiptError> {
+    let preserved = pod.pod_dir.join(PRESERVED_REPORT);
+    if let Ok(json) = tokio::fs::read_to_string(&preserved).await {
+        return Ok(json);
+    }
     let jail = pod.jail.lock().await;
-    let layout = jail.as_ref()?;
+    let Some(layout) = jail.as_ref() else {
+        return Err(ReceiptError::NoExitReport(format!(
+            "{}: not preserved, and the pod's jail is already gone",
+            preserved.display()
+        )));
+    };
+    read_from_image(layout)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .map_err(|e| ReceiptError::NoExitReport(format!("scratch image: {e}")))
+}
+
+fn read_from_image(
+    layout: &crate::firecracker_config::JailLayout,
+) -> Result<Vec<u8>, scratch_readback::ReadbackError> {
     let image = layout
         .jail_root
         .join(crate::firecracker_config::in_jail::SCRATCH.trim_start_matches('/'));
-    if !image.exists() {
-        return None;
-    }
-    Some(
-        scratch_readback::read_file(&image, "/.nucleus-exit-report.json")
-            .map(|b| String::from_utf8_lossy(&b).into_owned()),
+    // The guest mounts the image at `/work`, so `/work/<file>` is `/<file>` here.
+    scratch_readback::read_file(
+        &image,
+        &format!("/{}", nucleus_spec::exit_report_auth::EXIT_REPORT_FILE),
     )
+}
+
+/// Copy the exit report out of the jail's scratch image into the pod dir.
+///
+/// Called after the VMM is killed and before the jail is removed. Without it the
+/// report existed only inside the jail, and every way a Firecracker pod ends —
+/// cancel, or the reaper — removed the jail first, so no receipt could ever be
+/// built. Best effort by design: a missing report is reported when a receipt is
+/// asked for, where the reason can be read.
+pub(crate) fn preserve_exit_report(
+    layout: &crate::firecracker_config::JailLayout,
+    pod_dir: &std::path::Path,
+) {
+    match read_from_image(layout) {
+        Ok(bytes) => {
+            if let Err(e) = std::fs::write(pod_dir.join(PRESERVED_REPORT), bytes) {
+                tracing::warn!(error = %e, "could not preserve the exit report before teardown");
+            }
+        }
+        Err(e) => tracing::debug!(reason = %e, "no exit report to preserve"),
+    }
+}
+
+/// Where a report was read from, which decides what it has to prove.
+pub(crate) enum ReportSource {
+    /// A directory the host shares with the pod (local and container drivers).
+    SharedDirectory,
+    /// An image the workload can write (Firecracker): only the supervisor's
+    /// signature, checked against the key the node minted, makes it a report.
+    WorkloadOwnedImage { pod_dir: std::path::PathBuf },
+}
+
+/// Parse and, where the source requires it, authenticate a report.
+pub(crate) fn parse_report(
+    json: &str,
+    source: &ReportSource,
+) -> Result<nucleus_spec::ExitReport, ReceiptError> {
+    use nucleus_spec::exit_report_auth::{SignedExitReport, signing_bytes};
+    match source {
+        ReportSource::SharedDirectory => {
+            if let Ok(signed) = serde_json::from_str::<SignedExitReport>(json) {
+                return Ok(signed.report);
+            }
+            serde_json::from_str(json).map_err(|e| ReceiptError::Malformed(e.to_string()))
+        }
+        ReportSource::WorkloadOwnedImage { pod_dir } => {
+            let signed: SignedExitReport = serde_json::from_str(json).map_err(|e| {
+                if serde_json::from_str::<nucleus_spec::ExitReport>(json).is_ok() {
+                    ReceiptError::Unauthenticated("the report is unsigned".into())
+                } else {
+                    ReceiptError::Malformed(e.to_string())
+                }
+            })?;
+            let recorded =
+                std::fs::read_to_string(pod_dir.join("mediator-pubkey.hex")).map_err(|e| {
+                    ReceiptError::Unauthenticated(format!(
+                        "the node has no record of this pod's mediation key: {e}"
+                    ))
+                })?;
+            let recorded = recorded.trim();
+            // The report's own copy of the key is a claim; the node's record decides.
+            if !signed.signer_pubkey.eq_ignore_ascii_case(recorded) {
+                return Err(ReceiptError::Unauthenticated(
+                    "signed by a key other than the one the node minted for this pod".into(),
+                ));
+            }
+            let key_bytes: [u8; 32] = hex::decode(recorded)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| {
+                    ReceiptError::Unauthenticated("the recorded key is malformed".into())
+                })?;
+            let key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)
+                .map_err(|e| ReceiptError::Unauthenticated(format!("the recorded key: {e}")))?;
+            let sig_bytes: [u8; 64] = hex::decode(&signed.signature)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| {
+                    ReceiptError::Unauthenticated("the signature is malformed".into())
+                })?;
+            let bytes = signing_bytes(&signed.report)
+                .map_err(|e| ReceiptError::Malformed(e.to_string()))?;
+            key.verify_strict(&bytes, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
+                .map_err(|_| {
+                    ReceiptError::Unauthenticated("the signature does not verify".into())
+                })?;
+            Ok(signed.report)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1010,5 +1116,135 @@ mod signature_tests {
         assert!(!verify_pod_receipt("nothex", &p, "nothex"));
         assert!(!verify_pod_receipt("", &p, ""));
         assert!(!verify_pod_receipt("aabb", &p, "ccdd"));
+    }
+}
+
+/// What a report read out of a workload-owned image has to prove.
+///
+/// The forged-report case is the one a live node measured as reachable in
+/// principle: the scratch root is the workload's uid, so the workload can put
+/// any bytes at the report's path. These pin that only a report signed with the
+/// key the NODE minted for this pod is accepted there.
+#[cfg(test)]
+mod authenticated_reports {
+    use super::*;
+    use ed25519_dalek::Signer;
+    use nucleus_spec::exit_report_auth::{SignedExitReport, signing_bytes};
+
+    const REPORT: &str = r#"{"workspace_hash":"ws","audit_tail_hash":"tail","audit_entry_count":4,"timestamp_unix":7}"#;
+
+    fn report() -> nucleus_spec::ExitReport {
+        serde_json::from_str(REPORT).unwrap()
+    }
+
+    fn signed_by(
+        key: &ed25519_dalek::SigningKey,
+        report: nucleus_spec::ExitReport,
+    ) -> SignedExitReport {
+        SignedExitReport {
+            signature: hex::encode(key.sign(&signing_bytes(&report).unwrap()).to_bytes()),
+            signer_pubkey: hex::encode(key.verifying_key().to_bytes()),
+            report,
+        }
+    }
+
+    /// A pod dir holding the node's record of `key`.
+    fn pod_dir(key: &ed25519_dalek::SigningKey) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mediator-pubkey.hex"),
+            hex::encode(key.verifying_key().to_bytes()),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn image(dir: &tempfile::TempDir) -> ReportSource {
+        ReportSource::WorkloadOwnedImage {
+            pod_dir: dir.path().to_path_buf(),
+        }
+    }
+
+    fn pod_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    /// Control first: the supervisor's own report is accepted, with its numbers.
+    #[test]
+    fn a_report_signed_with_the_pods_key_is_accepted() {
+        let dir = pod_dir(&pod_key());
+        let json = serde_json::to_string(&signed_by(&pod_key(), report())).unwrap();
+        let got = parse_report(&json, &image(&dir)).expect("the supervisor's report verifies");
+        assert_eq!(got.workspace_hash, "ws");
+        assert_eq!(got.audit_entry_count, 4);
+    }
+
+    #[test]
+    fn an_unsigned_report_in_the_image_is_refused_by_name() {
+        let dir = pod_dir(&pod_key());
+        let Err(ReceiptError::Unauthenticated(why)) = parse_report(REPORT, &image(&dir)) else {
+            panic!("an unsigned report must not become a receipt");
+        };
+        assert!(why.contains("unsigned"), "{why}");
+    }
+
+    /// The workload's own key, honestly named: not the key the node minted.
+    #[test]
+    fn a_report_signed_by_another_key_is_refused() {
+        let dir = pod_dir(&pod_key());
+        let other = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let json = serde_json::to_string(&signed_by(&other, report())).unwrap();
+        assert!(matches!(
+            parse_report(&json, &image(&dir)),
+            Err(ReceiptError::Unauthenticated(_))
+        ));
+    }
+
+    /// The report's claimed key is a claim: naming the right key does not make
+    /// another key's signature verify.
+    #[test]
+    fn claiming_the_pods_key_does_not_make_a_foreign_signature_verify() {
+        let dir = pod_dir(&pod_key());
+        let other = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let mut forged = signed_by(&other, report());
+        forged.signer_pubkey = hex::encode(pod_key().verifying_key().to_bytes());
+        let json = serde_json::to_string(&forged).unwrap();
+        let Err(ReceiptError::Unauthenticated(why)) = parse_report(&json, &image(&dir)) else {
+            panic!("a foreign signature must not verify");
+        };
+        assert!(why.contains("does not verify"), "{why}");
+    }
+
+    /// A genuine signature over different numbers: the workload edits the
+    /// supervisor's report in place.
+    #[test]
+    fn editing_a_signed_report_breaks_it() {
+        let dir = pod_dir(&pod_key());
+        let mut edited = signed_by(&pod_key(), report());
+        edited.report.workspace_hash = "forged-by-the-guest".into();
+        let json = serde_json::to_string(&edited).unwrap();
+        assert!(matches!(
+            parse_report(&json, &image(&dir)),
+            Err(ReceiptError::Unauthenticated(_))
+        ));
+    }
+
+    /// "Could not look" is not "looked and it was fine" (ADR 0007 A-1).
+    #[test]
+    fn with_no_record_of_the_key_nothing_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = serde_json::to_string(&signed_by(&pod_key(), report())).unwrap();
+        let Err(ReceiptError::Unauthenticated(why)) = parse_report(&json, &image(&dir)) else {
+            panic!("no key record must refuse");
+        };
+        assert!(why.contains("no record"), "{why}");
+    }
+
+    /// The shared-directory drivers keep what they accepted.
+    #[test]
+    fn a_shared_directory_accepts_a_plain_or_a_signed_report() {
+        assert!(parse_report(REPORT, &ReportSource::SharedDirectory).is_ok());
+        let json = serde_json::to_string(&signed_by(&pod_key(), report())).unwrap();
+        assert!(parse_report(&json, &ReportSource::SharedDirectory).is_ok());
     }
 }

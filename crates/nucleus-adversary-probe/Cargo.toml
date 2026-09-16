@@ -14,5 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 
+# `transcript` mode speaks the workload API over vsock, which only a Linux guest has.
+[target.'cfg(target_os = "linux")'.dependencies]
+vsock = "0.5"
+
 [lints]
 workspace = true
