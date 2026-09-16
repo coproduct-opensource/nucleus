@@ -49,10 +49,13 @@
 //! # What this does not reach
 //!
 //! A real VMM (whose death closes the guest's end); the broker listener, DNS proxy
-//! and network teardown that sit inside the window; `SHIP_RECEIPT` and the snapshot
-//! decision on the cross axis. Concurrency is reached only by the two race tests at
-//! the bottom — a guest hammering `FETCH_SVID` through a cancel, and a mint in flight
-//! when one starts — not by the census, whose letters are sequential.
+//! and network teardown that sit inside the window; the snapshot decision on the cross
+//! axis. Concurrency is reached only by the race tests at the bottom — `FETCH_SVID`
+//! hammered through a cancel, a mint in flight when one starts, and `SHIP_RECEIPT`
+//! mid-ship, stalled, and racing on several connections — not by the census, whose
+//! letters are sequential. The receipt tests found that concurrent ships tore the
+//! collected log (two writes per receipt); `mediation_receipt_collector` has the fix
+//! and its own test.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -153,6 +156,8 @@ struct Run {
     p: Uuid,
     k: Uuid,
     socket: std::path::PathBuf,
+    /// Where `SHIP_RECEIPT` bodies are collected for `P`.
+    receipt_dir: std::path::PathBuf,
     open: Option<(BufReader<OwnedReadHalf>, OwnedWriteHalf)>,
     broker_served: Arc<AtomicBool>,
     personalized: Arc<AtomicBool>,
@@ -194,7 +199,7 @@ impl Run {
             at_snapshot_barrier: Arc::default(),
             personalized: Arc::clone(&personalized),
             mediation_key_served: Arc::default(),
-            receipt_dir: None,
+            receipt_dir: Some(dir.path().join("p")),
             pod_registry: st.pods.clone(),
         };
         let bridge = crate::workload_api_vsock::WorkloadApiVsockBridge::start(
@@ -266,6 +271,7 @@ impl Run {
             p,
             k,
             socket,
+            receipt_dir: dir.path().join("p"),
             open: Some((BufReader::new(r), w)),
             broker_served,
             personalized,
@@ -661,5 +667,218 @@ async fn a_mint_in_flight_at_cancel_is_waited_for() {
     assert_eq!(
         leaked, 0,
         "a mint in flight at cancel left the certificate cached"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Receipts at teardown: the other half of the barrier.
+//
+// The barrier says nothing NEW is served once cancel begins. This says what was
+// already accepted is still recorded — whole or not at all. The drain in the bridge
+// exists for it ("a receipt mid-ship is collected, not truncated"); these are what
+// make that sentence a checked claim rather than a comment.
+// ---------------------------------------------------------------------------
+
+/// A receipt body that parses as JSON, big enough that a torn write would show.
+fn receipt_body(tag: usize) -> String {
+    format!(
+        r#"{{"schema_version":1,"verdict":"allow","tag":{tag},"pad":"{}"}}"#,
+        "x".repeat(2048)
+    )
+}
+
+/// Every collected line for `P`, and whether each is a whole receipt.
+fn collected(run: &Run) -> Vec<Result<serde_json::Value, String>> {
+    let path = crate::mediation_receipt_collector::receipt_log_path(&run.receipt_dir);
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).map_err(|_| l.chars().take(80).collect())
+        })
+        .collect()
+}
+
+async fn cancel_p(run: &Run) -> Duration {
+    let started = std::time::Instant::now();
+    let r = tokio::time::timeout(
+        Duration::from_secs(10),
+        cancel_pod(State(run.st.clone()), Extension(None), AxumPath(run.p)),
+    )
+    .await;
+    assert!(
+        r.is_ok(),
+        "cancel hung on a guest mid-receipt: the drain has no bound"
+    );
+    started.elapsed()
+}
+
+/// The command frame is read and the body is half-sent when cancel begins; the rest
+/// arrives inside the drain window. The receipt must be collected whole and acked,
+/// and cancel must have waited for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_receipt_mid_ship_at_cancel_is_collected_whole() {
+    let mut run = Run::new(false, false).await;
+    let (mut r, mut w) = run.open.take().expect("the open connection");
+    let body = receipt_body(1);
+    let (head, tail) = body.split_at(body.len() / 2);
+    w.write_all(b"SHIP_RECEIPT\n").await.expect("command");
+    w.write_all(head.as_bytes()).await.expect("half the body");
+    w.flush().await.expect("flush");
+    // Let the bridge read the command frame and block in the body.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let tail = tail.to_string();
+    let guest = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _ = w.write_all(tail.as_bytes()).await;
+        let _ = w.write_all(b"\n").await;
+        let _ = w.flush().await;
+        let mut line = String::new();
+        let _ = tokio::time::timeout(Duration::from_secs(5), r.read_line(&mut line)).await;
+        line
+    });
+    let took = cancel_p(&run).await;
+    let reply = guest.await.expect("guest task");
+
+    let lines = collected(&run);
+    assert_eq!(
+        lines.len(),
+        1,
+        "exactly the one receipt is collected: {lines:?}"
+    );
+    assert!(
+        matches!(&lines[0], Ok(v) if v.get("tag") == Some(&serde_json::json!(1))),
+        "the collected receipt is whole: {lines:?}"
+    );
+    assert!(
+        reply.contains("collected"),
+        "the guest was not told its receipt was collected: {reply:?}"
+    );
+    assert!(
+        took >= Duration::from_millis(250),
+        "cancel returned in {took:?}, before the receipt it was draining arrived"
+    );
+    let _ = run.finish().await;
+}
+
+/// The guest stalls inside the body and never finishes. Cancel must not wait for it
+/// past the bound, nothing may be collected, and no torn line may be left behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_receipt_stalled_at_cancel_is_dropped_whole_and_cancel_is_bounded() {
+    let mut run = Run::new(false, false).await;
+    let (mut r, mut w) = run.open.take().expect("the open connection");
+    let body = receipt_body(2);
+    w.write_all(b"SHIP_RECEIPT\n").await.expect("command");
+    w.write_all(&body.as_bytes()[..body.len() / 2])
+        .await
+        .expect("half the body");
+    w.flush().await.expect("flush");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let took = cancel_p(&run).await;
+    assert!(
+        took < Duration::from_secs(5),
+        "cancel took {took:?} on a stalled guest"
+    );
+    let mut line = String::new();
+    let got = tokio::time::timeout(Duration::from_secs(2), r.read_line(&mut line)).await;
+    assert!(
+        matches!(got, Ok(Ok(0)) | Ok(Err(_))),
+        "the stalled guest's connection is still open after cancel: {got:?} {line:?}"
+    );
+    let lines = collected(&run);
+    assert!(
+        lines.is_empty(),
+        "a stalled receipt left something behind: {lines:?}"
+    );
+    drop(w);
+    let _ = run.finish().await;
+}
+
+/// Receipts shipped on several connections while cancel lands: whatever was
+/// collected is whole, every ack names a receipt that was collected, and nothing is
+/// collected that was sent after cancel returned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receipts_racing_cancel_are_whole_and_every_ack_is_true() {
+    const TRIALS: usize = 20;
+    const CONNECTIONS: usize = 4;
+    let mut collected_during = 0usize;
+    for trial in 0..TRIALS {
+        let run = Run::new(false, false).await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut guests = Vec::new();
+        for c in 0..CONNECTIONS {
+            let socket = run.socket.clone();
+            let cancelled = Arc::clone(&cancelled);
+            guests.push(tokio::spawn(async move {
+                let mut acked = Vec::new();
+                let mut sent_after = Vec::new();
+                let Ok(stream) = UnixStream::connect(&socket).await else {
+                    return (acked, sent_after);
+                };
+                let (r, mut w) = stream.into_split();
+                let mut r = BufReader::new(r);
+                for i in 0.. {
+                    let tag = trial * 1_000_000 + c * 10_000 + i;
+                    let after = cancelled.load(Ordering::SeqCst);
+                    let frame = format!("SHIP_RECEIPT\n{}\n", receipt_body(tag));
+                    if w.write_all(frame.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    if after {
+                        sent_after.push(tag);
+                    }
+                    let mut line = String::new();
+                    match tokio::time::timeout(Duration::from_secs(3), r.read_line(&mut line)).await
+                    {
+                        Ok(Ok(n)) if n > 0 && line.contains("collected") => acked.push(tag),
+                        _ => break,
+                    }
+                }
+                (acked, sent_after)
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = cancel_p(&run).await;
+        cancelled.store(true, Ordering::SeqCst);
+
+        let mut acked = BTreeSet::new();
+        let mut sent_after = BTreeSet::new();
+        for g in guests {
+            let (a, s) = tokio::time::timeout(Duration::from_secs(10), g)
+                .await
+                .expect("a guest outlived cancel")
+                .expect("guest task");
+            acked.extend(a);
+            sent_after.extend(s);
+        }
+        let lines = collected(&run);
+        let torn: Vec<&String> = lines.iter().filter_map(|l| l.as_ref().err()).collect();
+        assert!(
+            torn.is_empty(),
+            "torn receipt lines were collected: {torn:?}"
+        );
+        let tags: BTreeSet<usize> = lines
+            .iter()
+            .filter_map(|l| l.as_ref().ok()?.get("tag")?.as_u64())
+            .map(|t| usize::try_from(t).expect("tag fits"))
+            .collect();
+        let lost: Vec<&usize> = acked.difference(&tags).collect();
+        assert!(lost.is_empty(), "acked but not collected: {lost:?}");
+        let late: Vec<&usize> = sent_after.intersection(&tags).collect();
+        assert!(
+            late.is_empty(),
+            "collected though sent after cancel returned: {late:?}"
+        );
+        collected_during += tags.len();
+        let _ = run.finish().await;
+    }
+    eprintln!(
+        "receipt race: {TRIALS} trials x {CONNECTIONS} connections, {collected_during} receipts collected"
+    );
+    assert!(
+        collected_during > 0,
+        "no receipt was shipped: nothing raced"
     );
 }
