@@ -1,0 +1,89 @@
+# The band each `nucleus` leaf command demands.
+#
+# `docs/design/command-grammar.md` defines three bands over the kernel's own
+# predicates (`ifc_ops.rs:96`, `:103`):
+#
+#   observe  no mutation, no exfiltration vector
+#   emit     mutates local state
+#   reach    execs, spawns, or crosses the network
+#
+# `cargo xtask command-grammar` checks this table is TOTAL IN BOTH DIRECTIONS
+# against the clap derives in `crates/nucleus-cli/`: no command without an entry,
+# no entry without a command. A one-way check lets stale entries accumulate, and
+# a stale entry reads exactly like a live one.
+#
+# WHAT THE GATE DOES NOT CHECK: that any value below is RIGHT. Deriving the true
+# band means walking each command down to the `Act`s it performs, which needs a
+# per-leaf `acts()` declaration that does not exist yet. Until it does, these
+# values are review material and the gate only stops the surface growing a
+# command whose authority nobody wrote down.
+#
+# PROVENANCE OF THIS FIRST PASS, 2026-09-15. The 20 flat leaves were classified
+# from their own doc comments in `crates/nucleus-cli/src/main.rs` (e.g. `verify`
+# is "Prove Tier 2 works by booting a real nucleus pod" — reach; `config` is
+# "Show current configuration" — observe). The 32 nested leaves were classified
+# from their names and their group's doc comment, which is weaker evidence: the
+# `node` group is "Interact with a running nucleus-node", so all six are reach,
+# and `identity present` is reach on the strength of the group being "OP
+# token-exchange affordances". Those are the entries most worth a second reader.
+#
+# `mediation-hook` is hidden from `--help` and still listed: a hidden command has
+# authority like any other, and omitting it would make the table's totality a
+# statement about the visible surface only.
+
+[leaf]
+# ── flat leaves, classified from their doc comments ──────────────────────────
+"audit" = "observe"                  # audit agent configurations for security risks
+"config" = "observe"                 # show current configuration
+"doctor" = "observe"                 # check setup status and diagnose issues
+"envelope" = "emit"                  # extract a portable provenance bundle — writes it
+"envelope-verify" = "observe"        # verify a provenance bundle standalone
+"lineage" = "observe"                # walk the data-lineage DAG
+"lineage-verify-chain" = "observe"   # verify Merkle integrity against checkpoints
+"lockdown" = "emit"                  # drop all agents to read-only — mutates agent state
+"mediation-hook" = "observe"         # PreToolUse hook: decides, mutates nothing
+"observe" = "emit"                   # observes, then GENERATES a policy profile
+"profiles" = "observe"               # list available permission profiles
+"replay" = "observe"                 # replay a kernel decision trace
+"run" = "reach"                      # execute a task
+"setup" = "reach"                    # Lima VM, artifact download, secrets
+"shell" = "reach"                    # interactive agent session
+"start" = "reach"                    # start nucleus-node in the Lima VM
+"stop" = "reach"                     # stop nucleus-node and optionally the VM
+"two-safety" = "reach"               # boots a pod twice
+"verify" = "reach"                   # boots a real pod — NOT the document checkers
+"verify-attestation" = "observe"     # verify an attested SVID
+
+# ── nested leaves, classified from names and group doc comments ──────────────
+"bundle fetch" = "reach"             # iroh-blobs transfer
+"bundle publish" = "reach"
+"grant propose" = "emit"
+"grant seal" = "emit"
+"grant show" = "observe"
+"grant widen" = "emit"
+"guard audit" = "observe"
+"guard enable" = "emit"
+"guard init" = "emit"
+"guard status" = "observe"
+"identity inspect" = "observe"
+"identity mint" = "emit"
+"identity present" = "reach"         # token exchange with an OP — weakest evidence here
+"identity verify" = "observe"
+"manifest init" = "emit"
+"manifest sign" = "emit"
+"manifest surface" = "observe"
+"manifest verify" = "observe"
+"node cancel" = "reach"              # the whole group talks to a running node
+"node create" = "reach"
+"node health" = "reach"
+"node logs" = "reach"
+"node pods" = "reach"
+"node sign" = "reach"
+"token delegate" = "emit"
+"token inspect" = "observe"
+"token mint" = "emit"
+"token verify" = "observe"
+"trust add" = "emit"
+"trust keygen" = "emit"
+"trust list" = "observe"
+"trust remove" = "emit"
