@@ -350,7 +350,6 @@ pub async fn write_exit_report(
 /// never produced for a Firecracker pod. The workload's exit is the point after
 /// which nothing it does is mediated, which makes it the right moment. The
 /// shutdown write stays, and overwrites this one where shutdown is reached.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn on_workload_exit(
     audit: Arc<AuditLog>,
     work_dir: std::path::PathBuf,
