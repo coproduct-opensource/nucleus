@@ -16,6 +16,7 @@
 //! * **Percentiles, not just a mean.** Under contention the tail is the story.
 
 mod agency;
+mod guest_transcript;
 mod symmetry;
 
 use std::collections::BTreeMap;
@@ -37,6 +38,9 @@ enum Cli {
     Toolcall(ToolCall),
     /// How many cross-pod checks does isolation actually require at N pods?
     Symmetry(SymmetryArgs),
+    /// A6/A7 of the command walk: boot one pod several times, each with a
+    /// different random guest transcript, and require identical host conclusions.
+    GuestTranscript(guest_transcript::Args),
     /// Measure one point on the safely-delegatable-agency frontier: how much
     /// useful work a pod completes, and what the authority cost (ADR 0005).
     Agency(AgencyArgs),
@@ -171,6 +175,7 @@ fn main() -> Result<()> {
         Cli::Toolcall(t) => toolcall(t),
         Cli::Symmetry(s) => symmetry_report(s),
         Cli::Agency(a) => agency_run(a),
+        Cli::GuestTranscript(g) => std::process::exit(guest_transcript::run(g)?),
     }
 }
 

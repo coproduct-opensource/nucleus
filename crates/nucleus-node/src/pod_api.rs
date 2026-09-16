@@ -490,6 +490,8 @@ pub(crate) async fn get_receipt(
         Err(e @ ReceiptError::NotExited) => Err(ApiError::Driver(e.to_string())),
         Err(ReceiptError::NoExitReport(_)) => Err(ApiError::NotFound),
         Err(e @ ReceiptError::Malformed(_)) => Err(ApiError::Driver(e.to_string())),
+        // Named, not NotFound: the report IS there, and it is not the supervisor's.
+        Err(e @ ReceiptError::Unauthenticated(_)) => Err(ApiError::Authority(e.to_string())),
     }
 }
 
@@ -1062,6 +1064,66 @@ mod handler_tests {
         for (_, h) in st.pods.lock().await.iter() {
             let _ = h.cancel().await;
         }
+    }
+
+    fn exits_audited(st: &NodeState) -> usize {
+        std::fs::read_to_string(st.state_dir.join("lifecycle.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains("\"pod_exited\""))
+            .count()
+    }
+
+    /// An exited pod is reaped ONCE. Exited pods stay in the registry, and the
+    /// reaper used to redo everything for them on every pass: another `pod_exited`
+    /// entry in the lifecycle audit log each 10 s (one pod recorded six exits on a
+    /// live node), and another identity release, which warned that the registry
+    /// keys had drifted apart because the first release had already removed them.
+    #[tokio::test]
+    async fn an_exited_pod_is_reaped_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let pod = register(&st, None).await;
+        let _cancelled = cancel_pod(State(st.clone()), Extension(None), AxumPath(pod))
+            .await
+            .expect("cancel");
+
+        let mut reaped = std::collections::HashSet::new();
+        crate::reap_once(&st, &mut reaped).await;
+        // Non-vacuity: the pod did exit, and the first pass did audit it.
+        assert_eq!(exits_audited(&st), 1, "the first pass audits the exit");
+        crate::reap_once(&st, &mut reaped).await;
+        crate::reap_once(&st, &mut reaped).await;
+        assert_eq!(
+            exits_audited(&st),
+            1,
+            "a later pass re-audited the same exit"
+        );
+    }
+
+    /// Reaping once must not mean cascading once: a child still running under a
+    /// parent that exited is cancelled on the next pass even if the parent was
+    /// already reaped, so a cascade that failed is retried rather than lost.
+    #[tokio::test]
+    async fn a_child_of_an_already_reaped_parent_is_still_cascaded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let parent = register(&st, None).await;
+        let _cancelled = cancel_pod(State(st.clone()), Extension(None), AxumPath(parent))
+            .await
+            .expect("cancel");
+        let mut reaped = std::collections::HashSet::new();
+        crate::reap_once(&st, &mut reaped).await;
+
+        // A child that is running under the reaped parent when a later pass comes.
+        let child = register(&st, Some(parent)).await;
+        crate::reap_once(&st, &mut reaped).await;
+        let state_of = get_pod(&st, child).await.expect("child").status().await;
+        assert!(
+            !matches!(state_of, crate::PodState::Running),
+            "a running child of an exited parent was left running: {state_of:?}"
+        );
+        cancel_all(&st).await;
     }
 
     /// An unidentified caller — an operator on the node's own API — sees every
