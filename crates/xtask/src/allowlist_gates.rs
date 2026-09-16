@@ -472,7 +472,9 @@ fn declared_under_cfg_test(file: &Path) -> bool {
             let t = line.trim();
             if t.starts_with("#[cfg(") && t.contains("test") {
                 gated = true;
-            } else if t.ends_with(&decl) && (t == decl || t.starts_with("pub ") || t.starts_with("mod ")) {
+            } else if t.ends_with(&decl)
+                && (t == decl || t.starts_with("pub ") || t.starts_with("mod "))
+            {
                 if gated {
                     return true;
                 }
