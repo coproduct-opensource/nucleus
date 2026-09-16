@@ -47,6 +47,7 @@ mod host_socket;
 mod identity_fusion;
 mod ingest;
 mod lockdown_client;
+mod lockdown_signal;
 #[cfg(feature = "mcp")]
 mod mcp;
 mod mediation;
@@ -472,6 +473,10 @@ pub(crate) struct AppState {
     file_lockdown: Arc<std::sync::atomic::AtomicBool>,
     /// gRPC stream-based lockdown flag. Set by the lockdown streaming client.
     stream_lockdown: Arc<std::sync::atomic::AtomicBool>,
+    /// The denial circuit breaker's lockdown. Its own flag: the signal-file watcher
+    /// clears the file's flag whenever no file exists, and sharing it lifted every
+    /// breaker lockdown within 500 ms (`lockdown_signal`).
+    breaker_lockdown: Arc<std::sync::atomic::AtomicBool>,
     /// SHA-256 checksum of the permission lattice for telemetry correlation.
     /// Kept for future audit-log integration in VerdictSink (PR 3).
     #[allow(dead_code)]
@@ -559,6 +564,9 @@ fn is_locked(state: &AppState) -> bool {
         .load(std::sync::atomic::Ordering::Acquire)
         || state
             .stream_lockdown
+            .load(std::sync::atomic::Ordering::Acquire)
+        || state
+            .breaker_lockdown
             .load(std::sync::atomic::Ordering::Acquire)
 }
 
@@ -1627,6 +1635,7 @@ async fn main() -> Result<(), ApiError> {
     // Pre-create shared state for lockdown + exposure so VerdictSink can share them.
     let file_lockdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stream_lockdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let breaker_lockdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>> =
         Arc::new(std::sync::RwLock::new(None));
     // The kernel's accumulated exposure, mirrored out of `decide_and_record`
@@ -1699,6 +1708,7 @@ async fn main() -> Result<(), ApiError> {
     let (verdict_sink, trace_monitor) = verdict_sink::build_monitored_sink(
         file_lockdown.clone(),
         stream_lockdown.clone(),
+        breaker_lockdown.clone(),
         runtime.policy().capabilities.clone(),
         exposure_guard.clone(),
         policy_checksum.clone(),
@@ -1849,6 +1859,7 @@ async fn main() -> Result<(), ApiError> {
         kernel_exposure: kernel_exposure.clone(),
         file_lockdown,
         stream_lockdown,
+        breaker_lockdown,
         policy_checksum,
         session_id,
         credentialed_egress: spec.spec.credentialed_egress.clone(),
@@ -1877,6 +1888,7 @@ async fn main() -> Result<(), ApiError> {
     // world-writable signal file (red team finding).
     {
         let lockdown_flag = state.file_lockdown.clone();
+        let breaker_flag = state.breaker_lockdown.clone();
         tokio::spawn(async move {
             // Same path logic as the CLI
             let signal_path = dirs::runtime_dir()
@@ -1885,38 +1897,20 @@ async fn main() -> Result<(), ApiError> {
                 .join("nucleus")
                 .join("lockdown.json");
 
-            // Fail-closed lockdown: on ANY verification failure (bad HMAC, parse
-            // error, read error), preserve the current lockdown state rather than
-            // defaulting to unlocked. Only a verified signal can change the state.
+            // Fail-closed: only a verified signal changes the file's lock, and only a
+            // verified RESTORE lifts the circuit breaker's (see `lockdown_signal`).
             loop {
-                let current = lockdown_flag.load(std::sync::atomic::Ordering::Acquire);
-                let should_lock = if signal_path.exists() {
-                    match tokio::fs::read_to_string(&signal_path).await {
-                        Ok(content) => parse_and_verify_lockdown_signal(&content, current),
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "Failed to read lockdown signal file — preserving current state"
-                            );
-                            current // fail-closed: preserve current state
-                        }
-                    }
+                let signal = if signal_path.exists() {
+                    Some(tokio::fs::read_to_string(&signal_path).await)
                 } else {
-                    false // no file = no lockdown (file must exist to lock)
+                    None
                 };
-
-                if should_lock != current {
-                    lockdown_flag.store(should_lock, std::sync::atomic::Ordering::Release);
-                    if should_lock {
-                        tracing::warn!(
-                            "LOCKDOWN ACTIVATED via verified signal file \
-                             — meet(current, read_only) applied, forensic reads still allowed"
-                        );
-                    } else {
-                        tracing::info!("Lockdown lifted via verified signal file");
-                    }
-                }
-
+                let now = lockdown_flag.load(std::sync::atomic::Ordering::Acquire);
+                lockdown_signal::apply(
+                    lockdown_signal::tick(signal, now),
+                    &lockdown_flag,
+                    &breaker_flag,
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         });
@@ -4497,64 +4491,6 @@ async fn build_audit_log(
         #[cfg(feature = "remote-audit")]
         s3_sink,
     }))
-}
-
-/// Parse and verify a lockdown signal file. Returns the desired lockdown state.
-///
-/// FAIL-CLOSED: on any verification failure (bad HMAC, malformed JSON, missing
-/// fields), returns `current_state` to preserve the existing lockdown. Only a
-/// verified, well-formed signal can change the state. This prevents an attacker
-/// from unlocking the system by corrupting or forging the signal file.
-fn parse_and_verify_lockdown_signal(content: &str, current_state: bool) -> bool {
-    let envelope: serde_json::Value = match serde_json::from_str(content) {
-        Ok(v) => v,
-        Err(_) => {
-            tracing::warn!("Lockdown signal file has invalid JSON — preserving current state");
-            return current_state;
-        }
-    };
-
-    let signal = match envelope.get("signal") {
-        Some(s) => s,
-        None => {
-            tracing::warn!(
-                "Lockdown signal file missing 'signal' field — preserving current state"
-            );
-            return current_state;
-        }
-    };
-
-    let claimed_hmac = envelope.get("hmac").and_then(|h| h.as_str()).unwrap_or("");
-
-    let body = serde_json::to_string_pretty(signal).unwrap_or_default();
-
-    // HMAC key: hostname:username. This is a tamper-detection mechanism against
-    // casual local attacks, not a cryptographic secret. For production fleet
-    // lockdown, use the gRPC streaming path with proper HMAC auth.
-    let key_material = format!(
-        "nucleus-lockdown-{}:{}",
-        whoami::hostname().unwrap_or_else(|_| "unknown".to_string()),
-        whoami::username().unwrap_or_else(|_| "unknown".to_string()),
-    );
-
-    use hmac::{Hmac, Mac, digest::KeyInit};
-    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key_material.as_bytes()).expect("hmac");
-    mac.update(body.as_bytes());
-    let expected = hex::encode(mac.finalize().into_bytes());
-
-    if expected != claimed_hmac {
-        tracing::warn!(
-            "Lockdown signal HMAC mismatch — preserving current state (possible tampering)"
-        );
-        return current_state; // fail-closed: preserve current state
-    }
-
-    // Verified signal — extract desired state
-    signal
-        .get("restore")
-        .and_then(|r| r.as_bool())
-        .map(|restore| !restore)
-        .unwrap_or(true) // signal without "restore" field = lockdown active
 }
 
 #[derive(Debug, Serialize, Deserialize)]

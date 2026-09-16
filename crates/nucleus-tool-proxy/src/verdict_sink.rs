@@ -24,6 +24,8 @@ use crate::telemetry;
 pub struct ToolProxyVerdictSink {
     file_lockdown: Arc<AtomicBool>,
     stream_lockdown: Arc<AtomicBool>,
+    /// The breaker's own lockdown flag (see `lockdown_signal`).
+    breaker_lockdown: Arc<AtomicBool>,
     capabilities: CapabilityLattice,
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
     policy_checksum: String,
@@ -93,6 +95,7 @@ fn denial_budget_from_env() -> u32 {
 pub fn build_monitored_sink(
     file_lockdown: Arc<AtomicBool>,
     stream_lockdown: Arc<AtomicBool>,
+    breaker_lockdown: Arc<AtomicBool>,
     capabilities: CapabilityLattice,
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
     policy_checksum: String,
@@ -107,6 +110,7 @@ pub fn build_monitored_sink(
     let inner: Arc<dyn VerdictSink> = Arc::new(ToolProxyVerdictSink::new(
         file_lockdown,
         stream_lockdown,
+        breaker_lockdown,
         capabilities,
         exposure_guard,
         policy_checksum.clone(),
@@ -152,6 +156,7 @@ impl ToolProxyVerdictSink {
     fn new(
         file_lockdown: Arc<AtomicBool>,
         stream_lockdown: Arc<AtomicBool>,
+        breaker_lockdown: Arc<AtomicBool>,
         capabilities: CapabilityLattice,
         exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
         policy_checksum: String,
@@ -165,6 +170,7 @@ impl ToolProxyVerdictSink {
             denial_budget: denial_budget_from_env(),
             file_lockdown,
             stream_lockdown,
+            breaker_lockdown,
             capabilities,
             exposure_guard,
             policy_checksum,
@@ -176,7 +182,9 @@ impl ToolProxyVerdictSink {
     /// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
     /// Mirrors `is_locked()` in main.rs.
     fn is_locked(&self) -> bool {
-        self.file_lockdown.load(Ordering::Acquire) || self.stream_lockdown.load(Ordering::Acquire)
+        self.file_lockdown.load(Ordering::Acquire)
+            || self.stream_lockdown.load(Ordering::Acquire)
+            || self.breaker_lockdown.load(Ordering::Acquire)
     }
 
     /// The **behavioural circuit breaker**: trip lockdown after
@@ -190,10 +198,11 @@ impl ToolProxyVerdictSink {
     /// wall indefinitely: every individual call was correctly refused, and the
     /// pattern across calls was nobody's job to notice.
     ///
-    /// This does not introduce a new way to deny. It sets the SAME
-    /// `file_lockdown` flag the operator path sets, so the deny happens through
-    /// the existing, already-enforced `preflight`/`record` gate. One lockdown
-    /// state, three ways in; clearing it stays a human action.
+    /// This does not introduce a new way to deny: the deny happens through the
+    /// existing, already-enforced `preflight`/`record` gate, which reads every
+    /// lockdown flag. It sets its OWN flag — it used to set the signal file's, and
+    /// the file watcher cleared that within 500 ms whenever no file existed.
+    /// Clearing it is a human action: a verified restore signal.
     ///
     /// **Consecutive**, and reset by any allow — that choice is what makes the
     /// default safe. Real work interleaves successes with the occasional
@@ -220,7 +229,7 @@ impl ToolProxyVerdictSink {
             return false;
         }
         // Trip. Idempotent: already-locked sessions just stay locked.
-        let already = self.file_lockdown.swap(true, Ordering::AcqRel);
+        let already = self.breaker_lockdown.swap(true, Ordering::AcqRel);
         if !already {
             tracing::error!(
                 target: "nucleus_permission",
@@ -554,6 +563,7 @@ mod tests {
         ToolProxyVerdictSink::new(
             Arc::new(AtomicBool::new(file_locked)),
             Arc::new(AtomicBool::new(stream_locked)),
+            Arc::new(AtomicBool::new(false)),
             CapabilityLattice::default(),
             Arc::new(std::sync::RwLock::new(None)),
             "test-checksum".to_string(),
@@ -631,6 +641,26 @@ mod tests {
             assert!(!s.is_locked(), "budget 0 must be off, not instant");
         }
 
+        /// The composition that was broken: the breaker trips, then the signal
+        /// file watcher runs a tick with no signal file — every pod without one.
+        /// The breaker's lockdown must survive it; only a verified restore lifts it.
+        #[test]
+        fn a_tripped_breaker_survives_the_signal_file_watcher() {
+            let s = sink_with_budget(2);
+            let file = Arc::clone(&s.file_lockdown);
+            let breaker = Arc::clone(&s.breaker_lockdown);
+            assert!(!s.note_outcome_for_breaker("deny"));
+            assert!(s.note_outcome_for_breaker("deny"), "the second trips it");
+            assert!(s.is_locked(), "tripped, or this proves nothing");
+
+            let now = file.load(Ordering::Acquire);
+            crate::lockdown_signal::apply(crate::lockdown_signal::tick(None, now), &file, &breaker);
+            assert!(
+                s.is_locked(),
+                "a watcher tick with no signal file lifted the breaker's lockdown"
+            );
+        }
+
         #[test]
         fn tripping_is_idempotent() {
             let s = sink_with_budget(1);
@@ -673,6 +703,7 @@ mod tests {
 
     fn built() -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
         build_monitored_sink(
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
             CapabilityLattice::default(),
@@ -732,6 +763,7 @@ mod tests {
     fn the_built_sink_still_enforces_lockdown() {
         let locked = build_monitored_sink(
             Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
             CapabilityLattice::default(),
             Arc::new(std::sync::RwLock::new(None)),
