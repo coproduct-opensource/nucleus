@@ -26,6 +26,22 @@
 //! - **A short write.** On ENOSPC a write can land partially. That is returned as an
 //!   error, which every caller treats as "not recorded".
 
+#![forbid(unsafe_code)]
+// Declared panic-free for the shipped build (the scorecard's `tot` family): a
+// record log's append must fail as an `Err`, never take the writer down.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use std::io::Write;
 use std::path::Path;
 #[cfg(feature = "async")]

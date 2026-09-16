@@ -485,16 +485,12 @@ pub(crate) fn prepare_jail(
         .map_err(|e| format!("cannot write jailed config {}: {e}", config_dest.display()))?;
     placed.push(config_dest);
 
-    // Firecracker's logger opens this path after dropping privileges, so it must
-    // exist and be writable by the unprivileged uid — it will not create it.
+    // Firecracker's logger opens this after dropping privileges and won't create it.
     let log_dest = layout.host_path(in_jail::LOG);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "ADR 0007 G-1 does not apply: creates the log Firecracker opens itself; writes nothing"
-    )]
     std::fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(false)
         .open(&log_dest)
         .map_err(|e| format!("cannot create jailed log {}: {e}", log_dest.display()))?;
     placed.push(log_dest);
