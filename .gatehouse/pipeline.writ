@@ -1,4 +1,4 @@
--- nucleus's gatehouse pipeline: the five gates, what each one needs, and the machine that runs
+-- nucleus's gatehouse pipeline: the six gates, what each one needs, and the machine that runs
 -- them. `cargo run -p gate -- plan check` elaborates this and the writ kernel checks the
 -- admissibility certificate at the bottom; the gate definitions in `.gatehouse/gates/*.json`
 -- carry the same commands, scopes and capabilities, plus the fields a writ Gate has no room for
@@ -8,10 +8,10 @@
 --   Cap    = (net, exec, wallMs, cpuMs, memMb, fsRead, fsWrite, secrets)
 --            net tag 3 0 = None, exec tag 3 1 = Scoped
 --   Gate   = (name, hash, scope, env, cap, cmd, timeoutMs, outputs, image, tools, diskMb, memMb,
---             platform, reads, seeds)          hash is filled by the elaborator (zeroed when hashed)
+--             platform, reads, seeds, measuredMs, replaces)   hash is filled by the elaborator
 --   Policy = (ceiling, required, queueBudgetMs, maxGates, builders, builderDiskMb, envTools,
 --             inFlight, builderMemMb, builderPlatform, hostDiskMb, hostMemMb, lanes, catalogKeep,
---             preparedMb, minFreeMb, seeds)
+--             preparedMb, minFreeMb, seeds, retired)
 --
 -- WHERE THE NUMBERS COME FROM. Every one is measured on the builder that runs these gates
 -- (`gatehouse-nucleus-acceptance`, 2026-09-17) or read out of a file that is itself pinned. They
@@ -96,25 +96,19 @@ let ciSpec : ci.Gate = (#b"ci-spec", #d"0000000000000000000000000000000000000000
 
 let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGates] : ci.Gate, [(1, 0), (2, 0)] : ci.Edge)
 
--- `required` is the four contexts `gatehouse/required` rolls up, which is what the branch
--- protection actually holds a merge to. lean-build is not among them until its toolchain is in
--- the image and its Mathlib cache is a pinned seed.
+-- `required` is the five gates `gatehouse/required` rolls up, which is what branch protection
+-- actually holds a merge to. lean-build is not among them until its toolchain is in the image and
+-- its Mathlib cache is a pinned seed.
 --
 -- The timeouts are ~3x the LONGEST run measured in the lane, which is what makes the capacity
 -- figure mean something. They were 5x to 10x that, and the budget they consumed was imaginary:
 -- 10800000 ms of declared gate time against a 21600000 ms window with 2 commits in flight is a
 -- builder that is exactly full while running 22 minutes of work per commit. Measured in-VM, worst
--- observed: fmt 123 s, ci-spec 92 s, clippy 304 s, test-core 702 s. Re-pinned, the pipeline
--- declares 5400000 ms, so `builderBudget_b` leaves 5400000 ms — ninety minutes — of headroom for
--- the gates still to move off GitHub, on the builder that already exists.
---
--- lean-build's 1800000 ms is the one number here that is not measured in the lane: it has never
--- run there (its toolchain is not in the image). 145 s in a container with a warm cache, twelve
--- times over, until the lane can measure it.
---
--- Only `timeoutMs` moved. A capability is part of a gate's identity and `timeout_s` is not
--- (`GateDef::hash` excludes it), so re-pinning the budget costs no re-dispatch: every receipt
--- already held at a tree still answers for the same gate.
+-- observed: fmt 123 s, ci-spec 92 s, clippy 304 s, test-core 702 s, text-gates 5 s, and
+-- lean-build 145 s in a container because the lane cannot run it yet. `timeoutMeasured_b` holds
+-- each timeout to between two and ten times its measurement, so the six declare 4845000 ms
+-- against a 21600000 ms window with two commits in flight — the builder is at 45% of what
+-- `builderBudget_b` allows, with room for the forty-six contexts still on GitHub.
 let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy", #b"test-core", #b"ci-spec", #b"text-gates"] : Bytes, 21600000, 64, 1, 32768, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"rustfmt@1.9.0", #b"clippy-driver@0.1.96", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1", #b"ip@6.1.0", #b"git@2.39.5", #b"rg@13.0.0", #b"awk@mawk-1.3.4", #b"python3@3.11.2", #b"jq@1.6", #b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 2, 8192, platform, 78284, 23981, 2, 3, 4096, 10240, [] : Bytes, [#b"Rustfmt", #b"Clippy"] : Bytes)
 
 let admissible : So (ci.admissible_b pipeline policy) = oh
