@@ -40,14 +40,28 @@ edges=$(printf '%s' "$meta" | jq -r '
   | ($pk | map({key: (.manifest_path | sub("/Cargo.toml$"; "") | sub(".*/"; "")), value: .name}) | from_entries) as $dir2name
   | ($pk | map(.name)) as $names
   | ($pk[] | .name as $n | .dependencies[] | select(.path != null) | select(.name as $d | $names | index($d)) | "\($n) \(.name)"),
-    ($dir2name | to_entries[] | "DIR \(.key) \(.value)")')
+    ($dir2name | to_entries[] | "DIR \(.key) \(.value)"),
+    ($names[] | "NAME \(.)")')
 
 declare -a affected=()
 for s in "${seeds[@]}"; do
     n=$(printf '%s\n' "$edges" | awk -v d="$s" '$1=="DIR" && $2==d {print $3; exit}')
-    [ -z "$n" ] && n=$s   # already a package name, or not a workspace member (kept; cargo will say so)
+    if [ -z "$n" ]; then
+        # Not a member directory. It may still be a package name (`--crates` takes those), and
+        # otherwise it is a directory under crates/ that cargo has never heard of: four of them
+        # hold only Lean sources. Passing those through and letting cargo say so turns a change to
+        # a lean-toolchain file into `package ID specification ... did not match any packages`,
+        # which is a red MSRV job on a change that touched no Rust. Dropping it scopes to nothing
+        # and the caller falls back to the whole workspace, which is the safe direction.
+        if printf '%s\n' "$edges" | awk -v d="$s" '$1=="NAME" && $2==d {f=1} END{exit !f}'; then
+            n=$s
+        else
+            continue
+        fi
+    fi
     affected+=("$n")
 done
+[ ${#affected[@]} -eq 0 ] && exit 0
 # Fixed point over reverse edges.
 while :; do
     before=${#affected[@]}
@@ -56,7 +70,7 @@ while :; do
             [ -z "$r" ] && continue
             found=0; for x in "${affected[@]}"; do [ "$x" = "$r" ] && found=1 && break; done
             [ $found -eq 0 ] && affected+=("$r")
-        done < <(printf '%s\n' "$edges" | awk -v d="$a" '$1!="DIR" && $2==d {print $1}')
+        done < <(printf '%s\n' "$edges" | awk -v d="$a" '$1!="DIR" && $1!="NAME" && $2==d {print $1}')
     done
     [ ${#affected[@]} -eq "$before" ] && break
 done
