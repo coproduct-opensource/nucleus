@@ -243,9 +243,20 @@ pub fn parse_workflow(path: &str, text: &str) -> Result<Workflow> {
                     }
                 }
             }
+            let outputs = get(jv, "outputs")
+                .and_then(Value::as_mapping)
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| {
+                            Some((k.as_str()?.to_string(), scalar_string(Some(v))?))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             jobs.push(Job {
                 matrix,
                 matrix_opaque,
+                outputs,
                 id,
                 name: scalar_string(get(jv, "name")),
                 runs_on: scalar_string(get(jv, "runs-on")).unwrap_or_default(),

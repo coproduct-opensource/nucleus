@@ -92,6 +92,11 @@ pub struct Job {
     /// expanded; `matrix_opaque` says so.
     pub matrix: Vec<Vec<(String, String)>>,
     pub matrix_opaque: bool,
+    /// `outputs:` — output name to its expression, e.g. `verify_strict` →
+    /// `${{ steps.verify_strict.outcome }}`. A relay job reads these through
+    /// `needs.<job>.outputs.<name>`, which is the only path from a status context back to the
+    /// command whose result it reports.
+    pub outputs: BTreeMap<String, String>,
 }
 
 impl Job {

@@ -21,6 +21,25 @@
 //! * **CI-RP-3** the replaced job is still in the tree. When the workflow is finally deleted the
 //!   parity becomes uncheckable, and the line should go with it; this says so rather than passing
 //!   in silence, which is what an unfalsifiable row does.
+//! * **CI-RP-4** a context produced by a RELAY resolves to the step it reports.
+//!
+//! # Relays, and why ignoring them would make this vacuous
+//!
+//! nucleus consolidated eleven one-script jobs into one pod and kept eleven status contexts, each
+//! produced by a tiny job whose only command is
+//!
+//! ```text
+//! case "$STEP" in success|skipped) exit 0;; *) echo "::error::…"; exit 1;; esac
+//! ```
+//!
+//! with `STEP: ${{ needs.text-gates.outputs.verify_strict }}`. That job runs no gate: comparing a
+//! replacement against ITS commands would find nothing to cover and pass every time. Eleven of the
+//! contexts still on GitHub have this shape, so a parity rule that stopped at the producer would
+//! wave the entire next wave through.
+//!
+//! So a producer with no verdict-deciding command of its own is followed: `needs.<job>.outputs.<n>`
+//! resolves through that job's `outputs:` to `steps.<id>.outcome`, and the parity is computed
+//! against that step's `run:`. A relay that cannot be resolved is CI-RP-4, never a pass.
 //!
 //! # What "every command" means, exactly
 //!
@@ -83,6 +102,13 @@ fn invocation(line: &str) -> Option<String> {
     let line = line.trim().trim_start_matches('(');
     let mut words = line.split_whitespace().peekable();
     let mut program = words.next()?;
+    // A `case` arm's label is not a program: splitting `case "$STEP" in success) exit 0;; *) …`
+    // on `;` leaves `success) exit 0` and `*) echo …`. Left unhandled, a relay job reads as
+    // running the commands `success)` and `skipped)`, which is worse than reading as running
+    // nothing — it makes the job look like a gate and stops the relay from being followed.
+    while program.ends_with(')') {
+        program = words.next()?;
+    }
     loop {
         // `FOO=bar cmd …`: the assignment is not the program, and neither is `exec` or `nice -n 15`.
         if program.contains('=') || PREFIX.contains(&program) {
@@ -208,6 +234,94 @@ fn split_key(key: &str) -> (String, BTreeSet<String>) {
     (head, denials)
 }
 
+/// `${{ needs.text-gates.outputs.verify_strict }}` → `("text-gates", "verify_strict")`.
+fn relay_targets(job: &crate::model::Job) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut scan = |text: &str| {
+        let mut rest = text;
+        while let Some(i) = rest.find("needs.") {
+            rest = &rest[i + "needs.".len()..];
+            let Some((job_id, tail)) = rest.split_once(".outputs.") else {
+                continue;
+            };
+            let name: String = tail
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
+            let job_id: String = job_id
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
+            if !name.is_empty() && !job_id.is_empty() {
+                out.push((job_id, name));
+            }
+        }
+    };
+    for step in &job.steps {
+        for value in step.env.values() {
+            scan(value);
+        }
+        if let Some(run) = &step.run {
+            scan(run);
+        }
+    }
+    out
+}
+
+/// `${{ steps.verify_strict.outcome }}` → `verify_strict`.
+fn step_of_output(expr: &str) -> Option<String> {
+    let rest = expr.split_once("steps.")?.1;
+    let id: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
+
+/// The `run:` blocks whose result a context actually reports. Normally the producer's own; for a
+/// relay, the steps it relays. Returns `None` when a relay names a step nothing resolves to.
+fn deciding_runs(m: &Model, wi: usize, ji: usize) -> Option<Vec<String>> {
+    let job = &m.workflows[wi].jobs[ji];
+    let own: Vec<String> = job
+        .steps
+        .iter()
+        .filter_map(|s| s.run.clone())
+        .filter(|r| !invocations(r).is_empty())
+        .collect();
+    if !own.is_empty() {
+        return Some(own);
+    }
+    let targets = relay_targets(job);
+    if targets.is_empty() {
+        // Not a relay and not a gate: it decides nothing, and nothing is what a replacement has
+        // to cover.
+        return Some(Vec::new());
+    }
+    let mut runs = Vec::new();
+    for (job_id, output) in targets {
+        let Some(target) = m.workflows[wi].jobs.iter().find(|j| j.id == job_id) else {
+            return None;
+        };
+        let Some(expr) = target.outputs.get(&output) else {
+            return None;
+        };
+        let Some(step_id) = step_of_output(expr) else {
+            return None;
+        };
+        let Some(step) = target
+            .steps
+            .iter()
+            .find(|s| s.id.as_deref() == Some(step_id.as_str()))
+        else {
+            return None;
+        };
+        if let Some(run) = &step.run {
+            runs.push(run.clone());
+        }
+    }
+    Some(runs)
+}
+
 pub fn check(m: &Model) -> Vec<Finding> {
     let mut findings = Vec::new();
     for r in &m.replacements.entries {
@@ -245,16 +359,33 @@ pub fn check(m: &Model) -> Vec<Finding> {
             continue;
         }
         let mut missing: Vec<String> = Vec::new();
+        let mut unresolved = false;
         for (wi, ji) in producers {
-            let job = &m.workflows[wi].jobs[ji];
-            for step in &job.steps {
-                let Some(run) = &step.run else { continue };
-                for key in invocations(run) {
+            let Some(runs) = deciding_runs(m, wi, ji) else {
+                unresolved = true;
+                continue;
+            };
+            for run in runs {
+                for key in invocations(&run) {
                     if !covers(&r.expanded, &key) && !missing.contains(&key) {
                         missing.push(key);
                     }
                 }
             }
+        }
+        if unresolved {
+            findings.push(finding(
+                "CI-RP-4",
+                Severity::High,
+                LEDGER,
+                r.line,
+                &r.context,
+                "the job producing this context only relays another job's step, and the step it \
+                 relays could not be resolved — so what the gate must cover is unknown"
+                    .to_string(),
+                "name the reporting step's output so the parity can be computed, or compare the \
+                 gate against the job that runs the command",
+            ));
         }
         for key in missing {
             findings.push(finding(
@@ -305,6 +436,13 @@ mod tests {
         assert!(invocation("git fetch -q origin main").is_none());
         assert!(invocation("echo \"- tests: $T\" >> \"$GITHUB_STEP_SUMMARY\"").is_none());
         assert!(invocation("RUSTFLAGS=-Dwarnings").is_none());
+        // A case arm's label is not a program, and what follows it may still be one.
+        assert!(invocation("skipped) exit 0").is_none());
+        assert!(invocation("*) echo \"::error::x\"; exit 1").is_none());
+        assert_eq!(
+            invocation("success) cargo fmt --all").as_deref(),
+            Some("cargo fmt")
+        );
         // Shell punctuation left by splitting `cmd || { echo …; exit 1; }` is not a program.
         assert!(invocation("{ ").is_none());
         assert!(invocation("}").is_none());
