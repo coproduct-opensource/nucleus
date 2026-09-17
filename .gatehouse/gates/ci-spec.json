@@ -6,7 +6,7 @@
       "rust-toolchain.toml",
       ".github/workflows/**",
       "ci/**",
-      "crates/ci-spec/**",
+      "crates/**",
       "scripts/check-ci-spec.sh"
     ],
     "exclude": [],
@@ -29,7 +29,7 @@
       "rust-toolchain.toml",
       ".github/workflows/**",
       "ci/**",
-      "crates/ci-spec/**",
+      "crates/**",
       "scripts/check-ci-spec.sh"
     ],
     "fs_write": [
