@@ -26,6 +26,8 @@ use crate::{Finding, Severity};
 pub struct LiveProtection {
     pub strict: bool,
     pub contexts: Vec<String>,
+    /// The app id branch protection binds each `checks[]` context to, when it binds one.
+    pub apps: std::collections::BTreeMap<String, u64>,
 }
 
 /// What `GET /rulesets/{id}` says about the merge queue.
@@ -55,6 +57,8 @@ struct RscJson {
 #[derive(Deserialize)]
 struct CheckJson {
     context: String,
+    #[serde(default)]
+    app_id: Option<u64>,
 }
 
 /// Parse the branch-protection response. The `checks[].context` list is
@@ -67,6 +71,11 @@ pub fn parse_protection(json: &str) -> Result<LiveProtection, String> {
     let Some(r) = p.required_status_checks else {
         return Err("branch protection has no required_status_checks block".into());
     };
+    let apps = r
+        .checks
+        .iter()
+        .filter_map(|c| c.app_id.map(|id| (c.context.clone(), id)))
+        .collect();
     let mut contexts: Vec<String> = r.checks.into_iter().map(|c| c.context).collect();
     for c in r.contexts {
         if !contexts.contains(&c) {
@@ -77,6 +86,7 @@ pub fn parse_protection(json: &str) -> Result<LiveProtection, String> {
     Ok(LiveProtection {
         strict: r.strict,
         contexts,
+        apps,
     })
 }
 
@@ -179,6 +189,24 @@ pub fn parity(m: &Model, live: &LiveProtection, queue: Option<&LiveQueue>) -> Ve
                 "add it to branch protection (`gh api -X PATCH …/protection/required_status_checks`) \
                  or, if it was retired on purpose, remove it from the ledger with a dated note and \
                  lower the pin",
+            ));
+        }
+    }
+    for (c, app) in &m.ledger.app_contexts {
+        if live.contexts.contains(c) && live.apps.get(c) != Some(app) {
+            out.push(finding(
+                "CI-LP-APP",
+                Severity::Critical,
+                F,
+                0,
+                c,
+                format!(
+                    "the ledger says app {app} produces this context but branch protection binds \
+                     it to {:?}: any check run with this name could satisfy it, including one a \
+                     workflow writes",
+                    live.apps.get(c)
+                ),
+                "bind the context to the app id in branch protection (`checks: [{context, app_id}]`)",
             ));
         }
     }

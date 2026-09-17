@@ -20,6 +20,25 @@ pub fn check(m: &Model) -> Vec<Finding> {
     let mut out = Vec::new();
     for ctx in &m.ledger.contexts {
         let producers = m.producers(ctx);
+        if m.ledger.app_contexts.contains_key(ctx) {
+            // An App's context has no workflow producer by construction. A workflow job with the
+            // same name is the I2 defect in its sharpest form: GitHub matches required checks by
+            // name, so the job's result could stand in for the App's.
+            if let Some((wi, ji)) = producers.first() {
+                out.push(finding(
+                    "CI-I2-APP",
+                    Severity::Critical,
+                    &m.workflows[*wi].path,
+                    m.workflows[*wi].jobs[*ji].line,
+                    ctx,
+                    "a workflow job produces a context the ledger says a GitHub App produces: a \
+                     same-named check run the App did not write"
+                        .into(),
+                    "rename the job; the App's context is bound to its app id in branch protection",
+                ));
+            }
+            continue;
+        }
         if producers.is_empty() {
             out.push(finding(
                 "CI-I2-NONE",

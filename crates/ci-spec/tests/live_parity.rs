@@ -84,6 +84,7 @@ fn model(ledger: &[&str]) -> ci_spec::model::Model {
 
 fn live(contexts: &[&str], strict: bool) -> LiveProtection {
     LiveProtection {
+        apps: Default::default(),
         strict,
         contexts: contexts.iter().map(|s| s.to_string()).collect(),
     }
@@ -223,4 +224,70 @@ fn a_ruleset_carries_a_merge_queue_only_while_it_is_enforced() {
         ci_spec::live::parse_ruleset_ids(r#"[{"id":7,"name":"a"},{"id":9,"name":"b"}]"#).unwrap(),
         vec![7, 9]
     );
+}
+
+/// `gatehouse/required @app 4853870`: an App's context. No workflow produces it, which is not a
+/// defect for it; a workflow job with its name is. Live, it must be bound to that app id, or any
+/// check run with the name satisfies it.
+#[test]
+fn an_app_context_is_bound_to_its_app_not_to_a_workflow_job() {
+    let apped = model(&["Rustfmt", "gatehouse/required @app 4853870"]);
+    assert_eq!(
+        apped.ledger.contexts,
+        vec!["Rustfmt".to_string(), "gatehouse/required".to_string()]
+    );
+    assert_eq!(
+        apped.ledger.app_contexts.get("gatehouse/required"),
+        Some(&4853870)
+    );
+    let codes = |m: &ci_spec::model::Model| -> Vec<String> {
+        ci_spec::check(m)
+            .findings
+            .iter()
+            .map(|f| f.rule.to_string())
+            .collect()
+    };
+    let found = codes(&apped);
+    assert!(
+        !found
+            .iter()
+            .any(|c| c.starts_with("CI-I2") || c == "CI-I3-NOMG"),
+        "{found:?}"
+    );
+    // The same name produced by a workflow job is the defect.
+    let shadowed = model(&["Rustfmt", "Clippy @app 4853870"]);
+    assert!(
+        codes(&shadowed).iter().any(|c| c == "CI-I2-APP"),
+        "{:?}",
+        codes(&shadowed)
+    );
+
+    let lp = |apps: &[(&str, u64)]| {
+        let mut l = live(&["Rustfmt", "gatehouse/required"], false);
+        l.apps = apps.iter().map(|(c, a)| ((*c).to_string(), *a)).collect();
+        parity(&apped, &l, Some(&queue()))
+            .into_iter()
+            .map(|f| f.rule.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        !lp(&[("gatehouse/required", 4853870)])
+            .iter()
+            .any(|c| c == "CI-LP-APP")
+    );
+    assert!(
+        lp(&[("gatehouse/required", 15368)])
+            .iter()
+            .any(|c| c == "CI-LP-APP")
+    );
+    assert!(
+        lp(&[]).iter().any(|c| c == "CI-LP-APP"),
+        "unbound is any-app"
+    );
+    // The protection JSON carries the binding.
+    let p = ci_spec::live::parse_protection(
+        r#"{"required_status_checks":{"strict":false,"checks":[{"context":"gatehouse/required","app_id":4853870},{"context":"Rustfmt","app_id":15368}]}}"#,
+    )
+    .unwrap();
+    assert_eq!(p.apps.get("gatehouse/required"), Some(&4853870));
 }
