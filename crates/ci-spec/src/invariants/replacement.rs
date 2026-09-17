@@ -299,22 +299,12 @@ fn deciding_runs(m: &Model, wi: usize, ji: usize) -> Option<Vec<String>> {
     }
     let mut runs = Vec::new();
     for (job_id, output) in targets {
-        let Some(target) = m.workflows[wi].jobs.iter().find(|j| j.id == job_id) else {
-            return None;
-        };
-        let Some(expr) = target.outputs.get(&output) else {
-            return None;
-        };
-        let Some(step_id) = step_of_output(expr) else {
-            return None;
-        };
-        let Some(step) = target
+        let target = m.workflows[wi].jobs.iter().find(|j| j.id == job_id)?;
+        let step_id = step_of_output(target.outputs.get(&output)?)?;
+        let step = target
             .steps
             .iter()
-            .find(|s| s.id.as_deref() == Some(step_id.as_str()))
-        else {
-            return None;
-        };
+            .find(|s| s.id.as_deref() == Some(step_id.as_str()))?;
         if let Some(run) = &step.run {
             runs.push(run.clone());
         }
