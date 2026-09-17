@@ -111,8 +111,7 @@ impl ExternalityProfile {
 pub fn canonical_externality_bytes(p: &ExternalityProfile) -> Vec<u8> {
     let mut out = Vec::with_capacity(256);
     out.extend_from_slice(PROFILE_DOMAIN);
-    let n = p.dimensions.len() as u32;
-    out.extend_from_slice(&n.to_be_bytes());
+    out.extend_from_slice(&crate::be_len::be_len(p.dimensions.len()));
     // BTreeMap's iter is in `Ord` order, which is deterministic.
     for (_dim, claim) in p.dimensions.iter() {
         out.extend_from_slice(&canonical_claim_bytes(claim));

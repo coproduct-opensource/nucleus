@@ -42,6 +42,7 @@
 #![deny(clippy::float_arithmetic)]
 
 mod assurance;
+mod be_len;
 mod claim;
 mod cube;
 mod dim;
