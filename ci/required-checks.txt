@@ -50,7 +50,13 @@
 # from the tree for it, and live parity instead holds branch protection to that app id. It also
 # requires the plan's `ci-spec` and `test-core` gates; `Tests` stays required here because it
 # additionally runs the SDK tests (node, python) that the gate image does not carry.
-# PINNED = 47
+# 2026-09-17 (owner decision, wave two): nine contexts left this list for `gatehouse/required`.
+# They were nine relay jobs reporting nine steps of one pod (`Text gates (one pod)`); the
+# `text-gates` plan gate runs the same eleven scripts in the Firecracker lane and its verdict is
+# their conjunction. `ci/gatehouse-replacements.txt` records which gate took each one, and CI-RP-2
+# holds the gate's command to the script each context is named for -- following the relay to the
+# step it reports, because the relay itself runs no gate. PINNED 47 -> 38.
+# PINNED = 38
 
 # --- the gatehouse App ---
 gatehouse/required @app 4853870
@@ -60,23 +66,14 @@ Detect changed crates
 Tests
 Fuzz
 OWASP LLM Security Gauntlet
-Ed25519 verify_strict gate (M-3)
-Sandbox trusted-base gate
-Fail-closed verifier gate
-Mediation backstop gate (North Star)
 test-helpers is not reachable from a shipping build
 Every lean_lib is type-checked by something
 Declassify sink scope is enforced
 Declassification is value-bound, single-use, and live
-Governor trusted-key set is not workload-writable
 C1 inbound fences are enforced
-The North Star status table cannot outrun its wiring
-Extracted predicates have live call sites (C8)
 The node records pod lineage on the live path (C2)
 Gates must fail on their own subject
 The CI assurance ledger cannot outrun its wiring
-No-unwitnessed-ingest gate (InputsAuthorized)
-Sealed-home integrity gate (North Star)
 Policy-kernel model↔Rust parity (K4)
 musl type-check (nucleus-node, nucleus-tool-proxy)
 
