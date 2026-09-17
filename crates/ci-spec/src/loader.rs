@@ -13,8 +13,8 @@ use anyhow::{Context, Result, bail};
 use serde_yaml::Value;
 
 use crate::model::{
-    Allowlist, Concurrency, InlineGates, Job, Ledger, Model, PathFilter, QueueConfig, Step,
-    Triggers, Workflow,
+    Allowlist, Concurrency, InlineGates, Job, Ledger, Model, PathFilter, QueueConfig, Replacement,
+    Replacements, Step, Triggers, Workflow,
 };
 
 /// Look a key up in a mapping, tolerating YAML 1.1's reading of `on` as a
@@ -360,10 +360,13 @@ pub fn from_parts(
         allowlist,
         gate_scripts,
         "",
+        "",
+        &std::collections::BTreeMap::new(),
     )
 }
 
 /// [`from_parts`] with the I8 population pin, for tests that exercise it.
+#[allow(clippy::too_many_arguments)] // one model, every committed file it is built from
 pub fn from_parts_with_pins(
     workflows: &[(String, String)],
     ledger: &str,
@@ -372,6 +375,9 @@ pub fn from_parts_with_pins(
     allowlist: &str,
     gate_scripts: Vec<String>,
     image_dependent: &str,
+    replacements: &str,
+    // `gate_defs`: gate name -> (argv, the text of every repository script the argv invokes).
+    gate_defs: &std::collections::BTreeMap<String, (Vec<String>, String)>,
 ) -> Result<Model> {
     let mut wfs = Vec::new();
     for (p, t) in workflows {
@@ -386,7 +392,86 @@ pub fn from_parts_with_pins(
         allowlist: parse_allowlist(allowlist),
         gate_scripts,
         image_dependent_pinned: parse_pin_list(image_dependent),
+        replacements: parse_replacements(replacements, gate_defs),
     })
+}
+
+/// `<context> <- <gate>`, one per line; blanks and `#` comments ignored. A context may contain
+/// spaces (they nearly all do), so the arrow is the separator and not whitespace.
+fn parse_replacements(
+    text: &str,
+    gate_defs: &std::collections::BTreeMap<String, (Vec<String>, String)>,
+) -> Replacements {
+    let mut entries = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((context, gate)) = line.split_once("<-") else {
+            continue;
+        };
+        let gate = gate.trim().to_string();
+        let (cmd, scripts) = gate_defs.get(&gate).cloned().unwrap_or_default();
+        entries.push(Replacement {
+            context: context.trim().to_string(),
+            line: i + 1,
+            expanded: format!("{} {scripts}", cmd.join(" ")),
+            cmd,
+            gate,
+        });
+    }
+    Replacements {
+        entries,
+        present: !text.trim().is_empty(),
+    }
+}
+
+/// Read `.gatehouse/gates/*.json` and resolve each gate's argv to the text a parity check can
+/// read: the argv itself plus every repository script it names. One level of indirection, because
+/// a wrapper that calls a wrapper is a gate nobody can review either.
+fn gate_defs(root: &Path) -> std::collections::BTreeMap<String, (Vec<String>, String)> {
+    let mut out = std::collections::BTreeMap::new();
+    let dir = root.join(".gatehouse/gates");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for e in entries.filter_map(Result::ok) {
+        let path = e.path();
+        if path.extension().is_none_or(|x| x != "json") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|f| f.to_str()) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let cmd: Vec<String> = value["cmd"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut scripts = String::new();
+        for word in cmd.iter().flat_map(|w| w.split_whitespace()) {
+            let word = word.trim_matches(|c| c == '\'' || c == '"');
+            if (word.starts_with("scripts/") || word.starts_with("ci/"))
+                && word.ends_with(".sh")
+                && let Ok(body) = std::fs::read_to_string(root.join(word))
+            {
+                scripts.push_str(&body);
+                scripts.push('\n');
+            }
+        }
+        out.insert(name.to_string(), (cmd, scripts));
+    }
+    out
 }
 
 /// One entry per line; blanks and `#` comments ignored.
@@ -449,5 +534,7 @@ pub fn from_repo(root: &Path) -> Result<Model> {
         &allow,
         gate_scripts,
         &image_dependent,
+        &read("ci/gatehouse-replacements.txt").unwrap_or_default(),
+        &gate_defs(root),
     )
 }

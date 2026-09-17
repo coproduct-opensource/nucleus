@@ -201,6 +201,38 @@ pub struct Ledger {
     pub pinned: Option<usize>,
 }
 
+/// One `<context> <- <gate>` line of `ci/gatehouse-replacements.txt`: a required context that a
+/// gatehouse plan gate took over.
+///
+/// The declaration is what makes a cutover checkable. Retiring a context is two edits in two
+/// files — a line out of `ci/required-checks.txt`, a rule out of the GitHub ruleset — and nothing
+/// in either of them says what now does the work. This says it, and CI-RP-2 holds the claim to
+/// the two commands.
+#[derive(Debug, Clone)]
+pub struct Replacement {
+    /// The retired status-check context, as branch protection spelled it.
+    pub context: String,
+    /// The gatehouse gate that took it over, as `.gatehouse/gates/<gate>.json` is named.
+    pub gate: String,
+    /// 1-indexed line in `ci/gatehouse-replacements.txt`.
+    pub line: usize,
+    /// The gate's argv. Empty when no such gate definition exists.
+    pub cmd: Vec<String>,
+    /// `cmd`, plus the text of every repository script `cmd` invokes. A gate may reach a command
+    /// through a wrapper — nucleus's clippy gate runs `wasm-pack` through
+    /// `scripts/gatehouse-verifier-sdk.sh` — and a parity check that could not see through one
+    /// would force every gate to inline its scripts.
+    pub expanded: String,
+}
+
+/// `ci/gatehouse-replacements.txt`.
+#[derive(Debug, Clone, Default)]
+pub struct Replacements {
+    pub entries: Vec<Replacement>,
+    /// Absent file: no cutover has been declared, and CI-RP is silent rather than wrong.
+    pub present: bool,
+}
+
 /// The inline-gate inventory (`ci/inline-gates.txt`).
 #[derive(Debug, Clone, Default)]
 pub struct InlineGates {
@@ -224,6 +256,8 @@ pub struct Model {
     pub queue: QueueConfig,
     pub inline_gates: InlineGates,
     pub allowlist: Allowlist,
+    /// What each retired context was replaced by (`ci/gatehouse-replacements.txt`).
+    pub replacements: Replacements,
     /// Repo-relative paths of every `scripts/check-*.sh` and `ci/*.sh` on disk.
     pub gate_scripts: Vec<String>,
     /// The pinned population of image-dependent jobs (I10), from

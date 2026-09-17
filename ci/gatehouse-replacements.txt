@@ -1,0 +1,16 @@
+# What replaced what, when a required context moved to a gatehouse plan gate.
+#
+# `<retired context> <- <gate>`, where <gate> names .gatehouse/gates/<gate>.json. The arrow is the
+# separator because a context name contains spaces; nearly all of them do.
+#
+# Retiring a context is two subtractions -- a line out of ci/required-checks.txt and a rule out of
+# the GitHub ruleset -- and neither of them records what now does the work. This file records it,
+# and CI-RP-2 holds the claim to the two commands: every verdict-deciding invocation the retired
+# job runs must be one the gate runs. Adding a line here is how a cutover stops being a claim in a
+# commit message.
+#
+# 2026-09-17, the hard cut (#2953): four contexts left branch protection for `gatehouse/required`.
+# Only the two whose workflow jobs are still in the tree can be compared, and they are the two
+# whose jobs will be deleted after one release -- at which point CI-RP-3 says the lines may go.
+Rustfmt <- fmt
+Clippy <- clippy
