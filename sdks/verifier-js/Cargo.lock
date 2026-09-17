@@ -1280,6 +1280,8 @@ dependencies = [
 name = "nucleus-recompute"
 version = "1.0.0"
 dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek",
  "hex",
  "nucleus-econ-kernels",
  "nucleus-ifc",
