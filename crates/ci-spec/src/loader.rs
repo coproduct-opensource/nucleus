@@ -285,9 +285,19 @@ pub fn parse_ledger(text: &str) -> Ledger {
             }
             continue;
         }
-        if !t.is_empty() {
-            l.contexts.push(t.to_string());
+        if t.is_empty() {
+            continue;
         }
+        // `<context> @app <id>`: produced by a GitHub App, not a workflow.
+        if let Some((name, app)) = t.rsplit_once(" @app ") {
+            if let Ok(id) = app.trim().parse::<u64>() {
+                let name = name.trim().to_string();
+                l.app_contexts.insert(name.clone(), id);
+                l.contexts.push(name);
+                continue;
+            }
+        }
+        l.contexts.push(t.to_string());
     }
     l
 }

@@ -25,6 +25,9 @@ use super::finding;
 pub fn check(m: &Model) -> Vec<Finding> {
     let mut out = Vec::new();
     for ctx in &m.ledger.contexts {
+        if m.ledger.app_contexts.contains_key(ctx) {
+            continue; // produced by an App on merge_group itself; live parity binds the App.
+        }
         let producers = m.producers(ctx);
         let reals: Vec<_> = producers
             .iter()

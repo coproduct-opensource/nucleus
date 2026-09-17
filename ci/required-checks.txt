@@ -40,12 +40,23 @@
 # main's deny fold removed three contexts (-> 47) and this branch's routing
 # decision adds one (-> 48). Neither number alone is right on the merge; 51 was
 # computed against a 50-context main that no longer exists.
-# PINNED = 48
+# 2026-09-17, owner decision (the hard cut to gatehouse, fail closed), 48 -> 47: `Rustfmt` and
+# `Clippy` leave, `gatehouse/required` joins. The two GitHub jobs are replaced by the gatehouse
+# plan's `fmt` and `clippy` gates, which run the same commands (clippy: the all-features workspace
+# run AND the crate-scoped portcullis run) inside a protected Firecracker microVM on gatehouse's
+# builder; each run's receipt is signed at NodeAttested and verified before the required context
+# can go green. `gatehouse/required` is produced by the coproduct-gatehouse GitHub App (4853870),
+# not a workflow, so it carries `@app`: the producer and merge-group invariants cannot be decided
+# from the tree for it, and live parity instead holds branch protection to that app id. It also
+# requires the plan's `ci-spec` and `test-core` gates; `Tests` stays required here because it
+# additionally runs the SDK tests (node, python) that the gate image does not carry.
+# PINNED = 47
+
+# --- the gatehouse App ---
+gatehouse/required @app 4853870
 
 # --- ci.yml -------------------------------------------------------------
 Detect changed crates
-Rustfmt
-Clippy
 Tests
 Fuzz
 OWASP LLM Security Gauntlet

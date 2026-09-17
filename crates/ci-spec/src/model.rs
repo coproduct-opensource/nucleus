@@ -192,6 +192,11 @@ pub struct QueueConfig {
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
     pub contexts: Vec<String>,
+    /// Contexts produced by a GitHub App rather than a workflow job, with the App id branch
+    /// protection must bind them to: `gatehouse/required @app 4853870`. No workflow produces
+    /// them, so the producer and merge-group invariants cannot be decided from the tree; what
+    /// the tree CAN pin is which App's check run counts, and live parity holds GitHub to it.
+    pub app_contexts: BTreeMap<String, u64>,
     /// `# PINNED = N` — the population pin; grow-only.
     pub pinned: Option<usize>,
 }
