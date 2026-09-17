@@ -66,7 +66,8 @@ impl WitnessFederation {
     /// Build a federation with equal shares for `n` witnesses.
     /// Convenience for tests + the common-case bootstrap path.
     pub fn equal_shares(witness_kids: &[&str]) -> Self {
-        let n = witness_kids.len() as u32;
+        let n = u32::try_from(witness_kids.len())
+            .expect("a federation of more than u32::MAX witnesses cannot have equal shares");
         if n == 0 {
             return Self {
                 witnesses: Vec::new(),
@@ -80,7 +81,7 @@ impl WitnessFederation {
             .map(|(i, kid)| {
                 // First `remainder` witnesses absorb the +1 bps so
                 // the total is exact.
-                let bonus = if (i as u32) < remainder { 1 } else { 0 };
+                let bonus = u32::from(u32::try_from(i).is_ok_and(|i| i < remainder));
                 WitnessShare {
                     witness_kid: (*kid).to_string(),
                     share_basis_points: base + bonus,

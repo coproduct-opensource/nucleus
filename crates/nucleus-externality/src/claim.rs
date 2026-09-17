@@ -91,14 +91,14 @@ pub fn canonical_claim_bytes(c: &SignedExternalityClaim) -> Vec<u8> {
     let mut out = Vec::with_capacity(128);
     out.extend_from_slice(RESOURCE_DIM_DOMAIN);
     let tag = c.resource.as_canonical_tag();
-    out.extend_from_slice(&(tag.len() as u32).to_be_bytes());
+    out.extend_from_slice(&crate::be_len::be_len(tag.len()));
     out.extend_from_slice(tag);
     out.extend_from_slice(&c.units_micro.to_be_bytes());
     out.extend_from_slice(&c.ts_unix_micros.to_be_bytes());
     out.extend_from_slice(&c.not_after_unix_micros.to_be_bytes());
-    out.extend_from_slice(&(c.kid.len() as u32).to_be_bytes());
+    out.extend_from_slice(&crate::be_len::be_len(c.kid.len()));
     out.extend_from_slice(c.kid.as_bytes());
-    out.extend_from_slice(&(c.subject_identity.len() as u32).to_be_bytes());
+    out.extend_from_slice(&crate::be_len::be_len(c.subject_identity.len()));
     out.extend_from_slice(c.subject_identity.as_bytes());
     out
 }
