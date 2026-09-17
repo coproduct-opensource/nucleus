@@ -14,8 +14,8 @@
     "git_history": false
   },
   "env": {
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "platform": "linux/amd64",
+    "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+    "platform": "linux/arm64",
     "toolchains": {
       "rust": "1.96.1"
     },
