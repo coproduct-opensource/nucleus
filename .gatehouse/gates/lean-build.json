@@ -35,7 +35,7 @@
     "PortcullisCoreBridge"
   ],
   "cwd": "",
-  "timeout_s": 3600,
+  "timeout_s": 1800,
   "outputs": [],
   "resources": {
     "cpus": 2,

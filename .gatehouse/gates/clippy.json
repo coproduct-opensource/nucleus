@@ -57,7 +57,7 @@
     "scripts/gatehouse-verifier-sdk.sh && cargo clippy --offline --all-targets --all-features --locked -- -D warnings && cargo clippy --offline -p portcullis --all-targets --locked -- -D warnings"
   ],
   "cwd": "",
-  "timeout_s": 2400,
+  "timeout_s": 900,
   "outputs": [],
   "resources": {
     "cpus": 2,

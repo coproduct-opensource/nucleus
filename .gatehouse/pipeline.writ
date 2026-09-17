@@ -71,13 +71,13 @@ let lcap : ci.Cap = (tag 3 0, tag 3 1, 3600000, 3600000, 16384, [#b"crates/portc
 let scap : ci.Cap = (tag 3 0, tag 3 1, 900000, 900000, 4096, [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b".github/workflows/**", #b"ci/**", #b"crates/**", #b"scripts/check-ci-spec.sh"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, [] : Bytes)
 
 let fmt : ci.Gate = (#b"fmt", #d"0000000000000000000000000000000000000000000000000000000000000001", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**", #b"scripts/**", #b"sdks/verifier-js/**"] : Bytes, env, fcap, [#b"cargo", #b"fmt", #b"--all", #b"--", #b"--check"] : Bytes, 300000, [] : Bytes, image, [#b"cargo@1.96.1", #b"rustfmt@1.9.0"] : Bytes, 4096, 4096, platform, [] : Bytes, [] : Bytes)
-let clippy : ci.Gate = (#b"clippy", #d"0000000000000000000000000000000000000000000000000000000000000002", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b".cargo/config.toml", #b"clippy.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**", #b"scripts/**", #b"sdks/verifier-js/**", #b"examples/independent-conformance/**"] : Bytes, env, ccap, [#b"sh", #b"-c", #b"scripts/gatehouse-verifier-sdk.sh && cargo clippy --offline --all-targets --all-features --locked -- -D warnings && cargo clippy --offline -p portcullis --all-targets --locked -- -D warnings"] : Bytes, 2400000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"clippy-driver@0.1.96", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1"] : Bytes, 8192, 8192, platform, [] : Bytes, [] : Bytes)
-let testCore : ci.Gate = (#b"test-core", #d"0000000000000000000000000000000000000000000000000000000000000003", [#b"**"] : Bytes, env, tcap, [#b"sh", #b"-c", #b"scripts/gatehouse-verifier-sdk.sh && unshare -Urn sh -c '/usr/sbin/ip link set lo up && exec unshare -U --map-user=1001 --map-group=1001 cargo nextest run --offline --locked --all-features --no-fail-fast'"] : Bytes, 3600000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1", #b"ip@6.1.0", #b"git@2.39.5"] : Bytes, 8192, 8192, platform, [] : Bytes, [] : Bytes)
+let clippy : ci.Gate = (#b"clippy", #d"0000000000000000000000000000000000000000000000000000000000000002", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b".cargo/config.toml", #b"clippy.toml", #b"crates/**", #b"tests/**", #b"benchmarks/**", #b"scripts/**", #b"sdks/verifier-js/**", #b"examples/independent-conformance/**"] : Bytes, env, ccap, [#b"sh", #b"-c", #b"scripts/gatehouse-verifier-sdk.sh && cargo clippy --offline --all-targets --all-features --locked -- -D warnings && cargo clippy --offline -p portcullis --all-targets --locked -- -D warnings"] : Bytes, 900000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"clippy-driver@0.1.96", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1"] : Bytes, 8192, 8192, platform, [] : Bytes, [] : Bytes)
+let testCore : ci.Gate = (#b"test-core", #d"0000000000000000000000000000000000000000000000000000000000000003", [#b"**"] : Bytes, env, tcap, [#b"sh", #b"-c", #b"scripts/gatehouse-verifier-sdk.sh && unshare -Urn sh -c '/usr/sbin/ip link set lo up && exec unshare -U --map-user=1001 --map-group=1001 cargo nextest run --offline --locked --all-features --no-fail-fast'"] : Bytes, 2100000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1", #b"ip@6.1.0", #b"git@2.39.5"] : Bytes, 8192, 8192, platform, [] : Bytes, [] : Bytes)
 -- lean-build is DECLARED and not required. Its tools are not in the gate tools image yet, so the
 -- host check refuses to prepare it — which is the pair working: the plan says what the gate needs
 -- and the image is held to it, rather than the gate discovering `lake: not found` in a microVM.
-let leanBuild : ci.Gate = (#b"lean-build", #d"0000000000000000000000000000000000000000000000000000000000000004", [#b"crates/portcullis-core/lean/**"] : Bytes, env, lcap, [#b"lake", #b"build", #b"PortcullisCoreBridge"] : Bytes, 3600000, [] : Bytes, image, [#b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 16384, 8192, platform, [] : Bytes, [] : Bytes)
-let ciSpec : ci.Gate = (#b"ci-spec", #d"0000000000000000000000000000000000000000000000000000000000000005", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b".github/workflows/**", #b"ci/**", #b"crates/**", #b"scripts/check-ci-spec.sh"] : Bytes, env, scap, [#b"scripts/check-ci-spec.sh"] : Bytes, 900000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"git@2.39.5"] : Bytes, 4096, 4096, platform, [] : Bytes, [] : Bytes)
+let leanBuild : ci.Gate = (#b"lean-build", #d"0000000000000000000000000000000000000000000000000000000000000004", [#b"crates/portcullis-core/lean/**"] : Bytes, env, lcap, [#b"lake", #b"build", #b"PortcullisCoreBridge"] : Bytes, 1800000, [] : Bytes, image, [#b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 16384, 8192, platform, [] : Bytes, [] : Bytes)
+let ciSpec : ci.Gate = (#b"ci-spec", #d"0000000000000000000000000000000000000000000000000000000000000005", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b".github/workflows/**", #b"ci/**", #b"crates/**", #b"scripts/check-ci-spec.sh"] : Bytes, env, scap, [#b"scripts/check-ci-spec.sh"] : Bytes, 300000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"git@2.39.5"] : Bytes, 4096, 4096, platform, [] : Bytes, [] : Bytes)
 
 let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec] : ci.Gate, [(1, 0), (2, 0)] : ci.Edge)
 
@@ -85,10 +85,21 @@ let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec] : ci.Ga
 -- protection actually holds a merge to. lean-build is not among them until its toolchain is in
 -- the image and its Mathlib cache is a pinned seed.
 --
--- The queue capacity is EXACTLY at its limit and that is not a coincidence: 10800000 ms of gates
--- times 2 commits in flight is 21600000, and one builder times the 360-minute window is
--- 21600000. `builderBudget_b` holds today and refuses the next gate that lands on this builder,
--- which is the true statement about a one-machine lane.
+-- The timeouts are ~3x the LONGEST run measured in the lane, which is what makes the capacity
+-- figure mean something. They were 5x to 10x that, and the budget they consumed was imaginary:
+-- 10800000 ms of declared gate time against a 21600000 ms window with 2 commits in flight is a
+-- builder that is exactly full while running 22 minutes of work per commit. Measured in-VM, worst
+-- observed: fmt 123 s, ci-spec 92 s, clippy 304 s, test-core 702 s. Re-pinned, the pipeline
+-- declares 5400000 ms, so `builderBudget_b` leaves 5400000 ms — ninety minutes — of headroom for
+-- the gates still to move off GitHub, on the builder that already exists.
+--
+-- lean-build's 1800000 ms is the one number here that is not measured in the lane: it has never
+-- run there (its toolchain is not in the image). 145 s in a container with a warm cache, twelve
+-- times over, until the lane can measure it.
+--
+-- Only `timeoutMs` moved. A capability is part of a gate's identity and `timeout_s` is not
+-- (`GateDef::hash` excludes it), so re-pinning the budget costs no re-dispatch: every receipt
+-- already held at a tree still answers for the same gate.
 let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy", #b"test-core", #b"ci-spec"] : Bytes, 21600000, 64, 1, 32768, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"rustfmt@1.9.0", #b"clippy-driver@0.1.96", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1", #b"ip@6.1.0", #b"git@2.39.5", #b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 2, 8192, platform, 78284, 23981, 2, 3, 4096, 10240, [] : Bytes)
 
 let admissible : So (ci.admissible_b pipeline policy) = oh
