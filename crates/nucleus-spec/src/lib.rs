@@ -2197,3 +2197,4 @@ spec:
 
 // A deliberately unformatted line, to prove the gate can go red.
 pub fn   gatehouse_perturbation_probe( ) ->u8{7}
+// second probe line
