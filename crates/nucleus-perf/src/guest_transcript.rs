@@ -342,7 +342,8 @@ fn one_run(node: &Node, a: &Args, spec: &Value) -> Result<Run> {
     let exit_code = claim
         .get("exit_code")
         .and_then(Value::as_i64)
-        .map(|c| c as i32);
+        // An exit code outside i32 is not one a process reports: absent, not wrapped.
+        .and_then(|c| i32::try_from(c).ok());
 
     node.cancel_pod(&id)?;
     wait_for_exit(node, a, &id)?;
