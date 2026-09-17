@@ -8,7 +8,15 @@
       "tests/**",
       "benchmarks/**",
       "scripts/**",
-      "sdks/verifier-js/**"
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**"
     ],
     "exclude": [],
     "external": [],
@@ -32,7 +40,15 @@
       "tests/**",
       "benchmarks/**",
       "scripts/**",
-      "sdks/verifier-js/**"
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**"
     ],
     "fs_write": [
       "target/**",
