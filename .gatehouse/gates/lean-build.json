@@ -9,7 +9,7 @@
   },
   "env": {
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "toolchains": {
       "rust": "1.96.1"
     },
@@ -39,8 +39,8 @@
   "outputs": [],
   "resources": {
     "cpus": 2,
-    "mem_mb": 16384,
-    "disk_mb": 4096
+    "mem_mb": 8192,
+    "disk_mb": 16384
   },
   "falsifier": null
 }

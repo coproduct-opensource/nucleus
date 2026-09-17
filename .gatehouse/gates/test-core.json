@@ -42,7 +42,7 @@
   "resources": {
     "cpus": 2,
     "mem_mb": 8192,
-    "disk_mb": 4096
+    "disk_mb": 8192
   },
   "falsifier": null
 }
