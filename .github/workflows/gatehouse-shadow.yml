@@ -72,7 +72,7 @@ jobs:
               rust-toolchain.toml
               .github/workflows/**
               ci/**
-              crates/ci-spec/**
+              crates/**
               scripts/check-ci-spec.sh
     env:
       GATEHOUSE_REF: 89f7acc1e37eaa3b32c4b5eb9266fb41959a076a
