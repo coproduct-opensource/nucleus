@@ -6,7 +6,7 @@
 // ── Proof ↔ production pin (grep me) ─────────────────────────────────────────
 //
 // Lean source: `crates/nucleus-rubric/lean/Nucleus/Rubric.lean`
-// (namespace `Nucleus.Rubric`, Lean 4 v4.30.0-rc2, Mathlib-free, 0 `sorry`,
+// (namespace `Nucleus.Rubric`, Lean 4 v4.30.0, Mathlib-free, 0 `sorry`,
 //  no `native_decide`; built + sorry-banned by `.github/workflows/rubric-lean.yml`).
 //
 //   MODEL DEFS (the Rust mirror below transcribes these EXACTLY):

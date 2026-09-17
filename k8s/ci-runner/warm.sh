@@ -14,7 +14,7 @@ set -euo pipefail
 IMAGE="${IMAGE:-localhost:30500/nucleus-ci-runner:0.2.5}"
 ROOT="${ROOT:-/var/lib/nucleus-ci}"
 RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-1.96.1}"   # rust-toolchain.toml
-LEAN_TOOLCHAIN="${LEAN_TOOLCHAIN:-leanprover/lean4:v4.30.0-rc2}"  # every lean-toolchain in the tree
+LEAN_TOOLCHAIN="${LEAN_TOOLCHAIN:-leanprover/lean4:v4.30.0}"  # every lean-toolchain in the tree
 
 mkdir -p "$ROOT"/{rustup,cargo,cache,elan}
 chown -R 1001:1001 "$ROOT"

@@ -18,9 +18,9 @@ require aeneas from git
   "https://github.com/AeneasVerif/aeneas.git" @ "5138c03bd39e870abe1ad3a572865cf8c15f43d6" / "backends" / "lean"
 
 -- Mathlib for HeytingAlgebra typeclass
--- Version must be compatible with Aeneas's Lean toolchain (v4.30.0-rc2)
+-- Version must be compatible with Aeneas's Lean toolchain (v4.30.0)
 require mathlib from git
-  "https://github.com/leanprover-community/mathlib4.git" @ "v4.30.0-rc2"
+  "https://github.com/leanprover-community/mathlib4.git" @ "v4.30.0"
 
 -- Aeneas-generated types, curated function subset, and external implementations
 -- Second-opinion axiom audit (#2567): `lake exe axiom-audit --root <Lib>` walks

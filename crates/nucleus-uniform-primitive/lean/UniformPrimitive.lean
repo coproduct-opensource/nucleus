@@ -3,7 +3,7 @@
 
   **STATUS: SPINE PROVEN (0 `sorry`, 0 axiom in `preserves_seq`); GAP 1
   (policy⇝ocap) DISCHARGED as a theorem; 3 layer bridges remain named axioms =
-  the machine-checked distance-to-done.** Mathlib-free, Lean 4 v4.30.0-rc2,
+  the machine-checked distance-to-done.** Mathlib-free, Lean 4 v4.30.0,
   `autoImplicit = false`.
 
   # What this file is

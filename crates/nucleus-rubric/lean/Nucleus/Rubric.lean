@@ -2,7 +2,7 @@
   Nucleus / Rubric  (CT-disciplined cardinal scoring kernel — soundness proofs)
 
   **STATUS: PROVED (0 `sorry`).** Mathlib-free: `Nat` + `omega` + structural
-  recursion / list induction + `decide`. No native-decide. Lean 4 v4.30.0-rc2,
+  recursion / list induction + `decide`. No native-decide. Lean 4 v4.30.0,
   `autoImplicit = false`. Same discipline as `Nucleus.Commons` and
   `Nucleus.Auctions.IntegerVcgTruthful` in `nucleus-econ-kernels/lean`.
 

@@ -162,7 +162,7 @@ RUN set -eux; \
 # per runner user like rustup: the Lean jobs stop downloading a 300 MB
 # toolchain each run, and the arch-blind cache key that once restored an x86
 # toolchain over an arm64 mount has nothing left to restore.
-ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.30.0-rc2
+ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.30.0
 ARG ELAN_VERSION=v4.2.4
 # elan as its release binary per arch, checksum-verified (no downloaded script run by sh).
 ARG ELAN_SHA256_X86_64=42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
@@ -211,7 +211,7 @@ USER root
 RUN set -eux; apt-get update; apt-get install -y --no-install-recommends bc; rm -rf /var/lib/apt/lists/*
 USER runner
 RUN set -eux; \
-    tc=/home/runner/.elan/toolchains/leanprover--lean4---v4.30.0-rc2/bin; \
+    tc=/home/runner/.elan/toolchains/leanprover--lean4---v4.30.0/bin; \
     if [ "$(uname -m)" = aarch64 ]; then \
       curl -fsSL "https://github.com/digama0/leangz/releases/download/${LEANTAR_VERSION}/leantar-${LEANTAR_VERSION}-aarch64-unknown-linux-musl.tar.gz" | tar xz -C /tmp; \
       install -m 0755 "$(find /tmp -name leantar -type f | head -1)" "$tc/leantar"; \

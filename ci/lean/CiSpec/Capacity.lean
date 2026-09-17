@@ -2,7 +2,7 @@
   CiSpec / Capacity — when can the queue's check timeout eject an entry?
 
   **STATUS: PROVED (0 `sorry`).** Mathlib-free: `Nat` + `List` + `omega` +
-  structural induction. Lean 4 v4.30.0-rc2, `autoImplicit = false`.
+  structural induction. Lean 4 v4.30.0, `autoImplicit = false`.
 
   On 2026-09-04 entries were ejected from the merge queue by the 60-minute
   check timeout — not by any red check. The group's jobs were sharing four

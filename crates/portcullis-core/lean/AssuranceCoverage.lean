@@ -21,7 +21,7 @@ uncovered claims, and a gate suite's defect is **joint surjectivity, not cocycle
 agreement**.
 
 They are copied rather than imported. claim-calculus is Lean 4.32.0; this tree is
-pinned to 4.30.0-rc2 with Mathlib and Aeneas locked to it, so importing a
+pinned to 4.30.0 with Mathlib and Aeneas locked to it, so importing a
 ten-line dependency-free vocabulary would mean bumping a lockstep triple and
 re-extracting 68 `lean_lib`s. The definitions carry no dependencies and the proof
 is pure logic, so the port is faithful; the cost of the alternative is not.

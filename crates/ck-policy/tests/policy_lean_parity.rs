@@ -9,7 +9,7 @@
 // ── Proof ↔ production pin (grep me) ─────────────────────────────────────────
 //
 // Lean source: `crates/ck-policy/lean/Ck/Policy.lean`
-// (namespace `Ck.Policy`, Lean 4 v4.30.0-rc2, Mathlib-free, 0 `sorry`,
+// (namespace `Ck.Policy`, Lean 4 v4.30.0, Mathlib-free, 0 `sorry`,
 //  no native-decide; built + sorry-banned by `.github/workflows/ck-policy-lean.yml`).
 //
 //   MODEL DEFS (the Rust mirror below transcribes these EXACTLY):

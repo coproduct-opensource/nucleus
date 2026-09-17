@@ -35,10 +35,10 @@ package «ckPolicyAeneas» where
 require aeneas from git
   "https://github.com/AeneasVerif/aeneas.git" @ "5138c03bd39e870abe1ad3a572865cf8c15f43d6" / "backends" / "lean"
 
--- Mathlib pin must match the Aeneas Lean toolchain (v4.30.0-rc2). Aeneas Std
+-- Mathlib pin must match the Aeneas Lean toolchain (v4.30.0). Aeneas Std
 -- transitively requires Mathlib; we pin it here so the lake-manifest is stable.
 require mathlib from git
-  "https://github.com/leanprover-community/mathlib4.git" @ "v4.30.0-rc2"
+  "https://github.com/leanprover-community/mathlib4.git" @ "v4.30.0"
 
 -- The Aeneas-generated core (committed verbatim — DO NOT hand-edit).
 -- Second-opinion axiom audit (#2567): `lake exe axiom-audit --root <Lib>` walks

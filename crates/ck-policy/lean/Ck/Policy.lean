@@ -2,7 +2,7 @@
   Ck / Policy  (Constitutional Kernel monotonicity-gate soundness proofs)
 
   **STATUS: PROVED (0 `sorry`).** Mathlib-free: `Nat` + `List` + `Bool` + `omega`
-  / `decide` + structural induction. No native-decide. Lean 4 v4.30.0-rc2,
+  / `decide` + structural induction. No native-decide. Lean 4 v4.30.0,
   `autoImplicit = false`. Same discipline as `Nucleus.Rubric` in
   `crates/nucleus-rubric/lean`.
 

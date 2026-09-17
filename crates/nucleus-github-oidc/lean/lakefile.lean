@@ -16,9 +16,9 @@ package «nucleusGithubOidc» where
 require aeneas from git
   "https://github.com/AeneasVerif/aeneas.git" @ "5138c03bd39e870abe1ad3a572865cf8c15f43d6" / "backends" / "lean"
 
--- Mathlib for omega/decide ergonomics; toolchain-matched (v4.30.0-rc2).
+-- Mathlib for omega/decide ergonomics; toolchain-matched (v4.30.0).
 require mathlib from git
-  "https://github.com/leanprover-community/mathlib4.git" @ "v4.30.0-rc2"
+  "https://github.com/leanprover-community/mathlib4.git" @ "v4.30.0"
 
 -- The Aeneas-generated OIDC→SPIFFE slice (from real Rust:
 -- crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs). UNMODIFIED Aeneas
