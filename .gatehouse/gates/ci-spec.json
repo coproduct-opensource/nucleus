@@ -7,7 +7,8 @@
       ".github/workflows/**",
       "ci/**",
       "crates/**",
-      "scripts/check-ci-spec.sh"
+      "scripts/**",
+      "docs/assurance/**"
     ],
     "exclude": [],
     "external": [],
@@ -30,7 +31,8 @@
       ".github/workflows/**",
       "ci/**",
       "crates/**",
-      "scripts/check-ci-spec.sh"
+      "scripts/**",
+      "docs/assurance/**"
     ],
     "fs_write": [
       "target/**",
