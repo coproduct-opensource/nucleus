@@ -1,0 +1,24 @@
+# Derived files: a measurement of the tree, not a statement about a branch.
+#
+# Both sides of any two PRs move these, so every pair conflicts by construction,
+# and NEITHER side's number is right afterwards — they describe two trees, and
+# the one that matters is the third. Hand-resolving them (three times on
+# 2026-09-18 alone) invites picking a number that describes nothing.
+#
+# `keep-ours` takes the current branch's text so the rebase does not stop. The
+# number is then wrong on purpose, and the gate says so: `cargo xtask scorecard`
+# reds on a stale pin. `cargo xtask scorecard --write` records what THIS tree
+# measures — the only correct value — and refuses to lower a floor, so a
+# regression still has to be looked at by a person.
+#
+# The driver is per-clone, because git will not run a driver a repository can
+# define for it — a driver is arbitrary code. Run `scripts/install-merge-drivers.sh`
+# once per clone.
+#
+# Until you do, a rebase touching these files stops with
+#   fatal: custom merge driver keep-ours lacks command line
+# rather than with an ordinary conflict. That is git's behaviour for a named
+# driver it cannot find, it is noisy rather than silent, and the fix is the one
+# command above.
+.scorecard-ratchet.toml merge=keep-ours
+badges/scorecard.json   merge=keep-ours

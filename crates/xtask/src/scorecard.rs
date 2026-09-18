@@ -594,7 +594,114 @@ pub fn badge_json(card: &[(String, Census)]) -> Result<String> {
     ))
 }
 
-pub fn run(measure: bool, badge: bool) -> Result<i32> {
+/// Rewrite one family's two pins in the ratchet text, in place.
+///
+/// The file is edited as text rather than re-serialised: it is mostly prose —
+/// every pin carries the dated sentence saying what was measured and why — and
+/// a round-trip through a TOML writer would drop all of it.
+fn repin(text: &str, family: &str, floor_bp: u32, population: usize) -> Result<String> {
+    let header = format!("[family.{family}]");
+    let start = text
+        .find(&header)
+        .with_context(|| format!("{RATCHET} has no {header}"))?;
+    let end = text[start + header.len()..]
+        .find("\n[")
+        .map_or(text.len(), |i| start + header.len() + i + 1);
+    let mut section = text[start..end].to_string();
+    for (key, value) in [
+        ("floor_bp", floor_bp.to_string()),
+        ("population_floor", population.to_string()),
+    ] {
+        let mut out = String::with_capacity(section.len());
+        let mut replaced = false;
+        for line in section.lines() {
+            if line.trim_start().starts_with(&format!("{key} "))
+                || line.trim_start().starts_with(&format!("{key}="))
+            {
+                out.push_str(&format!("{key} = {value}"));
+                replaced = true;
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        if !replaced {
+            bail!("{RATCHET}: [family.{family}] has no {key}");
+        }
+        if section.ends_with('\n') {
+            section = out;
+        } else {
+            section = out.trim_end_matches('\n').to_string();
+        }
+    }
+    Ok(format!("{}{section}{}", &text[..start], &text[end..]))
+}
+
+/// Record this tree's measurement in the ratchet and the badge.
+///
+/// A rebase where both sides moved a pin has no correct answer on either side:
+/// the numbers describe two trees, and the one that matters is the third. This
+/// measures that third tree. It refuses to lower a floor — a fall is a
+/// regression, and the gate exists to make someone look at it.
+fn write_pins(card: &[(String, Census)], pins: &BTreeMap<String, Pin>) -> Result<i32> {
+    let mut text =
+        std::fs::read_to_string(RATCHET).with_context(|| format!("reading {RATCHET}"))?;
+    let mut moved = Vec::new();
+    let mut fell = Vec::new();
+    for (family, census) in card {
+        let Some(pin) = pins.get(family) else {
+            bail!("{RATCHET} has no pin for `{family}`; add it by hand, with its sentence");
+        };
+        let found_bp = census.basis_points();
+        if found_bp < pin.floor_bp {
+            fell.push(format!(
+                "  {family}: {} is below the pinned {}",
+                pct(found_bp),
+                pct(pin.floor_bp)
+            ));
+            continue;
+        }
+        if found_bp != pin.floor_bp || census.population != pin.population_floor {
+            text = repin(&text, family, found_bp, census.population)?;
+            moved.push(format!(
+                "  {family}: {} -> {}, population {} -> {}",
+                pct(pin.floor_bp),
+                pct(found_bp),
+                pin.population_floor,
+                census.population
+            ));
+        }
+    }
+    if !fell.is_empty() {
+        eprintln!("REFUSED: a floor may not be lowered by --write:");
+        for line in &fell {
+            eprintln!("{line}");
+        }
+        eprintln!(
+            "  A fall is a regression. Fix it, or lower the pin by hand with a dated sentence \
+             saying what was given up."
+        );
+        return Ok(1);
+    }
+    std::fs::write(RATCHET, &text).with_context(|| format!("writing {RATCHET}"))?;
+    std::fs::write(BADGE, format!("{}\n", badge_json(card)?))
+        .with_context(|| format!("writing {BADGE}"))?;
+    if moved.is_empty() {
+        println!("ok: the pins already say what this tree measures.");
+    } else {
+        println!("recorded this tree's measurement:");
+        for line in &moved {
+            println!("{line}");
+        }
+        println!(
+            "  Each pin keeps its sentence; say in the commit WHY the tree moved, since the \
+             number alone does not."
+        );
+    }
+    Ok(0)
+}
+
+pub fn run(measure: bool, badge: bool, write: bool) -> Result<i32> {
     let corpus = crate::law_mechanisms::tracked(crate::law_mechanisms::is_production_path)?;
     let families = families();
     let card = card_of(&families, &corpus)?;
@@ -606,6 +713,13 @@ pub fn run(measure: bool, badge: bool) -> Result<i32> {
     if badge {
         println!("{}", badge_json(&card)?);
         return Ok(0);
+    }
+
+    if write {
+        let pins = parse_ratchet(
+            &std::fs::read_to_string(RATCHET).with_context(|| format!("reading {RATCHET}"))?,
+        )?;
+        return write_pins(&card, &pins);
     }
 
     if measure {
@@ -1147,5 +1261,54 @@ population_floor = 250
                 family.name()
             );
         }
+    }
+
+    /// The prose is the point of the file: every pin carries a dated sentence
+    /// saying what was measured. A repin that dropped it would leave a number
+    /// nobody can audit.
+    #[test]
+    fn repinning_keeps_every_sentence_in_the_file() {
+        let src = "\
+[family.alg]
+# 2026-09-01: measured on the tree that added the walk.
+floor_bp = 100
+population_floor = 10
+
+[family.tot]
+# A sentence that must survive.
+floor_bp = 200
+population_floor = 20
+";
+        let out = repin(src, "alg", 350, 12).expect("repin");
+        assert!(out.contains("# 2026-09-01: measured on the tree that added the walk."));
+        assert!(out.contains("# A sentence that must survive."));
+        assert!(out.contains("floor_bp = 350"), "{out}");
+        assert!(out.contains("population_floor = 12"), "{out}");
+        // The other family is untouched.
+        assert!(out.contains("floor_bp = 200"), "{out}");
+        assert!(out.contains("population_floor = 20"), "{out}");
+    }
+
+    /// The last section has no `\n[` after it. The first version of `repin`
+    /// searched for one and left the file unchanged for whichever family
+    /// happened to be last -- which is `suppress`, the one that conflicts most.
+    #[test]
+    fn the_last_family_in_the_file_is_repinned_like_any_other() {
+        let src = "[family.alg]\nfloor_bp = 100\npopulation_floor = 10\n";
+        let out = repin(src, "alg", 999, 11).expect("repin");
+        assert!(out.contains("floor_bp = 999"), "{out}");
+        assert!(out.contains("population_floor = 11"), "{out}");
+    }
+
+    #[test]
+    fn a_family_the_ratchet_does_not_pin_is_refused_rather_than_invented() {
+        let err = repin(
+            "[family.alg]\nfloor_bp = 1\npopulation_floor = 1\n",
+            "tot",
+            5,
+            5,
+        )
+        .expect_err("a missing family is not something to guess at");
+        assert!(format!("{err}").contains("family.tot"), "{err}");
     }
 }
