@@ -363,5 +363,9 @@ population_floor = 23
 # `#[expect]` naming why. Ten new suppressions, all ten discharged (a mechanism that
 # fails if the reason stops holding: an unfulfilled expectation is an error).
 # 19 of 146 = 13.01%, pinned at the measurement.
-floor_bp = 676
-population_floor = 133
+#
+# 2026-09-18: rebased onto the tree that deleted WorkloadApiServer, so neither
+# branch's number describes the merged tree -- 19 of 143 = 13.28%, re-measured
+# rather than carried over from either side.
+floor_bp = 1328
+population_floor = 143
