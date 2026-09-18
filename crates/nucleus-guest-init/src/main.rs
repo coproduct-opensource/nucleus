@@ -44,6 +44,13 @@ impl std::ops::BitOr for MsFlags {
     }
 }
 
+/// The pinned compiler-cache seed, read-only, and the overlay that makes it usable.
+/// `CACHE_MERGED` is what a gate points `CARGO_TARGET_DIR` and `CARGO_HOME` inside.
+const CACHE_SEED: &str = "/cache-seed";
+const CACHE_UPPER: &str = "/work/.cache-upper";
+const CACHE_WORK: &str = "/work/.cache-work";
+const CACHE_MERGED: &str = "/cache";
+
 const POD_SPEC_PATH: &str = "/etc/nucleus/pod.yaml";
 const FALLBACK_POD_SPEC: &str = "/pod.yaml";
 /// Where a spec fetched from the HOST is written.
@@ -94,6 +101,71 @@ fn mount_work(_past_barrier: &identity::PastBarrier) {
     {
         eprintln!("optional mount /work failed — continuing without it: {err}");
     }
+}
+
+/// Mount the compiler cache: a read-only seed with a writable overlay on the scratch.
+///
+/// `/dev/vdc` is the pod's `data` drive. The node gives it `is_read_only: true` and pins its
+/// digest, and that digest is IN the identity this pod signs — so what a verdict was produced
+/// against is named rather than ambient. A build needs to WRITE, though, so the seed is the lower
+/// layer of an overlay whose upper and work directories live on the scratch: reads come from the
+/// pinned bytes, writes land in this pod's own disk, and the seed cannot be modified by the
+/// workload at all. A cache the guest could write back into would be the poisoning vector this
+/// arrangement exists to avoid.
+///
+/// Every failure here is optional. A pod with no data drive, a kernel without overlayfs, a seed
+/// that will not mount: the gate then compiles from nothing, which is exactly what it does today.
+/// It costs time and can never change a verdict, so it must not abort a boot.
+fn mount_cache(_past_barrier: &identity::PastBarrier) {
+    if !Path::new("/dev/vdc").exists() {
+        return;
+    }
+    for dir in [CACHE_SEED, CACHE_UPPER, CACHE_WORK, CACHE_MERGED] {
+        if let Err(err) = ensure_dir(dir) {
+            eprintln!("optional cache: {err} — continuing without it");
+            return;
+        }
+    }
+    if let Err(err) = mount_fs(
+        "/dev/vdc",
+        CACHE_SEED,
+        "ext4",
+        MsFlags::MS_RDONLY | MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+        None,
+    ) {
+        eprintln!("optional cache seed did not mount — continuing without it: {err}");
+        return;
+    }
+    // The workload does not run as root, so the layer it writes through must be its own.
+    // `mke2fs -E root_owner=65534:65534` gives the scratch that owner; the overlay's upper
+    // inherits nothing, so it is set here.
+    for dir in [CACHE_UPPER, CACHE_WORK] {
+        chown_nobody(dir);
+    }
+    let options = format!("lowerdir={CACHE_SEED},upperdir={CACHE_UPPER},workdir={CACHE_WORK}");
+    if let Err(err) = mount_fs(
+        "overlay",
+        CACHE_MERGED,
+        "overlay",
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+        Some(&options),
+    ) {
+        eprintln!("optional cache overlay did not mount — continuing without it: {err}");
+    }
+}
+
+/// Give a directory to the unprivileged build user. Best effort: the caller
+/// treats the whole cache as optional.
+fn chown_nobody(path: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::chown;
+        if let Err(err) = chown(path, Some(65534), Some(65534)) {
+            eprintln!("optional cache: chown {path}: {err}");
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = path;
 }
 
 /// Time one startup step and print it as it completes.
@@ -221,6 +293,8 @@ fn run() -> Result<(), String> {
     // convention anyone has to remember, it does not compile.
     let past_barrier = identity::barrier(workload_api_port);
     mount_work(&past_barrier);
+    // After the scratch: the overlay's upper and work directories live on it.
+    timed("mount_cache", || mount_cache(&past_barrier));
 
     // THE COMMAND, FETCHED RATHER THAN BAKED.
     //
