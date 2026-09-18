@@ -69,6 +69,8 @@ mod cgroup;
 mod container_transport;
 mod cred_split;
 mod driver;
+#[cfg(test)]
+mod effect_footprint;
 mod envelope_frame;
 mod guest_socket;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

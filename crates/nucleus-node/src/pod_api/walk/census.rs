@@ -24,10 +24,11 @@
 //!
 //! # The declaration is derived from the design's rules
 //!
-//! [`declared_hollow`] computes the laws from two rules the design states: who may
-//! manage whom (itself and its direct children; the operator, everything), and
-//! who sees what in a listing (the same). A face is hollow exactly when one letter
-//! changes something the other observes. It is written from the rules, not read
+//! [`declared_hollow`] derives the laws from each letter's [`footprint`], which is
+//! computed from two rules the design states: who may manage whom (itself and its
+//! direct children; the operator, everything), and who sees what in a listing (the
+//! same). A face is hollow exactly when one letter writes what the other reads
+//! (`effect_footprint`). It is written from the rules, not read
 //! from `caller_may_manage`, so the census checks the rules rather than restating
 //! the code. The expected count is 10 of 55, with only the creates non-idempotent:
 //! A3 (cancel is absorbing — idempotent, and invisible to a get) and the refused
@@ -42,6 +43,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
+use crate::effect_footprint::{self, Footprint};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Role {
@@ -226,52 +228,56 @@ fn sees(viewer: Role, pod: Option<Role>, parent: Option<Role>) -> bool {
     }
 }
 
-/// The hollow faces the rules imply: one letter changes what the other observes.
-fn declared_hollow() -> BTreeSet<(Letter, Letter)> {
-    // What a letter can change: a pod's running state, or the set of pods.
-    let changes = |l: Letter| -> Option<(Option<Role>, Option<Role>)> {
-        match l {
-            Letter::Cancel(caller, target) if may_manage(caller, target) => {
-                Some((Some(target), None))
-            }
-            Letter::Create(caller) => Some((
-                None,
-                if caller == Role::Operator {
-                    None
-                } else {
-                    Some(caller)
-                },
-            )),
-            Letter::Cancel(..) | Letter::Get(..) | Letter::List(_) => None,
-        }
-    };
-    // Only listings observe state (a get's reply does not depend on it; a cancel's
-    // and a create's replies depend only on the caller and target).
-    let observed_by = |observer: Letter, change: (Option<Role>, Option<Role>)| match observer {
-        Letter::List(viewer) => sees(viewer, change.0, change.1),
-        Letter::Cancel(..) | Letter::Get(..) | Letter::Create(_) => false,
-    };
-    let mut out = BTreeSet::new();
-    for (i, &a) in LETTERS.iter().enumerate() {
-        for &b in &LETTERS[i + 1..] {
-            let hollow = changes(a).is_some_and(|c| observed_by(b, c))
-                || changes(b).is_some_and(|c| observed_by(a, c));
-            if hollow {
-                out.insert((a, b));
-            }
-        }
-    }
-    out
+/// What the registry holds, as resources a letter reads or writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Resource {
+    /// Whether a pod is running.
+    Live(Role),
+    /// The pods created under a parent (`None`: roots, created by the operator).
+    Children(Option<Role>),
 }
 
-/// A letter is not idempotent when doing it twice leaves a different registry:
-/// only a create does. A3 is that a cancel is not in this set.
+/// Each letter's footprint, from the design's two rules above.
+///
+/// Only a permitted cancel writes (the target's liveness, as a blind `Set`: A3 is
+/// that a cancel is idempotent). A create updates its parent's children. A get's
+/// reply depends on lineage, which nothing here changes, so it reads nothing mutable.
+/// A listing reads the liveness of every pod the viewer sees, and the children of
+/// every parent whose new pods it would see.
+fn footprint(letter: Letter) -> Footprint<Resource> {
+    const PODS: [Role; 3] = [Role::R, Role::C, Role::G];
+    let parent_of = |caller: Role| (caller != Role::Operator).then_some(caller);
+    match letter {
+        Letter::Cancel(caller, target) if may_manage(caller, target) => {
+            Footprint::pure().set(Resource::Live(target))
+        }
+        Letter::Cancel(..) | Letter::Get(..) => Footprint::pure(),
+        Letter::Create(caller) => Footprint::pure().update(Resource::Children(parent_of(caller))),
+        Letter::List(viewer) => {
+            let lives = PODS
+                .into_iter()
+                .filter(|p| sees(viewer, Some(*p), None))
+                .map(Resource::Live);
+            let children = [None, Some(Role::R), Some(Role::C), Some(Role::G)]
+                .into_iter()
+                .filter(|parent| sees(viewer, None, *parent))
+                .map(Resource::Children);
+            lives
+                .chain(children)
+                .fold(Footprint::pure(), |fp, r| fp.read(r))
+        }
+    }
+}
+
+/// The order-dependent faces, DERIVED from the footprints (see `effect_footprint`).
+fn declared_hollow() -> BTreeSet<(Letter, Letter)> {
+    effect_footprint::hollow_faces(&LETTERS, footprint)
+}
+
+/// Derived: the letters that update what they read. Only a create; A3 is that a
+/// cancel is not in this set.
 fn declared_not_idempotent() -> BTreeSet<Letter> {
-    LETTERS
-        .iter()
-        .copied()
-        .filter(|l| matches!(l, Letter::Create(_)))
-        .collect()
+    effect_footprint::not_idempotent(&LETTERS, footprint)
 }
 
 #[tokio::test]
