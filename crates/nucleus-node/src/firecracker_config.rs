@@ -487,10 +487,6 @@ pub(crate) fn prepare_jail(
 
     // Firecracker's logger opens this after dropping privileges and won't create it.
     let log_dest = layout.host_path(in_jail::LOG);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "ADR 0007 G-1 does not apply: creates the log Firecracker opens itself; writes nothing"
-    )]
     std::fs::OpenOptions::new()
         .create(true)
         .write(true)
