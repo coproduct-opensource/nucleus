@@ -84,5 +84,5 @@
 #
 # Same provenance caveat as #2509's: taken from the CI run on this branch, so
 # unverified at the point of writing and verified by the run that consumes it.
-ac2e82e00098467bd5d78896c7f15e54f1327cfae818a45f4cc4cb9089941565  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+9f7e477ce6f44d4ba8f9301155440510e4f2f94f0401693222b4f6e2d9ec1e27  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js

@@ -157,8 +157,12 @@ population_floor = 278
 # tractable lints there are unwrap_used (87) and panic (10), and the 1528
 # arithmetic and indexing sites are a program, not a gate.
 # 2026-09-12: both new CI receipt crates deny all seven totality lints; 25/83.
-floor_bp = 3012
-population_floor = 83
+# 2026-09-16 (#2935): new crate nucleus-jsonl, the one atomic record append, declares
+# all seven from its first commit; 26/84. Without the declaration the new crate
+# alone dropped the ratio to 29.76% -- a crate that can panic while appending
+# evidence is exactly what this family counts.
+floor_bp = 3095
+population_floor = 84
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -353,5 +357,15 @@ population_floor = 23
 # `#[allow]`s with the code they excused (136 -> 133). The ratio rises because the
 # denominator shrank, not because anything was discharged; pinned at the
 # measurement so it does not read as progress. 9/133 = 6.76%.
-floor_bp = 676
-population_floor = 133
+# 2026-09-16 (#2935): the clippy ban on OpenOptions::append (ADR 0007 G-1) left ten
+# sites that are not record logs -- child stdout, a VMM console, dnsmasq's log, the
+# agent's own append effect, a test playing a tamperer -- and each carries an
+# `#[expect]` naming why. Ten new suppressions, all ten discharged (a mechanism that
+# fails if the reason stops holding: an unfulfilled expectation is an error).
+# 19 of 146 = 13.01%, pinned at the measurement.
+#
+# 2026-09-18: rebased onto the tree that deleted WorkloadApiServer, so neither
+# branch's number describes the merged tree -- 19 of 143 = 13.28%, re-measured
+# rather than carried over from either side.
+floor_bp = 1328
+population_floor = 143

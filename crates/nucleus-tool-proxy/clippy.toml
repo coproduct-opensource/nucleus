@@ -54,4 +54,14 @@ disallowed-methods = [
     # H-1 -- no ambient process-global mutation.
     { path = "std::env::set_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },
     { path = "std::env::remove_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },
+
+    # G-1 -- one decider per fact: a record log is appended to in ONE place.
+    # Four evidence logs (mediation receipts, Article 12 records, pod lifecycle, the
+    # tool-proxy's hash-chained audit log) wrote each record as two writes, and all
+    # four tore under concurrency (2026-09-16, PRs #2933 and the one adding
+    # `nucleus-jsonl`). `nucleus_jsonl::append_line` is the one atomic append. A byte
+    # stream that is not a record log (a child's stdout, a VMM console) carries an
+    # `#[expect]` saying so.
+    { path = "std::fs::OpenOptions::append", reason = "ADR 0007 G-1: append a record with nucleus_jsonl::append_line (one atomic write)" },
+    { path = "tokio::fs::OpenOptions::append", reason = "ADR 0007 G-1: append a record with nucleus_jsonl::append_line (one atomic write)" },
 ]

@@ -23,7 +23,6 @@ use nucleus_spec::PodSpec;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
@@ -4485,6 +4484,7 @@ async fn build_audit_log(
         path,
         secret,
         last_hash: Mutex::new(last_hash),
+        append_order: tokio::sync::Mutex::new(()),
         entry_count: std::sync::atomic::AtomicU64::new(0),
         webhook,
         drand_client,
@@ -4518,6 +4518,8 @@ struct AuditLog {
     path: PathBuf,
     secret: Vec<u8>,
     last_hash: Mutex<String>,
+    /// Serialises extending the chain with writing the entry. See `log`.
+    append_order: tokio::sync::Mutex<()>,
     entry_count: std::sync::atomic::AtomicU64,
     webhook: Option<WebhookSink>,
     /// Optional drand client for cryptographic time anchoring.
@@ -4589,8 +4591,14 @@ impl AuditLog {
         }
 
         let actor = entry.actor.clone().unwrap_or_default();
+        // Held from reading the chain's tail until this entry is on disk, so the
+        // file is in the order the chain was extended. The tail used to be read and
+        // advanced under `last_hash` alone, released before the write, so two
+        // concurrent entries could land in the opposite order to the one they were
+        // hashed in — and `nucleus-audit verify` walks the file top to bottom.
+        let _in_chain_order = self.append_order.lock().await;
         let (prev_hash, hash, signature) = {
-            let mut last_hash = self.last_hash.lock().unwrap();
+            let last_hash = self.last_hash.lock().unwrap();
             let prev_hash = last_hash.clone();
             // Include drand_round in message if available for stronger binding
             let drand_part = entry
@@ -4609,25 +4617,27 @@ impl AuditLog {
             );
             let signature = auth::sign_message(&self.secret, message.as_bytes());
             let hash = art12::sha256_hex(&format!("{}|{}", message, signature));
-            *last_hash = hash.clone();
             (prev_hash, hash, signature)
         };
         entry.prev_hash = prev_hash;
         entry.signature = signature.clone();
-        entry.hash = hash;
-        self.entry_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        entry.hash = hash.clone();
 
         let line = serde_json::to_string(&entry).map_err(|e| ApiError::Spec(e.to_string()))?;
 
-        // Write to local file
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .await?;
-        file.write_all(line.as_bytes()).await?;
-        file.write_all(b"\n").await?;
+        // One O_APPEND write per entry (see `nucleus_jsonl` for the tearing this
+        // replaced). The tail advances only once the entry is on disk: advancing it
+        // first meant a failed write left the chain naming an entry the file lacks.
+        nucleus_jsonl::append_line_async(
+            self.path.clone(),
+            line.clone(),
+            nucleus_jsonl::Durability::PageCache,
+        )
+        .await?;
+        *self.last_hash.lock().unwrap() = hash;
+        self.entry_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        drop(_in_chain_order);
 
         // Send to webhook if configured
         if let Some(webhook) = &self.webhook {

@@ -1436,10 +1436,18 @@ async fn spawn_local_pod(
         ));
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "ADR 0007 G-1 does not apply: a byte stream (the child's stdout), not a record log"
+    )]
     let log_stdout = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "ADR 0007 G-1 does not apply: a byte stream (the child's stderr), not a record log"
+    )]
     let log_stderr = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1914,6 +1922,10 @@ async fn spawn_container_pod(
                 ..Default::default()
             };
             let mut stream = docker.logs(&cid, Some(opts));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "ADR 0007 G-1 does not apply: a byte stream (the container's log stream), not a record log"
+            )]
             let mut file = match tokio::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -1963,6 +1975,10 @@ async fn spawn_container_pod(
     }
 
     // Touch audit log so it exists even in direct mode (for inspection)
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "ADR 0007 G-1 does not apply: creates the file so it exists; writes nothing"
+    )]
     let _ = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -2376,11 +2392,19 @@ async fn spawn_firecracker_pod(
             return Err(ApiError::Driver(err));
         }
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 G-1 does not apply: a byte stream (the VMM's console), not a record log"
+        )]
         let log_stdout = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log_path)
             .map_err(|err| ApiError::Driver(format!("failed to open firecracker log: {err}")))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 G-1 does not apply: a byte stream (the VMM's console), not a record log"
+        )]
         let log_stderr = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

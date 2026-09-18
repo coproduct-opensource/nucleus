@@ -3,7 +3,6 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio::io::AsyncWriteExt;
 use tracing::error;
 
 /// Append a node-side pod-lifecycle event to `<pod_dir>/lifecycle.log`.
@@ -36,22 +35,19 @@ pub(crate) async fn write_lifecycle_audit(pod_dir: &Path, event: &str, pod_id: &
             return;
         }
     };
-    match tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(audit_path)
-        .await
+    // One O_APPEND write per entry: see `nucleus_jsonl` for the tearing this
+    // replaced. A failed write is logged — it used to be dropped silently.
+    if let Err(e) = nucleus_jsonl::append_line_async(
+        audit_path.to_path_buf(),
+        line,
+        nucleus_jsonl::Durability::PageCache,
+    )
+    .await
     {
-        Ok(mut file) => {
-            let _ = file.write_all(line.as_bytes()).await;
-            let _ = file.write_all(b"\n").await;
-        }
-        Err(e) => {
-            error!(
-                "failed to write lifecycle audit to {}: {e}",
-                audit_path.display()
-            );
-        }
+        error!(
+            "failed to write lifecycle audit to {}: {e}",
+            audit_path.display()
+        );
     }
 }
 
@@ -60,4 +56,40 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lifecycle events for one pod are written from more than one task (create,
+    /// cancel, the reaper); each must land as one whole line.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_lifecycle_entries_never_tear_a_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let detail = "x".repeat(4096);
+        let mut tasks = Vec::new();
+        for t in 0..64 {
+            let d = dir.path().to_path_buf();
+            let detail = detail.clone();
+            tasks.push(tokio::spawn(async move {
+                write_lifecycle_audit(&d, &format!("event-{t}"), "pod", &detail).await;
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let raw = std::fs::read_to_string(dir.path().join("lifecycle.log")).unwrap();
+        let events: Vec<String> = raw
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .unwrap_or_else(|_| panic!("a torn line: {}", &l[..l.len().min(60)]))["event"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(events.len(), 64, "every entry exactly once");
+    }
 }
