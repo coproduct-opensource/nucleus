@@ -55,7 +55,12 @@ fi
 
 # ── The table ───────────────────────────────────────────────────────────────
 # Everything between the Status heading and the next heading.
-section="$(awk -v h="$STATUS_HEADING" 'index($0,h)==1{grab=1; next} grab && /^#{2,4} /{exit} grab{print}' "$DOC")"
+# `^###?#? ` rather than `^#{2,4} `: interval expressions are a POSIX awk feature that mawk does
+# not implement, and Debian's default awk IS mawk. Under mawk the terminator never matched, the
+# section ran to the end of the file, and every table below the ledger -- the alternatives table,
+# the PR table -- was read as a malformed ledger row: 18 failures for a document with no defect in
+# it. On a GitHub runner (gawk) the same script passed. Measured 2026-09-17 in the gate image.
+section="$(awk -v h="$STATUS_HEADING" 'index($0,h)==1{grab=1; next} grab && /^###?#? /{exit} grab{print}' "$DOC")"
 
 # All table rows (any line starting with '|'), minus the header and separator.
 all_rows="$(printf '%s\n' "$section" | grep -E '^\|' | grep -vE '^\|[ -]*-' | grep -viE '^\| *#? *\| *clause|^\| *part of the claim')"
