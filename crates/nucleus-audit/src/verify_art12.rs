@@ -33,8 +33,6 @@
 //!   live outside this file.
 
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -175,10 +173,9 @@ fn base_limitations(signatures_checked: bool) -> Vec<String> {
 /// # Errors
 /// The first record that fails to parse, chain, or verify, naming its line.
 pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Report, AuditError> {
-    let reader = BufReader::new(File::open(path)?);
+    let mut lines = crate::record_lines::open(path)?;
 
     let mut prev_hash: Option<String> = None;
-    let mut expected_seq: u64 = 1;
     let mut report = Art12Report {
         records: 0,
         chain_head: String::new(),
@@ -193,17 +190,10 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
         limitations: base_limitations(secret.is_some()),
     };
 
-    for (idx, line) in reader.lines().enumerate() {
-        let line = line?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let line_no = idx + 1;
-        let rec: Art12Record = serde_json::from_str(line).map_err(|source| AuditError::Json {
-            line: line_no,
-            source,
-        })?;
+    // The sequence number each record must carry, counted from 1.
+    for (expected_seq, item) in (1_u64..).zip(&mut lines) {
+        let (line_no, line) = item?;
+        let rec: Art12Record = crate::record_lines::parse(line_no, &line)?;
 
         if rec.schema_version != ART12_SCHEMA_VERSION {
             return Err(AuditError::Invalid {
@@ -279,8 +269,8 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
         *report.verdicts.entry(rec.verdict.clone()).or_insert(0) += 1;
 
         prev_hash = Some(rec.hash.clone());
-        expected_seq += 1;
     }
+    lines.finish(usize::try_from(report.records).unwrap_or(usize::MAX))?;
 
     report.chain_head = prev_hash.unwrap_or_default();
     if report.authority_bound < report.records {
@@ -376,6 +366,7 @@ pub fn apply_authority_requirement(
 mod tests {
     use super::*;
     use portcullis::art12_record::{Actor, DenyInfo};
+    use std::fs::File;
     use std::io::Write;
 
     const SECRET: &[u8] = b"operator-held-secret";
@@ -434,6 +425,40 @@ mod tests {
             writeln!(f, "{}", serde_json::to_string(r).unwrap()).unwrap();
         }
         path
+    }
+
+    /// A crash mid-append leaves the last record without its newline: the records
+    /// before it verify and the tear is a torn tail. The same bytes followed by a
+    /// newline, mid-log, are an altered line.
+    #[test]
+    fn a_torn_tail_and_an_altered_line_are_different_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a12.jsonl");
+        let r1 = record(1, "art12-genesis:sess", "allow");
+        let r2 = record(2, &r1.hash, "deny");
+        let (l1, l2) = (
+            serde_json::to_string(&r1).unwrap(),
+            serde_json::to_string(&r2).unwrap(),
+        );
+        let torn = &l2[..l2.len() / 2];
+        std::fs::write(&path, format!("{l1}\n{torn}")).unwrap();
+        let err = verify_art12_log(&path, Some(SECRET)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AuditError::TornTail {
+                    line: 2,
+                    verified: 1
+                }
+            ),
+            "got: {err}"
+        );
+        std::fs::write(&path, format!("{l1}\n{torn}\n{l2}\n")).unwrap();
+        let err = verify_art12_log(&path, Some(SECRET)).unwrap_err();
+        assert!(
+            matches!(err, AuditError::NotARecord { line: 2, .. }),
+            "got: {err}"
+        );
     }
 
     #[test]
