@@ -355,6 +355,8 @@ struct Stats {
 /// The commutation census over the pod API.
 mod census;
 
+mod cross;
+
 proptest! {
     // Each case builds a NodeState and up to MAX_PODS live processes.
     #![proptest_config(ProptestConfig::with_cases(48))]

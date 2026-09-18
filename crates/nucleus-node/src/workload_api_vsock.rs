@@ -348,6 +348,10 @@ pub struct PodMaterial {
 /// rather than a heuristic.
 pub const SPIFFE_WORKLOAD_API_PORT: u32 = 15013;
 
+/// How long a bridge shutdown waits for connections to finish the frame they are
+/// serving before aborting them. Bounded because it sits on the pod's teardown path.
+const CONNECTION_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl WorkloadApiVsockBridge {
     /// Starts the Workload API vsock bridge for a specific pod.
     ///
@@ -438,7 +442,19 @@ impl WorkloadApiVsockBridge {
                 pod_id
             );
 
+            // Every accepted connection is OWNED here, not spawned and forgotten.
+            // Shutdown used to stop accepting and nothing else: a guest holding a
+            // connection it opened earlier — as the tool-proxy does for the pod's
+            // life — was still served after its pod was cancelled, and a
+            // FETCH_SVID on it minted a certificate for the identity teardown had
+            // just released, re-caching it with nothing left to forget it. On
+            // Firecracker that window is teardown itself: this bridge is shut
+            // first and the VMM killed last. `pod_api::walk::cross` measures it.
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
+            let mut connections = tokio::task::JoinSet::new();
             loop {
+                // Reap finished connections so the set is bounded by the live ones.
+                while connections.try_join_next().is_some() {}
                 tokio::select! {
                     _ = &mut shutdown_rx => {
                         info!("workload API vsock bridge shutting down for pod {}", pod_id);
@@ -454,9 +470,11 @@ impl WorkloadApiVsockBridge {
                                 // "once per connection", which is not a
                                 // restriction at all.
                                 let material = std::sync::Arc::clone(&material);
-                                tokio::spawn(async move {
+                                let stop = stop_rx.clone();
+                                connections.spawn(async move {
                                     if let Err(err) =
-                                        handle_connection(stream, manager, pod_id, material).await
+                                        handle_connection(stream, manager, pod_id, material, stop)
+                                            .await
                                     {
                                         debug!("workload API connection closed: {err}");
                                     }
@@ -469,6 +487,26 @@ impl WorkloadApiVsockBridge {
                         }
                     }
                 }
+            }
+
+            // Tell every connection to stop at its next frame boundary, and WAIT
+            // for them: the caller releases this pod's identity once `shutdown`
+            // returns, so a frame still being served after that could re-mint it.
+            // A frame already read is served to completion (a receipt mid-ship is
+            // collected, not truncated). One that does not finish within the bound
+            // — a guest stalling inside a SHIP_RECEIPT body — is aborted, and
+            // `JoinSet::shutdown` waits for the abort to land before returning.
+            drop(stop_tx);
+            let drained = tokio::time::timeout(CONNECTION_DRAIN, async {
+                while connections.join_next().await.is_some() {}
+            })
+            .await;
+            if drained.is_err() {
+                tracing::warn!(
+                    "workload API connections for pod {pod_id} did not finish within \
+                     {CONNECTION_DRAIN:?} of shutdown; aborting them"
+                );
+                connections.shutdown().await;
             }
         });
 
@@ -813,15 +851,23 @@ async fn handle_connection(
     manager: IdentityManager,
     pod_id: uuid::Uuid,
     material: std::sync::Arc<PodMaterial>,
+    mut stop: tokio::sync::watch::Receiver<()>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
     loop {
-        let frame = match read_command_frame(&mut reader).await? {
-            Some(frame) => frame,
-            // Clean EOF: the guest closed the connection.
-            None => break,
+        // Stop is checked only BETWEEN frames. Dropping a half-read command frame
+        // loses nothing the guest was told about; dropping a frame mid-serve could.
+        let frame = tokio::select! {
+            biased;
+            // The bridge dropped its sender: it is shutting down.
+            _ = stop.changed() => break,
+            read = read_command_frame(&mut reader) => match read? {
+                Some(frame) => frame,
+                // Clean EOF: the guest closed the connection.
+                None => break,
+            },
         };
 
         let reply = serve_frame(&frame, &mut reader, &manager, pod_id, &material).await;
