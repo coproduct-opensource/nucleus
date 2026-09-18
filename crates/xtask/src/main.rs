@@ -204,6 +204,16 @@ enum Command {
         measure: bool,
         #[arg(long)]
         badge: bool,
+        /// Record THIS tree's measurement in the ratchet and the badge.
+        ///
+        /// For the one case a human cannot decide from either side: a rebase or
+        /// merge where both branches moved a pin. Neither number describes the
+        /// resulting tree, so the only correct value is the one measured here.
+        /// It raises a floor and rewrites a population; it REFUSES to lower a
+        /// floor, because that is a regression and no automation should be able
+        /// to record one quietly.
+        #[arg(long)]
+        write: bool,
     },
     /// Build every workspace crate in isolation (`cargo build -p <crate>`) to
     /// catch feature-unification-masked breakages — crates that compile in a
@@ -478,7 +488,11 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
-        Command::Scorecard { measure, badge } => match scorecard::run(measure, badge)? {
+        Command::Scorecard {
+            measure,
+            badge,
+            write,
+        } => match scorecard::run(measure, badge, write)? {
             0 => Ok(()),
             code => std::process::exit(code),
         },
