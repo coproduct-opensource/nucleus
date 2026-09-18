@@ -54,7 +54,7 @@
 -- written yet, so `scopeClosed_b` holds vacuously here — the clause is in place and its operand
 -- is not, exactly as `tools` was for one release. nucleus has 108 such sites; three of them cost
 -- a full gate run each to find this week.
-import "sha256:c02c04f747e00a6d8504d458e9dc5f1f68dbe2304055c27447b234544d409640" as ci
+import "sha256:6330de31510b1cc5b27094ba79670db8918162519aa2d51a0659d5edc9e2ea62" as ci
 
 -- The rust:1.96.1-slim-bookworm image index digest (rust-toolchain.toml pins 1.96.1). The gate
 -- tools layer the builder runs is built FROM this base and pinned separately, by image id, in the
@@ -92,7 +92,7 @@ let testCore : ci.Gate = (#b"test-core", #d"000000000000000000000000000000000000
 -- host check refuses to prepare it — which is the pair working: the plan says what the gate needs
 -- and the image is held to it, rather than the gate discovering `lake: not found` in a microVM.
 let leanBuild : ci.Gate = (#b"lean-build", #d"0000000000000000000000000000000000000000000000000000000000000004", [#b"crates/portcullis-core/lean/*.lean", #b"crates/portcullis-core/lean/lean-toolchain", #b"crates/portcullis-core/lean/lake-manifest.json", #b"crates/portcullis-core/lean/generated/**", #b"crates/portcullis-core/lean/generated-attenuation/**", #b"crates/portcullis-core/lean/generated-cap-quantale/**", #b"crates/portcullis-core/lean/generated-certchain/**", #b"crates/portcullis-core/lean/generated-channel/**", #b"crates/portcullis-core/lean/generated-credential/**", #b"crates/portcullis-core/lean/generated-decide/**", #b"crates/portcullis-core/lean/generated-declass/**", #b"crates/portcullis-core/lean/generated-egress/**", #b"crates/portcullis-core/lean/generated-identity/**", #b"crates/portcullis-core/lean/generated-ifc/**", #b"crates/portcullis-core/lean/generated-mediation/**"] : Bytes, env, lcap, [#b"lake", #b"build", #b"PortcullisCoreBridge"] : Bytes, 1200000, [] : Bytes, image, [#b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 16384, 8192, platform, [] : Bytes, [] : Bytes, 145000, [] : Bytes)
-let ciSpec : ci.Gate = (#b"ci-spec", #d"0000000000000000000000000000000000000000000000000000000000000005", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b".github/workflows/**", #b"ci/**", #b"crates/**", #b"scripts/check-ci-spec.sh"] : Bytes, env, scap, [#b"scripts/check-ci-spec.sh"] : Bytes, 300000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"git@2.39.5"] : Bytes, 4096, 4096, platform, [] : Bytes, [] : Bytes, 92000, [] : Bytes)
+let ciSpec : ci.Gate = (#b"ci-spec", #d"0000000000000000000000000000000000000000000000000000000000000005", [#b"Cargo.toml", #b"Cargo.lock", #b"rust-toolchain.toml", #b".github/workflows/**", #b"ci/**", #b"crates/**", #b"scripts/check-ci-spec.sh"] : Bytes, env, scap, [#b"sh", #b"-c", #b"rc=0; scripts/check-ci-spec.sh || rc=1; scripts/check-ci-assurance-ledger.sh || rc=1; cargo run -q --offline -p xtask -- assurance-required || rc=1; exit $rc"] : Bytes, 300000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"git@2.39.5"] : Bytes, 4096, 4096, platform, [] : Bytes, [] : Bytes, 92000, [#b"CI configuration is sound (CI-1)", #b"The CI assurance ledger cannot outrun its wiring"] : Bytes)
 
 let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGates] : ci.Gate, [(1, 0), (2, 0)] : ci.Edge)
 

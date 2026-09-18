@@ -44,7 +44,9 @@
     "secrets": []
   },
   "cmd": [
-    "scripts/check-ci-spec.sh"
+    "sh",
+    "-c",
+    "rc=0; scripts/check-ci-spec.sh || rc=1; scripts/check-ci-assurance-ledger.sh || rc=1; cargo run -q --offline -p xtask -- assurance-required || rc=1; exit $rc"
   ],
   "cwd": "",
   "timeout_s": 300,
