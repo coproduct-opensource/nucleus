@@ -976,7 +976,16 @@ perturb_assurance_required_pin() {
 perturb_lean_toolchain_split() {
     # Two first-party Lean versions. The gate's own stake line says why it matters: "two Lean
     # versions cannot share a .lake cache, and the second one rebuilds everything."
-    sed -i.bak 's|leanprover/lean4:v4\.30\.0-rc2|leanprover/lean4:v4.29.0|' "$1" && rm -f "$1.bak"
+    #
+    # The version is READ OUT of the file rather than written into this script. A hard-coded one
+    # goes vacuous the moment the toolchain moves, and that is exactly what happened: this said
+    # `v4.30.0-rc2` and the bump to `v4.30.0` left the perturbation matching nothing, so the gate
+    # stayed green and the probe passed for the wrong reason.
+    cur=$(sed -n 's|.*leanprover/lean4:\([^[:space:]]*\).*|\1|p' "$1" | head -1)
+    [ -n "$cur" ] || return 1
+    other=v4.29.0
+    [ "$cur" = "$other" ] && other=v4.28.0
+    sed -i.bak "s|leanprover/lean4:$cur|leanprover/lean4:$other|" "$1" && rm -f "$1.bak"
 }
 
 perturb_self_pin_sha() {
