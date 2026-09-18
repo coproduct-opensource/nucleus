@@ -28,6 +28,7 @@ jobs:
     outputs:
       all: ${{ steps.detect.outputs.all }}
       crates: ${{ steps.detect.outputs.crates }}
+      gates: ${{ steps.detect.outputs.gates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,13 +42,26 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.ref }}
+          MERGE_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_HEAD: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
 
           all=false
           changed=""
 
-          if [ "$EVENT_NAME" = "merge_group" ] || [ "$EVENT_NAME" = "push" ]; then
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            # The queue is the SERIAL path, so it is where narrowing is worth the most, and this
+            # used to be the one place that gave up: `all=true` meant a merge group for a
+            # two-shell-script change re-ran everything, including 573 s of gate-of-gates. The
+            # diff is available — `coverage-matrix.yml` has computed it this way for a while — and
+            # it is the same reasoning as a PR diff, against the queue's own base. Missing refs
+            # fail this required detector rather than silently widening or skipping.
+            changed="$(git diff --name-only "${MERGE_BASE:?missing merge-group base}" "${MERGE_HEAD:?missing merge-group head}")"
+            if printf '%s\n' "$changed" | grep -qE '^Cargo\.toml$|^Cargo\.lock$|^\.github/'; then
+              all=true
+            fi
+          elif [ "$EVENT_NAME" = "push" ]; then
             all=true
           else
             # A failed fetch used to be swallowed (`|| true`); the diff below
@@ -68,8 +82,18 @@ jobs:
             crates="$(printf '%s\n' "$changed" | grep -oE '^crates/[^/]+' | sed 's#^crates/##' | sort -u | paste -sd' ' - || true)"
           fi
 
+          # What can change what the gate of gates CONCLUDES: a gate script, the workflows that
+          # invoke them, or the xtask gates they call. A change elsewhere cannot make a gate stop
+          # being able to fail — and the cheap half (`--vacuity-only`, ten seconds) runs on every
+          # commit regardless, which is the half that catches a perturbation the tree moved under.
+          gates=false
+          if [ "$all" = "true" ] || printf '%s\n' "$changed" | grep -qE '^scripts/|^\.github/workflows/|^crates/xtask/'; then
+            gates=true
+          fi
+
           echo "all=$all" >> "$GITHUB_OUTPUT"
           echo "crates=$crates" >> "$GITHUB_OUTPUT"
+          echo "gates=$gates" >> "$GITHUB_OUTPUT"
 
           {
             echo "### Changed-crate detection"
@@ -501,6 +525,7 @@ jobs:
     name: Live-path gates (one pod)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
+    needs: changed-crates
     if: ${{ github.event.pull_request.draft != true }}
     outputs:
       declassify: ${{ steps.declassify.outcome }}
@@ -563,8 +588,17 @@ jobs:
       # Every gate is a claim that something is checked. This checks the claim:
       # each check-*.sh must RED on a real violation of its own subject and
       # GREEN when restored. Needs a clean tree (it perturbs and restores).
+      # The slow half, and 573 s of an 801-second job — 72 % of the merge queue's own critical
+      # path once the gate lane is warm. It asks whether each gate REDS on a violation of its own
+      # subject, which is a property of the GATE: a change that touches no gate script, no
+      # workflow and no xtask gate cannot alter the answer. The cheap half above still runs on
+      # every commit and is the half that catches a perturbation the tree moved under.
+      #
+      # When this is skipped the relay reads `skipped`, which `gates-can-fail` already treats as a
+      # pass — it has to, because the job is skipped for drafts too.
       - name: Every gate REDs on a real violation and GREENs when restored
         id: gates
+        if: ${{ needs.changed-crates.outputs.gates == 'true' }}
         continue-on-error: true
         shell: bash
         # The script itself refuses a dirty tree (its first check), so the step is the gate
