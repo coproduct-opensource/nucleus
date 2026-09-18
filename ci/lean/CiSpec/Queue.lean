@@ -2,7 +2,7 @@
   CiSpec / Queue — the merge queue as a state machine.
 
   **STATUS: PROVED (0 `sorry`).** Mathlib-free: `Nat` + `List` + `Bool` +
-  `simp` / `omega` + structural induction. Lean 4 v4.30.0-rc2,
+  `simp` / `omega` + structural induction. Lean 4 v4.30.0,
   `autoImplicit = false`.
 
   The shape is the one Mergify's and Aviator's TLA+ merge-queue specs use

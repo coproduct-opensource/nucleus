@@ -3,7 +3,7 @@
   merge rollup, as a model.
 
   **STATUS: PROVED (0 `sorry`).** Mathlib-free: `List` + `Bool` + `simp` /
-  `decide`. Lean 4 v4.30.0-rc2, `autoImplicit = false`.
+  `decide`. Lean 4 v4.30.0, `autoImplicit = false`.
 
   The decision procedures in `crates/ci-spec` (I1 twin completeness, I3
   reported-under-merge_group-and-not-skippable) are the HYPOTHESES of the

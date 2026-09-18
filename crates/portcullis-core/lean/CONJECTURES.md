@@ -121,8 +121,8 @@ security guarantees.
 
 Surfaced 2026-06-21 when the proven-tier gate first attempted to build the full
 core. These files claim to be "kernel-checked, sorry-free" in their own headers,
-but they do **not** compile against the pinned toolchain (`v4.30.0-rc2` +
-Mathlib `v4.30.0-rc2`). They were ungated/orphaned and silently rotted. **Do not
+but they do **not** compile against the pinned toolchain (`v4.30.0` +
+Mathlib `v4.30.0`). They were ungated/orphaned and silently rotted. **Do not
 cite their theorems as proven until repaired.** They are excluded from the
 proven build list in `portcullis-core-proven-lean.yml`.
 

@@ -3,7 +3,7 @@
 
   **STATUS: PROVED (0 `sorry`).** Mathlib-free: finite inductive enums +
   exhaustive `cases` / `rfl` / `decide`. No Mathlib, no native-decide, no
-  `sorry` / `admit` / `axiom`. Lean 4 v4.30.0-rc2, `autoImplicit = false`.
+  `sorry` / `admit` / `axiom`. Lean 4 v4.30.0, `autoImplicit = false`.
   Same discipline as `Ck.Policy` (`crates/ck-policy/lean`) and `Nucleus.Rubric`
   (`crates/nucleus-rubric/lean`).
 

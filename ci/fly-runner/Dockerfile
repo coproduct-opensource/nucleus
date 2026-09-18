@@ -98,7 +98,7 @@ RUN set -eux; \
 # found`, which is a REQUIRED check and therefore ejects merge-queue entries. It was left out on
 # the first pass because the full k3s image does not fit Fly's 8 GB rootfs cap; elan and one
 # toolchain on top of this much smaller image do. Mathlib's cache is fetched per job, not baked.
-ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.30.0-rc2
+ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.30.0
 ARG ELAN_VERSION=v4.2.4
 ARG ELAN_SHA256_X86_64=42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
 ARG ELAN_SHA256_AARCH64=05febd124d84ebf994b2e7479922a5650b1e950c17ae3bd1ddd776b65bb72bf9

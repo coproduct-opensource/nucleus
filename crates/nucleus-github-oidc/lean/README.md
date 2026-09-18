@@ -83,4 +83,4 @@ cd lean && lake exe cache get && lake build NucleusGithubOidc OidcSpiffeProofs J
 ```
 
 Pins: aeneas `nightly-2026.06.10` (commit `2a12be13…`), Charon nightly
-`nightly-2026-02-07`, Lean `v4.30.0-rc2` + mathlib `v4.30.0-rc2`.
+`nightly-2026-02-07`, Lean `v4.30.0` + mathlib `v4.30.0`.
