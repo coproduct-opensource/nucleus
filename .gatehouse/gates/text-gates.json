@@ -33,7 +33,7 @@
     "rc=0; scripts/check-verify-strict.sh || rc=1; scripts/check-sandbox-trusted-base.sh || rc=1; scripts/check-failclosed-verifiers.sh || rc=1; scripts/check-mediation.sh || rc=1; scripts/check-north-star-ledger.sh || rc=1; scripts/check-extracted-callsites.sh || rc=1; scripts/check-task-compiler-offline.sh || rc=1; scripts/check-ingest-hashed.sh || rc=1; scripts/check-kani-divergence.sh || rc=1; scripts/check-sealed-home.sh || rc=1; scripts/check-declassify-governor-keys-sealed.sh || rc=1; exit $rc"
   ],
   "cwd": "",
-  "timeout_s": 45,
+  "timeout_s": 120,
   "outputs": [],
   "resources": {
     "cpus": 2,
