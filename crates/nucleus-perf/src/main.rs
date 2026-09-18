@@ -181,7 +181,12 @@ fn main() -> Result<()> {
         Cli::Agency(a) => agency_run(a),
         Cli::GuestTranscript(g) => std::process::exit(guest_transcript::run(g)?),
         Cli::TeardownBarrier(t) => std::process::exit(teardown_barrier::run(t)?),
-        Cli::Stress(s) => std::process::exit(stress::run(s)?),
+        // An error is "could not look" (2), never "violated" (1): a proxy that fails
+        // to start must not read as a defect caught.
+        Cli::Stress(s) => std::process::exit(stress::run(s).unwrap_or_else(|e| {
+            eprintln!("could not look: {e:#}");
+            2
+        })),
     }
 }
 

@@ -1,0 +1,14 @@
+diff --git a/crates/portcullis/src/kernel/ifc.rs b/crates/portcullis/src/kernel/ifc.rs
+index 2403cbb55..45fb47635 100644
+--- a/crates/portcullis/src/kernel/ifc.rs
++++ b/crates/portcullis/src/kernel/ifc.rs
+@@ -91,7 +91,8 @@ impl Kernel {
+                     %detail,
+                     "IFC denied action"
+                 );
+-                Some(self.ifc_deny(term.clone(), detail))
++                let _ = detail;
++                None
+             }
+             exposure_core::EgressVerdict::RequireApproval(detail) => {
+                 tracing::info!(

@@ -1,0 +1,13 @@
+diff --git a/crates/nucleus-tool-proxy/src/main.rs b/crates/nucleus-tool-proxy/src/main.rs
+index 874f7faca..ca979c5aa 100644
+--- a/crates/nucleus-tool-proxy/src/main.rs
++++ b/crates/nucleus-tool-proxy/src/main.rs
+@@ -3634,7 +3634,7 @@ async fn web_fetch(
+     // IFC: web content is an adversarial taint source — taint the session so
+     // subsequent outbound actions are denied with IfcUnsafe (lethal trifecta, #1633).
+     // Brick 3: content-address the exact fetched body bytes.
+-    ingest::http_observe_flow(&state, NodeKind::WebContent, &bytes).await;
++    let _ = &bytes;
+     Ok(Json(WebFetchResponse {
+         status,
+         headers: response_headers,

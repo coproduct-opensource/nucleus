@@ -51,6 +51,14 @@ enum Command {
     Grammar,
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
+    /// Score `nucleus-perf stress` against the bug zoo (crates/nucleus-perf/zoo): each
+    /// defect patched into a scratch worktree at HEAD, every mode run against it.
+    /// Exit 0 as the manifest says, 1 a mismatch, 2 could not look or zoo rot.
+    StressZoo {
+        /// Run only the defect with this name.
+        #[arg(long)]
+        only: Option<String>,
+    },
     /// The two pins naming gatehouse must agree: `.gatehouse/pipeline.writ`'s import
     /// digest must be the SHA-256 of `prelude/ci.writ` at `gatehouse-plan.yml`'s
     /// `GATEHOUSE_REF`. Decided from declarations alone; reads no source tree.
@@ -405,6 +413,7 @@ mod schedule_liveness;
 mod scoreboard;
 mod scorecard;
 mod self_pin;
+mod stress_zoo;
 mod suppress;
 mod tot;
 mod typed;
@@ -413,6 +422,7 @@ mod workspace_members;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::StressZoo { only } => std::process::exit(stress_zoo::run(only.as_deref())?),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {

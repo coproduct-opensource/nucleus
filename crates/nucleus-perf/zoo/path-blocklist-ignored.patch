@@ -1,0 +1,13 @@
+diff --git a/crates/portcullis/src/path.rs b/crates/portcullis/src/path.rs
+index eae130197..8e1addb80 100644
+--- a/crates/portcullis/src/path.rs
++++ b/crates/portcullis/src/path.rs
+@@ -360,7 +360,7 @@ impl PathLattice {
+         // agent-instruction manifest may ship as `FOO.md` or `foo.md`) is
+         // attacker-controlled, and matching without regard to case only ever
+         // ADDS blocks — it can never narrow the sandbox.
+-        for pattern in &self.blocked {
++        for pattern in self.blocked.iter().take(0) {
+             if glob_match_ci(pattern, &path_str) || glob_match_ci(pattern, &original_str) {
+                 return Some(PathDenial::MatchedBlockedPattern {
+                     pattern: pattern.clone(),
