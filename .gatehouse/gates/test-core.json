@@ -37,12 +37,15 @@
     "scripts/gatehouse-verifier-sdk.sh && unshare -Urn sh -c '/usr/sbin/ip link set lo up && exec unshare -U --map-user=1001 --map-group=1001 cargo nextest run --offline --locked --all-features --no-fail-fast'"
   ],
   "cwd": "",
-  "timeout_s": 3600,
+  "timeout_s": 2100,
   "outputs": [],
   "resources": {
     "cpus": 2,
     "mem_mb": 8192,
-    "disk_mb": 4096
+    "disk_mb": 8192
   },
-  "falsifier": null
+  "falsifier": null,
+  "seeds": [
+    "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
+  ]
 }

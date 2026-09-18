@@ -51,7 +51,7 @@ jobs:
       # which pins the right bytes, names no repository, and no kubelet can pull — so those
       # five gates could never have run. A pin bump that only moved the ref would have
       # failed the plan check, which is the gate working.
-      GATEHOUSE_REF: 89f7acc1e37eaa3b32c4b5eb9266fb41959a076a
+      GATEHOUSE_REF: 706001f09ced642e50c52b622f76a61405fbb345
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

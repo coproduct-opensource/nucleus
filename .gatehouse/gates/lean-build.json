@@ -1,7 +1,21 @@
 {
   "scope": {
     "include": [
-      "crates/portcullis-core/lean/**"
+      "crates/portcullis-core/lean/*.lean",
+      "crates/portcullis-core/lean/lean-toolchain",
+      "crates/portcullis-core/lean/lake-manifest.json",
+      "crates/portcullis-core/lean/generated/**",
+      "crates/portcullis-core/lean/generated-attenuation/**",
+      "crates/portcullis-core/lean/generated-cap-quantale/**",
+      "crates/portcullis-core/lean/generated-certchain/**",
+      "crates/portcullis-core/lean/generated-channel/**",
+      "crates/portcullis-core/lean/generated-credential/**",
+      "crates/portcullis-core/lean/generated-decide/**",
+      "crates/portcullis-core/lean/generated-declass/**",
+      "crates/portcullis-core/lean/generated-egress/**",
+      "crates/portcullis-core/lean/generated-identity/**",
+      "crates/portcullis-core/lean/generated-ifc/**",
+      "crates/portcullis-core/lean/generated-mediation/**"
     ],
     "exclude": [],
     "external": [],
@@ -9,7 +23,7 @@
   },
   "env": {
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "toolchains": {
       "rust": "1.96.1"
     },
@@ -18,7 +32,21 @@
   "cap": {
     "net": "none",
     "fs_read": [
-      "crates/portcullis-core/lean/**"
+      "crates/portcullis-core/lean/*.lean",
+      "crates/portcullis-core/lean/lean-toolchain",
+      "crates/portcullis-core/lean/lake-manifest.json",
+      "crates/portcullis-core/lean/generated/**",
+      "crates/portcullis-core/lean/generated-attenuation/**",
+      "crates/portcullis-core/lean/generated-cap-quantale/**",
+      "crates/portcullis-core/lean/generated-certchain/**",
+      "crates/portcullis-core/lean/generated-channel/**",
+      "crates/portcullis-core/lean/generated-credential/**",
+      "crates/portcullis-core/lean/generated-decide/**",
+      "crates/portcullis-core/lean/generated-declass/**",
+      "crates/portcullis-core/lean/generated-egress/**",
+      "crates/portcullis-core/lean/generated-identity/**",
+      "crates/portcullis-core/lean/generated-ifc/**",
+      "crates/portcullis-core/lean/generated-mediation/**"
     ],
     "fs_write": [
       "crates/portcullis-core/lean/.lake/**"
@@ -35,12 +63,12 @@
     "PortcullisCoreBridge"
   ],
   "cwd": "",
-  "timeout_s": 3600,
+  "timeout_s": 1200,
   "outputs": [],
   "resources": {
     "cpus": 2,
-    "mem_mb": 16384,
-    "disk_mb": 4096
+    "mem_mb": 8192,
+    "disk_mb": 16384
   },
   "falsifier": null
 }
