@@ -27,7 +27,12 @@
 --   inFlight        2: `max_entries_to_build = 1` plus the pull-request head under test.
 --   builders        1. One Mac VM runs every nucleus gate.
 --   lanes           2: a node build and a plan gate share the host, queued on one launch lock.
---   hostDiskMb      78284, hostMemMb 23981: `df -m /` and `/proc/meminfo` on the builder.
+--   hostDiskMb      197316, hostMemMb 23981: `df -m /` and `/proc/meminfo` on the builder. The
+--                   disk was 78284 until 2026-09-17, when four pull requests dispatched at once
+--                   and the two lanes drove free space between 165 MiB and 3.3 GiB while each
+--                   preparation wanted ten. The Mac hosting it had 266 GiB free and the instance
+--                   disk is sparse, so the builder was small for no reason: `limactl edit --disk
+--                   200` and the guest grew its own partition on the next boot. 134 GiB free.
 --   builderMemMb    8192: the worker's `build_memory_mib`, which the executor CLAMPS a gate's
 --                   request into rather than refusing it. lean-build declared 16384 — twice what
 --                   any lane can give — and would have run in half what it asked for without
@@ -113,6 +118,6 @@ let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGat
 -- each timeout to between two and ten times its measurement, so the six declare 4845000 ms
 -- against a 21600000 ms window with two commits in flight — the builder is at 45% of what
 -- `builderBudget_b` allows, with room for the forty-six contexts still on GitHub.
-let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy", #b"test-core", #b"ci-spec", #b"text-gates"] : Bytes, 21600000, 64, 1, 32768, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"rustfmt@1.9.0", #b"clippy-driver@0.1.96", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1", #b"ip@6.1.0", #b"git@2.39.5", #b"rg@13.0.0", #b"awk@mawk-1.3.4", #b"python3@3.11.2", #b"jq@1.6", #b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 2, 8192, platform, 78284, 23981, 2, 3, 4096, 10240, [] : Bytes, [#b"Rustfmt", #b"Clippy"] : Bytes)
+let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy", #b"test-core", #b"ci-spec", #b"text-gates"] : Bytes, 21600000, 64, 1, 32768, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"rustfmt@1.9.0", #b"clippy-driver@0.1.96", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1", #b"ip@6.1.0", #b"git@2.39.5", #b"rg@13.0.0", #b"awk@mawk-1.3.4", #b"python3@3.11.2", #b"jq@1.6", #b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 2, 8192, platform, 197316, 23981, 2, 3, 4096, 10240, [] : Bytes, [#b"Rustfmt", #b"Clippy"] : Bytes)
 
 let admissible : So (ci.admissible_b pipeline policy) = oh
