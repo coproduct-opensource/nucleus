@@ -214,3 +214,185 @@ impl Session {
         next
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A response the model can be stepped with. `status` is what the proxy
+    /// returned; `code` its error name; `contents` the body a read saw.
+    fn out(status: u16, code: Option<&str>, contents: Option<&str>) -> Out {
+        Out {
+            status,
+            code: code.map(str::to_owned),
+            contents: contents.map(str::to_owned),
+        }
+    }
+    fn ok_body(body: &str) -> Out {
+        out(200, None, Some(body))
+    }
+    fn ok() -> Out {
+        out(200, None, None)
+    }
+    fn refusal(code: &str) -> Out {
+        out(403, Some(code), None)
+    }
+    fn grant() -> Session {
+        Session::initial(Policy::Grant)
+    }
+    fn trifecta() -> Session {
+        Session::initial(Policy::Trifecta)
+    }
+
+    /// Failing closed is allowed anywhere and changes nothing. A model that
+    /// refused these would call a busy proxy a violation.
+    #[test]
+    fn a_closed_failure_is_admissible_after_any_op_and_moves_nothing() {
+        for o in [
+            out(402, Some("budget_exhausted"), None),
+            out(413, None, None),
+            out(429, None, None),
+        ] {
+            let s = grant();
+            assert_eq!(s.step(&Op::Write(File::A, 7), &o), Some(s.clone()), "{o:?}");
+        }
+    }
+
+    /// The breaker's counter is not linearizable, so WHEN it trips is not
+    /// modelled -- only that it is sticky. This is the half that has teeth: once
+    /// lockdown has been seen, a later mutating success is a violation.
+    #[test]
+    fn lockdown_is_sticky_and_a_later_mutating_success_is_refused() {
+        let locked = grant()
+            .step(&Op::Run, &refusal("lockdown"))
+            .expect("lockdown is admissible");
+        assert!(locked.step(&Op::Write(File::A, 1), &ok()).is_none());
+        assert!(locked.step(&Op::Run, &ok()).is_none());
+        // A read is not mutating, so it is still judged on its own terms.
+        assert!(
+            locked
+                .step(&Op::Read(File::A), &ok_body(INITIAL_A))
+                .is_some()
+        );
+    }
+
+    /// The path lattice is checked before anything else, under either policy.
+    #[test]
+    fn a_blocked_path_is_refused_first_whatever_the_policy() {
+        for s in [grant(), trifecta()] {
+            assert!(
+                s.step(&Op::Read(File::Key), &refusal("kernel_denied"))
+                    .is_some()
+            );
+            // Serving it would be the violation the whole harness exists to catch.
+            assert!(s.step(&Op::Read(File::Key), &ok_body("secret")).is_none());
+        }
+    }
+
+    #[test]
+    fn under_a_grant_each_file_is_its_own_register() {
+        let s = grant();
+        assert!(s.step(&Op::Read(File::A), &ok_body(INITIAL_A)).is_some());
+        // A read that returns something the model did not write is not linearizable.
+        assert!(
+            s.step(&Op::Read(File::A), &ok_body("something else"))
+                .is_none()
+        );
+        let after = s
+            .step(&Op::Write(File::A, 3), &ok())
+            .expect("a write under a grant succeeds");
+        assert!(
+            after
+                .step(&Op::Read(File::A), &ok_body(&contents(3)))
+                .is_some()
+        );
+        // B is untouched by a write to A: separate registers, separate partitions.
+        assert!(
+            after
+                .step(&Op::Read(File::B), &ok_body(INITIAL_B))
+                .is_some()
+        );
+        assert_eq!(s.partition(&Op::Read(File::A)), Some(0));
+        assert_eq!(s.partition(&Op::Read(File::B)), Some(1));
+    }
+
+    /// `research-web` grants no commands, and a grant profile has no taint source.
+    #[test]
+    fn a_grant_runs_commands_and_admits_no_fetch() {
+        let s = grant();
+        assert!(s.step(&Op::Run, &ok()).is_some());
+        assert!(s.step(&Op::Fetch, &refusal("kernel_denied")).is_some());
+        // An admitted fetch under a grant is a hole in the profile.
+        assert!(s.step(&Op::Fetch, &ok()).is_none());
+    }
+
+    /// Taint takes effect when content is DELIVERED, not when its fetch is
+    /// decided -- the distinction the concurrent measurement forced.
+    #[test]
+    fn taint_arrives_with_delivery_and_never_reverts() {
+        let fetched = trifecta()
+            .step(&Op::Fetch, &ok())
+            .expect("a fetch is admitted under the trifecta");
+        // Exposed but not yet tainted: a read still succeeds.
+        assert!(
+            fetched
+                .step(&Op::Read(File::A), &ok_body(INITIAL_A))
+                .is_some()
+        );
+        // A write in that window goes to a person, not to the file.
+        assert!(
+            fetched
+                .step(&Op::Write(File::A, 1), &refusal("approval_required"))
+                .is_some()
+        );
+        assert!(fetched.step(&Op::Write(File::A, 1), &ok()).is_none());
+
+        let tainted = fetched
+            .step(&Op::Delivered, &ok())
+            .expect("delivery is always admissible");
+        for op in [Op::Read(File::A), Op::Write(File::A, 2), Op::Fetch] {
+            assert!(
+                tainted.step(&op, &refusal("ifc_denied")).is_some(),
+                "{op:?}"
+            );
+            assert!(
+                tainted.step(&op, &ok()).is_none(),
+                "{op:?} must not succeed"
+            );
+        }
+        // Still tainted after another refusal: it never reverts.
+        let later = tainted
+            .step(&Op::Read(File::A), &refusal("ifc_denied"))
+            .expect("refused");
+        assert!(
+            later
+                .step(&Op::Read(File::A), &ok_body(INITIAL_A))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_trifecta_shares_one_partition_and_refuses_commands_outright() {
+        let s = trifecta();
+        assert!(s.step(&Op::Run, &refusal("kernel_denied")).is_some());
+        assert_eq!(s.partition(&Op::Read(File::A)), Some(0));
+        assert_eq!(s.partition(&Op::Write(File::B, 1)), Some(0));
+        // Ops with no session state are outside every partition.
+        assert_eq!(s.partition(&Op::Glob), None);
+        assert_eq!(s.partition(&Op::Read(File::Key)), None);
+        assert_eq!(grant().partition(&Op::Run), None);
+    }
+
+    #[test]
+    fn a_glob_is_judged_only_on_its_status() {
+        assert!(grant().step(&Op::Glob, &ok()).is_some());
+        assert!(grant().step(&Op::Glob, &refusal("kernel_denied")).is_none());
+    }
+
+    #[test]
+    fn a_files_path_and_a_values_bytes_are_what_the_harness_writes() {
+        assert_eq!(File::A.path(), "a.txt");
+        assert_eq!(File::Key.path(), ".ssh/id_rsa");
+        assert!(contents(5).starts_with("value-5"));
+    }
+}
