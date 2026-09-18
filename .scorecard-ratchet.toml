@@ -367,5 +367,14 @@ population_floor = 23
 # 2026-09-18: rebased onto the tree that deleted WorkloadApiServer, so neither
 # branch's number describes the merged tree -- 19 of 143 = 13.28%, re-measured
 # rather than carried over from either side.
-floor_bp = 1328
-population_floor = 143
+#
+# 2026-09-18 (#2957): the replacement invariant's loader gained one nine-argument
+# constructor, and it arrived carrying `#[allow(clippy::too_many_arguments)]`. That
+# is one more obligation the tree declares and does not discharge -- 19 of 144 =
+# 13.19%, under the floor, which is the ratchet doing its job on a change that felt
+# like it had nothing to do with suppressions. Changed to `#[expect]` with the same
+# reason: an unfulfilled expectation is an error, so if the function ever loses
+# arguments the suppression goes with it instead of outliving the sentence that
+# excused it. 20 of 144 = 13.88%.
+floor_bp = 1388
+population_floor = 144

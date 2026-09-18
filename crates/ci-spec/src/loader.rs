@@ -366,7 +366,14 @@ pub fn from_parts(
 }
 
 /// [`from_parts`] with the I8 population pin, for tests that exercise it.
-#[allow(clippy::too_many_arguments)] // one model, every committed file it is built from
+// `expect`, not `allow`: an unfulfilled expectation is an error, so if this function ever
+// loses arguments the suppression goes with it instead of outliving its reason. The scorecard
+// counts the difference — an `allow` here is one more obligation the tree declares and does
+// not discharge.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one model, every committed file it is built from"
+)]
 pub fn from_parts_with_pins(
     workflows: &[(String, String)],
     ledger: &str,
