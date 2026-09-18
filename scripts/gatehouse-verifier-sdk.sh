@@ -17,7 +17,20 @@ tools=/opt/gate-tools
 if [ ! -f "$tools/pins.json" ] || [ ! -x "$tools/bin/rustc-ci-host" ]; then
   exec wasm-pack build sdks/verifier-js --target web --release
 fi
-field() { sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" "$tools/pins.json"; }
+# The manifest is JSON, so read it with a JSON parser when the image has one. The sed fallback
+# tolerates whitespace around the colon, which the first version did not: the gate tools image
+# started pretty-printing pins.json on 2026-09-17 and `"ci_workspace": "..."` stopped matching
+# `"ci_workspace":"..."`. The field came back empty, the bind mount target was the empty string,
+# and every clippy and test-core run failed with `mount: : mount point does not exist` followed by
+# cargo resolving the workspace root as a registry. A parser that only works for one pretty-printer
+# is a contract nobody wrote down.
+field() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg k "$1" '.[$k] // empty' "$tools/pins.json"
+  else
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$tools/pins.json"
+  fi
+}
 workspace=$(field ci_workspace)
 registry=$(field ci_registry)
 test -n "$workspace" && test -n "$registry"
