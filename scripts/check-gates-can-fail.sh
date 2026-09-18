@@ -33,6 +33,25 @@
 #
 # Usage: scripts/check-gates-can-fail.sh
 set -uo pipefail
+
+# `--vacuity-only`: apply every perturbation, check it changes its target, restore,
+# and run no gate at all.
+#
+# The full probe runs each gate three times (baseline, perturbed, restored) and takes
+# over an hour, so a perturbation that has gone stale is found an hour into the merge
+# queue. It costs the queue a whole cycle, and the cycle is ~23 minutes. Every part of
+# a vacuity check is `cp`, a `sed` and a `cmp`: it is seconds, and it catches the one
+# failure that churn actually produces. On 2026-09-18 two probes went vacuous in one
+# day -- a call site renamed under one, a pinned Lean version bumped under another --
+# and both were found the slow way.
+#
+# This is a strictly weaker check run early, not a replacement: it says the
+# perturbation still bites, never that the gate reds on it.
+VACUITY_ONLY=0
+if [[ "${1:-}" == "--vacuity-only" ]]; then
+    VACUITY_ONLY=1
+    shift
+fi
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
 # A dirty tree cannot be safely perturbed: the restore step would have to guess
@@ -120,8 +139,11 @@ probe() {
     # the larger half: a probe on a tree where the gate is already red decides nothing, and
     # saying THAT is the only honest verdict available.
     local baseline_rc=0
-    # shellcheck disable=SC2086
-    bash "scripts/$gate" $ci_flags >/dev/null 2>&1 || baseline_rc=$?
+    # The baseline is a run of the gate, so it is skipped with the others in vacuity mode.
+    if [[ "$VACUITY_ONLY" != "1" ]]; then
+        # shellcheck disable=SC2086
+        bash "scripts/$gate" $ci_flags >/dev/null 2>&1 || baseline_rc=$?
+    fi
     if [[ "$baseline_rc" -ne 0 ]]; then
         echo "  FAIL  $gate — already red (exit $baseline_rc) BEFORE any perturbation."
         echo "        Not a restore failure and not a broken probe: this gate is failing on"
@@ -152,6 +174,15 @@ probe() {
         restore
         RESTORE_FROM=""
         failures=$((failures + 1))
+        return
+    fi
+
+    # Vacuity is the whole question in this mode: the perturbation bit, so restore and
+    # move on without paying for three runs of the gate.
+    if [[ "$VACUITY_ONLY" == "1" ]]; then
+        restore
+        RESTORE_FROM=""
+        covered=$((covered + 1))
         return
     fi
 
@@ -235,6 +266,15 @@ probe_xtask_flagged() {
         restore
         RESTORE_FROM=""
         failures=$((failures + 1))
+        return
+    fi
+
+    # Vacuity is the whole question in this mode: the perturbation bit, so restore and
+    # move on without paying for three runs of the gate.
+    if [[ "$VACUITY_ONLY" == "1" ]]; then
+        restore
+        RESTORE_FROM=""
+        covered=$((covered + 1))
         return
     fi
 
@@ -345,6 +385,15 @@ probe_xtask_partial() {
         return
     fi
 
+    # Vacuity is the whole question in this mode: the perturbation bit, so restore and
+    # move on without paying for three runs of the gate.
+    if [[ "$VACUITY_ONLY" == "1" ]]; then
+        restore
+        RESTORE_FROM=""
+        covered=$((covered + 1))
+        return
+    fi
+
     local out perturbed_rc=0
     out="$(cargo run -q -p xtask -- "$sub" 2>&1)" || perturbed_rc=$?
     restore
@@ -418,7 +467,10 @@ probe_xtask() {
     # naming the one cause. A probe on a tree where the gate is already red decides
     # nothing, and saying THAT is the only honest verdict available.
     local baseline_rc=0
-    cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || baseline_rc=$?
+    # The baseline is a run of the gate, so it is skipped with the others in vacuity mode.
+    if [[ "$VACUITY_ONLY" != "1" ]]; then
+        cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || baseline_rc=$?
+    fi
     if [[ "$baseline_rc" -ne 0 ]]; then
         echo "  FAIL  xtask $sub — already red (exit $baseline_rc) BEFORE any perturbation."
         echo "        Not a restore failure and not a broken probe: this gate is failing on"
@@ -441,6 +493,15 @@ probe_xtask() {
         restore
         RESTORE_FROM=""
         failures=$((failures + 1))
+        return
+    fi
+
+    # Vacuity is the whole question in this mode: the perturbation bit, so restore and
+    # move on without paying for three runs of the gate.
+    if [[ "$VACUITY_ONLY" == "1" ]]; then
+        restore
+        RESTORE_FROM=""
+        covered=$((covered + 1))
         return
     fi
 
@@ -590,6 +651,15 @@ probe_xtask_generated() {
         restore
         RESTORE_FROM=""
         failures=$((failures + 1))
+        return
+    fi
+
+    # Vacuity is the whole question in this mode: the perturbation bit, so restore and
+    # move on without paying for three runs of the gate.
+    if [[ "$VACUITY_ONLY" == "1" ]]; then
+        restore
+        RESTORE_FROM=""
+        covered=$((covered + 1))
         return
     fi
 
@@ -1807,7 +1877,19 @@ fi
 
 echo
 if [[ "$failures" -gt 0 ]]; then
-    echo "FAILED: $failures problem(s). A gate that cannot fail is not a gate."
+    if [[ "$VACUITY_ONLY" == "1" ]]; then
+        echo "FAILED: $failures perturbation(s) change nothing. A probe that cannot bite tests nothing."
+    else
+        echo "FAILED: $failures problem(s). A gate that cannot fail is not a gate."
+    fi
     exit 1
+fi
+if [[ "$VACUITY_ONLY" == "1" ]]; then
+    # Say exactly what was established and no more. This mode ran no gate, so it has
+    # no evidence about what any gate concludes -- claiming otherwise would make this
+    # script the thing it exists to catch.
+    echo "OK: every perturbation still changes its target. NO GATE WAS RUN:"
+    echo "    this says the probes still bite, not that the gates red on them."
+    exit 0
 fi
 echo "OK: every probed gate REDs on its own subject and GREENs when restored."

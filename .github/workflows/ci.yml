@@ -545,6 +545,21 @@ jobs:
         continue-on-error: true
         shell: bash
         run: scripts/check-c1-inbound-fences.sh
+      # Cheap half first. Every perturbation below must still CHANGE its target;
+      # one that has gone stale makes its probe test nothing. That question is a
+      # `sed` and a `cmp` per probe -- about ten seconds for all of them -- while
+      # the step after it runs every gate three times and takes over an hour.
+      #
+      # Running it first turns a stale perturbation from an hour of queue time
+      # into ten seconds. On 2026-09-18 two probes went stale in one day (a call
+      # site renamed under one, the Lean toolchain bumped under another) and both
+      # were found by the slow half, each costing a merge-queue cycle.
+      #
+      # NOT continue-on-error: unlike the probe below, this decides one thing
+      # completely, and there is no reason to spend the hour once it is red.
+      - name: Every perturbation still bites
+        shell: bash
+        run: scripts/check-gates-can-fail.sh --vacuity-only
       # Every gate is a claim that something is checked. This checks the claim:
       # each check-*.sh must RED on a real violation of its own subject and
       # GREEN when restored. Needs a clean tree (it perturbs and restores).
