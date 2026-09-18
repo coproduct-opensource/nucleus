@@ -80,5 +80,8 @@
     "mem_mb": 8192,
     "disk_mb": 8192
   },
-  "falsifier": null
+  "falsifier": null,
+  "seeds": [
+    "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
+  ]
 }
