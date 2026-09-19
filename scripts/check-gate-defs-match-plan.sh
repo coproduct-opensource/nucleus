@@ -23,19 +23,22 @@
 # with another hand-rolled pattern tests the same assumption twice"). The elaborator is the only
 # reader that agrees with the kernel by construction.
 #
-# Usage: check-gate-defs-match-plan.sh <gates.json>
-#   where <gates.json> is the output of `gate plan gates .gatehouse/pipeline.writ`.
-# Without it this script REFUSES rather than guesses: it cannot look, and says so.
+# The elaboration is COMMITTED, at `.gatehouse/plan-gates.json`, and that is what makes this
+# gate probeable. Needing a gatehouse checkout at the pinned ref would name the gate's SUBJECT
+# while saying nothing about its DETECTION — the distinction `check-gates-can-fail.sh` keeps
+# re-learning, where an exemption names a real obstacle to producing the input and stops short of
+# asking whether the comparison itself can be exercised. It can, from this tree alone.
+#
+# The snapshot cannot go stale silently: `gatehouse-plan.yml` re-elaborates with `gate plan gates`
+# at the pinned ref and refuses any difference, which is the half that genuinely needs the
+# checkout.
+#
+# Usage: check-gate-defs-match-plan.sh [gates.json]
+#   with no argument, compares against the committed `.gatehouse/plan-gates.json`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [ $# -lt 1 ]; then
-  echo "usage: $0 <gates.json>   (from: gate plan gates .gatehouse/pipeline.writ)" >&2
-  echo "cannot look: without the elaborator's output there is nothing authoritative to compare" >&2
-  exit 2
-fi
-
-ELABORATED="$1"
+ELABORATED="${1:-.gatehouse/plan-gates.json}"
 [ -s "$ELABORATED" ] || { echo "cannot look: $ELABORATED is empty or missing" >&2; exit 2; }
 
 ELABORATED="$ELABORATED" python3 - <<'PY'

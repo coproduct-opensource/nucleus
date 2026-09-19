@@ -1,0 +1,400 @@
+[
+  {
+    "cap": {
+      "cpu_ms": 120000,
+      "exec": "scoped",
+      "fs_read": [
+        "**"
+      ],
+      "fs_write": [],
+      "mem_mb": 2048,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 120000
+    },
+    "cmd": [
+      "sh",
+      "-c",
+      "rc=0; scripts/check-verify-strict.sh || rc=1; scripts/check-sandbox-trusted-base.sh || rc=1; scripts/check-failclosed-verifiers.sh || rc=1; scripts/check-mediation.sh || rc=1; scripts/check-north-star-ledger.sh || rc=1; scripts/check-extracted-callsites.sh || rc=1; scripts/check-task-compiler-offline.sh || rc=1; scripts/check-ingest-hashed.sh || rc=1; scripts/check-kani-divergence.sh || rc=1; scripts/check-sealed-home.sh || rc=1; scripts/check-declassify-governor-keys-sealed.sh || rc=1; exit $rc"
+    ],
+    "disk_mb": 4096,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 26000,
+    "mem_mb": 2048,
+    "name": "text-gates",
+    "outputs": [],
+    "platform": "linux/arm64",
+    "reads": [],
+    "replaces": [
+      "Ed25519 verify_strict gate (M-3)",
+      "Sandbox trusted-base gate",
+      "Fail-closed verifier gate",
+      "Mediation backstop gate (North Star)",
+      "The North Star status table cannot outrun its wiring",
+      "Extracted predicates have live call sites (C8)",
+      "The task compiler is offline by construction",
+      "No-unwitnessed-ingest gate (InputsAuthorized)",
+      "cfg(kani) divergences are inventoried and ratcheted",
+      "Sealed-home integrity gate (North Star)",
+      "Governor trusted-key set is not workload-writable"
+    ],
+    "scope": [
+      "**"
+    ],
+    "seeds": [],
+    "timeout_ms": 120000,
+    "tools": [
+      "sh@0.5.12",
+      "git@2.39.5",
+      "rg@13.0.0",
+      "awk@mawk-1.3.4",
+      "python3@3.11.2"
+    ]
+  },
+  {
+    "cap": {
+      "cpu_ms": 300000,
+      "exec": "scoped",
+      "fs_read": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "crates/**",
+        "tests/**",
+        "benchmarks/**",
+        "scripts/**",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**"
+      ],
+      "fs_write": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ],
+      "mem_mb": 4096,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 300000
+    },
+    "cmd": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "disk_mb": 4096,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 123000,
+    "mem_mb": 4096,
+    "name": "fmt",
+    "outputs": [],
+    "platform": "linux/arm64",
+    "reads": [],
+    "replaces": [
+      "Rustfmt"
+    ],
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**"
+    ],
+    "seeds": [],
+    "timeout_ms": 300000,
+    "tools": [
+      "cargo@1.96.1",
+      "rustfmt@1.9.0"
+    ]
+  },
+  {
+    "cap": {
+      "cpu_ms": 2400000,
+      "exec": "scoped",
+      "fs_read": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        "clippy.toml",
+        "crates/**",
+        "tests/**",
+        "benchmarks/**",
+        "scripts/**",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**",
+        "examples/independent-conformance/**"
+      ],
+      "fs_write": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ],
+      "mem_mb": 8192,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 2400000
+    },
+    "cmd": [
+      "sh",
+      "-c",
+      "scripts/gatehouse-verifier-sdk.sh && cargo clippy --offline --all-targets --all-features --locked -- -D warnings && cargo clippy --offline -p portcullis --all-targets --locked -- -D warnings"
+    ],
+    "disk_mb": 8192,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 304000,
+    "mem_mb": 8192,
+    "name": "clippy",
+    "outputs": [],
+    "platform": "linux/arm64",
+    "reads": [],
+    "replaces": [
+      "Clippy"
+    ],
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
+      "clippy.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**",
+      "examples/independent-conformance/**"
+    ],
+    "seeds": [
+      "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
+    ],
+    "timeout_ms": 900000,
+    "tools": [
+      "sh@0.5.12",
+      "cargo@1.96.1",
+      "rustc@1.96.1",
+      "clippy-driver@0.1.96",
+      "wasm-pack@0.13.1",
+      "wasm-bindgen@0.2.122",
+      "unshare@2.38.1"
+    ]
+  },
+  {
+    "cap": {
+      "cpu_ms": 3600000,
+      "exec": "scoped",
+      "fs_read": [
+        "**"
+      ],
+      "fs_write": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ],
+      "mem_mb": 8192,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 3600000
+    },
+    "cmd": [
+      "sh",
+      "-c",
+      "scripts/gatehouse-verifier-sdk.sh && unshare -Urn sh -c '/usr/sbin/ip link set lo up && exec unshare -U --map-user=1001 --map-group=1001 cargo nextest run --offline --locked --all-features --no-fail-fast'"
+    ],
+    "disk_mb": 8192,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 702000,
+    "mem_mb": 8192,
+    "name": "test-core",
+    "outputs": [],
+    "platform": "linux/arm64",
+    "reads": [],
+    "replaces": [],
+    "scope": [
+      "**"
+    ],
+    "seeds": [
+      "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
+    ],
+    "timeout_ms": 2100000,
+    "tools": [
+      "sh@0.5.12",
+      "cargo@1.96.1",
+      "rustc@1.96.1",
+      "cargo-nextest@0.9.145",
+      "wasm-pack@0.13.1",
+      "wasm-bindgen@0.2.122",
+      "unshare@2.38.1",
+      "ip@6.1.0",
+      "git@2.39.5"
+    ]
+  },
+  {
+    "cap": {
+      "cpu_ms": 3600000,
+      "exec": "scoped",
+      "fs_read": [
+        "crates/portcullis-core/lean/*.lean",
+        "crates/portcullis-core/lean/lean-toolchain",
+        "crates/portcullis-core/lean/lake-manifest.json",
+        "crates/portcullis-core/lean/generated/**",
+        "crates/portcullis-core/lean/generated-attenuation/**",
+        "crates/portcullis-core/lean/generated-cap-quantale/**",
+        "crates/portcullis-core/lean/generated-certchain/**",
+        "crates/portcullis-core/lean/generated-channel/**",
+        "crates/portcullis-core/lean/generated-credential/**",
+        "crates/portcullis-core/lean/generated-decide/**",
+        "crates/portcullis-core/lean/generated-declass/**",
+        "crates/portcullis-core/lean/generated-egress/**",
+        "crates/portcullis-core/lean/generated-identity/**",
+        "crates/portcullis-core/lean/generated-ifc/**",
+        "crates/portcullis-core/lean/generated-mediation/**"
+      ],
+      "fs_write": [
+        "crates/portcullis-core/lean/.lake/**"
+      ],
+      "mem_mb": 16384,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 3600000
+    },
+    "cmd": [
+      "lake",
+      "build",
+      "PortcullisCoreBridge"
+    ],
+    "disk_mb": 16384,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 145000,
+    "mem_mb": 8192,
+    "name": "lean-build",
+    "outputs": [],
+    "platform": "linux/arm64",
+    "reads": [],
+    "replaces": [],
+    "scope": [
+      "crates/portcullis-core/lean/*.lean",
+      "crates/portcullis-core/lean/lean-toolchain",
+      "crates/portcullis-core/lean/lake-manifest.json",
+      "crates/portcullis-core/lean/generated/**",
+      "crates/portcullis-core/lean/generated-attenuation/**",
+      "crates/portcullis-core/lean/generated-cap-quantale/**",
+      "crates/portcullis-core/lean/generated-certchain/**",
+      "crates/portcullis-core/lean/generated-channel/**",
+      "crates/portcullis-core/lean/generated-credential/**",
+      "crates/portcullis-core/lean/generated-decide/**",
+      "crates/portcullis-core/lean/generated-declass/**",
+      "crates/portcullis-core/lean/generated-egress/**",
+      "crates/portcullis-core/lean/generated-identity/**",
+      "crates/portcullis-core/lean/generated-ifc/**",
+      "crates/portcullis-core/lean/generated-mediation/**"
+    ],
+    "seeds": [],
+    "timeout_ms": 1200000,
+    "tools": [
+      "lake@4.30.0",
+      "lean@4.30.0"
+    ]
+  },
+  {
+    "cap": {
+      "cpu_ms": 900000,
+      "exec": "scoped",
+      "fs_read": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".github/workflows/**",
+        "ci/**",
+        "crates/**",
+        "scripts/**",
+        "docs/assurance/**"
+      ],
+      "fs_write": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ],
+      "mem_mb": 4096,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 900000
+    },
+    "cmd": [
+      "sh",
+      "-c",
+      "rc=0; scripts/check-ci-spec.sh || rc=1; scripts/check-ci-assurance-ledger.sh || rc=1; cargo run -q --offline -p xtask -- assurance-required || rc=1; exit $rc"
+    ],
+    "disk_mb": 4096,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 92000,
+    "mem_mb": 4096,
+    "name": "ci-spec",
+    "outputs": [],
+    "platform": "linux/arm64",
+    "reads": [],
+    "replaces": [
+      "CI configuration is sound (CI-1)",
+      "The CI assurance ledger cannot outrun its wiring"
+    ],
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".github/workflows/**",
+      "ci/**",
+      "crates/**",
+      "scripts/**",
+      "docs/assurance/**"
+    ],
+    "seeds": [
+      "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
+    ],
+    "timeout_ms": 300000,
+    "tools": [
+      "sh@0.5.12",
+      "cargo@1.96.1",
+      "rustc@1.96.1",
+      "git@2.39.5"
+    ]
+  }
+]

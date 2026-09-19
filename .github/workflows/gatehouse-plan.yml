@@ -56,6 +56,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Unconditional: it reads `.gatehouse/gates/*.json` against the committed elaboration and
+      # needs no gatehouse checkout, so it is the one part of this workflow that still decides
+      # when the token is absent. `plan check` below proves the PLAN admissible and never opens
+      # the JSON that `put_plan` actually uploads, so a disagreement between them is invisible to
+      # every other gate here.
+      - name: The gate definitions carry what the plan declares
+        run: ./scripts/check-gate-defs-match-plan.sh
       - name: Is the gatehouse token available?
         id: tok
         env:
@@ -103,14 +110,18 @@ jobs:
           cargo build --locked --manifest-path gatehouse/Cargo.toml -p gate
           gatehouse/target/debug/gate plan check .gatehouse/pipeline.writ
 
-      # `plan check` proves the PLAN admissible and never opens `.gatehouse/gates/*.json` — but
-      # the JSON is what `put_plan` uploads and the executor is handed, so a disagreement between
-      # them is invisible to every gate in this workflow. Compared against `gate plan gates`,
-      # the elaborator's own output, rather than a pattern over the writ: the first version of
-      # this check scraped it with a regex that matched `tools` where it meant `cmd` and called
-      # all six gates broken, which is F-152's failure mode exactly.
-      - name: The gate definitions carry what the plan declares
+      # The committed elaboration is only worth comparing against while it still IS the
+      # elaboration. Re-running `gate plan gates` at the pinned ref and refusing any difference is
+      # the half that genuinely needs the gatehouse checkout; the comparison against the gate
+      # definitions needs no checkout and runs above, unconditionally.
+      - name: The committed elaboration is what the plan elaborates to
         if: steps.tok.outputs.present == 'true'
         run: |
-          gatehouse/target/debug/gate plan gates .gatehouse/pipeline.writ > /tmp/plan-gates.json
-          ./scripts/check-gate-defs-match-plan.sh /tmp/plan-gates.json
+          gatehouse/target/debug/gate plan gates .gatehouse/pipeline.writ \
+            | python3 -c 'import json,sys; json.dump(json.load(sys.stdin), sys.stdout, indent=2, sort_keys=True); print()' \
+            > /tmp/plan-gates.json
+          if ! diff -u .gatehouse/plan-gates.json /tmp/plan-gates.json; then
+            echo "::error::.gatehouse/plan-gates.json is stale — regenerate it with 'gate plan gates .gatehouse/pipeline.writ'"
+            exit 1
+          fi
+          echo "OK: the committed elaboration matches the plan"
