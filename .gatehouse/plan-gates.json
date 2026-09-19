@@ -357,7 +357,7 @@
     "seeds": [
       "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
     ],
-    "measured_ms": 1253000,
+    "measured_ms": 584000,
     "replaces": [
       "Clippy"
     ],
