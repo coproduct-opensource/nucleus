@@ -1,7 +1,8 @@
 {
   "scope": {
     "include": [
-      "**"
+      "**",
+      "scripts/**"
     ],
     "exclude": [],
     "external": [],
@@ -18,7 +19,8 @@
   "cap": {
     "net": "none",
     "fs_read": [
-      "**"
+      "**",
+      "scripts/**"
     ],
     "fs_write": [],
     "exec": "scoped",
@@ -27,10 +29,85 @@
     "mem_mb": 2048,
     "secrets": []
   },
-  "cmd": [
-    "sh",
-    "-c",
-    "rc=0; scripts/check-verify-strict.sh || rc=1; scripts/check-sandbox-trusted-base.sh || rc=1; scripts/check-failclosed-verifiers.sh || rc=1; scripts/check-mediation.sh || rc=1; scripts/check-north-star-ledger.sh || rc=1; scripts/check-extracted-callsites.sh || rc=1; scripts/check-task-compiler-offline.sh || rc=1; scripts/check-ingest-hashed.sh || rc=1; scripts/check-kani-divergence.sh || rc=1; scripts/check-sealed-home.sh || rc=1; scripts/check-declassify-governor-keys-sealed.sh || rc=1; exit $rc"
+  "cmd": [],
+  "steps": [
+    {
+      "program": "scripts/check-verify-strict.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-sandbox-trusted-base.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-failclosed-verifiers.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-mediation.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-north-star-ledger.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-extracted-callsites.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-task-compiler-offline.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-ingest-hashed.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-kani-divergence.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-sealed-home.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    },
+    {
+      "program": "scripts/check-declassify-governor-keys-sealed.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ]
+    }
   ],
   "tools": [
     "sh@0.5.12",

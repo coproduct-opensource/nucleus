@@ -67,10 +67,116 @@
     "mem_mb": 8192,
     "secrets": []
   },
-  "cmd": [
-    "sh",
-    "-c",
-    "scripts/gatehouse-verifier-sdk.sh && cargo clippy --offline --all-targets --all-features --locked -- -D warnings && cargo clippy --offline -p portcullis --all-targets --locked -- -D warnings"
+  "cmd": [],
+  "steps": [
+    {
+      "program": "scripts/gatehouse-verifier-sdk.sh",
+      "reads": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        "clippy.toml",
+        "crates/**",
+        "tests/**",
+        "benchmarks/**",
+        "scripts/**",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**",
+        "examples/independent-conformance/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    },
+    {
+      "program": "cargo",
+      "args": [
+        "clippy",
+        "--offline",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "reads": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        "clippy.toml",
+        "crates/**",
+        "tests/**",
+        "benchmarks/**",
+        "scripts/**",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**",
+        "examples/independent-conformance/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    },
+    {
+      "program": "cargo",
+      "args": [
+        "clippy",
+        "--offline",
+        "-p",
+        "portcullis",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "reads": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        "clippy.toml",
+        "crates/**",
+        "tests/**",
+        "benchmarks/**",
+        "scripts/**",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**",
+        "examples/independent-conformance/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    }
   ],
   "tools": [
     "sh@0.5.12",

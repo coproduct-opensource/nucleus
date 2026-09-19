@@ -61,12 +61,40 @@
     "mem_mb": 4096,
     "secrets": []
   },
-  "cmd": [
-    "cargo",
-    "fmt",
-    "--all",
-    "--",
-    "--check"
+  "cmd": [],
+  "steps": [
+    {
+      "program": "cargo",
+      "args": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "reads": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "crates/**",
+        "tests/**",
+        "benchmarks/**",
+        "scripts/**",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    }
   ],
   "tools": [
     "cargo@1.96.1",

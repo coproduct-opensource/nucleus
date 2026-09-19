@@ -1,7 +1,8 @@
 {
   "scope": {
     "include": [
-      "**"
+      "**",
+      "scripts/**"
     ],
     "exclude": [],
     "external": [],
@@ -18,7 +19,8 @@
   "cap": {
     "net": "none",
     "fs_read": [
-      "**"
+      "**",
+      "scripts/**"
     ],
     "fs_write": [
       "target/**",
@@ -31,10 +33,42 @@
     "mem_mb": 8192,
     "secrets": []
   },
-  "cmd": [
-    "sh",
-    "-c",
-    "scripts/gatehouse-verifier-sdk.sh && unshare -Urn sh -c '/usr/sbin/ip link set lo up && exec unshare -U --map-user=1001 --map-group=1001 cargo nextest run --offline --locked --all-features --no-fail-fast'"
+  "cmd": [],
+  "steps": [
+    {
+      "program": "scripts/gatehouse-verifier-sdk.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    },
+    {
+      "program": "cargo",
+      "args": [
+        "nextest",
+        "run",
+        "--offline",
+        "--locked",
+        "--all-features",
+        "--no-fail-fast"
+      ],
+      "reads": [
+        "**",
+        "scripts/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ],
+      "loopback": true,
+      "uid": 1001
+    }
   ],
   "tools": [
     "sh@0.5.12",

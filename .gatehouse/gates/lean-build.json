@@ -57,10 +57,35 @@
     "mem_mb": 16384,
     "secrets": []
   },
-  "cmd": [
-    "lake",
-    "build",
-    "PortcullisCoreBridge"
+  "cmd": [],
+  "steps": [
+    {
+      "program": "lake",
+      "args": [
+        "build",
+        "PortcullisCoreBridge"
+      ],
+      "reads": [
+        "crates/portcullis-core/lean/*.lean",
+        "crates/portcullis-core/lean/lean-toolchain",
+        "crates/portcullis-core/lean/lake-manifest.json",
+        "crates/portcullis-core/lean/generated/**",
+        "crates/portcullis-core/lean/generated-attenuation/**",
+        "crates/portcullis-core/lean/generated-cap-quantale/**",
+        "crates/portcullis-core/lean/generated-certchain/**",
+        "crates/portcullis-core/lean/generated-channel/**",
+        "crates/portcullis-core/lean/generated-credential/**",
+        "crates/portcullis-core/lean/generated-decide/**",
+        "crates/portcullis-core/lean/generated-declass/**",
+        "crates/portcullis-core/lean/generated-egress/**",
+        "crates/portcullis-core/lean/generated-identity/**",
+        "crates/portcullis-core/lean/generated-ifc/**",
+        "crates/portcullis-core/lean/generated-mediation/**"
+      ],
+      "writes": [
+        "crates/portcullis-core/lean/.lake/**"
+      ]
+    }
   ],
   "tools": [
     "lake@4.30.0",
