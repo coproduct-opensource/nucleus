@@ -1,0 +1,44 @@
+{
+  "scope": {
+    "include": [
+      "**"
+    ],
+    "exclude": [],
+    "external": [],
+    "git_history": true
+  },
+  "env": {
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "platform": "linux/arm64",
+    "toolchains": {
+      "rust": "1.96.1"
+    },
+    "env_vars": {}
+  },
+  "cap": {
+    "net": "none",
+    "fs_read": [
+      "**"
+    ],
+    "fs_write": [],
+    "exec": "scoped",
+    "wall_ms": 120000,
+    "cpu_ms": 120000,
+    "mem_mb": 2048,
+    "secrets": []
+  },
+  "cmd": [
+    "sh",
+    "-c",
+    "rc=0; scripts/check-verify-strict.sh || rc=1; scripts/check-sandbox-trusted-base.sh || rc=1; scripts/check-failclosed-verifiers.sh || rc=1; scripts/check-mediation.sh || rc=1; scripts/check-north-star-ledger.sh || rc=1; scripts/check-extracted-callsites.sh || rc=1; scripts/check-task-compiler-offline.sh || rc=1; scripts/check-ingest-hashed.sh || rc=1; scripts/check-kani-divergence.sh || rc=1; scripts/check-sealed-home.sh || rc=1; scripts/check-declassify-governor-keys-sealed.sh || rc=1; exit $rc"
+  ],
+  "cwd": "",
+  "timeout_s": 120,
+  "outputs": [],
+  "resources": {
+    "cpus": 2,
+    "mem_mb": 2048,
+    "disk_mb": 4096
+  },
+  "falsifier": null
+}
