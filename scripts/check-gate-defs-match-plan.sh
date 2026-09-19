@@ -60,6 +60,27 @@ for path in sorted(gates_dir.glob("*.json")):
         continue
     want, got = plan[name], json.loads(path.read_text())
 
+    # A gate declares a command XOR steps. `ci.oneSource_b` proves it of the PLAN and
+    # `GateRecipe::validate` re-decides it in the executor; neither looks at this file, which is
+    # the one that is actually PUT to controld. gatehouse#82 is what that gap costs: a one-step
+    # gate reached the controller carrying both, because `GateDef::argv()` SYNTHESISES an argv
+    # from a lone step, and it was refused before launching anything -- nucleus's `fmt` and
+    # `lean-build` are its only one-step gates and both were dead while the other four ran.
+    #
+    # It is also the rule `ci-spec`'s loader ASSUMES when it derives a converted gate's argv:
+    # reading `cmd` when both are present would decide CI-RP against a command the executor does
+    # not run, which is the exact defect CI-RP exists to catch, one level up.
+    #
+    # Checked here rather than expressed in the type, because the type cannot say it yet: writ
+    # can CONSTRUCT a tagged union (`Sigma (isCmd : Bool) (if isCmd then ... else ...)` elaborates,
+    # and the illegal value is a type error) but has no dependent eliminator to read one back, so
+    # no predicate could use it. That is gatehouse F-158 and it is one term former away.
+    has_cmd, has_steps = bool(got.get("cmd")), bool(got.get("steps"))
+    if has_cmd and has_steps:
+        bad.append(f"{name}: declares BOTH a cmd and steps; a gate declares one or the other")
+    elif not has_cmd and not has_steps:
+        bad.append(f"{name}: declares neither a cmd nor steps, so it runs nothing")
+
     # Lists and scalars that mean the same thing on both sides.
     for field in ("cmd", "tools", "seeds", "outputs"):
         a, b = want.get(field, []), got.get(field, [])

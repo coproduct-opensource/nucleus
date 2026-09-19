@@ -476,7 +476,13 @@ fn gate_defs(root: &Path) -> std::collections::BTreeMap<String, (Vec<String>, St
                     .collect()
             })
             .unwrap_or_default();
-        // A CONVERTED gate declares `steps` and no `cmd` (`ci.oneSource_b` refuses both), so
+        // A CONVERTED gate declares `steps` and no `cmd` -- `ci.oneSource_b` proves it of the
+        // PLAN, and `scripts/check-gate-defs-match-plan.sh` now decides it of THIS FILE, which is
+        // the one actually PUT to controld and the one this reads. That distinction is not
+        // pedantry: gatehouse#82 was a gate reaching the executor carrying both, and if one
+        // reached here the `cmd.is_empty()` below would silently prefer a command the executor
+        // does not run -- CI-RP deciding parity against the wrong operand, which is the defect
+        // CI-RP exists to catch, one level up. Assumed until now; checked from here. So
         // reading `cmd` alone would find every converted gate commandless and CI-RP-1 would
         // report each one as undefined. Its argv is the concatenation of the steps': the program
         // and then its arguments, in order.
