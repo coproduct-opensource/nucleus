@@ -1,0 +1,45 @@
+# What replaced what, when a required context moved to a gatehouse plan gate.
+#
+# `<retired context> <- <gate>`, where <gate> names .gatehouse/gates/<gate>.json. The arrow is the
+# separator because a context name contains spaces; nearly all of them do.
+#
+# Retiring a context is two subtractions -- a line out of ci/required-checks.txt and a rule out of
+# the GitHub ruleset -- and neither of them records what now does the work. This file records it,
+# and CI-RP-2 holds the claim to the two commands: every verdict-deciding invocation the retired
+# job runs must be one the gate runs. Adding a line here is how a cutover stops being a claim in a
+# commit message.
+#
+# 2026-09-17, the hard cut (#2953): four contexts left branch protection for `gatehouse/required`.
+# Only the two whose workflow jobs are still in the tree can be compared, and they are the two
+# whose jobs will be deleted after one release -- at which point CI-RP-3 says the lines may go.
+Rustfmt <- fmt
+Clippy <- clippy
+#
+# 2026-09-17, wave 2: the eleven text gates. CI consolidated eleven one-script jobs into one pod
+# (`Text gates (one pod)`) and kept eleven status contexts, each produced by a relay job that
+# reports one step's outcome. The gate runs the same eleven scripts and its exit is their
+# conjunction; CI-RP-2 follows each relay to the step it reports, so all eleven are compared
+# against the script the context is named for, not against the relay's `case` statement.
+Ed25519 verify_strict gate (M-3) <- text-gates
+Sandbox trusted-base gate <- text-gates
+Fail-closed verifier gate <- text-gates
+Mediation backstop gate (North Star) <- text-gates
+The North Star status table cannot outrun its wiring <- text-gates
+Extracted predicates have live call sites (C8) <- text-gates
+The task compiler is offline by construction <- text-gates
+No-unwitnessed-ingest gate (InputsAuthorized) <- text-gates
+cfg(kani) divergences are inventoried and ratcheted <- text-gates
+Sealed-home integrity gate (North Star) <- text-gates
+Governor trusted-key set is not workload-writable <- text-gates
+#
+# 2026-09-17, wave three: two, and to the gate that already has cargo. CI-RP-2 refused the first
+# attempt -- the assurance-ledger context's job runs `cargo run -p xtask -- assurance-required` as
+# well as its script, and text-gates is the grep gate. Both contexts belong to ci-spec, which runs
+# cargo already, so ci-spec takes both and declares both. Of the remaining single-script contexts, only
+# this one runs in the lane as it stands: `check-lean-libs-built.sh` and
+# `check-declassify-value-bound.sh` shell out to cargo, which without a network resolves nothing,
+# and `check-test-helpers-not-in-production.sh` then reports that its own subject "has been
+# renamed or removed" -- a WRONG reason for a right-ish red. They move when the gate's prepared
+# inputs give them an offline cargo, not before.
+CI configuration is sound (CI-1) <- ci-spec
+The CI assurance ledger cannot outrun its wiring <- ci-spec
