@@ -231,8 +231,13 @@ population_floor = 84
 # 2026-09-13: VerifiedLogs inherits the execution deadline and checks it when
 # consumed. Adding the unbounded type first reddened CI at 4/11 (36.36%);
 # the expiry regression refuses consumption after the deadline. Now 5/11.
-floor_bp = 4545
-population_floor = 11
+# 2026-09-16 (#2936): nucleus_jsonl::Durable, the proof an acknowledgement is built
+# from, entered the census as an affine right. Adding it unbounded reddened CI at
+# 5/12 (41.66%), and that exposed a real hole: the proof did not say WHICH record it
+# proved, so one record's proof could acknowledge another. It now carries a
+# state_hash of the log and the record, checked at both acknowledgement sites. 6/12.
+floor_bp = 5000
+population_floor = 12
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

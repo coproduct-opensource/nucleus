@@ -4668,12 +4668,7 @@ impl AuditLog {
         // One O_APPEND write per entry (see `nucleus_jsonl` for the tearing this
         // replaced). The tail advances only once the entry is on disk: advancing it
         // first meant a failed write left the chain naming an entry the file lacks.
-        nucleus_jsonl::append_line_async(
-            self.path.clone(),
-            line.clone(),
-            nucleus_jsonl::Durability::PageCache,
-        )
-        .await?;
+        nucleus_jsonl::append_line_unsynced_async(self.path.clone(), line.clone()).await?;
         *self.last_hash.lock().unwrap() = hash;
         self.entry_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

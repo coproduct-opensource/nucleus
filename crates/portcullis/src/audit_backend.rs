@@ -164,7 +164,7 @@ impl AuditBackend for FileAuditBackend {
         // One O_APPEND write per line: `writeln!` on a `File` is several writes, and
         // two backends on one path (two processes) could interleave them. See
         // `nucleus_jsonl`.
-        nucleus_jsonl::append_line(&self.path, &line_str, nucleus_jsonl::Durability::PageCache)?;
+        nucleus_jsonl::append_line_unsynced(&self.path, &line_str)?;
 
         Ok(())
     }

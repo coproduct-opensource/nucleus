@@ -37,12 +37,7 @@ pub(crate) async fn write_lifecycle_audit(pod_dir: &Path, event: &str, pod_id: &
     };
     // One O_APPEND write per entry: see `nucleus_jsonl` for the tearing this
     // replaced. A failed write is logged — it used to be dropped silently.
-    if let Err(e) = nucleus_jsonl::append_line_async(
-        audit_path.to_path_buf(),
-        line,
-        nucleus_jsonl::Durability::PageCache,
-    )
-    .await
+    if let Err(e) = nucleus_jsonl::append_line_unsynced_async(audit_path.to_path_buf(), line).await
     {
         error!(
             "failed to write lifecycle audit to {}: {e}",
