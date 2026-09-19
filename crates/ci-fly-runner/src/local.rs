@@ -369,7 +369,10 @@ mod tests {
         // Exactly one over the ceiling, which is the case that pins the comparison. Asking for
         // five is refused by a `<=` that is off by one as readily as by a correct one, so a suite
         // that only tries three and five cannot tell them apart; four can.
-        assert!(box_.admits(4).is_err(), "one over the ceiling must be refused");
+        assert!(
+            box_.admits(4).is_err(),
+            "one over the ceiling must be refused"
+        );
         let why = box_.admits(5).unwrap_err();
         assert!(why.contains("5 worker(s) declared"), "{why}");
         assert!(why.contains("admits 3"), "{why}");
