@@ -36,6 +36,17 @@
     "-c",
     "scripts/gatehouse-verifier-sdk.sh && unshare -Urn sh -c '/usr/sbin/ip link set lo up && exec unshare -U --map-user=1001 --map-group=1001 cargo nextest run --offline --locked --all-features --no-fail-fast'"
   ],
+  "tools": [
+    "sh@0.5.12",
+    "cargo@1.96.1",
+    "rustc@1.96.1",
+    "cargo-nextest@0.9.145",
+    "wasm-pack@0.13.1",
+    "wasm-bindgen@0.2.122",
+    "unshare@2.38.1",
+    "ip@6.1.0",
+    "git@2.39.5"
+  ],
   "cwd": "",
   "timeout_s": 2100,
   "outputs": [],

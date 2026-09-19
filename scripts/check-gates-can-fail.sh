@@ -1118,6 +1118,26 @@ perturb_wasm_closure_forbid_present() {
     sed -i.bak -E 's/^FORBIDDEN=\((.*)\)$/FORBIDDEN=(\1 serde)/' "$1" && rm -f "$1.bak"
 }
 
+perturb_gate_def_tools_dropped() {
+    # The 2026-09-19 outage state, restored exactly: a gate definition that declares no `tools`
+    # while the plan declares them. `GateDef::tools` is `#[serde(default, skip_serializing_if)]`,
+    # so the field's ABSENCE is the failure — an empty list arrives silently and the executor is
+    # handed a gate that asks for nothing. Deleting the key is therefore the faithful
+    # perturbation, not editing a version inside it.
+    #
+    # The elaboration this is compared against is committed, so the detection runs from this tree
+    # alone. Needing a gatehouse checkout would name the gate's SUBJECT and say nothing about
+    # whether the comparison bites, which is the distinction the UNCOVERED notes above keep
+    # re-learning.
+    python3 - "$1" <<'PYEOF'
+import collections, json, sys
+p = sys.argv[1]
+d = json.load(open(p), object_pairs_hook=collections.OrderedDict)
+d.pop("tools", None)
+open(p, "w").write(json.dumps(d, indent=2) + "\n")
+PYEOF
+}
+
 perturb_dep_ceiling_raise() {
     # The OTHER direction of this gate, and the one its uncovered entry did not see.
     # "needs a real duplicate crate version" is true for the drift half -- you cannot
@@ -1438,6 +1458,8 @@ probe_xtask_generated policy-gate PolicyManifest.toml \
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
+probe check-gate-defs-match-plan.sh "" .gatehouse/gates/fmt.json \
+      "a gate definition that declares no tools" perturb_gate_def_tools_dropped
 probe check-dep-ceiling.sh    "" scripts/check-dep-ceiling.sh \
       "a ceiling above the count it caps"     perturb_dep_ceiling_raise
 probe check-wasm-closure.sh   "" scripts/check-wasm-closure.sh \
