@@ -1376,10 +1376,36 @@ impl NucleusMcpServer {
                 }
             };
             let port = parsed_url.port_or_known_default().unwrap_or(443);
-            if let Err(e) =
-                crate::web_fetch_policy::check_dns_allowlist(&self.state.dns_allow, host, port)
-            {
-                warn!(host = host, port = port, "DNS not in allow-list");
+            let holds_private = self
+                .flow_graph
+                .lock()
+                .await
+                .effective_exfiltration_check(
+                    Operation::WebFetch,
+                    nucleus_ifc_kernel::ConfLevel::Public,
+                )
+                .is_denied();
+            // stdio has no approval channel, so a decision that needs a human is refused.
+            let refusal = match crate::web_fetch_policy::admit_host(
+                &self.state.dns_allow,
+                host,
+                port,
+                holds_private,
+            ) {
+                Ok(
+                    crate::web_fetch_policy::HostAdmission::Declared
+                    | crate::web_fetch_policy::HostAdmission::Open,
+                ) => None,
+                Ok(crate::web_fetch_policy::HostAdmission::NeedsApproval(key)) => Some(format!(
+                    "{key}: the session has read private data and this host is not declared \
+                     in network.dns_allow; stdio cannot ask for approval"
+                )),
+                Err(e) => {
+                    warn!(host = host, port = port, "DNS not in allow-list");
+                    Some(e)
+                }
+            };
+            if let Some(e) = refusal {
                 self.record_verdict(
                     Operation::WebFetch,
                     &subject,
@@ -1970,7 +1996,7 @@ mod tests {
     fn http_and_stdio_web_fetch_run_the_same_gates() {
         const GATES: [&str; 6] = [
             "validate_url",
-            "check_dns_allowlist",
+            "admit_host",
             "check_url_allowlist",
             "admit_http_recorded",
             "check_redirect_target",

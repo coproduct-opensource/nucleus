@@ -1,0 +1,13 @@
+diff --git a/crates/nucleus-tool-proxy/src/web_fetch_policy.rs b/crates/nucleus-tool-proxy/src/web_fetch_policy.rs
+index a5ab31cdb..d3afd5450 100644
+--- a/crates/nucleus-tool-proxy/src/web_fetch_policy.rs
++++ b/crates/nucleus-tool-proxy/src/web_fetch_policy.rs
+@@ -250,7 +250,7 @@ pub fn admit_host(
+     if !dns_allow.is_empty() {
+         return check_dns_allowlist(dns_allow, host, port).map(|()| HostAdmission::Declared);
+     }
+-    Ok(if holds_private {
++    Ok(if holds_private && false {
+         HostAdmission::NeedsApproval(format!("web_egress {host}:{port}"))
+     } else {
+         HostAdmission::Open
