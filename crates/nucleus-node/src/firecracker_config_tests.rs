@@ -1667,3 +1667,58 @@ fn a_spec_asking_for_huge_pages_reaches_the_machine_config() {
          84-second build and one that does not finish"
     );
 }
+
+/// Startup reclaims what a killed node stranded, and reclaims exactly that.
+///
+/// `cleanup_jail` runs on every teardown path and cannot run on the one that strands disk: the
+/// node being killed. A pod cannot outlive the node, so at startup every jail under the base is
+/// an orphan by construction — which is why this needs no age threshold and no process table.
+/// That exactness is the whole argument for doing it here instead of in a sweeper: on the
+/// gatehouse builder ten restarts left 18 chroots holding 82 GB, and a periodic janitor would
+/// have had to guess which one was the running gate.
+///
+/// The second assertion is the one that would have caught a silent no-op: the reclaim must sweep
+/// the SAME directory `JailLayout` creates. Both derive it from `jail_exec_name`, and a second
+/// copy of that arithmetic drifting would leave this reporting success over an empty directory.
+#[test]
+fn startup_reclaims_jails_a_previous_node_stranded() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let firecracker = std::path::Path::new("/opt/bin/firecracker");
+
+    // Two pods from a life that has ended, laid out exactly as the jailer would.
+    let stranded: Vec<JailLayout> = ["pod-a", "pod-b"]
+        .iter()
+        .map(|id| {
+            let layout = JailLayout::new(base.path(), firecracker, id);
+            std::fs::create_dir_all(&layout.jail_root).expect("stage a jail");
+            std::fs::write(layout.jail_root.join("rootfs.ext4"), b"bytes").expect("stage content");
+            layout
+        })
+        .collect();
+    for layout in &stranded {
+        assert!(layout.jail_root.exists());
+    }
+
+    // An unrelated tree under the same base must be untouched: the reclaim owns
+    // `<base>/<exec>/`, not the base.
+    let neighbour = base.path().join("not-firecracker").join("keep");
+    std::fs::create_dir_all(&neighbour).expect("stage a neighbour");
+
+    let reclaimed = reclaim_orphaned_jails(base.path(), firecracker);
+    assert_eq!(reclaimed.len(), 2, "both stranded jails: {reclaimed:?}");
+    for layout in &stranded {
+        assert!(
+            !layout.jail_root.exists(),
+            "a jail from a previous node must not survive startup"
+        );
+    }
+    assert!(
+        neighbour.exists(),
+        "the reclaim must sweep only the jailer's own directory"
+    );
+
+    // Idempotent, and silent when there is nothing to do: first boot has no base at all.
+    assert!(reclaim_orphaned_jails(base.path(), firecracker).is_empty());
+    let missing = tempfile::tempdir().expect("tempdir");
+    assert!(reclaim_orphaned_jails(missing.path(), firecracker).is_empty());
+}
