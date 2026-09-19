@@ -45,10 +45,71 @@
     "mem_mb": 4096,
     "secrets": []
   },
-  "cmd": [
-    "sh",
-    "-c",
-    "rc=0; scripts/check-ci-spec.sh || rc=1; scripts/check-ci-assurance-ledger.sh || rc=1; cargo run -q --offline -p xtask -- assurance-required || rc=1; exit $rc"
+  "cmd": [],
+  "steps": [
+    {
+      "program": "scripts/check-ci-spec.sh",
+      "reads": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".github/workflows/**",
+        "ci/**",
+        "crates/**",
+        "scripts/**",
+        "docs/assurance/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    },
+    {
+      "program": "scripts/check-ci-assurance-ledger.sh",
+      "reads": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".github/workflows/**",
+        "ci/**",
+        "crates/**",
+        "scripts/**",
+        "docs/assurance/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    },
+    {
+      "program": "cargo",
+      "args": [
+        "run",
+        "-q",
+        "--offline",
+        "-p",
+        "xtask",
+        "--",
+        "assurance-required"
+      ],
+      "reads": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".github/workflows/**",
+        "ci/**",
+        "crates/**",
+        "scripts/**",
+        "docs/assurance/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    }
   ],
   "tools": [
     "sh@0.5.12",
