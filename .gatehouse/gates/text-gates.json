@@ -1,8 +1,13 @@
 {
   "scope": {
     "include": [
-      "**",
-      "scripts/**"
+      ".github/workflows/**",
+      "crates/**",
+      "docs/**",
+      "kani-divergence.toml",
+      "sandbox-trusted-base.txt",
+      "scripts/**",
+      "tests/**"
     ],
     "exclude": [],
     "external": [],
@@ -19,8 +24,13 @@
   "cap": {
     "net": "none",
     "fs_read": [
-      "**",
-      "scripts/**"
+      ".github/workflows/**",
+      "crates/**",
+      "docs/**",
+      "kani-divergence.toml",
+      "sandbox-trusted-base.txt",
+      "scripts/**",
+      "tests/**"
     ],
     "fs_write": [],
     "exec": "scoped",
@@ -34,78 +44,133 @@
     {
       "program": "scripts/check-verify-strict.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-sandbox-trusted-base.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-failclosed-verifiers.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-mediation.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-north-star-ledger.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-extracted-callsites.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-task-compiler-offline.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-ingest-hashed.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-kani-divergence.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-sealed-home.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     },
     {
       "program": "scripts/check-declassify-governor-keys-sealed.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ]
     }
   ],

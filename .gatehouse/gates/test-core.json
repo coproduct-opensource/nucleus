@@ -85,7 +85,7 @@
   "timeout_s": 2100,
   "outputs": [],
   "resources": {
-    "cpus": 2,
+    "cpus": 3,
     "mem_mb": 8192,
     "disk_mb": 8192
   },

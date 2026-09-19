@@ -4,8 +4,13 @@
       "cpu_ms": 1800000,
       "exec": "scoped",
       "fs_read": [
-        "**",
-        "scripts/**"
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
       ],
       "fs_write": [],
       "mem_mb": 2048,
@@ -37,8 +42,13 @@
       "Governor trusted-key set is not workload-writable"
     ],
     "scope": [
-      "**",
-      "scripts/**"
+      ".github/workflows/**",
+      "crates/**",
+      "docs/**",
+      "kani-divergence.toml",
+      "sandbox-trusted-base.txt",
+      "scripts/**",
+      "tests/**"
     ],
     "seeds": [],
     "steps": [
@@ -47,8 +57,13 @@
         "loopback": 0,
         "program": "scripts/check-verify-strict.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -58,8 +73,13 @@
         "loopback": 0,
         "program": "scripts/check-sandbox-trusted-base.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -69,8 +89,13 @@
         "loopback": 0,
         "program": "scripts/check-failclosed-verifiers.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -80,8 +105,13 @@
         "loopback": 0,
         "program": "scripts/check-mediation.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -91,8 +121,13 @@
         "loopback": 0,
         "program": "scripts/check-north-star-ledger.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -102,8 +137,13 @@
         "loopback": 0,
         "program": "scripts/check-extracted-callsites.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -113,8 +153,13 @@
         "loopback": 0,
         "program": "scripts/check-task-compiler-offline.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -124,8 +169,13 @@
         "loopback": 0,
         "program": "scripts/check-ingest-hashed.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -135,8 +185,13 @@
         "loopback": 0,
         "program": "scripts/check-kani-divergence.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -146,8 +201,13 @@
         "loopback": 0,
         "program": "scripts/check-sealed-home.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
@@ -157,8 +217,13 @@
         "loopback": 0,
         "program": "scripts/check-declassify-governor-keys-sealed.sh",
         "reads": [
-          "**",
-          "scripts/**"
+          ".github/workflows/**",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
         ],
         "uid": 0,
         "writes": []
