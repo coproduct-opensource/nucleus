@@ -149,12 +149,11 @@ impl JailLayout {
         firecracker_path: &std::path::Path,
         pod_id: &str,
     ) -> Self {
-        let exec_name = firecracker_path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "firecracker".to_string());
         JailLayout {
-            jail_root: chroot_base.join(exec_name).join(pod_id).join("root"),
+            jail_root: chroot_base
+                .join(jail_exec_name(firecracker_path))
+                .join(pod_id)
+                .join("root"),
         }
     }
 
@@ -505,6 +504,71 @@ pub(crate) fn prepare_jail(
     }
 
     Ok(())
+}
+
+/// The directory the jailer nests pods under: the basename of the Firecracker binary.
+///
+/// Written once because two callers need it -- `JailLayout::new`, which creates the path, and
+/// `reclaim_orphaned_jails`, which removes what is left in it. A second copy of this arithmetic
+/// that drifted would leave the reclaim sweeping a directory no jail was ever placed in, and
+/// reporting success.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn jail_exec_name(firecracker_path: &std::path::Path) -> String {
+    firecracker_path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "firecracker".to_string())
+}
+
+/// Reclaim every jail left by a PREVIOUS life of this node.
+///
+/// `cleanup_jail` is the deterministic release and it runs on every teardown path. It cannot run
+/// on the one path that matters most for disk: the node being killed. A pod cannot outlive the
+/// node -- this module already relies on that, which is why caller tokens are a per-process
+/// secret -- so at startup **every** jail under the base belongs to a life that has ended, and
+/// the set of orphans is known exactly rather than guessed.
+///
+/// That exactness is the point, and it is what a periodic sweeper cannot have. A janitor running
+/// alongside live pods has to infer death from age, or from a process table it races: on
+/// 2026-09-19 the builder had accumulated **18 chroots holding 82 GB**, the oldest two days old,
+/// across ten node restarts, while a sweeper written to catch them would have had to guess which
+/// of them was the running gate. Here there is nothing to guess. Startup is the moment the
+/// answer is free.
+///
+/// PRECONDITION: the chroot base belongs to this node. It is an operator flag
+/// (`--jailer-chroot-base`) and two nodes sharing one would already collide on pod ids and vsock
+/// paths; if that ever becomes possible, this must take a lock on the base and hold it for the
+/// process lifetime, because it would otherwise delete a live peer's jails.
+///
+/// Best-effort per entry, like `cleanup_jail`: a jail that cannot be removed is disk leaked, not
+/// isolation lost, and refusing to start over it would turn a full disk into an outage.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn reclaim_orphaned_jails(
+    chroot_base: &std::path::Path,
+    firecracker_path: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let base = chroot_base.join(jail_exec_name(firecracker_path));
+    let mut reclaimed = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        // No base yet is the normal first-boot case, and says nothing is stranded.
+        return reclaimed;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => reclaimed.push(path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "could not reclaim a jail stranded by a previous node; leaking disk, not isolation"
+            ),
+        }
+    }
+    reclaimed
 }
 
 /// Remove a pod's jail directory.
