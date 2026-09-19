@@ -750,29 +750,18 @@ async fn main() -> Result<(), ApiError> {
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
     };
 
-    // Release what the previous life of this node acquired, BEFORE serving anything.
-    //
-    // `cleanup_jail` is the deterministic release and it runs on every teardown path; the one
-    // path it cannot run on is the node being killed, which is exactly the path that strands
-    // disk. A pod cannot outlive the node, so at this instant every jail under the base belongs
-    // to a life that has ended and the orphan set is known EXACTLY -- no age threshold, no
-    // process table to race. Measured on the gatehouse builder 2026-09-19: ten node restarts had
-    // left 18 chroots holding 82 GB, the oldest two days old, and the lane was refusing gates
-    // for want of disk while a periodic sweeper could only have guessed which chroot was live.
-    //
-    // Before serving, not after: a pod launched first would own a jail this then deletes.
+    // Release what the previous life of this node acquired, BEFORE serving anything: a pod
+    // launched first would own a jail this then deletes. Why startup and not a timer is the
+    // argument on `reclaim_orphaned_jails` itself.
     #[cfg(target_os = "linux")]
     if args.firecracker_jailer {
-        let reclaimed = firecracker_config::reclaim_orphaned_jails(
+        let n = firecracker_config::reclaim_orphaned_jails(
             &args.jailer_chroot_base,
             &args.firecracker_path,
-        );
-        if !reclaimed.is_empty() {
-            info!(
-                count = reclaimed.len(),
-                base = %args.jailer_chroot_base.display(),
-                "reclaimed jail(s) stranded by a previous node"
-            );
+        )
+        .len();
+        if n > 0 {
+            info!(count = n, "reclaimed jail(s) stranded by a previous node");
         }
     }
 

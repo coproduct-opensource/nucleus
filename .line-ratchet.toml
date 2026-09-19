@@ -200,6 +200,23 @@ path = "crates/nucleus-node/src/firecracker_config.rs"
 # field, 4 KiB was still building past twelve minutes where 2 MiB finished in
 # eighty-four seconds. Extracting further would mean splitting a struct
 # definition from the one place that fills it.
-ceiling = 1341
+#
+# Bumped 1341 -> 1405 2026-09-19: reclaiming jails a killed node stranded.
+# `cleanup_jail` is the deterministic release and already lives here; what was
+# missing is the one path it cannot run on, the node being killed. The reclaim
+# goes BESIDE it because it is the same resource and must agree with
+# `JailLayout` about where jails live — which is why `jail_exec_name` is now
+# extracted and shared, rather than the path arithmetic existing twice. A copy
+# that drifted would leave the reclaim sweeping a directory no jail was ever
+# placed in and reporting success, which is the failure this file should make
+# impossible rather than merely unlikely.
+#
+# What it buys, measured on the gatehouse builder: ten node restarts had left
+# 18 jailer chroots holding 82 GB, the oldest two days old, while the lane
+# refused gates for want of disk. Most of the 64 lines are the argument for
+# doing this at startup instead of on a timer — that at startup the orphan set
+# is EXACT, where a sweeper must infer death from age or race a process table.
+# That argument is the load-bearing part and belongs next to the code.
+ceiling = 1405
 target = 2500
 step = 0
