@@ -384,7 +384,12 @@ mod tests {
             cores_per_worker: 0,
             mem_mib_per_worker: 0,
         };
-        assert_eq!(silly.max_workers(), 8.min(16_000));
+        // A zero per-worker ask is read as one, so the box is bounded by whichever dimension is
+        // smaller rather than by a division that would panic: here the 8 cores, not the 16 000
+        // MiB. Asserting the number itself and not `8.min(16_000)`, because restating the
+        // implementation's own formula only repeats it back — and clippy folds it anyway, which
+        // is how this was found.
+        assert_eq!(silly.max_workers(), 8);
     }
 
     struct OneRepo {
