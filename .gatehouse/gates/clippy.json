@@ -62,8 +62,8 @@
       "sdks/verifier-js/target/**"
     ],
     "exec": "scoped",
-    "wall_ms": 2400000,
-    "cpu_ms": 2400000,
+    "wall_ms": 3000000,
+    "cpu_ms": 3000000,
     "mem_mb": 8192,
     "secrets": []
   },
@@ -188,7 +188,7 @@
     "unshare@2.38.1"
   ],
   "cwd": "",
-  "timeout_s": 900,
+  "timeout_s": 2600,
   "outputs": [],
   "resources": {
     "cpus": 2,

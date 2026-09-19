@@ -1,28 +1,41 @@
 [
   {
+    "name": "text-gates",
+    "scope": [
+      "**",
+      "scripts/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 1800000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "**",
         "scripts/**"
       ],
       "fs_write": [],
+      "exec": "scoped",
+      "wall_ms": 1800000,
+      "cpu_ms": 1800000,
       "mem_mb": 2048,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 1800000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 4096,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 713000,
-    "mem_mb": 2048,
-    "name": "text-gates",
+    "timeout_ms": 1800000,
     "outputs": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "sh@0.5.12",
+      "git@2.39.5",
+      "rg@13.0.0",
+      "awk@mawk-1.3.4",
+      "python3@3.11.2"
+    ],
+    "disk_mb": 4096,
+    "mem_mb": 2048,
     "platform": "linux/arm64",
     "reads": [],
+    "seeds": [],
+    "measured_ms": 713000,
     "replaces": [
       "Ed25519 verify_strict gate (M-3)",
       "Sandbox trusted-base gate",
@@ -36,147 +49,153 @@
       "Sealed-home integrity gate (North Star)",
       "Governor trusted-key set is not workload-writable"
     ],
-    "scope": [
-      "**",
-      "scripts/**"
-    ],
-    "seeds": [],
     "steps": [
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-verify-strict.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-sandbox-trusted-base.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-failclosed-verifiers.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-mediation.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-north-star-ledger.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-extracted-callsites.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-task-compiler-offline.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-ingest-hashed.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-kani-divergence.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-sealed-home.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-declassify-governor-keys-sealed.sh",
+        "args": [],
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       }
-    ],
-    "timeout_ms": 1800000,
-    "tools": [
-      "sh@0.5.12",
-      "git@2.39.5",
-      "rg@13.0.0",
-      "awk@mawk-1.3.4",
-      "python3@3.11.2"
     ]
   },
   {
+    "name": "fmt",
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 300000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "Cargo.toml",
         "Cargo.lock",
@@ -200,53 +219,38 @@
         "sdks/verifier-js/pkg/**",
         "sdks/verifier-js/target/**"
       ],
+      "exec": "scoped",
+      "wall_ms": 300000,
+      "cpu_ms": 300000,
       "mem_mb": 4096,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 300000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 4096,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 123000,
-    "mem_mb": 4096,
-    "name": "fmt",
+    "timeout_ms": 300000,
     "outputs": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "cargo@1.96.1",
+      "rustfmt@1.9.0"
+    ],
+    "disk_mb": 4096,
+    "mem_mb": 4096,
     "platform": "linux/arm64",
     "reads": [],
+    "seeds": [],
+    "measured_ms": 123000,
     "replaces": [
       "Rustfmt"
     ],
-    "scope": [
-      "Cargo.toml",
-      "Cargo.lock",
-      "rust-toolchain.toml",
-      "crates/**",
-      "tests/**",
-      "benchmarks/**",
-      "scripts/**",
-      "sdks/verifier-js/Cargo.toml",
-      "sdks/verifier-js/Cargo.lock",
-      "sdks/verifier-js/package.json",
-      "sdks/verifier-js/index.js",
-      "sdks/verifier-js/index.d.ts",
-      "sdks/verifier-js/src/**",
-      "sdks/verifier-js/test/**",
-      "sdks/verifier-js/tests/**",
-      "sdks/verifier-js/demo-fixtures/**"
-    ],
-    "seeds": [],
     "steps": [
       {
+        "program": "cargo",
         "args": [
           "fmt",
           "--all",
           "--",
           "--check"
         ],
-        "loopback": 0,
-        "program": "cargo",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -265,24 +269,42 @@
           "sdks/verifier-js/tests/**",
           "sdks/verifier-js/demo-fixtures/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       }
-    ],
-    "timeout_ms": 300000,
-    "tools": [
-      "cargo@1.96.1",
-      "rustfmt@1.9.0"
     ]
   },
   {
+    "name": "clippy",
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
+      "clippy.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**",
+      "examples/independent-conformance/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 2400000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "Cargo.toml",
         "Cargo.lock",
@@ -309,53 +331,40 @@
         "sdks/verifier-js/pkg/**",
         "sdks/verifier-js/target/**"
       ],
+      "exec": "scoped",
+      "wall_ms": 3000000,
+      "cpu_ms": 3000000,
       "mem_mb": 8192,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 2400000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 8192,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 304000,
-    "mem_mb": 8192,
-    "name": "clippy",
+    "timeout_ms": 2600000,
     "outputs": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "sh@0.5.12",
+      "cargo@1.96.1",
+      "rustc@1.96.1",
+      "clippy-driver@0.1.96",
+      "wasm-pack@0.13.1",
+      "wasm-bindgen@0.2.122",
+      "unshare@2.38.1"
+    ],
+    "disk_mb": 8192,
+    "mem_mb": 8192,
     "platform": "linux/arm64",
     "reads": [],
-    "replaces": [
-      "Clippy"
-    ],
-    "scope": [
-      "Cargo.toml",
-      "Cargo.lock",
-      "rust-toolchain.toml",
-      ".cargo/config.toml",
-      "clippy.toml",
-      "crates/**",
-      "tests/**",
-      "benchmarks/**",
-      "scripts/**",
-      "sdks/verifier-js/Cargo.toml",
-      "sdks/verifier-js/Cargo.lock",
-      "sdks/verifier-js/package.json",
-      "sdks/verifier-js/index.js",
-      "sdks/verifier-js/index.d.ts",
-      "sdks/verifier-js/src/**",
-      "sdks/verifier-js/test/**",
-      "sdks/verifier-js/tests/**",
-      "sdks/verifier-js/demo-fixtures/**",
-      "examples/independent-conformance/**"
-    ],
     "seeds": [
       "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
     ],
+    "measured_ms": 1253000,
+    "replaces": [
+      "Clippy"
+    ],
     "steps": [
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/gatehouse-verifier-sdk.sh",
+        "args": [],
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -377,14 +386,16 @@
           "sdks/verifier-js/demo-fixtures/**",
           "examples/independent-conformance/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       },
       {
+        "program": "cargo",
         "args": [
           "clippy",
           "--offline",
@@ -395,8 +406,6 @@
           "-D",
           "warnings"
         ],
-        "loopback": 0,
-        "program": "cargo",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -418,14 +427,16 @@
           "sdks/verifier-js/demo-fixtures/**",
           "examples/independent-conformance/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       },
       {
+        "program": "cargo",
         "args": [
           "clippy",
           "--offline",
@@ -437,8 +448,6 @@
           "-D",
           "warnings"
         ],
-        "loopback": 0,
-        "program": "cargo",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -460,29 +469,25 @@
           "sdks/verifier-js/demo-fixtures/**",
           "examples/independent-conformance/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       }
-    ],
-    "timeout_ms": 900000,
-    "tools": [
-      "sh@0.5.12",
-      "cargo@1.96.1",
-      "rustc@1.96.1",
-      "clippy-driver@0.1.96",
-      "wasm-pack@0.13.1",
-      "wasm-bindgen@0.2.122",
-      "unshare@2.38.1"
     ]
   },
   {
+    "name": "test-core",
+    "scope": [
+      "**",
+      "scripts/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 3600000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "**",
         "scripts/**"
@@ -492,69 +497,16 @@
         "sdks/verifier-js/pkg/**",
         "sdks/verifier-js/target/**"
       ],
+      "exec": "scoped",
+      "wall_ms": 3600000,
+      "cpu_ms": 3600000,
       "mem_mb": 8192,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 3600000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 8192,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 702000,
-    "mem_mb": 8192,
-    "name": "test-core",
-    "outputs": [],
-    "platform": "linux/arm64",
-    "reads": [],
-    "replaces": [],
-    "scope": [
-      "**",
-      "scripts/**"
-    ],
-    "seeds": [
-      "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
-    ],
-    "steps": [
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/gatehouse-verifier-sdk.sh",
-        "reads": [
-          "**",
-          "scripts/**"
-        ],
-        "uid": 0,
-        "writes": [
-          "target/**",
-          "sdks/verifier-js/pkg/**",
-          "sdks/verifier-js/target/**"
-        ]
-      },
-      {
-        "args": [
-          "nextest",
-          "run",
-          "--offline",
-          "--locked",
-          "--all-features",
-          "--no-fail-fast"
-        ],
-        "loopback": 1,
-        "program": "cargo",
-        "reads": [
-          "**",
-          "scripts/**"
-        ],
-        "uid": 1001,
-        "writes": [
-          "target/**",
-          "sdks/verifier-js/pkg/**",
-          "sdks/verifier-js/target/**"
-        ]
-      }
-    ],
     "timeout_ms": 2100000,
+    "outputs": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "tools": [
       "sh@0.5.12",
       "cargo@1.96.1",
@@ -565,12 +517,78 @@
       "unshare@2.38.1",
       "ip@6.1.0",
       "git@2.39.5"
+    ],
+    "disk_mb": 8192,
+    "mem_mb": 8192,
+    "platform": "linux/arm64",
+    "reads": [],
+    "seeds": [
+      "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
+    ],
+    "measured_ms": 702000,
+    "replaces": [],
+    "steps": [
+      {
+        "program": "scripts/gatehouse-verifier-sdk.sh",
+        "args": [],
+        "reads": [
+          "**",
+          "scripts/**"
+        ],
+        "writes": [
+          "target/**",
+          "sdks/verifier-js/pkg/**",
+          "sdks/verifier-js/target/**"
+        ],
+        "loopback": 0,
+        "uid": 0
+      },
+      {
+        "program": "cargo",
+        "args": [
+          "nextest",
+          "run",
+          "--offline",
+          "--locked",
+          "--all-features",
+          "--no-fail-fast"
+        ],
+        "reads": [
+          "**",
+          "scripts/**"
+        ],
+        "writes": [
+          "target/**",
+          "sdks/verifier-js/pkg/**",
+          "sdks/verifier-js/target/**"
+        ],
+        "loopback": 1,
+        "uid": 1001
+      }
     ]
   },
   {
+    "name": "lean-build",
+    "scope": [
+      "crates/portcullis-core/lean/*.lean",
+      "crates/portcullis-core/lean/lean-toolchain",
+      "crates/portcullis-core/lean/lake-manifest.json",
+      "crates/portcullis-core/lean/generated/**",
+      "crates/portcullis-core/lean/generated-attenuation/**",
+      "crates/portcullis-core/lean/generated-cap-quantale/**",
+      "crates/portcullis-core/lean/generated-certchain/**",
+      "crates/portcullis-core/lean/generated-channel/**",
+      "crates/portcullis-core/lean/generated-credential/**",
+      "crates/portcullis-core/lean/generated-decide/**",
+      "crates/portcullis-core/lean/generated-declass/**",
+      "crates/portcullis-core/lean/generated-egress/**",
+      "crates/portcullis-core/lean/generated-identity/**",
+      "crates/portcullis-core/lean/generated-ifc/**",
+      "crates/portcullis-core/lean/generated-mediation/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 3600000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "crates/portcullis-core/lean/*.lean",
         "crates/portcullis-core/lean/lean-toolchain",
@@ -591,48 +609,34 @@
       "fs_write": [
         "crates/portcullis-core/lean/.lake/**"
       ],
+      "exec": "scoped",
+      "wall_ms": 3600000,
+      "cpu_ms": 3600000,
       "mem_mb": 16384,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 3600000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 16384,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 145000,
-    "mem_mb": 8192,
-    "name": "lean-build",
+    "timeout_ms": 1200000,
     "outputs": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "lake@4.30.0",
+      "lean@4.30.0"
+    ],
+    "disk_mb": 16384,
+    "mem_mb": 8192,
     "platform": "linux/arm64",
     "reads": [],
-    "replaces": [],
-    "scope": [
-      "crates/portcullis-core/lean/*.lean",
-      "crates/portcullis-core/lean/lean-toolchain",
-      "crates/portcullis-core/lean/lake-manifest.json",
-      "crates/portcullis-core/lean/generated/**",
-      "crates/portcullis-core/lean/generated-attenuation/**",
-      "crates/portcullis-core/lean/generated-cap-quantale/**",
-      "crates/portcullis-core/lean/generated-certchain/**",
-      "crates/portcullis-core/lean/generated-channel/**",
-      "crates/portcullis-core/lean/generated-credential/**",
-      "crates/portcullis-core/lean/generated-decide/**",
-      "crates/portcullis-core/lean/generated-declass/**",
-      "crates/portcullis-core/lean/generated-egress/**",
-      "crates/portcullis-core/lean/generated-identity/**",
-      "crates/portcullis-core/lean/generated-ifc/**",
-      "crates/portcullis-core/lean/generated-mediation/**"
-    ],
     "seeds": [],
+    "measured_ms": 145000,
+    "replaces": [],
     "steps": [
       {
+        "program": "lake",
         "args": [
           "build",
           "PortcullisCoreBridge"
         ],
-        "loopback": 0,
-        "program": "lake",
         "reads": [
           "crates/portcullis-core/lean/*.lean",
           "crates/portcullis-core/lean/lean-toolchain",
@@ -650,22 +654,30 @@
           "crates/portcullis-core/lean/generated-ifc/**",
           "crates/portcullis-core/lean/generated-mediation/**"
         ],
-        "uid": 0,
         "writes": [
           "crates/portcullis-core/lean/.lake/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       }
-    ],
-    "timeout_ms": 1200000,
-    "tools": [
-      "lake@4.30.0",
-      "lean@4.30.0"
     ]
   },
   {
+    "name": "ci-spec",
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".github/workflows/**",
+      "ci/**",
+      "crates/**",
+      "scripts/**",
+      "docs/assurance/**",
+      ".gatehouse/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 900000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "Cargo.toml",
         "Cargo.lock",
@@ -682,66 +694,38 @@
         "sdks/verifier-js/pkg/**",
         "sdks/verifier-js/target/**"
       ],
+      "exec": "scoped",
+      "wall_ms": 900000,
+      "cpu_ms": 900000,
       "mem_mb": 4096,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 900000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 4096,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 92000,
-    "mem_mb": 4096,
-    "name": "ci-spec",
+    "timeout_ms": 300000,
     "outputs": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "sh@0.5.12",
+      "cargo@1.96.1",
+      "rustc@1.96.1",
+      "git@2.39.5"
+    ],
+    "disk_mb": 4096,
+    "mem_mb": 4096,
     "platform": "linux/arm64",
     "reads": [],
+    "seeds": [
+      "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
+    ],
+    "measured_ms": 92000,
     "replaces": [
       "CI configuration is sound (CI-1)",
       "The CI assurance ledger cannot outrun its wiring"
     ],
-    "scope": [
-      "Cargo.toml",
-      "Cargo.lock",
-      "rust-toolchain.toml",
-      ".github/workflows/**",
-      "ci/**",
-      "crates/**",
-      "scripts/**",
-      "docs/assurance/**",
-      ".gatehouse/**"
-    ],
-    "seeds": [
-      "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
-    ],
     "steps": [
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-ci-spec.sh",
-        "reads": [
-          "Cargo.toml",
-          "Cargo.lock",
-          "rust-toolchain.toml",
-          ".github/workflows/**",
-          "ci/**",
-          "crates/**",
-          "scripts/**",
-          "docs/assurance/**",
-          ".gatehouse/**"
-        ],
-        "uid": 0,
-        "writes": [
-          "target/**",
-          "sdks/verifier-js/pkg/**",
-          "sdks/verifier-js/target/**"
-        ]
-      },
-      {
         "args": [],
-        "loopback": 0,
-        "program": "scripts/check-ci-assurance-ledger.sh",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -753,14 +737,38 @@
           "docs/assurance/**",
           ".gatehouse/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       },
       {
+        "program": "scripts/check-ci-assurance-ledger.sh",
+        "args": [],
+        "reads": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          ".github/workflows/**",
+          "ci/**",
+          "crates/**",
+          "scripts/**",
+          "docs/assurance/**",
+          ".gatehouse/**"
+        ],
+        "writes": [
+          "target/**",
+          "sdks/verifier-js/pkg/**",
+          "sdks/verifier-js/target/**"
+        ],
+        "loopback": 0,
+        "uid": 0
+      },
+      {
+        "program": "cargo",
         "args": [
           "run",
           "-q",
@@ -770,8 +778,6 @@
           "--",
           "assurance-required"
         ],
-        "loopback": 0,
-        "program": "cargo",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -783,20 +789,14 @@
           "docs/assurance/**",
           ".gatehouse/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       }
-    ],
-    "timeout_ms": 300000,
-    "tools": [
-      "sh@0.5.12",
-      "cargo@1.96.1",
-      "rustc@1.96.1",
-      "git@2.39.5"
     ]
   }
 ]
