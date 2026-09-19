@@ -82,7 +82,15 @@ mod tests {
                     r#"{{"schema_version":1,"tag":{t},"pad":"{}"}}"#,
                     "x".repeat(4096)
                 );
-                append_receipt(&dir, &line).await.unwrap();
+                // The `Durable` is the proof the line reached the disk, which is exactly what
+                // this test is about — so it is asserted rather than dropped. Dropping it would
+                // have the test claim durability it never checked, which is what `#[must_use]`
+                // on `Durable` exists to prevent.
+                let durable = append_receipt(&dir, &line).await.unwrap();
+                assert!(
+                    durable.proves(&receipt_log_path(&dir), &line),
+                    "the acknowledgement must prove THIS line reached THIS log"
+                );
             }));
         }
         for t in tasks {
