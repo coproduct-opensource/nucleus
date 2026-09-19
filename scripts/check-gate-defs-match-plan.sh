@@ -15,60 +15,63 @@
 # "a gate must declare the tools it needs; the image is held to them", and the lane decided
 # nothing. The plan proved a property (`toolsCovered_b`) about a value the executor never received.
 #
-# Compares the fields that are a plain list or scalar on both sides. Scope and capabilities are
-# deliberately NOT compared here: their writ encoding is a tuple of globs whose faithful
-# comparison belongs with the elaborator, not with a regex. A narrower check that runs beats a
-# wider one that does not.
+# THE PLAN SIDE IS READ BY THE ELABORATOR, NOT BY A PATTERN. `gate plan gates` emits the gate
+# terms the kernel actually checked, as JSON. The first version of this script scraped the writ
+# with a regex, and that regex silently matched the `tools` list where it meant `cmd` and reported
+# all six gates as disagreeing — a false alarm of exactly the shape gatehouse's F-152 records
+# ("a hand-rolled pattern's failure mode is silently matching less than you meant, and checking it
+# with another hand-rolled pattern tests the same assumption twice"). The elaborator is the only
+# reader that agrees with the kernel by construction.
+#
+# Usage: check-gate-defs-match-plan.sh <gates.json>
+#   where <gates.json> is the output of `gate plan gates .gatehouse/pipeline.writ`.
+# Without it this script REFUSES rather than guesses: it cannot look, and says so.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-python3 - <<'PY'
-import json, re, sys, pathlib
+if [ $# -lt 1 ]; then
+  echo "usage: $0 <gates.json>   (from: gate plan gates .gatehouse/pipeline.writ)" >&2
+  echo "cannot look: without the elaborator's output there is nothing authoritative to compare" >&2
+  exit 2
+fi
 
-plan = pathlib.Path(".gatehouse/pipeline.writ").read_text()
+ELABORATED="$1"
+[ -s "$ELABORATED" ] || { echo "cannot look: $ELABORATED is empty or missing" >&2; exit 2; }
 
-# One `let <var> : ci.Gate = (#b"<name>", ...)` per gate, each on a single line.
-# Field order is fixed by the prelude's `Gate` and documented in the plan's header:
-#   (name, hash, scope, env, cap, cmd, timeoutMs, outputs, image, tools, diskMb, memMb,
-#    platform, reads, seeds, measuredMs, replaces)
-declared = {}
-for line in plan.splitlines():
-    m = re.match(r'let \w+ : ci\.Gate = \(#b"([^"]+)"', line)
-    if not m:
-        continue
-    name = m.group(1)
-    tools = re.search(r'image,\s*(\[[^\]]*\])', line)
-    # `seeds` is the list after `platform,` and the one whose members carry a digest.
-    seeds = re.search(r'platform,\s*\[[^\]]*\]\s*:\s*Bytes,\s*(\[[^\]]*\])', line)
-    if not tools:
-        sys.exit(f"cannot read the tools list for gate {name} out of the plan")
-    declared[name] = {
-        "tools": re.findall(r'#b"([^"]+)"', tools.group(1)),
-        "seeds": re.findall(r'#b"([^"]+)"', seeds.group(1)) if seeds else [],
-    }
+ELABORATED="$ELABORATED" python3 - <<'PY'
+import json, os, pathlib, sys
 
-if not declared:
-    sys.exit("no gates found in .gatehouse/pipeline.writ: the parser and the plan disagree")
+elaborated = json.loads(pathlib.Path(os.environ["ELABORATED"]).read_text())
+plan = {g["name"]: g for g in elaborated}
+if not plan:
+    sys.exit("cannot look: the elaborator emitted no gates")
 
-bad = []
-seen = set()
-for path in sorted(pathlib.Path(".gatehouse/gates").glob("*.json")):
+gates_dir = pathlib.Path(".gatehouse/gates")
+bad, seen = [], set()
+
+for path in sorted(gates_dir.glob("*.json")):
     name = path.stem
     seen.add(name)
-    if name not in declared:
+    if name not in plan:
         bad.append(f"{name}: has a gate definition and the plan declares no such gate")
         continue
-    got = json.loads(path.read_text())
-    for field in ("tools", "seeds"):
-        want = declared[name][field]
-        have = got.get(field, [])
-        if have != want:
-            bad.append(
-                f"{name}: {field} in .gatehouse/gates/{name}.json is {have!r}, "
-                f"and .gatehouse/pipeline.writ declares {want!r}"
-            )
+    want, got = plan[name], json.loads(path.read_text())
 
-for name in sorted(set(declared) - seen):
+    # Lists and scalars that mean the same thing on both sides.
+    for field in ("cmd", "tools", "seeds", "outputs"):
+        a, b = want.get(field, []), got.get(field, [])
+        if a != b:
+            bad.append(f"{name}: {field} is {b!r} in the gate definition and {a!r} in the plan")
+
+    # The writ `Gate` carries scope as a flat list of globs; the JSON carries an object whose
+    # other fields (exclude, external, git_history) the writ term has no room for. The INCLUDE
+    # list is the part both spell, so it is the part compared.
+    a = want.get("scope", [])
+    b = (got.get("scope") or {}).get("include", [])
+    if a != b:
+        bad.append(f"{name}: scope.include is {b!r} and the plan declares {a!r}")
+
+for name in sorted(set(plan) - seen):
     bad.append(f"{name}: the plan declares this gate and .gatehouse/gates/{name}.json is missing")
 
 if bad:
@@ -77,5 +80,5 @@ if bad:
         print(f"  {b}", file=sys.stderr)
     sys.exit(1)
 
-print(f"OK: {len(declared)} gate(s) carry the tools and seeds the plan declares")
+print(f"OK: {len(plan)} gate(s) carry the cmd, tools, seeds, outputs and scope the plan declares")
 PY
