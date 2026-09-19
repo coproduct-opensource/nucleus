@@ -87,6 +87,30 @@ for path in sorted(gates_dir.glob("*.json")):
         if a != b:
             bad.append(f"{name}: {field} is {b!r} in the gate definition and {a!r} in the plan")
 
+    # The numbers that bound the gate, which nothing compared until a desync cost a lane.
+    #
+    # The plan spells a timeout in MILLISECONDS and the gate definition in seconds; they are one
+    # fact and the elaborated plan is the side the kernel proved `timeoutCoherent_b` and
+    # `timeoutMeasured_b` about. A disagreement is not cosmetic: the executor stamps a receipt's
+    # publication window from the gate definition's timeout, and the relying party verifies every
+    # step of a sequence only once the whole sequence ends — so a definition carrying LESS than
+    # the plan makes a green multi-step gate unpublishable, with an error naming neither number.
+    # nucleus text-gates, 2026-09-19: eleven steps all exit 0, a 120 s window, 589 s of gate, and
+    # three `gate_undecided` attempts ending in `exhausted`.
+    if (want.get("timeout_ms") or 0) != (got.get("timeout_s") or 0) * 1000:
+        bad.append(
+            f"{name}: timeout_s is {got.get('timeout_s')!r} ({(got.get('timeout_s') or 0) * 1000} ms) "
+            f"in the gate definition and the plan declares {want.get('timeout_ms')!r} ms"
+        )
+
+    # The capability is what the policy ceiling was proved against, so the two sides disagreeing
+    # means the kernel bounded something other than what runs.
+    want_cap, got_cap = want.get("cap") or {}, got.get("cap") or {}
+    for field in ("wall_ms", "cpu_ms", "mem_mb", "net", "exec", "fs_read", "fs_write", "secrets"):
+        a, b = want_cap.get(field), got_cap.get(field)
+        if a != b:
+            bad.append(f"{name}: cap.{field} is {b!r} in the gate definition and {a!r} in the plan")
+
     # The writ `Gate` carries scope as a flat list of globs; the JSON carries an object whose
     # other fields (exclude, external, git_history) the writ term has no room for. The INCLUDE
     # list is the part both spell, so it is the part compared.
@@ -104,5 +128,5 @@ if bad:
         print(f"  {b}", file=sys.stderr)
     sys.exit(1)
 
-print(f"OK: {len(plan)} gate(s) carry the cmd, tools, seeds, outputs and scope the plan declares")
+print(f"OK: {len(plan)} gate(s) carry the cmd, tools, seeds, outputs, scope, timeout and capability the plan declares")
 PY
