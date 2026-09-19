@@ -56,6 +56,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Deliberately NOT gated on the token, and first: it reads two files in this repository and
+      # needs no gatehouse checkout, so it is the one part of this workflow that still decides
+      # when the token is absent. The disagreement it catches is invisible to `gate plan check`,
+      # which reads the writ and never opens the JSON the executor is actually handed.
+      - name: The gate definitions carry what the plan declares
+        run: ./scripts/check-gate-defs-match-plan.sh
       - name: Is the gatehouse token available?
         id: tok
         env:

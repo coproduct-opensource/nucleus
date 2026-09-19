@@ -62,6 +62,10 @@
     "build",
     "PortcullisCoreBridge"
   ],
+  "tools": [
+    "lake@4.30.0",
+    "lean@4.30.0"
+  ],
   "cwd": "",
   "timeout_s": 1200,
   "outputs": [],
