@@ -372,5 +372,5 @@ population_floor = 23
 # 2026-09-18: rebased onto the tree that deleted WorkloadApiServer, so neither
 # branch's number describes the merged tree -- 19 of 143 = 13.28%, re-measured
 # rather than carried over from either side.
-floor_bp = 1328
+floor_bp = 1388
 population_floor = 143
