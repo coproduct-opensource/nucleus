@@ -459,13 +459,43 @@ from some states and filled from others — once a VM is personalised, a further
 personalising fetch and the snapshot decision commute — so a law is about where
 state changes, not about a fixed pair.
 
+The same census runs over the pod API (`pod_api/walk/census.rs`: 10 hollow faces
+of 55, only the creates non-idempotent, A3 and non-transitive management as
+consequences) and over the faces *between* the two surfaces on one pod
+(`pod_api/walk/cross.rs`). The cross census found that cancel was not a barrier:
+the workload-API bridge kept serving connections opened before the cancel (#2930).
+
+### Footprints: the laws are derived, not written
+
+The three censuses' laws were one fact in three spellings: two effects commute
+unless one writes what the other reads (Mazurkiewicz independence from read/write
+sets; the frame rule of separation logic). So each surface now declares a
+*footprint* per command — the resources it `Read`s, `Set`s (a blind overwrite:
+idempotent) or `Update`s (read-modify-write, append, a one-shot consumed) — and
+`effect_footprint.rs` derives the hollow faces and the non-idempotent commands.
+The censuses measure both against the code in both directions, and the
+partial-order-reduced walk reads the same derived relation.
+
+Two laws that were rules become footprints:
+
+* **A5.** The host's snapshot decision reads *personalised* and *at barrier*; the
+  personalising commands and `SNAPSHOT_READY` write them.
+* **Cancel is a barrier.** Every guest command is scoped to its pod, which is a
+  read of the pod's liveness; a cancel writes it.
+
+Driving a footprint wrong turns the census red on exactly the face it implies:
+a listing that stops reading its children; `POD_LIST` not reading a child's
+liveness; `PING` not scoped to its pod; the snapshot decision not reading the
+barrier (which also reddens the reduced walk); an `Update` counted as idempotent.
+
 ## Status
 
 The guest-surface walk (A2, A5) and the pod-surface walk (A3, lineage scoping)
 are property tests in `nucleus-node`; A4 is a leaf walk in `nucleus-spec`; A8
 and A9 are artifact walks in `nucleus-envelope` and `nucleus-lineage`; A6 and
 A7 are a live harness, `nucleus-perf guest-transcript`, which needs a KVM host
-and runs in no workflow. The commutation census covers the guest surface only.
+and runs in no workflow. The commutation census covers the guest surface, the pod
+surface and the faces between them, with its laws derived from footprints.
 
 ## Sources
 

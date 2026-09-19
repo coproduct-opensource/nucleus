@@ -68,6 +68,44 @@ pub async fn append_receipt(
 mod tests {
     use super::*;
 
+    /// Receipts shipped on different connections are appended concurrently. Each
+    /// must land as one whole line: a receipt log with a torn line is one the audit
+    /// verifier cannot read past, produced by the node itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_appends_never_tear_a_line() {
+        let pod_dir = tempfile::tempdir().unwrap();
+        let mut tasks = Vec::new();
+        for t in 0..64 {
+            let dir = pod_dir.path().to_path_buf();
+            tasks.push(tokio::spawn(async move {
+                let line = format!(
+                    r#"{{"schema_version":1,"tag":{t},"pad":"{}"}}"#,
+                    "x".repeat(4096)
+                );
+                append_receipt(&dir, &line).await.unwrap();
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let stored = std::fs::read_to_string(receipt_log_path(pod_dir.path())).unwrap();
+        let mut tags: Vec<u64> = stored
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .unwrap_or_else(|_| panic!("a torn line: {}", &l[..l.len().min(60)]))["tag"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        tags.sort_unstable();
+        assert_eq!(
+            tags,
+            (0..64).collect::<Vec<u64>>(),
+            "every receipt exactly once"
+        );
+    }
+
     #[tokio::test]
     async fn shipped_receipts_accumulate_one_per_line_in_order() {
         let pod_dir = tempfile::tempdir().unwrap();
