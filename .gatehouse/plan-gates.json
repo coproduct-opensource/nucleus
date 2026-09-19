@@ -674,7 +674,8 @@
         "ci/**",
         "crates/**",
         "scripts/**",
-        "docs/assurance/**"
+        "docs/assurance/**",
+        ".gatehouse/**"
       ],
       "fs_write": [
         "target/**",
@@ -708,7 +709,8 @@
       "ci/**",
       "crates/**",
       "scripts/**",
-      "docs/assurance/**"
+      "docs/assurance/**",
+      ".gatehouse/**"
     ],
     "seeds": [
       "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
@@ -726,7 +728,8 @@
           "ci/**",
           "crates/**",
           "scripts/**",
-          "docs/assurance/**"
+          "docs/assurance/**",
+          ".gatehouse/**"
         ],
         "uid": 0,
         "writes": [
@@ -747,7 +750,8 @@
           "ci/**",
           "crates/**",
           "scripts/**",
-          "docs/assurance/**"
+          "docs/assurance/**",
+          ".gatehouse/**"
         ],
         "uid": 0,
         "writes": [
@@ -776,7 +780,8 @@
           "ci/**",
           "crates/**",
           "scripts/**",
-          "docs/assurance/**"
+          "docs/assurance/**",
+          ".gatehouse/**"
         ],
         "uid": 0,
         "writes": [
