@@ -1,7 +1,7 @@
 [
   {
     "cap": {
-      "cpu_ms": 120000,
+      "cpu_ms": 1800000,
       "exec": "scoped",
       "fs_read": [
         "**",
@@ -11,13 +11,13 @@
       "mem_mb": 2048,
       "net": "none",
       "secrets": [],
-      "wall_ms": 120000
+      "wall_ms": 1800000
     },
     "cmd": [],
     "disk_mb": 4096,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 26000,
+    "measured_ms": 713000,
     "mem_mb": 2048,
     "name": "text-gates",
     "outputs": [],
@@ -164,7 +164,7 @@
         "writes": []
       }
     ],
-    "timeout_ms": 120000,
+    "timeout_ms": 1800000,
     "tools": [
       "sh@0.5.12",
       "git@2.39.5",

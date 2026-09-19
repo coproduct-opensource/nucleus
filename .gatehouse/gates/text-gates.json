@@ -24,8 +24,8 @@
     ],
     "fs_write": [],
     "exec": "scoped",
-    "wall_ms": 120000,
-    "cpu_ms": 120000,
+    "wall_ms": 1800000,
+    "cpu_ms": 1800000,
     "mem_mb": 2048,
     "secrets": []
   },
@@ -117,7 +117,7 @@
     "python3@3.11.2"
   ],
   "cwd": "",
-  "timeout_s": 120,
+  "timeout_s": 1800,
   "outputs": [],
   "resources": {
     "cpus": 2,

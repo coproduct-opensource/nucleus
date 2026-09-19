@@ -13,8 +13,8 @@ use anyhow::{Context, Result, bail};
 use serde_yaml::Value;
 
 use crate::model::{
-    Allowlist, Concurrency, InlineGates, Job, Ledger, Model, PathFilter, QueueConfig, Step,
-    Triggers, Workflow,
+    Allowlist, Concurrency, InlineGates, Job, Ledger, Model, PathFilter, QueueConfig, Replacement,
+    Replacements, Step, Triggers, Workflow,
 };
 
 /// Look a key up in a mapping, tolerating YAML 1.1's reading of `on` as a
@@ -243,9 +243,20 @@ pub fn parse_workflow(path: &str, text: &str) -> Result<Workflow> {
                     }
                 }
             }
+            let outputs = get(jv, "outputs")
+                .and_then(Value::as_mapping)
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| {
+                            Some((k.as_str()?.to_string(), scalar_string(Some(v))?))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             jobs.push(Job {
                 matrix,
                 matrix_opaque,
+                outputs,
                 id,
                 name: scalar_string(get(jv, "name")),
                 runs_on: scalar_string(get(jv, "runs-on")).unwrap_or_default(),
@@ -360,10 +371,20 @@ pub fn from_parts(
         allowlist,
         gate_scripts,
         "",
+        "",
+        &std::collections::BTreeMap::new(),
     )
 }
 
 /// [`from_parts`] with the I8 population pin, for tests that exercise it.
+// `expect`, not `allow`: an unfulfilled expectation is an error, so if this function ever
+// loses arguments the suppression goes with it instead of outliving its reason. The scorecard
+// counts the difference — an `allow` here is one more obligation the tree declares and does
+// not discharge.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one model, every committed file it is built from"
+)]
 pub fn from_parts_with_pins(
     workflows: &[(String, String)],
     ledger: &str,
@@ -372,6 +393,9 @@ pub fn from_parts_with_pins(
     allowlist: &str,
     gate_scripts: Vec<String>,
     image_dependent: &str,
+    replacements: &str,
+    // `gate_defs`: gate name -> (argv, the text of every repository script the argv invokes).
+    gate_defs: &std::collections::BTreeMap<String, (Vec<String>, String)>,
 ) -> Result<Model> {
     let mut wfs = Vec::new();
     for (p, t) in workflows {
@@ -386,7 +410,148 @@ pub fn from_parts_with_pins(
         allowlist: parse_allowlist(allowlist),
         gate_scripts,
         image_dependent_pinned: parse_pin_list(image_dependent),
+        replacements: parse_replacements(replacements, gate_defs),
     })
+}
+
+/// `<context> <- <gate>`, one per line; blanks and `#` comments ignored. A context may contain
+/// spaces (they nearly all do), so the arrow is the separator and not whitespace.
+fn parse_replacements(
+    text: &str,
+    gate_defs: &std::collections::BTreeMap<String, (Vec<String>, String)>,
+) -> Replacements {
+    let mut entries = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((context, gate)) = line.split_once("<-") else {
+            continue;
+        };
+        let gate = gate.trim().to_string();
+        let (cmd, scripts) = gate_defs.get(&gate).cloned().unwrap_or_default();
+        entries.push(Replacement {
+            context: context.trim().to_string(),
+            line: i + 1,
+            expanded: format!("{} {scripts}", cmd.join(" ")),
+            cmd,
+            gate,
+        });
+    }
+    Replacements {
+        entries,
+        present: !text.trim().is_empty(),
+    }
+}
+
+/// Read `.gatehouse/gates/*.json` and resolve each gate's argv to the text a parity check can
+/// read: the argv itself plus every repository script it names. One level of indirection, because
+/// a wrapper that calls a wrapper is a gate nobody can review either.
+fn gate_defs(root: &Path) -> std::collections::BTreeMap<String, (Vec<String>, String)> {
+    let mut out = std::collections::BTreeMap::new();
+    let dir = root.join(".gatehouse/gates");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for e in entries.filter_map(Result::ok) {
+        let path = e.path();
+        if path.extension().is_none_or(|x| x != "json") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|f| f.to_str()) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let cmd: Vec<String> = value["cmd"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // A CONVERTED gate declares `steps` and no `cmd` -- `ci.oneSource_b` proves it of the
+        // PLAN, and `scripts/check-gate-defs-match-plan.sh` now decides it of THIS FILE, which is
+        // the one actually PUT to controld and the one this reads. That distinction is not
+        // pedantry: gatehouse#82 was a gate reaching the executor carrying both, and if one
+        // reached here the `cmd.is_empty()` below would silently prefer a command the executor
+        // does not run -- CI-RP deciding parity against the wrong operand, which is the defect
+        // CI-RP exists to catch, one level up. Assumed until now; checked from here. So
+        // reading `cmd` alone would find every converted gate commandless and CI-RP-1 would
+        // report each one as undefined. Its argv is the concatenation of the steps': the program
+        // and then its arguments, in order.
+        //
+        // This is a BETTER operand than the string it replaces, not a worse one. The old `cmd`
+        // was `["sh", "-c", "a && b && c"]`, whose commands parity had to recover by splitting a
+        // shell string; a converted gate has already split them, and the words below are the
+        // words the executor runs.
+        let cmd: Vec<String> = if cmd.is_empty() {
+            value["steps"]
+                .as_array()
+                .map(|steps| {
+                    steps
+                        .iter()
+                        .map(|st| {
+                            let program = st["program"].as_str().unwrap_or_default().to_string();
+                            let args = st["args"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|v| v.as_str().map(str::to_string))
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            std::iter::once(program)
+                                .chain(args)
+                                .filter(|w| !w.is_empty())
+                                .collect::<Vec<_>>()
+                        })
+                        .filter(|w| !w.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .map(|per_step: Vec<Vec<String>>| {
+                    // `&&` BETWEEN steps, because `expanded` is read by a tokenizer that splits
+                    // on shell separators. Joined with spaces alone, eleven programs read as one
+                    // invocation with every flag merged onto the first — which reported all
+                    // eleven text checks and both clippy invocations as missing from the gates
+                    // that plainly run them.
+                    //
+                    // `&&` is the faithful separator, not a convenience: a step runs only if the
+                    // one before it succeeded (evidence is a prefix, and a failing step stops the
+                    // sequence), which is what `&&` means.
+                    let mut out: Vec<String> = Vec::new();
+                    for (i, words) in per_step.into_iter().enumerate() {
+                        if i > 0 {
+                            out.push("&&".to_string());
+                        }
+                        out.extend(words);
+                    }
+                    out
+                })
+                .unwrap_or_default()
+        } else {
+            cmd
+        };
+        let mut scripts = String::new();
+        for word in cmd.iter().flat_map(|w| w.split_whitespace()) {
+            let word = word.trim_matches(|c| c == '\'' || c == '"');
+            if (word.starts_with("scripts/") || word.starts_with("ci/"))
+                && word.ends_with(".sh")
+                && let Ok(body) = std::fs::read_to_string(root.join(word))
+            {
+                scripts.push_str(&body);
+                scripts.push('\n');
+            }
+        }
+        out.insert(name.to_string(), (cmd, scripts));
+    }
+    out
 }
 
 /// One entry per line; blanks and `#` comments ignored.
@@ -449,5 +614,68 @@ pub fn from_repo(root: &Path) -> Result<Model> {
         &allow,
         gate_scripts,
         &image_dependent,
+        &read("ci/gatehouse-replacements.txt").unwrap_or_default(),
+        &gate_defs(root),
     )
+}
+
+#[cfg(test)]
+mod gate_def_tests {
+    use super::gate_defs;
+
+    /// A CONVERTED gate declares `steps` and no `cmd`, and its argv has to be read out of them —
+    /// otherwise CI-RP-1 reports every gate in a converted plan as defining no command.
+    ///
+    /// The `&&` between steps is the part worth pinning. `Replacement::expanded` is read by a
+    /// tokenizer that splits on shell separators, so steps joined by spaces alone collapse into a
+    /// single invocation carrying every flag: eleven text checks read as one, and both clippy
+    /// invocations read as one with `-p portcullis` merged in. That is not a hypothetical — it
+    /// reported twelve critical findings against gates that plainly ran the commands.
+    #[test]
+    fn a_converted_gate_declares_its_argv_in_steps_separated_as_a_sequence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gates = dir.path().join(".gatehouse/gates");
+        std::fs::create_dir_all(&gates).expect("mkdir");
+        std::fs::write(
+            gates.join("clippy.json"),
+            r#"{"cmd":[],"steps":[
+                 {"program":"scripts/sdk.sh"},
+                 {"program":"cargo","args":["clippy","--locked","--","-D","warnings"]},
+                 {"program":"cargo","args":["clippy","-p","portcullis","--","-D","warnings"]}
+               ]}"#,
+        )
+        .expect("write");
+        // An UNCONVERTED gate is unchanged: `cmd` wins and nothing is derived.
+        std::fs::write(
+            gates.join("fmt.json"),
+            r#"{"cmd":["cargo","fmt","--all","--","--check"]}"#,
+        )
+        .expect("write");
+
+        let defs = gate_defs(dir.path());
+        let (clippy, _) = defs.get("clippy").expect("clippy");
+        assert_eq!(
+            clippy,
+            &[
+                "scripts/sdk.sh",
+                "&&",
+                "cargo",
+                "clippy",
+                "--locked",
+                "--",
+                "-D",
+                "warnings",
+                "&&",
+                "cargo",
+                "clippy",
+                "-p",
+                "portcullis",
+                "--",
+                "-D",
+                "warnings",
+            ]
+        );
+        let (fmt, _) = defs.get("fmt").expect("fmt");
+        assert_eq!(fmt, &["cargo", "fmt", "--all", "--", "--check"]);
+    }
 }
