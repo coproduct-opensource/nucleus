@@ -116,6 +116,10 @@ jobs:
       # definitions needs no checkout and runs above, unconditionally.
       - name: The committed elaboration is what the plan elaborates to
         if: steps.tok.outputs.present == 'true'
+        # `bash -e {0}`, which a bare `run:` gets, has no pipefail: `gate plan gates` could fail
+        # and `python3` still succeed, and the diff would then compare the committed elaboration
+        # against an empty document and pass. `xtask pipefail` caught exactly that here.
+        shell: bash
         run: |
           gatehouse/target/debug/gate plan gates .gatehouse/pipeline.writ \
             | python3 -c 'import json,sys; json.dump(json.load(sys.stdin), sys.stdout, indent=2, sort_keys=True); print()' \
