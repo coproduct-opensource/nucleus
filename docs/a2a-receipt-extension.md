@@ -76,7 +76,7 @@ examples:
 
 ## Payload schema
 
-The metadata value is a `nucleus-envelope` **bundle** (schema version 1):
+The metadata value is a `nucleus-envelope` **bundle** (schema version 2):
 `{ "envelope": { "edges": […] }, "payload": {…}, "jwks": {…} }`, whose
 signed payload is the commerce binding:
 

@@ -226,19 +226,41 @@ pub struct EdgeInclusionProof {
 }
 
 /// Metadata about the envelope itself (not about the payload it covers).
+///
+/// **Authenticated by the payload binding, and only by it.** From schema
+/// version 2 the binding's signed bytes include the RFC 8785 form of this
+/// struct (see [`crate::binding::signed_bytes`]), so a bundle whose binding
+/// verifies has an authentic `created_at` and `schema_version`. A bundle
+/// with no binding has no producer signature over its assembly at all — its
+/// payload and its metadata are equally unauthenticated, and
+/// [`crate::VerificationReport::payload_binding_verified`] says so. Require
+/// the binding with [`crate::TrustAnchor::require_payload_binding`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvelopeMeta {
-    /// Envelope schema version. Bump on any breaking change to the wire
-    /// format; verifiers may refuse unknown versions.
+    /// Envelope schema version. Verifiers refuse anything outside
+    /// [`MIN_SUPPORTED_ENVELOPE_SCHEMA_VERSION`]..=[`ENVELOPE_SCHEMA_VERSION`].
     pub schema_version: u32,
     /// Wall-clock time the bundle was assembled.
     pub created_at: DateTime<Utc>,
 }
 
-/// Current envelope schema version. Verifiers should accept this and
-/// reject (or migrate) anything newer than they understand.
-pub const ENVELOPE_SCHEMA_VERSION: u32 = 1;
+/// Current envelope schema version.
+///
+/// **2** (from 1): the payload binding hashes the payload's RFC 8785
+/// canonical form instead of `serde_json::to_vec` — whose key order follows
+/// `serde_json/preserve_order` and so split producers from verifiers built
+/// with different feature sets — and it signs [`EnvelopeMeta`], which version
+/// 1 left unauthenticated.
+pub const ENVELOPE_SCHEMA_VERSION: u32 = 2;
+
+/// The oldest schema version a verifier accepts.
+///
+/// Equal to [`ENVELOPE_SCHEMA_VERSION`] on purpose. A version-1 binding
+/// signs neither the metadata nor a canonical payload hash, so accepting
+/// version 1 would re-open both gaps for anyone who rewrites a bundle's
+/// `schema_version` to 1. Version-1 bundles no longer verify; re-emit them.
+pub const MIN_SUPPORTED_ENVELOPE_SCHEMA_VERSION: u32 = 2;
 
 impl EnvelopeMeta {
     /// Default metadata stamped with the current time and current schema
@@ -457,9 +479,10 @@ impl<'a> BundleBuilder<'a> {
         };
 
         // v2.2 payload binding (optional). The binding signature
-        // covers (sha256(payload) || envelope_head_hash || merkle_root)
-        // via DSSE PAE so a downstream verifier can detect payload
-        // tampering even when every per-edge signature still checks.
+        // covers (sha256(JCS(payload)) || envelope_head_hash || merkle_root
+        // || JCS(meta)) via DSSE PAE so a downstream verifier can detect
+        // payload or metadata tampering even when every per-edge signature
+        // still checks.
         let binding = if let Some(signer) = self.binding_signer {
             // **MED-2 (audit) fix.** Refuse to mint a binding over an
             // empty envelope. compute_envelope_head_hash returns
@@ -484,7 +507,8 @@ impl<'a> BundleBuilder<'a> {
                 &payload_h,
                 &head_hash,
                 merkle_root_bytes.as_ref(),
-            );
+                &envelope.meta,
+            )?;
             let signature = signer.sign(&to_sign)?;
             Some(PayloadBinding {
                 payload_type: NUCLEUS_BUNDLE_PAYLOAD_TYPE.to_string(),

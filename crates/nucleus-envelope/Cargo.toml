@@ -23,6 +23,14 @@ thiserror = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# RFC 8785 (JCS) for the payload binding's payload hash and metadata field —
+# the same canonicalization, and pin, nucleus-receipt signs with. Plain
+# `serde_json::to_vec` follows `serde_json/preserve_order`, which feature
+# unification turns on in some builds and not others.
+serde_json_canonicalizer = "0.3"
+# `jcs_inexact_integer`: the one decider for "this integer has no exact JCS
+# form" — the receipt refuses such a value on the same rule.
+nucleus-receipt = { path = "../nucleus-receipt" }
 
 # C2PA v2.3 manifest export — gated behind `c2pa` feature. Default-off so
 # the lean dep tree is preserved for callers who don't need EU AI Act
@@ -37,8 +45,6 @@ c2pa = ["dep:c2pa"]
 [dev-dependencies]
 nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
 tempfile = { workspace = true }
-# A8 walks a receipt through the same harness as a bundle (tests/verification_is_exact.rs).
-nucleus-receipt = { path = "../nucleus-receipt" }
 
 [lints]
 workspace = true

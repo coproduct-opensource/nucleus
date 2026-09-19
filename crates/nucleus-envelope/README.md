@@ -33,14 +33,26 @@ it as a provenance claim.
    content hash; splicing/reordering breaks the chain.
 3. **Signed tree heads (STHs)** — a witness Ed25519 signature over
    `(tree_size, timestamp_ms, root_hash)` attests "the log had N entries at this
-   moment."
+   moment." The Merkle anchor's STH binds the session edges by inclusion proof;
+   `checkpoints` are verified against the same witness key, the anchor, and —
+   when the bundle carries the whole log — roots recomputed from its edges.
+4. **Payload binding** — the producer's signature over the RFC 8785 payload
+   hash, the chain head, the Merkle root and the envelope metadata.
 
-### Scope limits (v1)
+### Schema version 2
 
-Per-STH **inclusion proofs** binding session edges to the signed Merkle root are
-**not** in v1: the STH ships as a contemporaneous *time* attestation, and the
-cryptographic edge↔root linkage (audit-path generation) is a v2 follow-up. Edge-
-level and chain-level integrity are fully enforced today.
+Version 2 hashes the payload's RFC 8785 form (version 1 used
+`serde_json::to_vec`, whose key order depends on `serde_json/preserve_order`)
+and signs `meta` (`schema_version`, `created_at`), which version 1 left
+unauthenticated. Verifiers refuse version 1 (`SchemaTooOld`): re-emit old
+bundles.
+
+### Scope limits
+
+Checkpoints of a log larger than the session are checked for signature,
+equivocation and agreement with the anchor, but cannot be recomputed from the
+bundle. A bundle without a payload binding has no producer signature over its
+payload or metadata — require one with `TrustAnchor::require_payload_binding`.
 
 ## Interop exports
 

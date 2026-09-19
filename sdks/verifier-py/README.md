@@ -68,7 +68,7 @@ assert report["trust_mode"] in ("out_of_band", "self_check_only")
     "edge_count": 5,
     "checkpoint_count": 1,
     "head_edge_hash_hex": "<64-char SHA-256 hex>",
-    "schema_version": 1,
+    "schema_version": 2,
     "kids": ["..."],                       # every kid covered by the JWKS
     "merkle_verified": True,
     "cosignatures_verified": 2,
