@@ -80,14 +80,6 @@ impl CertifiedCeiling {
     pub(crate) fn for_test(micros: u64) -> Self {
         CertifiedCeiling(MicroUsd::new(micros))
     }
-
-    /// An unbounded ceiling, for [`crate::test_support`] only. Gated on the
-    /// `test-support` feature, which `default` does not enable: a production
-    /// dependency cannot reach it, so the evidence this type carries survives.
-    #[cfg(feature = "test-support")]
-    pub(crate) fn unbounded_for_testing() -> Self {
-        CertifiedCeiling(MicroUsd::MAX)
-    }
 }
 
 /// Why a bid could not be built.

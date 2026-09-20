@@ -19,6 +19,14 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 ureq = { workspace = true }
 nucleus-client = { path = "../nucleus-client" }
+# `exchange` drives the real RoundScheduler — real windows, real closer tasks,
+# real run_vcg — so the numbers describe shipped code rather than a model of it.
+nucleus-authority-exchange = { path = "../nucleus-authority-exchange", features = ["test-support"] }
+nucleus-econ-types = { path = "../nucleus-econ-types" }
+nucleus-permission-market = { path = "../nucleus-permission-market" }
+nucleus-recompute = { path = "../nucleus-recompute" }
+# The scheduler is async: `exchange` is the only subcommand that needs a runtime.
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
 portcullis = { path = "../portcullis", features = ["spec", "dlc"] }
 # Approvals on a real pod are Ed25519; `pkcs8` loads the node's persisted
 # approval signing key from its DER file.
