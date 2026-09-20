@@ -114,6 +114,8 @@ struct Observed {
     seq: u32,
     /// Which round it landed in, recovered from the receipt's declared bids.
     round: Option<String>,
+    /// The round's receipt, kept so the run can close the loop into standing.
+    receipt: Option<std::sync::Arc<nucleus_recompute::ClearingReceipt>>,
 }
 
 pub async fn run(args: Args) -> Result<()> {
@@ -140,14 +142,16 @@ pub async fn run(args: Args) -> Result<()> {
     let mut observed = Vec::new();
     for h in handles {
         let (seq, value, verdict) = h.await?;
-        let (won_at, round) = match verdict {
+        let (won_at, round, receipt) = match verdict {
             // `round` is deliberately ignored in favour of a label derived from
             // the RECEIPT: taking the scheduler's own id would be the harness
             // agreeing with the thing it is measuring about which bids shared a
             // round. Now that a loser carries the receipt too, every bid gets
             // its label from a signed artefact rather than from string matching.
-            Verdict::Won { price, receipt, .. } => (Some(price.get()), round_label(&receipt)),
-            Verdict::Lost { receipt, .. } => (None, round_label(&receipt)),
+            Verdict::Won { price, receipt, .. } => {
+                (Some(price.get()), round_label(&receipt), Some(receipt))
+            }
+            Verdict::Lost { receipt, .. } => (None, round_label(&receipt), Some(receipt)),
             Verdict::Denied(reason) => bail!(
                 "bid {seq} was denied ({reason}); this harness charges everything, \
                  so a denial means the mechanism refused and the run is not measuring \
@@ -159,6 +163,7 @@ pub async fn run(args: Args) -> Result<()> {
             won_at,
             seq,
             round,
+            receipt,
         });
     }
 
@@ -254,12 +259,85 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
             100.0 * (vcg_welfare.saturating_sub(fifo_welfare)) as f64 / vcg_welfare as f64
         );
     }
+
+    standing(observed)?;
+
     println!();
     println!(
         "  Read this as a fact about the workload, not about VCG: allocating to the\n\
          \x20 highest bidder beats allocating to the earliest by construction. What the\n\
          \x20 run tells you is HOW MUCH, at this arrival rate, and what a contended slot\n\
          \x20 costs when someone else wants it."
+    );
+    Ok(())
+}
+
+/// Close the loop the receipts exist for: `receipt → recompute → CreditEvent →
+/// CreditFile → required_bond`.
+///
+/// # Whose standing this is
+///
+/// **The clearing site's, not a bidder's.** A clearing receipt's honesty is a
+/// fact about the *clearing* — it recomputed from declared inputs — and says
+/// nothing about who bid into it. So what accrues here is the standing of the
+/// party that issued the receipts, which is exactly the credible-clearing story:
+/// the auctioneer is untrusted, and every clearing anyone can re-derive is one
+/// more reason not to need to trust it. Reading this as a bidder's reputation
+/// would be attributing a property of the arithmetic to a participant.
+///
+/// # Reported, never enforced
+///
+/// `docs/rfcs/receipt-provenance-defection.md` sets four conditions before
+/// standing may gate anything: every money-gating event derives from a
+/// recompute-verified receipt *in code*; obligations are signed and debits land
+/// on the signing key; the bond is posted and slashable; and the ledger is
+/// durable and transparency-logged. Only the first holds here. This is a number
+/// printed at the end of a run, and nothing in the exchange consults it.
+/// Fold the run's receipts into a deduped set of credit events.
+///
+/// Extracted from [`standing`] so the deduplication can be pinned by a test: it
+/// is the part that is easy to get wrong and invisible when wrong, because a
+/// multiplied reputation looks exactly like a larger one.
+fn reputation_set(observed: &[Observed]) -> nucleus_creditworthiness::crdt::ReputationSet {
+    let mut set = nucleus_creditworthiness::crdt::ReputationSet::new();
+    for o in observed {
+        if let Some(r) = o.receipt.as_deref() {
+            set.verified_insert(r);
+        }
+    }
+    set
+}
+
+fn standing(observed: &[Observed]) -> Result<()> {
+    // Deduped by receipt hash, which is the point of using the CRDT rather than
+    // folding the receipts directly: every participant in a round holds the SAME
+    // receipt, so a naive fold would multiply one honest clearing by the number
+    // of bidders who witnessed it.
+    let set = reputation_set(observed);
+    if set.is_empty() {
+        bail!(
+            "no receipt minted a credit event: the standing below would be zero for a \
+             reason unrelated to the clearings, so the run is not measuring what it claims"
+        );
+    }
+    let file = set.credit_file();
+    let reputation = file.reputation_micro();
+    println!();
+    println!(
+        "  standing of the clearing site (deduped over {} receipt(s))",
+        set.len()
+    );
+    println!("    reputation          {reputation} µUSD of verified clearing");
+    // What that standing substitutes for: the bond an identity would otherwise
+    // post to deter a one-shot defection worth the largest price seen.
+    let worst = observed.iter().filter_map(|o| o.won_at).max().unwrap_or(0);
+    println!(
+        "    required bond       {} µUSD to deter a defection worth {worst} µUSD",
+        file.required_bond(worst).0
+    );
+    println!(
+        "    (reported, not enforced — three of the four conditions in\n\
+         \x20    receipt-provenance-defection.md are not met, so nothing gates on it)"
     );
     Ok(())
 }
@@ -303,6 +381,54 @@ mod tests {
             let v = r.upto(10);
             assert!((1..=10).contains(&v), "{v}");
         }
+    }
+
+    /// Every participant in a round holds the SAME receipt, so a round must
+    /// contribute ONE credit event however many bidders witnessed it. Folding
+    /// the receipts directly would multiply one honest clearing by the size of
+    /// the round, and a multiplied reputation looks exactly like a larger one.
+    #[tokio::test]
+    async fn a_round_contributes_one_credit_event_however_many_bid() {
+        let dim = PermissionDimension::NetworkEgress;
+        let s = RoundScheduler::new(Duration::from_millis(20), AlwaysPays);
+        let mut handles = Vec::new();
+        for (name, v) in [("a", 100u64), ("b", 70), ("c", 40)] {
+            let s = Arc::clone(&s);
+            handles.push(tokio::spawn(async move { s.join(bid(name, v, dim)).await }));
+        }
+        let mut observed = Vec::new();
+        for (seq, h) in handles.into_iter().enumerate() {
+            let (won_at, receipt) = match h.await.expect("joined") {
+                Verdict::Won { price, receipt, .. } => (Some(price.get()), Some(receipt)),
+                Verdict::Lost { receipt, .. } => (None, Some(receipt)),
+                Verdict::Denied(r) => panic!("denied: {r}"),
+            };
+            observed.push(Observed {
+                value: 1,
+                won_at,
+                seq: seq as u32,
+                round: None,
+                receipt,
+            });
+        }
+        assert_eq!(observed.len(), 3, "three bidders took part");
+        assert_eq!(
+            reputation_set(&observed).len(),
+            1,
+            "three witnesses to one clearing is one credit event, not three"
+        );
+        // And what the naive fold would have given, so this test carries its own
+        // evidence that the deduplication is load-bearing rather than incidental.
+        let receipts: Vec<_> = observed
+            .iter()
+            .filter_map(|o| o.receipt.as_deref().cloned())
+            .collect();
+        assert_eq!(
+            nucleus_creditworthiness::mint::mint_events(&receipts).len(),
+            3,
+            "folding the receipts directly triples one clearing — the defect the \
+             deduped set exists to prevent"
+        );
     }
 
     /// The round label is the sorted bidder set from the receipt, so two bids

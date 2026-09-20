@@ -26,6 +26,8 @@ nucleus-econ-types = { path = "../nucleus-econ-types" }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
 nucleus-recompute = { path = "../nucleus-recompute" }
 nucleus-econ-kernels = { path = "../nucleus-econ-kernels" }
+# Closes the loop the receipts exist for: recompute -> CreditEvent -> required_bond.
+nucleus-creditworthiness = { path = "../nucleus-creditworthiness" }
 # The scheduler is async: `exchange` is the only subcommand that needs a runtime.
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
 portcullis = { path = "../portcullis", features = ["spec", "dlc"] }

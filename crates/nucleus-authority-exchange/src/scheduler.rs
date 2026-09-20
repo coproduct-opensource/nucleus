@@ -479,7 +479,10 @@ mod tests {
             panic!("vcg");
         };
         assert!(
-            claim.bids.iter().any(|x| x.bidder == "a" && x.effective_value_micro_usd == 100),
+            claim
+                .bids
+                .iter()
+                .any(|x| x.bidder == "a" && x.effective_value_micro_usd == 100),
             "the receipt must show the bid that beat it"
         );
         let Verdict::Won { round: wr, .. } = &va else {

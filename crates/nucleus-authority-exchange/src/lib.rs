@@ -64,6 +64,31 @@
 //!
 //! It does not run a service, hold a key, or know a tenant — see
 //! `docs/adr/0008-the-public-private-line.md`.
+//!
+//! # Why a win does not mint a certificate
+//!
+//! The obvious next step is to hand the winner an attenuated delegation
+//! certificate with an expiry, minted through the path `verify_certificate`
+//! already walks. It is the wrong artifact, for two reasons that are worth
+//! recording so nobody re-derives them.
+//!
+//! **The exchange does not grant authority.** Every bidder already holds the
+//! capability it is bidding for — that is where [`CertifiedCeiling`] comes from.
+//! What is scarce is not the right but the *opportunity to exercise it*, and the
+//! auction rations that. A certificate says "you may"; the winner could already.
+//! Issuing one would overstate what happened, and `chain_attenuates` would be
+//! guarding a hop that widens nothing.
+//!
+//! **The pod cannot mint its own authority.** The proxy runs inside the
+//! workload. A certificate it signed for itself would be an agent granting
+//! itself a capability, which inverts the trust model this repository exists to
+//! hold: `exercised authority ≼ delegated authority` is a bound set by the
+//! *principal*, upstream, not by the party exercising it.
+//!
+//! So a win is a decision about *this request*, recorded and charged. If a
+//! future version wants a winner to hold a slot across several calls, the honest
+//! primitive is a **lease** on a capability already held — not a certificate,
+//! and not minted here.
 
 #![forbid(unsafe_code)]
 // A function whose type says `-> T` and panics is lying about its type, and this

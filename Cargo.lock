@@ -7232,6 +7232,7 @@ dependencies = [
  "hmac 0.13.0",
  "nucleus-authority-exchange",
  "nucleus-client",
+ "nucleus-creditworthiness",
  "nucleus-econ-kernels",
  "nucleus-econ-types",
  "nucleus-permission-market",
