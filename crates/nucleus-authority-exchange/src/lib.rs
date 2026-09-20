@@ -110,11 +110,15 @@
 
 pub mod bid;
 pub mod clearing;
+pub mod index;
 pub mod round;
 pub mod scheduler;
 
 pub use bid::{BidError, CertifiedCeiling, SignedBid};
-pub use clearing::{ClearError, Clearing, PostedPriceClearing, VcgClearing};
+pub use clearing::{
+    ClearError, Clearing, PostedPriceClearing, VcgClearing, slot_dimension, slot_id,
+};
+pub use index::{DimensionIndex, IndexError, PriceIndex, PriceStats};
 pub use round::{Admission, AdmitAll, AdmitError, Round, RoundOutcome};
 pub use scheduler::{ChargeError, Charger, DenyReason, RoundScheduler, UnwiredCharger, Verdict};
 

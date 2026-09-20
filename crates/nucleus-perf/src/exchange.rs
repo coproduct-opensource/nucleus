@@ -216,8 +216,19 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
         }
     }
 
-    let mut prices: Vec<u64> = contested.iter().filter_map(|o| o.won_at).collect();
-    prices.sort_unstable();
+    // The price statistics come from the INDEX over the receipts, not from the
+    // verdicts the harness observed. Two reasons: the index refuses any receipt
+    // that does not recompute, so a printed price is one a stranger can
+    // re-derive; and it dedups by content hash, so a round witnessed by four
+    // bidders is one round. The observed verdicts are still used for welfare,
+    // which is a fact about the bidders' private values the receipt does not
+    // carry.
+    let receipts: Vec<nucleus_recompute::ClearingReceipt> = observed
+        .iter()
+        .filter_map(|o| o.receipt.as_deref().cloned())
+        .collect();
+    let index = nucleus_authority_exchange::PriceIndex::from_receipts(&receipts)
+        .map_err(|e| anyhow::anyhow!("a receipt this run produced does not index: {e}"))?;
 
     println!("nucleus-perf exchange — seed {}", args.seed);
     println!(
@@ -244,12 +255,20 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
         bail!("no contested round");
     }
 
-    println!(
-        "  clearing price        p50 {} µUSD, p90 {} µUSD, max {} µUSD",
-        pctl(&prices, 50),
-        pctl(&prices, 90),
-        prices.last().copied().unwrap_or(0)
-    );
+    for (label, d) in &index.dimensions {
+        match d.price {
+            Some(p) => println!(
+                "  clearing price        {label}: p50 {} µUSD, p90 {} µUSD, max {} µUSD \
+                 (indexed over {} receipt(s), {} contested)",
+                p.p50.get(),
+                p.p90.get(),
+                p.max.get(),
+                index.receipts,
+                d.contested
+            ),
+            None => println!("  clearing price        {label}: no contested round to price"),
+        }
+    }
     println!("  welfare (VCG)         {vcg_welfare} µUSD");
     println!("  welfare (FIFO)        {fifo_welfare} µUSD");
     if fifo_welfare > 0 {
@@ -348,14 +367,6 @@ fn pct(n: usize, d: usize) -> f64 {
     } else {
         100.0 * n as f64 / d as f64
     }
-}
-
-fn pctl(sorted: &[u64], p: usize) -> u64 {
-    if sorted.is_empty() {
-        return 0;
-    }
-    let idx = (sorted.len().saturating_sub(1)).saturating_mul(p) / 100;
-    sorted.get(idx).copied().unwrap_or(0)
 }
 
 #[cfg(test)]
