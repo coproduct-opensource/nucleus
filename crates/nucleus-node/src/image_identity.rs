@@ -85,6 +85,14 @@ fn pins<'a>(image: &'a ImageSpec, jail: Option<&JailLayout>) -> Vec<Pinned<'a>> 
 /// digest an attestation reports, and the digest a posture claim is admitted against are one
 /// function's output and cannot drift apart.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// # Why this carries the `image.verify` boot stage
+///
+/// It measures every pinned artifact, and the artifacts are microVM images. Over 843 pod boots
+/// on the acceptance builder this was the whole of the boot's unaccounted time: `prepare_jail`
+/// closed at +82 ms and `attestation.hash` opened at +13.4 s with nothing instrumented between
+/// them, which is 63% of a 21.4 s median boot spent where no stage could name it. The span is
+/// what turns that gap into a number; `measure_artifact`'s memo is what makes the number small.
+#[tracing::instrument(skip_all, fields(boot.stage = "image.verify"))]
 pub(crate) async fn verify(image: &ImageSpec, jail: Option<&JailLayout>) -> Result<(), String> {
     for p in pins(image, jail) {
         let measured = nucleus_identity::attestation::measure_artifact(&p.path)

@@ -594,8 +594,138 @@ fn decode_generalized_time(data: &[u8], pos: &mut usize) -> Result<DateTime<Utc>
 /// function's output, so they cannot drift apart. Returns the raw 32-byte hash;
 /// callers hex-encode for comparison against operator-supplied digests.
 pub async fn measure_artifact(path: &Path) -> Result<Hash256> {
-    hash_file(path).await
+    // MEMOIZED, because the same 8 GiB rootfs was being read twice on every pod boot and again
+    // on the next pod. Measured 2026-09-20 over 843 boots on the acceptance builder: wall 21.4 s
+    // median, of which `attestation.hash` is 5.5 s and a further 13.4 s (63% of the boot) was
+    // unaccounted -- one contiguous gap between `prepare_jail` at +82 ms and `attestation.hash`
+    // at +13.4 s, which is `nucleus_node::image_identity::verify` calling this function for the
+    // kernel, rootfs, scratch and data pins. The guest itself boots in 1.97 s.
+    //
+    // The key is the file's identity as the kernel reports it -- device, inode, size and mtime,
+    // to the nanosecond -- which is the same discriminator `nucleus_node::identity`'s
+    // `attestation_key` already uses for the whole attestation, and the same one gatehouse's
+    // catalog uses for its verification stamps. Any write that changes the bytes changes at
+    // least one of those, so a hit means the file has not been touched since it was read.
+    //
+    // WHAT THIS DOES NOT SURVIVE, stated rather than discovered: a writer that restores size,
+    // inode and mtime around a modification defeats it. That is the identical exposure the
+    // attestation cache already accepts at the identical granularity, so this adds no new
+    // trust -- it extends an accepted one to the call site that was paying full price. The
+    // memo is per PROCESS and is dropped when the node restarts, which is what makes "verify
+    // once per boot" true without a stamp file.
+    let Some(key) = file_identity(path).await else {
+        // Not a regular file, or unreadable metadata: measure it and cache nothing. A path this
+        // function cannot identify is one it must not remember.
+        return hash_file(path).await;
+    };
+    if let Some(hit) = MEASURED.read().await.get(&key).copied() {
+        return Ok(hit);
+    }
+    let digest = hash_file(path).await?;
+    let mut w = MEASURED.write().await;
+    // Artifacts are catalog images: a handful of distinct files, each named by its own digest.
+    // The bound is a guard against a pathological caller, not a working eviction policy -- if it
+    // is ever reached the memo stops helping rather than starts lying.
+    if w.len() < 4096 {
+        w.insert(key, digest);
+    }
+    Ok(digest)
 }
+
+#[cfg(test)]
+mod measure_memo_tests {
+    use super::*;
+
+    /// The second measurement of an untouched file does not read it again.
+    ///
+    /// Proven by rewriting the CONTENTS while restoring size and mtime, so the file's identity
+    /// is unchanged and its bytes are not. A working memo answers with the FIRST digest, which
+    /// no amount of re-reading could produce; a memo that is absent returns the new one.
+    /// Asserting only that two measurements of an untouched file agree would pass just as well
+    /// with no cache present, which is the shape of a test that cannot fail.
+    ///
+    /// It doubles as the executable statement of what the memo does not survive -- a writer that
+    /// restores size, inode and mtime around a modification -- so that exposure is pinned rather
+    /// than only described in a comment.
+    #[tokio::test]
+    async fn an_unchanged_file_is_measured_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rootfs-a.img");
+        tokio::fs::write(&path, b"aaaaaaaaaaaaaaaa")
+            .await
+            .expect("write");
+        let times = std::fs::FileTimes::new()
+            .set_accessed(std::time::SystemTime::UNIX_EPOCH)
+            .set_modified(std::time::SystemTime::UNIX_EPOCH);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open")
+            .set_times(times)
+            .expect("stamp");
+        let first = measure_artifact(&path).await.expect("first measurement");
+
+        // Same length, same mtime, different bytes: the identity is unchanged by construction.
+        tokio::fs::write(&path, b"bbbbbbbbbbbbbbbb")
+            .await
+            .expect("rewrite");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open")
+            .set_times(times)
+            .expect("restamp");
+        let second = measure_artifact(&path).await.expect("second measurement");
+        assert_eq!(
+            first, second,
+            "the memo did not answer: the file was re-read despite an unchanged identity"
+        );
+    }
+
+    /// A file REWRITTEN in place is measured again: the memo keys on size and mtime, so the
+    /// bytes changing changes the key. Without this the memo would be a way to serve a stale
+    /// digest for a modified image, which is the failure it must not have.
+    #[tokio::test]
+    async fn a_rewritten_file_is_measured_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rootfs.img");
+        tokio::fs::write(&path, b"first contents")
+            .await
+            .expect("write");
+        let first = measure_artifact(&path).await.expect("first");
+        // Different length, so size alone already separates them; mtime moves too.
+        tokio::fs::write(&path, b"second contents, longer")
+            .await
+            .expect("rewrite");
+        let second = measure_artifact(&path).await.expect("second");
+        assert_ne!(
+            first, second,
+            "a rewritten file must not answer from the memo"
+        );
+    }
+}
+
+/// `dev:ino:size:mtime.nsec` for a regular file, or `None` when the path is not one.
+async fn file_identity(path: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let m = tokio::fs::symlink_metadata(path).await.ok()?;
+    if !m.is_file() {
+        return None;
+    }
+    Some(format!(
+        "{}:{}:{}:{}.{}",
+        m.dev(),
+        m.ino(),
+        m.size(),
+        m.mtime(),
+        m.mtime_nsec()
+    ))
+}
+
+/// Digests of artifacts already measured in this process, by [`file_identity`].
+static MEASURED: std::sync::LazyLock<
+    tokio::sync::RwLock<std::collections::HashMap<String, Hash256>>,
+> = std::sync::LazyLock::new(|| tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
 /// Computes SHA-256 hash of a file, a chunk at a time.
 ///
