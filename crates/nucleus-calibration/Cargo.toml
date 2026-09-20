@@ -1,0 +1,27 @@
+[package]
+name = "nucleus-calibration"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Recomputable calibration receipts for decision models: integer-exact Brier and ECE over declared (probability, outcome) pairs, with the noise floor for the sample size printed beside every estimate — and a verdict that says 'could not look' when n cannot distinguish calibrated from not."
+publish = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+# The verdict enum. Same three arms every other recomputable claim in this
+# workspace uses, so a verifier that already understands a clearing receipt
+# understands this one.
+nucleus-recompute = { path = "../nucleus-recompute", version = "1.0.0" }
+
+[dev-dependencies]
+proptest = { workspace = true }
