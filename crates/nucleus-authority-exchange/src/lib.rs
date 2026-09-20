@@ -86,10 +86,12 @@
 pub mod bid;
 pub mod clearing;
 pub mod round;
+pub mod scheduler;
 
 pub use bid::{BidError, CertifiedCeiling, SignedBid};
 pub use clearing::{ClearError, Clearing, PostedPriceClearing, VcgClearing};
 pub use round::{AdmitError, Round, RoundOutcome};
+pub use scheduler::{ChargeError, Charger, DenyReason, RoundScheduler, UnwiredCharger, Verdict};
 
 /// Fixtures for doctests and downstream tests.
 ///

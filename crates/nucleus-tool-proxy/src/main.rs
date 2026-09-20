@@ -18,7 +18,11 @@ use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeT
 use nucleus::portcullis::kernel::{DecisionToken, Kernel};
 use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
-use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
+use nucleus_authority_exchange::{CertifiedCeiling, Charger, RoundScheduler, SignedBid, Verdict};
+use nucleus_econ_types::AgentId;
+use nucleus_permission_market::{
+    PermissionBid, PermissionDimension, PermissionGrant, PermissionMarket,
+};
 use nucleus_spec::PodSpec;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
@@ -318,6 +322,26 @@ struct Args {
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_DELEGATION_CEILING")]
     delegation_ceiling: Option<String>,
 
+    /// Scarce-authority dimensions cleared by a truthful auction instead of the
+    /// Lagrangian screen. Comma-separated, from `filesystem`, `command_exec`,
+    /// `network_egress`, `approval`.
+    ///
+    /// Empty (the default) changes nothing: every dimension keeps the posted-price
+    /// path. A named dimension holds each request for `--clearing-window-ms`,
+    /// clears the group with the proven VCG kernel, and charges the winner the
+    /// Clarke pivot against this pod's delegated budget. A request for a named
+    /// dimension that arrives WITHOUT a verified delegation certificate is
+    /// refused: the bid ceiling comes from the certificate, and a bid the
+    /// principal did not authorise is not a bid.
+    #[arg(long, env = "NUCLEUS_CLEARING_DIMENSIONS", value_delimiter = ',')]
+    clearing: Vec<String>,
+
+    /// How long a clearing round collects bids before it closes, in
+    /// milliseconds. This is added latency on every request for a cleared
+    /// dimension, paid to make a second price exist at all.
+    #[arg(long, env = "NUCLEUS_CLEARING_WINDOW_MS", default_value_t = 50)]
+    clearing_window_ms: u64,
+
     // === Delegation Certificate Configuration ===
     /// Hex-encoded Ed25519 public key of the root delegation authority.
     /// When set, the tool-proxy accepts `x-nucleus-delegation-cert` headers
@@ -458,6 +482,12 @@ pub(crate) struct AppState {
     orchestrator_credentials: std::collections::BTreeMap<String, String>,
     /// Permission market for Lagrangian pricing of capability dimensions.
     permission_market: Arc<Mutex<PermissionMarket>>,
+    /// Dimensions whose slots are auctioned rather than posted-priced. Empty by
+    /// default, so this is inert until an operator names a dimension.
+    clearing_dimensions: std::collections::BTreeSet<PermissionDimension>,
+    /// The round scheduler, present exactly when `clearing_dimensions` is not
+    /// empty. `Box<dyn Charger>` so the charger is chosen at startup.
+    authority_exchange: Option<Arc<RoundScheduler<Box<dyn Charger>>>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
     sandbox_proof: sandbox_proof::SandboxProof,
     /// Root authority Ed25519 public key for delegation certificate verification.
@@ -1247,6 +1277,86 @@ fn console_line(msg: &str) {
     eprint!("{line}");
 }
 
+/// Which dimensions `--clearing` names, or why the flag is wrong.
+///
+/// An unknown name is an error, not a skip. The failure this forbids is a typo
+/// (`network-egress` for `network_egress`) that leaves the operator believing a
+/// dimension is auctioned while it quietly stays on the posted-price path —
+/// absence of evidence reading as evidence of absence, which is the exact shape
+/// `GI002` exists to catch in the shell gates.
+fn parse_clearing_dimensions(
+    names: &[String],
+) -> Result<std::collections::BTreeSet<PermissionDimension>, String> {
+    let mut set = std::collections::BTreeSet::new();
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let Some(dim) = PermissionDimension::ALL
+            .iter()
+            .copied()
+            .find(|d| d.label() == name)
+        else {
+            return Err(format!(
+                "--clearing: unknown dimension {name:?}; expected one of {}",
+                PermissionDimension::ALL
+                    .iter()
+                    .map(|d| d.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        };
+        set.insert(dim);
+    }
+    Ok(set)
+}
+
+#[cfg(test)]
+mod clearing_flag_tests {
+    use super::*;
+
+    /// INERTNESS, and it is the property that matters most about this feature:
+    /// with no `--clearing`, no dimension is auctioned, `authority_exchange`
+    /// stays `None`, and every request takes exactly the path it took before.
+    #[test]
+    fn the_default_auctions_nothing() {
+        assert!(
+            parse_clearing_dimensions(&[])
+                .expect("empty is valid")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn every_dimension_is_nameable_by_its_own_label() {
+        for d in PermissionDimension::ALL {
+            let got = parse_clearing_dimensions(&[d.label().to_string()]).expect("label parses");
+            assert!(got.contains(d), "{} did not parse to itself", d.label());
+        }
+    }
+
+    /// A typo must not read as "auction nothing". An operator who asked for a
+    /// dimension and got silence would believe the mechanism was running.
+    #[test]
+    fn an_unknown_dimension_is_an_error_not_a_skip() {
+        let err = parse_clearing_dimensions(&["network-egress".to_string()])
+            .expect_err("a typo must not be ignored");
+        assert!(err.contains("network-egress"), "{err}");
+        assert!(
+            err.contains("network_egress"),
+            "the error must name the fix: {err}"
+        );
+    }
+
+    #[test]
+    fn blank_entries_from_a_trailing_comma_are_not_errors() {
+        let got = parse_clearing_dimensions(&["network_egress".into(), String::new()])
+            .expect("a trailing comma is not a typo");
+        assert_eq!(got.len(), 1);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
@@ -1617,6 +1727,31 @@ async fn main() -> Result<(), ApiError> {
         })
     };
 
+    // The authority exchange. Inert unless an operator names a dimension: an
+    // empty `--clearing` leaves `authority_exchange` as `None` and every
+    // dimension on the posted-price path it is on today.
+    let clearing_dimensions = parse_clearing_dimensions(&args.clearing).map_err(ApiError::Body)?;
+    let authority_exchange = if clearing_dimensions.is_empty() {
+        None
+    } else {
+        // The pod cannot spend more on authority than it was delegated: the
+        // ledger's ceiling IS this pod's delegated budget, so a round it cannot
+        // afford denies rather than overdrawing.
+        let charger: Box<dyn Charger> =
+            Box::new(nucleus_authority_exchange::scheduler::LedgerCharger::new(
+                portcullis::budget_ledger::BudgetLedger::for_parent(&delegation_ceiling.budget),
+            ));
+        info!(
+            dimensions = %clearing_dimensions.iter().map(|d| d.label()).collect::<Vec<_>>().join(","),
+            window_ms = args.clearing_window_ms,
+            "authority exchange enabled: these dimensions clear by truthful auction"
+        );
+        Some(RoundScheduler::new(
+            std::time::Duration::from_millis(args.clearing_window_ms),
+            charger,
+        ))
+    };
+
     // Load orchestrator credentials from environment for sub-pod injection
     let orchestrator_credentials = {
         let mut creds = std::collections::BTreeMap::new();
@@ -1845,6 +1980,8 @@ async fn main() -> Result<(), ApiError> {
         delegation_ceiling,
         orchestrator_credentials,
         permission_market: Arc::new(Mutex::new(PermissionMarket::new())),
+        clearing_dimensions: clearing_dimensions.clone(),
+        authority_exchange,
         sandbox_proof,
         cert_root_pubkey: args
             .cert_root_pubkey
@@ -2445,6 +2582,79 @@ async fn auth_middleware(
     } else {
         (evaluate_permission_bid(&parts.headers, &state), None)
     };
+
+    // ── The authority exchange ───────────────────────────────────────────
+    // A dimension the operator named clears by auction: the request joins a
+    // round, waits for it to close, and is admitted only if it wins AND the
+    // Clarke pivot is charged. Every other outcome refuses. This runs BEFORE
+    // the posted-price screen below, because the two are alternative
+    // mechanisms for the same decision and running both would price the slot
+    // twice.
+    if let Some(scheduler) = state.authority_exchange.clone()
+        && let Some(dimension) = PermissionDimension::from_endpoint(parts.uri.path())
+        && state.clearing_dimensions.contains(&dimension)
+    {
+        // The ceiling comes from the verified certificate, so a request without
+        // one cannot bid. Refusing is the only honest option: the alternative is
+        // to invent a ceiling, which is what "the agent declares its own value"
+        // means.
+        let Some(ref certified) = certified_perms else {
+            return Err(ApiError::KernelDenied {
+                message: format!(
+                    "{} is cleared by auction; a verified delegation certificate is                      required to bid for it",
+                    dimension.label()
+                ),
+                code: None,
+            });
+        };
+        let ceiling = CertifiedCeiling::from_verified(&certified.verified);
+        // v1 bids the full certified ceiling. Under a second-price rule that is
+        // the truthful report when the ceiling IS the principal's value for the
+        // task, which is what `budget.max_cost_usd` on a task-scoped certificate
+        // means. A per-task value carried in the certificate is the refinement
+        // this leaves open, and it is a certificate change, not a mechanism one.
+        let bid = SignedBid::new(
+            AgentId::new(certified.verified.leaf_identity().to_string()),
+            dimension,
+            ceiling.get(),
+            ceiling,
+        )
+        .map_err(|e| ApiError::KernelDenied {
+            message: format!("authority bid refused: {e}"),
+            code: None,
+        })?;
+
+        match scheduler.join(bid).await {
+            Verdict::Won { price, .. } => {
+                tracing::info!(
+                    dimension = dimension.label(),
+                    price_micro_usd = price.get(),
+                    leaf = %certified.verified.leaf_identity(),
+                    event = "authority_slot_won",
+                    "authority slot cleared and charged"
+                );
+            }
+            Verdict::Lost => {
+                return Err(ApiError::KernelDenied {
+                    message: format!("outbid for the {} slot in this round", dimension.label()),
+                    code: None,
+                });
+            }
+            Verdict::Denied(reason) => {
+                // Every non-win refuses, including a round that never closed.
+                tracing::warn!(
+                    dimension = dimension.label(),
+                    reason = %reason,
+                    event = "authority_slot_denied",
+                    "authority clearing refused the request"
+                );
+                return Err(ApiError::KernelDenied {
+                    message: format!("{} slot not granted: {reason}", dimension.label()),
+                    code: None,
+                });
+            }
+        }
+    }
 
     // Refuse the endpoint when its dimension is denied, including partial grants.
     if let Some(ref grant) = permission_grant
