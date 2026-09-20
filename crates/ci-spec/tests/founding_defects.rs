@@ -717,3 +717,158 @@ fn allowlist_entries_go_stale_loudly() {
         r.rules()
     );
 }
+
+// ── CI-RP: a gate that replaces a context must run what that context ran ─────────────────────
+//
+// The founding defect: on 2026-09-17 four required contexts were retired in one change and
+// `gatehouse/required` took their place. Both edits are subtractions — a line out of the ledger,
+// a rule out of the GitHub ruleset — and nothing in either said which gate now runs
+// `cargo fmt --all -- --check`. Forty-six contexts remain to move.
+
+/// The model with a replacement ledger and gate definitions, which `from_parts` does not take.
+fn run_rp(workflow: &str, replacements: &str, gates: &[(&str, &[&str])]) -> ci_spec::Report {
+    let wfs: Vec<(String, String)> = vec![
+        (".github/workflows/ci.yml".into(), workflow.into()),
+        (".github/workflows/filler.yml".into(), FILLER.into()),
+    ];
+    let ledger = "# PINNED = 2\nRustfmt\nClippy\n";
+    let inline = format!("# UNCOVERED_CEILING = 50\n{FILLER_GATES}");
+    let defs = gates
+        .iter()
+        .map(|(n, cmd)| {
+            (
+                (*n).to_string(),
+                (
+                    cmd.iter().map(|w| (*w).to_string()).collect::<Vec<_>>(),
+                    String::new(),
+                ),
+            )
+        })
+        .collect();
+    let m = ci_spec::loader::from_parts_with_pins(
+        &wfs,
+        ledger,
+        QUEUE,
+        &inline,
+        "",
+        vec![],
+        "",
+        replacements,
+        &defs,
+    )
+    .expect("model");
+    check(&m)
+}
+
+const RP_WORKFLOW: &str = r#"
+name: CI
+on:
+  pull_request:
+  merge_group:
+jobs:
+  fmt:
+    name: RP Fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: cargo fmt --all -- --check
+  clippy:
+    name: RP Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy -p portcullis --all-targets -- -D warnings
+"#;
+
+#[test]
+fn rp_a_gate_that_runs_the_same_commands_is_clean() {
+    let r = run_rp(
+        RP_WORKFLOW,
+        "RP Fmt <- fmt\nRP Clippy <- clippy\n",
+        &[
+            ("fmt", &["cargo", "fmt", "--all", "--", "--check"]),
+            (
+                "clippy",
+                &[
+                    "sh",
+                    "-c",
+                    "cargo clippy --offline --locked --all-targets --all-features -- -D warnings \
+                     && cargo clippy --offline -p portcullis --all-targets --locked -- -D warnings",
+                ],
+            ),
+        ],
+    );
+    let rp: Vec<_> = r
+        .findings
+        .iter()
+        .filter(|f| f.rule.starts_with("CI-RP"))
+        .collect();
+    assert!(
+        rp.is_empty(),
+        "extra flags on the gate's side are not a difference in what it decides: {rp:#?}"
+    );
+}
+
+#[test]
+fn rp_a_gate_that_decides_less_than_the_context_it_replaced_is_red() {
+    // The crate-scoped pass exists because `--all-features` hides the defect it catches (#2746).
+    // A gate that keeps only the workspace pass is a smaller check wearing the same name.
+    let r = run_rp(
+        RP_WORKFLOW,
+        "RP Clippy <- clippy\n",
+        &[(
+            "clippy",
+            &[
+                "sh",
+                "-c",
+                "cargo clippy --offline --locked --all-targets --all-features -- -D warnings",
+            ],
+        )],
+    );
+    assert!(rules(&r).contains(&"CI-RP-2"), "{:#?}", r.findings);
+}
+
+#[test]
+fn rp_a_gate_that_drops_the_denial_is_red() {
+    // `cargo clippy` without `-D warnings` is the same command with the verdict removed.
+    let r = run_rp(
+        RP_WORKFLOW,
+        "RP Fmt <- fmt\n",
+        &[("fmt", &["cargo", "fmt", "--all"])],
+    );
+    assert!(!rules(&r).contains(&"CI-RP-2"), "fmt has no denial to drop");
+    let r = run_rp(
+        RP_WORKFLOW,
+        "RP Clippy <- clippy\n",
+        &[(
+            "clippy",
+            &[
+                "sh",
+                "-c",
+                "cargo clippy --all-targets --all-features && cargo clippy -p portcullis",
+            ],
+        )],
+    );
+    assert!(rules(&r).contains(&"CI-RP-2"), "{:#?}", r.findings);
+}
+
+#[test]
+fn rp_a_replacement_naming_no_gate_is_red_and_one_with_no_producer_is_noted() {
+    let r = run_rp(RP_WORKFLOW, "RP Fmt <- nosuchgate\n", &[]);
+    assert!(rules(&r).contains(&"CI-RP-1"), "{:#?}", r.findings);
+
+    // The workflow job is gone: the claim can no longer be compared with anything, which is a
+    // line to delete rather than a rule that passes.
+    let r = run_rp(
+        RP_WORKFLOW,
+        "Some Retired Context <- fmt\n",
+        &[("fmt", &["cargo", "fmt", "--all", "--", "--check"])],
+    );
+    assert!(
+        r.findings.iter().any(|f| f.rule == "CI-RP-3"),
+        "{:#?}",
+        r.findings
+    );
+    assert!(!rules(&r).contains(&"CI-RP-2"));
+}

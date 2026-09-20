@@ -7,6 +7,7 @@ pub mod concurrency;
 pub mod gates;
 pub mod merge_group;
 pub mod producers;
+pub mod replacement;
 pub mod scope;
 pub mod self_hosted_tools;
 pub mod timeouts;
