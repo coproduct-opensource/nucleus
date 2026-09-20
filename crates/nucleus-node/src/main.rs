@@ -750,6 +750,21 @@ async fn main() -> Result<(), ApiError> {
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
     };
 
+    // Release what the previous life of this node acquired, BEFORE serving anything: a pod
+    // launched first would own a jail this then deletes. Why startup and not a timer is the
+    // argument on `reclaim_orphaned_jails` itself.
+    #[cfg(target_os = "linux")]
+    if args.firecracker_jailer {
+        let n = firecracker_config::reclaim_orphaned_jails(
+            &args.jailer_chroot_base,
+            &args.firecracker_path,
+        )
+        .len();
+        if n > 0 {
+            info!(count = n, "reclaimed jail(s) stranded by a previous node");
+        }
+    }
+
     // Pods that outlived a restart get their certificates + holder keys back.
     let restored_authority = state.authority.restore_from_disk().await;
     info!("restored certificate authority for {restored_authority} pod(s)");
