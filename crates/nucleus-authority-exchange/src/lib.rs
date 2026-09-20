@@ -43,7 +43,7 @@
 //!
 //! let outcome = VcgClearing.clear(&round).unwrap();
 //! // The winner pays the second-highest bid, not its own.
-//! assert_eq!(outcome.winner().unwrap().as_str(), "agent-a");
+//! assert_eq!(outcome.winners()[0].as_str(), "agent-a");
 //! assert_eq!(outcome.price(), Some(MicroUsd::new(70)));
 //! // And the price is re-derivable from the receipt by someone who trusts
 //! // neither the winner nor the operator.
@@ -115,7 +115,7 @@ pub mod scheduler;
 
 pub use bid::{BidError, CertifiedCeiling, SignedBid};
 pub use clearing::{ClearError, Clearing, PostedPriceClearing, VcgClearing};
-pub use round::{AdmitError, Round, RoundOutcome};
+pub use round::{Admission, AdmitAll, AdmitError, Round, RoundOutcome};
 pub use scheduler::{ChargeError, Charger, DenyReason, RoundScheduler, UnwiredCharger, Verdict};
 
 /// Fixtures for doctests and downstream tests.

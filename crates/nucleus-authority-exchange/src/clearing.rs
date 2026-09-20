@@ -42,6 +42,13 @@ pub enum ClearError {
     /// impossible today; refused rather than assumed (A-1).
     #[error("expected a VCG clearing receipt")]
     WrongReceiptKind,
+    /// Winners were charged different prices. With identical units and unit
+    /// demand the Clarke pivot is the same for every winner, so a spread means
+    /// the clearing is outside the regime
+    /// `ThresholdTruthful.lean::multi_unit_truthful` covers — refused rather
+    /// than reported as if it were that mechanism.
+    #[error("winners were not charged a uniform price")]
+    NonUniformPrice,
 }
 
 /// Prices and allocates one round's bids.
@@ -81,7 +88,7 @@ impl Clearing for VcgClearing {
                 effective_value_micro_usd: b.value().get(),
             })
             .collect();
-        // ONE slot, and the exclusivity comes from the budget — not from the
+        // The slots, and the exclusivity comes from the budget — not from the
         // proposal being unique.
         //
         // `optimal_allocation` packs *bids* against the budget, so several bids
@@ -91,39 +98,62 @@ impl Clearing for VcgClearing {
         // zero, which is a posted price at price zero wearing a theorem's name.
         // (Written that way first; the second-price test caught it.)
         //
-        // `budget == cost` with `cost ≥ 1` admits exactly one bid, because
-        // `2·cost > budget`. That is the encoding `run_vcg`'s own
-        // `homogeneous_proposal_classical_vickrey` property uses, and it is what
-        // makes the Clarke pivot equal the second-highest bid. The unit is
-        // notional: authority is the scarce good here, and SLOT_UNITS is the
-        // one indivisible unit of it being rationed, not a price.
+        // A budget of `k · cost` with `cost ≥ 1` admits exactly `k` bids,
+        // because the `k+1`-th no longer fits. That is the encoding `run_vcg`'s
+        // own `homogeneous_proposal_classical_vickrey` property uses at k = 1,
+        // and at any k it makes every winner's Clarke pivot the `k+1`-th
+        // highest bid — the threshold
+        // `ThresholdTruthful.lean::multi_unit_truthful` is stated at. The unit
+        // is notional: authority is the scarce good, and SLOT_UNITS is one
+        // indivisible unit of it, not a price.
         const SLOT_UNITS: u64 = 1;
+        let slots = u64::from(round.slots().get());
         let proposals = vec![IntegerProposal {
             id: SLOT.to_owned(),
             cost_micro_usd: SLOT_UNITS,
         }];
 
-        let receipt = nucleus_recompute::issue_vcg(bids, proposals, SLOT_UNITS)?;
+        let receipt = nucleus_recompute::issue_vcg(bids, proposals, slots * SLOT_UNITS)?;
         let ClearingReceipt::Vcg(ref claim) = receipt else {
             return Err(ClearError::WrongReceiptKind);
         };
-        let win = claim
+        // `first()` rather than `[0]` behind an emptiness check: the check and
+        // the index are two places that have to agree about the same fact, and
+        // only one of them is in the type.
+        let head = claim
             .clearing
             .winners
             .first()
             .ok_or(ClearError::NoAllocation)?;
-        let winner = AgentId::new(win.bidder.clone());
-        let price = MicroUsd::new(win.vcg_payment_micro_usd);
+        // Every winner pays the same pivot in this regime. Checked rather than
+        // assumed: a per-winner price would mean the kernel had left the regime
+        // the theorem covers, and silently pricing the first winner's pivot as
+        // everyone's would hide that.
+        let price = MicroUsd::new(head.vcg_payment_micro_usd);
+        if claim
+            .clearing
+            .winners
+            .iter()
+            .any(|w| w.vcg_payment_micro_usd != price.get())
+        {
+            return Err(ClearError::NonUniformPrice);
+        }
+        let winners: Vec<AgentId> = claim
+            .clearing
+            .winners
+            .iter()
+            .map(|w| AgentId::new(w.bidder.clone()))
+            .collect();
 
         Ok(if round.is_contested() {
             RoundOutcome::Cleared {
-                winner,
+                winners,
                 price,
                 receipt: Box::new(receipt),
             }
         } else {
             RoundOutcome::Uncontested {
-                winner,
+                winners,
                 receipt: Box::new(receipt),
             }
         })
@@ -159,7 +189,7 @@ impl PostedPriceClearing {
 
 impl Clearing for PostedPriceClearing {
     fn clear(&self, round: &Round) -> Result<RoundOutcome, ClearError> {
-        let mut best: Option<(&crate::bid::SignedBid, u64)> = None;
+        let mut admitted: Vec<&crate::bid::SignedBid> = Vec::new();
         for b in round.bids() {
             let grant = self.market.evaluate_bid(&PermissionBid {
                 skill_id: b.bidder().as_str().to_owned(),
@@ -173,20 +203,24 @@ impl Clearing for PostedPriceClearing {
             if grant.granted.is_empty() {
                 continue;
             }
-            // The screen's price is an `f64` cost; the slot's price is what the
-            // winner bid, because a posted price grants at the asking value.
-            // Rounding a float into money is not something this crate will do.
-            let value = b.value().get();
-            if best.is_none_or(|(_, v)| value > v) {
-                best = Some((b, value));
-            }
+            admitted.push(b);
         }
-        Ok(match best {
-            None => RoundOutcome::NoBids,
-            Some((b, _)) => RoundOutcome::PostedPrice {
-                winner: b.bidder().clone(),
-                price: b.value(),
-            },
+        // Highest values take the slots. The screen's own price is an `f64`
+        // cost; the slot's price is what the winner bid, because a posted price
+        // grants at the asking value. Rounding a float into money is not
+        // something this crate will do.
+        admitted.sort_by(|a, b| b.value().cmp(&a.value()));
+        admitted.truncate(round.slots().get() as usize);
+        Ok(if admitted.is_empty() {
+            RoundOutcome::NoBids
+        } else {
+            // The lowest admitted value, so the reported price is one every
+            // winner actually cleared rather than the top bid alone.
+            let price = admitted.last().map_or(MicroUsd::ZERO, |b| b.value());
+            RoundOutcome::PostedPrice {
+                winners: admitted.iter().map(|b| b.bidder().clone()).collect(),
+                price,
+            }
         })
     }
 }
@@ -239,10 +273,11 @@ mod tests {
         let out = VcgClearing
             .clear(&round_of(&[("a", 100), ("b", 70), ("c", 40)]))
             .expect("clears");
-        let RoundOutcome::Cleared { winner, price, .. } = &out else {
+        let RoundOutcome::Cleared { winners, price, .. } = &out else {
             panic!("three bidders is contested: {out:?}");
         };
-        assert_eq!(winner.as_str(), "a");
+        assert_eq!(winners.len(), 1, "one slot, one winner");
+        assert_eq!(winners[0].as_str(), "a");
         assert_eq!(*price, MicroUsd::new(70));
     }
 
@@ -289,10 +324,11 @@ mod tests {
         let out = c
             .clear(&round_of(&[("a", 100), ("b", 70)]))
             .expect("clears");
-        let RoundOutcome::PostedPrice { winner, price } = &out else {
+        let RoundOutcome::PostedPrice { winners, price } = &out else {
             panic!("expected a posted price: {out:?}");
         };
-        assert_eq!(winner.as_str(), "a");
+        assert_eq!(winners.len(), 1, "one slot, one winner");
+        assert_eq!(winners[0].as_str(), "a");
         assert_eq!(*price, MicroUsd::new(100));
         assert!(out.receipt().is_none(), "the screen recomputes nothing");
     }

@@ -1,16 +1,25 @@
 //! A round: one contended authority slot, the bids for it, and what came of it.
 //!
-//! # One slot, on purpose
+//! # How many slots, and why the count is bounded by a theorem
 //!
-//! A round allocates exactly **one** slot of one [`PermissionDimension`]. That is
-//! not a simplification waiting to be lifted — it is the regime the truthfulness
-//! theorem covers. `IntegerVcgTruthful.lean::vickrey_truthful` is about a
-//! single-good Vickrey auction, and `run_vcg` reduces to classical second-price
-//! exactly when every bid is on one proposal (its own
-//! `homogeneous_proposal_classical_vickrey` test). Allocating *k* identical slots
-//! is multi-unit VCG, which the shipped greedy allocator approximates and which
-//! no theorem here covers, so the type does not offer it. Widening the regime is
-//! a proof obligation before it is an API change.
+//! A round allocates `slots` identical units of one [`PermissionDimension`] to
+//! **unit-demand** bidders — each bidder wants at most one.
+//!
+//! One slot was the only offer here until the regime was proved wider.
+//! `IntegerVcgTruthful.lean::vickrey_truthful` covers single-good Vickrey;
+//! `ThresholdTruthful.lean::multi_unit_truthful` now covers `k` identical slots,
+//! by observing that both are the same theorem about a price threshold that does
+//! not depend on the bid. With `k` units the threshold is the `k`-th highest of
+//! the *other* bids, and `slot_threshold_one_is_max` pins that the single-slot
+//! case is the classical mechanism unchanged.
+//!
+//! What is still NOT covered, and is not offered: **multi-unit demand**, a
+//! bidder that values a second slot. That is VCG over a combinatorial domain,
+//! where `VcgRevenueNonMonotone.lean` has a machine-checked witness that revenue
+//! is not even monotone. A round admits one bid per bidder, so the type keeps
+//! the mechanism inside the theorem.
+
+use std::num::NonZeroU32;
 
 use nucleus_econ_types::{AgentId, AuctionId, MicroUsd};
 use nucleus_permission_market::PermissionDimension;
@@ -18,11 +27,46 @@ use nucleus_recompute::ClearingReceipt;
 
 use crate::bid::SignedBid;
 
+/// Who may bid at all, decided before any bid is read.
+///
+/// # The signature is the theorem's hypothesis
+///
+/// `ThresholdTruthful.lean::admitted_truthful` holds because admission is one
+/// value shared by both arms of the comparison — it cannot depend on which bid
+/// was submitted. Here that is not a convention to be checked in review: the
+/// method is handed a [`AgentId`] and nothing else, so an implementation
+/// **cannot** see a bid value to condition on. Standing, tier, allow-lists and
+/// rate limits are all expressible; a bid-dependent gate is not.
+///
+/// This is the second of the two channels `docs/rfcs/reputation-weighted-clearing.md`
+/// permits. The first — standing buying a cheaper bond — is proved by
+/// `bonded_truthful` but not wired, because a bond that cannot be slashed is
+/// theatre: condition 3 of `receipt-provenance-defection.md` is unmet.
+pub trait Admission: Send + Sync {
+    /// Whether `bidder` may take part at all.
+    fn admits(&self, bidder: &AgentId) -> bool;
+}
+
+/// Everyone bids. The default, and the only honest one until standing is
+/// durable enough to gate on.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AdmitAll;
+
+impl Admission for AdmitAll {
+    fn admits(&self, _bidder: &AgentId) -> bool {
+        true
+    }
+}
+
 /// A round in progress: a contended slot and the bids submitted for it.
 #[derive(Debug, Clone)]
 pub struct Round {
     id: AuctionId,
     dimension: PermissionDimension,
+    /// Identical units on offer. Always ≥ 1: a round with nothing to allocate
+    /// is not a round, and a `0` would make "win iff bid ≥ threshold" grant the
+    /// slot to everyone, since every `MicroUsd` clears a threshold of zero.
+    slots: NonZeroU32,
     bids: Vec<SignedBid>,
 }
 
@@ -45,25 +89,71 @@ pub enum AdmitError {
         /// The agent that bid twice.
         bidder: String,
     },
+    /// The admission policy refused this bidder. Decided from identity alone —
+    /// see [`Admission`].
+    #[error("{bidder} is not admitted to this round")]
+    NotAdmitted {
+        /// The agent that was refused.
+        bidder: String,
+    },
 }
 
 impl Round {
-    /// Open a round for one slot of `dimension`.
+    /// Open a round for one slot of `dimension` — the classical regime.
     #[must_use]
     pub fn open(id: AuctionId, dimension: PermissionDimension) -> Self {
+        Round::open_with_slots(id, dimension, NonZeroU32::MIN)
+    }
+
+    /// Open a round for `slots` identical units of `dimension`.
+    #[must_use]
+    pub fn open_with_slots(
+        id: AuctionId,
+        dimension: PermissionDimension,
+        slots: NonZeroU32,
+    ) -> Self {
         Round {
             id,
             dimension,
+            slots,
             bids: Vec::new(),
         }
     }
 
-    /// Admit a bid.
+    /// How many identical units this round allocates.
+    #[must_use]
+    pub fn slots(&self) -> NonZeroU32 {
+        self.slots
+    }
+
+    /// Admit a bid, with everyone eligible.
     ///
     /// # Errors
     ///
     /// [`AdmitError::WrongDimension`] or [`AdmitError::DuplicateBidder`].
     pub fn submit(&mut self, bid: SignedBid) -> Result<(), AdmitError> {
+        self.submit_under(bid, &AdmitAll)
+    }
+
+    /// Admit a bid, subject to an [`Admission`] policy.
+    ///
+    /// # Errors
+    ///
+    /// [`AdmitError::WrongDimension`], [`AdmitError::DuplicateBidder`] or
+    /// [`AdmitError::NotAdmitted`].
+    pub fn submit_under(
+        &mut self,
+        bid: SignedBid,
+        admission: &dyn Admission,
+    ) -> Result<(), AdmitError> {
+        // Checked first, and on the identity alone: a bidder that is not
+        // admitted never enters the profile, so the clearing among the admitted
+        // is the mechanism the theorem covers, unchanged.
+        if !admission.admits(bid.bidder()) {
+            return Err(AdmitError::NotAdmitted {
+                bidder: bid.bidder().as_str().to_owned(),
+            });
+        }
         if bid.dimension() != self.dimension {
             return Err(AdmitError::WrongDimension {
                 round: self.dimension,
@@ -97,11 +187,12 @@ impl Round {
         &self.bids
     }
 
-    /// Whether more than one agent is competing. A round that is not contested
-    /// has no price to discover — see [`RoundOutcome`].
+    /// Whether demand exceeds supply. A round with no more bidders than slots
+    /// has no price to discover: everyone wins, nobody is displaced, and the
+    /// Clarke pivot is zero. See [`RoundOutcome`].
     #[must_use]
     pub fn is_contested(&self) -> bool {
-        self.bids.len() > 1
+        self.bids.len() > self.slots.get() as usize
     }
 }
 
@@ -114,25 +205,28 @@ impl Round {
 /// discovered price for a round in which nothing was discovered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoundOutcome {
-    /// Two or more agents competed. `price` is the Clarke pivot — under
-    /// single-good Vickrey, the second-highest bid.
+    /// Demand exceeded supply. `price` is the Clarke pivot, and it is the SAME
+    /// for every winner: with `k` identical units and unit demand the pivot is
+    /// the `k+1`-th highest bid, which is what
+    /// `ThresholdTruthful.lean::multi_unit_truthful` is stated at. A per-winner
+    /// price would mean the mechanism had left that regime.
     Cleared {
-        /// The agent that won the slot.
-        winner: AgentId,
-        /// What the winner pays.
+        /// The agents that won a slot.
+        winners: Vec<AgentId>,
+        /// What each winner pays — one uniform price.
         price: MicroUsd,
         /// The declared inputs beside the claimed outputs, so a third party can
         /// re-derive the whole outcome with `nucleus_recompute::verify_receipt`.
         receipt: Box<ClearingReceipt>,
     },
-    /// Exactly one agent bid. It takes the slot, and the mechanism's price is
-    /// zero because it displaced nobody: a VCG payment is the externality the
-    /// winner imposes on others, and there were no others. Whether a free grant
-    /// is acceptable is a policy question for the caller (a reserve price), not
-    /// a question the mechanism answers.
+    /// No more bidders than slots. Everyone takes a unit, and the price is zero
+    /// because nobody was displaced: a VCG payment is the externality a winner
+    /// imposes on others, and here there were none. Whether a free grant is
+    /// acceptable is a policy question for the caller (a reserve price), not a
+    /// question the mechanism answers.
     Uncontested {
-        /// The only bidder.
-        winner: AgentId,
+        /// Every bidder, each of which took a unit.
+        winners: Vec<AgentId>,
         /// The receipt for the degenerate clearing, which still recomputes.
         receipt: Box<ClearingReceipt>,
     },
@@ -141,8 +235,8 @@ pub enum RoundOutcome {
     /// truthfulness property and nothing a third party could re-derive. A caller
     /// holding this variant knows it has a price and not a discovered one.
     PostedPrice {
-        /// The agent that took the slot.
-        winner: AgentId,
+        /// The agents that took a slot.
+        winners: Vec<AgentId>,
         /// What it pays — its own bid, since a posted price grants at the asking
         /// value.
         price: MicroUsd,
@@ -152,15 +246,21 @@ pub enum RoundOutcome {
 }
 
 impl RoundOutcome {
-    /// The winner, if the round had one.
+    /// Everyone that took a unit.
     #[must_use]
-    pub fn winner(&self) -> Option<&AgentId> {
+    pub fn winners(&self) -> &[AgentId] {
         match self {
-            Self::Cleared { winner, .. }
-            | Self::Uncontested { winner, .. }
-            | Self::PostedPrice { winner, .. } => Some(winner),
-            Self::NoBids => None,
+            Self::Cleared { winners, .. }
+            | Self::Uncontested { winners, .. }
+            | Self::PostedPrice { winners, .. } => winners,
+            Self::NoBids => &[],
         }
+    }
+
+    /// Whether `agent` took a unit.
+    #[must_use]
+    pub fn won(&self, agent: &AgentId) -> bool {
+        self.winners().iter().any(|w| w == agent)
     }
 
     /// What the winner pays. `Uncontested` is [`MicroUsd::ZERO`] by the
@@ -239,10 +339,41 @@ mod tests {
         assert!(r.is_contested());
     }
 
+    /// Admission is decided on identity alone, so it cannot distort bidding
+    /// among the admitted — which is the hypothesis
+    /// `ThresholdTruthful.lean::admitted_truthful` is stated under.
+    #[test]
+    fn admission_refuses_on_identity_and_the_bid_never_enters() {
+        struct OnlyA;
+        impl Admission for OnlyA {
+            fn admits(&self, bidder: &AgentId) -> bool {
+                bidder.as_str() == "a"
+            }
+        }
+        let mut r = Round::open(AuctionId::new("r1"), PermissionDimension::NetworkEgress);
+        r.submit_under(signed("b", 999, PermissionDimension::NetworkEgress), &OnlyA)
+            .expect_err("b is not admitted");
+        assert!(
+            r.bids().is_empty(),
+            "a refused bidder must not be in the profile at all — if it were, its \
+             value would enter the clearing it was excluded from"
+        );
+        r.submit_under(signed("a", 10, PermissionDimension::NetworkEgress), &OnlyA)
+            .expect("a is admitted");
+        assert_eq!(r.bids().len(), 1);
+    }
+
+    /// The default admits everyone, because standing is not yet durable enough
+    /// to gate on.
+    #[test]
+    fn the_default_admission_refuses_nobody() {
+        assert!(AdmitAll.admits(&AgentId::new("anyone")));
+    }
+
     #[test]
     fn no_bids_has_no_winner_no_price_and_no_receipt() {
         let o = RoundOutcome::NoBids;
-        assert!(o.winner().is_none());
+        assert!(o.winners().is_empty());
         assert!(o.price().is_none());
         assert!(o.receipt().is_none());
     }

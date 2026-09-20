@@ -336,14 +336,14 @@ impl<C: Charger> RoundScheduler<C> {
         };
 
         let round_id = round.id().clone();
-        let (winner, price, receipt) = match &outcome {
+        let (winners, price, receipt) = match &outcome {
             RoundOutcome::Cleared {
-                winner,
+                winners,
                 price,
                 receipt,
-            } => (winner.clone(), *price, Arc::new((**receipt).clone())),
-            RoundOutcome::Uncontested { winner, receipt } => (
-                winner.clone(),
+            } => (winners.clone(), *price, Arc::new((**receipt).clone())),
+            RoundOutcome::Uncontested { winners, receipt } => (
+                winners.clone(),
                 MicroUsd::ZERO,
                 Arc::new((**receipt).clone()),
             ),
@@ -358,19 +358,24 @@ impl<C: Charger> RoundScheduler<C> {
             }
         };
 
-        // The charge decides whether the winner actually gets the slot. A
-        // refusal denies it rather than granting on credit.
-        let charged = self.charger.charge(&winner, price);
+        // Each winner is charged separately — the price is uniform, the ability
+        // to pay is not. One winner's refusal denies that winner's slot and
+        // leaves the others', which is what charging per payer means.
+        let charged: std::collections::BTreeMap<&AgentId, bool> = winners
+            .iter()
+            .map(|w| (w, self.charger.charge(w, price).is_ok()))
+            .collect();
 
         for (agent, tx) in waiters {
-            let verdict = if agent == winner {
-                match &charged {
-                    Ok(()) => Verdict::Won {
+            let verdict = if let Some(paid) = charged.get(&agent) {
+                if *paid {
+                    Verdict::Won {
                         round: round_id.clone(),
                         price,
                         receipt: Arc::clone(&receipt),
-                    },
-                    Err(_) => Verdict::Denied(DenyReason::ChargeRefused),
+                    }
+                } else {
+                    Verdict::Denied(DenyReason::ChargeRefused)
                 }
             } else {
                 Verdict::Lost {
