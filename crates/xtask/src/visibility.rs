@@ -1,6 +1,6 @@
 //! `cargo xtask visibility` — nucleus depends on nothing private.
 //!
-//! [ADR 0008](../../../docs/adr/0008-the-public-private-line.md) states the rule this gate
+//! [ADR 0009](../../../docs/adr/0009-the-public-private-line.md) states the rule this gate
 //! decides: the dependency arrow between this repository and the private repositories built
 //! on it is one-way. A private repository may depend on nucleus by version or by rev.
 //! Nucleus depends on nothing private — no `git` dependency, no alternate registry, no path
@@ -65,7 +65,7 @@ use anyhow::{Context, Result, bail};
 const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
 /// Standalone `[workspace]` roots, relative to the repository root. Each is outside the main
-/// build on purpose; each is still part of this repository and still bound by ADR 0008, so
+/// build on purpose; each is still part of this repository and still bound by ADR 0009, so
 /// each is swept. A root that is not listed here fails the gate: an unlisted satellite is a
 /// place the rule would not be checked.
 const DECLARED_SATELLITES: &[&str] = &[
@@ -90,7 +90,7 @@ const MIN_PACKAGES: usize = 300;
 
 /// Git dependencies this repository is allowed to declare, named one by one.
 ///
-/// ADR 0008's rule is that nucleus depends on nothing **private**. A git dependency on a
+/// ADR 0009's rule is that nucleus depends on nothing **private**. A git dependency on a
 /// public sibling does not cross that line, but it is not free either: it makes a build
 /// depend on a host rather than on crates.io, and a repository that is public today can be
 /// made private tomorrow without anything here changing. So they are permitted and
@@ -350,7 +350,7 @@ pub fn check(root: &Path) -> Result<()> {
             Some(other) => {
                 println!("  FAIL  {name} resolves to {other}");
                 println!(
-                    "        ADR 0008: nucleus depends on nothing private. A public clone must\n\
+                    "        ADR 0009: nucleus depends on nothing private. A public clone must\n\
                      \x20       build from crates.io and this tree alone."
                 );
                 failures += 1;
@@ -367,7 +367,7 @@ pub fn check(root: &Path) -> Result<()> {
     for s in found.difference(&declared) {
         println!("  FAIL  {s}/Cargo.toml is a `[workspace]` root this gate does not know about.");
         println!(
-            "        An unlisted satellite is a place ADR 0008 would not be checked. Add it to\n\
+            "        An unlisted satellite is a place ADR 0009 would not be checked. Add it to\n\
              \x20       DECLARED_SATELLITES, or fold the crate into the main workspace."
         );
         failures += 1;
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(found, declared, "satellite workspaces drifted");
     }
 
-    /// The property ADR 0008 asserts, over the tree as it stands.
+    /// The property ADR 0009 asserts, over the tree as it stands.
     #[test]
     fn no_manifest_in_this_repository_reaches_outside() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

@@ -26,7 +26,7 @@
   - [Hardening Checklist](assurance/hardening-checklist.md)
   - [CI Assurance](assurance/ci-assurance.md)
 - [Decision Records]()
-  - [0008 — The public/private line](adr/0008-the-public-private-line.md)
+  - [0009 — The public/private line](adr/0009-the-public-private-line.md)
   - [0007 — Make the defect unwritable](adr/0007-make-the-defect-unwritable.md)
   - [0006 — Four collapses](adr/0006-four-collapses.md)
   - [0005 — Delegatable agency is the objective](adr/0005-delegatable-agency.md)

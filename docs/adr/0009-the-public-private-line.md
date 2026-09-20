@@ -1,8 +1,12 @@
-# ADR 0008 — the public/private line
+# ADR 0009 — the public/private line
 
 - Status: accepted (2026-09-20)
 - Applies to: every manifest in this workspace, `docs/`, and any proposal to move code into
   or out of this repository
+- Numbered 0009 rather than 0008: [#2973](https://github.com/coproduct-opensource/nucleus/pull/2973)
+  opened first and claimed 0008. Two files named `0008-*.md` would not have conflicted in
+  git — different names — so the collision would have survived a merge and been discovered
+  by a reader, which is the wrong place to discover it.
 - Related: [ADR 0003](0003-gatehouse-owns-the-merge.md) draws the same kind of line for the
   merge queue; `CLAUDE.md` §"Runtime and control-plane ownership" draws it for gatehouse
   specifically. This ADR states the general rule those two are instances of.
