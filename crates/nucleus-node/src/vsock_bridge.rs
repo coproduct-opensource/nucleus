@@ -299,7 +299,6 @@ mod tests {
     }
 }
 
-
 /// A handshake EOF is a startup race or a missing guest, and the two are told apart by the clock.
 #[cfg(test)]
 mod a_handshake_eof_means_two_things {
@@ -314,7 +313,10 @@ mod a_handshake_eof_means_two_things {
         // The ordinary case: the pod is booting and its port is not listening yet. Measured
         // median pod boot on the builder is 21.9 s, so a second in is unremarkable.
         assert!(is_startup_race(&eof(), Duration::from_secs(1)));
-        assert!(is_startup_race(&eof(), GUEST_EXPECTED_UP - Duration::from_millis(1)));
+        assert!(is_startup_race(
+            &eof(),
+            GUEST_EXPECTED_UP - Duration::from_millis(1)
+        ));
 
         // Past the window the same EOF is a guest that is not there -- what an over-admitted pod
         // looks like when it dies. This must stay at ERROR or the flood hides it again.

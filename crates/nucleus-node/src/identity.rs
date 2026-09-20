@@ -573,7 +573,11 @@ impl IdentityManager {
         if let Some(key) = &key
             && let Some(hit) = self.attestation_by_inputs.read().await.get(key).cloned()
         {
-            debug!("attestation reused for pod {}: {}", pod_id, hit.to_hex_summary());
+            debug!(
+                "attestation reused for pod {}: {}",
+                pod_id,
+                hit.to_hex_summary()
+            );
             self.attestation_registry
                 .write()
                 .await
