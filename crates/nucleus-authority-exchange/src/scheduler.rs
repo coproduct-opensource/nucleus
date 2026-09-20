@@ -173,9 +173,11 @@ impl LedgerCharger {
     /// What the ledger has left, in micro-USD, for reporting a refusal.
     fn available_micro(ledger: &portcullis::budget_ledger::BudgetLedger) -> u64 {
         use rust_decimal::prelude::ToPrimitive;
-        (ledger.available() * rust_decimal::Decimal::from(1_000_000u32))
-            .trunc()
-            .to_u64()
+        ledger
+            .available()
+            .checked_mul(rust_decimal::Decimal::from(1_000_000u32))
+            .map(|d| d.trunc())
+            .and_then(|d| d.to_u64())
             .unwrap_or(0)
     }
 }
@@ -250,21 +252,17 @@ impl<C: Charger> RoundScheduler<C> {
             // block is synchronous map work.
             let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
             let fresh = !open.contains_key(&dimension);
-            if fresh {
+            let round_id = {
                 let mut seq = self.seq.lock().unwrap_or_else(|e| e.into_inner());
                 *seq = seq.wrapping_add(1);
-                let id = AuctionId::new(format!("{dimension:?}-{seq}"));
-                open.insert(
-                    dimension,
-                    OpenRound {
-                        round: Round::open(id, dimension),
-                        waiters: Vec::new(),
-                    },
-                );
-            }
-            let entry = open
-                .get_mut(&dimension)
-                .expect("just inserted or already present");
+                format!("{dimension:?}-{seq}")
+            };
+            // `entry` rather than insert-then-get: there is no second lookup
+            // to be wrong about, so no `expect` is needed to say it cannot fail.
+            let entry = open.entry(dimension).or_insert_with(|| OpenRound {
+                round: Round::open(AuctionId::new(round_id), dimension),
+                waiters: Vec::new(),
+            });
             match entry.round.submit(bid) {
                 Ok(()) => entry.waiters.push((bidder, tx)),
                 // A bid the round will not admit (wrong dimension is
@@ -287,7 +285,13 @@ impl<C: Charger> RoundScheduler<C> {
 
         // The window is the contract; twice it is the margin for the closer
         // task being scheduled late. Past that, fail closed.
-        match tokio::time::timeout(self.window.saturating_mul(2) + Duration::from_secs(1), rx).await
+        match tokio::time::timeout(
+            self.window
+                .saturating_mul(2)
+                .saturating_add(Duration::from_secs(1)),
+            rx,
+        )
+        .await
         {
             Ok(Ok(v)) => v,
             // Closer dropped the sender, or the deadline passed with no verdict.
