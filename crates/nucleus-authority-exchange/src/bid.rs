@@ -62,8 +62,15 @@ impl CertifiedCeiling {
         use rust_decimal::prelude::ToPrimitive;
 
         let usd = verified.effective().budget.max_cost_usd;
-        let micros = (usd * rust_decimal::Decimal::from(1_000_000u32)).trunc();
-        CertifiedCeiling(MicroUsd::new(micros.to_u64().unwrap_or(0)))
+        // `checked_mul` rather than `*`: a budget large enough to overflow a
+        // `Decimal` is not a licence to bid, so it yields a ZERO ceiling and
+        // authorises nothing.
+        let micros = usd
+            .checked_mul(rust_decimal::Decimal::from(1_000_000u32))
+            .map(|d| d.trunc())
+            .and_then(|m| m.to_u64())
+            .unwrap_or(0);
+        CertifiedCeiling(MicroUsd::new(micros))
     }
 
     /// Fixture constructor. Deliberately `cfg(test)`: if this were public the
@@ -158,6 +165,23 @@ impl SignedBid {
     #[must_use]
     pub fn value(&self) -> MicroUsd {
         self.value
+    }
+
+    /// Fixture constructor for [`crate::test_support`], bypassing the ceiling
+    /// check. Infallible rather than an `expect`, so the crate keeps its
+    /// panic-free declaration, and `pub(crate)` behind a non-default feature so
+    /// no production dependency can reach it.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn fixture(
+        bidder: AgentId,
+        dimension: PermissionDimension,
+        value: MicroUsd,
+    ) -> Self {
+        SignedBid {
+            bidder,
+            dimension,
+            value,
+        }
     }
 }
 

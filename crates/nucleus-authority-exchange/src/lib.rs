@@ -66,6 +66,22 @@
 //! `docs/adr/0008-the-public-private-line.md`.
 
 #![forbid(unsafe_code)]
+// A function whose type says `-> T` and panics is lying about its type, and this
+// crate decides who may spend authority. Denied for the shipped build only:
+// `assert!` IS a panic, so denying inside `#[cfg(test)]` would forbid the thing
+// tests are made of. Same line `is_production_path` draws.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
 
 pub mod bid;
 pub mod clearing;
@@ -87,23 +103,13 @@ pub use round::{AdmitError, Round, RoundOutcome};
 /// Gated on the `test-support` feature, which `default` does not enable.
 #[cfg(feature = "test-support")]
 pub mod test_support {
-    use super::{CertifiedCeiling, SignedBid};
+    use super::SignedBid;
     use nucleus_econ_types::{AgentId, MicroUsd};
     use nucleus_permission_market::PermissionDimension;
 
-    /// A bid with an unbounded ceiling, for examples and tests only.
-    ///
-    /// # Panics
-    ///
-    /// If `value` is zero, which [`SignedBid`] refuses.
+    /// A bid that bypasses the ceiling check, for examples and tests only.
     #[must_use]
     pub fn bid(agent: &str, value: u64, dimension: PermissionDimension) -> SignedBid {
-        SignedBid::new(
-            AgentId::new(agent),
-            dimension,
-            MicroUsd::new(value),
-            CertifiedCeiling::unbounded_for_testing(),
-        )
-        .expect("test fixture is within its own unbounded ceiling")
+        SignedBid::fixture(AgentId::new(agent), dimension, MicroUsd::new(value))
     }
 }
