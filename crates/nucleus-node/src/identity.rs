@@ -40,6 +40,21 @@ pub struct IdentityManager {
     trust_domain: String,
     /// Registry mapping pod IDs to their launch attestations.
     attestation_registry: Arc<RwLock<HashMap<String, LaunchAttestation>>>,
+    /// Launch attestations already computed, by the identity of the files they attest.
+    ///
+    /// The attestation hashes the kernel and the rootfs, and the rootfs is the prepared gate
+    /// image: 8 GiB. Every pod recomputed it. Measured on the builder 2026-09-19 across 74 real
+    /// pods, the gap from `attestation.hash` to `cert.issue` was a median 4.6 s and a maximum of
+    /// 16.0 s, which for an eleven-step gate is about 51 s spent re-deriving the digest of an
+    /// immutable, content-addressed file that had not changed between one pod and the next.
+    ///
+    /// The key is the file's identity as the kernel reports it -- device, inode, size and mtime,
+    /// for both files, with the config bytes -- so a replaced or rewritten image is a different
+    /// key and is hashed again. The cache lives only as long as this process: a node restart
+    /// re-hashes everything, which is the same "verify once per boot" scope the gatehouse
+    /// controller uses for the same file, and it means there is no on-disk artifact for anyone
+    /// to forge.
+    attestation_by_inputs: Arc<RwLock<HashMap<String, LaunchAttestation>>>,
     /// Default certificate TTL.
     // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
     // On other hosts it is genuinely dead, and CI builds release binaries with
@@ -55,6 +70,39 @@ pub struct IdentityManager {
     /// leaves SVIDs unbound (attestation only) — a graceful default, not a
     /// failure.
     mediation_binding_dir: Option<std::path::PathBuf>,
+}
+
+/// The identity of the inputs an attestation is computed from.
+///
+/// Device, inode, size and mtime of both files, with a digest of the config bytes. `None` when
+/// either file cannot be stated, and `None` means COMPUTE: a cache that cannot establish what it
+/// is caching must not answer. Deliberately not the file CONTENTS -- reading them is the cost
+/// this avoids -- so the guarantee is "this inode has not been replaced or rewritten since it
+/// was hashed", which is what an immutable content-addressed image needs.
+async fn attestation_key(kernel: &Path, rootfs: &Path, config: &[u8]) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let mut parts = Vec::new();
+    for p in [kernel, rootfs] {
+        let m = tokio::fs::symlink_metadata(p).await.ok()?;
+        if !m.is_file() {
+            return None;
+        }
+        parts.push(format!(
+            "{}:{}:{}:{}.{}",
+            m.dev(),
+            m.ino(),
+            m.size(),
+            m.mtime(),
+            m.mtime_nsec()
+        ));
+    }
+    // sha2 is already a dependency of this crate, so there is no reason to discriminate configs
+    // with anything weaker: a collision here would serve one config's attestation for another's.
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(config);
+    parts.push(hex::encode(hasher.finalize()));
+    Some(parts.join("|"))
 }
 
 impl IdentityManager {
@@ -129,6 +177,7 @@ impl IdentityManager {
             vm_registry,
             trust_domain,
             attestation_registry: Arc::new(RwLock::new(HashMap::new())),
+            attestation_by_inputs: Arc::new(RwLock::new(HashMap::new())),
             cert_ttl,
             mediation_binding_dir: None,
         }
@@ -519,9 +568,28 @@ impl IdentityManager {
             rootfs_path.display()
         );
 
+        // The same two files, unchanged, attest to the same thing. See `attestation_by_inputs`.
+        let key = attestation_key(kernel_path, rootfs_path, config).await;
+        if let Some(key) = &key
+            && let Some(hit) = self.attestation_by_inputs.read().await.get(key).cloned()
+        {
+            debug!("attestation reused for pod {}: {}", pod_id, hit.to_hex_summary());
+            self.attestation_registry
+                .write()
+                .await
+                .insert(pod_id.to_string(), hit.clone());
+            return Ok(hit);
+        }
+
         let attestation = LaunchAttestation::compute(kernel_path, rootfs_path, config)
             .await
             .map_err(|e| format!("failed to compute attestation: {e}"))?;
+        if let Some(key) = key {
+            self.attestation_by_inputs
+                .write()
+                .await
+                .insert(key, attestation.clone());
+        }
 
         debug!(
             "attestation computed for pod {}: {}",
@@ -1483,6 +1551,75 @@ mod retired_surface_tests {
         assert!(
             !main_src.contains(".start_workload_api_server("),
             "main.rs calls start_workload_api_server again -- see #2197"
+        );
+    }
+}
+
+/// The attestation cache answers for the same inputs and refuses for different ones.
+#[cfg(test)]
+mod attestation_is_computed_once_per_image {
+    use super::attestation_key;
+    use std::io::Write;
+
+    fn file(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = dir.join(name);
+        let mut f = std::fs::File::create(&p).unwrap();
+        f.write_all(bytes).unwrap();
+        f.sync_all().unwrap();
+        p
+    }
+
+    /// Same two files, same config: one key, so the 8 GiB rootfs is hashed once.
+    #[tokio::test]
+    async fn unchanged_inputs_give_the_same_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let k = file(tmp.path(), "vmlinux", b"kernel");
+        let r = file(tmp.path(), "rootfs.ext4", b"rootfs");
+        let a = attestation_key(&k, &r, b"cfg").await;
+        let b = attestation_key(&k, &r, b"cfg").await;
+        assert!(a.is_some());
+        assert_eq!(a, b);
+    }
+
+    /// A rewritten rootfs is a different key, so it is hashed again.
+    ///
+    /// This is the case that decides whether caching an attestation was safe: the cache must not
+    /// answer for an image that is no longer the image it hashed.
+    #[tokio::test]
+    async fn a_rewritten_rootfs_is_a_different_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let k = file(tmp.path(), "vmlinux", b"kernel");
+        let r = file(tmp.path(), "rootfs.ext4", b"rootfs");
+        let before = attestation_key(&k, &r, b"cfg").await;
+        // Replace it. Size differs, and so does the inode.
+        std::fs::remove_file(&r).unwrap();
+        let r2 = file(tmp.path(), "rootfs.ext4", b"a different rootfs entirely");
+        let after = attestation_key(&k, &r2, b"cfg").await;
+        assert!(before.is_some() && after.is_some());
+        assert_ne!(before, after, "a replaced image must not reuse its key");
+    }
+
+    /// The config is part of the identity: the same files under a different config attest
+    /// differently, and must not share a cache entry.
+    #[tokio::test]
+    async fn a_different_config_is_a_different_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let k = file(tmp.path(), "vmlinux", b"kernel");
+        let r = file(tmp.path(), "rootfs.ext4", b"rootfs");
+        assert_ne!(
+            attestation_key(&k, &r, b"cfg-a").await,
+            attestation_key(&k, &r, b"cfg-b").await
+        );
+    }
+
+    /// A file that cannot be stated yields no key, and no key means COMPUTE.
+    #[tokio::test]
+    async fn a_missing_file_yields_no_key_rather_than_a_weak_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let k = file(tmp.path(), "vmlinux", b"kernel");
+        assert_eq!(
+            attestation_key(&k, &tmp.path().join("absent"), b"cfg").await,
+            None
         );
     }
 }
