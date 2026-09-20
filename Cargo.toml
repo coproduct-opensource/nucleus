@@ -31,6 +31,7 @@ members = [
     "crates/exposure-playground", # Interactive TUI demo for HN
     "crates/nucleus-sdk",        # Rust SDK for building sandboxed AI agents
     "crates/nucleus-authority-exchange", # truthful VCG clearing of one contended authority slot, with a recomputable receipt
+    "crates/nucleus-calibration",        # recomputable Brier/ECE receipts with the noise floor beside the estimate; "could not look" is an arm
     "crates/nucleus-permission-market", # Lagrangian permission pricing oracle
     "crates/ctf-engine",               # CTF engine: formally verified sandbox challenge
     "crates/ctf-server",               # HTTP API server for The Vault CTF

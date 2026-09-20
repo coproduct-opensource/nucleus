@@ -169,8 +169,16 @@ population_floor = 278
 # addition, and a fixture that panicked instead of taking an infallible
 # constructor. A crate that decides who may spend authority is exactly what this
 # family counts.
-floor_bp = 3176
-population_floor = 85
+# 2026-09-20: new crate nucleus-calibration declares all seven from its first
+# commit; 28/86. The declaration paid for itself before the first commit: two
+# integer divisions behind a `.max(1)` that the type could not see (now
+# `checked_div`). Note the census reads git, not the working tree -- the crate
+# was invisible to this gate until `git add`, which is the same lesson the
+# visibility gate learned from a nested worktree the same day. A crate that
+# decides whether a probability may be trusted is exactly what this family
+# counts.
+floor_bp = 3255
+population_floor = 86
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

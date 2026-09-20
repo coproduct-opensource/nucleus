@@ -6553,6 +6553,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-calibration"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "nucleus-recompute",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "nucleus-ci-verdict"
 version = "1.0.0"
 dependencies = [
