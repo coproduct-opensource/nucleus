@@ -518,7 +518,17 @@ struct FirecrackerPod {
     /// strings, so `HashMap::remove` never matched and no pod was EVER removed
     /// from the identity registry. Two derivations of one key is the bug; there
     /// is now one value, produced once and carried to the removal.
-    identity_registry_key: Option<String>,
+    /// Taken, not read. `cleanup_identity` runs from BOTH `cancel` and `cleanup`, so a pod that
+    /// is cancelled and then cleaned up released twice: the first call removed the registry entry
+    /// and the second found nothing and warned that the registration and removal keys had drifted
+    /// apart, which is a different and much more alarming fact than "this already happened".
+    ///
+    /// Every other resource in that function is already taken -- the bridge, the broker, the
+    /// proxy -- so releasing twice was the one thing there that was not idempotent. Measured on
+    /// the gatehouse builder 2026-09-20, after the reaper fix (#2934) removed the repeating
+    /// flood, this was the residue that remained: about one warning per pod rather than one every
+    /// ten seconds forever.
+    identity_registry_key: Mutex<Option<String>>,
     /// Workload API vsock bridge for this pod
     workload_api_bridge: Mutex<Option<workload_api_vsock::WorkloadApiVsockBridge>>,
     /// The credential broker listening for this pod, when the rollout serves one.
@@ -1351,9 +1361,10 @@ impl FirecrackerPod {
         if let Some(identity) = &self.identity
             && let Some(manager) = &self.identity_manager
         {
-            manager
-                .release_pod(self.identity_registry_key.as_deref(), identity)
-                .await;
+            // Taken: a second cleanup passes None and attempts no removal, so the warning keeps
+            // meaning "the keys drifted" rather than "this ran twice".
+            let key = self.identity_registry_key.lock().await.take();
+            manager.release_pod(key.as_deref(), identity).await;
         }
     }
 }
@@ -2882,7 +2893,7 @@ async fn spawn_firecracker_pod(
             drift_stop,
             network_allocator: state.network_allocator.clone(),
             identity: pod_identity,
-            identity_registry_key: identity_registry_key.clone(),
+            identity_registry_key: Mutex::new(identity_registry_key.clone()),
             identity_manager,
             workload_api_bridge: Mutex::new(workload_api_bridge),
             broker: Mutex::new(broker),
@@ -3783,3 +3794,34 @@ fn pod_info_to_grpc(info: PodInfo) -> proto::PodInfo {
 #[cfg(test)]
 #[path = "tests_main.rs"]
 mod tests;
+
+/// Releasing a pod's identity twice is a no-op the second time, not a warning.
+///
+/// `cleanup_identity` runs from both `cancel` and `cleanup`. Taking the key rather than reading
+/// it is what keeps "the registration and removal keys have drifted apart" meaning what it says,
+/// instead of meaning "this pod was cancelled and then cleaned up", which is every pod.
+#[cfg(test)]
+mod releasing_twice_is_quiet {
+    use tokio::sync::Mutex;
+
+    /// The shape in `cleanup_identity`: take, do not read.
+    async fn take_key(slot: &Mutex<Option<String>>) -> Option<String> {
+        slot.lock().await.take()
+    }
+
+    #[tokio::test]
+    async fn the_second_release_has_no_key_to_remove() {
+        let slot = Mutex::new(Some("pod-1".to_owned()));
+        assert_eq!(take_key(&slot).await.as_deref(), Some("pod-1"));
+        // `release_pod(None, ..)` attempts no removal, so nothing warns.
+        assert_eq!(take_key(&slot).await, None);
+        assert_eq!(take_key(&slot).await, None);
+    }
+
+    /// A pod that never registered has nothing to release, and that is also quiet.
+    #[tokio::test]
+    async fn a_pod_with_no_key_never_warns() {
+        let slot: Mutex<Option<String>> = Mutex::new(None);
+        assert_eq!(take_key(&slot).await, None);
+    }
+}
