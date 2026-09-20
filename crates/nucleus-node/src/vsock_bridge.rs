@@ -8,11 +8,29 @@ use std::time::Duration;
 /// is intentionally left unbounded — it is the long-lived data path.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long after a bridge opens a handshake EOF is still the guest starting up, rather than the
+/// guest being absent.
+///
+/// Measured on the builder 2026-09-19 from the node's own `boot_trace`: `proxy.health_wait` has a
+/// median of 2.1 s and a whole pod boot a median of 21.9 s, so a guest that has not answered
+/// within thirty seconds is not slow. Deliberately generous: being wrong high costs one line at
+/// DEBUG that should have been ERROR, and being wrong low restores the flood this replaces.
+const GUEST_EXPECTED_UP: Duration = Duration::from_secs(30);
+
+/// Whether a failed tunnel is the guest still coming up rather than the guest being absent.
+///
+/// Only an EOF, and only early. A handshake TIMEOUT is not a race: the guest's port accepted and
+/// then said nothing for ten seconds, which is a different fact and keeps its ERROR whenever it
+/// happens.
+fn is_startup_race(err: &std::io::Error, bridge_age: Duration) -> bool {
+    err.kind() == std::io::ErrorKind::UnexpectedEof && bridge_age < GUEST_EXPECTED_UP
+}
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UnixStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub struct VsockBridge {
     listen_addr: SocketAddr,
@@ -34,6 +52,13 @@ impl VsockBridge {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let listen_addr = listener.local_addr()?;
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+        // When this bridge opened. A handshake EOF means the guest's vsock port answered with
+        // nothing, and that has two causes of opposite severity: the guest has not started
+        // listening YET, which is the ordinary startup race and resolves itself, or the guest is
+        // GONE, which is what an over-admitted pod looks like when it dies. Both logged the same
+        // ERROR with no port and no clock, so the second was invisible inside the first: 384 of
+        // these in three hours on the builder, against 73 bridge shutdowns.
+        let opened = std::time::Instant::now();
 
         let task = tokio::spawn(async move {
             // Tunnels are OWNED here, not spawned and forgotten. Shutdown used to stop
@@ -56,8 +81,24 @@ impl VsockBridge {
                             Ok((stream, _)) => {
                                 let uds = uds_path.clone();
                                 tunnels.spawn(async move {
-                                    if let Err(err) = handle_connection(stream, &uds, guest_port).await {
-                                        error!("vsock bridge connection error: {err}");
+                                    if let Err(err) =
+                                        handle_connection(stream, &uds, guest_port).await
+                                    {
+                                        let age_ms = opened.elapsed().as_millis() as u64;
+                                        if is_startup_race(&err, opened.elapsed()) {
+                                            debug!(
+                                                guest_port,
+                                                bridge_age_ms = age_ms,
+                                                "vsock handshake EOF while the guest is still \
+                                                 coming up"
+                                            );
+                                        } else {
+                                            error!(
+                                                guest_port,
+                                                bridge_age_ms = age_ms,
+                                                "vsock bridge connection error: {err}"
+                                            );
+                                        }
                                     }
                                 });
                             }
@@ -255,5 +296,45 @@ mod tests {
             matches!(host_side, Ok(Err(_))),
             "an open tunnel still carried bytes after shutdown: {host_side:?}"
         );
+    }
+}
+
+/// A handshake EOF is a startup race or a missing guest, and the two are told apart by the clock.
+#[cfg(test)]
+mod a_handshake_eof_means_two_things {
+    use super::{GUEST_EXPECTED_UP, is_startup_race};
+    use std::io::{Error, ErrorKind};
+    use std::time::Duration;
+
+    #[test]
+    fn early_is_the_guest_starting_and_late_is_the_guest_gone() {
+        let eof = || Error::new(ErrorKind::UnexpectedEof, "vsock handshake EOF");
+
+        // The ordinary case: the pod is booting and its port is not listening yet. Measured
+        // median pod boot on the builder is 21.9 s, so a second in is unremarkable.
+        assert!(is_startup_race(&eof(), Duration::from_secs(1)));
+        assert!(is_startup_race(
+            &eof(),
+            GUEST_EXPECTED_UP - Duration::from_millis(1)
+        ));
+
+        // Past the window the same EOF is a guest that is not there -- what an over-admitted pod
+        // looks like when it dies. This must stay at ERROR or the flood hides it again.
+        assert!(!is_startup_race(&eof(), GUEST_EXPECTED_UP));
+        assert!(!is_startup_race(&eof(), Duration::from_secs(600)));
+
+        // A timeout is never a race, however early: the port answered and then went quiet.
+        let timeout = Error::new(ErrorKind::TimedOut, "handshake timed out");
+        assert!(!is_startup_race(&timeout, Duration::from_secs(1)));
+
+        // Nor is a refusal, or a bad handshake response.
+        assert!(!is_startup_race(
+            &Error::new(ErrorKind::ConnectionRefused, "refused"),
+            Duration::from_secs(1)
+        ));
+        assert!(!is_startup_race(
+            &Error::new(ErrorKind::InvalidData, "vsock handshake failed: NO"),
+            Duration::from_secs(1)
+        ));
     }
 }
