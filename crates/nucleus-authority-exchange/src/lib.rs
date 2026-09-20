@@ -1,0 +1,109 @@
+//! Truthful clearing of scarce agent authority.
+//!
+//! # The gap this closes
+//!
+//! Nucleus has a machine-checked auction mechanism and a heuristic one, and
+//! until now the heuristic decided everything.
+//!
+//! `nucleus-econ-kernels` ships integer VCG under 2,620 lines of `sorry`-free
+//! Lean — `IntegerVcgTruthful.lean::vickrey_truthful`,
+//! `VcgPigouTruthful.lean::pigou_vickrey_truthful`,
+//! `BudgetConservation.lean::greedyPack_le_budget` — with golden vectors sealed
+//! across Lean, Rust, WASM and Solidity. In this repository nothing called it:
+//! `run_vcg` ran only as a *verifier* of receipts produced elsewhere.
+//!
+//! Meanwhile the one auction-shaped thing on the live path,
+//! `nucleus-permission-market`, is an `f64` Lagrangian screen —
+//! `compute_lambda(u) = exp(3·(u−0.5)/0.5) − 1`, trust discounts 1.0/0.8/0.5/0.1
+//! — with no cited derivation, no Lean, no Kani, and a `value_estimate` the
+//! bidder self-reports with no incentive to be truthful. `FORMAL_METHODS.md`
+//! files it as "Tested… a Lagrangian pricing oracle", which is accurate and is
+//! not a mechanism.
+//!
+//! This crate wires the proven one to a decision: a round, a Clarke-pivot price,
+//! and a receipt anyone can re-derive.
+//!
+//! # What a round is
+//!
+//! One contended slot of one [`nucleus_permission_market::PermissionDimension`],
+//! bids from agents whose *principals* authorised the value, and an outcome that
+//! distinguishes "the market priced this" from "one agent asked" from "nobody
+//! did". See [`Round`] for why it is one slot and [`RoundOutcome`] for why that
+//! distinction is three variants rather than an `Option`.
+//!
+//! ```
+//! use nucleus_authority_exchange::{Clearing, Round, RoundOutcome, VcgClearing};
+//! # use nucleus_authority_exchange::test_support::bid;
+//! use nucleus_econ_types::{AuctionId, MicroUsd};
+//! use nucleus_permission_market::PermissionDimension::NetworkEgress;
+//!
+//! let mut round = Round::open(AuctionId::new("egress-1"), NetworkEgress);
+//! round.submit(bid("agent-a", 100, NetworkEgress)).unwrap();
+//! round.submit(bid("agent-b", 70, NetworkEgress)).unwrap();
+//!
+//! let outcome = VcgClearing.clear(&round).unwrap();
+//! // The winner pays the second-highest bid, not its own.
+//! assert_eq!(outcome.winner().unwrap().as_str(), "agent-a");
+//! assert_eq!(outcome.price(), Some(MicroUsd::new(70)));
+//! // And the price is re-derivable from the receipt by someone who trusts
+//! // neither the winner nor the operator.
+//! assert_eq!(
+//!     nucleus_recompute::verify_receipt(outcome.receipt().unwrap()),
+//!     nucleus_recompute::RecomputeOutcome::Match,
+//! );
+//! ```
+//!
+//! # What this crate does not do
+//!
+//! It does not charge anyone. Truthfulness is a statement about a bidder's
+//! *utility*, and a bid that costs nothing to inflate has no utility to reason
+//! about — so the theorem means nothing until the pivot is debited against a
+//! real budget. That debit is the live path's job
+//! (`portcullis::budget_ledger`), and until it is wired this crate computes an
+//! honest price for a bid nobody pays.
+//!
+//! It does not run a service, hold a key, or know a tenant — see
+//! `docs/adr/0008-the-public-private-line.md`.
+
+#![forbid(unsafe_code)]
+
+pub mod bid;
+pub mod clearing;
+pub mod round;
+
+pub use bid::{BidError, CertifiedCeiling, SignedBid};
+pub use clearing::{ClearError, Clearing, PostedPriceClearing, VcgClearing};
+pub use round::{AdmitError, Round, RoundOutcome};
+
+/// Fixtures for doctests and downstream tests.
+///
+/// A [`CertifiedCeiling`] is deliberately unforgeable outside this crate — that
+/// is the whole guarantee of [`bid`] — which would otherwise make every example
+/// unwritable. This module mints one, and is documented rather than hidden so
+/// nobody mistakes it for a production path: **do not use it to originate a real
+/// bid.** It grants an effectively unbounded ceiling, which is exactly what a
+/// certificate must never do.
+///
+/// Gated on the `test-support` feature, which `default` does not enable.
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    use super::{CertifiedCeiling, SignedBid};
+    use nucleus_econ_types::{AgentId, MicroUsd};
+    use nucleus_permission_market::PermissionDimension;
+
+    /// A bid with an unbounded ceiling, for examples and tests only.
+    ///
+    /// # Panics
+    ///
+    /// If `value` is zero, which [`SignedBid`] refuses.
+    #[must_use]
+    pub fn bid(agent: &str, value: u64, dimension: PermissionDimension) -> SignedBid {
+        SignedBid::new(
+            AgentId::new(agent),
+            dimension,
+            MicroUsd::new(value),
+            CertifiedCeiling::unbounded_for_testing(),
+        )
+        .expect("test fixture is within its own unbounded ceiling")
+    }
+}
