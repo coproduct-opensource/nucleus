@@ -63,7 +63,7 @@
 //! honest price for a bid nobody pays.
 //!
 //! It does not run a service, hold a key, or know a tenant — see
-//! `docs/adr/0008-the-public-private-line.md`.
+//! `docs/adr/0009-the-public-private-line.md`.
 //!
 //! # Why a win does not mint a certificate
 //!
