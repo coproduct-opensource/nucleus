@@ -141,8 +141,13 @@ pub async fn run(args: Args) -> Result<()> {
     for h in handles {
         let (seq, value, verdict) = h.await?;
         let (won_at, round) = match verdict {
-            Verdict::Won { price, receipt } => (Some(price.get()), round_label(&receipt)),
-            Verdict::Lost => (None, None),
+            // `round` is deliberately ignored in favour of a label derived from
+            // the RECEIPT: taking the scheduler's own id would be the harness
+            // agreeing with the thing it is measuring about which bids shared a
+            // round. Now that a loser carries the receipt too, every bid gets
+            // its label from a signed artefact rather than from string matching.
+            Verdict::Won { price, receipt, .. } => (Some(price.get()), round_label(&receipt)),
+            Verdict::Lost { receipt, .. } => (None, round_label(&receipt)),
             Verdict::Denied(reason) => bail!(
                 "bid {seq} was denied ({reason}); this harness charges everything, \
                  so a denial means the mechanism refused and the run is not measuring \
@@ -199,7 +204,7 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
         }
         let first = observed
             .iter()
-            .filter(|o| o.round.as_deref() == Some(label) || in_round(o, label))
+            .filter(|o| o.round.as_deref() == Some(label))
             .min_by_key(|o| o.seq);
         if let Some(f) = first {
             fifo_welfare = fifo_welfare.saturating_add(u128::from(f.value));
@@ -259,13 +264,6 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// Did this bid take part in the round labelled `label`? A loser carries no
-/// receipt, so its membership is read from the label's bidder set.
-fn in_round(o: &Observed, label: &str) -> bool {
-    let name = format!("bidder-{:05}", o.seq);
-    label.split(',').any(|b| b == name)
-}
-
 fn pct(n: usize, d: usize) -> f64 {
     if d == 0 {
         0.0
@@ -307,17 +305,40 @@ mod tests {
         }
     }
 
-    /// Round membership is read from the receipt's declared bidder set, so this
-    /// mapping has to agree with the name the harness bids under.
+    /// The round label is the sorted bidder set from the receipt, so two bids
+    /// that shared a round get byte-identical labels regardless of the order
+    /// their verdicts came back in.
     #[test]
-    fn round_membership_matches_the_bidder_naming() {
-        let o = Observed {
-            value: 1,
-            won_at: None,
-            seq: 7,
-            round: None,
+    fn the_round_label_is_order_independent() {
+        use nucleus_econ_kernels::{Clearing as KClearing, IntegerBid, IntegerProposal};
+        let mk = |names: [&str; 2]| {
+            nucleus_recompute::ClearingReceipt::Vcg(nucleus_recompute::VcgClaim {
+                bids: names
+                    .iter()
+                    .map(|n| IntegerBid {
+                        bidder: (*n).to_string(),
+                        proposal_id: "slot".into(),
+                        effective_value_micro_usd: 1,
+                    })
+                    .collect(),
+                proposals: vec![IntegerProposal {
+                    id: "slot".into(),
+                    cost_micro_usd: 1,
+                }],
+                budget_micro_usd: 1,
+                clearing: KClearing {
+                    winners: Vec::new(),
+                    losers: Vec::new(),
+                    total_effective_value_micro_usd: 0,
+                    total_payments_micro_usd: 0,
+                    budget_remaining_micro_usd: 1,
+                },
+            })
         };
-        assert!(in_round(&o, "bidder-00007,bidder-00009"));
-        assert!(!in_round(&o, "bidder-00008,bidder-00009"));
+        assert_eq!(
+            round_label(&mk(["b", "a"])),
+            round_label(&mk(["a", "b"])),
+            "membership, not submission order, identifies a round"
+        );
     }
 }

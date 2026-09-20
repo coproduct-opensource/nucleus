@@ -60,17 +60,30 @@ use crate::clearing::{Clearing, VcgClearing};
 use crate::round::{Round, RoundOutcome};
 
 /// What a bidder learns when its round closes.
+///
+/// A loser carries the receipt too, and that is not generosity. Without it a
+/// bidder told "you were outbid" has to take the operator's word for it; with
+/// it, the loser recomputes the whole round from declared inputs and sees the
+/// bid that beat it. "Verify, don't trust" has to hold for the party with the
+/// most reason to doubt.
 #[derive(Debug, Clone)]
 pub enum Verdict {
     /// The slot is yours, at `price`, and the charge went through.
     Won {
+        /// Which round decided it.
+        round: AuctionId,
         /// The Clarke pivot, already charged.
         price: MicroUsd,
         /// The receipt for the round that produced it.
         receipt: Arc<ClearingReceipt>,
     },
-    /// Someone outbid you. You are charged nothing.
-    Lost,
+    /// Someone outbid you. You are charged nothing, and the receipt says who.
+    Lost {
+        /// Which round decided it.
+        round: AuctionId,
+        /// The same receipt the winner got.
+        receipt: Arc<ClearingReceipt>,
+    },
     /// No slot, for a reason that is not "you were outbid".
     Denied(DenyReason),
 }
@@ -322,6 +335,7 @@ impl<C: Charger> RoundScheduler<C> {
             }
         };
 
+        let round_id = round.id().clone();
         let (winner, price, receipt) = match &outcome {
             RoundOutcome::Cleared {
                 winner,
@@ -352,13 +366,17 @@ impl<C: Charger> RoundScheduler<C> {
             let verdict = if agent == winner {
                 match &charged {
                     Ok(()) => Verdict::Won {
+                        round: round_id.clone(),
                         price,
                         receipt: Arc::clone(&receipt),
                     },
                     Err(_) => Verdict::Denied(DenyReason::ChargeRefused),
                 }
             } else {
-                Verdict::Lost
+                Verdict::Lost {
+                    round: round_id.clone(),
+                    receipt: Arc::clone(&receipt),
+                }
             };
             let _ = tx.send(verdict);
         }
@@ -425,13 +443,49 @@ mod tests {
             matches!(va, Verdict::Won { price, .. } if price == MicroUsd::new(70)),
             "a should win at b's bid: {va:?}"
         );
-        assert!(matches!(vb, Verdict::Lost), "b should lose: {vb:?}");
+        assert!(matches!(vb, Verdict::Lost { .. }), "b should lose: {vb:?}");
         assert_eq!(
             rec.calls.load(Ordering::SeqCst),
             1,
             "one winner, one charge"
         );
         assert_eq!(rec.total.load(Ordering::SeqCst), 70);
+    }
+
+    /// A loser can check that it really was outbid, without trusting anyone:
+    /// the receipt it gets is the winner's, and it recomputes.
+    #[tokio::test]
+    async fn a_loser_can_verify_why_it_lost() {
+        let rec = Arc::new(Recording::default());
+        let s = RoundScheduler::new(WINDOW, Arc::clone(&rec));
+        let a = {
+            let s = Arc::clone(&s);
+            tokio::spawn(async move { s.join(bid("a", 100, EGRESS)).await })
+        };
+        let b = {
+            let s = Arc::clone(&s);
+            tokio::spawn(async move { s.join(bid("b", 70, EGRESS)).await })
+        };
+        let (va, vb) = (a.await.unwrap(), b.await.unwrap());
+        let Verdict::Lost { round, receipt } = &vb else {
+            panic!("b should lose: {vb:?}");
+        };
+        assert_eq!(
+            nucleus_recompute::verify_receipt(receipt),
+            nucleus_recompute::RecomputeOutcome::Match,
+            "the loser's copy must recompute, or it is being asked to trust us"
+        );
+        let nucleus_recompute::ClearingReceipt::Vcg(claim) = &**receipt else {
+            panic!("vcg");
+        };
+        assert!(
+            claim.bids.iter().any(|x| x.bidder == "a" && x.effective_value_micro_usd == 100),
+            "the receipt must show the bid that beat it"
+        );
+        let Verdict::Won { round: wr, .. } = &va else {
+            panic!("a should win: {va:?}");
+        };
+        assert_eq!(round, wr, "winner and loser must name the same round");
     }
 
     /// The whole point of charging: the loser pays nothing, so a losing bid is
@@ -470,7 +524,7 @@ mod tests {
             "{va:?}"
         );
         assert!(
-            matches!(vb, Verdict::Lost),
+            matches!(vb, Verdict::Lost { .. }),
             "the loser is unaffected: {vb:?}"
         );
     }

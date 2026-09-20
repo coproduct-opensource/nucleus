@@ -36,6 +36,7 @@ mod art12_shipper;
 mod art12_sink;
 mod attestation;
 mod auth;
+mod authority_ledger;
 mod boot_report;
 mod broker_client;
 mod cert_bridge;
@@ -342,6 +343,16 @@ struct Args {
     #[arg(long, env = "NUCLEUS_CLEARING_WINDOW_MS", default_value_t = 50)]
     clearing_window_ms: u64,
 
+    /// Where cleared rounds are written down: one signed, hash-chained edge per
+    /// participant, each bound to the round's receipt hash.
+    ///
+    /// Required whenever `--clearing` names a dimension. Clearing without a
+    /// record would produce a price nothing can check afterwards, which is the
+    /// opposite of the reason to run an auction at all — so a missing ledger is
+    /// a refusal at startup, not a silent degradation.
+    #[arg(long, env = "NUCLEUS_AUTHORITY_LEDGER")]
+    authority_ledger: Option<PathBuf>,
+
     // === Delegation Certificate Configuration ===
     /// Hex-encoded Ed25519 public key of the root delegation authority.
     /// When set, the tool-proxy accepts `x-nucleus-delegation-cert` headers
@@ -488,6 +499,9 @@ pub(crate) struct AppState {
     /// The round scheduler, present exactly when `clearing_dimensions` is not
     /// empty. `Box<dyn Charger>` so the charger is chosen at startup.
     authority_exchange: Option<Arc<RoundScheduler<Box<dyn Charger>>>>,
+    /// Where cleared rounds are recorded. Present exactly when
+    /// `authority_exchange` is.
+    authority_ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
     sandbox_proof: sandbox_proof::SandboxProof,
     /// Root authority Ed25519 public key for delegation certificate verification.
@@ -1751,6 +1765,46 @@ async fn main() -> Result<(), ApiError> {
             charger,
         ))
     };
+    // Fail closed at startup rather than clearing unrecorded. A price nobody can
+    // check afterwards is not what an auction is for.
+    let authority_ledger = if clearing_dimensions.is_empty() {
+        None
+    } else {
+        let Some(path) = args.authority_ledger.as_deref() else {
+            return Err(ApiError::Body(
+                "--clearing names a dimension but --authority-ledger is unset; a cleared \
+                 round must be recorded or its price cannot be checked afterwards"
+                    .to_string(),
+            ));
+        };
+        let Some(seed) = art12_sink::mediation_seed_from_env() else {
+            return Err(ApiError::Body(
+                "--clearing names a dimension but NUCLEUS_MEDIATION_SIGNING_KEY is unset \
+                 or malformed; the authority ledger signs with the pod's mediation key"
+                    .to_string(),
+            ));
+        };
+        let Some(ledger) = authority_ledger::AuthorityLedger::open(path, seed, "pod-mediation")
+        else {
+            return Err(ApiError::Body(format!(
+                "could not open the authority ledger at {}",
+                path.display()
+            )));
+        };
+        // The PUBLIC half, once, so a reader of the ledger can verify its chain.
+        // Without this the edges are signed by a key nobody outside the pod has,
+        // which makes a tamper-evident log tamper-evident to nobody. Same
+        // reasoning, and the same key, as the mediation receipts' console
+        // publication; a relying party cross-checks it against the node's record
+        // of the key it minted for this pod.
+        info!(
+            path = %path.display(),
+            kid = ledger.kid(),
+            verifying_key_hex = %hex::encode(ledger.verifying_key().to_bytes()),
+            "authority ledger open: every cleared round is recorded per participant"
+        );
+        Some(Arc::new(ledger))
+    };
 
     // Load orchestrator credentials from environment for sub-pod injection
     let orchestrator_credentials = {
@@ -1982,6 +2036,7 @@ async fn main() -> Result<(), ApiError> {
         permission_market: Arc::new(Mutex::new(PermissionMarket::new())),
         clearing_dimensions: clearing_dimensions.clone(),
         authority_exchange,
+        authority_ledger,
         sandbox_proof,
         cert_root_pubkey: args
             .cert_root_pubkey
@@ -2625,18 +2680,47 @@ async fn auth_middleware(
         })?;
 
         match scheduler.join(bid).await {
-            Verdict::Won { price, .. } => {
+            Verdict::Won {
+                round,
+                price,
+                receipt,
+            } => {
+                record_round(
+                    &state,
+                    certified.verified.leaf_identity(),
+                    nucleus_lineage::edge::EdgeKind::Allocation {
+                        market_id: round.as_str().to_string(),
+                        mechanism: "vcg".to_string(),
+                    },
+                    &receipt,
+                );
                 tracing::info!(
                     dimension = dimension.label(),
+                    round = round.as_str(),
                     price_micro_usd = price.get(),
                     leaf = %certified.verified.leaf_identity(),
                     event = "authority_slot_won",
                     "authority slot cleared and charged"
                 );
             }
-            Verdict::Lost => {
+            Verdict::Lost { round, receipt } => {
+                // A loser is recorded too, and gets the receipt: being outbid is
+                // a fact about a round it can recompute, not a claim it has to
+                // accept.
+                record_round(
+                    &state,
+                    certified.verified.leaf_identity(),
+                    nucleus_lineage::edge::EdgeKind::Bid {
+                        market_id: round.as_str().to_string(),
+                    },
+                    &receipt,
+                );
                 return Err(ApiError::KernelDenied {
-                    message: format!("outbid for the {} slot in this round", dimension.label()),
+                    message: format!(
+                        "outbid for the {} slot in round {}",
+                        dimension.label(),
+                        round.as_str()
+                    ),
                     code: None,
                 });
             }
@@ -2686,6 +2770,45 @@ async fn auth_middleware(
         req.extensions_mut().insert(certified);
     }
     Ok(next.run(req).await)
+}
+
+/// Write one participant's part in a cleared round to the authority ledger.
+///
+/// A failure to record is logged and does not fail the request: the round has
+/// already cleared and the winner has already been charged, so refusing here
+/// would deny a slot that was paid for. The startup check is where a missing
+/// ledger is refused — by the time a round has cleared it is too late to
+/// pretend it did not.
+fn record_round(
+    state: &AppState,
+    leaf_identity: &str,
+    kind: nucleus_lineage::edge::EdgeKind,
+    receipt: &nucleus_recompute::ClearingReceipt,
+) {
+    let Some(ledger) = state.authority_ledger.as_ref() else {
+        return;
+    };
+    let child = match nucleus_lineage::id::CallSpiffeId::parse(leaf_identity)
+        .and_then(|id| id.derive_tool("authority", None))
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                leaf = leaf_identity,
+                error = %e,
+                event = "authority_round_unrecorded",
+                "cleared round not recorded: the caller's identity is not a SPIFFE id"
+            );
+            return;
+        }
+    };
+    if let Err(e) = ledger.record(child, kind, nucleus_recompute::content_hash_hex(receipt)) {
+        tracing::warn!(
+            error = %e,
+            event = "authority_round_unrecorded",
+            "cleared round not recorded"
+        );
+    }
 }
 
 /// Parse and evaluate a permission bid from request headers.
