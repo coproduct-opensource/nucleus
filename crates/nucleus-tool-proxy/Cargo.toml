@@ -44,6 +44,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+# Truthful clearing of a contended authority slot, behind `--clearing`.
+nucleus-authority-exchange = { path = "../nucleus-authority-exchange", version = "1.0.0" }
+nucleus-econ-types = { path = "../nucleus-econ-types", version = "1.0.0" }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

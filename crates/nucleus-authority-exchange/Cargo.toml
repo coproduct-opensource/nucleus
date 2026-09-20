@@ -41,9 +41,14 @@ nucleus-permission-market = { path = "../nucleus-permission-market", version = "
 # certificate's budget ceiling.
 portcullis = { path = "../portcullis", version = "1.0.0", default-features = false, optional = true }
 rust_decimal = { workspace = true, optional = true }
+# The scheduler holds a request for a collection window and closes the round
+# from a detached task. `sync` for the oneshot, `time` for the window, `rt` to
+# spawn the closer.
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 # Self-dependency so `test-support` is on for this crate's own tests,
 # examples and doctests, and off for everyone who depends on it.
 nucleus-authority-exchange = { path = ".", features = ["test-support"] }

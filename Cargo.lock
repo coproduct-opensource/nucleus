@@ -6534,6 +6534,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -7483,8 +7484,10 @@ dependencies = [
  "http-body-util",
  "libc",
  "nucleus",
+ "nucleus-authority-exchange",
  "nucleus-client",
  "nucleus-cred-protocol",
+ "nucleus-econ-types",
  "nucleus-identity",
  "nucleus-ifc-kernel",
  "nucleus-jsonl",
