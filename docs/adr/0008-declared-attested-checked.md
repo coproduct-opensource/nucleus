@@ -75,6 +75,43 @@ corrected here rather than quietly dropped, because the stale figure also passed
 cross-check against `gatehouse/scripts/scope-locality.sh` — both tools read the same stale
 file, so the agreement confirmed the matcher and said nothing about the scopes.
 
+## Why `test-core` declares `**`, measured rather than assumed
+
+Narrowing it looked like a judgment call about what `nextest` reads. It is not; it is two
+specific causes, and censusing the real read sites found both.
+
+**Cause 1 — `crates/xtask` is in the gate.** Eighteen of the twenty-six files that read outside
+their own crate are xtask's: `pipefail`, `push_auth`, `pin_parity`, `self_pin`, `gatehouse_pin`,
+`workspace_members`, `action_inputs`, `gate_budget`, `coverage_floor`. They read `.github/**`,
+`Cargo.toml` and `.line-ratchet.toml` **by design** — auditing the repository is their job. They
+are **331 of 7234 tests, 4.6%**, and they hold the most expensive gate in the lane at `**`.
+
+**Cause 2 — two product tests reach out of the tree.** `nucleus-task-compiler`'s
+`goal_corpus.rs` reads `.github/workflows`, and `nucleus-node`'s `olog.rs` reads
+`docs/olog/pod-snapshot-reuse.md`.
+
+Measured over the same 400 commits, with xtask split out:
+
+| `test-core` scope | hit rate |
+|---|---|
+| today, `**` | 0.3% |
+| honest, **including** `.github/workflows/**` and `docs/olog/**` | **7.3%** |
+| honest, **without** them | **25.1%** |
+
+**Those two files cost eighteen points on the 1200-second gate**, because `.github/workflows/**`
+is edited constantly — it is in `text-gates`'s and `ci-spec`'s scopes for that reason. The tests
+are not wrong; they are repo-auditing tests living in product crates, and they belong with
+xtask's, not in the product's test gate. This is a gate-topology change, not a test deletion.
+
+With that and F-160 (gatehouse#92, which takes `lean-build` from uncacheable to **95.2%**):
+
+> **9.3% → 34.3%. 309 gate-hours over 400 commits become 203.**
+
+One caution the census earns. `crates/nucleus-action-key/src/escapes` contains `include_str!`
+and `include_bytes!` spellings — including `"../../../../../etc/passwd"` — that are **string
+literals under analysis**, not reads: its whole subject is where a crate's read set escapes.
+A census that counted them would have widened the scope to the thing it was trying to shrink.
+
 ## Decision
 
 ### 1. The three tiers and the placement rule, as stated above.
