@@ -96,6 +96,15 @@ Orchestrator (vendor-aware)          Nucleus (vendor-agnostic)
 
 ## Testing
 
+**Before claiming a branch is green, run `just prepush`.** It is the gates CI reds on in its
+first minute — the gate scripts, the ratchets, the formal-methods census, actionlint, and `fmt`
+— collected in one command; `just prepush-full` adds clippy, the affected crates' tests and the
+heavy gate scripts. Assembling your own subset by hand instead is choosing the checks you
+thought of and reporting them as the whole, and the one you skip is the one that reds. Measured
+2026-09-20: #2972 was pushed after clippy and the test suites were run and reported green, and
+`fmt` then decided **verified but Failed** — a decided verdict, which is keyed by tree and cannot
+be lifted by an empty commit.
+
 When writing tests, use generic placeholders:
 - `LLM_API_TOKEN` not `ANTHROPIC_API_KEY`
 - `test-token-123` not `sk-ant-...`
