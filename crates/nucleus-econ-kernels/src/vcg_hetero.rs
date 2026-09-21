@@ -12,21 +12,27 @@
 //! still issue a "valid" signed clearing edge — the substrate would
 //! be cryptographically consistent but economically corrupt.
 //!
-//! This module:
+//! # One heterogeneous entry, and it is the exact one (#2521)
 //!
-//! 1. exposes [`clear_heterogeneous`] as the named heterogeneous-regime
-//!    entry point (a thin wrapper over [`crate::run_vcg`] that
-//!    additionally enforces a min-proposal-count check so single-
-//!    proposal inputs are routed to the homogeneous regime in
-//!    `nucleus-market`).
-//! 2. pins the IR property in [`tests::hetero_individual_rationality`]
-//!    — a proptest sweeping arbitrary heterogeneous proposal sets +
-//!    bid distributions.
+//! The claim at the end of this header used to be that the VCG payment rule
+//! "guarantees IR regardless of optimality". **That is false**, and the
+//! proptest below found the counterexample: at
+//! `proposal_costs = [21744, 20252, 1]`, greedy packing plus Clarke pivots
+//! charged `bidder-003` 98_624 on a bid of 91_857. The Clarke pivot is
+//! IR-correct only against an OPTIMAL allocator.
 //!
-//! The greedy allocator in `run_vcg` is sub-optimal in the general
-//! heterogeneous knapsack case (B3 brings exact-VCG via the `ddo`
-//! crate); but the *VCG payment rule* (externality computation against
-//! the same allocator) guarantees IR regardless of optimality.
+//! So the greedy wrapper is gone. [`clear_heterogeneous_exact`] — which
+//! enumerates the optimal allocation — is the only heterogeneous entry, and
+//! `run_vcg` now REFUSES two or more proposals rather than silently
+//! mispricing them. [`crate::clear_vcg`] is the router: one proposal to the
+//! homogeneous kernel, more than one to the exact enumerator.
+//!
+//! What this module holds:
+//!
+//! 1. [`clear_heterogeneous_exact`], the IR-correct entry.
+//! 2. The IR proptest, now over ARBITRARY heterogeneous budgets rather than
+//!    only budgets that admit every bid — the narrower regime was the
+//!    workaround for the greedy allocator that is no longer reachable.
 
 use std::collections::HashMap;
 
@@ -51,29 +57,37 @@ pub enum HeteroError {
     Kernel(#[from] VcgError),
 }
 
-/// Run a heterogeneous-proposal VCG auction.
+/// Clear a VCG auction through whichever kernel is SOUND for the input.
 ///
-/// `bids` may reference any subset of `proposals`. The allocator
-/// packs winners into the budget greedily by effective value /
-/// cost ratio; payments are computed via the classical VCG
-/// externality rule against the same allocator, which preserves
-/// individual rationality (every winner pays ≤ their bid).
+/// This is the one decider of "which VCG" (ADR 0007 G-1). Three call sites
+/// needed the routing — the golden-vector harness, the WASM binding's
+/// `recompute_vcg_js`, and `nucleus-recompute`'s receipt issuing and
+/// verification — and three copies of a soundness rule is three chances to
+/// get it wrong differently.
 ///
-/// Returns [`HeteroError::NotHeterogeneous`] when there's only one
-/// proposal in the input — that's the homogeneous regime
-/// (`nucleus_market::clear_homogeneous_vickrey`), and routing a
-/// single-proposal input through this entry point would silently
-/// degrade to the same code path while bypassing the homogeneous
-/// regime's stronger optimality guarantee.
-pub fn clear_heterogeneous(
+/// The rule, and why each arm is what it is:
+///
+/// * **one proposal** → [`crate::run_vcg`]. Every bid costs the same, so
+///   taking the highest values is optimal, so the Clarke pivot is IR-correct.
+///   This reduces to classical second-price.
+/// * **two or more** → [`clear_heterogeneous_exact`]. Greedy is not optimal
+///   on a knapsack, and `run_vcg` now refuses this shape outright (#2521).
+/// * **two or more, above [`EXACT_VCG_MAX_BIDS`]** → an error, because there
+///   is no sound kernel for it. That is a denial-of-service surface, stated
+///   on the cap rather than hidden behind a silent greedy fallback.
+/// * **no proposals** → [`crate::run_vcg`], which handles the empty clearing.
+///
+/// Agreement between the two arms is not assumed: `exact_agrees_with_greedy_
+/// on_the_sealed_displacement_vector` pins that the Rust↔WASM sealed
+/// two-proposal vector clears identically either way, which is why routing it
+/// to the exact kernel preserves the seal.
+pub fn clear_vcg(
     bids: &[IntegerBid],
     proposals: &[IntegerProposal],
     budget_micro_usd: u64,
 ) -> Result<Clearing, HeteroError> {
-    if proposals.len() < 2 {
-        return Err(HeteroError::NotHeterogeneous {
-            got: proposals.len(),
-        });
+    if proposals.len() >= 2 {
+        return clear_heterogeneous_exact(bids, proposals, budget_micro_usd);
     }
     Ok(run_vcg(bids, proposals, budget_micro_usd)?)
 }
@@ -115,6 +129,8 @@ pub fn clear_heterogeneous_exact(
             max: EXACT_VCG_MAX_BIDS,
         });
     }
+    // The arithmetic ceiling, from the one function that decides it.
+    crate::vcg::check_total_effective_ceiling(bids)?;
     // Reject duplicate bidders (matches run_vcg invariant).
     {
         let mut seen = std::collections::HashSet::new();
@@ -137,7 +153,12 @@ pub fn clear_heterogeneous_exact(
         }
     }
 
-    let (winner_idxs, opt_welfare) = optimal_subset(bids, &prop_by_id, budget_micro_usd);
+    let (mut winner_idxs, opt_welfare) = optimal_subset(bids, &prop_by_id, budget_micro_usd);
+    // CANONICAL ORDER, or the clearing is not recomputable: `optimal_subset`
+    // returns indices in input order, so a permuted bid list produced the same
+    // winners and payments in a different sequence — and the sequence is part
+    // of what a receipt commits to. One comparator, shared with `run_vcg`.
+    winner_idxs.sort_by(|&i, &j| crate::vcg::canonical_bid_order(&bids[i], &bids[j], &prop_by_id));
 
     // Build the winners with VCG payments.
     let winners: Vec<WinningBid> = winner_idxs
@@ -254,8 +275,11 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// One proposal is the homogeneous regime: the exact entry refuses it (it
+    /// would bypass the homogeneous kernel's stronger guarantee), and the
+    /// router sends it to that kernel instead of refusing the caller.
     #[test]
-    fn clear_heterogeneous_rejects_single_proposal() {
+    fn a_single_proposal_is_refused_by_exact_and_routed_by_clear_vcg() {
         let bids = vec![IntegerBid {
             bidder: "alice".into(),
             proposal_id: "p1".into(),
@@ -265,12 +289,106 @@ mod tests {
             id: "p1".into(),
             cost_micro_usd: 50,
         }];
-        let err = clear_heterogeneous(&bids, &proposals, 1_000).unwrap_err();
+        let err = clear_heterogeneous_exact(&bids, &proposals, 1_000).unwrap_err();
         assert!(matches!(err, HeteroError::NotHeterogeneous { got: 1 }));
+
+        let routed = clear_vcg(&bids, &proposals, 1_000).expect("routed to run_vcg");
+        assert_eq!(routed.winners.len(), 1, "alice is unopposed");
+        assert_eq!(routed.winners[0].bidder, "alice");
+    }
+
+    /// #2521, the defect itself. The recorded proptest regression
+    /// (`proptest-regressions/vcg_hetero.txt`) is replayed with its exact
+    /// inputs: `run_vcg` must now REFUSE the shape, and the exact kernel must
+    /// be individually rational on it. Before the refusal this input made
+    /// `run_vcg` charge a winner 98_624 on a bid of 91_857.
+    #[test]
+    fn run_vcg_refuses_the_input_that_broke_individual_rationality() {
+        let proposal_costs = [21_744u64, 20_252, 1];
+        let bid_specs = [(3usize, 98_624u64), (0, 98_624), (3, 98_624), (1, 91_857), (0, 91_858)];
+        let budget = 21_744u64;
+
+        let proposals: Vec<IntegerProposal> = proposal_costs
+            .iter()
+            .enumerate()
+            .map(|(i, &cost)| IntegerProposal {
+                id: format!("p{i}"),
+                cost_micro_usd: cost,
+            })
+            .collect();
+        let bids: Vec<IntegerBid> = bid_specs
+            .iter()
+            .enumerate()
+            .map(|(i, (idx, value))| IntegerBid {
+                bidder: format!("bidder-{i:03}"),
+                proposal_id: format!("p{}", idx % proposal_costs.len()),
+                effective_value_micro_usd: *value,
+            })
+            .collect();
+
+        // The greedy kernel no longer prices this at all.
+        let err = run_vcg(&bids, &proposals, budget).unwrap_err();
+        assert!(
+            matches!(err, VcgError::HeterogeneousRequiresExact { proposals: 3 }),
+            "expected a refusal naming the shape, got {err:?}"
+        );
+
+        // The exact kernel does, and it is individually rational.
+        let clearing = clear_vcg(&bids, &proposals, budget).expect("exact clears");
+        let bid_of: HashMap<&str, u64> = bids
+            .iter()
+            .map(|b| (b.bidder.as_str(), b.effective_value_micro_usd))
+            .collect();
+        for w in &clearing.winners {
+            assert!(
+                w.vcg_payment_micro_usd <= bid_of[w.bidder.as_str()],
+                "IR violation: {} paid {} > bid {}",
+                w.bidder,
+                w.vcg_payment_micro_usd,
+                bid_of[w.bidder.as_str()]
+            );
+        }
+    }
+
+    /// Why routing the sealed two-proposal golden vector to the EXACT kernel
+    /// does not break the Rust↔WASM seal: on that vector the two kernels
+    /// agree, so the recorded expectation is unchanged. Greedy is optimal
+    /// there because both proposals cost the same.
+    #[test]
+    fn exact_agrees_with_greedy_on_the_sealed_displacement_vector() {
+        let bids = vec![
+            IntegerBid {
+                bidder: "alice".into(),
+                proposal_id: "high".into(),
+                effective_value_micro_usd: 70_000_000,
+            },
+            IntegerBid {
+                bidder: "bob".into(),
+                proposal_id: "low".into(),
+                effective_value_micro_usd: 65_000_000,
+            },
+        ];
+        let proposals = vec![
+            IntegerProposal {
+                id: "high".into(),
+                cost_micro_usd: 60_000_000,
+            },
+            IntegerProposal {
+                id: "low".into(),
+                cost_micro_usd: 60_000_000,
+            },
+        ];
+        let exact = clear_heterogeneous_exact(&bids, &proposals, 100_000_000).expect("clears");
+        assert_eq!(exact.winners.len(), 1);
+        assert_eq!(exact.winners[0].bidder, "alice");
+        assert_eq!(exact.winners[0].proposal_id, "high");
+        // The displaced second value, which is what the golden vector records.
+        assert_eq!(exact.winners[0].vcg_payment_micro_usd, 65_000_000);
+        assert_eq!(exact.total_payments_micro_usd, 65_000_000);
     }
 
     #[test]
-    fn clear_heterogeneous_runs_two_proposal_fixture() {
+    fn clear_vcg_runs_two_proposal_fixture_through_the_exact_kernel() {
         // 2 proposals, 3 bids, budget admits both proposals.
         let bids = vec![
             IntegerBid {
@@ -300,7 +418,7 @@ mod tests {
             },
         ];
         let budget = 300; // admits both proposals (100 + 150 = 250 < 300)
-        let clearing = clear_heterogeneous(&bids, &proposals, budget).unwrap();
+        let clearing = clear_vcg(&bids, &proposals, budget).unwrap();
 
         // Both proposals get a winner (Carol for p1 because she
         // outbids Alice; Bob for p2 as the sole p2 bidder).
@@ -347,13 +465,15 @@ mod tests {
     // budgets) lands when B3 swaps in exact-VCG.
 
     proptest! {
-        /// **B2 — hetero_individual_rationality (greedy-optimal
-        /// regime).** Over the heterogeneous regime where the budget
-        /// admits ALL bids (so greedy allocation equals optimal
-        /// allocation), the VCG payment rule yields a clearing in
-        /// which every winner pays ≤ their submitted effective
-        /// value. This is the IR property: bidders never have
+        /// **hetero_individual_rationality, over ARBITRARY budgets.** Every
+        /// winner pays ≤ its submitted effective value: bidders never take
         /// negative utility from participating truthfully.
+        ///
+        /// The doc here used to scope the claim to budgets that admit every
+        /// bid, because greedy is optimal only in that regime. The body has
+        /// swept arbitrary budgets through the exact kernel for some time, and
+        /// since #2521 the greedy composition is not reachable at all — so
+        /// the claim is now as wide as the test always was.
         ///
         /// The wider claim — IR over arbitrary heterogeneous budgets
         /// — requires the exact-VCG allocator that B3 brings via the
@@ -399,11 +519,11 @@ mod tests {
                     effective_value_micro_usd: *value,
                 });
             }
-            // Use the EXACT-VCG variant so IR holds over arbitrary
-            // budgets, not just the greedy-feasible regime. The
-            // brute-force soft cap is 15 bids; proptest generates
-            // at most 10 bids so we're well within the envelope.
-            let clearing = match clear_heterogeneous_exact(&bids, &proposals, budget) {
+            // Through the ROUTER, which is what production calls, so this
+            // sweeps the dispatch as well as the kernel. The brute-force soft
+            // cap is 15 bids and proptest generates at most 10, well inside
+            // the envelope.
+            let clearing = match clear_vcg(&bids, &proposals, budget) {
                 Ok(c) => c,
                 Err(_) => return Ok(()),
             };
