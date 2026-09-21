@@ -178,6 +178,7 @@ pub(crate) async fn bind_unix(
     if !cfg.peer_uids.is_empty() {
         use std::os::unix::fs::PermissionsExt;
         tokio::fs::set_permissions(&cfg.path, std::fs::Permissions::from_mode(0o666)).await?;
+        warn_if_unreachable(&cfg.path).await;
     }
     if let Some(path) = announce_path {
         tokio::fs::write(path, unix_url(&cfg.path)).await?;
@@ -188,6 +189,44 @@ pub(crate) async fn bind_unix(
         path: cfg.path,
         policy,
     })
+}
+
+/// Say so when a listed peer uid cannot possibly reach the socket.
+///
+/// `connect(2)` needs write on the socket AND execute on every directory above
+/// it. The socket's own mode is set just above, but a parent directory the
+/// operator chose can still exclude everyone — and then `--peer-uids` is an
+/// allowlist that admits nobody: a gate that decides nothing, reported as
+/// configuration rather than discovered as silence. Found live (#2988): a
+/// socket under `/run/nucleus`, which the guest keeps at mode 700 because it
+/// holds the pod's SVID, refused every workload connect with EACCES.
+///
+/// A warning, not a refusal: an operator may have chowned the directory to the
+/// listed uid, which this cannot see from the mode alone.
+async fn warn_if_unreachable(sock: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut dir = sock.parent();
+    while let Some(d) = dir {
+        let Ok(meta) = tokio::fs::metadata(d).await else {
+            break;
+        };
+        let mode = meta.permissions().mode() & 0o7777;
+        if mode & 0o001 == 0 {
+            warn!(
+                dir = %d.display(),
+                mode = format!("{mode:o}"),
+                socket = %sock.display(),
+                "--peer-uids lists peers that cannot reach the socket: this directory \
+                 is not traversable by other uids, so every listed peer will be refused \
+                 at connect with EACCES before admission is ever consulted"
+            );
+            return;
+        }
+        if d.parent() == Some(d) {
+            break;
+        }
+        dir = d.parent();
+    }
 }
 
 /// The URL form the workload and the announce file carry for a Unix socket.
@@ -424,6 +463,82 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ok.peer_uids, vec![7, 8]);
+    }
+
+    /// A directory the listed peers cannot traverse makes the allowlist inert,
+    /// and the proxy must say so. Driven on the real shape that produced it: a
+    /// mode-700 parent, which refused every workload connect in a live run.
+    #[tokio::test]
+    async fn an_unreachable_socket_directory_is_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::{Arc, Mutex};
+
+        let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || CaptureWriter(sink.clone()))
+            .finish();
+
+        let dir = tempfile::tempdir().unwrap();
+        let private = dir.path().join("private");
+        std::fs::create_dir(&private).unwrap();
+        let sock = private.join("p.sock");
+        std::fs::write(&sock, b"").unwrap();
+
+        // A thread-local guard rather than `with_default`, so the subscriber
+        // survives the `.await`s below on this single-threaded test runtime.
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        // The assertions name the DIRECTORY the warning blames, not merely
+        // whether one was emitted: the enclosing temp root is itself mode 700
+        // on macOS, so "no warning at all" is not a property this test can
+        // hold anywhere — and a warning about the temp root is CORRECT, just
+        // not the subject.
+        let named = |what: &str| -> bool {
+            logs.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|l| l.contains("cannot reach the socket") && l.contains(what))
+        };
+        let private_dir = private.display().to_string();
+
+        // Traversable: this directory is not what blocks anyone.
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755)).unwrap();
+        warn_if_unreachable(&sock).await;
+        assert!(
+            !named(&format!("dir={private_dir}")),
+            "a traversable directory must not be blamed: {:?}",
+            logs.lock().unwrap()
+        );
+
+        // Mode 700, the live shape: every listed peer is refused at connect.
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+        warn_if_unreachable(&sock).await;
+        drop(guard);
+        assert!(
+            named(&format!("dir={private_dir}")),
+            "a mode-700 parent must be named, got {:?}",
+            logs.lock().unwrap()
+        );
+    }
+
+    /// Collects `tracing` output into a shared buffer so the test can assert on
+    /// what an operator would actually be told.
+    struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(String::from_utf8_lossy(buf).into_owned());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     /// The host is not a pod peer, and neither is a peer with no pid; only an
