@@ -379,7 +379,35 @@ fn contend_child(bid: u64) -> i32 {
     let mut stream = match std::os::unix::net::UnixStream::connect(path) {
         Ok(s) => s,
         Err(e) => {
-            println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=connect-failed error={e}");
+            // A connect refusal is a permission FACT, so report the facts that
+            // decide it rather than leaving the reader to guess: our uid, and
+            // the mode/owner of the socket and of every directory above it.
+            use std::os::unix::fs::MetadataExt;
+            let uid = std::fs::metadata("/proc/self")
+                .map(|m| m.uid())
+                .unwrap_or(u32::MAX);
+            let mut modes = String::new();
+            let mut acc = std::path::PathBuf::from("/");
+            let mut parts: Vec<&std::ffi::OsStr> = std::path::Path::new(path).iter().collect();
+            parts.remove(0);
+            for part in parts {
+                acc.push(part);
+                let d = match std::fs::metadata(&acc) {
+                    Ok(m) => format!(
+                        "{}=mode{:o},uid{} ",
+                        acc.display(),
+                        m.mode() & 0o7777,
+                        m.uid()
+                    ),
+                    Err(e) => format!("{}=<{}> ", acc.display(), e.kind()),
+                };
+                modes.push_str(&d);
+            }
+            println!(
+                "{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=connect-failed error={e} \
+                 my_uid={uid} path_modes=[{}]",
+                modes.trim_end()
+            );
             return 1;
         }
     };
