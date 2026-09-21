@@ -209,7 +209,7 @@ impl Clearing for PostedPriceClearing {
         // cost; the slot's price is what the winner bid, because a posted price
         // grants at the asking value. Rounding a float into money is not
         // something this crate will do.
-        admitted.sort_by(|a, b| b.value().cmp(&a.value()));
+        admitted.sort_by_key(|b| std::cmp::Reverse(b.value()));
         admitted.truncate(round.slots().get() as usize);
         Ok(if admitted.is_empty() {
             RoundOutcome::NoBids
