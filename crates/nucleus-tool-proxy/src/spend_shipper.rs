@@ -233,7 +233,7 @@ mod tests {
         let s = shipper();
         let r = s.issue(10, "authority-round:a");
         let pubkey = SigningKey::from_bytes(&[5u8; 32]).verifying_key();
-        assert_eq!(r.verify(&pubkey), Ok(()));
+        assert_eq!(r.verify_strict(&pubkey), Ok(()));
     }
 
     #[test]
