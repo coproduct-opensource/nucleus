@@ -2,7 +2,9 @@
 name = "nucleus-permission-market"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# Kani 0.67 bundles rustc 1.93; the λ-curve harness in proofs/ runs under it.
+# Every dependency in that closure (portcullis, rust_decimal, serde) is ≤ 1.93.
+rust-version = "1.93"
 license.workspace = true
 description = "Lagrangian permission pricing oracle for multi-dimensional capability constraints"
 repository = "https://github.com/coproduct-opensource/nucleus"
@@ -11,13 +13,31 @@ readme = "README.md"
 keywords = ["ai", "security", "permissions", "pricing", "lagrange"]
 categories = ["algorithms", "development-tools"]
 
+[features]
+default = ["certificate"]
+# `PermissionBid::from_verified` — the only way to construct a bid (#2526).
+# Off, the market and dimensions remain and no bid can be built at all.
+certificate = ["dep:portcullis", "dep:rust_decimal"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# Default features off: `VerifiedPermissions` is ring-free, and this crate
+# verifies nothing — it reads a value that verification already produced.
+portcullis = { path = "../portcullis", version = "1.0.0", default-features = false, optional = true }
+rust_decimal = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 
-[lints]
-workspace = true
+[lints.rust]
+# The λ-curve Kani harness is gated on `cfg(kani)`, which non-kani builds
+# wouldn't otherwise recognise. Mirrors nucleus-econ-kernels.
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
+
+[lints.clippy]
+# Inherited from the workspace lints in the root Cargo.toml; restated here
+# because mixing per-crate lint overrides with `workspace = true` inheritance
+# isn't supported.
+type_complexity = "allow"

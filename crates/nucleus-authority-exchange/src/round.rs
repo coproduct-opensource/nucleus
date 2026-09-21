@@ -230,17 +230,6 @@ pub enum RoundOutcome {
         /// The receipt for the degenerate clearing, which still recomputes.
         receipt: Box<ClearingReceipt>,
     },
-    /// The fallback screen allocated the slot. There is **no receipt**, and the
-    /// missing field is the claim: the Lagrangian λ curve is a heuristic with no
-    /// truthfulness property and nothing a third party could re-derive. A caller
-    /// holding this variant knows it has a price and not a discovered one.
-    PostedPrice {
-        /// The agents that took a slot.
-        winners: Vec<AgentId>,
-        /// What it pays — its own bid, since a posted price grants at the asking
-        /// value.
-        price: MicroUsd,
-    },
     /// Nobody bid. There is nothing to allocate and nothing to price.
     NoBids,
 }
@@ -250,9 +239,7 @@ impl RoundOutcome {
     #[must_use]
     pub fn winners(&self) -> &[AgentId] {
         match self {
-            Self::Cleared { winners, .. }
-            | Self::Uncontested { winners, .. }
-            | Self::PostedPrice { winners, .. } => winners,
+            Self::Cleared { winners, .. } | Self::Uncontested { winners, .. } => winners,
             Self::NoBids => &[],
         }
     }
@@ -268,22 +255,19 @@ impl RoundOutcome {
     #[must_use]
     pub fn price(&self) -> Option<MicroUsd> {
         match self {
-            Self::Cleared { price, .. } | Self::PostedPrice { price, .. } => Some(*price),
+            Self::Cleared { price, .. } => Some(*price),
             Self::Uncontested { .. } => Some(MicroUsd::ZERO),
             Self::NoBids => None,
         }
     }
 
-    /// The receipt, if the round produced one.
-    ///
-    /// `None` for [`RoundOutcome::PostedPrice`] is not a missing feature: that
-    /// path runs a heuristic, and there is no declared-input recomputation that
-    /// would make its number checkable.
+    /// The receipt, if the round produced one. Every clearing carries one;
+    /// only `NoBids` has nothing to recompute.
     #[must_use]
     pub fn receipt(&self) -> Option<&ClearingReceipt> {
         match self {
             Self::Cleared { receipt, .. } | Self::Uncontested { receipt, .. } => Some(receipt),
-            Self::PostedPrice { .. } | Self::NoBids => None,
+            Self::NoBids => None,
         }
     }
 }

@@ -7257,7 +7257,9 @@ dependencies = [
 name = "nucleus-permission-market"
 version = "1.0.0"
 dependencies = [
+ "portcullis",
  "proptest",
+ "rust_decimal",
  "serde",
  "serde_json",
  "tracing",

@@ -1,66 +1,69 @@
 //! # nucleus-permission-market
 //!
-//! Lagrangian permission pricing oracle for multi-dimensional capability constraints.
+//! Lagrangian permission pricing for multi-dimensional capability constraints.
 //!
 //! ## Overview
 //!
 //! In constrained optimization, a Lagrange multiplier `λ` converts a hard
-//! constraint into a continuous penalty. By the duality theorem, `λ` IS the
-//! market price of relaxing that constraint by one unit.
+//! constraint into a continuous penalty; by duality, `λ` **is** the market
+//! price of relaxing that constraint by one unit. This crate keeps one `λ` per
+//! permission dimension (filesystem, command exec, network egress, approval).
+//! When a dimension's utilization is low, `λ ≈ 0` and the permission is
+//! effectively free; as utilization approaches its limit, `λ` grows
+//! exponentially and prices out low-value operations first.
 //!
-//! This crate generalizes the 1D budget constraint (`BudgetConstraint` in
-//! workstream-kg) to N independent permission dimensions:
+//! ## What a bid is, and where it comes from
 //!
-//! ```text
-//! L' = L + Σᵢ λᵢ · gᵢ(utilization)
-//! ```
-//!
-//! Each dimension (filesystem, command exec, network, approval) has its own
-//! utilization and λ. When utilization is low, λ ≈ 0 and permissions are
-//! effectively free. As utilization approaches the limit, λ grows
-//! exponentially, pricing out low-value operations first.
-//!
-//! ## Usage
-//!
-//! ```rust
-//! use nucleus_permission_market::{PermissionMarket, PermissionBid, PermissionDimension, TrustTier};
-//! use std::collections::BTreeMap;
-//!
-//! // Create a market with current utilization
-//! let mut utilizations = BTreeMap::new();
-//! utilizations.insert(PermissionDimension::Filesystem, 0.3);    // low pressure
-//! utilizations.insert(PermissionDimension::CommandExec, 0.85);   // high pressure
-//!
-//! let market = PermissionMarket::with_utilization(utilizations);
-//!
-//! // Submit a bid
-//! let bid = PermissionBid {
-//!     skill_id: "my-plugin".into(),
-//!     requested: vec![
-//!         PermissionDimension::Filesystem,
-//!         PermissionDimension::CommandExec,
-//!     ],
-//!     value_estimate: 2.0,
-//!     trust_tier: TrustTier::Verified,
-//! };
-//!
-//! let grant = market.evaluate_bid(&bid);
-//! assert!(grant.granted.contains(&PermissionDimension::Filesystem)); // cheap, granted
-//! // CommandExec may be denied if 2.0 < λ_exec * 0.5 (verified discount)
-//! ```
-//!
-//! ## Integration
-//!
-//! The permission market sits between the plugin and the tool-proxy:
+//! A [`PermissionBid`] is **derived from a verified delegation certificate**,
+//! never declared by a request. The only public constructor is
+//! [`PermissionBid::from_verified`], which takes a sealed
+//! `portcullis::VerifiedPermissions` — a value that cannot exist unless a
+//! certificate chain was walked — and reads the requested dimensions, the
+//! spend ceiling and the trust tier out of it. There is no `Deserialize`, and
+//! there is no header. A bid that could arrive on the wire is a bid the wire
+//! could set, and that was the defect this crate used to have (#2526).
 //!
 //! ```text
-//! Plugin → X-Nucleus-Permission-Bid header → PermissionMarket.evaluate_bid()
-//!          → grant/deny with λ pricing      → tool-proxy endpoint (enforcement)
+//! request ─► certificate chain ─► verify_certificate ─► VerifiedPermissions
+//!                                                              │
+//!                                                  PermissionBid::from_verified
+//!                                                              │
+//!                                            PermissionMarket::evaluate_bid ─► grant / 402
 //! ```
 //!
-//! The _mechanism_ (λ computation, bid evaluation) is vendor-agnostic.
-//! The _calibration_ (cost models, trust assignment, utilization tracking)
-//! is the orchestrator's responsibility.
+//! ## Integer, on a money path
+//!
+//! Prices are micro-USD and utilization is basis points. `λ` is computed by a
+//! fixed-point exponential in `u128` — no float anywhere in the shipped build
+//! — and pinned to the `f64` curve it replaced within one micro-unit at every
+//! basis point (#2540). A Kani harness certifies the curve is overflow-free
+//! and monotone.
+//!
+//! ## What this crate decides, and what it must not
+//!
+//! Price, and which of an already-authorised request's dimensions clear it.
+//! Never *whether* an agent may act — that is the capability boundary's
+//! decision, and `cargo xtask econ-boundary` refuses this crate a way into it
+//! (`docs/econ-layer-boundary.md`).
+
+#![forbid(unsafe_code)]
+// This crate prices authority. A price two machines can disagree about is not
+// a price, and a function whose type says `-> u64` and panics is lying. Denied
+// for the shipped build only: `assert!` is a panic and the parity oracle is an
+// `f64`, and both belong in tests.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::float_arithmetic,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
 
 pub mod bid;
 pub mod dimension;
@@ -68,4 +71,13 @@ pub mod market;
 
 pub use bid::{DeniedDimension, PermissionBid, PermissionGrant};
 pub use dimension::{PermissionDimension, TrustTier};
-pub use market::{DimensionState, PermissionConstraintState, PermissionMarket, compute_lambda};
+pub use market::{
+    CRITICAL_LAMBDA_MICRO, DimensionState, HARD_LAMBDA_MAX_MICRO, LAMBDA_ONE_MICRO,
+    PermissionConstraintState, PermissionMarket, compute_lambda_micro,
+};
+
+// The λ-curve Kani harness is gated on `cfg(kani)`. Lives outside `src/` per
+// the econ-kernels precedent, so a plain build never compiles it.
+#[cfg(kani)]
+#[path = "../proofs/lambda_monotone.rs"]
+mod lambda_monotone_proofs;

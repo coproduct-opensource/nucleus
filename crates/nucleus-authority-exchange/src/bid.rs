@@ -8,13 +8,12 @@
 //!
 //! This is not a preference. If the bid is model-controlled then injected content
 //! can raise its own price and buy capability — the lethal trifecta with a
-//! checkout counter. The live posted-price path this crate supersedes has exactly
-//! that shape today: `nucleus-tool-proxy`'s `evaluate_permission_bid` parses
-//! `value_estimate` **and `trust_tier`** out of a client-supplied
-//! `x-nucleus-permission-bid` header with no verification, and `trust_tier`
-//! selects a discount down to 0.1×. It is reached only when no request-borne
-//! certificate is present, and other gates still apply — but the screen itself is
-//! self-scored.
+//! checkout counter. The live posted-price path used to have exactly that shape:
+//! `nucleus-tool-proxy` parsed `value_estimate` **and `trust_tier`** out of a
+//! client-supplied `x-nucleus-permission-bid` header with no verification, and
+//! `trust_tier` selected a discount down to 0.1× — a self-scored screen. That
+//! path is gone (#2526): `nucleus_permission_market::PermissionBid` is now built
+//! only from a `VerifiedPermissions`, the same way [`CertifiedCeiling`] is.
 //!
 //! So the ceiling is a type, not a check. [`CertifiedCeiling`] has a private
 //! field and, outside this crate's own tests, exactly one public constructor:

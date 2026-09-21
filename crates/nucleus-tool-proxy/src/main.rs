@@ -19,9 +19,7 @@ use nucleus::portcullis::kernel::{DecisionToken, Kernel};
 use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
 use nucleus_authority_exchange::{Charger, RoundScheduler};
-use nucleus_permission_market::{
-    PermissionBid, PermissionDimension, PermissionGrant, PermissionMarket,
-};
+use nucleus_permission_market::{PermissionDimension, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
@@ -2294,7 +2292,6 @@ fn is_allowed_during_lockdown(path: &str) -> bool {
 }
 
 const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
-const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
 
 async fn auth_middleware(
     State(state): State<AppState>,
@@ -2503,7 +2500,13 @@ async fn auth_middleware(
         }
         (Some(grant), Some(certified))
     } else {
-        (evaluate_permission_bid(&parts.headers, &state), None)
+        // No certificate, no grant. This arm used to parse a self-declared
+        // `x-nucleus-permission-bid` header — value estimate and trust tier
+        // included — and evaluate it as if it were a bid (#2526). A
+        // `PermissionBid` is now constructible only from a
+        // `VerifiedPermissions`, so the honest answer here is none, and the
+        // gates downstream that need a grant refuse.
+        (None, None)
     };
 
     // ── The authority exchange ───────────────────────────────────────────
@@ -2544,35 +2547,6 @@ async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
-/// Parse and evaluate a permission bid from request headers.
-///
-/// Returns `Some(PermissionGrant)` if a valid bid was present, `None` otherwise.
-/// Invalid bid JSON is silently ignored (logged at warn level).
-fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<PermissionGrant> {
-    let bid_header = headers.get(HEADER_PERMISSION_BID)?;
-    let bid_str = bid_header.to_str().ok()?;
-    let bid: PermissionBid = match serde_json::from_str(bid_str) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "invalid permission bid header");
-            return None;
-        }
-    };
-
-    let market = state.permission_market.lock().unwrap();
-    let grant = market.evaluate_bid(&bid);
-
-    tracing::info!(
-        skill_id = %bid.skill_id,
-        granted = grant.granted.len(),
-        denied = grant.denied.len(),
-        total_cost = grant.total_cost,
-        event = "permission_bid_evaluated",
-        "permission market evaluated bid"
-    );
-
-    Some(grant)
-}
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({

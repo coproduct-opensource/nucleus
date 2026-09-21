@@ -347,10 +347,9 @@ impl<C: Charger> RoundScheduler<C> {
                 MicroUsd::ZERO,
                 Arc::new((**receipt).clone()),
             ),
-            // `PostedPrice` cannot arise: this scheduler clears with
-            // `VcgClearing`. `NoBids` cannot either, since a waiter exists only
-            // because its bid was admitted.
-            RoundOutcome::PostedPrice { .. } | RoundOutcome::NoBids => {
+            // `NoBids` cannot arise: a waiter exists only because its bid was
+            // admitted. Denying is what happens if it somehow does.
+            RoundOutcome::NoBids => {
                 for (_, tx) in waiters {
                     let _ = tx.send(Verdict::Denied(DenyReason::ClearFailed));
                 }

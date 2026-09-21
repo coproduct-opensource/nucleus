@@ -13,12 +13,14 @@
 //! `run_vcg` ran only as a *verifier* of receipts produced elsewhere.
 //!
 //! Meanwhile the one auction-shaped thing on the live path,
-//! `nucleus-permission-market`, is an `f64` Lagrangian screen —
+//! `nucleus-permission-market`, was an `f64` Lagrangian screen —
 //! `compute_lambda(u) = exp(3·(u−0.5)/0.5) − 1`, trust discounts 1.0/0.8/0.5/0.1
-//! — with no cited derivation, no Lean, no Kani, and a `value_estimate` the
-//! bidder self-reports with no incentive to be truthful. `FORMAL_METHODS.md`
-//! files it as "Tested… a Lagrangian pricing oracle", which is accurate and is
-//! not a mechanism.
+//! — with no cited derivation, no Lean, and a `value_estimate` the bidder
+//! self-reported with no incentive to be truthful. It is integer now, with a
+//! Kani-checked curve and a bid derivable only from a verified certificate
+//! (#2526, #2540), but it is still a posted price: a screen, not a mechanism.
+//! `FORMAL_METHODS.md` files it as "Tested… a Lagrangian pricing oracle",
+//! which is accurate.
 //!
 //! This crate wires the proven one to a decision: a round, a Clarke-pivot price,
 //! and a receipt anyone can re-derive.
@@ -114,7 +116,7 @@ pub mod round;
 pub mod scheduler;
 
 pub use bid::{BidError, CertifiedCeiling, SignedBid};
-pub use clearing::{ClearError, Clearing, PostedPriceClearing, VcgClearing};
+pub use clearing::{ClearError, Clearing, VcgClearing};
 pub use round::{Admission, AdmitAll, AdmitError, Round, RoundOutcome};
 pub use scheduler::{ChargeError, Charger, DenyReason, RoundScheduler, UnwiredCharger, Verdict};
 

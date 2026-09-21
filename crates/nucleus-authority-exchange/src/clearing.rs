@@ -1,13 +1,13 @@
 //! The mechanism seam: how a round's bids become an allocation and a price.
 //!
-//! Two implementations, and the difference between them is the point of this
-//! crate. [`VcgClearing`] runs the proven kernel and emits a receipt that a
-//! stranger can re-derive. [`PostedPriceClearing`] runs the Lagrangian screen
-//! that is live on the tool-proxy hot path today, and emits **no receipt**,
-//! because there is nothing to recompute — the λ curve is a heuristic with no
-//! truthfulness property and no Lean statement. That absence is in the type
-//! ([`RoundOutcome::PostedPrice`] has no receipt field), so a caller cannot
-//! report a discovered, verifiable price for a round that had neither.
+//! One implementation: [`VcgClearing`] runs the proven kernel and emits a
+//! receipt that a stranger can re-derive. A `PostedPriceClearing` adapter over
+//! the Lagrangian screen used to sit beside it as a fallback; it was deleted
+//! when `PermissionBid` became constructible only from a verified certificate
+//! (#2526), because the adapter built one by struct literal — and because the
+//! proxy already runs that screen itself on the non-auctioned path, so a second
+//! copy here was a second decider for the same fact (G-1). A round is cleared
+//! by the mechanism or not at all.
 //!
 //! The seam mirrors `nucleus-marketplace-dashboard`'s `Clearing` trait, which
 //! was written with the same intent and the same honesty note ("only
@@ -16,7 +16,6 @@
 
 use nucleus_econ_kernels::{IntegerBid, IntegerProposal, VcgError};
 use nucleus_econ_types::{AgentId, MicroUsd};
-use nucleus_permission_market::{PermissionBid, PermissionMarket, TrustTier};
 use nucleus_recompute::ClearingReceipt;
 
 use crate::round::{Round, RoundOutcome};
@@ -160,74 +159,6 @@ impl Clearing for VcgClearing {
     }
 }
 
-/// The incumbent screen, kept as a fallback so a dimension can be moved back
-/// without a deploy.
-///
-/// It prices each bid independently against the Lagrangian shadow price and
-/// awards the contended slot to the highest-valued bid that clears it. Two
-/// deliberate differences from the live `evaluate_permission_bid` path:
-///
-/// 1. **The trust tier is not taken from the bidder.** Today's header path reads
-///    `trust_tier` out of the request and uses it to pick a discount factor as
-///    low as 0.1× — a self-scored screen. This adapter always uses
-///    [`TrustTier::Unverified`] (no discount). A tier belongs to a verified
-///    certificate chain, and until it is read from one it is not an input.
-/// 2. **No receipt.** There is nothing to recompute, and the outcome type says
-///    so by having nowhere to put one.
-#[derive(Debug, Default)]
-pub struct PostedPriceClearing {
-    market: PermissionMarket,
-}
-
-impl PostedPriceClearing {
-    /// Wrap an existing market.
-    #[must_use]
-    pub fn new(market: PermissionMarket) -> Self {
-        PostedPriceClearing { market }
-    }
-}
-
-impl Clearing for PostedPriceClearing {
-    fn clear(&self, round: &Round) -> Result<RoundOutcome, ClearError> {
-        let mut admitted: Vec<&crate::bid::SignedBid> = Vec::new();
-        for b in round.bids() {
-            let grant = self.market.evaluate_bid(&PermissionBid {
-                skill_id: b.bidder().as_str().to_owned(),
-                requested: vec![b.dimension()],
-                // Micro-USD as the abstract unit the market documents
-                // (`value_estimate` is "an abstract unit — the orchestrator
-                // calibrates what 1.0 means"). Converted losslessly through u32:
-                // a bid above u32::MAX µUSD ($4 294) is clamped, which for a
-                // screen that grants at the asking value changes nothing below
-                // the clamp and nothing this crate would put a proof on above it.
-                value_estimate: f64::from(u32::try_from(b.value().get()).unwrap_or(u32::MAX)),
-                trust_tier: TrustTier::Unverified,
-            });
-            if grant.granted.is_empty() {
-                continue;
-            }
-            admitted.push(b);
-        }
-        // Highest values take the slots. The screen's own price is an `f64`
-        // cost; the slot's price is what the winner bid, because a posted price
-        // grants at the asking value. Rounding a float into money is not
-        // something this crate will do.
-        admitted.sort_by_key(|b| std::cmp::Reverse(b.value()));
-        admitted.truncate(round.slots().get() as usize);
-        Ok(if admitted.is_empty() {
-            RoundOutcome::NoBids
-        } else {
-            // The lowest admitted value, so the reported price is one every
-            // winner actually cleared rather than the top bid alone.
-            let price = admitted.last().map_or(MicroUsd::ZERO, |b| b.value());
-            RoundOutcome::PostedPrice {
-                winners: admitted.iter().map(|b| b.bidder().clone()).collect(),
-                price,
-            }
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,22 +248,5 @@ mod tests {
     fn an_empty_round_clears_to_nothing() {
         let r = Round::open(AuctionId::new("r1"), EGRESS);
         assert_eq!(VcgClearing.clear(&r).expect("clears"), RoundOutcome::NoBids);
-    }
-
-    /// The fallback allocates, and carries no receipt — the absence is the
-    /// honest signal, not an omission.
-    #[test]
-    fn the_posted_price_fallback_awards_without_a_receipt() {
-        let c = PostedPriceClearing::new(PermissionMarket::new());
-        let out = c
-            .clear(&round_of(&[("a", 100), ("b", 70)]))
-            .expect("clears");
-        let RoundOutcome::PostedPrice { winners, price } = &out else {
-            panic!("expected a posted price: {out:?}");
-        };
-        assert_eq!(winners.len(), 1, "one slot, one winner");
-        assert_eq!(winners[0].as_str(), "a");
-        assert_eq!(*price, MicroUsd::new(100));
-        assert!(out.receipt().is_none(), "the screen recomputes nothing");
     }
 }
