@@ -216,8 +216,19 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
         }
     }
 
-    let mut prices: Vec<u64> = contested.iter().filter_map(|o| o.won_at).collect();
-    prices.sort_unstable();
+    // The price statistics come from the INDEX over the receipts, not from the
+    // verdicts the harness observed. Two reasons: the index refuses any receipt
+    // that does not recompute, so a printed price is one a stranger can
+    // re-derive; and it dedups by content hash, so a round witnessed by four
+    // bidders is one round. The observed verdicts are still used for welfare,
+    // which is a fact about the bidders' private values the receipt does not
+    // carry.
+    let receipts: Vec<nucleus_recompute::ClearingReceipt> = observed
+        .iter()
+        .filter_map(|o| o.receipt.as_deref().cloned())
+        .collect();
+    let index = nucleus_authority_exchange::PriceIndex::from_receipts(&receipts)
+        .map_err(|e| anyhow::anyhow!("a receipt this run produced does not index: {e}"))?;
 
     println!("nucleus-perf exchange — seed {}", args.seed);
     println!(
@@ -244,12 +255,20 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
         bail!("no contested round");
     }
 
-    println!(
-        "  clearing price        p50 {} µUSD, p90 {} µUSD, max {} µUSD",
-        pctl(&prices, 50),
-        pctl(&prices, 90),
-        prices.last().copied().unwrap_or(0)
-    );
+    for (label, d) in &index.dimensions {
+        match d.price {
+            Some(p) => println!(
+                "  clearing price        {label}: p50 {} µUSD, p90 {} µUSD, max {} µUSD \
+                 (indexed over {} receipt(s), {} contested)",
+                p.p50.get(),
+                p.p90.get(),
+                p.max.get(),
+                index.receipts,
+                d.contested
+            ),
+            None => println!("  clearing price        {label}: no contested round to price"),
+        }
+    }
     println!("  welfare (VCG)         {vcg_welfare} µUSD");
     println!("  welfare (FIFO)        {fifo_welfare} µUSD");
     if fifo_welfare > 0 {
@@ -359,14 +378,6 @@ fn pct_u128(n: u128, d: u128) -> f64 {
     f64::from(u32::try_from(bps).unwrap_or(u32::MAX)) / 100.0
 }
 
-fn pctl(sorted: &[u64], p: usize) -> u64 {
-    if sorted.is_empty() {
-        return 0;
-    }
-    let idx = (sorted.len().saturating_sub(1)).saturating_mul(p) / 100;
-    sorted.get(idx).copied().unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,6 +485,64 @@ mod tests {
             round_label(&mk(["b", "a"])),
             round_label(&mk(["a", "b"])),
             "membership, not submission order, identifies a round"
+        );
+    }
+
+    fn observation(value: u64, won_at: Option<u64>, seq: u32) -> Observed {
+        Observed {
+            value,
+            won_at,
+            seq,
+            round: None,
+            receipt: None,
+        }
+    }
+
+    /// NON-VACUITY, at the standing step rather than the clearing step. A run
+    /// whose observations carry no receipt must REFUSE to report standing: the
+    /// number would be zero for a reason unrelated to the clearings, which
+    /// reads exactly like a site that cleared honestly and earned nothing.
+    #[test]
+    fn standing_refuses_a_run_that_minted_no_receipt() {
+        let none_at_all = standing(&[]);
+        assert!(
+            none_at_all.is_err(),
+            "an empty run must not report standing"
+        );
+
+        // And observations that exist but carry no receipt are the same case —
+        // the guard is about evidence, not about the number of bidders.
+        let witnessed_nothing = [
+            observation(100, Some(70), 0),
+            observation(70, None, 1),
+            observation(40, None, 2),
+        ];
+        let err = standing(&witnessed_nothing)
+            .expect_err("three observations with no receipt still prove nothing");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no receipt minted a credit event"),
+            "the refusal must say what was missing: {msg}"
+        );
+        assert!(
+            msg.contains("not measuring what it claims"),
+            "and why a zero here would be misleading: {msg}"
+        );
+    }
+
+    /// The dedup this harness exists to get right, at the set level: a
+    /// receiptless observation contributes nothing, so the set size counts
+    /// RECEIPTS and not bidders.
+    #[test]
+    fn the_reputation_set_counts_receipts_not_bidders() {
+        let set = reputation_set(&[
+            observation(100, Some(70), 0),
+            observation(70, None, 1),
+            observation(40, None, 2),
+        ]);
+        assert!(
+            set.is_empty(),
+            "three bidders and no receipts is an empty set, not a set of three"
         );
     }
 }

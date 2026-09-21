@@ -421,6 +421,86 @@ mod clearing_flag_tests {
             .expect("a trailing comma is not a typo");
         assert_eq!(got.len(), 1);
     }
+
+    /// Inertness at the level ABOVE the flag parser: with no `--clearing`, the
+    /// builder returns an exchange that cannot clear anything, so the whole
+    /// mechanism is unreachable rather than merely unused.
+    #[test]
+    fn with_no_dimension_named_the_builder_returns_an_inert_exchange() {
+        let lattice = portcullis::PermissionLattice::permissive();
+        let ex = build(&[], 20, None, &lattice).expect("an empty --clearing is valid");
+        assert!(ex.clearing_dimensions.is_empty());
+        assert!(
+            ex.scheduler.is_none() && ex.ledger.is_none(),
+            "an inert exchange holds neither half"
+        );
+    }
+
+    /// And it stays inert when the flag is present but names nothing, which is
+    /// what `--clearing ""` produces.
+    ///
+    /// A lone `","` is NOT this case and must not be: each argument is trimmed
+    /// on its own, so `","` is a dimension nobody recognises and errors. That
+    /// is the same refusal a typo gets, and it is the right one — silently
+    /// treating an unrecognised argument as "nothing named" is how a dimension
+    /// stays on the posted-price path while the operator believes it is
+    /// auctioned.
+    #[test]
+    fn a_flag_that_names_nothing_is_still_inert() {
+        let lattice = portcullis::PermissionLattice::permissive();
+        let ex = build(&[String::new()], 20, None, &lattice).expect("names nothing, so valid");
+        assert!(
+            ex.scheduler.is_none(),
+            "an empty name built a live exchange"
+        );
+
+        assert!(
+            build(&[",".to_string()], 20, None, &lattice).is_err(),
+            "a lone comma is an unrecognised dimension, not an empty one"
+        );
+    }
+
+    /// FAIL CLOSED. A dimension that clears by auction with nowhere to record
+    /// the round must refuse at startup, because a price nobody can check
+    /// afterwards is not what an auction is for. Refusing here rather than at
+    /// the first request is the difference between a server that will not start
+    /// and one that clears unrecorded until someone looks.
+    #[test]
+    fn a_named_dimension_without_a_ledger_refuses_to_start() {
+        let lattice = portcullis::PermissionLattice::permissive();
+        // Matched rather than `expect_err`, which would need `Exchange: Debug`
+        // — and it holds a boxed trait object that has no reason to be.
+        let Err(err) = build(&["network_egress".to_string()], 20, None, &lattice) else {
+            panic!("a named dimension with no ledger must refuse");
+        };
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("--authority-ledger is unset"),
+            "the refusal must name the missing flag: {msg}"
+        );
+        assert!(
+            msg.contains("cannot be checked afterwards") || msg.contains("must be recorded"),
+            "the refusal must say WHY recording is required: {msg}"
+        );
+    }
+
+    /// The refusal is about the ledger, not about the dimension: every
+    /// auctionable dimension refuses the same way, so the fail-closed rule
+    /// cannot be true of one label and false of another.
+    #[test]
+    fn every_dimension_refuses_the_same_way_without_a_ledger() {
+        let lattice = portcullis::PermissionLattice::permissive();
+        for d in PermissionDimension::ALL {
+            let Err(err) = build(&[d.label().to_string()], 20, None, &lattice) else {
+                panic!("{}: no ledger, so it must refuse", d.label());
+            };
+            assert!(
+                format!("{err:?}").contains("--authority-ledger is unset"),
+                "{} refused for a different reason",
+                d.label()
+            );
+        }
+    }
 }
 
 #[cfg(test)]

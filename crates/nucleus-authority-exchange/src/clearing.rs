@@ -16,13 +16,44 @@
 
 use nucleus_econ_kernels::{IntegerBid, IntegerProposal, VcgError};
 use nucleus_econ_types::{AgentId, MicroUsd};
+// No `nucleus_permission_market` import survives the merge: `PermissionBid`,
+// `PermissionMarket` and `TrustTier` came with `PostedPriceClearing`, which
+// this branch deleted (G-1), and the slot id now keys on `ScarceGood`.
+use crate::good::ScarceGood;
 use nucleus_recompute::ClearingReceipt;
 
 use crate::round::{Round, RoundOutcome};
 
-/// The single slot every round allocates, as the kernel names it. One proposal
-/// is what makes `run_vcg` reduce to classical second-price — see [`crate::Round`].
-const SLOT: &str = "authority-slot";
+/// The proposal id prefix. One proposal per round is what makes `run_vcg`
+/// reduce to the threshold mechanism — see [`crate::Round`].
+const SLOT_PREFIX: &str = "authority-slot/";
+
+/// The proposal id for a round: the prefix plus the good's label.
+///
+/// The good is part of the id **on purpose**: the proposal is a declared
+/// input, so it is under the receipt's content hash, so the receipt says what
+/// was auctioned. A receipt that only said "a slot" could not be attributed to
+/// egress or exec afterwards, and an index over receipts — the price of egress
+/// this week — would have to trust a label kept somewhere the hash does not
+/// reach. [`slot_good`] is the inverse, and a reader with only the receipt uses
+/// it to recover the good.
+///
+/// Keyed on [`ScarceGood`] rather than on `PermissionDimension`, because a
+/// round carries a good and not every scarce good is a permission — that is
+/// what `good.rs` is for. A `PermissionDimension` still reaches this through
+/// its `From` impl, so nothing that auctions a permission dimension changed.
+#[must_use]
+pub fn slot_id(good: &ScarceGood) -> String {
+    format!("{SLOT_PREFIX}{}", good.label())
+}
+
+/// Recover the good a receipt's proposal names, or `None` for a proposal this
+/// crate did not issue or whose label is not a good this crate would mint.
+#[must_use]
+pub fn slot_good(proposal_id: &str) -> Option<ScarceGood> {
+    let label = proposal_id.strip_prefix(SLOT_PREFIX)?;
+    ScarceGood::new(label).ok()
+}
 
 /// Why a round could not be cleared.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -83,7 +114,7 @@ impl Clearing for VcgClearing {
             .iter()
             .map(|b| IntegerBid {
                 bidder: b.bidder().as_str().to_owned(),
-                proposal_id: SLOT.to_owned(),
+                proposal_id: slot_id(round.dimension()),
                 effective_value_micro_usd: b.value().get(),
             })
             .collect();
@@ -108,7 +139,7 @@ impl Clearing for VcgClearing {
         const SLOT_UNITS: u64 = 1;
         let slots = u64::from(round.slots().get());
         let proposals = vec![IntegerProposal {
-            id: SLOT.to_owned(),
+            id: slot_id(round.dimension()),
             cost_micro_usd: SLOT_UNITS,
         }];
 
@@ -248,6 +279,31 @@ mod tests {
             matches!(verify_receipt(&receipt), RecomputeOutcome::Mismatch { .. }),
             "a forged price must not verify"
         );
+    }
+
+    /// The receipt must say what was auctioned. A reader holding only the
+    /// bytes recovers the good from the declared proposal — which is under
+    /// the content hash — not from anything the hash does not cover.
+    #[test]
+    fn the_receipt_declares_which_good_was_sold() {
+        let out = VcgClearing
+            .clear(&round_of(&[("a", 100), ("b", 70)]))
+            .expect("clears");
+        let ClearingReceipt::Vcg(claim) = out.receipt().expect("receipt") else {
+            panic!("vcg");
+        };
+        let ids: Vec<&str> = claim.proposals.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, [slot_id(&egress()).as_str()]);
+        assert_eq!(slot_good(&claim.proposals[0].id), Some(egress()));
+        // A good is whatever the operator named, not one of a fixed four, so
+        // an unfamiliar label round-trips. What does not is a proposal that is
+        // not a slot, or a label no `ScarceGood` can carry.
+        assert_eq!(
+            slot_good("authority-slot/ci-runner"),
+            ScarceGood::new("ci-runner").ok()
+        );
+        assert_eq!(slot_good("authority-slot/"), None);
+        assert_eq!(slot_good("something-else"), None);
     }
 
     #[test]
