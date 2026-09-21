@@ -36,8 +36,7 @@ use sha2::{Digest, Sha256};
 
 use nucleus_econ_kernels::{
     Clearing, CommonsAllocation, CommonsError, CommonsShare, HeteroError, IntegerBid,
-    IntegerProposal, clear_vcg,
-    Verdict, classify, refund, route_to_commons, seller_gross,
+    IntegerProposal, Verdict, classify, clear_vcg, refund, route_to_commons, seller_gross,
 };
 // The Aeneas-extracted integrity primitives the D1 non-interference theorem is
 // proven over. `verify_ifc_trace`'s anti-laundering check is the runtime witness

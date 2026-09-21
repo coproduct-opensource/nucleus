@@ -40,7 +40,7 @@ use thiserror::Error;
 
 use crate::vcg::{Clearing, IntegerBid, IntegerProposal, VcgError, WinningBid, run_vcg};
 
-/// Errors from `clear_heterogeneous`.
+/// Errors from [`clear_vcg`] and [`clear_heterogeneous_exact`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HeteroError {
     /// The named heterogeneous entry point requires ≥ 2 distinct
@@ -94,10 +94,20 @@ pub fn clear_vcg(
 
 /// Soft cap on bid count for the exact-VCG enumerator. 2^15 = 32_768
 /// subsets is the upper bound the brute force tolerates without
-/// blowing test wall-clock budgets. Larger inputs should route
-/// through `clear_heterogeneous` (greedy) — IR holds only when the
-/// allocator is optimal, which is true in the greedy-feasible
-/// regime (budget ≥ Σ proposal_costs) per B2's documented gap.
+/// blowing test wall-clock budgets.
+///
+/// Heterogeneous input ABOVE this cap has no clearing path: it is
+/// refused with [`HeteroError::TooManyBidsForExact`], because the
+/// Clarke pivot is individually rational only against an optimal
+/// allocator, and the only optimal allocator here is the enumerator
+/// this cap bounds. The greedy kernel that used to absorb the
+/// overflow was removed for charging a winner more than it bid.
+///
+/// Refusing is therefore the honest answer and not a complete one —
+/// a caller that can present more than [`EXACT_VCG_MAX_BIDS`] bids
+/// can deny the round to everyone. Closing that needs a deterministic,
+/// log-anchored overflow rule, which is an open decision rather than
+/// an unwritten function.
 pub const EXACT_VCG_MAX_BIDS: usize = 15;
 
 /// **Close-to-Highest B2 — exact-VCG variant.**
@@ -110,9 +120,9 @@ pub const EXACT_VCG_MAX_BIDS: usize = 15;
 ///
 /// `bids` is constrained to `≤ EXACT_VCG_MAX_BIDS` items because the
 /// algorithm is `O(N × 2^N)`. Larger inputs return
-/// [`HeteroError::TooManyBidsForExact`]; route them through
-/// [`clear_heterogeneous`] (greedy) in the budget-feasible regime, or
-/// wait for the `ddo` branch-and-bound integration.
+/// [`HeteroError::TooManyBidsForExact`] and are refused rather than
+/// rerouted — see [`EXACT_VCG_MAX_BIDS`] for why there is nowhere to
+/// reroute them to, and what closing that would take.
 pub fn clear_heterogeneous_exact(
     bids: &[IntegerBid],
     proposals: &[IntegerProposal],
@@ -305,7 +315,13 @@ mod tests {
     #[test]
     fn run_vcg_refuses_the_input_that_broke_individual_rationality() {
         let proposal_costs = [21_744u64, 20_252, 1];
-        let bid_specs = [(3usize, 98_624u64), (0, 98_624), (3, 98_624), (1, 91_857), (0, 91_858)];
+        let bid_specs = [
+            (3usize, 98_624u64),
+            (0, 98_624),
+            (3, 98_624),
+            (1, 91_857),
+            (0, 91_858),
+        ];
         let budget = 21_744u64;
 
         let proposals: Vec<IntegerProposal> = proposal_costs
