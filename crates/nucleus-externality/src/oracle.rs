@@ -189,10 +189,16 @@ impl Disputed {
 pub trait TeeQuoteVerifier: sealed::Sealed {
     /// Verify `att` and mint the attestation witness.
     ///
+    /// Named `verify_quote` rather than `verify` so neither a reader nor
+    /// `scripts/check-verify-strict.sh` can mistake it for a dalek leaf call.
+    /// That gate watches every file mentioning `ed25519_dalek` for a
+    /// two-argument `.verify(`, and it was right to flag the first draft of
+    /// this trait.
+    ///
     /// # Errors
     ///
     /// Whatever the vendor chain check rejects.
-    fn verify(&self, att: &TeeAttestation) -> Result<TeeAttested, OracleError>;
+    fn verify_quote(&self, att: &TeeAttestation) -> Result<TeeAttested, OracleError>;
 }
 
 /// A verifier for zk upper-envelope proofs. Same shape, same reason (#2505),
@@ -201,10 +207,14 @@ pub trait TeeQuoteVerifier: sealed::Sealed {
 pub trait EnvelopeVerifier: sealed::Sealed {
     /// Verify `proof` against its verification key and bound `claim`.
     ///
+    /// Two arguments, so the name matters for the same reason as
+    /// `verify_quote`: a bare two-argument `.verify(` in this file reads
+    /// exactly like the dalek call the strict-verify gate forbids.
+    ///
     /// # Errors
     ///
     /// Whatever the proving-system check rejects.
-    fn verify(
+    fn verify_envelope(
         &self,
         proof: &UpperEnvelopeProof,
         claim: &SignedExternalityClaim,
@@ -361,8 +371,8 @@ where
     T: TeeQuoteVerifier,
     E: EnvelopeVerifier,
 {
-    let tee = tee_verifier.verify(&vca.tee)?;
-    let envelope = envelope_verifier.verify(&vca.envelope, &vca.claim)?;
+    let tee = tee_verifier.verify_quote(&vca.tee)?;
+    let envelope = envelope_verifier.verify_envelope(&vca.envelope, &vca.claim)?;
     let signature =
         verify_claim_witnessed(&vca.claim, oracle_vk, expected_subject, now_unix_micros)?;
     Ok((signature, tee, envelope))
@@ -485,7 +495,7 @@ mod tests {
     struct AcceptingTee;
     impl super::sealed::Sealed for AcceptingTee {}
     impl TeeQuoteVerifier for AcceptingTee {
-        fn verify(&self, _att: &TeeAttestation) -> Result<TeeAttested, OracleError> {
+        fn verify_quote(&self, _att: &TeeAttestation) -> Result<TeeAttested, OracleError> {
             Ok(TeeAttested::for_test())
         }
     }
@@ -494,7 +504,7 @@ mod tests {
     struct AcceptingEnvelope;
     impl super::sealed::Sealed for AcceptingEnvelope {}
     impl EnvelopeVerifier for AcceptingEnvelope {
-        fn verify(
+        fn verify_envelope(
             &self,
             _proof: &UpperEnvelopeProof,
             _claim: &SignedExternalityClaim,
@@ -507,7 +517,7 @@ mod tests {
     struct RefusingEnvelope;
     impl super::sealed::Sealed for RefusingEnvelope {}
     impl EnvelopeVerifier for RefusingEnvelope {
-        fn verify(
+        fn verify_envelope(
             &self,
             _proof: &UpperEnvelopeProof,
             _claim: &SignedExternalityClaim,
@@ -521,7 +531,7 @@ mod tests {
     struct RefusingTee;
     impl super::sealed::Sealed for RefusingTee {}
     impl TeeQuoteVerifier for RefusingTee {
-        fn verify(&self, _att: &TeeAttestation) -> Result<TeeAttested, OracleError> {
+        fn verify_quote(&self, _att: &TeeAttestation) -> Result<TeeAttested, OracleError> {
             Err(OracleError::TeeQuoteEmpty)
         }
     }
