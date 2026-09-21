@@ -196,11 +196,11 @@ impl Clearing for PostedPriceClearing {
                 requested: vec![b.dimension()],
                 // Micro-USD as the abstract unit the market documents
                 // (`value_estimate` is "an abstract unit — the orchestrator
-                // calibrates what 1.0 means"). A cast, not arithmetic, and the
-                // precision loss above 2^53 µUSD ($9e9) is the screen's own
-                // f64 problem, not a new one.
-                #[allow(clippy::cast_precision_loss)]
-                value_estimate: b.value().get() as f64,
+                // calibrates what 1.0 means"). Converted losslessly through u32:
+                // a bid above u32::MAX µUSD ($4 294) is clamped, which for a
+                // screen that grants at the asking value changes nothing below
+                // the clamp and nothing this crate would put a proof on above it.
+                value_estimate: f64::from(u32::try_from(b.value().get()).unwrap_or(u32::MAX)),
                 trust_tier: TrustTier::Unverified,
             });
             if grant.granted.is_empty() {
