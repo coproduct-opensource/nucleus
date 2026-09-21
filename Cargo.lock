@@ -6525,10 +6525,12 @@ name = "nucleus-authority-exchange"
 version = "1.0.0"
 dependencies = [
  "nucleus-authority-exchange",
+ "nucleus-creditworthiness",
  "nucleus-econ-kernels",
  "nucleus-econ-types",
  "nucleus-permission-market",
  "nucleus-recompute",
+ "nucleus-witness-olog",
  "portcullis",
  "proptest",
  "rust_decimal",
