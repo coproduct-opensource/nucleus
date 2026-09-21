@@ -198,6 +198,14 @@ let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGat
 -- caused by a declared number that a real run had quietly outgrown. fmt (1.45x) and test-core
 -- (1.27x) were under the 2x floor for the same reason and would have followed.
 --
+-- A CHANGE HERE DOES NOT REACH WORK ALREADY QUEUED. The controller serves the lane a plan
+-- that is UPLOADED to it, not read from the tree under test, and a gate job binds its recipe
+-- at ENQUEUE. Measured 2026-09-21: a ci-spec attempt retried an hour after a corrected plan
+-- was uploaded still ran with --timeout-seconds 300, the old value. So a timeout fix takes
+-- effect for requests made after the upload and for no others, and a tree already in the
+-- queue keeps whatever limit it was enqueued with until it is re-requested. Worth knowing
+-- before concluding from a red gate that the declaration below is still wrong.
+--
 -- test-audit's 300 s is the one figure here that is NOT a lane measurement: the gate is required
 -- and had never executed, because the plan the controller served carried six gates rather than
 -- seven. Its timeout stands at 3x a number nothing has confirmed on this builder, and the first
