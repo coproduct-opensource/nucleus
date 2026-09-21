@@ -31,7 +31,7 @@
 # predicting that gate.
 #
 # PINNED = 38
-# NOT-LOCAL = 19
+# NOT-LOCAL = 13
 
 # --- decided locally, in the fast gauntlet -----------------------------------
 Tests <- prepush: cargo test
@@ -68,6 +68,12 @@ Fuzz <- NOT-LOCAL: time-boxed fuzzing, not a bounded check
 Code Coverage (llvm-cov) <- NOT-LOCAL: instrumented rebuild of the workspace
 
 # Capability. These need a toolchain or artifact a developer checkout does not have.
+#
+# 2026-09-20, SIX CONTEXTS LEFT THIS SECTION. They were written here on the assumption that a
+# developer has no Lean toolchain. Nobody had tried. `lean-toolchain` pins v4.30.0 and elan
+# fetches it on demand, none of the four Lean projects requires mathlib, and all six run in
+# seconds: 5, 4, 2, 1, 2, 4. Six required contexts were being decided only by CI because of an
+# assumption written into this file by the same person who wrote the file to stop assumptions.
 charon+aeneas drift + lake build (extracted-core soundness) <- NOT-LOCAL: charon + aeneas + Lean
 Scoped Aeneas (Rust → Lean 4) — routing decision <- NOT-LOCAL: charon + aeneas
 Scoped Aeneas (Rust → Lean 4) + parity tests <- NOT-LOCAL: charon + aeneas
@@ -77,9 +83,9 @@ Scan PodSpecs <- NOT-LOCAL: scans PodSpecs from the live cluster, not the tree
 zizmor (high+ gate) <- NOT-LOCAL: zizmor is not a workspace tool
 audit <- NOT-LOCAL: cargo-audit needs the advisory DB fetched
 OWASP LLM Security Gauntlet <- NOT-LOCAL: a hosted adversarial suite
-Policy-kernel model↔Rust parity (K4) <- NOT-LOCAL: Lean toolchain
-Every lean_lib is type-checked by something <- NOT-LOCAL: Lean toolchain
-lake build CiSpec (pipeline + merge-queue theorems) <- NOT-LOCAL: Lean toolchain
-lake build Ck (monotonicity-gate soundness proofs) <- NOT-LOCAL: Lean toolchain
-lake build Nucleus (econ proofs + golden seal) <- NOT-LOCAL: Lean toolchain
-lake build Nucleus (rubric scoring proofs) <- NOT-LOCAL: Lean toolchain
+Policy-kernel model↔Rust parity (K4) <- prepush: policy-kernel parity (K4)
+Every lean_lib is type-checked by something <- prepush: check-lean-libs-built
+lake build CiSpec (pipeline + merge-queue theorems) <- prepush: lake build (ci/lean)
+lake build Ck (monotonicity-gate soundness proofs) <- prepush: lake build (crates/ck-policy/lean)
+lake build Nucleus (econ proofs + golden seal) <- prepush: lake build (crates/nucleus-econ-kernels/lean)
+lake build Nucleus (rubric scoring proofs) <- prepush: lake build (crates/nucleus-rubric/lean)
