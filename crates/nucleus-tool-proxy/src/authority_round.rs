@@ -279,6 +279,7 @@ pub(crate) async fn join_if_auctioned(
                         "authority-round:{}",
                         nucleus_recompute::content_hash_hex(&receipt)
                     ),
+                    &receipt,
                 );
             }
             tracing::info!(

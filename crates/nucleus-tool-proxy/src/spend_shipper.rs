@@ -122,7 +122,31 @@ impl SpendShipper {
 
     /// Issue and ship in the background. The returned receipt is what was
     /// signed; the ship's outcome is logged, never awaited by the request.
-    pub(crate) fn charge(self: &Arc<Self>, amount_micro: u64, basis: &str) -> SpendReceipt {
+    /// Issue and ship the spend receipt, AND ship the clearing receipt its
+    /// `basis` names.
+    ///
+    /// Both, or the discount is not earned: the host credits a spend only when
+    /// it holds a clearing receipt that recomputes for every basis. Shipping
+    /// the amount without the evidence used to leave the node with a hash
+    /// pointing at a receipt that died with this guest's tmpfs.
+    ///
+    /// The clearing receipt goes FIRST, so a host that sees the spend has
+    /// already seen what justifies it; if the clearing ship fails the spend is
+    /// still sent, and the host's refusal to credit it is the correct outcome
+    /// rather than a silent discount.
+    pub(crate) fn charge(
+        self: &Arc<Self>,
+        amount_micro: u64,
+        basis: &str,
+        clearing: &nucleus_recompute::ClearingReceipt,
+    ) -> SpendReceipt {
+        match serde_json::to_string(clearing) {
+            Ok(line) => self.send("SHIP_CLEARING", line, 0),
+            Err(e) => tracing::error!(
+                error = %e,
+                "could not serialize a ClearingReceipt; the host will not credit the spend"
+            ),
+        }
         let receipt = self.issue(amount_micro, basis);
         let me = Arc::clone(self);
         let line = match serde_json::to_string(&receipt) {
@@ -132,29 +156,45 @@ impl SpendShipper {
                 return receipt;
             }
         };
-        let seq = receipt.seq;
+        let _ = me;
+        self.send("SHIP_SPEND", line, receipt.seq);
+        receipt
+    }
+
+    /// Ship one line under one command, in the background.
+    ///
+    /// One sender for both receipt kinds: the only difference between them is
+    /// the command word and how the host verifies the body, and neither is the
+    /// guest's business. A failure is logged and never refuses the request —
+    /// the charge was made, the slot is the pod's, and an unshipped receipt
+    /// costs the POD (the host folds the full allocation), which is the right
+    /// direction for the incentive to point.
+    fn send(self: &Arc<Self>, command: &'static str, line: String, seq: u64) {
+        let me = Arc::clone(self);
         tokio::spawn(async move {
-            match ship(me.port, &line).await {
+            match ship(me.port, command, &line).await {
                 Ok(reply) if reply.contains("\"collected\"") => {
                     tracing::debug!(
+                        command,
                         seq,
-                        event = "spend_receipt_shipped",
-                        "spend receipt collected by the host"
+                        event = "receipt_shipped",
+                        "receipt collected by the host"
                     );
                 }
                 Ok(reply) => tracing::warn!(
+                    command,
                     seq,
                     reply = %reply.trim(),
-                    "the host refused a spend receipt; it will fold the full allocation"
+                    "the host refused a receipt; it will fold the full allocation"
                 ),
                 Err(e) => tracing::warn!(
+                    command,
                     seq,
                     error = %e,
-                    "could not ship a spend receipt; the host will fold the full allocation"
+                    "could not ship a receipt; the host will fold the full allocation"
                 ),
             }
         });
-        receipt
     }
 }
 
@@ -167,7 +207,7 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// line, then one reply line. `cfg`-split rather than gated, for the reason
 /// `broker_client::ask` gives.
 #[cfg(target_os = "linux")]
-async fn ship(port: u32, line: &str) -> std::io::Result<String> {
+async fn ship(port: u32, command: &str, line: &str) -> std::io::Result<String> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     let fut = async {
@@ -176,7 +216,8 @@ async fn ship(port: u32, line: &str) -> std::io::Result<String> {
             port,
         ))
         .await?;
-        stream.write_all(b"SHIP_SPEND\n").await?;
+        stream.write_all(command.as_bytes()).await?;
+        stream.write_all(b"\n").await?;
         stream.write_all(line.as_bytes()).await?;
         stream.write_all(b"\n").await?;
         stream.flush().await?;
@@ -196,7 +237,7 @@ async fn ship(port: u32, line: &str) -> std::io::Result<String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn ship(_port: u32, _line: &str) -> std::io::Result<String> {
+async fn ship(_port: u32, _command: &str, _line: &str) -> std::io::Result<String> {
     let _ = MAX_REPLY_BYTES;
     let _ = REQUEST_TIMEOUT;
     Err(std::io::Error::new(

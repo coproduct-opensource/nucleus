@@ -7081,6 +7081,7 @@ dependencies = [
  "nucleus-proto",
  "nucleus-provenance-memory",
  "nucleus-receipt",
+ "nucleus-recompute",
  "nucleus-spec",
  "oid-registry",
  "portcullis",

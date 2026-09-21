@@ -29,7 +29,7 @@
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::VerifyingKey;
-use portcullis::spend_receipt::{SpendReceipt, SpendReceiptError, VerifiedSpend};
+use portcullis::spend_receipt::{SpendReceipt, SpendReceiptError};
 
 /// The verified-spend log inside a pod's node-side directory. Same directory
 /// and same host-privacy argument as `collected-receipts.jsonl`.
@@ -108,16 +108,22 @@ pub async fn append_spend(
     nucleus_jsonl::append_line_synced_async(spend_log_path(pod_dir), line.to_owned()).await
 }
 
-/// Fold the pod's stored receipts into what the node may count as spent.
+/// Every stored spend receipt that still verifies under the key the node
+/// minted for this pod.
 ///
 /// Every line is re-checked: the log is host-private, but re-verifying costs a
 /// few signatures per pod exit and removes "the file was valid when written"
-/// from the trust argument. A line that fails is dropped with a warning; the
-/// gap it leaves is what [`VerifiedSpend::Gapped`] reports.
+/// from the trust argument. A line that fails is dropped with a warning, and
+/// the gap it leaves is what [`VerifiedSpend::Gapped`] reports downstream.
+///
+/// Returned as receipts rather than a fold because the caller also has to
+/// resolve each receipt's `basis` against the clearing receipts the host holds
+/// (`clearing_receipt_collector::creditable_spend`), and it cannot do that from
+/// a total.
 #[must_use]
-pub fn verified_spend(pod_dir: &Path, pod_id: &str) -> VerifiedSpend {
+pub fn verified_spend_receipts(pod_dir: &Path, pod_id: &str) -> Vec<SpendReceipt> {
     let Ok(text) = std::fs::read_to_string(spend_log_path(pod_dir)) else {
-        return VerifiedSpend::NoReceipts;
+        return Vec::new();
     };
     let mut verified = Vec::new();
     for (n, line) in text.lines().enumerate() {
@@ -134,13 +140,14 @@ pub fn verified_spend(pod_dir: &Path, pod_id: &str) -> VerifiedSpend {
             ),
         }
     }
-    VerifiedSpend::fold(verified.iter())
+    verified
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+    use portcullis::spend_receipt::VerifiedSpend;
 
     const POD: &str = "0f7b3a2e-1111-4222-8333-444455556666";
 
@@ -180,7 +187,7 @@ mod tests {
             assert!(kept.proves(&spend_log_path(dir.path()), &l));
         }
         assert_eq!(
-            verified_spend(dir.path(), POD),
+            VerifiedSpend::fold(verified_spend_receipts(dir.path(), POD).iter()),
             VerifiedSpend::Complete {
                 total_micro: 500_000,
                 count: 2
@@ -191,7 +198,10 @@ mod tests {
     #[test]
     fn no_log_is_no_receipts() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(verified_spend(dir.path(), POD), VerifiedSpend::NoReceipts);
+        assert_eq!(
+            VerifiedSpend::fold(verified_spend_receipts(dir.path(), POD).iter()),
+            VerifiedSpend::NoReceipts
+        );
     }
 
     #[test]
@@ -250,7 +260,7 @@ mod tests {
             assert!(kept.proves(&spend_log_path(dir.path()), &l));
         }
         assert_eq!(
-            verified_spend(dir.path(), POD),
+            VerifiedSpend::fold(verified_spend_receipts(dir.path(), POD).iter()),
             VerifiedSpend::Gapped { at_seq: 2 }
         );
     }
