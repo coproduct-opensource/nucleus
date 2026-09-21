@@ -193,6 +193,11 @@ jobs:
       # returned zero. It checks TOTALITY, not correctness -- a leaf declared `observe`
       # that boots a VM passes -- and the design doc says so rather than letting the green
       # light imply more.
+      - name: Economics never widens authority
+        # #2514. The authority crates reach no economic crate; the decision functions in
+        # run_gate.rs and all of pod_authority.rs name none; the one permitted meet is
+        # still where six epics say it is. docs/econ-layer-boundary.md is the prose.
+        run: cargo run -q -p xtask -- econ-boundary
       - name: Every command declares its authority band
         run: cargo run -q -p xtask -- command-grammar
 

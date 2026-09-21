@@ -138,6 +138,10 @@ enum Command {
         #[arg(long)]
         network: bool,
     },
+    /// Economics never widens authority (#2514): the authority crates reach no economic
+    /// crate in the resolved graph, the decision functions in run_gate.rs and all of
+    /// pod_authority.rs name none, and the one permitted meet is still in cert_bridge.rs.
+    EconBoundary,
     /// A crate outside the workspace is reached by no `--workspace` command. Decided from
     /// `cargo metadata` and Cargo.toml's own `exclude` list.
     WorkspaceMembers,
@@ -395,6 +399,7 @@ mod clippy_config;
 mod command_grammar;
 mod convergence;
 mod coverage_floor;
+mod econ_boundary;
 mod fly_pools;
 mod gate_budget;
 mod gatehouse_pin;
@@ -461,6 +466,7 @@ fn main() -> Result<()> {
         Command::ActionInputs { network } => {
             action_inputs::check(&std::env::current_dir()?, network)
         }
+        Command::EconBoundary => econ_boundary::check(&std::env::current_dir()?),
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::Grammar => match command_grammar::run(&std::env::current_dir()?)? {
             0 => Ok(()),
