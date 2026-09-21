@@ -96,7 +96,7 @@ nucleus-cred-broker = { path = "../nucleus-cred-broker" }
 nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
-portcullis = { path = "../portcullis", features = ["serde"] }
+portcullis = { path = "../portcullis", features = ["serde", "crypto"] }
 
 uuid = { workspace = true, features = ["serde"] }
 

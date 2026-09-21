@@ -102,6 +102,9 @@ struct Record {
     mediation_key_served: bool,
     audit_served: bool,
     receipts: Vec<String>,
+    /// The verified spend log (`spend-receipts.jsonl`): its own resource, since
+    /// a spend receipt and a mediation receipt land in different files.
+    spend: Vec<String>,
 }
 
 impl Record {
@@ -113,6 +116,7 @@ impl Record {
             mediation_key_served: false,
             audit_served: false,
             receipts: Vec::new(),
+            spend: Vec::new(),
         }
     }
 
@@ -120,9 +124,18 @@ impl Record {
     fn reachable(p: Provision) -> Vec<Record> {
         let bits: u32 = if p.broker_secret { 5 } else { 2 };
         let receipt_options: &[bool] = if p.receipts { &[false, true] } else { &[false] };
+        // A spend line can only have been collected where an anchor exists.
+        let spend_options: &[bool] = if p.receipts && p.mediation_key {
+            &[false, true]
+        } else {
+            &[false]
+        };
         let mut out = Vec::new();
         for mask in 0..(1u32 << bits) {
-            for &receipt in receipt_options {
+            for (&receipt, &spend) in receipt_options
+                .iter()
+                .flat_map(|r| spend_options.iter().map(move |s| (r, s)))
+            {
                 let bit = |i: u32| mask & (1 << i) != 0;
                 out.push(Record {
                     personalized: bit(0),
@@ -132,6 +145,11 @@ impl Record {
                     audit_served: bits > 4 && bit(4),
                     receipts: if receipt {
                         vec!["{\"receipt\":\"earlier\"}".to_string()]
+                    } else {
+                        Vec::new()
+                    },
+                    spend: if spend {
+                        vec![spend_body(uuid::Uuid::nil()).trim_end().to_string()]
                     } else {
                         Vec::new()
                     },
@@ -198,6 +216,11 @@ async fn run(
         lines.push('\n');
         std::fs::write(dir.path().join("collected-receipts.jsonl"), lines).expect("receipts");
     }
+    if !start.spend.is_empty() {
+        let mut lines = start.spend.join("\n");
+        lines.push('\n');
+        std::fs::write(dir.path().join("spend-receipts.jsonl"), lines).expect("spend");
+    }
     let pod_id = uuid::Uuid::nil();
     let mut seen = Vec::with_capacity(letters.len());
     for letter in letters {
@@ -210,7 +233,11 @@ async fn run(
             )),
             Letter::Guest(i) => {
                 let frame = format!("{}\n", wire_name(COMMANDS[*i]));
-                let mut rest: &[u8] = b"{\"receipt\":\"census\"}\n";
+                let body = match COMMANDS[*i] {
+                    Cmd::ShipSpend => spend_body(pod_id),
+                    _ => "{\"receipt\":\"census\"}\n".to_string(),
+                };
+                let mut rest: &[u8] = body.as_bytes();
                 match serve_frame(frame.as_bytes(), &mut rest, manager, pod_id, &material).await {
                     Ok(body) => Seen::Served(body),
                     Err(r) => Seen::Refused(r),
@@ -230,6 +257,9 @@ async fn run(
     let receipts = std::fs::read_to_string(dir.path().join("collected-receipts.jsonl"))
         .map(|s| s.lines().map(str::to_string).collect())
         .unwrap_or_default();
+    let spend = std::fs::read_to_string(dir.path().join("spend-receipts.jsonl"))
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default();
     let record = Record {
         personalized: material.personalized.load(Ordering::SeqCst),
         at_barrier: material.at_snapshot_barrier.load(Ordering::SeqCst),
@@ -237,6 +267,7 @@ async fn run(
         mediation_key_served: material.mediation_key_served.load(Ordering::SeqCst),
         audit_served: material.audit_creds_served.load(Ordering::SeqCst),
         receipts,
+        spend,
     };
     (seen, record)
 }
@@ -279,8 +310,9 @@ async fn take_census() -> Census {
 
     // Starting states: EVERY reachable host state, not a sample. With everything
     // provisioned, all 32 flag combinations are reachable, with and without a
-    // collected receipt; with nothing provisioned, no one-shot can be served and
-    // no receipt collected, leaving the 4 personalised/barrier combinations.
+    // collected receipt and with and without a collected spend line; with
+    // nothing provisioned, no one-shot can be served and nothing collected,
+    // leaving the 4 personalised/barrier combinations.
     for &p in &[FULL, EMPTY] {
         for start in Record::reachable(p) {
             let at = |extra: &str| {
@@ -350,6 +382,9 @@ enum Resource {
     Served(OneShot),
     /// The collected receipt log.
     ReceiptLog,
+    /// The verified spend log (#2541). Its own resource: a spend receipt and a
+    /// mediation receipt land in different files and neither reads the other.
+    SpendLog,
 }
 
 /// Each letter's footprint. Personalisation is read from the production
@@ -374,6 +409,7 @@ fn footprint(letter: Letter) -> Footprint<Resource> {
                     fp.update(Resource::Served(OneShot::AuditCredentials))
                 }
                 Cmd::ShipReceipt => fp.update(Resource::ReceiptLog),
+                Cmd::ShipSpend => fp.update(Resource::SpendLog),
                 Cmd::FetchSvid
                 | Cmd::FetchBundle
                 | Cmd::Ping

@@ -63,6 +63,7 @@ mod proposal;
 mod run_gate;
 mod sandbox_proof;
 mod session_token;
+mod spend_shipper;
 mod startup_trace;
 mod telemetry;
 #[allow(dead_code)]
@@ -500,6 +501,11 @@ pub(crate) struct AppState {
     /// Where cleared rounds are recorded. Present exactly when
     /// `authority_exchange` is.
     authority_ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
+    /// Signs and ships a `SpendReceipt` for every charge the exchange makes, so
+    /// the node — not this guest — decides how much of the allocation was spent
+    /// (#2541). `None` when the exchange is off or the plumbing is absent; the
+    /// node then folds the full allocation, which is the conservative default.
+    spend_shipper: Option<Arc<spend_shipper::SpendShipper>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
     sandbox_proof: sandbox_proof::SandboxProof,
     /// Root authority Ed25519 public key for delegation certificate verification.
@@ -1875,6 +1881,24 @@ async fn main() -> Result<(), ApiError> {
         }
     });
 
+    // Host-side spend accounting. Only meaningful with the exchange on: it is the
+    // exchange's charges that are otherwise invisible to the node.
+    let spend_shipper = if clearing_dimensions.is_empty() {
+        None
+    } else {
+        match spend_shipper::SpendShipper::from_env() {
+            Ok(s) => Some(Arc::new(s)),
+            Err(why) => {
+                warn!(
+                    %why,
+                    "authority charges cannot be shipped to the host; it will fold this pod's \
+                     FULL budget allocation at exit"
+                );
+                None
+            }
+        }
+    };
+
     let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
     let state = AppState {
         receipts: Arc::clone(&receipts),
@@ -1903,6 +1927,7 @@ async fn main() -> Result<(), ApiError> {
         clearing_dimensions: clearing_dimensions.clone(),
         authority_exchange,
         authority_ledger,
+        spend_shipper,
         sandbox_proof,
         cert_root_pubkey: args
             .cert_root_pubkey
@@ -2546,7 +2571,6 @@ async fn auth_middleware(
     }
     Ok(next.run(req).await)
 }
-
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({

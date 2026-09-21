@@ -437,6 +437,10 @@ fn run() -> Result<(), String> {
             Ok(Some(mk)) => {
                 export!("NUCLEUS_MEDIATION_SIGNING_KEY", &mk.signing_key);
                 export!("NUCLEUS_MEDIATION_SPIFFE_ID", &mk.spiffe_id);
+                // Where the proxy ships what it signs. Not a secret — it is
+                // where to connect — and exported only alongside a key, since
+                // a proxy with nothing to sign has nothing to ship (#2541).
+                export!("NUCLEUS_WORKLOAD_API_PORT", port.to_string());
                 eprintln!("fetched mediation signing key over vsock (receipts enabled)");
             }
             Ok(None) => eprintln!("no mediation key provisioned — receipts disabled"),

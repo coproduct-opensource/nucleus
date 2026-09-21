@@ -50,6 +50,7 @@ mod pod_caller_identity;
 mod pod_receipt;
 mod pod_view;
 mod production_confinement;
+mod spend_receipt_collector;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;

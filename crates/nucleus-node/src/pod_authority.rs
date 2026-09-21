@@ -593,14 +593,21 @@ impl PodAuthority {
     }
 
     /// Retire a pod's certificate and return its budget allocation to the
-    /// parent's ledger. Until children report actual spend, the whole
-    /// allocation is folded into the parent's consumption (no refund).
+    /// parent's ledger.
+    ///
+    /// How much is folded into the parent's consumption is the NODE's decision,
+    /// from the spend receipts the pod shipped and the node verified under the
+    /// mediator key it minted (#2541): `min(allocation, Σ verified)` when the
+    /// receipts are complete, and the whole allocation otherwise — no receipts
+    /// and a gap in the sequence are both "the host could not see every
+    /// charge", and neither is a refund.
     pub async fn release_child(&self, pod_id: Uuid) {
         let mut inner = self.inner.lock().await;
         let Some(entry) = inner.pods.remove(&pod_id) else {
             return;
         };
-        let consumed = entry.cert.effective_permissions().budget.max_cost_usd;
+        let allocation = entry.cert.effective_permissions().budget.max_cost_usd;
+        let consumed = self.consumed_at_release(pod_id, allocation);
         let released = match entry.parent {
             Parent::Root => Ok(rust_decimal::Decimal::ZERO),
             Parent::Pod(p) => match inner.pods.get_mut(&p) {
@@ -617,6 +624,43 @@ impl PodAuthority {
         }
         let path = self.authority_path(pod_id);
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    /// The amount `release_child` folds: see its docs. Split out so the rule is
+    /// testable without a ledger.
+    fn consumed_at_release(
+        &self,
+        pod_id: Uuid,
+        allocation: rust_decimal::Decimal,
+    ) -> rust_decimal::Decimal {
+        use portcullis::spend_receipt::VerifiedSpend;
+        let pod_dir = self.state_dir.join("pods").join(pod_id.to_string());
+        match crate::spend_receipt_collector::verified_spend(&pod_dir, &pod_id.to_string()) {
+            VerifiedSpend::Complete { total_micro, count } => {
+                // Micro-USD is exactly a Decimal of scale 6.
+                let spent = rust_decimal::Decimal::from_i128_with_scale(i128::from(total_micro), 6);
+                tracing::info!(
+                    pod = %pod_id,
+                    receipts = count,
+                    spent_usd = %spent,
+                    allocation_usd = %allocation,
+                    "verified spend receipts decide the released budget"
+                );
+                spent.min(allocation)
+            }
+            VerifiedSpend::NoReceipts => {
+                tracing::debug!(pod = %pod_id, "no verified spend receipts; the full allocation is consumed");
+                allocation
+            }
+            VerifiedSpend::Gapped { at_seq } => {
+                tracing::warn!(
+                    pod = %pod_id,
+                    missing_seq = at_seq,
+                    "spend receipts have a gap; the full allocation is consumed"
+                );
+                allocation
+            }
+        }
     }
 
     /// Rebuild the registry from `pods/<id>/authority.json` after a restart.
@@ -986,6 +1030,115 @@ mod tests {
                 .is_err()
         );
         assert!(auth.boot_certificate(c1).await.is_none());
+    }
+
+    /// #2541: with complete, verified spend receipts the node folds what was
+    /// SPENT, not the whole allocation — and with none, or a gap, or only
+    /// forged lines, it folds everything. The control is one admission that
+    /// fails under the old rule and succeeds under the new one.
+    #[tokio::test]
+    async fn verified_spend_receipts_decide_the_released_budget() {
+        use ed25519_dalek::SigningKey;
+        use portcullis::spend_receipt::SpendReceipt;
+
+        /// A $3 child of `parent` whose node-side dir holds `anchor`'s public
+        /// key and `receipts` signed by `signer`.
+        async fn child_with_receipts(
+            dir: &std::path::Path,
+            auth: &PodAuthority,
+            parent: Uuid,
+            receipts: &[(u64, u64)],
+            signer: &SigningKey,
+            anchor: &SigningKey,
+        ) -> Uuid {
+            let child = Uuid::new_v4();
+            auth.admit(&from_pod(parent), &spec_with(lattice(3)), child)
+                .await
+                .unwrap();
+            let pod_dir = dir.join("pods").join(child.to_string());
+            std::fs::create_dir_all(&pod_dir).unwrap();
+            std::fs::write(
+                pod_dir.join("mediator-pubkey.hex"),
+                format!("{}\n", hex::encode(anchor.verifying_key().to_bytes())),
+            )
+            .unwrap();
+            for (seq, amount) in receipts {
+                let r = SpendReceipt::issue(
+                    "spiffe://t/mediator",
+                    &child.to_string(),
+                    *seq,
+                    *amount,
+                    "authority-round:abc",
+                    signer,
+                );
+                let line = serde_json::to_string(&r).unwrap();
+                let kept = crate::spend_receipt_collector::append_spend(&pod_dir, &line)
+                    .await
+                    .unwrap();
+                assert!(kept.proves(
+                    &crate::spend_receipt_collector::spend_log_path(&pod_dir),
+                    &line
+                ));
+            }
+            child
+        }
+
+        /// Whether a $4 sibling fits after `child` is released from a $5 parent.
+        /// Under the old rule (fold all $3) it never does; under the new one it
+        /// does exactly when the verified spend is ≤ $1.
+        async fn four_dollar_sibling_fits(
+            receipts: &[(u64, u64)],
+            signer: &SigningKey,
+            anchor: &SigningKey,
+        ) -> bool {
+            let dir = tempfile::tempdir().unwrap();
+            let auth = authority(dir.path(), args());
+            let parent = Uuid::new_v4();
+            auth.admit(&by(MINTER), &spec_with(lattice(5)), parent)
+                .await
+                .unwrap();
+            let c = child_with_receipts(dir.path(), &auth, parent, receipts, signer, anchor).await;
+            auth.release_child(c).await;
+            auth.admit(&from_pod(parent), &spec_with(lattice(4)), Uuid::new_v4())
+                .await
+                .is_ok()
+        }
+
+        let key = SigningKey::from_bytes(&[11u8; 32]);
+        let other = SigningKey::from_bytes(&[12u8; 32]);
+
+        assert!(
+            four_dollar_sibling_fits(&[(1, 300_000), (2, 200_000)], &key, &key).await,
+            "$0.50 spent of $3 leaves $4.50 in the parent: a $4 child fits"
+        );
+        assert!(
+            !four_dollar_sibling_fits(&[], &key, &key).await,
+            "no receipts folds the full allocation"
+        );
+        assert!(
+            !four_dollar_sibling_fits(&[(1, 100_000), (3, 100_000)], &key, &key).await,
+            "a gap (seq 2 missing) folds the full allocation"
+        );
+        assert!(
+            !four_dollar_sibling_fits(&[(1, 1)], &other, &key).await,
+            "a receipt under a key the node did not mint is not a $0.000001 bill"
+        );
+        // Spend above the allocation is clamped to it: the parent is never
+        // charged more than it delegated, so a $2 child still fits.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let auth = authority(dir.path(), args());
+            let parent = Uuid::new_v4();
+            auth.admit(&by(MINTER), &spec_with(lattice(5)), parent)
+                .await
+                .unwrap();
+            let c =
+                child_with_receipts(dir.path(), &auth, parent, &[(1, 9_000_000)], &key, &key).await;
+            auth.release_child(c).await;
+            auth.admit(&from_pod(parent), &spec_with(lattice(2)), Uuid::new_v4())
+                .await
+                .expect("$9 claimed of $3 folds as $3, leaving $2");
+        }
     }
 
     #[tokio::test]

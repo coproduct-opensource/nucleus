@@ -202,6 +202,17 @@ pub(crate) async fn join_if_auctioned(
                 },
                 &receipt,
             );
+            // The charge was made in this guest's ledger; tell the host, signed,
+            // so the node can fold what was spent rather than everything (#2541).
+            if let Some(ref shipper) = state.spend_shipper {
+                shipper.charge(
+                    price.get(),
+                    &format!(
+                        "authority-round:{}",
+                        nucleus_recompute::content_hash_hex(&receipt)
+                    ),
+                );
+            }
             tracing::info!(
                 dimension = dimension.label(),
                 round = round.as_str(),

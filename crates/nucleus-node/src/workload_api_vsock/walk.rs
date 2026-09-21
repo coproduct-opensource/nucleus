@@ -43,13 +43,38 @@ const MEDIATION_KEY: &str = "walk-mediation-key-a93b27";
 const AUDIT_SECRET: &str = "walk-audit-secret-7e40d8";
 const LEAKABLE: [&str; 3] = [BROKER_SECRET, MEDIATION_KEY, AUDIT_SECRET];
 
+/// The seed whose public half the walk writes as the pod's `mediator-pubkey.hex`
+/// anchor when a mediation key is provisioned, and signs `SHIP_SPEND` bodies
+/// with. Distinct from `MEDIATION_KEY`, which is served as opaque material and
+/// never used to sign anything here.
+const SPEND_SEED: [u8; 32] = [0x5a; 32];
+
+/// A valid `SpendReceipt` line for `pod_id`, signed by [`SPEND_SEED`]. The walk
+/// ships a REAL receipt for `SHIP_SPEND` — unlike the opaque `SHIP_RECEIPT`
+/// body — because the host verifies it before storing, and a body it refuses
+/// would leave the write path unwalked.
+pub(super) fn spend_body(pod_id: uuid::Uuid) -> String {
+    let key = ed25519_dalek::SigningKey::from_bytes(&SPEND_SEED);
+    let receipt = portcullis::spend_receipt::SpendReceipt::issue(
+        "spiffe://walk.local/mediator",
+        &pod_id.to_string(),
+        1,
+        1,
+        "walk",
+        &key,
+    );
+    let mut line = serde_json::to_string(&receipt).expect("a receipt serializes");
+    line.push('\n');
+    line
+}
+
 /// A kernel command line `snapshot_safety` accepts, so the verdict turns only
 /// on what the walk changes.
 const CLEAN_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off init=/init";
 
 /// Every command. [`ordinal`] is an exhaustive match, so adding a command to the
 /// protocol stops this file compiling until the walk can draw it.
-const COMMANDS: [Cmd; 14] = [
+const COMMANDS: [Cmd; 15] = [
     Cmd::FetchSvid,
     Cmd::FetchBundle,
     Cmd::Ping,
@@ -64,6 +89,7 @@ const COMMANDS: [Cmd; 14] = [
     Cmd::FetchPodSpec,
     Cmd::ShipReceipt,
     Cmd::SnapshotReady,
+    Cmd::ShipSpend,
 ];
 
 fn ordinal(c: Cmd) -> usize {
@@ -82,6 +108,7 @@ fn ordinal(c: Cmd) -> usize {
         Cmd::FetchPodSpec => 11,
         Cmd::ShipReceipt => 12,
         Cmd::SnapshotReady => 13,
+        Cmd::ShipSpend => 14,
     }
 }
 
@@ -100,6 +127,7 @@ fn wire_name(c: Cmd) -> &'static str {
         Cmd::PodList => "POD_LIST",
         Cmd::FetchPodSpec => "FETCH_POD_SPEC",
         Cmd::ShipReceipt => "SHIP_RECEIPT",
+        Cmd::ShipSpend => "SHIP_SPEND",
         Cmd::SnapshotReady => "SNAPSHOT_READY",
     }
 }
@@ -210,6 +238,20 @@ impl Model {
                         Expect::Refused(Refusal::ReceiptCollectionNotConfigured)
                     }
                 }
+                // The walk ships a VALID receipt (`spend_body`), so the outcome
+                // is decided by host state alone: no collection dir, no anchor
+                // (no key was minted, so `material_for` wrote none), or served.
+                Cmd::ShipSpend => {
+                    if !p.receipts {
+                        Expect::Refused(Refusal::ReceiptCollectionNotConfigured)
+                    } else if !p.mediation_key {
+                        Expect::Refused(Refusal::SpendRejected(
+                            crate::spend_receipt_collector::SpendRejection::NoAnchor,
+                        ))
+                    } else {
+                        Expect::Served
+                    }
+                }
             },
         }
     }
@@ -237,7 +279,8 @@ impl Model {
             | Cmd::FetchPodCertificate
             | Cmd::PodList
             | Cmd::FetchPodSpec
-            | Cmd::ShipReceipt => {}
+            | Cmd::ShipReceipt
+            | Cmd::ShipSpend => {}
         }
     }
 
@@ -259,6 +302,17 @@ const UNKNOWN_TOKEN: &str = "FETCH_EVERYTHING";
 /// added to `PodMaterial` stops this compiling until the walk decides whether it
 /// is provisioned (ADR 0007 E).
 fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
+    // The node writes the anchor exactly when it mints a mediation key
+    // (`mediation::new_seed_hex`), so the walk does the same: a pod with a
+    // receipt dir but no key has no anchor, and its spend receipts are refused.
+    if p.receipts && p.mediation_key {
+        let pubkey = ed25519_dalek::SigningKey::from_bytes(&SPEND_SEED).verifying_key();
+        std::fs::write(
+            receipt_dir.join("mediator-pubkey.hex"),
+            format!("{}\n", hex::encode(pubkey.to_bytes())),
+        )
+        .expect("anchor");
+    }
     PodMaterial {
         task_token: p.task_token.then(|| crate::session_mint::MintedTaskToken {
             token_json: r#"{"task":"walk"}"#.to_string(),
@@ -343,8 +397,12 @@ fn walk(provision: Provision, ops: &[Op]) -> Result<(), String> {
                 Op::Command(c) => format!("{}\n", wire_name(*c)),
                 Op::Unknown => format!("{UNKNOWN_TOKEN}\n"),
             };
-            // SHIP_RECEIPT reads its body from the same connection.
-            let mut rest: &[u8] = b"{\"receipt\":\"walk\"}\n";
+            // SHIP_RECEIPT and SHIP_SPEND read their body from the same connection.
+            let body = match op {
+                Op::Command(Cmd::ShipSpend) => spend_body(pod_id),
+                _ => "{\"receipt\":\"walk\"}\n".to_string(),
+            };
+            let mut rest: &[u8] = body.as_bytes();
             let reply = serve_frame(frame.as_bytes(), &mut rest, &manager, pod_id, &material).await;
             let at = || format!("step {step} {op:?} (expected {expect:?})");
 
