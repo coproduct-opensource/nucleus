@@ -530,11 +530,20 @@ fn verify_ed25519_any(
 /// on a host-verified vsock listener; every other transport keeps its existing
 /// mechanism.
 /// OS assumption: KB-VSOCK-PEER-CID (docs/assumptions/kernel-behaviour.md).
+/// Seconds since the epoch, saturating rather than wrapping. One definition for
+/// the tiers that stamp a request, which otherwise each cast the same duration.
+fn now_secs() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
 pub fn verify_host_vsock() -> AuthContext {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = now_secs();
 
     AuthContext {
         actor: Some("host".to_string()),
@@ -552,10 +561,7 @@ pub fn verify_host_vsock() -> AuthContext {
 /// accept and carried as connect-info, and `actor` names it so the audit record
 /// says which process asked.
 pub fn verify_pod_peer(peer: crate::host_socket::PodPeer) -> AuthContext {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = now_secs();
 
     AuthContext {
         actor: Some(format!(
@@ -592,10 +598,7 @@ pub fn verify_pod_peer(peer: crate::host_socket::PodPeer) -> AuthContext {
 /// 2. Identity is attested by the CA, not self-declared
 /// 3. Certificates auto-rotate, limiting compromise window
 pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = now_secs();
 
     AuthContext {
         actor: Some(spiffe_id.to_string()),
@@ -695,10 +698,7 @@ fn parse_timestamp(ts: &str) -> Result<i64, AuthError> {
 }
 
 fn ensure_skew(timestamp: i64, max_skew: Duration) -> Result<(), AuthError> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = now_secs();
     let skew = (now - timestamp).unsigned_abs();
     if skew > max_skew.as_secs() {
         return Err(AuthError::Skew);

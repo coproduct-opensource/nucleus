@@ -275,6 +275,21 @@ impl
     }
 }
 
+/// The pod peer a request arrived from, or `None`.
+///
+/// The Unix listener stamps every accepted connection with the kernel-reported
+/// credentials, and this reads them back off the request. `None` for anything
+/// that did not come from a process inside the pod: a vsock request (no
+/// connect-info of this type), or the host through the socket, which reports
+/// pid 0. Lives here, beside the type and the listener that sets it, so the
+/// one place that decides what a pod peer IS is the one place that reads it.
+pub(crate) fn pod_peer_of(extensions: &axum::http::Extensions) -> Option<PodPeer> {
+    extensions
+        .get::<axum::extract::ConnectInfo<PodPeer>>()
+        .map(|c| c.0)
+        .filter(PodPeer::is_in_pod)
+}
+
 /// The axum listener that enforces [`PeerPolicy`] at accept time.
 struct PeerVerifiedUnixListener {
     inner: UnixListener,

@@ -2435,14 +2435,8 @@ async fn auth_middleware(
     // this match only performs the chosen tier. Keeping the order in one
     // testable place is deliberate — an invisible reordering here would make
     // the transport tier dead and silently reinstate the readable-key HMAC.
-    // The one per-connection fact: the Unix listener stamped this request with
-    // the kernel-reported peer, and an in-namespace pid makes it a pod peer
-    // (#2988). The host through that socket (pid 0) is not one.
-    let pod_peer: Option<host_socket::PodPeer> = parts
-        .extensions
-        .get::<axum::extract::ConnectInfo<host_socket::PodPeer>>()
-        .map(|c| c.0)
-        .filter(host_socket::PodPeer::is_in_pod);
+    // The one per-connection fact, stamped by the kernel at accept (#2988).
+    let pod_peer = host_socket::pod_peer_of(&parts.extensions);
     debug_assert_eq!(
         auth::select_auth_tier(
             auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some(),

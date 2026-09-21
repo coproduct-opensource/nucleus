@@ -689,8 +689,14 @@ pub(crate) fn payment_required(
 }
 
 /// Micro-USD to the `f64` the payment protocol speaks. Wire boundary only.
+///
+/// Converted through `u32`, which `f64` represents exactly, so no price below
+/// $4 294 loses a digit. Above that the amount clamps rather than rounding
+/// silently: a 402 asking more than four thousand dollars for one tool call is
+/// a bug upstream, and a clamped number is easier to disbelieve than a rounded
+/// one.
 fn micro_to_usd(micro: u64) -> f64 {
-    micro as f64 / 1_000_000.0
+    f64::from(u32::try_from(micro).unwrap_or(u32::MAX)) / 1_000_000.0
 }
 
 pub(crate) fn grant_denies_endpoint(

@@ -368,10 +368,14 @@ mod tests {
         let mut worst = 0u64;
         for bps in 0..=10_000u32 {
             let ours = compute_lambda_micro(bps);
-            let theirs = (lambda_f64(f64::from(bps) / 10_000.0) * 1e6).round() as u64;
-            let diff = ours.abs_diff(theirs);
-            worst = worst.max(diff);
-            assert!(diff <= 1, "at {bps} bps: integer {ours} vs f64 {theirs}");
+            // Lossless both ways: the curve peaks near 19.09e6 micro-units, far
+            // inside u32, and `u32 -> f64` is exact. Comparing in f64 keeps the
+            // oracle's own rounding out of the assertion.
+            let ours_f = f64::from(u32::try_from(ours).expect("lambda fits u32"));
+            let theirs = lambda_f64(f64::from(bps) / 10_000.0) * 1e6;
+            let diff = (ours_f - theirs).abs();
+            worst = worst.max(diff.round() as u64);
+            assert!(diff <= 1.0, "at {bps} bps: integer {ours} vs f64 {theirs}");
         }
         // Non-vacuity: the curve is not zero, so "within one" was a real test.
         assert!(compute_lambda_micro(10_000) > 19_000_000);
