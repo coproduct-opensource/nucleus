@@ -487,4 +487,62 @@ mod tests {
             "membership, not submission order, identifies a round"
         );
     }
+
+    fn observation(value: u64, won_at: Option<u64>, seq: u32) -> Observed {
+        Observed {
+            value,
+            won_at,
+            seq,
+            round: None,
+            receipt: None,
+        }
+    }
+
+    /// NON-VACUITY, at the standing step rather than the clearing step. A run
+    /// whose observations carry no receipt must REFUSE to report standing: the
+    /// number would be zero for a reason unrelated to the clearings, which
+    /// reads exactly like a site that cleared honestly and earned nothing.
+    #[test]
+    fn standing_refuses_a_run_that_minted_no_receipt() {
+        let none_at_all = standing(&[]);
+        assert!(
+            none_at_all.is_err(),
+            "an empty run must not report standing"
+        );
+
+        // And observations that exist but carry no receipt are the same case —
+        // the guard is about evidence, not about the number of bidders.
+        let witnessed_nothing = [
+            observation(100, Some(70), 0),
+            observation(70, None, 1),
+            observation(40, None, 2),
+        ];
+        let err = standing(&witnessed_nothing)
+            .expect_err("three observations with no receipt still prove nothing");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no receipt minted a credit event"),
+            "the refusal must say what was missing: {msg}"
+        );
+        assert!(
+            msg.contains("not measuring what it claims"),
+            "and why a zero here would be misleading: {msg}"
+        );
+    }
+
+    /// The dedup this harness exists to get right, at the set level: a
+    /// receiptless observation contributes nothing, so the set size counts
+    /// RECEIPTS and not bidders.
+    #[test]
+    fn the_reputation_set_counts_receipts_not_bidders() {
+        let set = reputation_set(&[
+            observation(100, Some(70), 0),
+            observation(70, None, 1),
+            observation(40, None, 2),
+        ]);
+        assert!(
+            set.is_empty(),
+            "three bidders and no receipts is an empty set, not a set of three"
+        );
+    }
 }
