@@ -88,6 +88,46 @@ impl AssuranceRung {
     }
 }
 
+/// The rung a set of DECLARED layer outcomes would earn.
+///
+/// **This is a calculator, not a derivation.** Its inputs are assertions the
+/// caller makes about layers IT verified, so the result is only as good as the
+/// caller — and if the caller is relaying someone else's claim, the result is a
+/// self-report wearing a rung's name. The offline verifier SDK uses it to show
+/// a receipt's implied ladder to a JavaScript consumer; nothing on a trust path
+/// inside this repository may.
+///
+/// [`assess_rung`] is the one that derives, and it takes witnesses precisely so
+/// that the verification path cannot reach this function's shape by accident.
+/// The name says `declared` for the same reason the witnesses exist: the
+/// difference between "verified" and "asserted" was invisible on 2026-09-21 and
+/// cost a rung.
+///
+/// KNOWN GAP, not fixed here: the SDK's consumer sees a rung computed from
+/// outcomes it was handed, and a relying party cannot tell that from one
+/// derived from evidence. Closing it needs the layers' evidence carried in the
+/// receipt so the SDK can check rather than accept.
+#[must_use]
+pub fn rung_from_declared_outcomes(
+    signature_ok: bool,
+    tee_ok: bool,
+    multi_source_disputed: bool,
+    zk_envelope_ok: bool,
+) -> AssuranceRung {
+    if !signature_ok {
+        return AssuranceRung::SelfReported;
+    }
+    if zk_envelope_ok {
+        AssuranceRung::ZkUpperEnvelope
+    } else if multi_source_disputed {
+        AssuranceRung::MultiSourceDisputed
+    } else if tee_ok {
+        AssuranceRung::TeeAttested
+    } else {
+        AssuranceRung::OracleSigned
+    }
+}
+
 /// Derive the achieved [`AssuranceRung`] from WITNESSES that each layer
 /// verified — never from booleans a caller can type.
 ///

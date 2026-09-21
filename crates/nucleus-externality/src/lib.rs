@@ -50,7 +50,7 @@ mod oracle;
 mod profile;
 mod rebate;
 
-pub use assurance::{AssuranceRung, assess_rung};
+pub use assurance::{AssuranceRung, assess_rung, rung_from_declared_outcomes};
 pub use claim::{
     ClaimError, SignedExternalityClaim, canonical_claim_bytes, sign_claim, verify_claim,
 };
