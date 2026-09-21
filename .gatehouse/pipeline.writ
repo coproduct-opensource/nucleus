@@ -198,6 +198,13 @@ let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGat
 -- caused by a declared number that a real run had quietly outgrown. fmt (1.45x) and test-core
 -- (1.27x) were under the 2x floor for the same reason and would have followed.
 --
+-- test-audit's 300 s is the one figure here that is NOT a lane measurement: the gate is required
+-- and had never executed, because the plan the controller served carried six gates rather than
+-- seven. Its timeout stands at 3x a number nothing has confirmed on this builder, and the first
+-- runs are what will settle it. Said here rather than left to be discovered, per the rule above:
+-- a measurement taken somewhere else is not the measurement this clause wants, and no measurement
+-- at all is weaker still.
+--
 -- lean-build's 145 s is still a CONTAINER measurement, because the lane cannot run it yet; it is
 -- declared and not required, and the figure is marked here rather than trusted. text-gates took
 -- FIVE seconds in a container and 874 in the microVM: the difference is the VM, not the greps,
