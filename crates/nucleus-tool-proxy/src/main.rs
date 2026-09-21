@@ -481,6 +481,11 @@ pub(crate) struct AppState {
     /// (`pod_cert.rs`). `None` only for a pod created before its node issued
     /// certificates.
     pod_cert: Option<Arc<pod_cert::PodCertificate>>,
+    /// The same chain as a sealed `VerifiedPermissions`: the ceiling a process
+    /// inside this pod bids under in the authority exchange (#2988). A pod
+    /// peer holds no certificate of its own; it acts under the pod's, and a
+    /// pod without one cannot bid at all.
+    pod_verified: Option<Arc<portcullis::certificate::VerifiedPermissions>>,
     /// What a denial needs to explain itself: the grant a person approved, the
     /// ceiling they chose, and the effect catalog. `None` for a profile run,
     /// and then refusals read exactly as they did before.
@@ -1437,8 +1442,10 @@ async fn main() -> Result<(), ApiError> {
     st.mark("runtime_build");
 
     // Split the verified certificate: the sealed permissions go into the
-    // kernel, the summary into AppState.
-    let (mut pod_cert_verified, pod_cert) = match pod_cert {
+    // kernel, the summary into AppState — and a second handle on the sealed
+    // permissions stays in AppState as the ceiling a pod peer bids under
+    // (#2988). Same verified value; nothing is re-derived.
+    let (mut pod_cert_verified, pod_cert, pod_verified) = match pod_cert {
         Some((verified, summary)) => {
             tracing::info!(
                 leaf = %summary.leaf_identity,
@@ -1447,9 +1454,14 @@ async fn main() -> Result<(), ApiError> {
                 "pod certificate verified; kernel and delegation ceiling derive from it"
             );
             let fingerprint = summary.fingerprint;
-            (Some((verified, fingerprint)), Some(Arc::new(summary)))
+            let pod_verified = Arc::new(verified.clone());
+            (
+                Some((verified, fingerprint)),
+                Some(Arc::new(summary)),
+                Some(pod_verified),
+            )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     let auth = AuthConfig::new(
@@ -1853,11 +1865,7 @@ async fn main() -> Result<(), ApiError> {
     // describe how this server will actually be bound, not be patched in later.
     // A request can never influence it.
     let vsock_binding = pod_mgmt::resolve_vsock(&args, &spec)?;
-    let unix_binding = host_socket::resolve_unix(
-        args.listen_unix.as_deref(),
-        &args.peer_uids,
-        vsock_binding.as_ref(),
-    )?;
+    let unix_binding = host_socket::resolve_unix(args.listen_unix.as_deref(), &args.peer_uids)?;
     let host_verified = vsock_binding.is_some() || unix_binding.is_some();
 
     // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
@@ -1936,6 +1944,7 @@ async fn main() -> Result<(), ApiError> {
             .map(Arc::new),
         effect_gate: effect_gate::EffectGate::new(pod_cert.as_deref(), &spec.spec.work_dir),
         pod_cert,
+        pod_verified,
         proposals,
         exposure_guard,
         kernel_exposure: kernel_exposure.clone(),
@@ -2426,12 +2435,21 @@ async fn auth_middleware(
     // this match only performs the chosen tier. Keeping the order in one
     // testable place is deliberate — an invisible reordering here would make
     // the transport tier dead and silently reinstate the readable-key HMAC.
+    // The one per-connection fact: the Unix listener stamped this request with
+    // the kernel-reported peer, and an in-namespace pid makes it a pod peer
+    // (#2988). The host through that socket (pid 0) is not one.
+    let pod_peer: Option<host_socket::PodPeer> = parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<host_socket::PodPeer>>()
+        .map(|c| c.0)
+        .filter(host_socket::PodPeer::is_in_pod);
     debug_assert_eq!(
         auth::select_auth_tier(
             auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some(),
             parts.uri.path() == APPROVE_PATH,
             state.approval_verifier.is_some(),
             state.host_verified_transport,
+            pod_peer.is_some(),
         ),
         if auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some() {
             auth::AuthTier::SpiffeMtls
@@ -2439,6 +2457,8 @@ async fn auth_middleware(
             auth::AuthTier::ApprovalEd25519Drand
         } else if parts.uri.path() == APPROVE_PATH {
             auth::AuthTier::ApprovalHmacDrand
+        } else if pod_peer.is_some() {
+            auth::AuthTier::PodPeer
         } else if state.host_verified_transport {
             auth::AuthTier::HostVsock
         } else {
@@ -2474,6 +2494,10 @@ async fn auth_middleware(
                 );
             }
             ctx
+        } else if let Some(peer) = pod_peer {
+            // A process inside the pod, over the peer-verified Unix socket: the
+            // kernel named it at accept. No secret and no certificate (#2988).
+            auth::verify_pod_peer(peer)
         } else if state.host_verified_transport {
             // The listener already dropped every non-host peer, so this request
             // provably came from the host. No shared secret is involved, which
@@ -2538,7 +2562,14 @@ async fn auth_middleware(
     // An auctioned dimension is decided by a round, BEFORE the posted-price
     // screen below: the two are alternative mechanisms for the same decision
     // and running both would price the slot twice. See `authority_round`.
-    authority_round::join_if_auctioned(&state, parts.uri.path(), certified_perms.as_ref()).await?;
+    // Who bids is decided here, from facts the request cannot claim: a verified
+    // certificate chain (mTLS), or a kernel-attributed process inside the pod.
+    let bidder = match (certified_perms.as_ref(), pod_peer) {
+        (Some(c), _) => authority_round::Bidder::Certified(c),
+        (None, Some(peer)) => authority_round::Bidder::PodPeer(peer),
+        (None, None) => authority_round::Bidder::Nobody,
+    };
+    authority_round::join_if_auctioned(&state, parts.uri.path(), bidder, &parts.headers).await?;
 
     // Refuse the endpoint when its dimension is denied, including partial grants.
     if let Some(ref grant) = permission_grant

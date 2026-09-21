@@ -51,7 +51,30 @@ const IDENTITY_VARS: &[&str] = &[
 /// learns the full canary and no secret ever reaches the console.
 const CANARY_PREFIX: &str = "nucleus-e2e-canary-";
 
+/// The contention probe's per-request line and its summary line, read back off
+/// the guest console by whoever ran the pod.
+const CONTEND_SENTINEL: &str = "NUCLEUS_CONTEND";
+
 fn main() {
+    // `contend N` (#2988): the composition probe for the authority exchange.
+    // N child PROCESSES — distinct kernel-reported pids, so distinct bidders —
+    // each ask the pod's proxy for the same auctioned dimension inside one
+    // clearing window, at a different declared value. The proxy's verdicts come
+    // back as one line per child, and the parent's summary says whether the
+    // round was CONTESTED at all: a run where nobody was outbid proves nothing.
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("contend") => {
+            let n = args.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(3);
+            std::process::exit(contend(n));
+        }
+        Some("contend-child") => {
+            let bid = args.get(2).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            std::process::exit(contend_child(bid));
+        }
+        _ => {}
+    }
+
     let mut fails: Vec<String> = Vec::new();
 
     check_environment(&mut fails);
@@ -270,4 +293,128 @@ fn check_root_readonly(fails: &mut Vec<String>) {
         Some(false) => fails.push("root filesystem is mounted read-write".to_string()),
         None => fails.push("no root (/) mount found in /proc/self/mountinfo".to_string()),
     }
+}
+
+// ── contend: the authority exchange's composition probe (#2988) ─────────────
+
+/// Spawn `n` children, each a distinct process bidding a distinct value for the
+/// same auctioned dimension, and summarise what the proxy decided. Exit 0 when
+/// the round was contested (at least one winner AND at least one outbid), 1
+/// otherwise: an uncontested run is a posted price wearing a theorem's name.
+fn contend(n: u32) -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            println!("{CONTEND_SENTINEL}: FAIL current_exe: {e}");
+            return 1;
+        }
+    };
+    // Values 1 000 000, 2 000 000, … µUSD: distinct, so the second-price rule
+    // has something to discover, and all under the certificate ceilings the
+    // live specs use.
+    let mut children = Vec::new();
+    for i in 1..=n {
+        let bid = u64::from(i) * 1_000_000;
+        match std::process::Command::new(&exe)
+            .arg("contend-child")
+            .arg(bid.to_string())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(c) => children.push(c),
+            Err(e) => println!("{CONTEND_SENTINEL}: FAIL spawn child {i}: {e}"),
+        }
+    }
+    let (mut won, mut outbid, mut denied, mut other) = (0u32, 0u32, 0u32, 0u32);
+    for c in children {
+        let out = match c.wait_with_output() {
+            Ok(o) => o,
+            Err(e) => {
+                println!("{CONTEND_SENTINEL}: FAIL wait: {e}");
+                continue;
+            }
+        };
+        let line = String::from_utf8_lossy(&out.stdout);
+        // Echo the child's line so the console carries every verdict.
+        print!("{line}");
+        eprint!("{line}");
+        if line.contains("outcome=won") {
+            won += 1;
+        } else if line.contains("outcome=outbid") {
+            outbid += 1;
+        } else if line.contains("outcome=denied") {
+            denied += 1;
+        } else {
+            other += 1;
+        }
+    }
+    let contested = won >= 1 && outbid >= 1;
+    let summary = format!(
+        "{CONTEND_SENTINEL}: SUMMARY children={n} won={won} outbid={outbid} denied={denied} \
+         other={other} contested={contested}"
+    );
+    println!("{summary}");
+    eprintln!("{summary}");
+    if contested { 0 } else { 1 }
+}
+
+/// One bidder: POST an egress request over the pod's Unix socket with a
+/// declared value, and classify the proxy's answer.
+fn contend_child(bid: u64) -> i32 {
+    use std::io::{Read, Write};
+
+    let pid = std::process::id();
+    let url = std::env::var("NUCLEUS_TOOL_PROXY_URL").unwrap_or_default();
+    let Some(path) = url.strip_prefix("unix://") else {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=no-unix-socket url={url:?}");
+        return 1;
+    };
+    let body = r#"{"url":"http://contend.invalid/","method":"GET"}"#;
+    let request = format!(
+        "POST /v1/web_fetch HTTP/1.1\r\nHost: nucleus\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nx-nucleus-bid-micro-usd: {bid}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = match std::os::unix::net::UnixStream::connect(path) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=connect-failed error={e}");
+            return 1;
+        }
+    };
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+    if let Err(e) = stream.write_all(request.as_bytes()) {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=write-failed error={e}");
+        return 1;
+    }
+    let mut reply = Vec::new();
+    let _ = stream.read_to_end(&mut reply);
+    let reply = String::from_utf8_lossy(&reply);
+    let status = reply.split_whitespace().nth(1).unwrap_or("?").to_string();
+    let outcome = if reply.contains("outbid for the") {
+        "outbid"
+    } else if reply.contains("slot not granted") || reply.contains("required to bid") {
+        "denied"
+    } else if status.starts_with('2') || status.starts_with('4') || status.starts_with('5') {
+        // Anything the auction let THROUGH: the handler's own answer (an egress
+        // refusal is fine — the slot was won, the fetch itself is not the
+        // question).
+        "won"
+    } else {
+        "other"
+    };
+    let tail: String = reply
+        .chars()
+        .rev()
+        .take(120)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    println!(
+        "{CONTEND_SENTINEL}: bid={bid} pid={pid} status={status} outcome={outcome} tail={:?}",
+        tail.replace('\n', " ")
+    );
+    0
 }

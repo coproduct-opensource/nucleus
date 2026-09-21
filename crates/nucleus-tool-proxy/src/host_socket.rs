@@ -44,9 +44,27 @@
 //! - Off Linux, `pid` is a real pid (or absent), so the "outside my namespace"
 //!   host rule never fires and only the uid rule admits; the container driver
 //!   runs on Linux, and the tests pin both rules.
-//! - `--listen-unix` and a vsock binding are mutually exclusive: one
-//!   host-verified transport per proxy, so the audit record's `AuthMethod`
-//!   names the transport that actually carried the request.
+//!
+//! # The pod-peer tier: the socket beside vsock (#2988)
+//!
+//! A Firecracker guest's proxy serves vsock, and the vsock listener admits ONLY
+//! the host (`peer_is_host`), so an in-guest process — the workload, or a
+//! sub-agent it spawned — cannot reach its own proxy over vsock at all. The
+//! Unix socket is that path. It may now be bound BESIDE vsock, and the
+//! ambiguity that used to forbid the pair is resolved per connection rather
+//! than per proxy: every accepted Unix connection carries the peer's
+//! kernel-reported credentials into the request as [`PodPeer`] (axum
+//! connect-info), and `auth::select_auth_tier` names an in-namespace peer
+//! `AuthTier::PodPeer`, distinct from `HostVsock`. The audit record still
+//! names the transport that carried the request — more precisely than before.
+//!
+//! A pod peer is a BOUND identity for the authority exchange: `(uid, pid)`
+//! from `SO_PEERCRED`, which no guest process can forge, is what makes two
+//! sub-agents two bidders (`authority_round::Bidder::PodPeer`). It is still
+//! NOT an identity a delegation certificate can act for — `delegation_authority`
+//! keeps the tier `Unbound` and a certificate header on it is refused — because
+//! a uid is not a SPIFFE leaf. The ceiling a peer bids under is the POD's own
+//! certificate, which is exactly the authority it was already acting under.
 
 use std::path::{Path, PathBuf};
 
@@ -69,12 +87,12 @@ pub(crate) struct UnixConfig {
 
 /// Resolve the Unix-socket binding from the CLI. `None` when not configured.
 ///
-/// Refuses the combination with a vsock binding: two host-verified transports
-/// on one proxy would make `AuthMethod` ambiguous in the audit record.
+/// May be combined with a vsock binding (#2988): the two carry different
+/// peers — the host over vsock, in-guest processes over the socket — and each
+/// request names its own transport, so nothing is ambiguous in the record.
 pub(crate) fn resolve_unix(
     listen_unix: Option<&Path>,
     peer_uids: &[u32],
-    vsock: Option<&VsockConfig>,
 ) -> Result<Option<UnixConfig>, ApiError> {
     let Some(path) = listen_unix else {
         if !peer_uids.is_empty() {
@@ -84,12 +102,6 @@ pub(crate) fn resolve_unix(
         }
         return Ok(None);
     };
-    if vsock.is_some() {
-        return Err(ApiError::Spec(
-            "--listen-unix and a vsock binding are mutually exclusive: one host-verified transport per proxy"
-                .to_string(),
-        ));
-    }
     if !path.is_absolute() {
         return Err(ApiError::Spec(format!(
             "--listen-unix must be an absolute path, got {}",
@@ -158,6 +170,15 @@ pub(crate) async fn bind_unix(
         Err(e) => return Err(e.into()),
     }
     let listener = UnixListener::bind(&cfg.path)?;
+    // Admission is decided by the kernel-reported peer credentials at accept,
+    // not by the file mode — so when other uids are admitted by policy, the
+    // socket must be connectable by them at all (connect needs write on the
+    // socket file). Without listed peers the default mode stays: the only
+    // admitted in-namespace peer is our own uid.
+    if !cfg.peer_uids.is_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&cfg.path, std::fs::Permissions::from_mode(0o666)).await?;
+    }
     if let Some(path) = announce_path {
         tokio::fs::write(path, unix_url(&cfg.path)).await?;
     }
@@ -181,6 +202,40 @@ fn current_uid() -> u32 {
     crate::workload::nix_getuid()
 }
 
+/// The kernel-reported identity of an admitted Unix-socket peer, carried into
+/// every request on that connection as axum connect-info
+/// (`ConnectInfo<PodPeer>`).
+///
+/// `pid == Some(0)` is a peer outside the proxy's pid namespace — the host,
+/// through a socket mounted into a container — and [`PodPeer::is_in_pod`] is
+/// false for it. Everything else is a process inside the pod.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PodPeer {
+    pub(crate) uid: u32,
+    pub(crate) pid: Option<i32>,
+}
+
+impl PodPeer {
+    /// An in-namespace process: a bidder the exchange can tell from another.
+    /// The host (pid 0) is not a pod peer; a platform that reports no pid at
+    /// all yields no in-pod identity either, so it cannot bid.
+    pub(crate) fn is_in_pod(&self) -> bool {
+        matches!(self.pid, Some(p) if p != 0)
+    }
+}
+
+/// What `ConnectInfo<PodPeer>` is filled from: the address the listener
+/// returned at accept, which IS the peer's credentials.
+impl
+    axum::extract::connect_info::Connected<
+        axum::serve::IncomingStream<'_, PeerVerifiedUnixListener>,
+    > for PodPeer
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, PeerVerifiedUnixListener>) -> Self {
+        *stream.remote_addr()
+    }
+}
+
 /// The axum listener that enforces [`PeerPolicy`] at accept time.
 struct PeerVerifiedUnixListener {
     inner: UnixListener,
@@ -189,12 +244,12 @@ struct PeerVerifiedUnixListener {
 
 impl axum::serve::Listener for PeerVerifiedUnixListener {
     type Io = UnixStream;
-    type Addr = tokio::net::unix::SocketAddr;
+    type Addr = PodPeer;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
             match self.inner.accept().await {
-                Ok((stream, addr)) => {
+                Ok((stream, _addr)) => {
                     // FAIL CLOSED ON PEER IDENTITY, before the router sees the
                     // stream. The facts come from the kernel; if it cannot
                     // report them the peer is not admitted.
@@ -217,7 +272,13 @@ impl axum::serve::Listener for PeerVerifiedUnixListener {
                         drop(stream);
                         continue;
                     }
-                    return (stream, addr);
+                    return (
+                        stream,
+                        PodPeer {
+                            uid: cred.uid(),
+                            pid: cred.pid(),
+                        },
+                    );
                 }
                 Err(err) => {
                     tracing::error!("unix-socket accept error: {err}");
@@ -227,11 +288,19 @@ impl axum::serve::Listener for PeerVerifiedUnixListener {
     }
 
     fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        self.inner.local_addr()
+        // The listener's own address is not a peer; the connect-info of a
+        // request is what carries identity, and that is set per connection in
+        // `accept`. Reported as "nobody, no pid" so it can never read as a pod
+        // peer or as the host.
+        Ok(PodPeer {
+            uid: u32::MAX,
+            pid: None,
+        })
     }
 }
 
-/// Serve the router over the bound socket until the listener errors out.
+/// Serve the router over the bound socket until the listener errors out. Every
+/// request carries `ConnectInfo<PodPeer>` for the connection that brought it.
 pub(crate) async fn serve_unix(app: Router, bound: BoundUnix) -> Result<(), ApiError> {
     info!(
         "nucleus-tool-proxy listening on unix socket {} (peer-credential admission)",
@@ -241,58 +310,83 @@ pub(crate) async fn serve_unix(app: Router, bound: BoundUnix) -> Result<(), ApiE
         inner: bound.listener,
         policy: bound.policy,
     };
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<PodPeer>(),
+    )
+    .await?;
     Ok(())
 }
 
-/// The one host-verified transport a proxy may serve on: vsock in a microVM,
-/// a peer-verified Unix socket in a container. `main` binds whichever is
-/// configured and serves it the same way; the HMAC tier is unreachable on both
-/// (`auth::select_auth_tier`).
-pub(crate) enum HostBound {
-    Vsock(BoundVsock),
-    Unix(BoundUnix),
+/// The host-verified transports a proxy serves on: vsock in a microVM (the
+/// host's path), a peer-verified Unix socket (the host's path in a container,
+/// and the in-pod processes' path everywhere). Either, or both (#2988). The
+/// HMAC tier is unreachable on both (`auth::select_auth_tier`).
+pub(crate) struct HostBound {
+    vsock: Option<BoundVsock>,
+    unix: Option<BoundUnix>,
 }
 
 impl HostBound {
     /// What the workload's `NUCLEUS_TOOL_PROXY_URL` should name.
+    ///
+    /// The Unix socket when there is one: it is the only transport an in-guest
+    /// process can actually use, since the vsock listener admits the host and
+    /// nobody else. A vsock-only proxy names vsock, as it always has.
     pub(crate) fn proxy(&self) -> BoundProxy {
-        match self {
-            Self::Vsock(b) => BoundProxy::Vsock {
-                cid: b.cid(),
-                port: b.port(),
+        match (&self.unix, &self.vsock) {
+            (Some(u), _) => BoundProxy::Unix(u.path.clone()),
+            (None, Some(v)) => BoundProxy::Vsock {
+                cid: v.cid(),
+                port: v.port(),
             },
-            Self::Unix(b) => BoundProxy::Unix(b.path.clone()),
+            (None, None) => unreachable!("HostBound is constructed with at least one transport"),
         }
     }
 
+    /// Serve every bound transport; the first to fail ends the proxy.
     pub(crate) async fn serve(self, app: Router) -> Result<(), ApiError> {
-        match self {
-            Self::Vsock(b) => pod_mgmt::serve_vsock(app, b).await,
-            Self::Unix(b) => serve_unix(app, b).await,
+        match (self.vsock, self.unix) {
+            (Some(v), Some(u)) => {
+                tokio::try_join!(pod_mgmt::serve_vsock(app.clone(), v), serve_unix(app, u))?;
+                Ok(())
+            }
+            (Some(v), None) => pod_mgmt::serve_vsock(app, v).await,
+            (None, Some(u)) => serve_unix(app, u).await,
+            (None, None) => Ok(()),
         }
     }
 }
 
-/// Bind the configured host-verified transport, if any, recording the bind in
-/// the startup trace under the transport's own mark.
+/// Bind the configured host-verified transports, if any, recording each bind
+/// in the startup trace under its own mark. The announce file names the
+/// transport the WORKLOAD should use (see [`HostBound::proxy`]).
 pub(crate) async fn bind_host_verified(
     vsock: Option<VsockConfig>,
     unix: Option<UnixConfig>,
     announce_path: Option<PathBuf>,
     st: &mut Startup,
 ) -> Result<Option<HostBound>, ApiError> {
-    if let Some(v) = vsock {
-        let bound = st
-            .timed("vsock_bind", pod_mgmt::bind_vsock(v, announce_path))
-            .await?;
-        return Ok(Some(HostBound::Vsock(bound)));
+    if vsock.is_none() && unix.is_none() {
+        return Ok(None);
     }
-    if let Some(u) = unix {
-        let bound = st.timed("unix_bind", bind_unix(u, announce_path)).await?;
-        return Ok(Some(HostBound::Unix(bound)));
-    }
-    Ok(None)
+    let vsock_announce = if unix.is_some() {
+        None
+    } else {
+        announce_path.clone()
+    };
+    let vsock = match vsock {
+        Some(v) => Some(
+            st.timed("vsock_bind", pod_mgmt::bind_vsock(v, vsock_announce))
+                .await?,
+        ),
+        None => None,
+    };
+    let unix = match unix {
+        Some(u) => Some(st.timed("unix_bind", bind_unix(u, announce_path)).await?),
+        None => None,
+    };
+    Ok(Some(HostBound { vsock, unix }))
 }
 
 #[cfg(test)]
@@ -320,19 +414,45 @@ mod tests {
     }
 
     #[test]
-    fn resolve_refuses_ambiguous_and_relative_configs() {
-        let v = VsockConfig { cid: 3, port: 5000 };
-        let err = resolve_unix(Some(Path::new("/run/x.sock")), &[], Some(&v)).unwrap_err();
-        assert!(err.to_string().contains("mutually exclusive"), "{err}");
-        let err = resolve_unix(Some(Path::new("rel.sock")), &[], None).unwrap_err();
+    fn resolve_refuses_relative_and_orphaned_configs() {
+        let err = resolve_unix(Some(Path::new("rel.sock")), &[]).unwrap_err();
         assert!(err.to_string().contains("absolute"), "{err}");
-        let err = resolve_unix(None, &[7], None).unwrap_err();
+        let err = resolve_unix(None, &[7]).unwrap_err();
         assert!(err.to_string().contains("requires --listen-unix"), "{err}");
-        assert_eq!(resolve_unix(None, &[], None).unwrap(), None);
-        let ok = resolve_unix(Some(Path::new("/run/x.sock")), &[7, 8], None)
+        assert_eq!(resolve_unix(None, &[]).unwrap(), None);
+        let ok = resolve_unix(Some(Path::new("/run/x.sock")), &[7, 8])
             .unwrap()
             .unwrap();
         assert_eq!(ok.peer_uids, vec![7, 8]);
+    }
+
+    /// The host is not a pod peer, and neither is a peer with no pid; only an
+    /// in-namespace process is a bidder.
+    #[test]
+    fn only_an_in_namespace_process_is_a_pod_peer() {
+        assert!(
+            PodPeer {
+                uid: 1000,
+                pid: Some(42)
+            }
+            .is_in_pod()
+        );
+        assert!(
+            !PodPeer {
+                uid: 1000,
+                pid: Some(0)
+            }
+            .is_in_pod(),
+            "the host"
+        );
+        assert!(
+            !PodPeer {
+                uid: 1000,
+                pid: None
+            }
+            .is_in_pod(),
+            "no pid reported"
+        );
     }
 
     #[test]
@@ -344,23 +464,34 @@ mod tests {
     }
 
     /// The admission is enforced at accept: a connection from an unadmitted
-    /// peer is closed before any byte is answered, an admitted one is served.
-    /// Both directions are exercised against a real bound socket, in-process
-    /// (so the peer uid is our own and the pid is a real in-namespace pid).
+    /// peer is closed before any byte is answered, an admitted one is served —
+    /// and the served request carries the peer's kernel-reported credentials
+    /// as connect-info, which is what the exchange bids under. Both directions
+    /// are exercised against a real bound socket, in-process (so the peer uid
+    /// is our own and the pid is a real in-namespace pid).
     #[tokio::test]
     async fn accept_drops_unadmitted_peers_and_serves_admitted_ones() {
+        use axum::extract::ConnectInfo;
+
         async fn bind_with(policy: PeerPolicy) -> (PathBuf, tokio::task::JoinHandle<()>) {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("p.sock");
             let listener = UnixListener::bind(&path).unwrap();
-            let app = Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
+            // The handler answers with the peer it saw: the assertion below is
+            // that this equals the kernel's view of THIS process.
+            let app = Router::new().route(
+                "/ping",
+                axum::routing::get(|ConnectInfo(peer): ConnectInfo<PodPeer>| async move {
+                    format!("pong uid={} pid={:?}", peer.uid, peer.pid)
+                }),
+            );
             let l = PeerVerifiedUnixListener {
                 inner: listener,
                 policy,
             };
             let h = tokio::spawn(async move {
                 let _keep = dir;
-                let _ = axum::serve(l, app).await;
+                let _ = axum::serve(l, app.into_make_service_with_connect_info::<PodPeer>()).await;
             });
             (path, h)
         }
@@ -374,10 +505,19 @@ mod tests {
             Ok(buf)
         }
 
-        // Admitted: our own uid.
+        // Admitted: our own uid — and the request saw OUR uid and a real pid,
+        // which is the identity the exchange would bid under.
         let (path, h) = bind_with(PeerPolicy::new(current_uid(), vec![])).await;
         let reply = get_ping(&path).await.unwrap();
-        assert!(reply.contains("200") && reply.ends_with("pong"), "{reply}");
+        assert!(reply.contains("200"), "{reply}");
+        assert!(
+            reply.contains(&format!("pong uid={}", current_uid())),
+            "the peer's uid must reach the handler: {reply}"
+        );
+        assert!(
+            reply.contains(&format!("pid=Some({})", std::process::id())),
+            "the peer's pid must reach the handler: {reply}"
+        );
         h.abort();
 
         // Unadmitted: a policy whose own uid is not ours and lists nobody.
