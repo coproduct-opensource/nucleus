@@ -247,58 +247,74 @@ fn graph_reaches(root: &Path) -> Result<BTreeMap<String, BTreeSet<String>>> {
     Ok(result)
 }
 
-pub fn check(root: &Path) -> Result<()> {
-    let mut failures = 0usize;
+/// Every boundary violation implied by the four inputs, as strings.
+///
+/// Extracted from `check` so each rule is reachable from a test. `check` reads
+/// the graph and three files; this decides. Before the split the only way to
+/// exercise any rule was to run the gate on the whole repository, which can
+/// only ever show the clean case — and a gate that has only been observed
+/// passing is the thing A-19 exists to forbid.
+pub fn findings(
+    graph: &BTreeMap<String, BTreeSet<String>>,
+    run_gate_src: &str,
+    pod_authority_src: &str,
+    bridge_src: &str,
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
 
-    // 1. The graph.
-    for (auth, reached) in graph_reaches(root)? {
+    for (auth, reached) in graph {
         for econ in reached {
-            println!("  FAIL  {auth} reaches {econ} in the resolved dependency graph.");
-            println!(
-                "        An authority crate that can name a price can be moved by one. The\n\
-                 \x20       economic layer decides price, collateral, allocation and payout —\n\
-                 \x20       never whether."
-            );
-            failures += 1;
+            out.push(format!(
+                "{auth} reaches {econ} in the resolved dependency graph. An authority crate \
+                 that can name a price can be moved by one."
+            ));
         }
     }
 
-    // 2. run_gate's decision functions.
-    let run_gate = fs::read_to_string(root.join(RUN_GATE)).context("reading run_gate.rs")?;
-    let (hits, missing) = econ_paths_in_fns(&run_gate, &RUN_GATE_DECISION_FNS)?;
+    let (hits, missing) = econ_paths_in_fns(run_gate_src, &RUN_GATE_DECISION_FNS)?;
     for m in &missing {
-        println!(
-            "  FAIL  {RUN_GATE}: decision function `{m}` not found. A renamed decision function \
-             is one this gate silently stopped watching — update RUN_GATE_DECISION_FNS."
-        );
-        failures += 1;
+        out.push(format!(
+            "{RUN_GATE}: decision function `{m}` not found. A renamed decision function is one \
+             this gate silently stopped watching — update RUN_GATE_DECISION_FNS."
+        ));
     }
     for h in &hits {
-        println!("  FAIL  {RUN_GATE}: decision function names an economic type — {h}");
-        failures += 1;
+        out.push(format!(
+            "{RUN_GATE}: decision function names an economic type — {h}"
+        ));
     }
 
-    // 3. pod_authority, whole file.
+    for h in econ_paths_in_file(pod_authority_src)? {
+        out.push(format!("{POD_AUTHORITY}: names an economic type — {h}"));
+    }
+
+    if !bridge_src.contains(&format!("fn {TOUCHPOINT}")) {
+        out.push(format!(
+            "{CERT_BRIDGE} no longer defines `{TOUCHPOINT}`, the single lattice touchpoint the \
+             boundary names. Either the meet moved — update this gate and \
+             docs/econ-layer-boundary.md — or it is gone, and the boundary has no touchpoint."
+        ));
+    }
+
+    Ok(out)
+}
+
+pub fn check(root: &Path) -> Result<()> {
+    let graph = graph_reaches(root)?;
+    let run_gate = fs::read_to_string(root.join(RUN_GATE)).context("reading run_gate.rs")?;
     let pod_auth =
         fs::read_to_string(root.join(POD_AUTHORITY)).context("reading pod_authority.rs")?;
-    for h in econ_paths_in_file(&pod_auth)? {
-        println!("  FAIL  {POD_AUTHORITY}: names an economic type — {h}");
-        failures += 1;
-    }
-
-    // Anchor: the one permitted touchpoint still exists where six epics say it is.
     let bridge = fs::read_to_string(root.join(CERT_BRIDGE)).context("reading cert_bridge.rs")?;
-    if !bridge.contains(&format!("fn {TOUCHPOINT}")) {
-        println!(
-            "  FAIL  {CERT_BRIDGE} no longer defines `{TOUCHPOINT}`, the single lattice \
-             touchpoint the boundary names. Either the meet moved — update this gate and \
-             docs/econ-layer-boundary.md — or it is gone, and the boundary has no touchpoint."
-        );
-        failures += 1;
-    }
 
-    if failures > 0 {
-        bail!("{failures} boundary violation(s): economics reached authority");
+    let found = findings(&graph, &run_gate, &pod_auth, &bridge)?;
+    for f in &found {
+        println!("  FAIL  {f}");
+    }
+    if !found.is_empty() {
+        bail!(
+            "{} boundary violation(s): economics reached authority",
+            found.len()
+        );
     }
     println!(
         "ok: {} authority crate(s) reach no economic crate; {} decision function(s) in run_gate.rs \
@@ -379,5 +395,116 @@ mod tests {
         assert!(econ_paths_in_file(&pa).expect("parses").is_empty());
         let bridge = fs::read_to_string(root.join(CERT_BRIDGE)).expect("cert_bridge.rs");
         assert!(bridge.contains(&format!("fn {TOUCHPOINT}")));
+    }
+
+    fn graph(pairs: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
+        pairs
+            .iter()
+            .map(|(a, es)| {
+                (
+                    (*a).to_string(),
+                    es.iter().map(|e| (*e).to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// The four inputs that must yield NOTHING, so each test below departs from
+    /// a known-clean baseline rather than from nothing at all.
+    fn clean() -> (BTreeMap<String, BTreeSet<String>>, String, String, String) {
+        let fns = RUN_GATE_DECISION_FNS
+            .iter()
+            .map(|n| format!("fn {n}() {{ let _ = 1; }}\n"))
+            .collect::<String>();
+        (
+            BTreeMap::new(),
+            fns,
+            "fn unrelated() {}\n".to_string(),
+            format!("fn {TOUCHPOINT}() {{}}\n"),
+        )
+    }
+
+    #[test]
+    fn the_clean_shape_reports_nothing() {
+        let (g, rg, pa, br) = clean();
+        let f = findings(&g, &rg, &pa, &br).expect("parses");
+        assert!(f.is_empty(), "{f:?}");
+    }
+
+    /// Rule 1: the resolved graph. This is the violation the gate exists for —
+    /// an authority crate that can name a price can be moved by one.
+    #[test]
+    fn an_authority_crate_reaching_an_economic_one_is_reported() {
+        let (_, rg, pa, br) = clean();
+        let g = graph(&[(AUTHORITY_CRATES[0], &[ECON_CRATES[0]])]);
+        let f = findings(&g, &rg, &pa, &br).expect("parses");
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].contains(AUTHORITY_CRATES[0]) && f[0].contains(ECON_CRATES[0]));
+        assert!(f[0].contains("resolved dependency graph"));
+    }
+
+    /// Rule 2a: a renamed decision function. Absence of a hit must not read as
+    /// absence of a problem — the gate stops watching a function it cannot find.
+    #[test]
+    fn a_decision_function_that_is_gone_is_reported_not_skipped() {
+        let (g, _, pa, br) = clean();
+        let f = findings(&g, "fn something_else() {}\n", &pa, &br).expect("parses");
+        assert_eq!(
+            f.len(),
+            RUN_GATE_DECISION_FNS.len(),
+            "every missing decision function must be named: {f:?}"
+        );
+        assert!(f.iter().all(|m| m.contains("not found")));
+    }
+
+    /// Rule 2b: an economic path inside a decision function.
+    #[test]
+    fn an_economic_path_in_a_decision_function_is_reported() {
+        let (g, _, pa, br) = clean();
+        let mut rg = String::new();
+        for (i, n) in RUN_GATE_DECISION_FNS.iter().enumerate() {
+            if i == 0 {
+                rg.push_str(&format!(
+                    "fn {n}() {{ let _ = {}::PermissionGrant::default(); }}\n",
+                    ECON_ROOTS[0]
+                ));
+            } else {
+                rg.push_str(&format!("fn {n}() {{}}\n"));
+            }
+        }
+        let f = findings(&g, &rg, &pa, &br).expect("parses");
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].contains("names an economic type"));
+    }
+
+    /// Rule 3: pod_authority.rs, whole file — not just its decision functions,
+    /// because the authority file may not name economics anywhere.
+    #[test]
+    fn an_economic_path_anywhere_in_pod_authority_is_reported() {
+        let (g, rg, _, br) = clean();
+        let pa = format!("fn helper() {{ let _ = {}::Thing; }}\n", ECON_ROOTS[0]);
+        let f = findings(&g, &rg, &pa, &br).expect("parses");
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].contains("pod_authority.rs"));
+    }
+
+    /// Rule 4: the anchor. If the one permitted touchpoint is gone, the gate
+    /// must say so rather than pass — a boundary with no touchpoint is not a
+    /// boundary that holds, it is one nobody is checking.
+    #[test]
+    fn the_missing_touchpoint_is_reported() {
+        let (g, rg, pa, _) = clean();
+        let f = findings(&g, &rg, &pa, "fn nothing_like_it() {}\n").expect("parses");
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].contains(TOUCHPOINT) && f[0].contains("no longer defines"));
+    }
+
+    #[test]
+    fn malformed_rust_is_an_error_not_a_pass() {
+        let (g, _, pa, br) = clean();
+        assert!(
+            findings(&g, "fn (((", &pa, &br).is_err(),
+            "unparseable source must not read as clean"
+        );
     }
 }
