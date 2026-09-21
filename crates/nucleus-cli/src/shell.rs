@@ -269,7 +269,7 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         .arg("--disallowedTools")
         .arg(crate::constants::DISALLOWED_BUILTIN_TOOLS)
         .arg("--settings")
-        .arg(&settings_path)
+        .arg(settings_path.as_path())
         .env(crate::mediation::ALLOWED_TOOLS_ENV, allowed_tools.join(","))
         .env_remove("CLAUDECODE")
         .current_dir(&work_dir);
