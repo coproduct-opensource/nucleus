@@ -256,7 +256,7 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
         println!(
             "  FIFO leaves           {} µUSD on the table ({:.1}%)",
             vcg_welfare.saturating_sub(fifo_welfare),
-            100.0 * (vcg_welfare.saturating_sub(fifo_welfare)) as f64 / vcg_welfare as f64
+            pct_u128(vcg_welfare.saturating_sub(fifo_welfare), vcg_welfare)
         );
     }
 
@@ -343,11 +343,20 @@ fn standing(observed: &[Observed]) -> Result<()> {
 }
 
 fn pct(n: usize, d: usize) -> f64 {
+    pct_u128(
+        u128::try_from(n).unwrap_or(u128::MAX),
+        u128::try_from(d).unwrap_or(u128::MAX),
+    )
+}
+
+/// `100 · n / d` to two decimals, computed in integers and converted losslessly:
+/// basis points fit `u32`, and `u32 → f64` is exact. No `as f64` on a count.
+fn pct_u128(n: u128, d: u128) -> f64 {
     if d == 0 {
-        0.0
-    } else {
-        100.0 * n as f64 / d as f64
+        return 0.0;
     }
+    let bps = n.saturating_mul(10_000).checked_div(d).unwrap_or(0);
+    f64::from(u32::try_from(bps).unwrap_or(u32::MAX)) / 100.0
 }
 
 fn pctl(sorted: &[u64], p: usize) -> u64 {
@@ -406,7 +415,7 @@ mod tests {
             observed.push(Observed {
                 value: 1,
                 won_at,
-                seq: seq as u32,
+                seq: u32::try_from(seq).expect("fewer than 2^32 observations"),
                 round: None,
                 receipt,
             });

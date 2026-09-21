@@ -196,7 +196,10 @@ impl Clearing for PostedPriceClearing {
                 requested: vec![b.dimension()],
                 // Micro-USD as the abstract unit the market documents
                 // (`value_estimate` is "an abstract unit — the orchestrator
-                // calibrates what 1.0 means"). A cast, not arithmetic.
+                // calibrates what 1.0 means"). A cast, not arithmetic, and the
+                // precision loss above 2^53 µUSD ($9e9) is the screen's own
+                // f64 problem, not a new one.
+                #[allow(clippy::cast_precision_loss)]
                 value_estimate: b.value().get() as f64,
                 trust_tier: TrustTier::Unverified,
             });
