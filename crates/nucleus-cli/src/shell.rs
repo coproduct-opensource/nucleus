@@ -202,9 +202,13 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         println!("Allowed tools: {}", allowed_tools.join(","));
         println!();
         println!("Launch the agent CLI with:");
+        // The printed line is advice someone will paste, so it carries the
+        // confinement flags too — without them the pasted command lets the
+        // working directory register its own hooks and MCP servers.
         println!(
-            "  {} --mcp-config {} --allowedTools {} --disallowedTools {}",
+            "  {} --setting-sources '{}' --strict-mcp-config --mcp-config {} --allowedTools {} --disallowedTools {}",
             crate::constants::AGENT_CLI_BIN,
+            crate::mediation::SETTING_SOURCES,
             mcp_config_path.display(),
             allowed_tools.join(","),
             crate::constants::DISALLOWED_BUILTIN_TOOLS,
@@ -257,6 +261,7 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
     let settings_path = crate::mediation::write_hook_settings(&tmp_dir)?;
 
     let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
+    crate::mediation::confine_to_nucleus_settings(&mut cmd);
     cmd.arg("--mcp-config")
         .arg(&mcp_config_path)
         .arg("--allowedTools")
