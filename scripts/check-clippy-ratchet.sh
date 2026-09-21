@@ -77,6 +77,20 @@ for l in $LINTS; do FLAGS+=(-W "$l"); done
 # "however much happened to build". Capture the run, count the sites, and
 # report the failures rather than letting either disappear.
 RAW=$(mktemp)
+# Cargo's OWN errors, which are not compiler messages. A crate whose BUILD SCRIPT
+# dies is never analysed, exactly like one that fails to compile -- but it emits no
+# `compiler-message`, so the `FAILED` query below cannot see it and `--strict`
+# passes on a count that silently lost that crate's sites.
+#
+# This is a RECURRENCE, and the header of .clippy-unanalysed.txt describes the first
+# one: nucleus-verifier-service `include_*!`d a wasm-pack artifact and "455 was never
+# the workspace's real count; it was the count of the crates that happened to build."
+# That version failed inside the COMPILER, so the guard caught it. The check later
+# moved into build.rs with a friendly message telling the reader to run wasm-pack --
+# and a build script that panics is invisible here. Improving the error message is
+# what hid it from the gate that exists to catch it. Measured 2026-09-21 on main:
+# `cargo exit=101`, the FAILED query returns nothing, the crate is undeclared.
+ERRS=$(mktemp)
 set +e
 # RUSTFLAGS is cleared for the MEASUREMENT run. CI (setup-rust-toolchain)
 # exports `-D warnings`, which promotes the tracked cast lints from `warning`
@@ -86,12 +100,18 @@ set +e
 #
 # Counting is not gating. This script decides pass/fail from the count against
 # the ceiling; it must not also inherit someone else's promotion policy.
-RUSTFLAGS= cargo clippy --workspace --all-targets --keep-going --message-format=json -- "${FLAGS[@]}" >"$RAW" 2>/dev/null
+RUSTFLAGS= cargo clippy --workspace --all-targets --keep-going --message-format=json -- "${FLAGS[@]}" >"$RAW" 2>"$ERRS"
 set -e
 
 FAILED=$(jq -r 'select(.reason=="compiler-message") | .message
                 | select(.level=="error") | (.spans[]? | select(.is_primary) | .file_name)' "$RAW" \
          | cut -d/ -f2 | sort -u)
+# ... and the ones cargo refused before the compiler ever ran. The message names the
+# manifest directory, which is the same crate spelling the list above uses.
+BUILD_FAILED=$(sed -n 's/.*failed to run custom build command for `[^(]*(\(.*\))`.*/\1/p' "$ERRS" \
+         | sed 's#.*/##' | sort -u)
+rm -f "$ERRS"
+FAILED=$(printf '%s\n%s\n' "$FAILED" "$BUILD_FAILED" | grep -v '^$' | sort -u)
 
 # Unique (file, line, column, lint) SITES, not raw messages: a file compiled as
 # both lib and test yields the same warning twice, and which targets cargo
