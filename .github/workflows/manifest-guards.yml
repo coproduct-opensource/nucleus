@@ -64,6 +64,15 @@ jobs:
           fi
           echo "cargo metadata OK (empty stderr)"
 
+      # The action-key census, bound. `census.rs` calls itself "the audit the
+      # design rests on" and until 2026-09-21 nothing ran it — no workflow, no
+      # script, no ledger entry named the crate. A step here rather than its own
+      # job on purpose: a new required context would change the pinned count in
+      # ci/required-checks.txt, and this measurement does not need to gate the
+      # merge queue to be worth having.
+      - name: Which required contexts can have a receipt key
+        run: cargo run -q -p nucleus-action-key -- --check
+
       - name: Vendor neutrality (no claude/anthropic/openai in source)
         run: bash ci/no-vendor-strings.sh
 
