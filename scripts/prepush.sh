@@ -45,6 +45,16 @@ for s in check-declassify-governor-keys-sealed check-dep-ceiling check-extracted
     esac
 done
 run "check-line-ratchet --strict" bash scripts/check-line-ratchet.sh --strict
+# Three gates CI decides that this file did not, measured 2026-09-20 by pushing five branches
+# green and watching CI red on each. All three already existed in the tree; none was a cost
+# trade-off, just a list nobody reconciled. Timed before adding: 0 s and 3 s, against a fast
+# gauntlet of about a minute. `check-clippy-ratchet` is the fourth and is NOT here -- 53 s warm
+# and minutes cold, so it sits in --full below with the other clippy work.
+run "check-gate-defs-match-plan" bash scripts/check-gate-defs-match-plan.sh
+run "ci-spec check" cargo run -q -p xtask -- ci-spec check
+# The gauntlet checking its own list. Cheap, and the only thing that stops a gate being added to
+# CI and never reaching the fast path -- which is how three of today's five misses happened.
+run "ci-spec local-coverage" cargo run -q -p xtask -- ci-spec local-coverage
 [ -x scripts/formal-numbers.sh ] && run "formal-numbers (census vs docs)" bash scripts/formal-numbers.sh
 if printf '%s\n' "$changed" | grep -q '^\.github/workflows/'; then
     if have actionlint; then
@@ -72,6 +82,12 @@ if printf '%s\n' "$changed" | grep -q '\.rs$'; then
 fi
 
 # ── full tier ─────────────────────────────────────────────────────────────
+if [ "$FULL" = 1 ]; then
+    # 53 s warm, minutes cold: real, and not worth a minute on every push. It reds when a crate
+    # that was unanalysable starts compiling, which is how a one-line feature gate turned out to
+    # restore clippy coverage over a whole crate (#2979).
+    run "check-clippy-ratchet --strict" bash scripts/check-clippy-ratchet.sh --strict
+fi
 if [ "$FULL" = 1 ] && printf '%s\n' "$changed" | grep -q '\.rs$'; then
     run "cargo clippy --all-targets --all-features -D warnings" cargo clippy --all-targets --all-features -- -D warnings
     if [ "$affected" = ALL ] || [ -z "$affected" ]; then

@@ -1,0 +1,85 @@
+# What a developer can decide before pushing, and what only CI can.
+#
+# Every required context on `main` gets a line here: either the local command that decides it, or
+# NOT-LOCAL with the reason. `cargo xtask ci-spec local-coverage` checks BOTH directions -- a
+# required context with no line is a red, and a line naming a context that is not required is a
+# red. Same convention as `assurance/trusted-base.txt` ("everything trusted is listed") and
+# `.clippy-unanalysed.txt`, and for the same reason: a set that only grows in one direction
+# stops describing anything.
+#
+# WHY THIS FILE EXISTS. Measured 2026-09-20. Ten branches were pushed after `just prepush`
+# reported every check green. CI then red on five of the eight it could judge -- a 62% miss rate
+# -- and three of the five were gates that ALREADY EXISTED in this tree and were simply not in
+# `scripts/prepush.sh`:
+#
+#   check-gate-defs-match-plan.sh   0 s   in the tree, not in the list
+#   xtask ci-spec check             3 s   in the tree, not in the list
+#   check-clippy-ratchet.sh        53 s   in the tree, not in the list
+#
+# None was a cost decision. There was no decision: nothing compared the gauntlet's list against
+# the contexts it is meant to predict, so a gate added to CI simply never reached the fast path
+# and every local green quietly meant less than it said.
+#
+# A line here is a CLAIM that running that command decides that context. The checker holds the
+# claim to the two files -- the command must appear in `scripts/prepush.sh` -- so a decider that
+# is declared and not wired is the same red as one that is missing. What it cannot check is that
+# the command decides the SAME question the context does; that is a judgement, and it is why each
+# line is short enough to read.
+#
+# PINNED may only GROW with the required set, and NOT-LOCAL may only SHRINK. Moving a context to
+# NOT-LOCAL is a deliberate, dated act: it is a statement that the fast gauntlet has given up on
+# predicting that gate.
+#
+# PINNED = 38
+# NOT-LOCAL = 19
+
+# --- decided locally, in the fast gauntlet -----------------------------------
+Tests <- prepush: cargo test
+Detect changed crates <- prepush: affected
+Detect Changed Crates <- prepush: affected
+C1 inbound fences are enforced <- prepush: check-c1-inbound-fences
+Declassification is value-bound, single-use, and live <- prepush: check-declassify-value-bound
+Declassify sink scope is enforced <- prepush: check-declassify-sink-scope-enforced
+test-helpers is not reachable from a shipping build <- prepush: check-test-helpers-not-in-production
+The node records pod lineage on the live path (C2) <- prepush: check-law-mechanisms
+Manifest Guards <- prepush: check-dep-ceiling
+version ceiling + wasm closure <- prepush: check-wasm-closure
+Proof Count Ratchet <- prepush: check-kani-proof-count
+Kani <- prepush: check-kani-divergence
+Kani (constitutional kernel) <- prepush: check-kani-divergence
+The CI assurance ledger cannot outrun its wiring <- prepush: ci-spec check
+gatehouse/required <- prepush: check-gate-defs-match-plan
+cargo hack --each-feature <- prepush: cargo hack check --each-feature
+MSRV floor (workspace rust-version) <- prepush: cargo hack check --each-feature
+
+# --- decided locally, only under --full --------------------------------------
+Analyze <- prepush --full: cargo clippy --all-targets --all-features -D warnings
+deny <- prepush --full: cargo clippy --all-targets --all-features -D warnings
+
+# --- NOT-LOCAL: CI decides, and the reason -----------------------------------
+# Cost. Perturbs every gate and re-runs the pipeline: ~35 minutes. `assure probe-needles` in
+# gatehouse is the cheap subset -- it catches a probe whose needle has moved, which is the
+# failure mode that actually recurs -- but it does not decide this context.
+Gates must fail on their own subject <- NOT-LOCAL: ~35 min, perturbs and re-runs every gate
+
+# Cost. Mutation testing rebuilds the workspace per mutant.
+Mutation Testing <- NOT-LOCAL: rebuilds per mutant
+Fuzz <- NOT-LOCAL: time-boxed fuzzing, not a bounded check
+Code Coverage (llvm-cov) <- NOT-LOCAL: instrumented rebuild of the workspace
+
+# Capability. These need a toolchain or artifact a developer checkout does not have.
+charon+aeneas drift + lake build (extracted-core soundness) <- NOT-LOCAL: charon + aeneas + Lean
+Scoped Aeneas (Rust → Lean 4) — routing decision <- NOT-LOCAL: charon + aeneas
+Scoped Aeneas (Rust → Lean 4) + parity tests <- NOT-LOCAL: charon + aeneas
+Scoped Aeneas OIDC→SPIFFE (Rust → Lean 4) + parity tests <- NOT-LOCAL: charon + aeneas
+musl type-check (nucleus-node, nucleus-tool-proxy) <- NOT-LOCAL: musl cross-toolchain
+Scan PodSpecs <- NOT-LOCAL: scans PodSpecs from the live cluster, not the tree
+zizmor (high+ gate) <- NOT-LOCAL: zizmor is not a workspace tool
+audit <- NOT-LOCAL: cargo-audit needs the advisory DB fetched
+OWASP LLM Security Gauntlet <- NOT-LOCAL: a hosted adversarial suite
+Policy-kernel model↔Rust parity (K4) <- NOT-LOCAL: Lean toolchain
+Every lean_lib is type-checked by something <- NOT-LOCAL: Lean toolchain
+lake build CiSpec (pipeline + merge-queue theorems) <- NOT-LOCAL: Lean toolchain
+lake build Ck (monotonicity-gate soundness proofs) <- NOT-LOCAL: Lean toolchain
+lake build Nucleus (econ proofs + golden seal) <- NOT-LOCAL: Lean toolchain
+lake build Nucleus (rubric scoring proofs) <- NOT-LOCAL: Lean toolchain
