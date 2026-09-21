@@ -38,6 +38,11 @@ pub enum AssuranceRung {
     /// **R0** — self-reported, no independent verification. The greenwashing
     /// baseline; the trusted surface is the claimant itself. We never emit this
     /// for a *verified* claim — it is the floor a failed verification falls to.
+    ///
+    /// [`assess_rung`] cannot return it, because that function requires a
+    /// [`crate::SignatureVerified`] to be called at all. A caller reporting a
+    /// failed verification names this variant directly, which is honest: it is
+    /// a label, not evidence.
     SelfReported,
     /// **R1** — an independent oracle's Ed25519 signature verified (fresh, bound
     /// to the subject identity + resource tag). The floor for any verified
@@ -83,31 +88,44 @@ impl AssuranceRung {
     }
 }
 
-/// Derive the achieved [`AssuranceRung`] from the outcomes of the independent
-/// verification layers. Each argument is "did this layer verify?":
+/// Derive the achieved [`AssuranceRung`] from WITNESSES that each layer
+/// verified — never from booleans a caller can type.
 ///
-/// - `signature_ok` — the Ed25519 oracle signature verified (fresh, bound).
-/// - `tee_ok` — a TEE attestation over the oracle key verified.
-/// - `multi_source_disputed` — the value was corroborated by ≥2 independent
-///   sources under a staked dispute window that elapsed unchallenged.
-/// - `zk_envelope_ok` — a zk upper-envelope proof bounded `units_micro` and
-///   verified.
+/// # Why witnesses and not `bool`
+///
+/// This function used to take four `bool`s. Measured on 2026-09-21 against the
+/// then-current tree: a claim carrying a ONE-BYTE TEE quote and a one-byte
+/// "proof" whose self-declared `public_inputs[0]` was `u64::MAX` reached
+/// `ZkUpperEnvelope`, the top rung. Nothing lied — the two stub verifiers
+/// checked well-formedness, reported success, and this function was handed
+/// `true, true`. The rung was derived exactly as documented, from inputs that
+/// meant "well-formed" rather than "verified".
+///
+/// So each argument is now evidence with a private constructor, minted only by
+/// the checker for that layer (ADR 0007 C-1, C-2). `assess_rung(true, true,
+/// false, true)` no longer compiles, and a shape check cannot be passed where
+/// an attestation is wanted because
+/// [`crate::QuoteWellFormed`] is a different type from
+/// [`crate::TeeAttested`] (C-3: a capability is indexed by what it
+/// authorizes).
 ///
 /// Returns the **highest rung whose property holds**. A higher rung never
 /// implies a lower one mechanically (TEE+envelope without a dispute is genuine
-/// R4), but every rung above R0 requires `signature_ok` — an unsigned claim is
-/// self-reported no matter what else is attached.
+/// R4), but every rung above R0 requires the signature witness — an unsigned
+/// claim is self-reported no matter what else is attached, which is why that
+/// one parameter is not optional.
 pub fn assess_rung(
-    signature_ok: bool,
-    tee_ok: bool,
-    multi_source_disputed: bool,
-    zk_envelope_ok: bool,
+    _signature: &crate::SignatureVerified,
+    tee: Option<&crate::TeeAttested>,
+    disputed: Option<&crate::Disputed>,
+    envelope: Option<&crate::EnvelopeBounded>,
 ) -> AssuranceRung {
-    // Without an independent signature there is no independent verification at
-    // all — everything else is attached by the same untrusted party.
-    if !signature_ok {
-        return AssuranceRung::SelfReported;
-    }
+    // The signature witness is not optional: holding one IS `signature_ok`,
+    // and there is no way to reach this function without it. The old
+    // `if !signature_ok { SelfReported }` branch is now unrepresentable, so
+    // `SelfReported` is reachable only through `rung_of_unverified_claim`.
+    let (tee_ok, multi_source_disputed, zk_envelope_ok) =
+        (tee.is_some(), disputed.is_some(), envelope.is_some());
     // Highest satisfied property wins. zk-envelope and multi-source are both
     // strictly stronger than bare TEE; envelope (over-claim-proof) is the
     // strongest single guarantee we can derive today.
@@ -141,35 +159,41 @@ mod tests {
         }
     }
 
+    /// "Unsigned" stopped being a parameter value: `assess_rung` cannot be
+    /// called without a signature witness, so the floor is named directly and
+    /// is the bottom of the ladder.
     #[test]
-    fn unsigned_is_always_self_reported() {
-        // No matter what evidence is attached, no independent signature = R0.
-        assert_eq!(
-            assess_rung(false, true, true, true),
-            AssuranceRung::SelfReported
-        );
+    fn the_floor_is_the_bottom_of_the_ladder() {
+        assert_eq!(AssuranceRung::SelfReported.level(), 0);
+        assert!(AssuranceRung::SelfReported < AssuranceRung::OracleSigned);
     }
 
     #[test]
     fn bare_signature_is_r1() {
+        let sig = crate::SignatureVerified::for_test();
         assert_eq!(
-            assess_rung(true, false, false, false),
+            assess_rung(&sig, None, None, None),
             AssuranceRung::OracleSigned
         );
     }
 
     #[test]
     fn signature_plus_tee_is_r2() {
+        let sig = crate::SignatureVerified::for_test();
+        let tee = crate::TeeAttested::for_test();
         assert_eq!(
-            assess_rung(true, true, false, false),
+            assess_rung(&sig, Some(&tee), None, None),
             AssuranceRung::TeeAttested
         );
     }
 
     #[test]
     fn multi_source_outranks_tee() {
+        let sig = crate::SignatureVerified::for_test();
+        let tee = crate::TeeAttested::for_test();
+        let disputed = crate::Disputed::for_test();
         assert_eq!(
-            assess_rung(true, true, true, false),
+            assess_rung(&sig, Some(&tee), Some(&disputed), None),
             AssuranceRung::MultiSourceDisputed
         );
     }
@@ -178,12 +202,38 @@ mod tests {
     fn zk_envelope_is_the_top_derivable_rung() {
         // Envelope present → R4 even without a dispute window (genuinely the
         // strongest single guarantee: over-claiming is detectable).
+        let sig = crate::SignatureVerified::for_test();
+        let tee = crate::TeeAttested::for_test();
+        let disputed = crate::Disputed::for_test();
+        let env = crate::EnvelopeBounded::for_test();
         assert_eq!(
-            assess_rung(true, true, false, true),
+            assess_rung(&sig, Some(&tee), None, Some(&env)),
             AssuranceRung::ZkUpperEnvelope
         );
         assert_eq!(
-            assess_rung(true, true, true, true),
+            assess_rung(&sig, Some(&tee), Some(&disputed), Some(&env)),
+            AssuranceRung::ZkUpperEnvelope
+        );
+    }
+
+    /// **The repair, as a test.** The top rung needs the envelope WITNESS, and
+    /// the only thing a self-declared bound yields is
+    /// `EnvelopeSelfDeclared` — a different type. So the rung a forged claim
+    /// reached on 2026-09-21 is now reachable only with a real verifier, and
+    /// this pair shows the rung genuinely moves with the witness rather than
+    /// being constant.
+    #[test]
+    fn the_top_rung_moves_with_the_envelope_witness() {
+        let sig = crate::SignatureVerified::for_test();
+        let tee = crate::TeeAttested::for_test();
+        let env = crate::EnvelopeBounded::for_test();
+        assert_eq!(
+            assess_rung(&sig, Some(&tee), None, None),
+            AssuranceRung::TeeAttested,
+            "without the envelope witness the rung must fall back"
+        );
+        assert_eq!(
+            assess_rung(&sig, Some(&tee), None, Some(&env)),
             AssuranceRung::ZkUpperEnvelope
         );
     }

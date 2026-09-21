@@ -57,8 +57,10 @@ pub use claim::{
 pub use cube::{AggregateBucket, ExternalityCube, PullbackError, WindowId};
 pub use dim::{RESOURCE_DIM_DOMAIN, ResourceDim};
 pub use oracle::{
-    OracleError, OracleRegistry, TeeAttestation, TeeVendor, UpperEnvelopeProof,
-    VcaExternalityClaim, verify_vca_claim, verify_vca_claim_rung,
+    Disputed, EnvelopeBounded, EnvelopeSelfDeclared, EnvelopeVerifier, OracleError, OracleRegistry,
+    QuoteWellFormed, SignatureVerified, TeeAttestation, TeeAttested, TeeQuoteVerifier, TeeVendor,
+    UpperEnvelopeProof, VcaExternalityClaim, verify_claim_witnessed, verify_vca_claim,
+    verify_vca_claim_rung,
 };
 pub use profile::{
     ExternalityProfile, PROFILE_DOMAIN, canonical_externality_bytes, externality_digest,
