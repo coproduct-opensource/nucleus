@@ -161,8 +161,13 @@ population_floor = 278
 # all seven from its first commit; 26/84. Without the declaration the new crate
 # alone dropped the ratio to 29.76% -- a crate that can panic while appending
 # evidence is exactly what this family counts.
-floor_bp = 3095
-population_floor = 84
+# 2026-09-20: new crate nucleus-blast-radius declares all seven from its first
+# commit; 27/85. Same measured value the authority-exchange branch raises to, on
+# its own — two independent crates each lifting the floor by one is the ratchet
+# working, and the merge of the two pins is an identical-value conflict. A crate
+# whose output an insurer prices is exactly what this family counts.
+floor_bp = 3176
+population_floor = 85
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

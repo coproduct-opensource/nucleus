@@ -508,17 +508,17 @@ async fn run_hook(
         );
     }
 
-    // Write temporary settings.json with the hook configured
+    // Write temporary settings.json with the hook configured.
+    //
+    // The document comes from `mediation::hook_settings_for_exe` rather than
+    // being built here, because the registration shape is FAIL-OPEN: this site
+    // previously emitted the matcher-group entry `{"type","command"}` without
+    // the nested `hooks` array, which registers no hook at all — silently, with
+    // every tool call proceeding unhooked. In this mode the hook is the only
+    // boundary there is, so that made the enforcement vacuous.
     let settings_path = tmp_dir.join("settings.json");
     let profile_name = &args.profile;
-    let settings = serde_json::json!({
-        "hooks": {
-            "PreToolUse": [{
-                "type": "command",
-                "command": hook_bin.display().to_string(),
-            }]
-        }
-    });
+    let settings = crate::mediation::hook_settings_for_exe(&hook_bin, &[]);
     fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
 
     info!(
@@ -530,6 +530,7 @@ async fn run_hook(
     let start = Instant::now();
 
     let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
+    crate::mediation::confine_to_nucleus_settings(&mut cmd);
     cmd.arg("--print");
     if let Some(model) = &args.model {
         cmd.arg("--model").arg(model);
@@ -1128,6 +1129,7 @@ fn run_agent_mcp(
     )?;
 
     let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
+    crate::mediation::confine_to_nucleus_settings(&mut cmd);
     cmd.arg("--print");
     if let Some(model) = &args.model {
         cmd.arg("--model").arg(model);
