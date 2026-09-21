@@ -16,14 +16,39 @@
 
 use nucleus_econ_kernels::{IntegerBid, IntegerProposal, VcgError};
 use nucleus_econ_types::{AgentId, MicroUsd};
-use nucleus_permission_market::{PermissionBid, PermissionMarket, TrustTier};
+use nucleus_permission_market::{PermissionBid, PermissionDimension, PermissionMarket, TrustTier};
 use nucleus_recompute::ClearingReceipt;
 
 use crate::round::{Round, RoundOutcome};
 
-/// The single slot every round allocates, as the kernel names it. One proposal
-/// is what makes `run_vcg` reduce to classical second-price — see [`crate::Round`].
-const SLOT: &str = "authority-slot";
+/// The proposal id prefix. One proposal per round is what makes `run_vcg`
+/// reduce to the threshold mechanism — see [`crate::Round`].
+const SLOT_PREFIX: &str = "authority-slot/";
+
+/// The proposal id for a round: the prefix plus the dimension's label.
+///
+/// The dimension is part of the id **on purpose**: the proposal is a declared
+/// input, so it is under the receipt's content hash, so the receipt says what
+/// was auctioned. A receipt that only said "a slot" could not be attributed to
+/// egress or exec afterwards, and an index over receipts — the price of egress
+/// this week — would have to trust a label kept somewhere the hash does not
+/// reach. [`slot_dimension`] is the inverse, and a reader with only the receipt
+/// uses it to recover the good.
+#[must_use]
+pub fn slot_id(dimension: PermissionDimension) -> String {
+    format!("{SLOT_PREFIX}{}", dimension.label())
+}
+
+/// Recover the dimension a receipt's proposal names, or `None` for a proposal
+/// this crate did not issue.
+#[must_use]
+pub fn slot_dimension(proposal_id: &str) -> Option<PermissionDimension> {
+    let label = proposal_id.strip_prefix(SLOT_PREFIX)?;
+    PermissionDimension::ALL
+        .iter()
+        .copied()
+        .find(|d| d.label() == label)
+}
 
 /// Why a round could not be cleared.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -84,7 +109,7 @@ impl Clearing for VcgClearing {
             .iter()
             .map(|b| IntegerBid {
                 bidder: b.bidder().as_str().to_owned(),
-                proposal_id: SLOT.to_owned(),
+                proposal_id: slot_id(round.dimension()),
                 effective_value_micro_usd: b.value().get(),
             })
             .collect();
@@ -109,7 +134,7 @@ impl Clearing for VcgClearing {
         const SLOT_UNITS: u64 = 1;
         let slots = u64::from(round.slots().get());
         let proposals = vec![IntegerProposal {
-            id: SLOT.to_owned(),
+            id: slot_id(round.dimension()),
             cost_micro_usd: SLOT_UNITS,
         }];
 
@@ -311,6 +336,24 @@ mod tests {
             matches!(verify_receipt(&receipt), RecomputeOutcome::Mismatch { .. }),
             "a forged price must not verify"
         );
+    }
+
+    /// The receipt must say what was auctioned. A reader holding only the
+    /// bytes recovers the dimension from the declared proposal — which is under
+    /// the content hash — not from anything the hash does not cover.
+    #[test]
+    fn the_receipt_declares_which_dimension_was_sold() {
+        let out = VcgClearing
+            .clear(&round_of(&[("a", 100), ("b", 70)]))
+            .expect("clears");
+        let ClearingReceipt::Vcg(claim) = out.receipt().expect("receipt") else {
+            panic!("vcg");
+        };
+        let ids: Vec<&str> = claim.proposals.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, [slot_id(EGRESS).as_str()]);
+        assert_eq!(slot_dimension(&claim.proposals[0].id), Some(EGRESS));
+        assert_eq!(slot_dimension("authority-slot/not-a-dimension"), None);
+        assert_eq!(slot_dimension("something-else"), None);
     }
 
     #[test]
