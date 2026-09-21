@@ -55,51 +55,6 @@ pub(crate) fn parse_clearing_dimensions(
     Ok(set)
 }
 
-#[cfg(test)]
-mod clearing_flag_tests {
-    use super::*;
-
-    /// INERTNESS, and it is the property that matters most about this feature:
-    /// with no `--clearing`, no dimension is auctioned, `authority_exchange`
-    /// stays `None`, and every request takes exactly the path it took before.
-    #[test]
-    fn the_default_auctions_nothing() {
-        assert!(
-            parse_clearing_dimensions(&[])
-                .expect("empty is valid")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn every_dimension_is_nameable_by_its_own_label() {
-        for d in PermissionDimension::ALL {
-            let got = parse_clearing_dimensions(&[d.label().to_string()]).expect("label parses");
-            assert!(got.contains(d), "{} did not parse to itself", d.label());
-        }
-    }
-
-    /// A typo must not read as "auction nothing". An operator who asked for a
-    /// dimension and got silence would believe the mechanism was running.
-    #[test]
-    fn an_unknown_dimension_is_an_error_not_a_skip() {
-        let err = parse_clearing_dimensions(&["network-egress".to_string()])
-            .expect_err("a typo must not be ignored");
-        assert!(err.contains("network-egress"), "{err}");
-        assert!(
-            err.contains("network_egress"),
-            "the error must name the fix: {err}"
-        );
-    }
-
-    #[test]
-    fn blank_entries_from_a_trailing_comma_are_not_errors() {
-        let got = parse_clearing_dimensions(&["network_egress".into(), String::new()])
-            .expect("a trailing comma is not a typo");
-        assert_eq!(got.len(), 1);
-    }
-}
-
 /// Clear this request's dimension by auction, when the operator named it.
 ///
 /// A dimension the operator named clears by auction: the request joins a
@@ -124,7 +79,7 @@ pub(crate) async fn clear_by_auction(
         // one cannot bid. Refusing is the only honest option: the alternative is
         // to invent a ceiling, which is what "the agent declares its own value"
         // means.
-        let Some(ref certified) = certified_perms else {
+        let Some(certified) = certified_perms else {
             return Err(ApiError::KernelDenied {
                 message: format!(
                     "{} is cleared by auction; a verified delegation certificate is                      required to bid for it",
@@ -283,4 +238,49 @@ pub(crate) fn evaluate_permission_bid(
     );
 
     Some(grant)
+}
+
+#[cfg(test)]
+mod clearing_flag_tests {
+    use super::*;
+
+    /// INERTNESS, and it is the property that matters most about this feature:
+    /// with no `--clearing`, no dimension is auctioned, `authority_exchange`
+    /// stays `None`, and every request takes exactly the path it took before.
+    #[test]
+    fn the_default_auctions_nothing() {
+        assert!(
+            parse_clearing_dimensions(&[])
+                .expect("empty is valid")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn every_dimension_is_nameable_by_its_own_label() {
+        for d in PermissionDimension::ALL {
+            let got = parse_clearing_dimensions(&[d.label().to_string()]).expect("label parses");
+            assert!(got.contains(d), "{} did not parse to itself", d.label());
+        }
+    }
+
+    /// A typo must not read as "auction nothing". An operator who asked for a
+    /// dimension and got silence would believe the mechanism was running.
+    #[test]
+    fn an_unknown_dimension_is_an_error_not_a_skip() {
+        let err = parse_clearing_dimensions(&["network-egress".to_string()])
+            .expect_err("a typo must not be ignored");
+        assert!(err.contains("network-egress"), "{err}");
+        assert!(
+            err.contains("network_egress"),
+            "the error must name the fix: {err}"
+        );
+    }
+
+    #[test]
+    fn blank_entries_from_a_trailing_comma_are_not_errors() {
+        let got = parse_clearing_dimensions(&["network_egress".into(), String::new()])
+            .expect("a trailing comma is not a typo");
+        assert_eq!(got.len(), 1);
+    }
 }
