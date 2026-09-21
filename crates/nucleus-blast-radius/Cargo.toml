@@ -1,0 +1,31 @@
+[package]
+name = "nucleus-blast-radius"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The bound on an agent's authority, projected from a VERIFIED delegation certificate chain into the vocabulary an underwriter prices — as a receipt anyone re-derives. Derived, never declared."
+publish = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+# The certificate chain and its verifier. `crypto` is what makes
+# `verify_certificate` exist; without it there is no verified chain to
+# project, and a projection of an unverified lattice is a declaration.
+portcullis = { path = "../portcullis", version = "1.0.0" }
+# The verdict enum. Same three arms every other recomputable claim uses.
+nucleus-recompute = { path = "../nucleus-recompute", version = "1.0.0" }
+
+[dev-dependencies]
+ring = { workspace = true }
