@@ -98,5 +98,20 @@
 # two platforms have been observed to produce the same .wasm, so one line
 # suffices here for a reason stronger than convention -- though it is one
 # observation, not a claim that the difference has gone away.
-54eaafbe6ed5339fdcf841bd67ee7414ceb795aa95eb63ae1df0b0986a15c968  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+# 2026-09-21 (#3002): the .wasm moved for a source change with NO behaviour
+# change — `nucleus-recompute` turned its `use nucleus_econ_kernels::{…}` into a
+# `pub use`, so a receipt-checking consumer can spell `IntegerBid` without
+# depending on an economic crate. Nothing the verifier COMPUTES changed; the
+# exported symbol set did, and the compiled bytes moved with it. Recorded
+# because it is the first time this pin moved without the verifier's behaviour
+# moving, and the honest reading of that is that the pin tracks the artifact,
+# not the semantics — which is what makes it a drift check rather than a proof
+# of equivalence.
+#
+# `54eaafbe…` is REPLACED, on the standing rule: it is the artifact built before
+# the re-export, and a pin listing both would accept either, which is exactly
+# the drift the file exists to notice. Same provenance caveat as every digest
+# here — taken from the CI run on this branch, so unverified at the point of
+# writing and verified by the run that consumes it.
+75fe617ee401703c98c1ecfe99f8774a95b4ade42bcf1c26cd316fb3215e4264  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
