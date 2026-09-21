@@ -169,8 +169,14 @@ population_floor = 278
 # addition, and a fixture that panicked instead of taking an infallible
 # constructor. A crate that decides who may spend authority is exactly what this
 # family counts.
-floor_bp = 3176
-population_floor = 85
+# 2026-09-21 (#2983 into #2977): new crate nucleus-blast-radius, the bound an
+# underwriter prices, declares all seven by inheriting `[lints] workspace = true`
+# from its first commit; 28/86. So the ratio ROSE rather than fell, and the gate
+# then refused the old floor for the opposite reason to the two notes above --
+# a floor with slack under it has already stopped gating (ADR 0007 I-1). Raised
+# to the measured value, which is the only direction this pin moves.
+floor_bp = 3255
+population_floor = 86
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
