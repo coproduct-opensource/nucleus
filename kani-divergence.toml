@@ -24,7 +24,7 @@
 # harness over CapabilityLattice or ExposureSet is a `*_core_dims` proof.
 
 
-total = 75
+total = 73
 
 [[site]]
 file = "crates/ck-kernel/src/kani.rs"
@@ -47,19 +47,7 @@ guards = "mod welfare_no_overflow_proofs;"
 class = "harness-only"
 why = "Proof harnesses. Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
 
-[[site]]
-file = "crates/nucleus-permission-market/proofs/lambda_monotone.rs"
-attr = "#![cfg(kani)]"
-guards = "<whole file>"
-class = "harness-only"
-why = "Proof harnesses for the integer lambda curve (#2540). Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
 
-[[site]]
-file = "crates/nucleus-permission-market/src/lib.rs"
-attr = "#[cfg(kani)]"
-guards = "mod lambda_monotone_proofs;"
-class = "harness-only"
-why = "Proof harnesses for the integer lambda curve (#2540). Compiled only under `cargo kani`; nothing on a production path changes. Listed so the census is total, not because it diverges."
 
 [[site]]
 file = "crates/nucleus-ifc-kernel/src/flow.rs"

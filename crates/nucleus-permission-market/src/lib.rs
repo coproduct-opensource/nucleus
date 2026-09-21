@@ -36,8 +36,11 @@
 //! Prices are micro-USD and utilization is basis points. `λ` is computed by a
 //! fixed-point exponential in `u128` — no float anywhere in the shipped build
 //! — and pinned to the `f64` curve it replaced within one micro-unit at every
-//! basis point (#2540). A Kani harness certifies the curve is overflow-free
-//! and monotone.
+//! basis point (#2540). The curve is checked over its WHOLE domain: `bps` is
+//! bounded by 10 000, so `lambda_monotonically_increases` walks all 10 001
+//! inputs under debug overflow checks. That is exhaustive, which is the
+//! strongest thing available here and stronger than a bounded model checker
+//! could add — see the note on `compute_lambda_micro`.
 //!
 //! ## What this crate decides, and what it must not
 //!
@@ -75,9 +78,3 @@ pub use market::{
     CRITICAL_LAMBDA_MICRO, DimensionState, HARD_LAMBDA_MAX_MICRO, LAMBDA_ONE_MICRO,
     PermissionConstraintState, PermissionMarket, compute_lambda_micro,
 };
-
-// The λ-curve Kani harness is gated on `cfg(kani)`. Lives outside `src/` per
-// the econ-kernels precedent, so a plain build never compiles it.
-#[cfg(kani)]
-#[path = "../proofs/lambda_monotone.rs"]
-mod lambda_monotone_proofs;

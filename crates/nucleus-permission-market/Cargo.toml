@@ -2,9 +2,7 @@
 name = "nucleus-permission-market"
 version.workspace = true
 edition.workspace = true
-# Kani 0.67 bundles rustc 1.93; the λ-curve harness in proofs/ runs under it.
-# Every dependency in that closure (portcullis, rust_decimal, serde) is ≤ 1.93.
-rust-version = "1.93"
+rust-version.workspace = true
 license.workspace = true
 description = "Lagrangian permission pricing oracle for multi-dimensional capability constraints"
 repository = "https://github.com/coproduct-opensource/nucleus"
@@ -30,11 +28,6 @@ rust_decimal = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-
-[lints.rust]
-# The λ-curve Kani harness is gated on `cfg(kani)`, which non-kani builds
-# wouldn't otherwise recognise. Mirrors nucleus-econ-kernels.
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
 
 [lints.clippy]
 # Inherited from the workspace lints in the root Cargo.toml; restated here

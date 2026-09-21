@@ -14,8 +14,9 @@ exponentially and prices out low-value operations first.
 Prices are **micro-USD** and utilization is **basis points**. `λ` is computed
 by a fixed-point exponential — no float anywhere in the shipped build — and
 pinned to the `f64` curve it replaced within one micro-unit at every basis
-point. A Kani harness (`proofs/lambda_monotone.rs`) certifies the curve is
-overflow-free and monotone.
+point. Monotonicity and overflow-freedom are checked over the curve's WHOLE
+domain — `bps` is bounded by 10 000, so the test walks all 10 001 inputs under
+debug overflow checks.
 
 ## Dimensions
 

@@ -238,8 +238,13 @@ impl Default for PermissionMarket {
 /// is ≤ 0.003, so the ninth term is below 10⁻²⁴), then ten squarings. Every
 /// intermediate fits `u128` with headroom: the largest is a squaring of
 /// `e³·FP ≈ 2.01·10¹³`, whose square is ≈ 4·10²⁶ against a ceiling of 3.4·10³⁸.
-/// The loop counts are fixed, which is what makes the Kani harness in
-/// `proofs/lambda_monotone.rs` tractable.
+/// The loop counts are fixed, so the function is straight-line over a finite
+/// domain — which is why the exhaustive test below is a complete check and a
+/// bounded model checker was dropped. `bps` is capped at 10 000, so walking all
+/// 10 001 inputs under debug overflow checks decides monotonicity and
+/// overflow-freedom outright, for the code that actually ships. Kani would
+/// re-prove the same finite facts; measured, it did not terminate on the u128
+/// multiplications at all, and a proof that cannot terminate is not a proof.
 fn exp_fixed(x: u128) -> u128 {
     const REDUCE_SHIFT: u32 = 10;
     const TAYLOR_TERMS: u128 = 8;
