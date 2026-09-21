@@ -168,7 +168,15 @@ pub fn confine_to_nucleus_settings(cmd: &mut Command) -> &mut Command {
 /// structural assertion rather than by the compiler. ADR 0007 C-1 — a type that
 /// names evidence has a private constructor — read across to a document whose
 /// wrongness is invisible.
-#[must_use]
+///
+/// NOT `#[must_use]`, and `write_to` takes `&self`. The first draft made this
+/// affine — consumed by value, "the document exists to become one file" — and
+/// the `life` census was right to charge for it: a `#[must_use]` non-`Clone`
+/// type joins the population of one-shot RIGHTS, every member of which is
+/// expected to carry a validity interval, and this one has nothing to expire.
+/// Writing the same document twice is harmless. The guarantee here is the
+/// private field and the two constructors; affinity was ornament, and ornament
+/// that moves a security census is not free.
 pub struct HookSettings(serde_json::Value);
 
 impl HookSettings {
@@ -206,13 +214,10 @@ impl HookSettings {
 
     /// Write the document into `dir` and return the path `--settings` takes.
     ///
-    /// Consumes `self`: the document is written once, and there is no second
-    /// use of a value whose whole purpose is to become that one file.
-    ///
     /// # Errors
     ///
     /// If serialization or the write fails.
-    pub fn write_to(self, dir: &Path, file_name: &str) -> Result<SettingsPath> {
+    pub fn write_to(&self, dir: &Path, file_name: &str) -> Result<SettingsPath> {
         let path = dir.join(file_name);
         std::fs::write(&path, serde_json::to_string_pretty(&self.0)?)
             .with_context(|| format!("writing {}", path.display()))?;
