@@ -92,12 +92,6 @@ fi
 # the same answer up to four times (33 probe calls name 28 distinct invocations). In the
 # full run each perturbation is its own question and no deduplication is possible.
 BASELINE_SEEN=""
-# Probes whose family has no baseline check, so `--baseline-only` has nothing to run for
-# them. Counted and REPORTED rather than quietly passed: `probe_xtask_flagged`,
-# `probe_xtask_partial` and `probe_xtask_generated` never established a baseline even in
-# the full run, and a mode that skipped them silently would claim a clean sheet over
-# probes it never looked at.
-BASELINE_NO_CHECK=0
 
 RESTORE_FROM=""
 RESTORE_TO=""
@@ -287,13 +281,6 @@ probe_xtask_flagged() {
     local sub="$1" flags="$2" target="$3" desc="$4"
     shift 4
 
-    # No baseline check in this family (see BASELINE_NO_CHECK). Nothing to run, and
-    # perturbing would contradict the mode.
-    if [[ "$BASELINE_ONLY" == "1" ]]; then
-        BASELINE_NO_CHECK=$((BASELINE_NO_CHECK + 1))
-        return
-    fi
-
     local invocations
     invocations="$(grep -rhE "xtask -- ${sub}" .github/workflows/*.yml 2>/dev/null \
         | grep -vE '^[[:space:]]*#' \
@@ -309,6 +296,41 @@ probe_xtask_flagged() {
     if [[ ! -f "$target" ]]; then
         echo "  ERROR: $target does not exist"
         failures=$((failures + 1))
+        return
+    fi
+
+    # The BASELINE, before anything is touched. This family shipped without one: a gate
+    # that was already red on arrival produced "still failing after restore", which names
+    # the one thing that did not happen and sends the reader to debug the restore. Same
+    # fix, same reason, as probe() and probe_xtask() carry -- and it is what makes this
+    # family answerable in `--baseline-only`.
+    # Deduplicate on the COMMAND, so a sub probed by several perturbations -- or by two
+    # families -- is baselined once. Only in `--baseline-only`: in the full run each
+    # perturbation is its own question.
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<xtask $sub $flags>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<xtask $sub $flags>"
+    fi
+
+    local baseline_rc=0
+    if [[ "$VACUITY_ONLY" != "1" ]]; then
+        # shellcheck disable=SC2086
+        cargo run -q -p xtask -- "$sub" $flags >/dev/null 2>&1 || baseline_rc=$?
+    fi
+    if [[ "$baseline_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub $flags — already red (exit $baseline_rc) BEFORE any perturbation."
+        echo "        Not a restore failure and not a broken probe: this gate is failing on"
+        echo "        this tree for its own reasons, so nothing it says under perturbation"
+        echo "        would be evidence. Fix that red first, then this probe means something."
+        failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "  ok    xtask $sub $flags"
+        covered=$((covered + 1))
         return
     fi
 
@@ -390,13 +412,6 @@ probe_xtask_partial() {
     local sub="$1" ci_flags="$2" marker="$3" target="$4" desc="$5"
     shift 5
 
-    # No baseline check in this family (see BASELINE_NO_CHECK). Nothing to run, and
-    # perturbing would contradict the mode.
-    if [[ "$BASELINE_ONLY" == "1" ]]; then
-        BASELINE_NO_CHECK=$((BASELINE_NO_CHECK + 1))
-        return
-    fi
-
     local invocations
     invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
         | grep -vE '^[[:space:]]*#' \
@@ -426,12 +441,34 @@ probe_xtask_partial() {
     fi
 
     # The clean bare run, BEFORE perturbing: green, or the probe measures nothing.
+    #
+    # This is a BASELINE and it ran unconditionally, which made `--vacuity-only` a liar:
+    # that mode prints "NO GATE WAS RUN" and this family ran one, every time. Guarded now,
+    # like every other baseline in this script.
+    # Deduplicate on the COMMAND, so a sub probed by several perturbations -- or by two
+    # families -- is baselined once. Only in `--baseline-only`: in the full run each
+    # perturbation is its own question.
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<xtask $sub>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<xtask $sub>"
+    fi
+
     local clean_rc=0
-    cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || clean_rc=$?
+    if [[ "$VACUITY_ONLY" != "1" ]]; then
+        cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || clean_rc=$?
+    fi
     if [[ "$clean_rc" -ne 0 ]]; then
         echo "  FAIL  xtask $sub — bare (without '$ci_flags') the gate already exits $clean_rc"
         echo "        on a clean tree, so a red under perturbation would not be evidence."
         failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "  ok    xtask $sub"
+        covered=$((covered + 1))
         return
     fi
 
@@ -617,10 +654,6 @@ probe_xtask() {
 # probe_xtask_generated <sub> <target> <desc> <ci_flags> <generated> <local_path> <gen_fn> <perturb_fn>
 probe_xtask_generated() {
     local sub="$1" target="$2" desc="$3" ci_flags="$4" generated="$5" local_path="$6" gen_fn="$7" perturb_fn="$8"
-    if [[ "$BASELINE_ONLY" == "1" ]]; then
-        BASELINE_NO_CHECK=$((BASELINE_NO_CHECK + 1))
-        return
-    fi
     # An OPTIONAL second generated input, for a gate CI feeds more than one.
     #
     # `policy-gate` needs two: a base manifest and a changed-files list, both written by
@@ -718,6 +751,41 @@ probe_xtask_generated() {
     if [[ ! -f "$target" ]]; then
         echo "  ERROR: $target does not exist"
         failures=$((failures + 1))
+        return
+    fi
+
+    # The BASELINE, before anything is touched. This family shipped without one: a gate
+    # that was already red on arrival produced "still failing after restore", which names
+    # the one thing that did not happen and sends the reader to debug the restore. Same
+    # fix, same reason, as probe() and probe_xtask() carry -- and it is what makes this
+    # family answerable in `--baseline-only`.
+    # Deduplicate on the COMMAND, so a sub probed by several perturbations -- or by two
+    # families -- is baselined once. Only in `--baseline-only`: in the full run each
+    # perturbation is its own question.
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<xtask $sub $expected_local>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<xtask $sub $expected_local>"
+    fi
+
+    local baseline_rc=0
+    if [[ "$VACUITY_ONLY" != "1" ]]; then
+        # shellcheck disable=SC2086
+        cargo run -q -p xtask -- "$sub" $expected_local >/dev/null 2>&1 || baseline_rc=$?
+    fi
+    if [[ "$baseline_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub — already red (exit $baseline_rc) BEFORE any perturbation."
+        echo "        Not a restore failure and not a broken probe: this gate is failing on"
+        echo "        this tree for its own reasons, so nothing it says under perturbation"
+        echo "        would be evidence. Fix that red first, then this probe means something."
+        failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "  ok    xtask $sub"
+        covered=$((covered + 1))
         return
     fi
 
@@ -2019,10 +2087,6 @@ if [[ "$BASELINE_ONLY" == "1" ]]; then
     # Same discipline as the vacuity message: claim the half that was established.
     echo "OK: all $covered probed gate(s) pass on this tree. NOTHING WAS PERTURBED:"
     echo "    this says they are green, not that they red on their own subject."
-    if [[ "$BASELINE_NO_CHECK" -gt 0 ]]; then
-        echo "    $BASELINE_NO_CHECK probe(s) are in a family that establishes no baseline even in the"
-        echo "    full run, so this mode ran nothing for them and claims nothing about them."
-    fi
     exit 0
 fi
 if [[ "$VACUITY_ONLY" == "1" ]]; then
