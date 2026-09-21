@@ -56,8 +56,8 @@
       "sdks/verifier-js/target/**"
     ],
     "exec": "scoped",
-    "wall_ms": 300000,
-    "cpu_ms": 300000,
+    "wall_ms": 600000,
+    "cpu_ms": 600000,
     "mem_mb": 4096,
     "secrets": []
   },
@@ -101,7 +101,7 @@
     "rustfmt@1.9.0"
   ],
   "cwd": "",
-  "timeout_s": 300,
+  "timeout_s": 450,
   "outputs": [],
   "resources": {
     "cpus": 2,

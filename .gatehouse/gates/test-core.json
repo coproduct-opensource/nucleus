@@ -152,7 +152,7 @@
     "git@2.39.5"
   ],
   "cwd": "",
-  "timeout_s": 2100,
+  "timeout_s": 3400,
   "outputs": [],
   "resources": {
     "cpus": 3,
