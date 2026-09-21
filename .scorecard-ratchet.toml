@@ -169,7 +169,10 @@ population_floor = 278
 # addition, and a fixture that panicked instead of taking an infallible
 # constructor. A crate that decides who may spend authority is exactly what this
 # family counts.
-floor_bp = 3176
+# 2026-09-20 (#2540): nucleus-permission-market declares all seven and goes
+# integer: the f64 λ curve became a u128 fixed-point exponential, every price a
+# micro-USD u64, `deny(float_arithmetic)` on the shipped build. 28/85.
+floor_bp = 3294
 population_floor = 85
 
 [family.life]

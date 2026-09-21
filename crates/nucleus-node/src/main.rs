@@ -31,6 +31,7 @@ use uuid::Uuid;
 mod api_error;
 mod art12_collector;
 mod auth;
+mod clearing_receipt_collector;
 mod firecracker_api;
 mod firecracker_config;
 mod grpc_tls;
@@ -50,6 +51,7 @@ mod pod_caller_identity;
 mod pod_receipt;
 mod pod_view;
 mod production_confinement;
+mod spend_receipt_collector;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
@@ -1173,8 +1175,9 @@ async fn create_pod_internal(
     let (driver_state, proxy_addr, log_path) = match spawned {
         Ok(s) => s,
         Err(e) => {
-            // Nothing runs: hand the budget reservation back to the parent.
-            state.authority.release_child(id).await;
+            // Nothing ran, so nothing is verifiable: the full allocation goes
+            // back, which is the same arithmetic as a zero spend here.
+            state.authority.release_child(id, None).await;
             return Err(e);
         }
     };
@@ -3076,8 +3079,10 @@ async fn reap_once(state: &NodeState, reaped: &mut std::collections::HashSet<Uui
                 .await;
 
             pod.cleanup_after_exit().await;
-            // Hand the child's budget allocation back to its parent.
-            state.authority.release_child(pod.id).await;
+            // Credit only what the node could verify; see `creditable_spend`.
+            let creditable =
+                clearing_receipt_collector::creditable_spend(pod_dir, &pod.id.to_string());
+            state.authority.release_child(pod.id, creditable).await;
         }
     }
 

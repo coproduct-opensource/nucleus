@@ -36,6 +36,11 @@ nucleus-recompute = { path = "../nucleus-recompute", version = "1.0.0" }
 # screen, so both must agree on what is being priced. Its `f64` is confined to
 # `compute_lambda`, which this crate never calls arithmetic on.
 nucleus-permission-market = { path = "../nucleus-permission-market", version = "1.0.0" }
+# Standing that gates ROUND ENTRY (never authority): `StandingAdmission`
+# composes `CreditFile::deters`/`required_bond`, which compose the proven
+# `nucleus-witness-olog` functions. Econ-to-econ, which the boundary permits.
+nucleus-creditworthiness = { path = "../nucleus-creditworthiness", version = "1.0.0" }
+nucleus-witness-olog = { path = "../nucleus-witness-olog", version = "1.0.0" }
 # `default-features = false` drops ring/cedar: only the always-compiled data
 # types (VerifiedPermissions / PermissionLattice) are needed to read a verified
 # certificate's budget ceiling.

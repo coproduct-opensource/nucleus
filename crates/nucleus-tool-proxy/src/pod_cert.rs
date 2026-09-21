@@ -231,7 +231,7 @@ pub(crate) fn evaluate_request_cert(
     let mut fused =
         client_cert_der.and_then(|der| identity_fusion::extract_fused_identity(der, spiffe_id));
 
-    let bid = cert_bridge::certificate_to_bid(&verified);
+    let bid = nucleus_permission_market::PermissionBid::from_verified(&verified);
     let market = state.permission_market.lock().unwrap();
     let mut grant = market.evaluate_bid(&bid);
     if let Some(ref mut fi) = fused
@@ -244,10 +244,10 @@ pub(crate) fn evaluate_request_cert(
     tracing::info!(
         leaf_identity = %verified.leaf_identity(),
         chain_depth = verified.chain_depth(),
-        trust_tier = ?bid.trust_tier,
+        trust_tier = ?bid.trust_tier(),
         granted = grant.granted.len(),
         denied = grant.denied.len(),
-        total_cost = grant.total_cost,
+        total_cost_micro = grant.total_cost_micro,
         fused_verified = fused.as_ref().is_some_and(|f| f.fingerprint_verified),
         event = "delegation_cert_evaluated",
         "delegation certificate verified and evaluated against market"
@@ -378,6 +378,7 @@ mod tests {
             AuthMethod::Hmac,
             AuthMethod::HmacDrand,
             AuthMethod::HostVsock,
+            AuthMethod::PodPeer,
             AuthMethod::Ed25519Drand,
         ] {
             assert_eq!(

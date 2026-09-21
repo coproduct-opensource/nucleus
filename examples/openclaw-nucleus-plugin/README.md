@@ -191,8 +191,6 @@ If `approvalSecret` is empty, approvals use the regular `authSecret`.
 
 ## Permission Market Integration
 
-When the `nucleus-permission-market` crate is active on the tool-proxy, this plugin includes permission bid headers with each request:
+This plugin sends **no** permission-bid header. The tool-proxy derives a bid — requested dimensions, spend ceiling and trust tier — from the verified delegation certificate a request carries, and ignores anything a request declares about its own value. An earlier version sent an `X-Nucleus-Permission-Bid` header with a self-chosen `value_estimate` and `trust_tier`; that header is no longer read (nucleus #2526).
 
-- `X-Nucleus-Permission-Bid` — JSON-encoded bid with `skill_id`, `dimensions`, `value_estimate`, and `trust_tier`
-
-The market evaluates each bid against current Lagrange multiplier prices per permission dimension. Permissions with price exceeding the bid value are denied. See the `nucleus-permission-market` crate for details.
+The market evaluates the derived bid against current Lagrange multiplier prices per permission dimension, in micro-USD. Dimensions whose price exceeds the certificate's budget are denied with a `402` naming them. See the `nucleus-permission-market` crate for details.

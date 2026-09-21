@@ -10,11 +10,58 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nucleus_authority_exchange::{CertifiedCeiling, Charger, RoundScheduler, SignedBid, Verdict};
-use nucleus_econ_types::AgentId;
+use nucleus_econ_types::{AgentId, MicroUsd};
 use nucleus_permission_market::PermissionDimension;
+use portcullis::certificate::VerifiedPermissions;
 use tracing::info;
 
+use crate::host_socket::PodPeer;
 use crate::{ApiError, AppState, art12_sink, authority_ledger, pod_cert};
+
+/// Who is asking for an auctioned slot, as established by facts a request
+/// cannot claim (#2988).
+pub(crate) enum Bidder<'a> {
+    /// An mTLS caller whose delegation-certificate chain verified: it bids
+    /// under its own ceiling, as its own leaf identity.
+    Certified(&'a pod_cert::CertifiedPermissions),
+    /// A process inside the pod, named by the kernel over the peer-verified
+    /// Unix socket: it bids under the POD's certificate, as `(uid, pid)` beneath
+    /// the pod's leaf. Two processes are two bidders; one process is one.
+    PodPeer(PodPeer),
+    /// Neither. Cannot bid, and an auctioned dimension refuses it.
+    Nobody,
+}
+
+/// The header a bidder may use to declare a value BELOW its ceiling, in
+/// micro-USD. Absent or unparsable means "the whole ceiling"; a value above
+/// the ceiling is refused by `SignedBid::new`, never clamped.
+pub(crate) const HEADER_BID_MICRO_USD: &str = "x-nucleus-bid-micro-usd";
+
+/// The declared value, if the header carries a non-negative integer.
+pub(crate) fn bid_value(headers: &axum::http::HeaderMap) -> Option<MicroUsd> {
+    headers
+        .get(HEADER_BID_MICRO_USD)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(MicroUsd::new)
+}
+
+/// The bidder identity of a process inside the pod: the pod's leaf with the
+/// kernel-reported `(uid, pid)` beneath it. `DuplicateBidder` in the round is
+/// what makes one process one bidder per round; distinct processes are
+/// distinct. Splitting oneself across processes cannot lower one's own price
+/// under the second-price rule, and every peer draws on the same pod ledger,
+/// so the pod is charged once for what its processes won.
+pub(crate) fn peer_agent_id(pod_leaf: &str, peer: PodPeer) -> AgentId {
+    AgentId::new(format!(
+        "{pod_leaf}/peer/uid-{}/pid-{}",
+        peer.uid,
+        peer.pid.unwrap_or(0)
+    ))
+}
 
 /// Which dimensions `--clearing` names, or why the flag is wrong.
 ///
@@ -145,7 +192,8 @@ pub(crate) fn build(
 pub(crate) async fn join_if_auctioned(
     state: &AppState,
     path: &str,
-    certified_perms: Option<&pod_cert::CertifiedPermissions>,
+    bidder: Bidder<'_>,
+    headers: &axum::http::HeaderMap,
 ) -> Result<(), ApiError> {
     let Some(scheduler) = state.authority_exchange.clone() else {
         return Ok(());
@@ -156,36 +204,57 @@ pub(crate) async fn join_if_auctioned(
     if !state.clearing_dimensions.contains(&dimension) {
         return Ok(());
     }
-    // The ceiling comes from the verified certificate, so a request without
-    // one cannot bid. Refusing is the only honest option: the alternative is
-    // to invent a ceiling, which is what "the agent declares its own value"
-    // means.
-    let Some(certified) = certified_perms else {
-        return Err(ApiError::KernelDenied {
-            message: format!(
-                "{} is cleared by auction; a verified delegation certificate is \
-                 required to bid for it",
-                dimension.label()
-            ),
-            code: None,
-        });
+    // The ceiling comes from a VERIFIED chain — the caller's own certificate,
+    // or the pod's for a kernel-attributed process inside it — so a request
+    // that is neither cannot bid. Refusing is the only honest option: the
+    // alternative is to invent a ceiling, which is what "the agent declares
+    // its own value" means.
+    let (verified, agent, peer): (&VerifiedPermissions, AgentId, Option<PodPeer>) = match bidder {
+        Bidder::Certified(c) => (
+            &c.verified,
+            AgentId::new(c.verified.leaf_identity().to_string()),
+            None,
+        ),
+        Bidder::PodPeer(peer) => {
+            let Some(v) = state.pod_verified.as_deref() else {
+                return Err(ApiError::KernelDenied {
+                    message: format!(
+                        "{} is cleared by auction; this pod holds no certificate, so a \
+                         process inside it has no ceiling to bid under",
+                        dimension.label()
+                    ),
+                    code: None,
+                });
+            };
+            (v, peer_agent_id(v.leaf_identity(), peer), Some(peer))
+        }
+        Bidder::Nobody => {
+            return Err(ApiError::KernelDenied {
+                message: format!(
+                    "{} is cleared by auction; a verified delegation certificate or a \
+                     kernel-attributed pod peer is required to bid for it",
+                    dimension.label()
+                ),
+                code: None,
+            });
+        }
     };
-    let ceiling = CertifiedCeiling::from_verified(&certified.verified);
-    // v1 bids the full certified ceiling. Under a second-price rule that is
-    // the truthful report when the ceiling IS the principal's value for the
-    // task, which is what `budget.max_cost_usd` on a task-scoped certificate
-    // means. A per-task value carried in the certificate is the refinement
-    // this leaves open, and it is a certificate change, not a mechanism one.
-    let bid = SignedBid::new(
-        AgentId::new(certified.verified.leaf_identity().to_string()),
-        dimension,
-        ceiling.get(),
-        ceiling,
-    )
-    .map_err(|e| ApiError::KernelDenied {
-        message: format!("authority bid refused: {e}"),
-        code: None,
-    })?;
+    let leaf = verified.leaf_identity().to_string();
+    let ceiling = CertifiedCeiling::from_verified(verified);
+    // The bid is the caller's declared value, capped by the verified ceiling
+    // (`SignedBid::new` refuses one above it), or the whole ceiling when none
+    // is declared. Declaring a value UNDER a verified ceiling is what a bid is;
+    // what #2526 removed was a value with no ceiling behind it. Under the
+    // second-price rule the dominant strategy is the true value, so nothing
+    // here rewards misreporting.
+    let value = bid_value(headers).unwrap_or_else(|| ceiling.get());
+    let bid =
+        // The proxy's scarce good IS a permission dimension; the conversion is
+        // the boundary between this pod's vocabulary and the mechanism's.
+        SignedBid::new(agent, dimension.into(), value, ceiling).map_err(|e| ApiError::KernelDenied {
+            message: format!("authority bid refused: {e}"),
+            code: None,
+        })?;
 
     match scheduler.join(bid).await {
         Verdict::Won {
@@ -195,18 +264,32 @@ pub(crate) async fn join_if_auctioned(
         } => {
             record_round(
                 state,
-                certified.verified.leaf_identity(),
+                &leaf,
+                peer,
                 nucleus_lineage::edge::EdgeKind::Allocation {
                     market_id: round.as_str().to_string(),
                     mechanism: "vcg".to_string(),
                 },
                 &receipt,
             );
+            // The charge was made in this guest's ledger; tell the host, signed,
+            // so the node can fold what was spent rather than everything (#2541).
+            if let Some(ref shipper) = state.spend_shipper {
+                shipper.charge(
+                    price.get(),
+                    &format!(
+                        "authority-round:{}",
+                        nucleus_recompute::content_hash_hex(&receipt)
+                    ),
+                    &receipt,
+                );
+            }
             tracing::info!(
                 dimension = dimension.label(),
                 round = round.as_str(),
                 price_micro_usd = price.get(),
-                leaf = %certified.verified.leaf_identity(),
+                leaf = %leaf,
+                peer = ?peer,
                 event = "authority_slot_won",
                 "authority slot cleared and charged"
             );
@@ -218,7 +301,8 @@ pub(crate) async fn join_if_auctioned(
             // accept.
             record_round(
                 state,
-                certified.verified.leaf_identity(),
+                &leaf,
+                peer,
                 nucleus_lineage::edge::EdgeKind::Bid {
                     market_id: round.as_str().to_string(),
                 },
@@ -259,14 +343,20 @@ pub(crate) async fn join_if_auctioned(
 fn record_round(
     state: &AppState,
     leaf_identity: &str,
+    peer: Option<PodPeer>,
     kind: nucleus_lineage::edge::EdgeKind,
     receipt: &nucleus_recompute::ClearingReceipt,
 ) {
     let Some(ledger) = state.authority_ledger.as_ref() else {
         return;
     };
+    // A pod peer's edge hangs off the POD's identity (the chain the ceiling
+    // came from) with the peer bound into the derived id's content hash, so
+    // two peers' edges are two edges under one leaf rather than one edge
+    // written twice.
+    let peer_tag = peer.map(|p| peer_agent_id(leaf_identity, p).as_str().as_bytes().to_vec());
     let child = match nucleus_lineage::id::CallSpiffeId::parse(leaf_identity)
-        .and_then(|id| id.derive_tool("authority", None))
+        .and_then(|id| id.derive_tool("authority", peer_tag.as_deref()))
     {
         Ok(c) => c,
         Err(e) => {
@@ -330,5 +420,103 @@ mod clearing_flag_tests {
         let got = parse_clearing_dimensions(&["network_egress".into(), String::new()])
             .expect("a trailing comma is not a typo");
         assert_eq!(got.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod pod_peer_bidder_tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    const LEAF: &str = "spiffe://nucleus.local/ns/pods/sa/0f7b3a2e";
+
+    /// The property #2988 exists for: two processes in one pod are two
+    /// bidders, and the same process is the same bidder. Both under the pod's
+    /// leaf, so the ledger charging the pod is charging the right principal.
+    #[test]
+    fn distinct_processes_are_distinct_bidders_under_one_leaf() {
+        let a = peer_agent_id(
+            LEAF,
+            PodPeer {
+                uid: 65534,
+                pid: Some(41),
+            },
+        );
+        let b = peer_agent_id(
+            LEAF,
+            PodPeer {
+                uid: 65534,
+                pid: Some(42),
+            },
+        );
+        let a_again = peer_agent_id(
+            LEAF,
+            PodPeer {
+                uid: 65534,
+                pid: Some(41),
+            },
+        );
+        assert_ne!(a, b, "two pids, two bidders");
+        assert_eq!(a, a_again, "one pid, one bidder");
+        assert!(
+            a.as_str().starts_with(LEAF),
+            "{a:?} is not under the pod's leaf"
+        );
+        // Different uids with the same pid cannot happen in one namespace, but
+        // the identity must still tell them apart rather than collapse them.
+        let c = peer_agent_id(
+            LEAF,
+            PodPeer {
+                uid: 1000,
+                pid: Some(41),
+            },
+        );
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn a_declared_value_is_read_and_garbage_means_the_whole_ceiling() {
+        let mut h = HeaderMap::new();
+        assert_eq!(bid_value(&h), None, "absent: the caller bids its ceiling");
+        h.insert(HEADER_BID_MICRO_USD, HeaderValue::from_static(" 250000 "));
+        assert_eq!(bid_value(&h), Some(MicroUsd::new(250_000)));
+        h.insert(HEADER_BID_MICRO_USD, HeaderValue::from_static("-1"));
+        assert_eq!(bid_value(&h), None, "a negative value is not a bid");
+        h.insert(HEADER_BID_MICRO_USD, HeaderValue::from_static("lots"));
+        assert_eq!(bid_value(&h), None);
+    }
+
+    /// The peer's lineage edge is derived from the POD's id with the peer
+    /// bound into it: `record_round` must be able to parse the pod leaf, and
+    /// the peer tag must change the derived id.
+    #[test]
+    fn a_peer_edge_is_derived_from_the_pod_leaf_with_the_peer_bound_in() {
+        let pod = nucleus_lineage::id::CallSpiffeId::parse(LEAF).expect("a pod leaf parses");
+        let tag_a = peer_agent_id(
+            LEAF,
+            PodPeer {
+                uid: 65534,
+                pid: Some(41),
+            },
+        );
+        let tag_b = peer_agent_id(
+            LEAF,
+            PodPeer {
+                uid: 65534,
+                pid: Some(42),
+            },
+        );
+        let a = pod
+            .derive_tool("authority", Some(tag_a.as_str().as_bytes()))
+            .expect("derives");
+        let b = pod
+            .derive_tool("authority", Some(tag_b.as_str().as_bytes()))
+            .expect("derives");
+        // `derive_tool` mints a fresh uuid each call, so compare the bound
+        // content hash, which is the peer.
+        let hash = |id: &nucleus_lineage::id::CallSpiffeId| {
+            id.as_str().rsplit("/sha256:").next().map(str::to_owned)
+        };
+        assert_ne!(hash(&a), hash(&b), "two peers must not share a derived id");
     }
 }

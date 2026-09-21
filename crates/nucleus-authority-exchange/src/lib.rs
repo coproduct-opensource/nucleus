@@ -13,33 +13,39 @@
 //! `run_vcg` ran only as a *verifier* of receipts produced elsewhere.
 //!
 //! Meanwhile the one auction-shaped thing on the live path,
-//! `nucleus-permission-market`, is an `f64` Lagrangian screen —
+//! `nucleus-permission-market`, was an `f64` Lagrangian screen —
 //! `compute_lambda(u) = exp(3·(u−0.5)/0.5) − 1`, trust discounts 1.0/0.8/0.5/0.1
-//! — with no cited derivation, no Lean, no Kani, and a `value_estimate` the
-//! bidder self-reports with no incentive to be truthful. `FORMAL_METHODS.md`
-//! files it as "Tested… a Lagrangian pricing oracle", which is accurate and is
-//! not a mechanism.
+//! — with no cited derivation, no Lean, and a `value_estimate` the bidder
+//! self-reported with no incentive to be truthful. It is integer now, with a
+//! Kani-checked curve and a bid derivable only from a verified certificate
+//! (#2526, #2540), but it is still a posted price: a screen, not a mechanism.
+//! `FORMAL_METHODS.md` files it as "Tested… a Lagrangian pricing oracle",
+//! which is accurate.
 //!
 //! This crate wires the proven one to a decision: a round, a Clarke-pivot price,
 //! and a receipt anyone can re-derive.
 //!
 //! # What a round is
 //!
-//! One contended slot of one [`nucleus_permission_market::PermissionDimension`],
+//! One contended slot of one [`ScarceGood`] — a permission dimension inside a
+//! pod, or whatever an operator names as contended —
 //! bids from agents whose *principals* authorised the value, and an outcome that
 //! distinguishes "the market priced this" from "one agent asked" from "nobody
 //! did". See [`Round`] for why it is one slot and [`RoundOutcome`] for why that
 //! distinction is three variants rather than an `Option`.
 //!
 //! ```
-//! use nucleus_authority_exchange::{Clearing, Round, RoundOutcome, VcgClearing};
+//! use nucleus_authority_exchange::{Clearing, Round, RoundOutcome, ScarceGood, VcgClearing};
 //! # use nucleus_authority_exchange::test_support::bid;
 //! use nucleus_econ_types::{AuctionId, MicroUsd};
 //! use nucleus_permission_market::PermissionDimension::NetworkEgress;
 //!
-//! let mut round = Round::open(AuctionId::new("egress-1"), NetworkEgress);
-//! round.submit(bid("agent-a", 100, NetworkEgress)).unwrap();
-//! round.submit(bid("agent-b", 70, NetworkEgress)).unwrap();
+//! // A permission dimension names a good; so does anything an operator
+//! // declares contended, e.g. `ScarceGood::new("ci-runner-slot")`.
+//! let egress = ScarceGood::from(NetworkEgress);
+//! let mut round = Round::open(AuctionId::new("egress-1"), egress.clone());
+//! round.submit(bid("agent-a", 100, egress.clone())).unwrap();
+//! round.submit(bid("agent-b", 70, egress)).unwrap();
 //!
 //! let outcome = VcgClearing.clear(&round).unwrap();
 //! // The winner pays the second-highest bid, not its own.
@@ -110,13 +116,17 @@
 
 pub mod bid;
 pub mod clearing;
+pub mod good;
 pub mod round;
 pub mod scheduler;
+pub mod standing;
 
 pub use bid::{BidError, CertifiedCeiling, SignedBid};
-pub use clearing::{ClearError, Clearing, PostedPriceClearing, VcgClearing};
+pub use clearing::{ClearError, Clearing, VcgClearing};
+pub use good::{GoodError, ScarceGood};
 pub use round::{Admission, AdmitAll, AdmitError, Round, RoundOutcome};
 pub use scheduler::{ChargeError, Charger, DenyReason, RoundScheduler, UnwiredCharger, Verdict};
+pub use standing::StandingAdmission;
 
 /// Fixtures for doctests and downstream tests.
 ///
@@ -130,13 +140,16 @@ pub use scheduler::{ChargeError, Charger, DenyReason, RoundScheduler, UnwiredCha
 /// Gated on the `test-support` feature, which `default` does not enable.
 #[cfg(feature = "test-support")]
 pub mod test_support {
-    use super::SignedBid;
+    use super::{ScarceGood, SignedBid};
     use nucleus_econ_types::{AgentId, MicroUsd};
-    use nucleus_permission_market::PermissionDimension;
 
     /// A bid that bypasses the ceiling check, for examples and tests only.
+    ///
+    /// Takes anything that names a good, so a caller may pass a
+    /// `PermissionDimension` (the in-pod authority case) or a `ScarceGood` it
+    /// built itself (an operator's own contended resource).
     #[must_use]
-    pub fn bid(agent: &str, value: u64, dimension: PermissionDimension) -> SignedBid {
-        SignedBid::fixture(AgentId::new(agent), dimension, MicroUsd::new(value))
+    pub fn bid(agent: &str, value: u64, good: impl Into<ScarceGood>) -> SignedBid {
+        SignedBid::fixture(AgentId::new(agent), good.into(), MicroUsd::new(value))
     }
 }

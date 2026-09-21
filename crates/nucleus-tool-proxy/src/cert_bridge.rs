@@ -5,6 +5,10 @@
 //!
 //! The abstraction function α: PermissionLattice → P(PermissionDimension)
 //! collapses 12 capability dimensions into 4 market dimensions via surjection.
+//! It is `PermissionBid::from_verified` in `nucleus-permission-market`: the
+//! crate whose type it produces is the crate that decides what the type means
+//! (G-1), and a bid must not be constructible from anything but a verified
+//! chain (#2526). This module holds γ and the meet.
 //!
 //! The concretization function γ: P(PermissionDimension) → PermissionLattice
 //! produces the maximal lattice element mapping to a given dimension set.
@@ -24,87 +28,13 @@
 //! gates them; they survive from the certificate unchanged.
 
 use chrono::{Duration, Utc};
-use nucleus_permission_market::{PermissionBid, PermissionDimension, PermissionGrant, TrustTier};
+use nucleus_permission_market::{PermissionDimension, PermissionGrant};
 use portcullis::{
     BudgetLattice, CapabilityLattice, CapabilityLevel, PermissionLattice, TimeLattice,
     certificate::VerifiedPermissions,
 };
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
 use std::collections::HashSet;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// α: ABSTRACTION (12-dim → 4-dim)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Convert verified delegation certificate permissions into a market bid.
-///
-/// This is the abstraction function (α) of the Galois connection between
-/// the 12-dimensional capability lattice and the 4-dimensional market space.
-///
-/// A dimension is included in the bid if ANY constituent capability is non-Never.
-pub fn certificate_to_bid(verified: &VerifiedPermissions) -> PermissionBid {
-    let caps = &verified.effective().capabilities;
-    let mut requested = Vec::new();
-
-    // Filesystem: read_files, write_files, edit_files, glob_search, grep_search
-    if caps.read_files > CapabilityLevel::Never
-        || caps.write_files > CapabilityLevel::Never
-        || caps.edit_files > CapabilityLevel::Never
-        || caps.glob_search > CapabilityLevel::Never
-        || caps.grep_search > CapabilityLevel::Never
-    {
-        requested.push(PermissionDimension::Filesystem);
-    }
-
-    // CommandExec: run_bash
-    if caps.run_bash > CapabilityLevel::Never {
-        requested.push(PermissionDimension::CommandExec);
-    }
-
-    // NetworkEgress: web_search, web_fetch, git_push, create_pr
-    if caps.web_search > CapabilityLevel::Never
-        || caps.web_fetch > CapabilityLevel::Never
-        || caps.git_push > CapabilityLevel::Never
-        || caps.create_pr > CapabilityLevel::Never
-    {
-        requested.push(PermissionDimension::NetworkEgress);
-    }
-
-    // Approval: meta-dimension, present if there are obligations
-    if !verified.effective().obligations.is_empty() {
-        requested.push(PermissionDimension::Approval);
-    }
-
-    let trust_tier = chain_depth_to_trust_tier(verified.chain_depth());
-
-    let value_estimate = verified
-        .effective()
-        .budget
-        .max_cost_usd
-        .to_f64()
-        .unwrap_or(0.0);
-
-    PermissionBid {
-        skill_id: verified.leaf_identity().to_string(),
-        requested,
-        value_estimate,
-        trust_tier,
-    }
-}
-
-/// Map delegation chain depth to market trust tier.
-///
-/// - Depth 0: root authority itself → Platform (90% discount)
-/// - Depth 1: direct delegate → Verified (50% discount)
-/// - Depth 2+: transitive delegate → Community (20% discount)
-pub fn chain_depth_to_trust_tier(depth: usize) -> TrustTier {
-    match depth {
-        0 => TrustTier::Platform,
-        1 => TrustTier::Verified,
-        _ => TrustTier::Community,
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // γ: CONCRETIZATION (4-dim → 12-dim)
@@ -255,7 +185,7 @@ fn lattice_to_dimensions(perms: &PermissionLattice) -> HashSet<PermissionDimensi
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
-    use nucleus_permission_market::PermissionMarket;
+    use nucleus_permission_market::{PermissionBid, PermissionMarket, TrustTier};
     use portcullis::certificate::{LatticeCertificate, verify_certificate};
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -325,24 +255,30 @@ mod tests {
     #[test]
     fn test_alpha_permissive_requests_all_non_approval_dimensions() {
         let verified = mint_and_verify(PermissionLattice::permissive());
-        let bid = certificate_to_bid(&verified);
+        let bid = PermissionBid::from_verified(&verified);
 
-        assert!(bid.requested.contains(&PermissionDimension::Filesystem));
-        assert!(bid.requested.contains(&PermissionDimension::CommandExec));
-        assert!(bid.requested.contains(&PermissionDimension::NetworkEgress));
+        assert!(bid.requested().contains(&PermissionDimension::Filesystem));
+        assert!(bid.requested().contains(&PermissionDimension::CommandExec));
+        assert!(
+            bid.requested()
+                .contains(&PermissionDimension::NetworkEgress)
+        );
         // Approval depends on whether permissive() has obligations
-        assert_eq!(bid.skill_id, "spiffe://test/root");
-        assert_eq!(bid.trust_tier, TrustTier::Platform); // depth 0
+        assert_eq!(bid.skill_id(), "spiffe://test/root");
+        assert_eq!(bid.trust_tier(), TrustTier::Platform); // depth 0
     }
 
     #[test]
     fn test_alpha_read_only_requests_only_filesystem() {
         let verified = mint_and_verify(PermissionLattice::read_only());
-        let bid = certificate_to_bid(&verified);
+        let bid = PermissionBid::from_verified(&verified);
 
-        assert!(bid.requested.contains(&PermissionDimension::Filesystem));
-        assert!(!bid.requested.contains(&PermissionDimension::CommandExec));
-        assert!(!bid.requested.contains(&PermissionDimension::NetworkEgress));
+        assert!(bid.requested().contains(&PermissionDimension::Filesystem));
+        assert!(!bid.requested().contains(&PermissionDimension::CommandExec));
+        assert!(
+            !bid.requested()
+                .contains(&PermissionDimension::NetworkEgress)
+        );
     }
 
     #[test]
@@ -351,21 +287,15 @@ mod tests {
             .capabilities(all_never_capabilities())
             .build();
         let verified = mint_and_verify(perms);
-        let bid = certificate_to_bid(&verified);
+        let bid = PermissionBid::from_verified(&verified);
 
         // No market dimensions requested (possibly Approval if normalize adds obligations)
-        assert!(!bid.requested.contains(&PermissionDimension::Filesystem));
-        assert!(!bid.requested.contains(&PermissionDimension::CommandExec));
-        assert!(!bid.requested.contains(&PermissionDimension::NetworkEgress));
-    }
-
-    #[test]
-    fn test_chain_depth_trust_mapping() {
-        assert_eq!(chain_depth_to_trust_tier(0), TrustTier::Platform);
-        assert_eq!(chain_depth_to_trust_tier(1), TrustTier::Verified);
-        assert_eq!(chain_depth_to_trust_tier(2), TrustTier::Community);
-        assert_eq!(chain_depth_to_trust_tier(5), TrustTier::Community);
-        assert_eq!(chain_depth_to_trust_tier(10), TrustTier::Community);
+        assert!(!bid.requested().contains(&PermissionDimension::Filesystem));
+        assert!(!bid.requested().contains(&PermissionDimension::CommandExec));
+        assert!(
+            !bid.requested()
+                .contains(&PermissionDimension::NetworkEgress)
+        );
     }
 
     #[test]
@@ -374,19 +304,19 @@ mod tests {
             PermissionLattice::permissive(),
             PermissionLattice::read_only(),
         );
-        let bid = certificate_to_bid(&verified);
+        let bid = PermissionBid::from_verified(&verified);
 
-        assert_eq!(bid.trust_tier, TrustTier::Verified); // depth 1
-        assert_eq!(bid.skill_id, "spiffe://test/agent");
+        assert_eq!(bid.trust_tier(), TrustTier::Verified); // depth 1
+        assert_eq!(bid.skill_id(), "spiffe://test/agent");
     }
 
     #[test]
-    fn test_value_estimate_from_budget() {
+    fn test_value_is_the_budget_in_micro_usd() {
         let verified = mint_and_verify(PermissionLattice::permissive());
-        let bid = certificate_to_bid(&verified);
+        let bid = PermissionBid::from_verified(&verified);
 
-        // permissive() has max_cost_usd = 100.0
-        assert!(bid.value_estimate > 0.0);
+        // permissive() has max_cost_usd = 10: ten dollars is 10_000_000 µUSD.
+        assert_eq!(bid.value_micro(), 10_000_000);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -455,7 +385,7 @@ mod tests {
         let grant = PermissionGrant {
             granted: vec![PermissionDimension::Filesystem],
             denied: vec![],
-            total_cost: 0.0,
+            total_cost_micro: 0,
             expires_at: None,
         };
 
@@ -488,7 +418,7 @@ mod tests {
                 PermissionDimension::Approval,
             ],
             denied: vec![],
-            total_cost: 0.0,
+            total_cost_micro: 0,
             expires_at: None,
         };
 
@@ -514,7 +444,7 @@ mod tests {
         let grant = PermissionGrant {
             granted: vec![],
             denied: vec![],
-            total_cost: 0.0,
+            total_cost_micro: 0,
             expires_at: None,
         };
 
@@ -564,15 +494,15 @@ mod tests {
         assert_eq!(verified.leaf_identity(), "spiffe://nucleus/agent/coder-042");
 
         // Step 4: Convert to market bid (α)
-        let bid = certificate_to_bid(&verified);
-        assert_eq!(bid.skill_id, "spiffe://nucleus/agent/coder-042");
-        assert_eq!(bid.trust_tier, TrustTier::Verified); // depth 1
-        assert!(bid.requested.contains(&PermissionDimension::Filesystem));
-        assert!(!bid.requested.contains(&PermissionDimension::CommandExec));
+        let bid = PermissionBid::from_verified(&verified);
+        assert_eq!(bid.skill_id(), "spiffe://nucleus/agent/coder-042");
+        assert_eq!(bid.trust_tier(), TrustTier::Verified); // depth 1
+        assert!(bid.requested().contains(&PermissionDimension::Filesystem));
+        assert!(!bid.requested().contains(&PermissionDimension::CommandExec));
 
         // Step 5: Evaluate against market with high filesystem utilization
         let mut utilizations = BTreeMap::new();
-        utilizations.insert(PermissionDimension::Filesystem, 0.9); // λ high
+        utilizations.insert(PermissionDimension::Filesystem, 9_000); // λ high
         let market = PermissionMarket::with_utilization(utilizations);
         let grant = market.evaluate_bid(&bid);
 
@@ -664,13 +594,13 @@ mod tests {
             PermissionGrant {
                 granted: vec![],
                 denied: vec![],
-                total_cost: 0.0,
+                total_cost_micro: 0,
                 expires_at: None,
             },
             PermissionGrant {
                 granted: vec![PermissionDimension::Filesystem],
                 denied: vec![],
-                total_cost: 0.0,
+                total_cost_micro: 0,
                 expires_at: None,
             },
             PermissionGrant {
@@ -681,7 +611,7 @@ mod tests {
                     PermissionDimension::Approval,
                 ],
                 denied: vec![],
-                total_cost: 0.0,
+                total_cost_micro: 0,
                 expires_at: None,
             },
         ];

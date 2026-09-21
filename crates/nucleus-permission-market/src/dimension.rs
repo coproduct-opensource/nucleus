@@ -30,6 +30,7 @@ impl PermissionDimension {
     ];
 
     /// Human-readable label.
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             Self::Filesystem => "filesystem",
@@ -40,6 +41,7 @@ impl PermissionDimension {
     }
 
     /// Map a tool-proxy endpoint path to its primary dimension.
+    #[must_use]
     pub fn from_endpoint(path: &str) -> Option<Self> {
         match path {
             "/v1/read" | "/v1/write" | "/v1/glob" | "/v1/grep" => Some(Self::Filesystem),
@@ -51,37 +53,56 @@ impl PermissionDimension {
     }
 }
 
-/// Trust tier for a skill/plugin publisher.
+/// Trust tier of a bidder, **assigned by certificate verification**.
 ///
-/// Higher trust tiers receive a discount on permission prices,
-/// reflecting lower risk from verified publishers.
+/// Higher tiers pay less. The tier is a function of delegation chain depth
+/// ([`TrustTier::from_chain_depth`]) and nothing else: a request cannot
+/// declare one (#2526).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustTier {
-    /// Unverified or unknown publisher.
+    /// No verified chain. Not reachable from a certificate; kept as the tier
+    /// a market with no discount evaluates at.
     Unverified,
-    /// Community-verified (e.g. published to a registry with basic checks).
+    /// Transitive delegate (chain depth ≥ 2).
     Community,
-    /// Organization-verified (e.g. signed by a known org key).
+    /// Direct delegate of the root (chain depth 1).
     Verified,
-    /// Platform-level trust (e.g. built-in tools, first-party plugins).
+    /// The root authority itself (chain depth 0).
     Platform,
 }
 
 impl TrustTier {
-    /// Price discount factor for this trust tier.
+    /// The tier a delegation chain of `depth` earns.
     ///
-    /// Lower values mean cheaper permissions:
-    /// - `Unverified`: 1.0x (full price)
-    /// - `Community`: 0.8x
-    /// - `Verified`: 0.5x
-    /// - `Platform`: 0.1x (nearly free)
-    pub fn discount_factor(&self) -> f64 {
+    /// - Depth 0: root authority itself → `Platform`
+    /// - Depth 1: direct delegate → `Verified`
+    /// - Depth 2+: transitive delegate → `Community`
+    ///
+    /// `Unverified` is never returned: a chain that verified is, by
+    /// construction, not unverified.
+    #[must_use]
+    pub fn from_chain_depth(depth: usize) -> Self {
+        match depth {
+            0 => Self::Platform,
+            1 => Self::Verified,
+            _ => Self::Community,
+        }
+    }
+
+    /// Price multiplier for this tier, in basis points of the full price.
+    ///
+    /// - `Unverified`: 10 000 (full price)
+    /// - `Community`: 8 000
+    /// - `Verified`: 5 000
+    /// - `Platform`: 1 000
+    #[must_use]
+    pub fn discount_bps(&self) -> u32 {
         match self {
-            Self::Unverified => 1.0,
-            Self::Community => 0.8,
-            Self::Verified => 0.5,
-            Self::Platform => 0.1,
+            Self::Unverified => 10_000,
+            Self::Community => 8_000,
+            Self::Verified => 5_000,
+            Self::Platform => 1_000,
         }
     }
 }
@@ -118,9 +139,9 @@ mod tests {
 
     #[test]
     fn trust_discount_ordering() {
-        assert!(TrustTier::Platform.discount_factor() < TrustTier::Verified.discount_factor());
-        assert!(TrustTier::Verified.discount_factor() < TrustTier::Community.discount_factor());
-        assert!(TrustTier::Community.discount_factor() < TrustTier::Unverified.discount_factor());
+        assert!(TrustTier::Platform.discount_bps() < TrustTier::Verified.discount_bps());
+        assert!(TrustTier::Verified.discount_bps() < TrustTier::Community.discount_bps());
+        assert!(TrustTier::Community.discount_bps() < TrustTier::Unverified.discount_bps());
     }
 
     #[test]
@@ -131,11 +152,28 @@ mod tests {
             TrustTier::Verified,
             TrustTier::Platform,
         ] {
-            let d = tier.discount_factor();
+            let d = tier.discount_bps();
             assert!(
-                d > 0.0 && d <= 1.0,
+                d > 0 && d <= 10_000,
                 "discount {d} out of bounds for {tier:?}"
             );
+        }
+    }
+
+    #[test]
+    fn chain_depth_trust_mapping() {
+        assert_eq!(TrustTier::from_chain_depth(0), TrustTier::Platform);
+        assert_eq!(TrustTier::from_chain_depth(1), TrustTier::Verified);
+        assert_eq!(TrustTier::from_chain_depth(2), TrustTier::Community);
+        assert_eq!(TrustTier::from_chain_depth(5), TrustTier::Community);
+        assert_eq!(TrustTier::from_chain_depth(10), TrustTier::Community);
+    }
+
+    /// No depth reaches `Unverified`: verification never yields "unverified".
+    #[test]
+    fn verification_never_yields_unverified() {
+        for depth in 0..64 {
+            assert_ne!(TrustTier::from_chain_depth(depth), TrustTier::Unverified);
         }
     }
 }

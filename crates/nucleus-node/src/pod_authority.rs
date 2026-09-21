@@ -49,10 +49,13 @@
 //! [`BudgetLedger`] per parent (per external caller chain, for case 2)
 //! enforces `Σ live child allocations + consumed ≤ parent max`. A child's
 //! allocation is its certificate's `max_cost_usd`; it is released when the
-//! reaper sees the child exit. Until a child can report what it actually
-//! spent, release folds the WHOLE allocation into the parent's consumption —
-//! conservative, documented, and the reason the invariant cannot be violated
-//! by a parent that spawns and reaps in a loop.
+//! reaper sees the child exit. What is folded into the parent's consumption is
+//! `min(allocation, verified spend)` when the node could verify every charge,
+//! and the WHOLE allocation otherwise — so a parent that spawns and reaps in a
+//! loop still cannot violate the invariant, and a pod only gets credit for
+//! spend it shipped evidence for. The verification is NOT done here: this file
+//! decides authority, so it receives the number
+//! (`clearing_receipt_collector::creditable_spend` computes it).
 //!
 //! # Persistence
 //!
@@ -593,14 +596,49 @@ impl PodAuthority {
     }
 
     /// Retire a pod's certificate and return its budget allocation to the
-    /// parent's ledger. Until children report actual spend, the whole
-    /// allocation is folded into the parent's consumption (no refund).
-    pub async fn release_child(&self, pod_id: Uuid) {
+    /// parent's ledger.
+    ///
+    /// `creditable` is what the node was able to VERIFY the pod spent, and it
+    /// is computed by the caller — `clearing_receipt_collector::creditable_spend`
+    /// — never here. This file decides authority, and
+    /// `docs/econ-layer-boundary.md` keeps economics out of it: the evidence
+    /// chain (signed spend receipts, their sequence, and the clearing receipts
+    /// their basis names) is read on the economic side, and what arrives here
+    /// is a number.
+    ///
+    /// `None` means the node could not see every charge — no receipts, a gap
+    /// in the sequence, or a basis naming a clearing receipt the host does not
+    /// hold — and then the WHOLE allocation is folded into the parent's
+    /// consumption. `Some(spent)` is clamped to the allocation, because a pod
+    /// cannot spend more than it was delegated however many receipts it signs.
+    /// Neither case is a refund.
+    pub async fn release_child(&self, pod_id: Uuid, creditable: Option<rust_decimal::Decimal>) {
         let mut inner = self.inner.lock().await;
         let Some(entry) = inner.pods.remove(&pod_id) else {
             return;
         };
-        let consumed = entry.cert.effective_permissions().budget.max_cost_usd;
+        let allocation = entry.cert.effective_permissions().budget.max_cost_usd;
+        let consumed = match creditable {
+            Some(spent) => {
+                let charged = spent.min(allocation);
+                tracing::info!(
+                    pod = %pod_id,
+                    verified_usd = %spent,
+                    charged_usd = %charged,
+                    allocation_usd = %allocation,
+                    "verified spend decides the released budget"
+                );
+                charged
+            }
+            None => {
+                tracing::debug!(
+                    pod = %pod_id,
+                    allocation_usd = %allocation,
+                    "no verifiable spend; the full allocation is consumed"
+                );
+                allocation
+            }
+        };
         let released = match entry.parent {
             Parent::Root => Ok(rust_decimal::Decimal::ZERO),
             Parent::Pod(p) => match inner.pods.get_mut(&p) {
@@ -979,13 +1017,76 @@ mod tests {
 
         // Releasing c1 folds its allocation into the parent's consumption
         // (conservative: no refund), so the parent still cannot over-spawn.
-        auth.release_child(c1).await;
+        auth.release_child(c1, None).await;
         assert!(
             auth.admit(&from_pod(parent), &spec_with(lattice(1)), Uuid::new_v4())
                 .await
                 .is_err()
         );
         assert!(auth.boot_certificate(c1).await.is_none());
+    }
+
+    /// What this file decides about spend is the CLAMP and the "could not look"
+    /// arm — nothing more. Whether the evidence is good is decided by
+    /// `clearing_receipt_collector::creditable_spend`, whose own tests cover
+    /// the signatures, the sequence and the clearing receipts; keeping that out
+    /// of here is what `docs/econ-layer-boundary.md` asks for.
+    ///
+    /// The control is one $4 admission that fails under the old rule (fold
+    /// everything) and succeeds under the new one.
+    #[tokio::test]
+    async fn the_credited_spend_is_clamped_and_absence_folds_everything() {
+        use rust_decimal::Decimal;
+
+        /// Whether a $4 sibling fits after a $3 child is released from a $5
+        /// parent, having been credited `creditable`.
+        async fn four_dollar_sibling_fits(creditable: Option<Decimal>) -> bool {
+            let dir = tempfile::tempdir().unwrap();
+            let auth = authority(dir.path(), args());
+            let parent = Uuid::new_v4();
+            auth.admit(&by(MINTER), &spec_with(lattice(5)), parent)
+                .await
+                .unwrap();
+            let child = Uuid::new_v4();
+            auth.admit(&from_pod(parent), &spec_with(lattice(3)), child)
+                .await
+                .unwrap();
+            auth.release_child(child, creditable).await;
+            auth.admit(&from_pod(parent), &spec_with(lattice(4)), Uuid::new_v4())
+                .await
+                .is_ok()
+        }
+
+        assert!(
+            four_dollar_sibling_fits(Some(Decimal::from_i128_with_scale(500_000, 6))).await,
+            "$0.50 credited of a $3 allocation leaves $4.50: a $4 child fits"
+        );
+        assert!(
+            !four_dollar_sibling_fits(None).await,
+            "nothing verifiable folds the full allocation"
+        );
+        assert!(
+            !four_dollar_sibling_fits(Some(Decimal::from(3))).await,
+            "crediting the whole allocation is the same as folding it"
+        );
+        // Over-claimed spend clamps: a pod cannot be charged more than it was
+        // delegated however many receipts it signs, so a $2 sibling still fits.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let auth = authority(dir.path(), args());
+            let parent = Uuid::new_v4();
+            auth.admit(&by(MINTER), &spec_with(lattice(5)), parent)
+                .await
+                .unwrap();
+            let child = Uuid::new_v4();
+            auth.admit(&from_pod(parent), &spec_with(lattice(3)), child)
+                .await
+                .unwrap();
+            auth.release_child(child, Some(Decimal::from(9))).await;
+            auth.admit(&from_pod(parent), &spec_with(lattice(2)), Uuid::new_v4())
+                .await
+                .expect("$9 claimed against a $3 allocation folds as $3, leaving $2");
+        }
     }
 
     #[tokio::test]

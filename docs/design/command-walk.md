@@ -450,11 +450,13 @@ explore once (partial-order reduction).
 
 For the guest surface (`workload_api_vsock/walk/census.rs`), with the host's
 snapshot decision added as a letter — guest commands alone barely conflict —
-the census finds exactly 10 hollow faces of 120: every personalising command,
+the census finds exactly 10 hollow faces of 136: every personalising command,
 and `SNAPSHOT_READY`, against the snapshot decision. That is A5, rediscovered
 rather than restated. It is asserted both ways: an undeclared hollow face (a
 new law) fails, and so does a declared one that filled. The non-idempotent
-commands are exactly A2's one-shots plus `SHIP_RECEIPT`. Each face is hollow
+commands are exactly A2's one-shots plus `SHIP_RECEIPT` and `SHIP_SPEND` (#2541;
+the walk ships a real signed receipt for the latter, since the host verifies
+before it stores and a refused body would leave the write unwalked). Each face is hollow
 from some states and filled from others — once a VM is personalised, a further
 personalising fetch and the snapshot decision commute — so a law is about where
 state changes, not about a fixed pair.

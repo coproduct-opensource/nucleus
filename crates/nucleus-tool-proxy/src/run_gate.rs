@@ -652,19 +652,31 @@ pub(crate) fn payment_required(
     grant: &nucleus_permission_market::PermissionGrant,
     path: &str,
 ) -> nucleus_spec::PaymentRequiredInfo {
-    let amount_usd: f64 = grant.denied.iter().map(|d| d.price).sum();
+    // Micro-USD until the last step: the wire type is `f64`, so the ONE cast is
+    // here, after an exact integer sum, and nowhere upstream.
+    let amount_micro = grant
+        .denied
+        .iter()
+        .fold(0u64, |acc, d| acc.saturating_add(d.price_micro));
+    let amount_usd = micro_to_usd(amount_micro);
     let denied_dimensions = grant
         .denied
         .iter()
         .map(|d| nucleus_spec::DeniedDimensionInfo {
             dimension: d.dimension.label().to_string(),
-            price_usd: d.price,
+            price_usd: micro_to_usd(d.price_micro),
         })
         .collect();
     let reason = grant
         .denied
         .iter()
-        .map(|d| format!("{} λ={:.2}", d.dimension.label(), d.price))
+        .map(|d| {
+            format!(
+                "{} λ={:.2}",
+                d.dimension.label(),
+                micro_to_usd(d.price_micro)
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
     nucleus_spec::PaymentRequiredInfo {
@@ -674,6 +686,17 @@ pub(crate) fn payment_required(
         recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
         resource: Some(path.to_string()),
     }
+}
+
+/// Micro-USD to the `f64` the payment protocol speaks. Wire boundary only.
+///
+/// Converted through `u32`, which `f64` represents exactly, so no price below
+/// $4 294 loses a digit. Above that the amount clamps rather than rounding
+/// silently: a 402 asking more than four thousand dollars for one tool call is
+/// a bug upstream, and a clamped number is easier to disbelieve than a rounded
+/// one.
+fn micro_to_usd(micro: u64) -> f64 {
+    f64::from(u32::try_from(micro).unwrap_or(u32::MAX)) / 1_000_000.0
 }
 
 pub(crate) fn grant_denies_endpoint(
@@ -703,9 +726,9 @@ mod certificate_endpoint_tests {
             granted: vec![D::Filesystem],
             denied: vec![DeniedDimension {
                 dimension: D::NetworkEgress,
-                price: 1.0,
+                price_micro: 1_000_000,
             }],
-            total_cost: 0.0,
+            total_cost_micro: 0,
             expires_at: None,
         };
         for path in ["/v1/web_fetch", "/v1/web_search", "/v1/egress/api/resource"] {
@@ -719,7 +742,7 @@ mod certificate_endpoint_tests {
             granted: vec![D::NetworkEgress],
             denied: vec![DeniedDimension {
                 dimension: D::Filesystem,
-                price: 2.0,
+                price_micro: 2_000_000,
             }],
             ..grant
         };

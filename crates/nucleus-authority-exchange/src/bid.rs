@@ -8,13 +8,12 @@
 //!
 //! This is not a preference. If the bid is model-controlled then injected content
 //! can raise its own price and buy capability — the lethal trifecta with a
-//! checkout counter. The live posted-price path this crate supersedes has exactly
-//! that shape today: `nucleus-tool-proxy`'s `evaluate_permission_bid` parses
-//! `value_estimate` **and `trust_tier`** out of a client-supplied
-//! `x-nucleus-permission-bid` header with no verification, and `trust_tier`
-//! selects a discount down to 0.1×. It is reached only when no request-borne
-//! certificate is present, and other gates still apply — but the screen itself is
-//! self-scored.
+//! checkout counter. The live posted-price path used to have exactly that shape:
+//! `nucleus-tool-proxy` parsed `value_estimate` **and `trust_tier`** out of a
+//! client-supplied `x-nucleus-permission-bid` header with no verification, and
+//! `trust_tier` selected a discount down to 0.1× — a self-scored screen. That
+//! path is gone (#2526): `nucleus_permission_market::PermissionBid` is now built
+//! only from a `VerifiedPermissions`, the same way [`CertifiedCeiling`] is.
 //!
 //! So the ceiling is a type, not a check. [`CertifiedCeiling`] has a private
 //! field and, outside this crate's own tests, exactly one public constructor:
@@ -25,8 +24,8 @@
 //! [`BidError::AboveCeiling`], never a clamp: silently lowering a bid would make
 //! the mechanism price something the principal did not ask for.
 
+use crate::good::ScarceGood;
 use nucleus_econ_types::{AgentId, MicroUsd};
-use nucleus_permission_market::PermissionDimension;
 
 /// A spend ceiling that came from a verified delegation certificate.
 ///
@@ -108,7 +107,7 @@ pub enum BidError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedBid {
     bidder: AgentId,
-    dimension: PermissionDimension,
+    dimension: ScarceGood,
     value: MicroUsd,
 }
 
@@ -121,7 +120,7 @@ impl SignedBid {
     /// [`BidError::ZeroValue`] for a zero bid.
     pub fn new(
         bidder: AgentId,
-        dimension: PermissionDimension,
+        dimension: ScarceGood,
         requested: MicroUsd,
         ceiling: CertifiedCeiling,
     ) -> Result<Self, BidError> {
@@ -149,8 +148,8 @@ impl SignedBid {
 
     /// Which scarce authority was bid for.
     #[must_use]
-    pub fn dimension(&self) -> PermissionDimension {
-        self.dimension
+    pub fn dimension(&self) -> &ScarceGood {
+        &self.dimension
     }
 
     /// The bid value, in micro-USD.
@@ -164,11 +163,7 @@ impl SignedBid {
     /// panic-free declaration, and `pub(crate)` behind a non-default feature so
     /// no production dependency can reach it.
     #[cfg(feature = "test-support")]
-    pub(crate) fn fixture(
-        bidder: AgentId,
-        dimension: PermissionDimension,
-        value: MicroUsd,
-    ) -> Self {
+    pub(crate) fn fixture(bidder: AgentId, dimension: ScarceGood, value: MicroUsd) -> Self {
         SignedBid {
             bidder,
             dimension,
@@ -181,10 +176,17 @@ impl SignedBid {
 mod tests {
     use super::*;
 
+    /// The good these tests contend for. A function rather than a `const`
+    /// because a good owns its label; `PermissionDimension` is the source so
+    /// the tests exercise the conversion the in-pod path uses.
+    fn egress() -> ScarceGood {
+        ScarceGood::from(nucleus_permission_market::PermissionDimension::NetworkEgress)
+    }
+
     fn bid(requested: u64, ceiling: u64) -> Result<SignedBid, BidError> {
         SignedBid::new(
             AgentId::new("spiffe://example/ns/a/sa/b"),
-            PermissionDimension::NetworkEgress,
+            egress(),
             MicroUsd::new(requested),
             CertifiedCeiling::for_test(ceiling),
         )
