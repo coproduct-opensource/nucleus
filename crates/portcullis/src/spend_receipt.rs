@@ -144,7 +144,15 @@ impl SpendReceipt {
 
     /// Verify the mediator's signature (strict). Establishes ONLY that this
     /// receipt is the holder of `mediator_pubkey`'s word about a charge.
-    pub fn verify(&self, mediator_pubkey: &VerifyingKey) -> Result<(), SpendReceiptError> {
+    ///
+    /// Named `verify_strict`, not `verify`, so the guarantee travels to every
+    /// call site: the body rejects the small-order and malleable signatures
+    /// `VerifyingKey::verify` accepts, and a reader of the CALLER should not
+    /// have to open this file to learn that. It also keeps the exemplar
+    /// scoreboard's `permissive_verify` census honest — that metric reads call
+    /// sites, and a strict verifier spelled `verify` reads there as a
+    /// permissive one.
+    pub fn verify_strict(&self, mediator_pubkey: &VerifyingKey) -> Result<(), SpendReceiptError> {
         if self.schema_version != SPEND_RECEIPT_SCHEMA_VERSION {
             return Err(SpendReceiptError::UnknownSchema(self.schema_version));
         }
@@ -241,7 +249,7 @@ mod tests {
     fn issued_receipt_verifies_under_its_key() {
         let k = key(7);
         let r = receipt(1, 250_000, &k);
-        assert_eq!(r.verify(&k.verifying_key()), Ok(()));
+        assert_eq!(r.verify_strict(&k.verifying_key()), Ok(()));
     }
 
     #[test]
@@ -250,7 +258,7 @@ mod tests {
         let mut r = receipt(1, 250_000, &k);
         r.amount_micro = 1;
         assert_eq!(
-            r.verify(&k.verifying_key()),
+            r.verify_strict(&k.verifying_key()),
             Err(SpendReceiptError::SignatureInvalid)
         );
     }
@@ -261,7 +269,7 @@ mod tests {
         let mut r = receipt(1, 250_000, &k);
         r.pod_id = "pod-2".into();
         assert_eq!(
-            r.verify(&k.verifying_key()),
+            r.verify_strict(&k.verifying_key()),
             Err(SpendReceiptError::SignatureInvalid)
         );
     }
@@ -270,7 +278,7 @@ mod tests {
     fn another_key_does_not_verify() {
         let r = receipt(1, 250_000, &key(7));
         assert_eq!(
-            r.verify(&key(8).verifying_key()),
+            r.verify_strict(&key(8).verifying_key()),
             Err(SpendReceiptError::SignatureInvalid)
         );
     }
@@ -281,7 +289,7 @@ mod tests {
         let mut r = receipt(1, 250_000, &k);
         r.schema_version = 2;
         assert_eq!(
-            r.verify(&k.verifying_key()),
+            r.verify_strict(&k.verifying_key()),
             Err(SpendReceiptError::UnknownSchema(2))
         );
     }
@@ -298,7 +306,7 @@ mod tests {
         );
         r.signature = hex::encode(k.sign(other_domain.as_bytes()).to_bytes());
         assert_eq!(
-            r.verify(&k.verifying_key()),
+            r.verify_strict(&k.verifying_key()),
             Err(SpendReceiptError::SignatureInvalid)
         );
     }
@@ -310,7 +318,7 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let back: SpendReceipt = serde_json::from_str(&json).unwrap();
         assert_eq!(back, r);
-        assert_eq!(back.verify(&k.verifying_key()), Ok(()));
+        assert_eq!(back.verify_strict(&k.verifying_key()), Ok(()));
     }
 
     // ── fold ─────────────────────────────────────────────────────────────

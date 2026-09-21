@@ -90,7 +90,9 @@ pub fn check(pod_dir: &Path, pod_id: &str, line: &str) -> Result<SpendReceipt, S
         return Err(SpendRejection::WrongPod);
     }
     let key = anchor_key(pod_dir)?;
-    receipt.verify(&key).map_err(SpendRejection::Signature)?;
+    receipt
+        .verify_strict(&key)
+        .map_err(SpendRejection::Signature)?;
     Ok(receipt)
 }
 
