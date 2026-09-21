@@ -48,6 +48,29 @@ set -uo pipefail
 # This is a strictly weaker check run early, not a replacement: it says the
 # perturbation still bites, never that the gate reds on it.
 VACUITY_ONLY=0
+
+# `--baseline-only`: run each probed gate ONCE, on the tree as it stands, and perturb
+# nothing.
+#
+# This is the other cheap half. `--vacuity-only` establishes that each perturbation still
+# bites; this establishes that each gate is GREEN before one is applied -- the `baseline_rc`
+# check below, lifted out of the loop that costs an hour.
+#
+# It is not a nicety. A gate that is already red makes the full probe report
+# "already red BEFORE any perturbation" and FAIL, so a red in ANY gate here -- including
+# gates that are advisory on their own -- turns the required `Gates must fail on their own
+# subject` red. Measured 2026-09-20 on #2981: `check-line-ratchet.sh` was over its ceiling,
+# which is advisory, and the required context failed for it thirty-five minutes into CI.
+# The line ratchet takes 0.8 s to run.
+#
+# Because it perturbs nothing it writes nothing, so unlike the other two modes it is safe
+# over a DIRTY tree -- which is the state a developer is actually in before a push, and the
+# reason this can live in the fast gauntlet at all.
+BASELINE_ONLY=0
+if [[ "${1:-}" == "--baseline-only" ]]; then
+    BASELINE_ONLY=1
+    shift
+fi
 if [[ "${1:-}" == "--vacuity-only" ]]; then
     VACUITY_ONLY=1
     shift
@@ -57,12 +80,24 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 # A dirty tree cannot be safely perturbed: the restore step would have to guess
 # what was yours. Refuse rather than risk it — `git checkout -- <file>` has
 # destroyed uncommitted work in this repo before.
-if [[ -n "$(git status --porcelain)" ]]; then
+if [[ "$BASELINE_ONLY" != "1" ]] && [[ -n "$(git status --porcelain)" ]]; then
     echo "ERROR: the working tree is dirty. This script edits real files and"
     echo "restores them from a copy; running it over uncommitted work risks that"
     echo "work. Commit or stash first."
     exit 1
 fi
+
+# Gates probed already, as "<gate>|<flags>". Only `--baseline-only` consults it: the
+# baseline is a property of the GATE, so running it once per perturbation would pay for
+# the same answer up to four times (33 probe calls name 28 distinct invocations). In the
+# full run each perturbation is its own question and no deduplication is possible.
+BASELINE_SEEN=""
+# Probes whose family has no baseline check, so `--baseline-only` has nothing to run for
+# them. Counted and REPORTED rather than quietly passed: `probe_xtask_flagged`,
+# `probe_xtask_partial` and `probe_xtask_generated` never established a baseline even in
+# the full run, and a mode that skipped them silently would claim a clean sheet over
+# probes it never looked at.
+BASELINE_NO_CHECK=0
 
 RESTORE_FROM=""
 RESTORE_TO=""
@@ -89,6 +124,13 @@ covered=0
 probe() {
     local gate="$1" ci_flags="$2" target="$3" desc="$4"
     shift 4
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<$gate|$ci_flags>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<$gate|$ci_flags>"
+    fi
 
     # The invocation must match the workflows, or this script is testing
     # something CI does not run.
@@ -150,6 +192,14 @@ probe() {
         echo "        this tree for its own reasons, so nothing it says under perturbation"
         echo "        would be evidence. Fix that red first, then this probe means something."
         failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        # Green on this tree, which is all this mode claims. Say so per gate so the
+        # gauntlet's output still names what ran.
+        echo "  ok    $gate${ci_flags:+ $ci_flags}"
+        covered=$((covered + 1))
         return
     fi
 
@@ -236,6 +286,13 @@ probe() {
 probe_xtask_flagged() {
     local sub="$1" flags="$2" target="$3" desc="$4"
     shift 4
+
+    # No baseline check in this family (see BASELINE_NO_CHECK). Nothing to run, and
+    # perturbing would contradict the mode.
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        BASELINE_NO_CHECK=$((BASELINE_NO_CHECK + 1))
+        return
+    fi
 
     local invocations
     invocations="$(grep -rhE "xtask -- ${sub}" .github/workflows/*.yml 2>/dev/null \
@@ -333,6 +390,13 @@ probe_xtask_partial() {
     local sub="$1" ci_flags="$2" marker="$3" target="$4" desc="$5"
     shift 5
 
+    # No baseline check in this family (see BASELINE_NO_CHECK). Nothing to run, and
+    # perturbing would contradict the mode.
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        BASELINE_NO_CHECK=$((BASELINE_NO_CHECK + 1))
+        return
+    fi
+
     local invocations
     invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
         | grep -vE '^[[:space:]]*#' \
@@ -422,6 +486,13 @@ probe_xtask() {
     local sub="$1" target="$2" desc="$3"
     shift 3
 
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<xtask $sub>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<xtask $sub>"
+    fi
+
     local invocations
     # Backslash continuations joined FIRST. A workflow may spell the invocation over
     # several lines, and a line-at-a-time scan then reports the flags CI uses as `\`.
@@ -477,6 +548,12 @@ probe_xtask() {
         echo "        this tree for its own reasons, so nothing it says under perturbation"
         echo "        would be evidence. Fix that red first, then this probe means something."
         failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "  ok    xtask $sub"
+        covered=$((covered + 1))
         return
     fi
 
@@ -540,6 +617,10 @@ probe_xtask() {
 # probe_xtask_generated <sub> <target> <desc> <ci_flags> <generated> <local_path> <gen_fn> <perturb_fn>
 probe_xtask_generated() {
     local sub="$1" target="$2" desc="$3" ci_flags="$4" generated="$5" local_path="$6" gen_fn="$7" perturb_fn="$8"
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        BASELINE_NO_CHECK=$((BASELINE_NO_CHECK + 1))
+        return
+    fi
     # An OPTIONAL second generated input, for a gate CI feeds more than one.
     #
     # `policy-gate` needs two: a base manifest and a changed-files list, both written by
@@ -1920,12 +2001,29 @@ fi
 
 echo
 if [[ "$failures" -gt 0 ]]; then
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "FAILED: $failures gate(s) do not pass on this tree. Until they do, the full probe"
+        echo "        cannot say anything about them -- and because it FAILS on a gate that is"
+        echo "        already red, a red here is a red on 'Gates must fail on their own subject',"
+        echo "        whether or not the gate is required on its own."
+        exit 1
+    fi
     if [[ "$VACUITY_ONLY" == "1" ]]; then
         echo "FAILED: $failures perturbation(s) change nothing. A probe that cannot bite tests nothing."
     else
         echo "FAILED: $failures problem(s). A gate that cannot fail is not a gate."
     fi
     exit 1
+fi
+if [[ "$BASELINE_ONLY" == "1" ]]; then
+    # Same discipline as the vacuity message: claim the half that was established.
+    echo "OK: all $covered probed gate(s) pass on this tree. NOTHING WAS PERTURBED:"
+    echo "    this says they are green, not that they red on their own subject."
+    if [[ "$BASELINE_NO_CHECK" -gt 0 ]]; then
+        echo "    $BASELINE_NO_CHECK probe(s) are in a family that establishes no baseline even in the"
+        echo "    full run, so this mode ran nothing for them and claims nothing about them."
+    fi
+    exit 0
 fi
 if [[ "$VACUITY_ONLY" == "1" ]]; then
     # Say exactly what was established and no more. This mode ran no gate, so it has
