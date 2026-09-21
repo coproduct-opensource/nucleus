@@ -1,8 +1,25 @@
 {
   "scope": {
     "include": [
-      "**",
-      "scripts/**"
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
+      "clippy.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**",
+      "examples/**"
     ],
     "exclude": [],
     "external": [],
@@ -19,8 +36,25 @@
   "cap": {
     "net": "none",
     "fs_read": [
-      "**",
-      "scripts/**"
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
+      "clippy.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**",
+      "examples/**"
     ],
     "fs_write": [
       "target/**",
@@ -38,8 +72,25 @@
     {
       "program": "scripts/gatehouse-verifier-sdk.sh",
       "reads": [
-        "**",
-        "scripts/**"
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        "clippy.toml",
+        "crates/**",
+        "tests/**",
+        "benchmarks/**",
+        "scripts/**",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**",
+        "examples/**"
       ],
       "writes": [
         "target/**",
@@ -55,11 +106,30 @@
         "--offline",
         "--locked",
         "--all-features",
-        "--no-fail-fast"
+        "--no-fail-fast",
+        "-E",
+        "not (package(xtask) | binary(olog) | binary(goal_corpus))"
       ],
       "reads": [
-        "**",
-        "scripts/**"
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        "clippy.toml",
+        "crates/**",
+        "tests/**",
+        "benchmarks/**",
+        "scripts/**",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**",
+        "examples/**"
       ],
       "writes": [
         "target/**",
