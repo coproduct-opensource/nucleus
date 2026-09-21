@@ -79,13 +79,36 @@ fn pins<'a>(image: &'a ImageSpec, jail: Option<&JailLayout>) -> Vec<Pinned<'a>> 
     out
 }
 
-/// Measure every pinned artifact and refuse on any mismatch.
+/// What `verify` actually read, so the launch attestation can report the bytes that were
+/// CHECKED rather than re-deriving them from the same file a moment later.
+///
+/// Only a pinned artifact appears here. An unpinned one was never read, so there is nothing
+/// honest to report and the attestation must hash it itself -- which is the point: `None` means
+/// NOT MEASURED, never "assume it is fine".
+#[derive(Debug, Default, Clone, Copy)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) struct Measured {
+    pub kernel: Option<nucleus_identity::attestation::Hash256>,
+    pub rootfs: Option<nucleus_identity::attestation::Hash256>,
+}
+
+/// Measure every pinned artifact, refuse on any mismatch, and return what was read.
 ///
 /// Uses the same `measure_artifact` the launch attestation uses, so the digest a spec pins, the
 /// digest an attestation reports, and the digest a posture claim is admitted against are one
 /// function's output and cannot drift apart.
+///
+/// Returning the measurement is what closes the drift for real. Before, the attestation hashed
+/// the same two files a second time, so the certificate reported a SEPARATE READ from the one
+/// held to the pin -- two answers about one file with a window between them. Now the pinned
+/// artifacts are read exactly once, in the jail, after placement, and the certificate carries
+/// those bytes.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) async fn verify(image: &ImageSpec, jail: Option<&JailLayout>) -> Result<(), String> {
+pub(crate) async fn verify(
+    image: &ImageSpec,
+    jail: Option<&JailLayout>,
+) -> Result<Measured, String> {
+    let mut measured_out = Measured::default();
     for p in pins(image, jail) {
         let measured = nucleus_identity::attestation::measure_artifact(&p.path)
             .await
@@ -100,8 +123,16 @@ pub(crate) async fn verify(image: &ImageSpec, jail: Option<&JailLayout>) -> Resu
                 p.expected.as_str()
             ));
         }
+        // Only AFTER the pin agrees. A value that was refused must never be reportable, even
+        // transiently: the whole point of returning this is that the certificate carries bytes
+        // something checked.
+        match p.what {
+            "kernel" => measured_out.kernel = Some(measured),
+            "rootfs" => measured_out.rootfs = Some(measured),
+            _ => {}
+        }
     }
-    Ok(())
+    Ok(measured_out)
 }
 
 #[cfg(test)]
