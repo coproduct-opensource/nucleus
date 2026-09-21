@@ -24,8 +24,8 @@
 //! [`BidError::AboveCeiling`], never a clamp: silently lowering a bid would make
 //! the mechanism price something the principal did not ask for.
 
+use crate::good::ScarceGood;
 use nucleus_econ_types::{AgentId, MicroUsd};
-use nucleus_permission_market::PermissionDimension;
 
 /// A spend ceiling that came from a verified delegation certificate.
 ///
@@ -107,7 +107,7 @@ pub enum BidError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedBid {
     bidder: AgentId,
-    dimension: PermissionDimension,
+    dimension: ScarceGood,
     value: MicroUsd,
 }
 
@@ -120,7 +120,7 @@ impl SignedBid {
     /// [`BidError::ZeroValue`] for a zero bid.
     pub fn new(
         bidder: AgentId,
-        dimension: PermissionDimension,
+        dimension: ScarceGood,
         requested: MicroUsd,
         ceiling: CertifiedCeiling,
     ) -> Result<Self, BidError> {
@@ -148,8 +148,8 @@ impl SignedBid {
 
     /// Which scarce authority was bid for.
     #[must_use]
-    pub fn dimension(&self) -> PermissionDimension {
-        self.dimension
+    pub fn dimension(&self) -> &ScarceGood {
+        &self.dimension
     }
 
     /// The bid value, in micro-USD.
@@ -163,11 +163,7 @@ impl SignedBid {
     /// panic-free declaration, and `pub(crate)` behind a non-default feature so
     /// no production dependency can reach it.
     #[cfg(feature = "test-support")]
-    pub(crate) fn fixture(
-        bidder: AgentId,
-        dimension: PermissionDimension,
-        value: MicroUsd,
-    ) -> Self {
+    pub(crate) fn fixture(bidder: AgentId, dimension: ScarceGood, value: MicroUsd) -> Self {
         SignedBid {
             bidder,
             dimension,
@@ -180,10 +176,17 @@ impl SignedBid {
 mod tests {
     use super::*;
 
+    /// The good these tests contend for. A function rather than a `const`
+    /// because a good owns its label; `PermissionDimension` is the source so
+    /// the tests exercise the conversion the in-pod path uses.
+    fn egress() -> ScarceGood {
+        ScarceGood::from(nucleus_permission_market::PermissionDimension::NetworkEgress)
+    }
+
     fn bid(requested: u64, ceiling: u64) -> Result<SignedBid, BidError> {
         SignedBid::new(
             AgentId::new("spiffe://example/ns/a/sa/b"),
-            PermissionDimension::NetworkEgress,
+            egress(),
             MicroUsd::new(requested),
             CertifiedCeiling::for_test(ceiling),
         )

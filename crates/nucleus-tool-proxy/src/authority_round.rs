@@ -249,7 +249,9 @@ pub(crate) async fn join_if_auctioned(
     // here rewards misreporting.
     let value = bid_value(headers).unwrap_or_else(|| ceiling.get());
     let bid =
-        SignedBid::new(agent, dimension, value, ceiling).map_err(|e| ApiError::KernelDenied {
+        // The proxy's scarce good IS a permission dimension; the conversion is
+        // the boundary between this pod's vocabulary and the mechanism's.
+        SignedBid::new(agent, dimension.into(), value, ceiling).map_err(|e| ApiError::KernelDenied {
             message: format!("authority bid refused: {e}"),
             code: None,
         })?;

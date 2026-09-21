@@ -162,20 +162,26 @@ impl Clearing for VcgClearing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The good these tests contend for. A function rather than a `const`
+    /// because a good owns its label; `PermissionDimension` is the source so
+    /// the tests exercise the conversion the in-pod path uses.
+    fn egress() -> ScarceGood {
+        ScarceGood::from(nucleus_permission_market::PermissionDimension::NetworkEgress)
+    }
+
     use crate::bid::{CertifiedCeiling, SignedBid};
+    use crate::good::ScarceGood;
     use nucleus_econ_types::AuctionId;
-    use nucleus_permission_market::PermissionDimension;
     use nucleus_recompute::{RecomputeOutcome, verify_receipt};
 
-    const EGRESS: PermissionDimension = PermissionDimension::NetworkEgress;
-
     fn round_of(values: &[(&str, u64)]) -> Round {
-        let mut r = Round::open(AuctionId::new("r1"), EGRESS);
+        let mut r = Round::open(AuctionId::new("r1"), egress());
         for (agent, v) in values {
             r.submit(
                 SignedBid::new(
                     AgentId::new(*agent),
-                    EGRESS,
+                    egress(),
                     MicroUsd::new(*v),
                     CertifiedCeiling::for_test(1_000_000),
                 )
@@ -246,7 +252,7 @@ mod tests {
 
     #[test]
     fn an_empty_round_clears_to_nothing() {
-        let r = Round::open(AuctionId::new("r1"), EGRESS);
+        let r = Round::open(AuctionId::new("r1"), egress());
         assert_eq!(VcgClearing.clear(&r).expect("clears"), RoundOutcome::NoBids);
     }
 }
