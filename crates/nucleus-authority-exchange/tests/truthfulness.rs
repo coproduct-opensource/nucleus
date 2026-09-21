@@ -146,7 +146,7 @@ fn the_kernel_charges_the_lean_threshold_at_every_slot_count() {
         let mut round = Round::open_with_slots(
             AuctionId::new(format!("r-{slots}")),
             EGRESS,
-            NonZeroU32::new(slots as u32).expect("slots ≥ 1"),
+            NonZeroU32::new(u32::try_from(slots).expect("slot count fits u32")).expect("slots ≥ 1"),
         );
         for (i, v) in values.iter().enumerate() {
             round
@@ -222,7 +222,7 @@ fn utility_at_slots(slots: usize, report: u64, others: &[u64], true_value: u64) 
     let mut round = Round::open_with_slots(
         AuctionId::new("r"),
         EGRESS,
-        NonZeroU32::new(slots as u32).expect("slots ≥ 1"),
+        NonZeroU32::new(u32::try_from(slots).expect("slot count fits u32")).expect("slots ≥ 1"),
     );
     round.submit(bid("me", report, EGRESS)).expect("admitted");
     for (i, v) in others.iter().enumerate() {
