@@ -34,7 +34,7 @@ jobs:
       - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
           languages: actions
-      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
 
   # The runtime itself. Build-free extraction (no cargo build), so it costs extraction time
   # only; it is what makes CodeQL a SAST tool for this repo rather than a linter for its CI
@@ -59,4 +59,4 @@ jobs:
         with:
           languages: rust
           build-mode: none
-      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
