@@ -35,6 +35,26 @@ fn calibrated(n: usize) -> Vec<Prediction> {
         .collect()
 }
 
+/// Render a micro-unit integer to four decimal places WITHOUT f64.
+///
+/// This crate's claim is that the measurement is integer-exact, so a float in
+/// its own printer is exactly the cast the ratchet is right to count: the
+/// numbers it prints are the numbers the receipt carries, and a rounding step
+/// on the way to the terminal is a second opinion nobody asked for.
+fn four_dp(micro: u64) -> String {
+    // Round to nearest rather than truncate. Truncating renders a floor one
+    // digit LOW, which understates the region where no observed ECE can
+    // establish calibration -- the wrong direction for the one number here
+    // whose job is to say "could not look".
+    let step = MICRO / 10_000;
+    let ten_thousandths = (micro + step / 2) / step;
+    format!(
+        "{}.{:04}",
+        ten_thousandths / 10_000,
+        ten_thousandths % 10_000
+    )
+}
+
 fn main() {
     let tolerance = 20_000; // ECE < 0.02
     for n in [60usize, 5000] {
@@ -47,12 +67,12 @@ fn main() {
         };
         let a = claim.claimed;
         println!("n = {n}");
-        println!("  ECE observed   {:.4}", a.ece_micro as f64 / MICRO as f64);
+        println!("  ECE observed   {}", four_dp(a.ece_micro));
         println!(
-            "  noise floor    {:.4}  (95th pct of a perfect model at this n)",
-            a.floor_micro as f64 / MICRO as f64
+            "  noise floor    {}  (95th pct of a perfect model at this n)",
+            four_dp(a.floor_micro)
         );
-        println!("  tolerance      {:.4}", tolerance as f64 / MICRO as f64);
+        println!("  tolerance      {}", four_dp(tolerance));
         println!("  verdict        {}", a.verdict.tag());
         println!("  gate on it?    {}", a.verdict.supports_gating());
         println!("  recomputes?    {:?}", verify(&claim));

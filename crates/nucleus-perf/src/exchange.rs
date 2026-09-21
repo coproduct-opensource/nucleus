@@ -229,7 +229,7 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
     );
     println!("  rounds cleared        {rounds}");
     println!(
-        "  contested             {} ({:.1}% — below this the auction is overhead)",
+        "  contested             {} ({}% — below this the auction is overhead)",
         contested.len(),
         pct(contested.len(), rounds)
     );
@@ -254,9 +254,9 @@ fn report(observed: &[Observed], args: &Args) -> Result<()> {
     println!("  welfare (FIFO)        {fifo_welfare} µUSD");
     if fifo_welfare > 0 {
         println!(
-            "  FIFO leaves           {} µUSD on the table ({:.1}%)",
+            "  FIFO leaves           {} µUSD on the table ({}%)",
             vcg_welfare.saturating_sub(fifo_welfare),
-            100.0 * (vcg_welfare.saturating_sub(fifo_welfare)) as f64 / vcg_welfare as f64
+            permille(vcg_welfare.saturating_sub(fifo_welfare), vcg_welfare)
         );
     }
 
@@ -342,12 +342,27 @@ fn standing(observed: &[Observed]) -> Result<()> {
     Ok(())
 }
 
-fn pct(n: usize, d: usize) -> f64 {
+/// A percentage to one decimal place, computed in integers.
+///
+/// The casts this replaces were `usize -> f64` on a ratio whose numerator and
+/// denominator are both counts: exact in u64, and a float only to be printed.
+fn pct(n: usize, d: usize) -> String {
     if d == 0 {
-        0.0
-    } else {
-        100.0 * n as f64 / d as f64
+        return "0.0".to_string();
     }
+    // usize throughout: these are round counts, nowhere near overflowing when
+    // multiplied by a thousand, so no conversion is needed at all.
+    let tenths = (n * 1_000) / d;
+    format!("{}.{}", tenths / 10, tenths % 10)
+}
+
+/// The same, for two welfare quantities (µUSD, u128) rather than two counts.
+fn permille(n: u128, d: u128) -> String {
+    if d == 0 {
+        return "0.0".to_string();
+    }
+    let tenths = (n * 1_000) / d;
+    format!("{}.{}", tenths / 10, tenths % 10)
 }
 
 fn pctl(sorted: &[u64], p: usize) -> u64 {
@@ -406,7 +421,10 @@ mod tests {
             observed.push(Observed {
                 value: 1,
                 won_at,
-                seq: seq as u32,
+                // `enumerate` gives a usize; the count it indexes is a u32
+                // argument, so this cannot truncate -- and saying so in a
+                // conversion is cheaper than a cast that could.
+                seq: u32::try_from(seq).expect("bid index fits in u32"),
                 round: None,
                 receipt,
             });
