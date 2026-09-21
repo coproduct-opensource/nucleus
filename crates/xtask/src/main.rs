@@ -142,6 +142,10 @@ enum Command {
     /// crate in the resolved graph, the decision functions in run_gate.rs and all of
     /// pod_authority.rs name none, and the one permitted meet is still in cert_bridge.rs.
     EconBoundary,
+    /// ADR 0008: nucleus depends on nothing private. Refuses any git dependency, alternate
+    /// registry, or path dependency escaping the repository — in the resolved graph per
+    /// `cargo metadata`, and in every manifest's own declarations including the satellites.
+    Visibility,
     /// A crate outside the workspace is reached by no `--workspace` command. Decided from
     /// `cargo metadata` and Cargo.toml's own `exclude` list.
     WorkspaceMembers,
@@ -422,6 +426,7 @@ mod stress_zoo;
 mod suppress;
 mod tot;
 mod typed;
+mod visibility;
 mod workspace_members;
 
 fn main() -> Result<()> {
@@ -467,6 +472,7 @@ fn main() -> Result<()> {
             action_inputs::check(&std::env::current_dir()?, network)
         }
         Command::EconBoundary => econ_boundary::check(&std::env::current_dir()?),
+        Command::Visibility => visibility::check(&std::env::current_dir()?),
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::Grammar => match command_grammar::run(&std::env::current_dir()?)? {
             0 => Ok(()),
