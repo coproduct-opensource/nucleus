@@ -68,7 +68,6 @@ fn pin(text: &str, key: &str) -> Option<usize> {
     text[at..]
         .lines()
         .next()?
-        .trim()
         .split_whitespace()
         .next()?
         .parse()
