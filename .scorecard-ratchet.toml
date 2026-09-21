@@ -177,8 +177,17 @@ population_floor = 278
 # visibility gate learned from a nested worktree the same day. A crate that
 # decides whether a probability may be trusted is exactly what this family
 # counts.
-floor_bp = 3255
-population_floor = 86
+# 2026-09-21 (main merged in): nucleus-blast-radius arrives from #2983, also
+# declaring all seven by workspace inheritance; 29/87. Third crate in a row to
+# RAISE this ratio on arrival, so the gate refused the floor for having slack
+# under it rather than for being overshot. Raised to the measured value.
+#
+# Worth recording as a cost rather than a complaint: a floor pinned AT the
+# measurement means every branch that adds a crate must move this line, and two
+# branches doing it in parallel conflict here. That is the price of a floor with
+# no slack, and no-slack is the property that makes it a gate.
+floor_bp = 3333
+population_floor = 87
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

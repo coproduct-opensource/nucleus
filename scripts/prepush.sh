@@ -37,7 +37,7 @@ for s in check-declassify-governor-keys-sealed check-dep-ceiling check-extracted
          check-failclosed-verifiers check-ingest-hashed check-mediation check-no-hmac-auth \
          check-north-star-ledger check-sandbox-trusted-base check-sealed-home \
          check-test-helpers-not-in-production check-verify-strict check-wasm-closure \
-         check-kani-divergence check-kani-proof-count; do
+         check-kani-divergence check-kani-proof-count check-gate-defs-match-plan; do
     [ -x "scripts/$s.sh" ] || continue
     case $s in
         check-kani-proof-count) run "$s --strict" bash "scripts/$s.sh" --strict ;;

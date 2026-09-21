@@ -1054,10 +1054,42 @@ mod handler_tests {
         ));
 
         handle.cleanup_after_exit().await;
+
+        // The direct observable, and the defect's own shape: cleanup TOOK the proxy and awaited
+        // its shutdown. `LocalPod::teardown` does `.take()` then `SignedProxy::shutdown().await`,
+        // so an empty slot means both happened. This cannot race with anything.
+        let crate::DriverState::Local(local) = &handle.driver_state else {
+            unreachable!("the handle above was built with a Local driver")
+        };
         assert!(
-            tokio::net::TcpStream::connect(listening).await.is_err(),
-            "the signed proxy of a pod that exited on its own is still listening"
+            local.signed_proxy.lock().await.is_none(),
+            "cleanup_after_exit left the signed proxy attached to the pod"
         );
+
+        // And the end-to-end one: it stops answering. POLLED, not sampled once, because
+        // "connect succeeds" is NOT evidence that a listener is alive.
+        //
+        // Measured 2026-09-20 on macOS, running this crate's tests with 16 threads: for 10-20 ms
+        // after the listener is dropped, a connect to its port still completes. Sometimes an
+        // accepted connection is still draining, and an immediate `TcpListener::bind` of the same
+        // address reports AddrInUse; sometimes nothing holds it at all and that same bind
+        // SUCCEEDS while connect keeps completing. The second case is the giveaway -- the port is
+        // free, so no proxy is listening, and the assertion was reading the loopback stack rather
+        // than this code. It reproduced in isolation from `SignedProxy::shutdown` alone, with no
+        // pod machinery involved.
+        //
+        // Polling loses none of the test's force. The bug it guards is a proxy that listened for
+        // the node's whole lifetime: that one never refuses, so it still fails, just ten seconds
+        // later. Sampling once cost five open PRs a red on `Code Coverage (llvm-cov)`, whose
+        // instrumentation is slow enough to lose this race about one run in six.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while tokio::net::TcpStream::connect(listening).await.is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the signed proxy of a pod that exited on its own is still listening"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     async fn cancel_all(st: &NodeState) {
