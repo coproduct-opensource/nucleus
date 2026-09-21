@@ -28,6 +28,17 @@
 //! from wasting tokens on tool definitions it cannot use); the hook is the
 //! boundary. Both launch sites are pinned to install it.
 //!
+//! # The hook is only the boundary if the subject cannot register one too
+//!
+//! Both launch sites run the agent CLI on the HOST, in the working directory
+//! being examined, and the CLI's own defaults load configuration FROM that
+//! directory: `.claude/settings.json`, the hooks registered there, `CLAUDE.md`,
+//! and `.mcp.json` servers. Installing nucleus's hook does not displace those —
+//! it is merged alongside them. A repository could therefore supply its own
+//! tools and its own instructions to the agent sent to examine it, unmediated,
+//! with approval already bypassed. [`confine_to_nucleus_settings`] closes that,
+//! and every launch site is pinned to call it.
+//!
 //! # Interop note
 //!
 //! The hook event shape (`tool_name` on stdin, exit 2 = block) and the
@@ -39,6 +50,7 @@
 use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Environment variable carrying the vetted allowlist (comma-separated tool
 /// names) from the launch site to the hook. Set on the agent CLI's process;
@@ -107,19 +119,70 @@ pub fn tool_name_from_event(event: &str) -> Option<String> {
     v.get("tool_name")?.as_str().map(str::to_string)
 }
 
-/// The settings document that registers this binary as the `PreToolUse`
-/// hook for every tool (no matcher = all tools).
-pub fn hook_settings(self_exe: &Path) -> serde_json::Value {
+/// The implicit setting scopes the wrapped agent CLI may load: NONE.
+///
+/// Empty rather than `user`, because a boundary that reads ambient host state
+/// is not a boundary (ADR 0007, family H): a `PreToolUse` hook in
+/// `~/.claude/settings.json` is exactly as unmediated as one in the
+/// repository's. The only settings that configure a confined agent are the
+/// ones nucleus hands it on the command line, which `--setting-sources` does
+/// not gate.
+pub const SETTING_SOURCES: &str = "";
+
+/// Deny the WORKING DIRECTORY any say in how the confined agent is configured.
+///
+/// [`crate::run`] and [`crate::shell`] launch the agent CLI on the HOST, in the
+/// directory being worked on, with interactive approval bypassed. Left to its
+/// defaults the CLI ALSO loads that directory's `.claude/settings.json`, the
+/// `PreToolUse` hooks registered there, its `CLAUDE.md`, and its `.mcp.json`
+/// servers. So the repository under examination could install hooks and MCP
+/// servers of its own alongside the ones nucleus installed to mediate it: the
+/// measured thing editing its own measurement, and an unmediated tool reachable
+/// with approval already bypassed.
+///
+/// Every launch site must call this. Verified against the wrapped CLI at
+/// 2.1.278, by running it in a directory holding a `.claude/settings.json`
+/// hook: without these flags that hook RUNS; with them it does not, while the
+/// `--settings` document nucleus passes still does.
+///
+/// `--strict-mcp-config` is meaningful even where no `--mcp-config` is passed:
+/// it then resolves to zero MCP servers rather than to the directory's own.
+pub fn confine_to_nucleus_settings(cmd: &mut Command) -> &mut Command {
+    cmd.arg("--setting-sources")
+        .arg(SETTING_SOURCES)
+        .arg("--strict-mcp-config")
+}
+
+/// The settings document that registers `exe` as the `PreToolUse` hook for
+/// every tool (no matcher = all tools), with `args` appended to the command.
+///
+/// The ONE place that knows this shape, because the shape is fail-open: the
+/// nested `hooks` array is load-bearing, and an entry carrying `type` and
+/// `command` at the matcher-group level instead registers NOTHING — no error,
+/// no warning, and every tool call proceeds unhooked. Verified against the
+/// wrapped CLI at 2.1.278. A launch site must not hand-roll this JSON.
+pub fn hook_settings_for_exe(exe: &Path, args: &[&str]) -> serde_json::Value {
+    let mut command = shell_quote(exe);
+    for arg in args {
+        command.push(' ');
+        command.push_str(arg);
+    }
     serde_json::json!({
         "hooks": {
             "PreToolUse": [{
                 "hooks": [{
                     "type": "command",
-                    "command": format!("{} {}", shell_quote(self_exe), HOOK_SUBCOMMAND),
+                    "command": command,
                 }]
             }]
         }
     })
+}
+
+/// The settings document that registers this binary as the `PreToolUse`
+/// hook for every tool (no matcher = all tools).
+pub fn hook_settings(self_exe: &Path) -> serde_json::Value {
+    hook_settings_for_exe(self_exe, &[HOOK_SUBCOMMAND])
 }
 
 /// Write the hook settings into `dir` and return the path to pass as
@@ -277,29 +340,158 @@ mod tests {
         assert_eq!(entry["hooks"][0]["type"], "command");
     }
 
-    /// Structural pin: BOTH launch sites install the hook and hand it the
-    /// allowlist. Mirrors the existing `disallow lists must stay identical`
-    /// regression; a site that drops either line reopens the bypass.
+    const LAUNCH: &str = "Command::new(crate::constants::AGENT_CLI_BIN)";
+
+    /// Every source region that builds one agent-CLI invocation: from the
+    /// `Command::new` that starts it to whatever consumes it.
+    ///
+    /// Scoped per SITE rather than per file on purpose. The previous version of
+    /// this pin asked whether the file mentioned the hook anywhere, which
+    /// `run.rs` satisfied from its second launch site while its first one
+    /// hand-rolled a settings document that registered nothing.
+    fn launch_sites(src: &str) -> Vec<&str> {
+        let mut sites = Vec::new();
+        let mut rest = src;
+        while let Some(start) = rest.find(LAUNCH) {
+            let tail = &rest[start..];
+            let end = [".output()", ".status()", ".spawn("]
+                .iter()
+                .filter_map(|t| tail.find(t).map(|i| i + t.len()))
+                .min()
+                .unwrap_or(tail.len());
+            sites.push(&tail[..end]);
+            rest = &tail[LAUNCH.len()..];
+        }
+        sites
+    }
+
+    fn all_launch_sites() -> Vec<(&'static str, &'static str)> {
+        [
+            ("run.rs", include_str!("run.rs")),
+            ("shell.rs", include_str!("shell.rs")),
+        ]
+        .into_iter()
+        .flat_map(|(name, src)| launch_sites(src).into_iter().map(move |s| (name, s)))
+        .collect()
+    }
+
+    /// Structural pin: EVERY launch site confines the agent to the settings
+    /// nucleus hands it. A site that omits this lets the working directory
+    /// register its own hooks and MCP servers next to the mediating ones.
+    ///
+    /// No site count is asserted, so a fourth launch site is covered the day it
+    /// is written rather than the day someone remembers to update a number.
     #[test]
-    fn both_launch_sites_install_the_hook() {
+    fn every_launch_site_confines_the_agent_to_nucleus_settings() {
+        let sites = all_launch_sites();
+        assert!(
+            !sites.is_empty(),
+            "no launch site found — this pin has gone stale"
+        );
+        for (name, site) in sites {
+            let compact: String = site.split_whitespace().collect();
+            assert!(
+                compact.contains("crate::mediation::confine_to_nucleus_settings(&mutcmd)"),
+                "{name}: a launch site does not confine the agent to nucleus's own \
+                 settings, so the working directory can configure it:\n{site}"
+            );
+            assert!(
+                compact.contains(".arg(\"--settings\")"),
+                "{name}: a launch site installs no settings document:\n{site}"
+            );
+        }
+    }
+
+    /// A site that vets an MCP tool set must hand the SAME set to the hook that
+    /// enforces it. Conditional because the hook-only mode grants no MCP tools
+    /// at all; unconditional, it would read as covering a site it does not.
+    #[test]
+    fn a_site_that_grants_mcp_tools_tells_the_hook_which_ones() {
+        let mut checked = 0;
+        for (name, site) in all_launch_sites() {
+            let compact: String = site.split_whitespace().collect();
+            if !compact.contains(".arg(\"--allowedTools\")") {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                compact.contains(".env(crate::mediation::ALLOWED_TOOLS_ENV,"),
+                "{name}: a launch site auto-approves MCP tools without telling \
+                 the hook which ones, so the hook denies all of them:\n{site}"
+            );
+        }
+        assert!(
+            checked > 0,
+            "no tool-granting launch site found (stale pin)"
+        );
+    }
+
+    /// The fail-open shape has exactly one author.
+    ///
+    /// A matcher-group entry carrying `type`/`command` without the nested
+    /// `hooks` array registers NOTHING — no error, no warning, every tool call
+    /// unhooked. A launch site that writes this JSON itself can reintroduce
+    /// that silently, so the key may appear in this module only.
+    #[test]
+    fn no_launch_site_hand_rolls_the_hook_registration() {
         for (name, src) in [
             ("run.rs", include_str!("run.rs")),
             ("shell.rs", include_str!("shell.rs")),
         ] {
-            let launches = src
-                .matches("Command::new(crate::constants::AGENT_CLI_BIN)")
-                .count();
-            assert!(launches > 0, "{name}: no launch site found (test is stale)");
             assert!(
-                src.contains("mediation::write_hook_settings("),
-                "{name}: launch site does not install the mediation hook"
-            );
-            // rustfmt may split the call; compare without whitespace.
-            let compact: String = src.split_whitespace().collect();
-            assert!(
-                compact.contains(".env(crate::mediation::ALLOWED_TOOLS_ENV,"),
-                "{name}: launch site does not pass the allowlist to the hook"
+                !src.contains("\"PreToolUse\""),
+                "{name}: builds a hook registration itself; call \
+                 mediation::hook_settings_for_exe instead"
             );
         }
+    }
+
+    #[test]
+    fn the_registration_nests_the_hooks_array_and_quotes_the_path() {
+        // The nested array is the load-bearing part: without it the CLI
+        // registers no hook and does not say so.
+        let v = hook_settings_for_exe(Path::new("/opt/nuc leus/hook"), &[]);
+        let group = &v["hooks"]["PreToolUse"][0];
+        assert!(
+            group.get("hooks").is_some(),
+            "the nested hooks array is what registers the hook"
+        );
+        assert!(
+            group.get("command").is_none(),
+            "a command at the matcher-group level registers nothing"
+        );
+        assert_eq!(group["hooks"][0]["type"], "command");
+        assert_eq!(
+            group["hooks"][0]["command"].as_str().unwrap(),
+            "'/opt/nuc leus/hook'",
+            "the path is shell-quoted; the command line is run by a shell"
+        );
+        // And the self-registering form still agrees with it.
+        assert_eq!(
+            hook_settings(Path::new("/opt/nucleus"))["hooks"]["PreToolUse"][0]["hooks"][0]
+                ["command"]
+                .as_str()
+                .unwrap(),
+            "'/opt/nucleus' mediation-hook"
+        );
+    }
+
+    #[test]
+    fn confinement_loads_no_implicit_settings_and_no_foreign_mcp_servers() {
+        let mut cmd = Command::new("agent");
+        confine_to_nucleus_settings(&mut cmd);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec!["--setting-sources", "", "--strict-mcp-config"],
+            "the confined agent reads no settings scope nucleus did not pass"
+        );
+        assert!(
+            SETTING_SOURCES.is_empty(),
+            "an implicit scope is ambient authority, including the operator's own"
+        );
     }
 }
