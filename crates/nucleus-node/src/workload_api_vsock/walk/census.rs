@@ -105,6 +105,9 @@ struct Record {
     /// The verified spend log (`spend-receipts.jsonl`): its own resource, since
     /// a spend receipt and a mediation receipt land in different files.
     spend: Vec<String>,
+    /// The recomputed clearing log (`clearing-receipts.jsonl`), likewise its
+    /// own file and its own resource.
+    clearing: Vec<String>,
 }
 
 impl Record {
@@ -117,6 +120,7 @@ impl Record {
             audit_served: false,
             receipts: Vec::new(),
             spend: Vec::new(),
+            clearing: Vec::new(),
         }
     }
 
@@ -130,11 +134,14 @@ impl Record {
         } else {
             &[false]
         };
+        // A clearing line needs no key — only collection.
+        let clearing_options: &[bool] = if p.receipts { &[false, true] } else { &[false] };
         let mut out = Vec::new();
         for mask in 0..(1u32 << bits) {
-            for (&receipt, &spend) in receipt_options
+            for ((&receipt, &spend), &clearing) in receipt_options
                 .iter()
                 .flat_map(|r| spend_options.iter().map(move |s| (r, s)))
+                .flat_map(|rs| clearing_options.iter().map(move |c| (rs, c)))
             {
                 let bit = |i: u32| mask & (1 << i) != 0;
                 out.push(Record {
@@ -150,6 +157,11 @@ impl Record {
                     },
                     spend: if spend {
                         vec![spend_body(uuid::Uuid::nil()).trim_end().to_string()]
+                    } else {
+                        Vec::new()
+                    },
+                    clearing: if clearing {
+                        vec![clearing_body().trim_end().to_string()]
                     } else {
                         Vec::new()
                     },
@@ -221,6 +233,11 @@ async fn run(
         lines.push('\n');
         std::fs::write(dir.path().join("spend-receipts.jsonl"), lines).expect("spend");
     }
+    if !start.clearing.is_empty() {
+        let mut lines = start.clearing.join("\n");
+        lines.push('\n');
+        std::fs::write(dir.path().join("clearing-receipts.jsonl"), lines).expect("clearing");
+    }
     let pod_id = uuid::Uuid::nil();
     let mut seen = Vec::with_capacity(letters.len());
     for letter in letters {
@@ -235,6 +252,7 @@ async fn run(
                 let frame = format!("{}\n", wire_name(COMMANDS[*i]));
                 let body = match COMMANDS[*i] {
                     Cmd::ShipSpend => spend_body(pod_id),
+                    Cmd::ShipClearing => clearing_body(),
                     _ => "{\"receipt\":\"census\"}\n".to_string(),
                 };
                 let mut rest: &[u8] = body.as_bytes();
@@ -260,6 +278,9 @@ async fn run(
     let spend = std::fs::read_to_string(dir.path().join("spend-receipts.jsonl"))
         .map(|s| s.lines().map(str::to_string).collect())
         .unwrap_or_default();
+    let clearing = std::fs::read_to_string(dir.path().join("clearing-receipts.jsonl"))
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default();
     let record = Record {
         personalized: material.personalized.load(Ordering::SeqCst),
         at_barrier: material.at_snapshot_barrier.load(Ordering::SeqCst),
@@ -268,6 +289,7 @@ async fn run(
         audit_served: material.audit_creds_served.load(Ordering::SeqCst),
         receipts,
         spend,
+        clearing,
     };
     (seen, record)
 }
@@ -385,6 +407,8 @@ enum Resource {
     /// The verified spend log (#2541). Its own resource: a spend receipt and a
     /// mediation receipt land in different files and neither reads the other.
     SpendLog,
+    /// The recomputed clearing log. Its own file, its own resource.
+    ClearingLog,
 }
 
 /// Each letter's footprint. Personalisation is read from the production
@@ -410,6 +434,7 @@ fn footprint(letter: Letter) -> Footprint<Resource> {
                 }
                 Cmd::ShipReceipt => fp.update(Resource::ReceiptLog),
                 Cmd::ShipSpend => fp.update(Resource::SpendLog),
+                Cmd::ShipClearing => fp.update(Resource::ClearingLog),
                 Cmd::FetchSvid
                 | Cmd::FetchBundle
                 | Cmd::Ping

@@ -2,7 +2,7 @@
 //!
 //! # How many slots, and why the count is bounded by a theorem
 //!
-//! A round allocates `slots` identical units of one [`PermissionDimension`] to
+//! A round allocates `slots` identical units of one [`ScarceGood`] to
 //! **unit-demand** bidders — each bidder wants at most one.
 //!
 //! One slot was the only offer here until the regime was proved wider.
@@ -21,8 +21,8 @@
 
 use std::num::NonZeroU32;
 
+use crate::good::ScarceGood;
 use nucleus_econ_types::{AgentId, AuctionId, MicroUsd};
-use nucleus_permission_market::PermissionDimension;
 use nucleus_recompute::ClearingReceipt;
 
 use crate::bid::SignedBid;
@@ -62,7 +62,7 @@ impl Admission for AdmitAll {
 #[derive(Debug, Clone)]
 pub struct Round {
     id: AuctionId,
-    dimension: PermissionDimension,
+    dimension: ScarceGood,
     /// Identical units on offer. Always ≥ 1: a round with nothing to allocate
     /// is not a round, and a `0` would make "win iff bid ≥ threshold" grant the
     /// slot to everyone, since every `MicroUsd` clears a threshold of zero.
@@ -77,9 +77,9 @@ pub enum AdmitError {
     #[error("round allocates {round:?}, bid is for {bid:?}")]
     WrongDimension {
         /// What this round is clearing.
-        round: PermissionDimension,
+        round: ScarceGood,
         /// What the bid asked for.
-        bid: PermissionDimension,
+        bid: ScarceGood,
     },
     /// This bidder already has a bid in the round. `run_vcg` rejects duplicate
     /// bidders outright, so admitting two would turn a caller's mistake into a
@@ -101,17 +101,13 @@ pub enum AdmitError {
 impl Round {
     /// Open a round for one slot of `dimension` — the classical regime.
     #[must_use]
-    pub fn open(id: AuctionId, dimension: PermissionDimension) -> Self {
+    pub fn open(id: AuctionId, dimension: ScarceGood) -> Self {
         Round::open_with_slots(id, dimension, NonZeroU32::MIN)
     }
 
     /// Open a round for `slots` identical units of `dimension`.
     #[must_use]
-    pub fn open_with_slots(
-        id: AuctionId,
-        dimension: PermissionDimension,
-        slots: NonZeroU32,
-    ) -> Self {
+    pub fn open_with_slots(id: AuctionId, dimension: ScarceGood, slots: NonZeroU32) -> Self {
         Round {
             id,
             dimension,
@@ -154,10 +150,10 @@ impl Round {
                 bidder: bid.bidder().as_str().to_owned(),
             });
         }
-        if bid.dimension() != self.dimension {
+        if *bid.dimension() != self.dimension {
             return Err(AdmitError::WrongDimension {
-                round: self.dimension,
-                bid: bid.dimension(),
+                round: self.dimension.clone(),
+                bid: bid.dimension().clone(),
             });
         }
         if self.bids.iter().any(|b| b.bidder() == bid.bidder()) {
@@ -177,8 +173,8 @@ impl Round {
 
     /// The scarce good this round allocates.
     #[must_use]
-    pub fn dimension(&self) -> PermissionDimension {
-        self.dimension
+    pub fn dimension(&self) -> &ScarceGood {
+        &self.dimension
     }
 
     /// The bids submitted so far.
@@ -275,9 +271,21 @@ impl RoundOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The good these tests contend for. A function rather than a `const`
+    /// because a good owns its label; `PermissionDimension` is the source so
+    /// the tests exercise the conversion the in-pod path uses.
+    fn other_good() -> ScarceGood {
+        ScarceGood::from(nucleus_permission_market::PermissionDimension::CommandExec)
+    }
+
+    fn egress() -> ScarceGood {
+        ScarceGood::from(nucleus_permission_market::PermissionDimension::NetworkEgress)
+    }
+
     use crate::bid::CertifiedCeiling;
 
-    fn signed(agent: &str, value: u64, dim: PermissionDimension) -> SignedBid {
+    fn signed(agent: &str, value: u64, dim: ScarceGood) -> SignedBid {
         SignedBid::new(
             AgentId::new(agent),
             dim,
@@ -289,9 +297,9 @@ mod tests {
 
     #[test]
     fn a_bid_for_another_dimension_is_refused() {
-        let mut r = Round::open(AuctionId::new("r1"), PermissionDimension::NetworkEgress);
+        let mut r = Round::open(AuctionId::new("r1"), egress());
         let err = r
-            .submit(signed("a", 10, PermissionDimension::CommandExec))
+            .submit(signed("a", 10, other_good()))
             .expect_err("wrong good");
         assert!(matches!(err, AdmitError::WrongDimension { .. }));
         assert!(r.bids().is_empty(), "a refused bid must not be recorded");
@@ -301,25 +309,20 @@ mod tests {
     /// beside its cause instead of surfacing as a kernel rejection at clearing.
     #[test]
     fn the_same_bidder_cannot_bid_twice() {
-        let mut r = Round::open(AuctionId::new("r1"), PermissionDimension::NetworkEgress);
-        r.submit(signed("a", 10, PermissionDimension::NetworkEgress))
-            .expect("first");
-        let err = r
-            .submit(signed("a", 99, PermissionDimension::NetworkEgress))
-            .expect_err("second");
+        let mut r = Round::open(AuctionId::new("r1"), egress());
+        r.submit(signed("a", 10, egress())).expect("first");
+        let err = r.submit(signed("a", 99, egress())).expect_err("second");
         assert!(matches!(err, AdmitError::DuplicateBidder { .. }));
         assert_eq!(r.bids().len(), 1);
     }
 
     #[test]
     fn contention_needs_two_agents() {
-        let mut r = Round::open(AuctionId::new("r1"), PermissionDimension::NetworkEgress);
+        let mut r = Round::open(AuctionId::new("r1"), egress());
         assert!(!r.is_contested());
-        r.submit(signed("a", 10, PermissionDimension::NetworkEgress))
-            .expect("a");
+        r.submit(signed("a", 10, egress())).expect("a");
         assert!(!r.is_contested(), "one bid is not a contest");
-        r.submit(signed("b", 20, PermissionDimension::NetworkEgress))
-            .expect("b");
+        r.submit(signed("b", 20, egress())).expect("b");
         assert!(r.is_contested());
     }
 
@@ -334,15 +337,15 @@ mod tests {
                 bidder.as_str() == "a"
             }
         }
-        let mut r = Round::open(AuctionId::new("r1"), PermissionDimension::NetworkEgress);
-        r.submit_under(signed("b", 999, PermissionDimension::NetworkEgress), &OnlyA)
+        let mut r = Round::open(AuctionId::new("r1"), egress());
+        r.submit_under(signed("b", 999, egress()), &OnlyA)
             .expect_err("b is not admitted");
         assert!(
             r.bids().is_empty(),
             "a refused bidder must not be in the profile at all — if it were, its \
              value would enter the clearing it was excluded from"
         );
-        r.submit_under(signed("a", 10, PermissionDimension::NetworkEgress), &OnlyA)
+        r.submit_under(signed("a", 10, egress()), &OnlyA)
             .expect("a is admitted");
         assert_eq!(r.bids().len(), 1);
     }
