@@ -563,6 +563,8 @@
       "exec": "scoped",
       "fs_read": [
         "Cargo.toml",
+        "PolicyManifest.toml",
+        "docs/**",
         "Cargo.lock",
         "rust-toolchain.toml",
         ".cargo/config.toml",
@@ -605,6 +607,8 @@
     "replaces": [],
     "scope": [
       "Cargo.toml",
+      "PolicyManifest.toml",
+      "docs/**",
       "Cargo.lock",
       "rust-toolchain.toml",
       ".cargo/config.toml",
@@ -634,6 +638,8 @@
         "program": "scripts/gatehouse-verifier-sdk.sh",
         "reads": [
           "Cargo.toml",
+          "PolicyManifest.toml",
+          "docs/**",
           "Cargo.lock",
           "rust-toolchain.toml",
           ".cargo/config.toml",
@@ -675,6 +681,8 @@
         "program": "cargo",
         "reads": [
           "Cargo.toml",
+          "PolicyManifest.toml",
+          "docs/**",
           "Cargo.lock",
           "rust-toolchain.toml",
           ".cargo/config.toml",
