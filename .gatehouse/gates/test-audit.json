@@ -80,7 +80,7 @@
     "git@2.39.5"
   ],
   "cwd": "",
-  "timeout_s": 2700,
+  "timeout_s": 3600,
   "outputs": [],
   "resources": {
     "cpus": 3,

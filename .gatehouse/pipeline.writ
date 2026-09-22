@@ -198,7 +198,7 @@ let testCore : ci.Gate = (#b"test-core", #d"000000000000000000000000000000000000
 -- `measuredMs` is an ESTIMATE pending the lane's own number, which is what `text-gates` did when
 -- it first declared 5000 against a lane that said otherwise. It is the one field here that can be
 -- wrong because the machine changed, and nothing in this repository can attest it (ADR 0008).
-let testAudit : ci.Gate = (#b"test-audit", #d"0000000000000000000000000000000000000000000000000000000000000007", [#b"**", #b"scripts/**"] : Bytes, env, acap, [] : Bytes, 2700000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"git@2.39.5"] : Bytes, 8192, 8192, platform, [] : Bytes, [#b"warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"] : Bytes, 900000, [] : Bytes, [(#b"scripts/gatehouse-verifier-sdk.sh", [] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0), (#b"cargo", [#b"nextest", #b"run", #b"--offline", #b"--locked", #b"--all-features", #b"--no-fail-fast", #b"-E", #b"package(xtask) | binary(olog) | binary(goal_corpus)"] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0)] : ci.Step)
+let testAudit : ci.Gate = (#b"test-audit", #d"0000000000000000000000000000000000000000000000000000000000000007", [#b"**", #b"scripts/**"] : Bytes, env, acap, [] : Bytes, 3600000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"git@2.39.5"] : Bytes, 8192, 8192, platform, [] : Bytes, [#b"warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"] : Bytes, 1493565, [] : Bytes, [(#b"scripts/gatehouse-verifier-sdk.sh", [] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0), (#b"cargo", [#b"nextest", #b"run", #b"--offline", #b"--locked", #b"--all-features", #b"--no-fail-fast", #b"-E", #b"package(xtask) | binary(olog) | binary(goal_corpus)"] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0)] : ci.Step)
 
 -- lean-build is DECLARED and not required. Its tools are not in the gate tools image yet, so the
 -- host check refuses to prepare it — which is the pair working: the plan says what the gate needs
@@ -260,21 +260,64 @@ let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGat
 -- whole workspace, the filter only selects what to RUN. It now has the same two steps and the
 -- same wasm tools test-core has.
 --
--- 900000 ms is an ANCHOR, not a measurement of this gate: test-core does the same SDK build and
--- full workspace build plus 7610 tests and has measured 821-907 s recently, so test-audit's 365
--- tests should land near it. The first PASSING run replaces this number, and until then the
--- clause holds on an estimate -- which this file elsewhere calls a hope, correctly.
+-- 900000 ms WAS an ANCHOR: test-core does the same SDK build and full workspace build plus 7610
+-- tests and had measured 821-907 s, so test-audit's 365 tests were expected to land near it. The
+-- clause held on an estimate, which this file elsewhere calls a hope, correctly.
+--
+-- 1493565 ms REPLACES it, and the road to that number is the point of this comment.
+--
+-- FIRST ATTEMPT, and it was wrong. Four runs of the two-step gate between 13:29Z and 14:29Z on
+-- 2026-09-22 measured 701925, 707056, 725281 and 776241 ms, and 776241 was declared as "the
+-- worst run seen here" per the rule above. It was beaten inside two hours, by 1.9x: a fifth run
+-- at 16:14Z took 1493565 ms. So the sample of four was not a measurement either -- it was a
+-- quieter hope than the 900000 anchor it replaced, and WORSE than it, because the anchor was at
+-- least conservative. This file's own sentence -- "a worst that a later run beats is not a
+-- measurement, it is a hope" -- has now caught two consecutive declarations for this gate.
+--
+-- WHAT THE FIFTH RUN HAD THAT THE OTHER FOUR DID NOT: contention. The four quiet runs were taken
+-- with ONE live tree in the lane. The 1493565 ms run was taken minutes after fourteen closed
+-- pull requests were reopened, putting fifteen live trees on a lane whose policy is proved for
+-- two commits in flight. That is not a reason to discard it. A timeout exists for exactly the
+-- moment the builder is busy, so the contended number is the one that decides whether a
+-- REQUIRED gate exhausts -- and 55% of its then-limit is how close it came.
+--
+-- The estimate's original reasoning still holds and now reads differently: 776 s against
+-- test-core's 821-907 s looked like agreement, but those test-core figures were themselves
+-- quiet-lane numbers. Nearly all of this gate is compilation (the 88% figure recorded above),
+-- and compilation is exactly what contends.
+--
+-- THE TIMEOUT RISES TO 3600000, which is 2.41x, and that is the MOST the budget allows rather
+-- than a convention. 2x1493565 = 2987130, so the old 2700000 is now below the floor and had to
+-- move regardless. Measured against the kernel: 3600000 proves, 3800000 is REFUSED --
+-- `builderBudget_b` binds between them, so the six required gates declare 12800000 ms and there
+-- is roughly 200000 ms of slack left in the whole pipeline. Every other gate here sits near
+-- 2.1x; this one takes the extra 0.3x because its sample is five runs from one day with a 2.1x
+-- spread between smallest and largest, and because an exhausted required gate leaves
+-- `gatehouse/required` undecided until the controller's five-hour timeout -- the ci-spec outage
+-- recorded above. The asymmetry buys the margin; the budget caps it.
+--
+-- THE HONEST STATE: five observations is still not a sample, and the next re-measure should come
+-- from a window that contains both a quiet lane and a contended one rather than from whichever
+-- happened to be running. Until the lane has a priced, bounded notion of how many trees may be
+-- live at once, "measured on the builder" does not name a single operating regime, and no
+-- declaration here can be stable. That is a gap in the policy, not in the number.
 --
 -- lean-build's 145 s is still a CONTAINER measurement, because the lane cannot run it yet; it is
 -- declared and not required, and the figure is marked here rather than trusted. text-gates took
 -- FIVE seconds in a container and 874 in the microVM: the difference is the VM, not the greps,
 -- and it is why a measurement taken anywhere else is not the measurement this clause wants.
 --
--- The six required gates now declare 10100000 ms against a 21600000 ms window with two commits
--- in flight -- 94% of what `builderBudget_b` allows. That is tight where it used to be roomy,
--- and it is the honest cost of timeouts that fit the work: the room was never there, it was
--- borrowed from measurements that no longer held. Two commits in flight is the number the
--- builder is proved for; the day this was measured had ELEVEN, which no timeout can fix.
+-- The six required gates now declare 12800000 ms against a 21600000 ms window. The "94% of what
+-- `builderBudget_b` allows" this paragraph used to claim was computed before `builders` went
+-- from 1 to 2 in the same change, which doubled the basis; rather than restate a percentage
+-- beside the clause that decides it -- one fact written twice, and the second copy drifted
+-- within one commit -- what is recorded here is the kernel's own answer, measured by bisection:
+-- test-audit at 3600000 PROVES and at 3800000 is REFUSED, so the pipeline has on the order of
+-- 200000 ms of slack in total. That is tight where it used to be roomy, and it is the honest
+-- cost of timeouts that fit the work: the room was never there, it was borrowed from
+-- measurements that no longer held. Two commits in flight is the number the builder is proved
+-- for; the day this was first measured had ELEVEN, and the day it was corrected had FIFTEEN,
+-- which no timeout can fix.
 let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy", #b"test-core", #b"ci-spec", #b"text-gates", #b"test-audit"] : Bytes, 21600000, 64, 2, 32768, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"rustfmt@1.9.0", #b"clippy-driver@0.1.96", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1", #b"ip@6.1.0", #b"git@2.39.5", #b"rg@13.0.0", #b"awk@mawk-1.3.4", #b"python3@3.11.2", #b"jq@1.6", #b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 2, 8192, platform, 197316, 23981, 2, 3, 4096, 10240, [#b"warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"] : Bytes, [#b"Rustfmt", #b"Clippy"] : Bytes, [#b"awk"] : Bytes, 8192)
 
 let admissible : So (ci.admissible_b pipeline policy) = oh
