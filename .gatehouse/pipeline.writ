@@ -65,7 +65,12 @@
 --   queueBudgetMs   21600000 = the 360-minute check timeout in `ci/merge-queue.toml`, which is
 --                   the live ruleset value that `cargo xtask ci-spec live-parity` holds it to.
 --   inFlight        2: `max_entries_to_build = 1` plus the pull-request head under test.
---   builders        1. One Mac VM runs every nucleus gate.
+--   builders        2. One Mac VM, but TWO gate-worker services on it, each running one gate
+--                   at a time -- observed repeatedly on 2026-09-22 with two gates in flight
+--                   together, and `gatehouse_live_workers` reporting 2. It was declared 1, which
+--                   understated the machine and left no room for a correct test-audit. They share
+--                   one launch lock, so 2 is the count of workers and not a claim of perfect
+--                   parallelism.
 --   lanes           2: a node build and a plan gate share the host, queued on one launch lock.
 --   hostDiskMb      197316, hostMemMb 23981: `df -m /` and `/proc/meminfo` on the builder. The
 --                   disk was 78284 until 2026-09-17, when four pull requests dispatched at once
@@ -183,7 +188,7 @@ let testCore : ci.Gate = (#b"test-core", #d"000000000000000000000000000000000000
 -- `measuredMs` is an ESTIMATE pending the lane's own number, which is what `text-gates` did when
 -- it first declared 5000 against a lane that said otherwise. It is the one field here that can be
 -- wrong because the machine changed, and nothing in this repository can attest it (ADR 0008).
-let testAudit : ci.Gate = (#b"test-audit", #d"0000000000000000000000000000000000000000000000000000000000000007", [#b"**", #b"scripts/**"] : Bytes, env, acap, [#b"cargo", #b"nextest", #b"run", #b"--offline", #b"--locked", #b"--all-features", #b"--no-fail-fast", #b"-E", #b"package(xtask) | binary(olog) | binary(goal_corpus)"] : Bytes, 900000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"cargo-nextest@0.9.145", #b"git@2.39.5"] : Bytes, 8192, 8192, platform, [] : Bytes, [#b"warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"] : Bytes, 300000, [] : Bytes, [] : ci.Step)
+let testAudit : ci.Gate = (#b"test-audit", #d"0000000000000000000000000000000000000000000000000000000000000007", [#b"**", #b"scripts/**"] : Bytes, env, acap, [] : Bytes, 2700000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"git@2.39.5"] : Bytes, 8192, 8192, platform, [] : Bytes, [#b"warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"] : Bytes, 900000, [] : Bytes, [(#b"scripts/gatehouse-verifier-sdk.sh", [] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0), (#b"cargo", [#b"nextest", #b"run", #b"--offline", #b"--locked", #b"--all-features", #b"--no-fail-fast", #b"-E", #b"package(xtask) | binary(olog) | binary(goal_corpus)"] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0)] : ci.Step)
 
 -- lean-build is DECLARED and not required. Its tools are not in the gate tools image yet, so the
 -- host check refuses to prepare it — which is the pair working: the plan says what the gate needs
@@ -230,13 +235,25 @@ let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGat
 -- queue keeps whatever limit it was enqueued with until it is re-requested. Worth knowing
 -- before concluding from a red gate that the declaration below is still wrong.
 --
--- test-audit's 300 s WAS the one figure here that no run had confirmed: the gate is required and
--- had never executed once, because the plan the controller served carried six gates rather than
--- seven. It ran for the first time on 2026-09-22 and measured 288800 ms -- just under the
--- declaration, for a 3.12x timeout ratio. So the number was right, and every timeout in this file
--- now rests on a run of this builder rather than on an estimate. Kept as a dated note because the
--- interesting part is not the figure but that a REQUIRED gate can sit unexecuted while the plan
--- served to the lane disagrees with the plan in the tree, and nothing compares the two.
+-- test-audit's measurement is PROVISIONAL and this is the correction of a wrong reading.
+--
+-- The gate is required and had never executed once, because the plan the controller served
+-- carried six gates rather than seven and nothing compares the two. Activating it on 2026-09-22
+-- produced a run of 288800 ms which I recorded as confirming the 300000 ms estimate. That was
+-- wrong: the run `decided`, and a decision can be FAILED. It was. 288800 ms is how long the gate
+-- takes to fail during the build, not how long it takes to pass -- `decided` is not `held`, and
+-- reading one as the other is the same error this file's own gates exist to prevent.
+--
+-- Why it failed: test-audit had NO STEPS. It ran `cargo nextest` as its cmd and so never ran
+-- `scripts/gatehouse-verifier-sdk.sh`, which builds the wasm-pack output that
+-- `nucleus-verifier-service/build.rs` requires; `cargo nextest -E <filter>` still BUILDS the
+-- whole workspace, the filter only selects what to RUN. It now has the same two steps and the
+-- same wasm tools test-core has.
+--
+-- 900000 ms is an ANCHOR, not a measurement of this gate: test-core does the same SDK build and
+-- full workspace build plus 7610 tests and has measured 821-907 s recently, so test-audit's 365
+-- tests should land near it. The first PASSING run replaces this number, and until then the
+-- clause holds on an estimate -- which this file elsewhere calls a hope, correctly.
 --
 -- lean-build's 145 s is still a CONTAINER measurement, because the lane cannot run it yet; it is
 -- declared and not required, and the figure is marked here rather than trusted. text-gates took
@@ -248,6 +265,6 @@ let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGat
 -- and it is the honest cost of timeouts that fit the work: the room was never there, it was
 -- borrowed from measurements that no longer held. Two commits in flight is the number the
 -- builder is proved for; the day this was measured had ELEVEN, which no timeout can fix.
-let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy", #b"test-core", #b"ci-spec", #b"text-gates", #b"test-audit"] : Bytes, 21600000, 64, 1, 32768, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"rustfmt@1.9.0", #b"clippy-driver@0.1.96", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1", #b"ip@6.1.0", #b"git@2.39.5", #b"rg@13.0.0", #b"awk@mawk-1.3.4", #b"python3@3.11.2", #b"jq@1.6", #b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 2, 8192, platform, 197316, 23981, 2, 3, 4096, 10240, [#b"warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"] : Bytes, [#b"Rustfmt", #b"Clippy"] : Bytes, [#b"awk"] : Bytes, 8192)
+let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy", #b"test-core", #b"ci-spec", #b"text-gates", #b"test-audit"] : Bytes, 21600000, 64, 2, 32768, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"rustfmt@1.9.0", #b"clippy-driver@0.1.96", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"unshare@2.38.1", #b"ip@6.1.0", #b"git@2.39.5", #b"rg@13.0.0", #b"awk@mawk-1.3.4", #b"python3@3.11.2", #b"jq@1.6", #b"lake@4.30.0", #b"lean@4.30.0"] : Bytes, 2, 8192, platform, 197316, 23981, 2, 3, 4096, 10240, [#b"warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"] : Bytes, [#b"Rustfmt", #b"Clippy"] : Bytes, [#b"awk"] : Bytes, 8192)
 
 let admissible : So (ci.admissible_b pipeline policy) = oh
