@@ -24,6 +24,16 @@
 --      the trap: changing the plan mid-flight does not merely discard work, it leaves the
 --      affected gates unable to recover without a new commit.
 --
+--   5. A NEW COMMIT IS NOT A NEW TREE. (4)'s escape is a new tree, and the roll-up keys on the
+--      TREE — so `git commit --allow-empty` does nothing: it makes a new SHA over an identical
+--      tree, the same (gate, tree) pairs resolve, and the same refuted jobs come back. Measured
+--      the hard way, twice on one branch, before checking `git rev-parse <sha>^{tree}` and
+--      finding all three commits shared one tree. A re-request needs a real content change.
+--
+--      The corollary is a race worth avoiding: push, THEN upload, and a job enqueued in the
+--      seconds between them binds the old plan and cannot recover without another tree change.
+--      `ci-spec` on this branch was caught exactly that way.
+--
 -- The cost of not knowing this: a REQUIRED gate (`test-audit`) sat unexecuted indefinitely
 -- because the served plan carried six gates while this file declared seven, and nothing compares
 -- the two. `GET /v1/<tenant>/plan` is how you find out; there is no gate for it.
