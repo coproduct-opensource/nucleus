@@ -33,6 +33,10 @@ async fn prepare_for_test(
         task_token: None,
         pod_certificate: None,
         broker_serve: serve,
+        // Nothing was verified in this test, so nothing was measured. `Measured::default()`
+        // is both `None`, which makes the attestation hash the files itself -- the honest
+        // reading of "no pinned artifact was read".
+        measured: crate::image_identity::Measured::default(),
     })
     .await
 }
