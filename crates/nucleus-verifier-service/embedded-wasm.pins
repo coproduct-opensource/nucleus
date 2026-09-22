@@ -98,5 +98,19 @@
 # two platforms have been observed to produce the same .wasm, so one line
 # suffices here for a reason stronger than convention -- though it is one
 # observation, not a claim that the difference has gone away.
-54eaafbe6ed5339fdcf841bd67ee7414ceb795aa95eb63ae1df0b0986a15c968  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+# 2026-09-22 (#3011): the .wasm moved because `nucleus-lineage` did, and
+# `sdks/verifier-js` compiles it in. The change is a RETURN TYPE:
+# `total_pigouvian_micro_usd` now yields `UnsignedPigouvianTotal` instead of a
+# bare `i128`, so a caller cannot read a Pigouvian total while believing a
+# signature covers it — `attrs` and a kind's payload are both outside
+# `canonical_edge_bytes`. Nothing the verifier COMPUTES changed; what changed is
+# what the type permits a caller to conclude, and the compiled bytes moved with
+# the signature.
+#
+# `54eaafbe…` is REPLACED, on the standing rule: it is the artifact built before
+# the wrapper existed, and a pin accepting both would accept a verifier whose
+# unsigned total still looks like a verified one. Taken from the CI run on this
+# branch — the canonical builder — so unverified at the point of writing and
+# verified by the run that consumes it.
+69a16e5dc9b353bbb01fc44913eae55654172f8c42221862366c93360e54f9b2  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js

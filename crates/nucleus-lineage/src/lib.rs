@@ -78,8 +78,8 @@ pub use signed_note::{
 pub use sink::JsonlSink;
 pub use sink::{InMemorySink, LineageSink, SinkError};
 pub use verify::{
-    Jwk, Jwks, StaticKeyResolver, VerifyError, total_pigouvian_micro_usd, verify_chain,
-    verify_proof,
+    Jwk, Jwks, StaticKeyResolver, UnsignedPigouvianTotal, VerifyError, total_pigouvian_micro_usd,
+    verify_chain, verify_proof,
 };
 
 #[cfg(feature = "insecure-local-issuer")]
