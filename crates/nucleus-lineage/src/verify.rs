@@ -323,6 +323,14 @@ impl Default for StaticKeyResolver {
 /// can defend must read it from there, and this type exists to make the difference impossible
 /// to miss rather than merely documented — `settlement_tx_ref_and_attrs_are_outside_the_signature`
 /// has warned about it in prose since the encoding was pinned.
+///
+/// **The same hazard is still open two crates away, and is deliberately not fixed here.**
+/// `nucleus_externality::ExternalityCube::ingest_edge` takes its consumption quantity from
+/// `edge.attrs["units_micro"]` while `SignedExternalityClaim` carries a signed `units_micro`,
+/// and `nucleus_externality::verify_claim` returns `()`, so verifying a claim leaves no
+/// evidence that any later caller can be required to hold. Closing those needs a witness type
+/// minted by the verifier, which is a larger change than a wrapper; neither has a production
+/// caller today, which is the only reason this one went first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub struct UnsignedPigouvianTotal(i128);
