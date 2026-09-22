@@ -304,19 +304,52 @@ impl Default for StaticKeyResolver {
     }
 }
 
+/// A Pigouvian total read from fields **no signature covers**.
+///
+/// There is no `Deref`, no `Display` and no `From<UnsignedPigouvianTotal> for i128`: the only
+/// way out is [`Self::micro_usd_unverified`], whose name is the acknowledgement. That is the
+/// whole point of the type. The previous shape returned a bare `i128` beside a doc comment
+/// claiming the sum was over "CRYPTOGRAPHICALLY-VERIFIED edges only", and a caller who
+/// believed it would have been wrong in the direction that costs money.
+///
+/// `canonical_edge_bytes` covers the child id, the kind's **discriminant**, the parents,
+/// `content_hash_hex`, the timestamp and the previous hash. It does **not** cover `attrs`, and
+/// it does not cover a kind's payload — so neither `attrs["pigou_charge_micro_usd"]` nor
+/// `WelfareRebate.micro_usd` is signed. `verify_chain` returning `Ok(())` says the edges are
+/// authentic; it says nothing about these numbers.
+///
+/// The authoritative amount lives in the `SignedExternalityClaim` the edge commits to through
+/// `content_hash_hex` (see [`crate::EdgeKind::Externality`]). A caller that needs a total it
+/// can defend must read it from there, and this type exists to make the difference impossible
+/// to miss rather than merely documented — `settlement_tx_ref_and_attrs_are_outside_the_signature`
+/// has warned about it in prose since the encoding was pinned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub struct UnsignedPigouvianTotal(i128);
+
+impl UnsignedPigouvianTotal {
+    /// The net micro-USD, **which no signature attests to**. Naming this is how a caller
+    /// takes responsibility for using an unsigned figure.
+    #[must_use]
+    pub const fn micro_usd_unverified(self) -> i128 {
+        self.0
+    }
+}
+
 /// **Pigouvian W2 — total Pigouvian micro-USD aggregator.**
 ///
-/// Walks a chain of signed lineage edges and sums every
+/// Walks a chain of lineage edges and sums every
 /// `EdgeKind::WelfareRebate.micro_usd` value (negative — disbursement
 /// outflow) and every `EdgeKind::Externality` attr
 /// `pigou_charge_micro_usd` (positive — tax inflow). The net is what
 /// the substrate's externality layer charged minus what it rebated;
 /// `0` for a chain with no Pigouvian activity.
 ///
-/// Verifier SDKs (browser, CLI, agent) call this AFTER `verify_chain`
-/// returns `Ok(())` so the sum is over CRYPTOGRAPHICALLY-VERIFIED
-/// edges only.
-pub fn total_pigouvian_micro_usd(edges: &[crate::LineageEdge]) -> i128 {
+/// **The result is [`UnsignedPigouvianTotal`], not a number.** Every field this reads is
+/// outside `canonical_edge_bytes`, so running `verify_chain` first does not make the sum
+/// verified — it makes the *edges* verified while leaving these amounts unattested. Read that
+/// type's documentation before using the figure for anything that settles.
+pub fn total_pigouvian_micro_usd(edges: &[crate::LineageEdge]) -> UnsignedPigouvianTotal {
     let mut net: i128 = 0;
     for edge in edges {
         match &edge.kind {
@@ -333,7 +366,7 @@ pub fn total_pigouvian_micro_usd(edges: &[crate::LineageEdge]) -> i128 {
             _ => {}
         }
     }
-    net
+    UnsignedPigouvianTotal(net)
 }
 
 /// Tests for surface that does NOT depend on the demo signer — these run
@@ -382,14 +415,85 @@ mod pigouvian_tests {
             },
         );
         assert_eq!(
-            super::total_pigouvian_micro_usd(&[ext, rebate1, rebate2]),
+            super::total_pigouvian_micro_usd(&[ext, rebate1, rebate2]).micro_usd_unverified(),
             200
         );
     }
 
     #[test]
     fn total_pigouvian_micro_usd_zero_on_empty_chain() {
-        assert_eq!(super::total_pigouvian_micro_usd(&[]), 0);
+        assert_eq!(
+            super::total_pigouvian_micro_usd(&[]).micro_usd_unverified(),
+            0
+        );
+    }
+
+    /// **The hazard, demonstrated rather than described.** Two chains that differ only in the
+    /// Pigouvian amounts produce BYTE-IDENTICAL canonical bytes, so one signature authenticates
+    /// both — and the totals differ by 999_250 micro-USD. This is why the aggregator returns
+    /// `UnsignedPigouvianTotal` and not an `i128`, and it holds for both sources: `attrs` on an
+    /// `Externality` edge and the `micro_usd` payload of a `WelfareRebate`, because
+    /// `canonical_edge_bytes` covers only the kind's DISCRIMINANT.
+    ///
+    /// If this test ever fails because the bytes differ, the encoding started covering these
+    /// fields and the wrapper can be retired — deliberately, not by accident.
+    #[test]
+    fn the_pigouvian_amounts_are_outside_the_signature_so_the_total_is_unattested() {
+        let p = pod();
+        // ONE edge, then a clone with a single field changed — anything else (including `ts`,
+        // which is set at construction) would differ between two separately built edges and
+        // mask the property under test.
+        let honest = LineageEdge::from_parent(
+            p.derive_artifact(b"ext").unwrap(),
+            p.clone(),
+            EdgeKind::Externality {
+                resource: "gpu_s".to_string(),
+                oracle_kid: "k1".to_string(),
+            },
+        )
+        .with_attr("pigou_charge_micro_usd", "750");
+        let mut inflated = honest.clone();
+        inflated
+            .attrs
+            .insert("pigou_charge_micro_usd".to_string(), "1000000".to_string());
+
+        assert_eq!(
+            crate::proof::canonical_edge_bytes(&honest, None),
+            crate::proof::canonical_edge_bytes(&inflated, None),
+            "attrs are outside the signature: a signature over one authenticates the other"
+        );
+        assert_eq!(
+            super::total_pigouvian_micro_usd(&[inflated]).micro_usd_unverified()
+                - super::total_pigouvian_micro_usd(&[honest]).micro_usd_unverified(),
+            999_250,
+            "the unsigned attr moves the total by this much with no signature change"
+        );
+
+        // The same holds for a kind PAYLOAD, which looks far more trustworthy than `attrs`.
+        let small = LineageEdge::from_parent(
+            p.derive_artifact(b"r").unwrap(),
+            p,
+            EdgeKind::WelfareRebate {
+                recipient_kid: "w1".to_string(),
+                micro_usd: 1,
+                source_externality_edge_hash: "f".repeat(64),
+            },
+        );
+        let mut large = small.clone();
+        large.kind = EdgeKind::WelfareRebate {
+            recipient_kid: "w1".to_string(),
+            micro_usd: 5_000_000,
+            source_externality_edge_hash: "f".repeat(64),
+        };
+        assert_eq!(
+            crate::proof::canonical_edge_bytes(&small, None),
+            crate::proof::canonical_edge_bytes(&large, None),
+            "a kind's payload is not signed either — only its discriminant is"
+        );
+        assert_ne!(
+            super::total_pigouvian_micro_usd(&[small]).micro_usd_unverified(),
+            super::total_pigouvian_micro_usd(&[large]).micro_usd_unverified()
+        );
     }
 
     #[test]
@@ -402,7 +506,10 @@ mod pigouvian_tests {
                 tool: "Bash".to_string(),
             },
         );
-        assert_eq!(super::total_pigouvian_micro_usd(&[edge]), 0);
+        assert_eq!(
+            super::total_pigouvian_micro_usd(&[edge]).micro_usd_unverified(),
+            0
+        );
     }
 }
 
