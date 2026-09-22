@@ -198,7 +198,7 @@ let testCore : ci.Gate = (#b"test-core", #d"000000000000000000000000000000000000
 -- `measuredMs` is an ESTIMATE pending the lane's own number, which is what `text-gates` did when
 -- it first declared 5000 against a lane that said otherwise. It is the one field here that can be
 -- wrong because the machine changed, and nothing in this repository can attest it (ADR 0008).
-let testAudit : ci.Gate = (#b"test-audit", #d"0000000000000000000000000000000000000000000000000000000000000007", [#b"**", #b"scripts/**"] : Bytes, env, acap, [] : Bytes, 2700000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"git@2.39.5"] : Bytes, 8192, 8192, platform, [] : Bytes, [#b"warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"] : Bytes, 900000, [] : Bytes, [(#b"scripts/gatehouse-verifier-sdk.sh", [] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0), (#b"cargo", [#b"nextest", #b"run", #b"--offline", #b"--locked", #b"--all-features", #b"--no-fail-fast", #b"-E", #b"package(xtask) | binary(olog) | binary(goal_corpus)"] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0)] : ci.Step)
+let testAudit : ci.Gate = (#b"test-audit", #d"0000000000000000000000000000000000000000000000000000000000000007", [#b"**", #b"scripts/**"] : Bytes, env, acap, [] : Bytes, 2700000, [] : Bytes, image, [#b"sh@0.5.12", #b"cargo@1.96.1", #b"rustc@1.96.1", #b"cargo-nextest@0.9.145", #b"wasm-pack@0.13.1", #b"wasm-bindgen@0.2.122", #b"git@2.39.5"] : Bytes, 8192, 8192, platform, [] : Bytes, [#b"warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"] : Bytes, 776241, [] : Bytes, [(#b"scripts/gatehouse-verifier-sdk.sh", [] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0), (#b"cargo", [#b"nextest", #b"run", #b"--offline", #b"--locked", #b"--all-features", #b"--no-fail-fast", #b"-E", #b"package(xtask) | binary(olog) | binary(goal_corpus)"] : Bytes, [#b"**", #b"scripts/**"] : Bytes, [#b"target/**", #b"sdks/verifier-js/pkg/**", #b"sdks/verifier-js/target/**"] : Bytes, 0, 0)] : ci.Step)
 
 -- lean-build is DECLARED and not required. Its tools are not in the gate tools image yet, so the
 -- host check refuses to prepare it — which is the pair working: the plan says what the gate needs
@@ -260,10 +260,30 @@ let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGat
 -- whole workspace, the filter only selects what to RUN. It now has the same two steps and the
 -- same wasm tools test-core has.
 --
--- 900000 ms is an ANCHOR, not a measurement of this gate: test-core does the same SDK build and
--- full workspace build plus 7610 tests and has measured 821-907 s recently, so test-audit's 365
--- tests should land near it. The first PASSING run replaces this number, and until then the
--- clause holds on an estimate -- which this file elsewhere calls a hope, correctly.
+-- 900000 ms WAS an ANCHOR: test-core does the same SDK build and full workspace build plus 7610
+-- tests and had measured 821-907 s, so test-audit's 365 tests were expected to land near it. The
+-- clause held on an estimate, which this file elsewhere calls a hope, correctly.
+--
+-- 776241 ms REPLACES it, and it is a measurement. Four runs of the two-step gate on the builder
+-- between 13:29Z and 14:29Z on 2026-09-22: 701925, 707056, 725281, 776241. The worst is
+-- declared, per the rule above. The 14:29Z run is the one the merged roll-up verified -- the
+-- controller reports tree db09d8b2 as "every required gate held: 6 verified receipt(s)" -- so
+-- this is a gate that PASSES in this time, not one that fails in it, which is the distinction
+-- the 288800 ms misreading above turned on.
+--
+-- The anchor was HIGH by 124 s, the safe direction, and the estimate's reasoning held: 776 s
+-- against test-core's 821-907 s, a gate doing the same build with a twentieth of the tests, so
+-- nearly all of it is compilation. That is the same 88% figure this file records elsewhere.
+--
+-- THE TIMEOUT STAYS AT 2700000, and the ratio is therefore 3.48x where every other gate here
+-- sits near 2.1x. That is deliberate. The 2x floor is a floor, not a target, and it earns its
+-- tightness on the other gates from hundreds of observations in /var/log/gatehouse/gates.log;
+-- test-audit has FOUR, all from one hour of one day, none of them under a cold seed or a
+-- contended builder. Tightening to 1600000 would return 1100000 ms to `builderBudget_b` -- 94%
+-- of the window becomes 83% -- and that is real, but the cost of being wrong is not symmetric:
+-- a required gate that cannot finish inside its limit is exhausted, and an exhausted required
+-- gate leaves `gatehouse/required` undecided until the controller's five-hour timeout, which is
+-- exactly the ci-spec outage recorded above. Revisit when the sample is a sample.
 --
 -- lean-build's 145 s is still a CONTAINER measurement, because the lane cannot run it yet; it is
 -- declared and not required, and the figure is marked here rather than trusted. text-gates took

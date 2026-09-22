@@ -745,7 +745,7 @@
     "disk_mb": 8192,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 900000,
+    "measured_ms": 776241,
     "mem_mb": 8192,
     "name": "test-audit",
     "outputs": [],
