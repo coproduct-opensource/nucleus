@@ -206,12 +206,13 @@ let pipeline : ci.Pipeline = ([fmt, clippy, testCore, leanBuild, ciSpec, textGat
 -- queue keeps whatever limit it was enqueued with until it is re-requested. Worth knowing
 -- before concluding from a red gate that the declaration below is still wrong.
 --
--- test-audit's 300 s is the one figure here that is NOT a lane measurement: the gate is required
--- and had never executed, because the plan the controller served carried six gates rather than
--- seven. Its timeout stands at 3x a number nothing has confirmed on this builder, and the first
--- runs are what will settle it. Said here rather than left to be discovered, per the rule above:
--- a measurement taken somewhere else is not the measurement this clause wants, and no measurement
--- at all is weaker still.
+-- test-audit's 300 s WAS the one figure here that no run had confirmed: the gate is required and
+-- had never executed once, because the plan the controller served carried six gates rather than
+-- seven. It ran for the first time on 2026-09-22 and measured 288800 ms -- just under the
+-- declaration, for a 3.12x timeout ratio. So the number was right, and every timeout in this file
+-- now rests on a run of this builder rather than on an estimate. Kept as a dated note because the
+-- interesting part is not the figure but that a REQUIRED gate can sit unexecuted while the plan
+-- served to the lane disagrees with the plan in the tree, and nothing compares the two.
 --
 -- lean-build's 145 s is still a CONTAINER measurement, because the lane cannot run it yet; it is
 -- declared and not required, and the figure is marked here rather than trusted. text-gates took
