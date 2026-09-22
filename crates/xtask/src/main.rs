@@ -477,11 +477,18 @@ fn main() -> Result<()> {
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
         Command::PlanMeasurements { events, plan } => {
+            // Exit 2 is "could not look", which is never a pass AND never a finding. Mapped
+            // here rather than exited from inside the check, so a unit test calling it
+            // survives -- the same shape as `SelfPin` above.
             match plan_measurements::check(&events, &plan) {
-                Ok(()) => Ok(()),
-                Err(why) => {
+                plan_measurements::Outcome::Clean => Ok(()),
+                plan_measurements::Outcome::Overtaken(why) => {
                     println!("VIOLATION: {why}");
                     std::process::exit(1)
+                }
+                plan_measurements::Outcome::CouldNotLook(why) => {
+                    println!("COULD NOT LOOK: {why}");
+                    std::process::exit(2)
                 }
             }
         }

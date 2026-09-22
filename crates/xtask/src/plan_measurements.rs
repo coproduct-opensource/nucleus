@@ -119,6 +119,27 @@ pub enum Standing {
     NotObserved,
 }
 
+/// What a whole run of this check concluded.
+///
+/// Three cases, because there are three facts and only two of them are about the plan. An
+/// unreadable event log and a declaration beaten by a real run are BOTH failures of the
+/// process and neither is a pass, but they call for opposite actions: one means raise
+/// `measuredMs`, the other means go and look at why the log could not be read. Collapsing them
+/// into one non-zero exit is how a monitor learns to cry violation when it simply could not
+/// see, and a monitor that does that gets ignored.
+///
+/// This is the convention `xtask self-pin` already uses, and mapping it to an exit code happens
+/// in `main` rather than by exiting from inside [`check`], so the tests can still call it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// Every observed gate stayed inside its declaration. Exit 0.
+    Clean,
+    /// A decided run beat a declaration. A FINDING about the plan. Exit 1.
+    Overtaken(String),
+    /// The check could not be carried out. Never a pass, and never a finding either. Exit 2.
+    CouldNotLook(String),
+}
+
 /// Decide each declared gate's standing against the observed runs.
 ///
 /// Pure over its two inputs so the falsifier below can drive it without a builder.
@@ -192,13 +213,22 @@ fn read_declared(path: &Path) -> Result<BTreeMap<String, u64>, String> {
     Ok(gates.into_iter().map(|g| (g.name, g.measured_ms)).collect())
 }
 
-/// Run the check. `Ok(())` is green; `Err` carries the reason and the caller exits non-zero.
-pub fn check(events_path: &Path, plan_path: &Path) -> Result<(), String> {
-    let events = read_events(events_path)?;
-    let declared = read_declared(plan_path)?;
+/// Run the check. See [`Outcome`]: the three cases are distinguished here and mapped to exit
+/// codes by the caller.
+pub fn check(events_path: &Path, plan_path: &Path) -> Outcome {
+    let events = match read_events(events_path) {
+        Ok(e) => e,
+        // Reading the subject is not auditing it. This is `CouldNotLook`, not a finding about
+        // any declaration -- nothing has been compared yet.
+        Err(why) => return Outcome::CouldNotLook(why),
+    };
+    let declared = match read_declared(plan_path) {
+        Ok(d) => d,
+        Err(why) => return Outcome::CouldNotLook(why),
+    };
     if declared.is_empty() {
-        return Err(format!(
-            "{} declared no gates — nothing to audit, which is not a pass",
+        return Outcome::CouldNotLook(format!(
+            "{} declared no gates — nothing to audit",
             plan_path.display()
         ));
     }
@@ -243,13 +273,15 @@ pub fn check(events_path: &Path, plan_path: &Path) -> Result<(), String> {
 
     // Non-vacuity. A filter that matched nothing is the quietest possible pass.
     if observed == 0 {
-        return Err(format!(
-            "no decided run was observed for ANY of the {} declared gate(s) — the events are empty, filtered out, or the wrong file; that is 'could not look', never a pass",
+        // The text here always said this was "could not look"; for one evening the exit code
+        // said "finding" anyway. The words were right and the type was wrong.
+        return Outcome::CouldNotLook(format!(
+            "no decided run was observed for ANY of the {} declared gate(s) — the events are empty, filtered out, or the wrong file",
             declared.len()
         ));
     }
     if overtaken > 0 {
-        return Err(format!(
+        return Outcome::Overtaken(format!(
             "{overtaken} declaration(s) overtaken by a real run — raise `measuredMs` in .gatehouse/pipeline.writ and re-check the timeout against `timeoutMeasured_b`"
         ));
     }
@@ -257,7 +289,7 @@ pub fn check(events_path: &Path, plan_path: &Path) -> Result<(), String> {
         "OK: {observed} gate(s) observed across {} decided run(s); no declared measurement has been beaten",
         events.iter().filter(|(_, _, d, _)| *d).count()
     );
-    Ok(())
+    Outcome::Clean
 }
 
 #[cfg(test)]
@@ -357,6 +389,54 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    /// The distinction this check got wrong for one evening: an unreadable subject is NOT a
+    /// finding about any declaration. It exited 1 -- the same code as "a declaration was
+    /// beaten" -- while its own message called it "could not look", so a monitor built on it
+    /// raised a measurement alarm whenever the log was merely missing.
+    #[test]
+    fn an_unreadable_event_log_is_could_not_look_not_a_finding() {
+        let plan = std::env::temp_dir().join("pm-test-plan-unreadable.json");
+        std::fs::write(&plan, r#"[{"name":"fmt","measured_ms":1}]"#).unwrap();
+        let out = check(Path::new("/nonexistent/events.jsonl"), &plan);
+        assert!(
+            matches!(out, Outcome::CouldNotLook(_)),
+            "a missing event log must not be reported as an overtaken declaration, got {out:?}"
+        );
+    }
+
+    /// Same for the vacuity guard. Nothing observed is nothing LOOKED AT, and the caller must
+    /// be able to tell that from a real overtaking without parsing prose.
+    #[test]
+    fn nothing_observed_is_could_not_look_not_a_finding() {
+        let plan = std::env::temp_dir().join("pm-test-plan-vacuous.json");
+        let events = std::env::temp_dir().join("pm-test-events-empty.jsonl");
+        std::fs::write(&plan, r#"[{"name":"fmt","measured_ms":1}]"#).unwrap();
+        std::fs::write(&events, "").unwrap();
+        assert!(matches!(check(&events, &plan), Outcome::CouldNotLook(_)));
+    }
+
+    /// And the finding is still a finding, so the three cases are genuinely distinguished
+    /// rather than all collapsed the other way.
+    #[test]
+    fn a_beaten_declaration_is_overtaken_and_a_clean_one_is_clean() {
+        let plan = std::env::temp_dir().join("pm-test-plan-beaten.json");
+        let events = std::env::temp_dir().join("pm-test-events-beaten.jsonl");
+        std::fs::write(&plan, r#"[{"name":"fmt","measured_ms":1000}]"#).unwrap();
+        std::fs::write(
+            &events,
+            "{\"event\":\"gate_measured\",\"gate\":\"fmt\",\"measured_ms\":5000,\"decided\":true,\"attempt\":\"a\"}\n",
+        )
+        .unwrap();
+        assert!(matches!(check(&events, &plan), Outcome::Overtaken(_)));
+
+        std::fs::write(
+            &events,
+            "{\"event\":\"gate_measured\",\"gate\":\"fmt\",\"measured_ms\":900,\"decided\":true,\"attempt\":\"a\"}\n",
+        )
+        .unwrap();
+        assert_eq!(check(&events, &plan), Outcome::Clean);
     }
 
     /// Only the named gate's runs count toward its worst case.
