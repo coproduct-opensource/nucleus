@@ -42,8 +42,8 @@
       "sdks/verifier-js/target/**"
     ],
     "exec": "scoped",
-    "wall_ms": 900000,
-    "cpu_ms": 900000,
+    "wall_ms": 1200000,
+    "cpu_ms": 1200000,
     "mem_mb": 4096,
     "secrets": []
   },
@@ -123,7 +123,7 @@
     "git@2.39.5"
   ],
   "cwd": "",
-  "timeout_s": 300,
+  "timeout_s": 950,
   "outputs": [],
   "resources": {
     "cpus": 2,

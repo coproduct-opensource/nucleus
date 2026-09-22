@@ -33,27 +33,54 @@
     "mem_mb": 8192,
     "secrets": []
   },
-  "cmd": [
-    "cargo",
-    "nextest",
-    "run",
-    "--offline",
-    "--locked",
-    "--all-features",
-    "--no-fail-fast",
-    "-E",
-    "package(xtask) | binary(olog) | binary(goal_corpus)"
+  "cmd": [],
+  "steps": [
+    {
+      "program": "scripts/gatehouse-verifier-sdk.sh",
+      "reads": [
+        "**",
+        "scripts/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    },
+    {
+      "program": "cargo",
+      "args": [
+        "nextest",
+        "run",
+        "--offline",
+        "--locked",
+        "--all-features",
+        "--no-fail-fast",
+        "-E",
+        "package(xtask) | binary(olog) | binary(goal_corpus)"
+      ],
+      "reads": [
+        "**",
+        "scripts/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    }
   ],
-  "steps": [],
   "tools": [
     "sh@0.5.12",
     "cargo@1.96.1",
     "rustc@1.96.1",
     "cargo-nextest@0.9.145",
+    "wasm-pack@0.13.1",
+    "wasm-bindgen@0.2.122",
     "git@2.39.5"
   ],
   "cwd": "",
-  "timeout_s": 900,
+  "timeout_s": 2700,
   "outputs": [],
   "resources": {
     "cpus": 3,
