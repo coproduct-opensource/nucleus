@@ -745,7 +745,7 @@
     "disk_mb": 8192,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 776241,
+    "measured_ms": 1493565,
     "mem_mb": 8192,
     "name": "test-audit",
     "outputs": [],
@@ -800,7 +800,7 @@
         ]
       }
     ],
-    "timeout_ms": 2700000,
+    "timeout_ms": 3600000,
     "tools": [
       "sh@0.5.12",
       "cargo@1.96.1",
