@@ -4,6 +4,22 @@
 -- carry the same commands, scopes and capabilities, plus the fields a writ Gate has no room for
 -- (cwd, resources, falsifier, the whole Env).
 --
+-- EDITING THIS FILE DOES NOT CHANGE WHAT THE LANE RUNS. Three separate steps stand between a
+-- commit here and a gate behaving differently, and 2026-09-22 spent hours discovering each:
+--
+--   1. The controller serves a plan UPLOADED to it (`PUT /v1/<tenant>/plan`), not read from the
+--      tree under test. Landing a change here leaves the lane on the old plan.
+--   2. A gate job binds its recipe at ENQUEUE. An upload does not retrofit queued work —
+--      measured: a job claimed twenty minutes after an upload still ran the old definition.
+--      Re-request the branch (a new commit) so its jobs are created under the new plan.
+--   3. The receipt binding verifies the `plan` field, so every receipt produced under the
+--      previous plan hash comes back `refuted` and the roll-up can use none of it. Batch plan
+--      changes; each upload discards all gate work in flight.
+--
+-- The cost of not knowing this: a REQUIRED gate (`test-audit`) sat unexecuted indefinitely
+-- because the served plan carried six gates while this file declared seven, and nothing compares
+-- the two. `GET /v1/<tenant>/plan` is how you find out; there is no gate for it.
+--
 -- Tuples follow gatehouse's prelude/ci.writ:
 --   Cap    = (net, exec, wallMs, cpuMs, memMb, fsRead, fsWrite, secrets)
 --            net tag 3 0 = None, exec tag 3 1 = Scoped
