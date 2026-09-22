@@ -5,6 +5,7 @@
       "exec": "scoped",
       "fs_read": [
         ".github/workflows/**",
+        ".sandbox-unpinned-ceiling",
         "crates/**",
         "docs/**",
         "kani-divergence.toml",
@@ -43,6 +44,7 @@
     ],
     "scope": [
       ".github/workflows/**",
+      ".sandbox-unpinned-ceiling",
       "crates/**",
       "docs/**",
       "kani-divergence.toml",
@@ -58,6 +60,7 @@
         "program": "scripts/check-verify-strict.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -74,6 +77,7 @@
         "program": "scripts/check-sandbox-trusted-base.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -90,6 +94,7 @@
         "program": "scripts/check-failclosed-verifiers.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -106,6 +111,7 @@
         "program": "scripts/check-mediation.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -122,6 +128,7 @@
         "program": "scripts/check-north-star-ledger.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -138,6 +145,7 @@
         "program": "scripts/check-extracted-callsites.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -154,6 +162,7 @@
         "program": "scripts/check-task-compiler-offline.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -170,6 +179,7 @@
         "program": "scripts/check-ingest-hashed.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -186,6 +196,7 @@
         "program": "scripts/check-kani-divergence.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -202,6 +213,7 @@
         "program": "scripts/check-sealed-home.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -218,6 +230,7 @@
         "program": "scripts/check-declassify-governor-keys-sealed.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
