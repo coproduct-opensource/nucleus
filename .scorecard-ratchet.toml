@@ -161,13 +161,33 @@ population_floor = 278
 # all seven from its first commit; 26/84. Without the declaration the new crate
 # alone dropped the ratio to 29.76% -- a crate that can panic while appending
 # evidence is exactly what this family counts.
-# 2026-09-20: new crate nucleus-blast-radius declares all seven from its first
-# commit; 27/85. Same measured value the authority-exchange branch raises to, on
-# its own — two independent crates each lifting the floor by one is the ratchet
-# working, and the merge of the two pins is an identical-value conflict. A crate
-# whose output an insurer prices is exactly what this family counts.
-floor_bp = 3176
-population_floor = 85
+# 2026-09-20: new crate nucleus-authority-exchange declares all seven; 27/85. The
+# gate caught it the same way: without the declaration the ratio fell to 30.58%
+# and Manifest Guards went red. Declaring it found five real sites -- two
+# unchecked `Decimal` multiplications converting a certificate's budget to a
+# ceiling, an `expect` on a map lookup that `entry()` removes, a `Duration`
+# addition, and a fixture that panicked instead of taking an infallible
+# constructor. A crate that decides who may spend authority is exactly what this
+# family counts.
+# 2026-09-20: new crate nucleus-calibration declares all seven from its first
+# commit; 28/86. The declaration paid for itself before the first commit: two
+# integer divisions behind a `.max(1)` that the type could not see (now
+# `checked_div`). Note the census reads git, not the working tree -- the crate
+# was invisible to this gate until `git add`, which is the same lesson the
+# visibility gate learned from a nested worktree the same day. A crate that
+# decides whether a probability may be trusted is exactly what this family
+# counts.
+# 2026-09-21 (main merged in): nucleus-blast-radius arrives from #2983, also
+# declaring all seven by workspace inheritance; 29/87. Third crate in a row to
+# RAISE this ratio on arrival, so the gate refused the floor for having slack
+# under it rather than for being overshot. Raised to the measured value.
+#
+# Worth recording as a cost rather than a complaint: a floor pinned AT the
+# measurement means every branch that adds a crate must move this line, and two
+# branches doing it in parallel conflict here. That is the price of a floor with
+# no slack, and no-slack is the property that makes it a gate.
+floor_bp = 3333
+population_floor = 87
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

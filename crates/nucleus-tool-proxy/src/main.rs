@@ -18,7 +18,8 @@ use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeT
 use nucleus::portcullis::kernel::{DecisionToken, Kernel};
 use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
-use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
+use nucleus_authority_exchange::{Charger, RoundScheduler};
+use nucleus_permission_market::{PermissionDimension, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
@@ -32,9 +33,11 @@ mod art12_shipper;
 mod art12_sink;
 mod attestation;
 mod auth;
+mod authority_ledger;
 mod boot_report;
 mod broker_client;
 mod cert_bridge;
+mod clearing;
 mod declassify;
 mod dlc_admission;
 mod drand_setup;
@@ -318,6 +321,36 @@ struct Args {
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_DELEGATION_CEILING")]
     delegation_ceiling: Option<String>,
 
+    /// Scarce-authority dimensions cleared by a truthful auction instead of the
+    /// Lagrangian screen. Comma-separated, from `filesystem`, `command_exec`,
+    /// `network_egress`, `approval`.
+    ///
+    /// Empty (the default) changes nothing: every dimension keeps the posted-price
+    /// path. A named dimension holds each request for `--clearing-window-ms`,
+    /// clears the group with the proven VCG kernel, and charges the winner the
+    /// Clarke pivot against this pod's delegated budget. A request for a named
+    /// dimension that arrives WITHOUT a verified delegation certificate is
+    /// refused: the bid ceiling comes from the certificate, and a bid the
+    /// principal did not authorise is not a bid.
+    #[arg(long, env = "NUCLEUS_CLEARING_DIMENSIONS", value_delimiter = ',')]
+    clearing: Vec<String>,
+
+    /// How long a clearing round collects bids before it closes, in
+    /// milliseconds. This is added latency on every request for a cleared
+    /// dimension, paid to make a second price exist at all.
+    #[arg(long, env = "NUCLEUS_CLEARING_WINDOW_MS", default_value_t = 50)]
+    clearing_window_ms: u64,
+
+    /// Where cleared rounds are written down: one signed, hash-chained edge per
+    /// participant, each bound to the round's receipt hash.
+    ///
+    /// Required whenever `--clearing` names a dimension. Clearing without a
+    /// record would produce a price nothing can check afterwards, which is the
+    /// opposite of the reason to run an auction at all — so a missing ledger is
+    /// a refusal at startup, not a silent degradation.
+    #[arg(long, env = "NUCLEUS_AUTHORITY_LEDGER")]
+    authority_ledger: Option<PathBuf>,
+
     // === Delegation Certificate Configuration ===
     /// Hex-encoded Ed25519 public key of the root delegation authority.
     /// When set, the tool-proxy accepts `x-nucleus-delegation-cert` headers
@@ -458,6 +491,15 @@ pub(crate) struct AppState {
     orchestrator_credentials: std::collections::BTreeMap<String, String>,
     /// Permission market for Lagrangian pricing of capability dimensions.
     permission_market: Arc<Mutex<PermissionMarket>>,
+    /// Dimensions whose slots are auctioned rather than posted-priced. Empty by
+    /// default, so this is inert until an operator names a dimension.
+    clearing_dimensions: std::collections::BTreeSet<PermissionDimension>,
+    /// The round scheduler, present exactly when `clearing_dimensions` is not
+    /// empty. `Box<dyn Charger>` so the charger is chosen at startup.
+    authority_exchange: Option<Arc<RoundScheduler<Box<dyn Charger>>>>,
+    /// Where cleared rounds are recorded. Present exactly when
+    /// `authority_exchange` is.
+    authority_ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
     sandbox_proof: sandbox_proof::SandboxProof,
     /// Root authority Ed25519 public key for delegation certificate verification.
@@ -1617,6 +1659,72 @@ async fn main() -> Result<(), ApiError> {
         })
     };
 
+    // The authority exchange. Inert unless an operator names a dimension: an
+    // empty `--clearing` leaves `authority_exchange` as `None` and every
+    // dimension on the posted-price path it is on today.
+    let clearing_dimensions =
+        clearing::parse_clearing_dimensions(&args.clearing).map_err(ApiError::Body)?;
+    let authority_exchange = if clearing_dimensions.is_empty() {
+        None
+    } else {
+        // The pod cannot spend more on authority than it was delegated: the
+        // ledger's ceiling IS this pod's delegated budget, so a round it cannot
+        // afford denies rather than overdrawing.
+        let charger: Box<dyn Charger> =
+            Box::new(nucleus_authority_exchange::scheduler::LedgerCharger::new(
+                portcullis::budget_ledger::BudgetLedger::for_parent(&delegation_ceiling.budget),
+            ));
+        info!(
+            dimensions = %clearing_dimensions.iter().map(|d| d.label()).collect::<Vec<_>>().join(","),
+            window_ms = args.clearing_window_ms,
+            "authority exchange enabled: these dimensions clear by truthful auction"
+        );
+        Some(RoundScheduler::new(
+            std::time::Duration::from_millis(args.clearing_window_ms),
+            charger,
+        ))
+    };
+    // Fail closed at startup rather than clearing unrecorded. A price nobody can
+    // check afterwards is not what an auction is for.
+    let authority_ledger = if clearing_dimensions.is_empty() {
+        None
+    } else {
+        let Some(path) = args.authority_ledger.as_deref() else {
+            return Err(ApiError::Body(
+                "--clearing names a dimension but --authority-ledger is unset; a cleared \
+                 round must be recorded or its price cannot be checked afterwards"
+                    .to_string(),
+            ));
+        };
+        let Some(seed) = art12_sink::mediation_seed_from_env() else {
+            return Err(ApiError::Body(
+                "--clearing names a dimension but NUCLEUS_MEDIATION_SIGNING_KEY is unset \
+                 or malformed; the authority ledger signs with the pod's mediation key"
+                    .to_string(),
+            ));
+        };
+        let Some(ledger) = authority_ledger::AuthorityLedger::open(path, seed, "pod-mediation")
+        else {
+            return Err(ApiError::Body(format!(
+                "could not open the authority ledger at {}",
+                path.display()
+            )));
+        };
+        // The PUBLIC half, once, so a reader of the ledger can verify its chain.
+        // Without this the edges are signed by a key nobody outside the pod has,
+        // which makes a tamper-evident log tamper-evident to nobody. Same
+        // reasoning, and the same key, as the mediation receipts' console
+        // publication; a relying party cross-checks it against the node's record
+        // of the key it minted for this pod.
+        info!(
+            path = %path.display(),
+            kid = ledger.kid(),
+            verifying_key_hex = %hex::encode(ledger.verifying_key().to_bytes()),
+            "authority ledger open: every cleared round is recorded per participant"
+        );
+        Some(Arc::new(ledger))
+    };
+
     // Load orchestrator credentials from environment for sub-pod injection
     let orchestrator_credentials = {
         let mut creds = std::collections::BTreeMap::new();
@@ -1845,6 +1953,9 @@ async fn main() -> Result<(), ApiError> {
         delegation_ceiling,
         orchestrator_credentials,
         permission_market: Arc::new(Mutex::new(PermissionMarket::new())),
+        clearing_dimensions: clearing_dimensions.clone(),
+        authority_exchange,
+        authority_ledger,
         sandbox_proof,
         cert_root_pubkey: args
             .cert_root_pubkey
@@ -2443,8 +2554,15 @@ async fn auth_middleware(
         }
         (Some(grant), Some(certified))
     } else {
-        (evaluate_permission_bid(&parts.headers, &state), None)
+        (
+            clearing::evaluate_permission_bid(&parts.headers, &state),
+            None,
+        )
     };
+
+    // The authority exchange decides first; see `clearing`. It refuses, or it does
+    // not, and the posted-price screen below is the other mechanism for the same slot.
+    clearing::clear_by_auction(&state, parts.uri.path(), certified_perms.as_ref()).await?;
 
     // Refuse the endpoint when its dimension is denied, including partial grants.
     if let Some(ref grant) = permission_grant
@@ -2476,36 +2594,6 @@ async fn auth_middleware(
         req.extensions_mut().insert(certified);
     }
     Ok(next.run(req).await)
-}
-
-/// Parse and evaluate a permission bid from request headers.
-///
-/// Returns `Some(PermissionGrant)` if a valid bid was present, `None` otherwise.
-/// Invalid bid JSON is silently ignored (logged at warn level).
-fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<PermissionGrant> {
-    let bid_header = headers.get(HEADER_PERMISSION_BID)?;
-    let bid_str = bid_header.to_str().ok()?;
-    let bid: PermissionBid = match serde_json::from_str(bid_str) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "invalid permission bid header");
-            return None;
-        }
-    };
-
-    let market = state.permission_market.lock().unwrap();
-    let grant = market.evaluate_bid(&bid);
-
-    tracing::info!(
-        skill_id = %bid.skill_id,
-        granted = grant.granted.len(),
-        denied = grant.denied.len(),
-        total_cost = grant.total_cost,
-        event = "permission_bid_evaluated",
-        "permission market evaluated bid"
-    );
-
-    Some(grant)
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
