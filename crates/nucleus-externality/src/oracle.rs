@@ -67,17 +67,177 @@ pub struct TeeAttestation {
     pub report_data: Vec<u8>,
 }
 
-impl TeeAttestation {
-    /// **STUB.** Vendor-specific parsing + signature chain
-    /// verification will land in a follow-on. Today the stub
-    /// asserts (a) `quote_bytes` is non-empty, (b) `report_data`
-    /// length is 64 bytes (matches every vendor's spec).
+/// Sealing token. Private, so every witness below has a private constructor
+/// (ADR 0007 C-1) and can be minted only inside this module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seal;
+
+/// Traits whose implementations must live in this crate. The witness a verifier
+/// returns is THIS crate's claim about what was checked, so this crate decides
+/// what may make one. A downstream verifier arrives by landing here, not by
+/// implementing an open trait and minting its own evidence.
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Evidence that the claim's Ed25519 signature verified — fresh, and bound to
+/// the expected subject and resource. Minted only by [`verify_claim_witnessed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignatureVerified {
+    _seal: Seal,
+}
+
+/// Evidence that a TEE quote was verified against a vendor trust chain.
+///
+/// NOT obtainable from a shape check: [`QuoteWellFormed`] is a different type,
+/// and `assess_rung` takes this one. That is the whole repair — the two were
+/// the same `bool` on 2026-09-21.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TeeAttested {
+    _seal: Seal,
+}
+
+/// Evidence that a quote is STRUCTURALLY well formed: non-empty, and
+/// `report_data` the 64 bytes every vendor specifies. It establishes nothing
+/// about provenance, which is why it cannot reach a rung.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuoteWellFormed {
+    _seal: Seal,
+}
+
+/// Evidence that a zk upper-envelope proof was verified against a verification
+/// key AND bounds the claim's `units_micro`.
+///
+/// Not obtainable from [`EnvelopeSelfDeclared`], which is what checking a claim
+/// against its own `public_inputs[0]` establishes: the prover chose that number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvelopeBounded {
+    _seal: Seal,
+}
+
+/// Evidence that `units_micro` is within the bound the PROVER supplied. A
+/// consistency check on the proof's own public inputs, and nothing more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvelopeSelfDeclared {
+    _seal: Seal,
+}
+
+/// Evidence of a multi-source dispute window that elapsed unchallenged.
+/// Supplied by the aggregation layer, never by a single claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Disputed {
+    _seal: Seal,
+}
+
+impl Disputed {
+    /// Minted by the aggregation layer once its window has elapsed. Takes the
+    /// count of independent corroborating sources so the constructor cannot be
+    /// called on no evidence at all.
     ///
-    /// Returns `Ok(())` for a well-formed stub quote. Production
-    /// implementations must walk the DCAP PCK cert chain (TDX),
-    /// the SEV-SNP versioned chip endorsement key, or the Nitro
-    /// CABundle.
-    pub fn verify_stub(&self) -> Result<(), OracleError> {
+    /// # Errors
+    ///
+    /// [`OracleError::DisputeNeedsTwoSources`] below two sources.
+    pub fn from_elapsed_window(independent_sources: usize) -> Result<Self, OracleError> {
+        if independent_sources < 2 {
+            return Err(OracleError::DisputeNeedsTwoSources {
+                got: independent_sources,
+            });
+        }
+        Ok(Self { _seal: Seal })
+    }
+}
+
+/// Test-only mints. `#[cfg(test)]`, so they do not ship: the production path
+/// has exactly one route to each witness, which is the checker for its layer.
+/// Without these the crate could not test `assess_rung` at all, and a rung
+/// table nobody exercises is the vacuity this change exists to remove.
+#[cfg(test)]
+impl SignatureVerified {
+    pub(crate) fn for_test() -> Self {
+        Self { _seal: Seal }
+    }
+}
+
+#[cfg(test)]
+impl TeeAttested {
+    pub(crate) fn for_test() -> Self {
+        Self { _seal: Seal }
+    }
+}
+
+#[cfg(test)]
+impl EnvelopeBounded {
+    pub(crate) fn for_test() -> Self {
+        Self { _seal: Seal }
+    }
+}
+
+#[cfg(test)]
+impl Disputed {
+    pub(crate) fn for_test() -> Self {
+        Self { _seal: Seal }
+    }
+}
+
+/// A verifier for vendor TEE quotes.
+///
+/// **There is no implementation in this crate, and that is the point.** The
+/// stub it replaces returned `Ok` for any non-empty byte string and fed the
+/// assurance rung; a fail-closed trait with no default means a caller must
+/// name a real verifier, and until one exists `verify_vca_claim` cannot be
+/// called at all (#2504).
+pub trait TeeQuoteVerifier: sealed::Sealed {
+    /// Verify `att` and mint the attestation witness.
+    ///
+    /// Named `verify_quote` rather than `verify` so neither a reader nor
+    /// `scripts/check-verify-strict.sh` can mistake it for a dalek leaf call.
+    /// That gate watches every file mentioning `ed25519_dalek` for a
+    /// two-argument `.verify(`, and it was right to flag the first draft of
+    /// this trait.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the vendor chain check rejects.
+    fn verify_quote(&self, att: &TeeAttestation) -> Result<TeeAttested, OracleError>;
+}
+
+/// A verifier for zk upper-envelope proofs. Same shape, same reason (#2505),
+/// and the sharper of the two: the bound the stub compared against was chosen
+/// by the prover.
+pub trait EnvelopeVerifier: sealed::Sealed {
+    /// Verify `proof` against its verification key and bound `claim`.
+    ///
+    /// Two arguments, so the name matters for the same reason as
+    /// `verify_quote`: a bare two-argument `.verify(` in this file reads
+    /// exactly like the dalek call the strict-verify gate forbids.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the proving-system check rejects.
+    fn verify_envelope(
+        &self,
+        proof: &UpperEnvelopeProof,
+        claim: &SignedExternalityClaim,
+    ) -> Result<EnvelopeBounded, OracleError>;
+}
+
+impl TeeAttestation {
+    /// A STRUCTURAL check: `quote_bytes` non-empty, and `report_data` the 64
+    /// bytes every vendor specifies. It establishes nothing about provenance.
+    ///
+    /// Deliberately NOT a [`TeeQuoteVerifier`], and it returns
+    /// [`QuoteWellFormed`] rather than [`TeeAttested`], so it cannot be passed
+    /// where an attestation is wanted. Under its old name `verify_stub` it was
+    /// called unconditionally by `verify_vca_claim` and its `Ok` became
+    /// `tee_ok = true`: a one-byte quote reached rung R2 and, beside the
+    /// envelope stub, R4. Real verification walks the DCAP PCK chain (TDX), the
+    /// SEV-SNP versioned chip endorsement key, or the Nitro CABundle.
+    ///
+    /// # Errors
+    ///
+    /// [`OracleError::TeeQuoteEmpty`] or
+    /// [`OracleError::TeeReportDataWrongLength`].
+    pub fn check_shape(&self) -> Result<QuoteWellFormed, OracleError> {
         if self.quote_bytes.is_empty() {
             return Err(OracleError::TeeQuoteEmpty);
         }
@@ -86,7 +246,7 @@ impl TeeAttestation {
                 got: self.report_data.len(),
             });
         }
-        Ok(())
+        Ok(QuoteWellFormed { _seal: Seal })
     }
 }
 
@@ -118,11 +278,27 @@ impl UpperEnvelopeProof {
         self.public_inputs.first().copied()
     }
 
-    /// **STUB.** Asserts `claim.units_micro <= envelope`. The
-    /// production verifier additionally runs the Groth16 (or chosen
-    /// scheme) verification key over (`proof_bytes`, `public_inputs`).
-    /// The stub matches the prod-shape contract S2 will inherit.
-    pub fn verify_stub(&self, claim: &SignedExternalityClaim) -> Result<(), OracleError> {
+    /// Asserts `claim.units_micro <= envelope` — where `envelope` is
+    /// `public_inputs[0]`, **which the prover supplied**. So this compares the
+    /// claim against a number the claimant chose, and `proof_bytes` is never
+    /// checked against anything.
+    ///
+    /// It returns [`EnvelopeSelfDeclared`] for that reason, not
+    /// [`EnvelopeBounded`], and cannot reach a rung. Under its old name
+    /// `verify_stub` a one-byte proof declaring `u64::MAX` passed it and
+    /// `assess_rung` read the `Ok` as `zk_envelope_ok = true`. The real
+    /// verifier runs the proving system's verification key over
+    /// (`proof_bytes`, `public_inputs`).
+    ///
+    /// # Errors
+    ///
+    /// [`OracleError::EnvelopeProofMissingPublicInputs`],
+    /// [`OracleError::EnvelopeOverclaim`] or
+    /// [`OracleError::EnvelopeProofEmpty`].
+    pub fn check_self_declared_bound(
+        &self,
+        claim: &SignedExternalityClaim,
+    ) -> Result<EnvelopeSelfDeclared, OracleError> {
         let envelope = self
             .envelope_micro()
             .ok_or(OracleError::EnvelopeProofMissingPublicInputs)?;
@@ -132,12 +308,10 @@ impl UpperEnvelopeProof {
                 envelope,
             });
         }
-        // Production: verify the Groth16/PLONK/Halo2 proof here.
-        // Today the stub trusts the envelope value is well-formed.
         if self.proof_bytes.is_empty() {
             return Err(OracleError::EnvelopeProofEmpty);
         }
-        Ok(())
+        Ok(EnvelopeSelfDeclared { _seal: Seal })
     }
 }
 
@@ -152,47 +326,94 @@ pub struct VcaExternalityClaim {
     pub envelope: UpperEnvelopeProof,
 }
 
-/// Verify a `VcaExternalityClaim` — three layers in order:
-/// (1) TEE attestation → (2) ZK envelope bound on `claim.units_micro`
-/// → (3) Ed25519 signature + freshness + subject binding.
+/// Verify the claim's signature and mint the [`SignatureVerified`] witness.
+///
+/// The only way to obtain that witness, which is what makes it evidence
+/// rather than a parameter (ADR 0007 C-2).
+///
+/// # Errors
+///
+/// [`OracleError::Claim`] if the signature, freshness or subject binding fails.
+pub fn verify_claim_witnessed(
+    claim: &SignedExternalityClaim,
+    oracle_vk: &VerifyingKey,
+    expected_subject: &str,
+    now_unix_micros: u64,
+) -> Result<SignatureVerified, OracleError> {
+    verify_claim(claim, oracle_vk, expected_subject, now_unix_micros)
+        .map_err(OracleError::Claim)?;
+    Ok(SignatureVerified { _seal: Seal })
+}
+
+/// Verify a `VcaExternalityClaim` — three layers, and return the witness each
+/// one minted.
+///
+/// The verifiers are PARAMETERS because there is no default: a caller must name
+/// what checks a vendor quote and what checks a proof. Before #2504/#2505 both
+/// were stubs called unconditionally, so every caller got the strongest rung
+/// for free.
 ///
 /// Fails fast at the first layer that rejects.
-pub fn verify_vca_claim(
+///
+/// # Errors
+///
+/// Whichever layer rejects first: the TEE verifier, the envelope verifier, or
+/// [`OracleError::Claim`] for the signature.
+pub fn verify_vca_claim<T, E>(
     vca: &VcaExternalityClaim,
     oracle_vk: &VerifyingKey,
     expected_subject: &str,
     now_unix_micros: u64,
-) -> Result<(), OracleError> {
-    vca.tee.verify_stub()?;
-    vca.envelope.verify_stub(&vca.claim)?;
-    verify_claim(&vca.claim, oracle_vk, expected_subject, now_unix_micros)
-        .map_err(OracleError::Claim)?;
-    Ok(())
+    tee_verifier: &T,
+    envelope_verifier: &E,
+) -> Result<(SignatureVerified, TeeAttested, EnvelopeBounded), OracleError>
+where
+    T: TeeQuoteVerifier,
+    E: EnvelopeVerifier,
+{
+    let tee = tee_verifier.verify_quote(&vca.tee)?;
+    let envelope = envelope_verifier.verify_envelope(&vca.envelope, &vca.claim)?;
+    let signature =
+        verify_claim_witnessed(&vca.claim, oracle_vk, expected_subject, now_unix_micros)?;
+    Ok((signature, tee, envelope))
 }
 
 /// Verify a `VcaExternalityClaim` AND report the [`AssuranceRung`] it achieved.
 ///
-/// On success the rung is **derived from what actually verified** (signature +
-/// TEE + zk upper-envelope all passed) — never self-asserted. A bare
-/// [`VcaExternalityClaim`] carries both the TEE quote and the envelope proof, so
-/// a full pass derives [`AssuranceRung::ZkUpperEnvelope`] (R4). Multi-source
-/// dispute (R3) is supplied by the aggregation layer, not a single claim, so it
-/// is `false` here.
+/// The rung is derived from the witnesses the layers minted, so R4 is
+/// unreachable without a real envelope verifier and R2 without a real quote
+/// verifier. The line this replaces read
+/// `assess_rung(/* signature_ok */ true, /* tee_ok */ true, …)` — four
+/// constants, and two of them stood for shape checks.
 ///
-/// Fails closed: any failing layer returns the error (the rung is *not* reported
-/// for an unverified claim — that would be the self-reported floor).
-pub fn verify_vca_claim_rung(
+/// Multi-source dispute (R3) stays `None`: it is a property of an aggregation
+/// over several claims, and a single claim cannot witness it.
+///
+/// # Errors
+///
+/// As [`verify_vca_claim`]. A failing layer returns the error rather than a
+/// rung, so an unverified claim never reports one.
+pub fn verify_vca_claim_rung<T, E>(
     vca: &VcaExternalityClaim,
     oracle_vk: &VerifyingKey,
     expected_subject: &str,
     now_unix_micros: u64,
-) -> Result<AssuranceRung, OracleError> {
-    verify_vca_claim(vca, oracle_vk, expected_subject, now_unix_micros)?;
-    // All three layers verified: signature ✓, TEE ✓, zk-envelope ✓.
-    Ok(assess_rung(
-        /* signature_ok */ true, /* tee_ok */ true,
-        /* multi_source_disputed */ false, /* zk_envelope_ok */ true,
-    ))
+    tee_verifier: &T,
+    envelope_verifier: &E,
+) -> Result<AssuranceRung, OracleError>
+where
+    T: TeeQuoteVerifier,
+    E: EnvelopeVerifier,
+{
+    let (signature, tee, envelope) = verify_vca_claim(
+        vca,
+        oracle_vk,
+        expected_subject,
+        now_unix_micros,
+        tee_verifier,
+        envelope_verifier,
+    )?;
+    Ok(assess_rung(&signature, Some(&tee), None, Some(&envelope)))
 }
 
 /// **S4 — Per-dimension oracle key registry.**
@@ -255,6 +476,10 @@ pub enum OracleError {
     EnvelopeOverclaim { claimed: u64, envelope: u64 },
     #[error("claim verification: {0}")]
     Claim(ClaimError),
+    /// A dispute window with fewer than two independent sources corroborates
+    /// nothing; `Disputed` refuses rather than witnessing a majority of one.
+    #[error("multi-source dispute needs >= 2 independent sources, got {got}")]
+    DisputeNeedsTwoSources { got: usize },
 }
 
 #[cfg(test)]
@@ -262,6 +487,54 @@ mod tests {
     use super::*;
     use crate::claim::sign_claim;
     use ed25519_dalek::SigningKey;
+
+    /// Stands in for a real vendor-chain verifier. Exists only under
+    /// `cfg(test)`: PRODUCTION SHIPS NO IMPLEMENTATION, which is the
+    /// fail-closed property #2504 asked for. A caller in production cannot
+    /// call `verify_vca_claim` until someone writes a real one.
+    struct AcceptingTee;
+    impl super::sealed::Sealed for AcceptingTee {}
+    impl TeeQuoteVerifier for AcceptingTee {
+        fn verify_quote(&self, _att: &TeeAttestation) -> Result<TeeAttested, OracleError> {
+            Ok(TeeAttested::for_test())
+        }
+    }
+
+    /// The same for the envelope layer (#2505).
+    struct AcceptingEnvelope;
+    impl super::sealed::Sealed for AcceptingEnvelope {}
+    impl EnvelopeVerifier for AcceptingEnvelope {
+        fn verify_envelope(
+            &self,
+            _proof: &UpperEnvelopeProof,
+            _claim: &SignedExternalityClaim,
+        ) -> Result<EnvelopeBounded, OracleError> {
+            Ok(EnvelopeBounded::for_test())
+        }
+    }
+
+    /// The same for the envelope layer, so a rejection there is reachable too.
+    struct RefusingEnvelope;
+    impl super::sealed::Sealed for RefusingEnvelope {}
+    impl EnvelopeVerifier for RefusingEnvelope {
+        fn verify_envelope(
+            &self,
+            _proof: &UpperEnvelopeProof,
+            _claim: &SignedExternalityClaim,
+        ) -> Result<EnvelopeBounded, OracleError> {
+            Err(OracleError::EnvelopeProofEmpty)
+        }
+    }
+
+    /// A verifier that refuses, so a rejection at the TEE layer is reachable
+    /// in a test and the accepting pair above is not the only shape exercised.
+    struct RefusingTee;
+    impl super::sealed::Sealed for RefusingTee {}
+    impl TeeQuoteVerifier for RefusingTee {
+        fn verify_quote(&self, _att: &TeeAttestation) -> Result<TeeAttested, OracleError> {
+            Err(OracleError::TeeQuoteEmpty)
+        }
+    }
 
     fn oracle_sk() -> SigningKey {
         SigningKey::from_bytes(&[44u8; 32])
@@ -301,14 +574,14 @@ mod tests {
 
     #[test]
     fn tee_attestation_stub_accepts_well_formed_quote() {
-        fixture_tee().verify_stub().unwrap();
+        fixture_tee().check_shape().unwrap();
     }
 
     #[test]
     fn tee_attestation_rejects_empty_quote() {
         let mut t = fixture_tee();
         t.quote_bytes.clear();
-        assert!(matches!(t.verify_stub(), Err(OracleError::TeeQuoteEmpty)));
+        assert!(matches!(t.check_shape(), Err(OracleError::TeeQuoteEmpty)));
     }
 
     #[test]
@@ -316,7 +589,7 @@ mod tests {
         let mut t = fixture_tee();
         t.report_data.truncate(32);
         assert!(matches!(
-            t.verify_stub(),
+            t.check_shape(),
             Err(OracleError::TeeReportDataWrongLength { got: 32 })
         ));
     }
@@ -327,14 +600,14 @@ mod tests {
     fn envelope_proof_accepts_in_bound_claim() {
         let claim = fixture_claim(1_000);
         let env = fixture_envelope(1_500);
-        env.verify_stub(&claim).unwrap();
+        env.check_self_declared_bound(&claim).unwrap();
     }
 
     #[test]
     fn envelope_proof_rejects_overclaim() {
         let claim = fixture_claim(1_000);
         let env = fixture_envelope(500);
-        let err = env.verify_stub(&claim).unwrap_err();
+        let err = env.check_self_declared_bound(&claim).unwrap_err();
         assert!(matches!(
             err,
             OracleError::EnvelopeOverclaim {
@@ -349,7 +622,7 @@ mod tests {
         let claim = fixture_claim(1_000);
         let mut env = fixture_envelope(500);
         env.public_inputs.clear();
-        let err = env.verify_stub(&claim).unwrap_err();
+        let err = env.check_self_declared_bound(&claim).unwrap_err();
         assert!(matches!(err, OracleError::EnvelopeProofMissingPublicInputs));
     }
 
@@ -358,7 +631,7 @@ mod tests {
         let claim = fixture_claim(1_000);
         let mut env = fixture_envelope(1_500);
         env.proof_bytes.clear();
-        let err = env.verify_stub(&claim).unwrap_err();
+        let err = env.check_self_declared_bound(&claim).unwrap_err();
         assert!(matches!(err, OracleError::EnvelopeProofEmpty));
     }
 
@@ -377,6 +650,8 @@ mod tests {
             &vk,
             "spiffe://nucleus.io/ns/agents/sa/a1",
             1_700_000_000_000_001,
+            &AcceptingTee,
+            &AcceptingEnvelope,
         )
         .unwrap();
     }
@@ -394,18 +669,23 @@ mod tests {
             &vk,
             "spiffe://nucleus.io/ns/agents/sa/a1",
             1_700_000_000_000_001,
+            &AcceptingTee,
+            &AcceptingEnvelope,
         )
         .unwrap();
         assert_eq!(rung, AssuranceRung::ZkUpperEnvelope);
     }
 
+    /// A refused layer yields an ERROR, never a rung. Driven by a refusing
+    /// verifier rather than by an over-claim, because the over-claim check is
+    /// now `check_self_declared_bound` — a shape check that mints no witness
+    /// and so cannot be what decides a rung.
     #[test]
     fn rung_not_reported_for_failed_verification() {
-        // Over-claim breaks the envelope layer → error, NOT a rung.
         let vca = VcaExternalityClaim {
-            claim: fixture_claim(2_000),
+            claim: fixture_claim(1_000),
             tee: fixture_tee(),
-            envelope: fixture_envelope(1_000),
+            envelope: fixture_envelope(1_500),
         };
         let vk = oracle_sk().verifying_key();
         assert!(
@@ -414,8 +694,11 @@ mod tests {
                 &vk,
                 "spiffe://nucleus.io/ns/agents/sa/a1",
                 1_700_000_000_000_001,
+                &AcceptingTee,
+                &RefusingEnvelope,
             )
-            .is_err()
+            .is_err(),
+            "a refused envelope layer must not report a rung"
         );
     }
 
@@ -429,14 +712,72 @@ mod tests {
         };
         vca.tee.quote_bytes.clear();
         let vk = oracle_sk().verifying_key();
+        // BOTH verifiers refuse; the TEE layer runs first, so its error is the
+        // one returned. The ordering is the property, not the message.
         let err = verify_vca_claim(
             &vca,
             &vk,
             "spiffe://nucleus.io/ns/agents/sa/a1",
             1_700_000_000_000_001,
+            &RefusingTee,
+            &RefusingEnvelope,
         )
         .unwrap_err();
-        assert!(matches!(err, OracleError::TeeQuoteEmpty));
+        assert!(
+            matches!(err, OracleError::TeeQuoteEmpty),
+            "expected the TEE layer's error, got {err:?}"
+        );
+    }
+
+    /// **The measurement from 2026-09-21, and what it earns now.**
+    ///
+    /// A one-byte TEE quote with 64 zero bytes of `report_data`, and a
+    /// one-byte "proof" whose self-declared bound is `u64::MAX`. Both SHAPE
+    /// checks still pass — they are honest about what they check — and under
+    /// the old names both returned `Ok`, which `assess_rung` read as
+    /// `tee_ok = true, zk_envelope_ok = true` and turned into R4.
+    ///
+    /// The repair is in the types: `check_shape` yields `QuoteWellFormed` and
+    /// `check_self_declared_bound` yields `EnvelopeSelfDeclared`, and
+    /// `assess_rung` takes neither. That is a compile-time fact, so this test
+    /// does not pretend to observe it at runtime (ADR 0007 D-3: a
+    /// `compile_fail` doctest is not a substitute for a type). What it does
+    /// show is the consequence — with no witness beyond the signature, the
+    /// same claim earns R1.
+    #[test]
+    fn the_forged_claim_passes_both_shape_checks_and_earns_r1() {
+        let att = TeeAttestation {
+            vendor: TeeVendor::IntelTdx,
+            quote_bytes: vec![0x00],
+            report_data: vec![0x00; 64],
+        };
+        let env = UpperEnvelopeProof {
+            proof_bytes: vec![0x00],
+            public_inputs: vec![u64::MAX],
+        };
+        let claim = fixture_claim(1_000);
+
+        let _shape: QuoteWellFormed = att.check_shape().expect("a one-byte quote IS well formed");
+        let _bound: EnvelopeSelfDeclared = env
+            .check_self_declared_bound(&claim)
+            .expect("the prover's own bound IS satisfied");
+
+        let sig = SignatureVerified::for_test();
+        assert_eq!(
+            crate::assess_rung(&sig, None, None, None),
+            AssuranceRung::OracleSigned,
+            "a signature and two shape checks earn R1, not R4"
+        );
+    }
+
+    /// A dispute window cannot be witnessed by a majority of one.
+    #[test]
+    fn a_dispute_needs_two_independent_sources() {
+        assert!(matches!(
+            Disputed::from_elapsed_window(1),
+            Err(OracleError::DisputeNeedsTwoSources { got: 1 })
+        ));
+        assert!(Disputed::from_elapsed_window(2).is_ok());
     }
 
     // ── S4 — Oracle registry ───────────────────────────────────────────
