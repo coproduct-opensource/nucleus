@@ -67,6 +67,14 @@ pub(crate) enum Refusal {
     NoReceiptBody,
     ReceiptBodyUnreadable,
     ReceiptStorageFailed,
+    NoSpendBody,
+    SpendBodyUnreadable,
+    /// The shipped spend receipt did not verify for this pod; the reason, by name.
+    SpendRejected(crate::spend_receipt_collector::SpendRejection),
+    NoClearingBody,
+    ClearingBodyUnreadable,
+    /// The shipped clearing receipt did not RECOMPUTE; the reason, by name.
+    ClearingRejected(crate::clearing_receipt_collector::ClearingRejection),
     PodListEncodingFailed,
     SerializationFailed(String),
     /// The identity manager could not issue; its message, escaped on the wire.
@@ -120,6 +128,16 @@ impl std::fmt::Display for Refusal {
             Refusal::NoReceiptBody => f.write_str("no receipt body after SHIP_RECEIPT"),
             Refusal::ReceiptBodyUnreadable => f.write_str("receipt body too long or unreadable"),
             Refusal::ReceiptStorageFailed => f.write_str("receipt storage failed"),
+            Refusal::NoSpendBody => f.write_str("no receipt body after SHIP_SPEND"),
+            Refusal::SpendBodyUnreadable => {
+                f.write_str("spend receipt body too long or unreadable")
+            }
+            Refusal::SpendRejected(r) => write!(f, "{r}"),
+            Refusal::NoClearingBody => f.write_str("no receipt body after SHIP_CLEARING"),
+            Refusal::ClearingBodyUnreadable => {
+                f.write_str("clearing receipt body too long or unreadable")
+            }
+            Refusal::ClearingRejected(r) => write!(f, "{r}"),
             Refusal::PodListEncodingFailed => f.write_str("failed to encode pod list"),
             Refusal::SerializationFailed(e) => write!(f, "serialization failed: {e}"),
             Refusal::Identity(e) => f.write_str(e),
@@ -782,6 +800,87 @@ where
     }
 }
 
+/// Handle `SHIP_SPEND`: read the receipt body, verify it for THIS pod under the
+/// node's own mediator-key anchor, store it, and ack only from the durable proof.
+/// A receipt that fails `check` is refused by name and never reaches the log.
+async fn handle_ship_spend<R>(
+    reader: &mut R,
+    receipt_dir: Option<&std::path::Path>,
+    pod_id: uuid::Uuid,
+) -> Reply
+where
+    R: AsyncReadExt + Unpin,
+{
+    let Some(dir) = receipt_dir else {
+        return Err(Refusal::ReceiptCollectionNotConfigured);
+    };
+    let body = match read_bounded_frame(reader, MAX_RECEIPT_BODY_LEN).await {
+        Ok(Some(frame)) => frame,
+        Ok(None) => return Err(Refusal::NoSpendBody),
+        Err(e) => {
+            tracing::warn!(error = %e, "SHIP_SPEND body frame rejected");
+            return Err(Refusal::SpendBodyUnreadable);
+        }
+    };
+    let text = String::from_utf8_lossy(&body);
+    let line = text.trim_end();
+    if let Err(r) = crate::spend_receipt_collector::check(dir, &pod_id.to_string(), line) {
+        tracing::warn!(pod = %pod_id, reason = %r, "a shipped spend receipt was refused");
+        return Err(Refusal::SpendRejected(r));
+    }
+    match crate::spend_receipt_collector::append_spend(dir, line).await {
+        Ok(kept) => receipt_collected(
+            kept,
+            &crate::spend_receipt_collector::spend_log_path(dir),
+            line,
+        ),
+        Err(e) => {
+            tracing::error!(error = %e, "could not collect a shipped SpendReceipt");
+            Err(Refusal::ReceiptStorageFailed)
+        }
+    }
+}
+
+/// Handle `SHIP_CLEARING`: read the receipt body and store it only if the
+/// proven kernel re-derives the outcome it claims.
+///
+/// No key is consulted. A clearing receipt is not anybody's word — it declares
+/// its own inputs — so a signature would prove less than recomputation does: a
+/// correctly signed wrong clearing is still refused here.
+async fn handle_ship_clearing<R>(reader: &mut R, receipt_dir: Option<&std::path::Path>) -> Reply
+where
+    R: AsyncReadExt + Unpin,
+{
+    let Some(dir) = receipt_dir else {
+        return Err(Refusal::ReceiptCollectionNotConfigured);
+    };
+    let body = match read_bounded_frame(reader, MAX_RECEIPT_BODY_LEN).await {
+        Ok(Some(frame)) => frame,
+        Ok(None) => return Err(Refusal::NoClearingBody),
+        Err(e) => {
+            tracing::warn!(error = %e, "SHIP_CLEARING body frame rejected");
+            return Err(Refusal::ClearingBodyUnreadable);
+        }
+    };
+    let text = String::from_utf8_lossy(&body);
+    let line = text.trim_end();
+    if let Err(r) = crate::clearing_receipt_collector::check(line) {
+        tracing::warn!(reason = %r, "a shipped clearing receipt was refused");
+        return Err(Refusal::ClearingRejected(r));
+    }
+    match crate::clearing_receipt_collector::append_clearing(dir, line).await {
+        Ok(kept) => receipt_collected(
+            kept,
+            &crate::clearing_receipt_collector::clearing_log_path(dir),
+            line,
+        ),
+        Err(e) => {
+            tracing::error!(error = %e, "could not collect a shipped ClearingReceipt");
+            Err(Refusal::ReceiptStorageFailed)
+        }
+    }
+}
+
 /// The reply that tells a guest its receipt is kept.
 ///
 /// Built only from the [`nucleus_jsonl::Durable`] proof a synced append returns, and
@@ -1025,6 +1124,16 @@ where
             // Followed by a second frame (the receipt body), read under its own
             // larger bound. The connection already binds this to `pod_id`.
             handle_ship_receipt(reader, material.receipt_dir.as_deref()).await
+        }
+        Ok(WorkloadApiCommand::ShipClearing) => {
+            // Verified by recomputation, not by a key: the receipt carries its
+            // declared inputs, so the host re-derives the outcome.
+            handle_ship_clearing(reader, material.receipt_dir.as_deref()).await
+        }
+        Ok(WorkloadApiCommand::ShipSpend) => {
+            // Same two-frame shape; the body is verified against the key the node
+            // minted for `pod_id` before it is stored (#2541).
+            handle_ship_spend(reader, material.receipt_dir.as_deref(), pod_id).await
         }
         Err(err) => {
             debug!("workload API rejected command for pod {}: {err}", pod_id);
@@ -1935,6 +2044,32 @@ mod refusal_wire_tests {
                 Refusal::SerializationFailed("x".into()),
                 r#"{"error":"serialization failed: x"}"#,
             ),
+            (
+                Refusal::NoSpendBody,
+                r#"{"error":"no receipt body after SHIP_SPEND"}"#,
+            ),
+            (
+                Refusal::SpendBodyUnreadable,
+                r#"{"error":"spend receipt body too long or unreadable"}"#,
+            ),
+            (
+                Refusal::SpendRejected(crate::spend_receipt_collector::SpendRejection::Malformed),
+                r#"{"error":"spend receipt body is not a SpendReceipt"}"#,
+            ),
+            (
+                Refusal::NoClearingBody,
+                r#"{"error":"no receipt body after SHIP_CLEARING"}"#,
+            ),
+            (
+                Refusal::ClearingBodyUnreadable,
+                r#"{"error":"clearing receipt body too long or unreadable"}"#,
+            ),
+            (
+                Refusal::ClearingRejected(
+                    crate::clearing_receipt_collector::ClearingRejection::Malformed,
+                ),
+                r#"{"error":"clearing receipt body is not a ClearingReceipt"}"#,
+            ),
             (Refusal::Identity("no CA".into()), r#"{"error":"no CA"}"#),
             (
                 Refusal::Parse(CommandParseError::Unknown("NOPE".into())),
@@ -1949,6 +2084,12 @@ mod refusal_wire_tests {
                 | Refusal::NoReceiptBody
                 | Refusal::ReceiptBodyUnreadable
                 | Refusal::ReceiptStorageFailed
+                | Refusal::NoSpendBody
+                | Refusal::SpendBodyUnreadable
+                | Refusal::SpendRejected(_)
+                | Refusal::NoClearingBody
+                | Refusal::ClearingBodyUnreadable
+                | Refusal::ClearingRejected(_)
                 | Refusal::PodListEncodingFailed
                 | Refusal::SerializationFailed(_)
                 | Refusal::Identity(_)
@@ -1956,8 +2097,8 @@ mod refusal_wire_tests {
             }
             assert_eq!(&wire(&Err(refusal.clone())), want);
         }
-        // 8 materials + 3 one-shots + 8 others: nothing silently skipped.
-        assert_eq!(cases.len(), 19);
+        // 8 materials + 3 one-shots + 14 others: nothing silently skipped.
+        assert_eq!(cases.len(), 25);
     }
 
     /// The defect the old identity-error path had: its message was spliced into

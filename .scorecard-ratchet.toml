@@ -161,12 +161,18 @@ population_floor = 278
 # all seven from its first commit; 26/84. Without the declaration the new crate
 # alone dropped the ratio to 29.76% -- a crate that can panic while appending
 # evidence is exactly what this family counts.
-# 2026-09-20: new crate nucleus-blast-radius declares all seven from its first
-# commit; 27/85. Same measured value the authority-exchange branch raises to, on
-# its own — two independent crates each lifting the floor by one is the ratchet
-# working, and the merge of the two pins is an identical-value conflict. A crate
-# whose output an insurer prices is exactly what this family counts.
-floor_bp = 3176
+# 2026-09-20: new crate nucleus-authority-exchange declares all seven; 27/85. The
+# gate caught it the same way: without the declaration the ratio fell to 30.58%
+# and Manifest Guards went red. Declaring it found five real sites -- two
+# unchecked `Decimal` multiplications converting a certificate's budget to a
+# ceiling, an `expect` on a map lookup that `entry()` removes, a `Duration`
+# addition, and a fixture that panicked instead of taking an infallible
+# constructor. A crate that decides who may spend authority is exactly what this
+# family counts.
+# 2026-09-20 (#2540): nucleus-permission-market declares all seven and goes
+# integer: the f64 λ curve became a u128 fixed-point exponential, every price a
+# micro-USD u64, `deny(float_arithmetic)` on the shipped build. 28/85.
+floor_bp = 3294
 population_floor = 85
 
 [family.life]

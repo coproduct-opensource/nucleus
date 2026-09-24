@@ -18,7 +18,8 @@ use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeT
 use nucleus::portcullis::kernel::{DecisionToken, Kernel};
 use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
-use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
+use nucleus_authority_exchange::{Charger, RoundScheduler};
+use nucleus_permission_market::{PermissionDimension, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
@@ -32,6 +33,8 @@ mod art12_shipper;
 mod art12_sink;
 mod attestation;
 mod auth;
+mod authority_ledger;
+mod authority_round;
 mod boot_report;
 mod broker_client;
 mod cert_bridge;
@@ -60,6 +63,7 @@ mod proposal;
 mod run_gate;
 mod sandbox_proof;
 mod session_token;
+mod spend_shipper;
 mod startup_trace;
 mod telemetry;
 #[allow(dead_code)]
@@ -318,6 +322,36 @@ struct Args {
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_DELEGATION_CEILING")]
     delegation_ceiling: Option<String>,
 
+    /// Scarce-authority dimensions cleared by a truthful auction instead of the
+    /// Lagrangian screen. Comma-separated, from `filesystem`, `command_exec`,
+    /// `network_egress`, `approval`.
+    ///
+    /// Empty (the default) changes nothing: every dimension keeps the posted-price
+    /// path. A named dimension holds each request for `--clearing-window-ms`,
+    /// clears the group with the proven VCG kernel, and charges the winner the
+    /// Clarke pivot against this pod's delegated budget. A request for a named
+    /// dimension that arrives WITHOUT a verified delegation certificate is
+    /// refused: the bid ceiling comes from the certificate, and a bid the
+    /// principal did not authorise is not a bid.
+    #[arg(long, env = "NUCLEUS_CLEARING_DIMENSIONS", value_delimiter = ',')]
+    clearing: Vec<String>,
+
+    /// How long a clearing round collects bids before it closes, in
+    /// milliseconds. This is added latency on every request for a cleared
+    /// dimension, paid to make a second price exist at all.
+    #[arg(long, env = "NUCLEUS_CLEARING_WINDOW_MS", default_value_t = 50)]
+    clearing_window_ms: u64,
+
+    /// Where cleared rounds are written down: one signed, hash-chained edge per
+    /// participant, each bound to the round's receipt hash.
+    ///
+    /// Required whenever `--clearing` names a dimension. Clearing without a
+    /// record would produce a price nothing can check afterwards, which is the
+    /// opposite of the reason to run an auction at all — so a missing ledger is
+    /// a refusal at startup, not a silent degradation.
+    #[arg(long, env = "NUCLEUS_AUTHORITY_LEDGER")]
+    authority_ledger: Option<PathBuf>,
+
     // === Delegation Certificate Configuration ===
     /// Hex-encoded Ed25519 public key of the root delegation authority.
     /// When set, the tool-proxy accepts `x-nucleus-delegation-cert` headers
@@ -447,6 +481,11 @@ pub(crate) struct AppState {
     /// (`pod_cert.rs`). `None` only for a pod created before its node issued
     /// certificates.
     pod_cert: Option<Arc<pod_cert::PodCertificate>>,
+    /// The same chain as a sealed `VerifiedPermissions`: the ceiling a process
+    /// inside this pod bids under in the authority exchange (#2988). A pod
+    /// peer holds no certificate of its own; it acts under the pod's, and a
+    /// pod without one cannot bid at all.
+    pod_verified: Option<Arc<portcullis::certificate::VerifiedPermissions>>,
     /// What a denial needs to explain itself: the grant a person approved, the
     /// ceiling they chose, and the effect catalog. `None` for a profile run,
     /// and then refusals read exactly as they did before.
@@ -458,6 +497,20 @@ pub(crate) struct AppState {
     orchestrator_credentials: std::collections::BTreeMap<String, String>,
     /// Permission market for Lagrangian pricing of capability dimensions.
     permission_market: Arc<Mutex<PermissionMarket>>,
+    /// Dimensions whose slots are auctioned rather than posted-priced. Empty by
+    /// default, so this is inert until an operator names a dimension.
+    clearing_dimensions: std::collections::BTreeSet<PermissionDimension>,
+    /// The round scheduler, present exactly when `clearing_dimensions` is not
+    /// empty. `Box<dyn Charger>` so the charger is chosen at startup.
+    authority_exchange: Option<Arc<RoundScheduler<Box<dyn Charger>>>>,
+    /// Where cleared rounds are recorded. Present exactly when
+    /// `authority_exchange` is.
+    authority_ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
+    /// Signs and ships a `SpendReceipt` for every charge the exchange makes, so
+    /// the node — not this guest — decides how much of the allocation was spent
+    /// (#2541). `None` when the exchange is off or the plumbing is absent; the
+    /// node then folds the full allocation, which is the conservative default.
+    spend_shipper: Option<Arc<spend_shipper::SpendShipper>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
     sandbox_proof: sandbox_proof::SandboxProof,
     /// Root authority Ed25519 public key for delegation certificate verification.
@@ -1389,8 +1442,10 @@ async fn main() -> Result<(), ApiError> {
     st.mark("runtime_build");
 
     // Split the verified certificate: the sealed permissions go into the
-    // kernel, the summary into AppState.
-    let (mut pod_cert_verified, pod_cert) = match pod_cert {
+    // kernel, the summary into AppState — and a second handle on the sealed
+    // permissions stays in AppState as the ceiling a pod peer bids under
+    // (#2988). Same verified value; nothing is re-derived.
+    let (mut pod_cert_verified, pod_cert, pod_verified) = match pod_cert {
         Some((verified, summary)) => {
             tracing::info!(
                 leaf = %summary.leaf_identity,
@@ -1399,9 +1454,14 @@ async fn main() -> Result<(), ApiError> {
                 "pod certificate verified; kernel and delegation ceiling derive from it"
             );
             let fingerprint = summary.fingerprint;
-            (Some((verified, fingerprint)), Some(Arc::new(summary)))
+            let pod_verified = Arc::new(verified.clone());
+            (
+                Some((verified, fingerprint)),
+                Some(Arc::new(summary)),
+                Some(pod_verified),
+            )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     let auth = AuthConfig::new(
@@ -1617,6 +1677,19 @@ async fn main() -> Result<(), ApiError> {
         })
     };
 
+    // The authority exchange: inert with an empty `--clearing`, fail-closed
+    // without a ledger otherwise. See `authority_round::build`.
+    let authority_round::Exchange {
+        clearing_dimensions,
+        scheduler: authority_exchange,
+        ledger: authority_ledger,
+    } = authority_round::build(
+        &args.clearing,
+        args.clearing_window_ms,
+        args.authority_ledger.as_ref(),
+        &delegation_ceiling,
+    )?;
+
     // Load orchestrator credentials from environment for sub-pod injection
     let orchestrator_credentials = {
         let mut creds = std::collections::BTreeMap::new();
@@ -1792,11 +1865,7 @@ async fn main() -> Result<(), ApiError> {
     // describe how this server will actually be bound, not be patched in later.
     // A request can never influence it.
     let vsock_binding = pod_mgmt::resolve_vsock(&args, &spec)?;
-    let unix_binding = host_socket::resolve_unix(
-        args.listen_unix.as_deref(),
-        &args.peer_uids,
-        vsock_binding.as_ref(),
-    )?;
+    let unix_binding = host_socket::resolve_unix(args.listen_unix.as_deref(), &args.peer_uids)?;
     let host_verified = vsock_binding.is_some() || unix_binding.is_some();
 
     // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
@@ -1819,6 +1888,24 @@ async fn main() -> Result<(), ApiError> {
             }
         }
     });
+
+    // Host-side spend accounting. Only meaningful with the exchange on: it is the
+    // exchange's charges that are otherwise invisible to the node.
+    let spend_shipper = if clearing_dimensions.is_empty() {
+        None
+    } else {
+        match spend_shipper::SpendShipper::from_env() {
+            Ok(s) => Some(Arc::new(s)),
+            Err(why) => {
+                warn!(
+                    %why,
+                    "authority charges cannot be shipped to the host; it will fold this pod's \
+                     FULL budget allocation at exit"
+                );
+                None
+            }
+        }
+    };
 
     let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
     let state = AppState {
@@ -1845,6 +1932,10 @@ async fn main() -> Result<(), ApiError> {
         delegation_ceiling,
         orchestrator_credentials,
         permission_market: Arc::new(Mutex::new(PermissionMarket::new())),
+        clearing_dimensions: clearing_dimensions.clone(),
+        authority_exchange,
+        authority_ledger,
+        spend_shipper,
         sandbox_proof,
         cert_root_pubkey: args
             .cert_root_pubkey
@@ -1853,6 +1944,7 @@ async fn main() -> Result<(), ApiError> {
             .map(Arc::new),
         effect_gate: effect_gate::EffectGate::new(pod_cert.as_deref(), &spec.spec.work_dir),
         pod_cert,
+        pod_verified,
         proposals,
         exposure_guard,
         kernel_exposure: kernel_exposure.clone(),
@@ -2234,7 +2326,6 @@ fn is_allowed_during_lockdown(path: &str) -> bool {
 }
 
 const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
-const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
 
 async fn auth_middleware(
     State(state): State<AppState>,
@@ -2344,12 +2435,15 @@ async fn auth_middleware(
     // this match only performs the chosen tier. Keeping the order in one
     // testable place is deliberate — an invisible reordering here would make
     // the transport tier dead and silently reinstate the readable-key HMAC.
+    // The one per-connection fact, stamped by the kernel at accept (#2988).
+    let pod_peer = host_socket::pod_peer_of(&parts.extensions);
     debug_assert_eq!(
         auth::select_auth_tier(
             auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some(),
             parts.uri.path() == APPROVE_PATH,
             state.approval_verifier.is_some(),
             state.host_verified_transport,
+            pod_peer.is_some(),
         ),
         if auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some() {
             auth::AuthTier::SpiffeMtls
@@ -2357,6 +2451,8 @@ async fn auth_middleware(
             auth::AuthTier::ApprovalEd25519Drand
         } else if parts.uri.path() == APPROVE_PATH {
             auth::AuthTier::ApprovalHmacDrand
+        } else if pod_peer.is_some() {
+            auth::AuthTier::PodPeer
         } else if state.host_verified_transport {
             auth::AuthTier::HostVsock
         } else {
@@ -2392,6 +2488,10 @@ async fn auth_middleware(
                 );
             }
             ctx
+        } else if let Some(peer) = pod_peer {
+            // A process inside the pod, over the peer-verified Unix socket: the
+            // kernel named it at accept. No secret and no certificate (#2988).
+            auth::verify_pod_peer(peer)
         } else if state.host_verified_transport {
             // The listener already dropped every non-host peer, so this request
             // provably came from the host. No shared secret is involved, which
@@ -2443,8 +2543,27 @@ async fn auth_middleware(
         }
         (Some(grant), Some(certified))
     } else {
-        (evaluate_permission_bid(&parts.headers, &state), None)
+        // No certificate, no grant. This arm used to parse a self-declared
+        // `x-nucleus-permission-bid` header — value estimate and trust tier
+        // included — and evaluate it as if it were a bid (#2526). A
+        // `PermissionBid` is now constructible only from a
+        // `VerifiedPermissions`, so the honest answer here is none, and the
+        // gates downstream that need a grant refuse.
+        (None, None)
     };
+
+    // ── The authority exchange ───────────────────────────────────────────
+    // An auctioned dimension is decided by a round, BEFORE the posted-price
+    // screen below: the two are alternative mechanisms for the same decision
+    // and running both would price the slot twice. See `authority_round`.
+    // Who bids is decided here, from facts the request cannot claim: a verified
+    // certificate chain (mTLS), or a kernel-attributed process inside the pod.
+    let bidder = match (certified_perms.as_ref(), pod_peer) {
+        (Some(c), _) => authority_round::Bidder::Certified(c),
+        (None, Some(peer)) => authority_round::Bidder::PodPeer(peer),
+        (None, None) => authority_round::Bidder::Nobody,
+    };
+    authority_round::join_if_auctioned(&state, parts.uri.path(), bidder, &parts.headers).await?;
 
     // Refuse the endpoint when its dimension is denied, including partial grants.
     if let Some(ref grant) = permission_grant
@@ -2476,36 +2595,6 @@ async fn auth_middleware(
         req.extensions_mut().insert(certified);
     }
     Ok(next.run(req).await)
-}
-
-/// Parse and evaluate a permission bid from request headers.
-///
-/// Returns `Some(PermissionGrant)` if a valid bid was present, `None` otherwise.
-/// Invalid bid JSON is silently ignored (logged at warn level).
-fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<PermissionGrant> {
-    let bid_header = headers.get(HEADER_PERMISSION_BID)?;
-    let bid_str = bid_header.to_str().ok()?;
-    let bid: PermissionBid = match serde_json::from_str(bid_str) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "invalid permission bid header");
-            return None;
-        }
-    };
-
-    let market = state.permission_market.lock().unwrap();
-    let grant = market.evaluate_bid(&bid);
-
-    tracing::info!(
-        skill_id = %bid.skill_id,
-        granted = grant.granted.len(),
-        denied = grant.denied.len(),
-        total_cost = grant.total_cost,
-        event = "permission_bid_evaluated",
-        "permission market evaluated bid"
-    );
-
-    Some(grant)
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {

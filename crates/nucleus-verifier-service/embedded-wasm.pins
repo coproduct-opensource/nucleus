@@ -98,19 +98,34 @@
 # two platforms have been observed to produce the same .wasm, so one line
 # suffices here for a reason stronger than convention -- though it is one
 # observation, not a claim that the difference has gone away.
-# 2026-09-22 (#3011): the .wasm moved because `nucleus-lineage` did, and
-# `sdks/verifier-js` compiles it in. The change is a RETURN TYPE:
-# `total_pigouvian_micro_usd` now yields `UnsignedPigouvianTotal` instead of a
-# bare `i128`, so a caller cannot read a Pigouvian total while believing a
-# signature covers it — `attrs` and a kind's payload are both outside
-# `canonical_edge_bytes`. Nothing the verifier COMPUTES changed; what changed is
-# what the type permits a caller to conclude, and the compiled bytes moved with
-# the signature.
+# 2026-09-21 (#3002): the .wasm moved for a source change with NO behaviour
+# change — `nucleus-recompute` turned its `use nucleus_econ_kernels::{…}` into a
+# `pub use`, so a receipt-checking consumer can spell `IntegerBid` without
+# depending on an economic crate. Nothing the verifier COMPUTES changed; the
+# exported symbol set did, and the compiled bytes moved with it. Recorded
+# because it is the first time this pin moved without the verifier's behaviour
+# moving, and the honest reading of that is that the pin tracks the artifact,
+# not the semantics — which is what makes it a drift check rather than a proof
+# of equivalence.
 #
 # `54eaafbe…` is REPLACED, on the standing rule: it is the artifact built before
-# the wrapper existed, and a pin accepting both would accept a verifier whose
-# unsigned total still looks like a verified one. Taken from the CI run on this
-# branch — the canonical builder — so unverified at the point of writing and
-# verified by the run that consumes it.
-69a16e5dc9b353bbb01fc44913eae55654172f8c42221862366c93360e54f9b2  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+# the re-export, and a pin listing both would accept either, which is exactly
+# the drift the file exists to notice. Same provenance caveat as every digest
+# here — taken from the CI run on this branch, so unverified at the point of
+# writing and verified by the run that consumes it.
+# 2026-09-24: MERGED main INTO this branch, and this digest is a PLACEHOLDER that the next CI
+# run must replace. Neither side of the conflict was right. main pinned `69a16e5d…`, built from
+# main's source; this branch pinned `75fe617e…`, built from its own pre-merge source; and the
+# merged tree is neither, because this branch changes ten of the crates `sdks/verifier-js`
+# embeds. `75fe617e…` is kept only because a file with conflict markers does not parse -- it is
+# this branch's own last honest claim, and it is now stale by construction.
+#
+# Listing BOTH digests would have made the conflict disappear and is exactly what the header
+# above forbids: "a pin that still accepts a wasm built from superseded source accepts exactly
+# the drift it exists to catch." A local rebuild is no better -- the digest differs by platform,
+# so it would be a number this builder produced and CI never will.
+#
+# So build.rs is EXPECTED to refuse on the first run after this merge. That refusal is the pin
+# working. Take the digest it reports and REPLACE the line below.
+d207affdd57c8995cc9851545ce7ff76f47e570ed78437c174afa17fdf2f1066  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js

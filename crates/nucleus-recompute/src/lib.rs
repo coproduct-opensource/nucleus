@@ -34,7 +34,13 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use nucleus_econ_kernels::{
+// `pub`, because these are part of THIS crate's public API: `VcgClaim` holds
+// `Vec<IntegerBid>`, so a caller that builds or reads a receipt has to name
+// them. Without the re-export every consumer needed a direct dependency on
+// `nucleus-econ-kernels` just to spell a field's type — which pulls an
+// economic crate into graphs that only wanted to CHECK a receipt, and the
+// right to check is meant to reach further than the economics does.
+pub use nucleus_econ_kernels::{
     Clearing, CommonsAllocation, CommonsError, CommonsShare, IntegerBid, IntegerProposal, VcgError,
     Verdict, classify, refund, route_to_commons, run_vcg, seller_gross,
 };

@@ -221,6 +221,21 @@ pub enum WorkloadApiCommand {
     /// The Firecracker guest has no HTTP path to the node, so this vsock channel
     /// is how a real pod's receipts reach the host as they are produced.
     ShipReceipt,
+    /// `SHIP_SPEND` — stream one signed `SpendReceipt` to the host (#2541). Same
+    /// two-frame shape as `SHIP_RECEIPT`, but the body is VERIFIED on arrival
+    /// against the mediator key the node minted for this pod, and refused by
+    /// name if it does not: the node decides a pod's consumed budget from these,
+    /// so an unverified line must not reach the log (see
+    /// [`crate::spend_receipt_collector`]).
+    ShipSpend,
+    /// `SHIP_CLEARING` — stream one `ClearingReceipt` to the host. Same
+    /// two-frame shape as its siblings, and verified on arrival by
+    /// RECOMPUTATION rather than a signature: the receipt carries its declared
+    /// inputs, so the host re-derives the outcome with the proven kernel
+    /// (`crate::clearing_receipt_collector`). It exists because a spend
+    /// receipt's `basis` named a clearing receipt that died with the guest's
+    /// tmpfs, leaving the node holding a reference to evidence nobody kept.
+    ShipClearing,
     /// The guest is up and has asked for nothing that would make it one particular pod.
     ///
     /// This is the point a snapshot base has to be taken at, and the guest is the only party
@@ -271,6 +286,8 @@ impl WorkloadApiCommand {
             | Self::Ping
             | Self::PodList
             | Self::ShipReceipt
+            | Self::ShipSpend
+            | Self::ShipClearing
             // Announcing the barrier is the opposite of being personalised: it is the guest
             // saying it has asked for nothing yet.
             | Self::SnapshotReady => false,
@@ -302,6 +319,8 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::SnapshotReady => "SNAPSHOT_READY",
             WorkloadApiCommand::FetchPodSpec => "FETCH_POD_SPEC",
             WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
+            WorkloadApiCommand::ShipSpend => "SHIP_SPEND",
+            WorkloadApiCommand::ShipClearing => "SHIP_CLEARING",
         }
     }
 }
@@ -374,6 +393,8 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "POD_LIST" => Ok(WorkloadApiCommand::PodList),
         "FETCH_POD_SPEC" => Ok(WorkloadApiCommand::FetchPodSpec),
         "SHIP_RECEIPT" => Ok(WorkloadApiCommand::ShipReceipt),
+        "SHIP_SPEND" => Ok(WorkloadApiCommand::ShipSpend),
+        "SHIP_CLEARING" => Ok(WorkloadApiCommand::ShipClearing),
         "SNAPSHOT_READY" => Ok(WorkloadApiCommand::SnapshotReady),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
@@ -558,6 +579,8 @@ mod tests {
                 WorkloadApiCommand::PodList => "POD_LIST",
                 WorkloadApiCommand::FetchPodSpec => "FETCH_POD_SPEC",
                 WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
+                WorkloadApiCommand::ShipSpend => "SHIP_SPEND",
+                WorkloadApiCommand::ShipClearing => "SHIP_CLEARING",
                 WorkloadApiCommand::SnapshotReady => "SNAPSHOT_READY",
             }
         }
@@ -604,6 +627,8 @@ mod tests {
             WorkloadApiCommand::FetchPodSpec,
             WorkloadApiCommand::PodList,
             WorkloadApiCommand::ShipReceipt,
+            WorkloadApiCommand::ShipSpend,
+            WorkloadApiCommand::ShipClearing,
             WorkloadApiCommand::SnapshotReady,
         ];
         let accepted: std::collections::BTreeSet<String> =
@@ -622,6 +647,8 @@ mod tests {
             "FETCH_POD_SPEC",
             "POD_LIST",
             "SHIP_RECEIPT",
+            "SHIP_SPEND",
+            "SHIP_CLEARING",
             "SNAPSHOT_READY",
         ]
         .iter()
@@ -643,7 +670,7 @@ mod tests {
         // the natural way to add a command — leaves this number alone, so it
         // reds and the two lists above get read. Raise it in the same change
         // that adds a command, never separately.
-        const DECLARED_COMMANDS: usize = 14;
+        const DECLARED_COMMANDS: usize = 16;
         assert_eq!(
             surface.len(),
             DECLARED_COMMANDS,
@@ -683,7 +710,14 @@ mod tests {
             );
         }
 
-        for cmd in [FetchBundle, Ping, PodList, ShipReceipt] {
+        for cmd in [
+            FetchBundle,
+            Ping,
+            PodList,
+            ShipReceipt,
+            ShipSpend,
+            ShipClearing,
+        ] {
             assert!(
                 !cmd.personalizes_the_vm(),
                 "{cmd:?} is not per-pod, and treating it as such would refuse bases needlessly"
