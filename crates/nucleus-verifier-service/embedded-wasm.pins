@@ -126,7 +126,7 @@
 #
 # Not both digests: the header above forbids accepting a wasm built from superseded source, which
 # is the whole drift this pin catches. Not a local rebuild either: the digest differs by platform.
-# build.rs is EXPECTED to refuse once, and that refusal is the pin working. Replace with what it
+# build.rs DID refuse once, as predicted, and that refusal was the pin working. It reported what it
 # reports.
-7df79e599bea8e0913e0b92d6cd62f4eff43218d5f6c7beaeaaaf536d144e7a6  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+623d27d67a366fe027d1734749a620d615edd7e106a4acd17898a4351c12f020  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
