@@ -313,3 +313,4 @@ pub mod census;
 pub mod closure;
 pub mod derive;
 pub mod escapes;
+pub mod pin;
