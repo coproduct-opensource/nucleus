@@ -54,7 +54,6 @@ pub struct IdentityManager {
     /// re-hashes everything, which is the same "verify once per boot" scope the gatehouse
     /// controller uses for the same file, and it means there is no on-disk artifact for anyone
     /// to forge.
-    attestation_by_inputs: Arc<RwLock<HashMap<String, LaunchAttestation>>>,
     /// Default certificate TTL.
     // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
     // On other hosts it is genuinely dead, and CI builds release binaries with
@@ -70,39 +69,6 @@ pub struct IdentityManager {
     /// leaves SVIDs unbound (attestation only) — a graceful default, not a
     /// failure.
     mediation_binding_dir: Option<std::path::PathBuf>,
-}
-
-/// The identity of the inputs an attestation is computed from.
-///
-/// Device, inode, size and mtime of both files, with a digest of the config bytes. `None` when
-/// either file cannot be stated, and `None` means COMPUTE: a cache that cannot establish what it
-/// is caching must not answer. Deliberately not the file CONTENTS -- reading them is the cost
-/// this avoids -- so the guarantee is "this inode has not been replaced or rewritten since it
-/// was hashed", which is what an immutable content-addressed image needs.
-async fn attestation_key(kernel: &Path, rootfs: &Path, config: &[u8]) -> Option<String> {
-    use std::os::unix::fs::MetadataExt;
-    let mut parts = Vec::new();
-    for p in [kernel, rootfs] {
-        let m = tokio::fs::symlink_metadata(p).await.ok()?;
-        if !m.is_file() {
-            return None;
-        }
-        parts.push(format!(
-            "{}:{}:{}:{}.{}",
-            m.dev(),
-            m.ino(),
-            m.size(),
-            m.mtime(),
-            m.mtime_nsec()
-        ));
-    }
-    // sha2 is already a dependency of this crate, so there is no reason to discriminate configs
-    // with anything weaker: a collision here would serve one config's attestation for another's.
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(config);
-    parts.push(hex::encode(hasher.finalize()));
-    Some(parts.join("|"))
 }
 
 impl IdentityManager {
@@ -177,7 +143,6 @@ impl IdentityManager {
             vm_registry,
             trust_domain,
             attestation_registry: Arc::new(RwLock::new(HashMap::new())),
-            attestation_by_inputs: Arc::new(RwLock::new(HashMap::new())),
             cert_ttl,
             mediation_binding_dir: None,
         }
@@ -542,16 +507,35 @@ impl IdentityManager {
     /// This should be called before launching a Firecracker VM to capture
     /// the integrity measurements of the kernel, rootfs, and configuration.
     ///
-    /// # Arguments
+    /// `measured` carries the digests `image_identity::verify` ALREADY read, in the jail, after
+    /// placement, and held to the pin. Passing them is not a cache: it is the same read, used
+    /// once instead of thrown away and repeated. An artifact the spec did not pin is `None`
+    /// there -- nothing read it -- so it is hashed here, because `None` means NOT MEASURED and
+    /// never "assume it is fine".
     ///
-    /// * `pod_id` - Unique identifier for the pod
-    /// * `kernel_path` - Path to the kernel image
-    /// * `rootfs_path` - Path to the root filesystem
-    /// * `config` - Serialized pod configuration (PodSpec + policy)
+    /// # Why there is no cache keyed on file identity
     ///
-    /// # Returns
+    /// There was one, added by #2972 and keyed on `dev:ino:size:mtime.nsec` of both files. Its
+    /// commit message stated the property it rested on: "a replaced or rewritten image is a
+    /// different key and is hashed again, which is the property that makes caching an
+    /// attestation safe rather than convenient."
     ///
-    /// The computed attestation, or an error if hashing fails.
+    /// That property does not hold. On 2026-09-21 a file in gatehouse's CI workspace was read
+    /// back as 8 KiB of NUL bytes with its device, inode, size AND mtime all unchanged: ext4's
+    /// delayed allocation had committed the inode when the VM was force-stopped and lost the
+    /// data blocks. `git status` called the tree clean for the same reason -- git's index is a
+    /// stat cache too (gatehouse F-161). Nanosecond mtime does not help, because the file was
+    /// never rewritten after the inode was committed.
+    ///
+    /// So stat is not a content proxy, and this is the worst place to assume it is: the
+    /// attestation goes into the pod's certificate and is what a relying party reads to learn
+    /// which kernel and rootfs ran. For a PINNED artifact `verify` would have caught the
+    /// corruption first; for an unpinned one -- every digest in `ImageSpec` is an `Option` --
+    /// nothing reads the bytes at all, and a stale hit would put a digest for bytes that did
+    /// not boot into a signed certificate.
+    ///
+    /// The speed the cache was buying is bought instead by not hashing twice: the pinned
+    /// artifacts are read once by `verify` and reported here.
     #[allow(dead_code)]
     #[tracing::instrument(skip_all, fields(boot.stage = "attestation.hash"))]
     pub async fn compute_attestation(
@@ -560,6 +544,7 @@ impl IdentityManager {
         kernel_path: &Path,
         rootfs_path: &Path,
         config: &[u8],
+        measured: crate::image_identity::Measured,
     ) -> Result<LaunchAttestation, String> {
         info!(
             "computing launch attestation for pod {} (kernel={}, rootfs={})",
@@ -568,32 +553,23 @@ impl IdentityManager {
             rootfs_path.display()
         );
 
-        // The same two files, unchanged, attest to the same thing. See `attestation_by_inputs`.
-        let key = attestation_key(kernel_path, rootfs_path, config).await;
-        if let Some(key) = &key
-            && let Some(hit) = self.attestation_by_inputs.read().await.get(key).cloned()
-        {
-            debug!(
-                "attestation reused for pod {}: {}",
-                pod_id,
-                hit.to_hex_summary()
-            );
-            self.attestation_registry
-                .write()
+        let kernel_hash = match measured.kernel {
+            Some(h) => h,
+            None => nucleus_identity::attestation::measure_artifact(kernel_path)
                 .await
-                .insert(pod_id.to_string(), hit.clone());
-            return Ok(hit);
-        }
-
-        let attestation = LaunchAttestation::compute(kernel_path, rootfs_path, config)
-            .await
-            .map_err(|e| format!("failed to compute attestation: {e}"))?;
-        if let Some(key) = key {
-            self.attestation_by_inputs
-                .write()
+                .map_err(|e| format!("failed to measure kernel for attestation: {e}"))?,
+        };
+        let rootfs_hash = match measured.rootfs {
+            Some(h) => h,
+            None => nucleus_identity::attestation::measure_artifact(rootfs_path)
                 .await
-                .insert(key, attestation.clone());
-        }
+                .map_err(|e| format!("failed to measure rootfs for attestation: {e}"))?,
+        };
+        let attestation = LaunchAttestation::from_hashes(
+            kernel_hash,
+            rootfs_hash,
+            nucleus_identity::attestation::hash_bytes(config),
+        );
 
         debug!(
             "attestation computed for pod {}: {}",
@@ -1105,7 +1081,13 @@ mod tests {
         let pod = Uuid::new_v4();
         let id = manager.identity_for_pod(pod, "default", "svc");
         let att = manager
-            .compute_attestation(&pod.to_string(), kernel.path(), rootfs.path(), b"cfg")
+            .compute_attestation(
+                &pod.to_string(),
+                kernel.path(),
+                rootfs.path(),
+                b"cfg",
+                crate::image_identity::Measured::default(),
+            )
             .await
             .expect("attest");
         manager
@@ -1162,6 +1144,7 @@ mod tests {
                 kernel.path(),
                 rootfs.path(),
                 config,
+                crate::image_identity::Measured::default(),
             )
             .await
             .expect("attestation computes");
@@ -1297,7 +1280,13 @@ mod tests {
 
         // Compute attestation
         let attestation = manager
-            .compute_attestation(pod_id, kernel.path(), rootfs.path(), config)
+            .compute_attestation(
+                pod_id,
+                kernel.path(),
+                rootfs.path(),
+                config,
+                crate::image_identity::Measured::default(),
+            )
             .await
             .unwrap();
 
@@ -1329,7 +1318,13 @@ mod tests {
 
         // Compute and store
         manager
-            .compute_attestation(pod_id, kernel.path(), rootfs.path(), b"config")
+            .compute_attestation(
+                pod_id,
+                kernel.path(),
+                rootfs.path(),
+                b"config",
+                crate::image_identity::Measured::default(),
+            )
             .await
             .unwrap();
         assert!(manager.get_attestation(pod_id).await.is_some());
@@ -1357,7 +1352,13 @@ mod tests {
 
         // Compute attestation first
         manager
-            .compute_attestation(pod_id, kernel.path(), rootfs.path(), b"config")
+            .compute_attestation(
+                pod_id,
+                kernel.path(),
+                rootfs.path(),
+                b"config",
+                crate::image_identity::Measured::default(),
+            )
             .await
             .unwrap();
 
@@ -1418,7 +1419,13 @@ mod tests {
         let mut rootfs = NamedTempFile::new().unwrap();
         rootfs.write_all(b"rootfs").unwrap();
         manager
-            .compute_attestation(pod_id, kernel.path(), rootfs.path(), b"config")
+            .compute_attestation(
+                pod_id,
+                kernel.path(),
+                rootfs.path(),
+                b"config",
+                crate::image_identity::Measured::default(),
+            )
             .await
             .unwrap();
 
@@ -1456,7 +1463,13 @@ mod tests {
         let mut rootfs = NamedTempFile::new().unwrap();
         rootfs.write_all(b"rootfs").unwrap();
         manager
-            .compute_attestation(pod_id, kernel.path(), rootfs.path(), b"config")
+            .compute_attestation(
+                pod_id,
+                kernel.path(),
+                rootfs.path(),
+                b"config",
+                crate::image_identity::Measured::default(),
+            )
             .await
             .unwrap();
 
@@ -1559,10 +1572,20 @@ mod retired_surface_tests {
     }
 }
 
-/// The attestation cache answers for the same inputs and refuses for different ones.
+/// The attestation reports the bytes something CHECKED, and a stat-stable rewrite cannot
+/// change that.
+///
+/// These replace `attestation_is_computed_once_per_image`, which tested a cache keyed on
+/// `dev:ino:size:mtime.nsec` (#2972). Its own case for safety --
+/// `a_rewritten_rootfs_is_a_different_key` -- removed the file and created a new one, so the
+/// size AND the inode differed. The case that decides the question is the one it did not try:
+/// same device, same inode, same size, same mtime, different bytes. gatehouse F-161 is that
+/// case, observed: ext4 committed an inode when a VM was force-stopped and lost the data
+/// blocks, and `git status` called the tree clean because git's index is a stat cache too.
 #[cfg(test)]
-mod attestation_is_computed_once_per_image {
-    use super::attestation_key;
+mod the_attestation_reports_what_was_measured {
+    use super::*;
+    use crate::image_identity::Measured;
     use std::io::Write;
 
     fn file(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
@@ -1573,57 +1596,106 @@ mod attestation_is_computed_once_per_image {
         p
     }
 
-    /// Same two files, same config: one key, so the 8 GiB rootfs is hashed once.
-    #[tokio::test]
-    async fn unchanged_inputs_give_the_same_key() {
-        let tmp = tempfile::tempdir().unwrap();
-        let k = file(tmp.path(), "vmlinux", b"kernel");
-        let r = file(tmp.path(), "rootfs.ext4", b"rootfs");
-        let a = attestation_key(&k, &r, b"cfg").await;
-        let b = attestation_key(&k, &r, b"cfg").await;
-        assert!(a.is_some());
-        assert_eq!(a, b);
+    /// Rewrite a file in place, preserving length and mtime, so every field the deleted cache
+    /// keyed on is unchanged. This is F-161 in ten lines.
+    fn rewrite_preserving_stat(p: &std::path::Path, bytes: &[u8]) {
+        use std::os::unix::fs::MetadataExt;
+        let before = std::fs::metadata(p).unwrap();
+        assert_eq!(
+            before.len() as usize,
+            bytes.len(),
+            "the replacement must be the same length or the test is not testing the hard case"
+        );
+        let mut f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
+        f.write_all(bytes).unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+        // std, not a new dependency: `File::set_times` restores the timestamps the rewrite
+        // moved, which is exactly what leaves the old cache key unchanged.
+        let restore = std::fs::File::options().write(true).open(p).unwrap();
+        let times = std::fs::FileTimes::new()
+            .set_accessed(before.accessed().unwrap())
+            .set_modified(before.modified().unwrap());
+        restore.set_times(times).unwrap();
+        drop(restore);
+        let after = std::fs::metadata(p).unwrap();
+        assert_eq!(before.ino(), after.ino(), "inode must not change");
+        assert_eq!(before.len(), after.len(), "size must not change");
+        assert_eq!(before.mtime(), after.mtime(), "mtime must not change");
     }
 
-    /// A rewritten rootfs is a different key, so it is hashed again.
+    /// THE FALSIFIER. Two pods, the same paths, the same stat in every field the old cache
+    /// keyed on -- and different bytes. The second attestation must describe the second bytes.
     ///
-    /// This is the case that decides whether caching an attestation was safe: the cache must not
-    /// answer for an image that is no longer the image it hashed.
+    /// Against #2972's cache this FAILS: the key is identical, so the first attestation is
+    /// served for the second image and the pod's certificate carries a digest for bytes that
+    /// did not boot.
     #[tokio::test]
-    async fn a_rewritten_rootfs_is_a_different_key() {
+    async fn a_stat_preserving_rewrite_does_not_reuse_the_old_attestation() {
         let tmp = tempfile::tempdir().unwrap();
         let k = file(tmp.path(), "vmlinux", b"kernel");
-        let r = file(tmp.path(), "rootfs.ext4", b"rootfs");
-        let before = attestation_key(&k, &r, b"cfg").await;
-        // Replace it. Size differs, and so does the inode.
-        std::fs::remove_file(&r).unwrap();
-        let r2 = file(tmp.path(), "rootfs.ext4", b"a different rootfs entirely");
-        let after = attestation_key(&k, &r2, b"cfg").await;
-        assert!(before.is_some() && after.is_some());
-        assert_ne!(before, after, "a replaced image must not reuse its key");
-    }
+        let r = file(tmp.path(), "rootfs.ext4", b"rootfs-aaaa");
+        let ca: Arc<dyn CaClient> = Arc::new(SelfSignedCa::new("test.local").unwrap());
+        let m = IdentityManager::with_ca("test.local", Duration::from_secs(3600), ca);
 
-    /// The config is part of the identity: the same files under a different config attest
-    /// differently, and must not share a cache entry.
-    #[tokio::test]
-    async fn a_different_config_is_a_different_key() {
-        let tmp = tempfile::tempdir().unwrap();
-        let k = file(tmp.path(), "vmlinux", b"kernel");
-        let r = file(tmp.path(), "rootfs.ext4", b"rootfs");
+        let first = m
+            .compute_attestation("pod-1", &k, &r, b"cfg", Measured::default())
+            .await
+            .expect("first attestation");
+
+        rewrite_preserving_stat(&r, b"rootfs-bbbb");
+
+        let second = m
+            .compute_attestation("pod-2", &k, &r, b"cfg", Measured::default())
+            .await
+            .expect("second attestation");
+
         assert_ne!(
-            attestation_key(&k, &r, b"cfg-a").await,
-            attestation_key(&k, &r, b"cfg-b").await
+            first.rootfs_hash(),
+            second.rootfs_hash(),
+            "an attestation must describe the bytes that are there, not the bytes that were \
+             there when something with the same stat was hashed"
         );
     }
 
-    /// A file that cannot be stated yields no key, and no key means COMPUTE.
+    /// A digest `verify` already read is REPORTED, not re-derived. This is where the 8 GiB
+    /// second pass went: the pinned artifacts are read once, in the jail, after placement.
     #[tokio::test]
-    async fn a_missing_file_yields_no_key_rather_than_a_weak_one() {
+    async fn a_measured_digest_is_reported_rather_than_read_again() {
         let tmp = tempfile::tempdir().unwrap();
         let k = file(tmp.path(), "vmlinux", b"kernel");
+        let r = file(tmp.path(), "rootfs.ext4", b"rootfs");
+        let ca: Arc<dyn CaClient> = Arc::new(SelfSignedCa::new("test.local").unwrap());
+        let m = IdentityManager::with_ca("test.local", Duration::from_secs(3600), ca);
+
+        // A digest the file on disk does NOT have, so reporting it can only come from here.
+        let sentinel = [0x5a_u8; 32];
+        let att = m
+            .compute_attestation(
+                "pod",
+                &k,
+                &r,
+                b"cfg",
+                Measured {
+                    kernel: None,
+                    rootfs: Some(sentinel),
+                },
+            )
+            .await
+            .expect("attestation");
+
         assert_eq!(
-            attestation_key(&k, &tmp.path().join("absent"), b"cfg").await,
-            None
+            att.rootfs_hash(),
+            &sentinel,
+            "a measured rootfs must be reported as measured"
+        );
+        assert_eq!(
+            att.kernel_hash(),
+            &nucleus_identity::attestation::measure_artifact(&k)
+                .await
+                .unwrap(),
+            "an UNMEASURED artifact must be hashed here -- None means not measured, never \
+             \"assume it is fine\""
         );
     }
 }

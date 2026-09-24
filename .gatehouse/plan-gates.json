@@ -5,6 +5,7 @@
       "exec": "scoped",
       "fs_read": [
         ".github/workflows/**",
+        ".sandbox-unpinned-ceiling",
         "crates/**",
         "docs/**",
         "kani-divergence.toml",
@@ -22,7 +23,7 @@
     "disk_mb": 4096,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 713000,
+    "measured_ms": 874000,
     "mem_mb": 2048,
     "name": "text-gates",
     "outputs": [],
@@ -43,6 +44,7 @@
     ],
     "scope": [
       ".github/workflows/**",
+      ".sandbox-unpinned-ceiling",
       "crates/**",
       "docs/**",
       "kani-divergence.toml",
@@ -58,6 +60,7 @@
         "program": "scripts/check-verify-strict.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -74,6 +77,7 @@
         "program": "scripts/check-sandbox-trusted-base.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -90,6 +94,7 @@
         "program": "scripts/check-failclosed-verifiers.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -106,6 +111,7 @@
         "program": "scripts/check-mediation.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -122,6 +128,7 @@
         "program": "scripts/check-north-star-ledger.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -138,6 +145,7 @@
         "program": "scripts/check-extracted-callsites.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -154,6 +162,7 @@
         "program": "scripts/check-task-compiler-offline.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -170,6 +179,7 @@
         "program": "scripts/check-ingest-hashed.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -186,6 +196,7 @@
         "program": "scripts/check-kani-divergence.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -202,6 +213,7 @@
         "program": "scripts/check-sealed-home.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -218,6 +230,7 @@
         "program": "scripts/check-declassify-governor-keys-sealed.sh",
         "reads": [
           ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
           "crates/**",
           "docs/**",
           "kani-divergence.toml",
@@ -240,7 +253,7 @@
   },
   {
     "cap": {
-      "cpu_ms": 300000,
+      "cpu_ms": 600000,
       "exec": "scoped",
       "fs_read": [
         "Cargo.toml",
@@ -268,13 +281,13 @@
       "mem_mb": 4096,
       "net": "none",
       "secrets": [],
-      "wall_ms": 300000
+      "wall_ms": 600000
     },
     "cmd": [],
     "disk_mb": 4096,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 123000,
+    "measured_ms": 208000,
     "mem_mb": 4096,
     "name": "fmt",
     "outputs": [],
@@ -338,7 +351,7 @@
         ]
       }
     ],
-    "timeout_ms": 300000,
+    "timeout_ms": 450000,
     "tools": [
       "cargo@1.96.1",
       "rustfmt@1.9.0"
@@ -383,7 +396,7 @@
     "disk_mb": 8192,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 584000,
+    "measured_ms": 1152000,
     "mem_mb": 8192,
     "name": "clippy",
     "outputs": [],
@@ -550,6 +563,8 @@
       "exec": "scoped",
       "fs_read": [
         "Cargo.toml",
+        "PolicyManifest.toml",
+        "docs/**",
         "Cargo.lock",
         "rust-toolchain.toml",
         ".cargo/config.toml",
@@ -583,7 +598,7 @@
     "disk_mb": 8192,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 907000,
+    "measured_ms": 1656000,
     "mem_mb": 8192,
     "name": "test-core",
     "outputs": [],
@@ -592,6 +607,8 @@
     "replaces": [],
     "scope": [
       "Cargo.toml",
+      "PolicyManifest.toml",
+      "docs/**",
       "Cargo.lock",
       "rust-toolchain.toml",
       ".cargo/config.toml",
@@ -621,6 +638,8 @@
         "program": "scripts/gatehouse-verifier-sdk.sh",
         "reads": [
           "Cargo.toml",
+          "PolicyManifest.toml",
+          "docs/**",
           "Cargo.lock",
           "rust-toolchain.toml",
           ".cargo/config.toml",
@@ -662,6 +681,8 @@
         "program": "cargo",
         "reads": [
           "Cargo.toml",
+          "PolicyManifest.toml",
+          "docs/**",
           "Cargo.lock",
           "rust-toolchain.toml",
           ".cargo/config.toml",
@@ -689,7 +710,7 @@
         ]
       }
     ],
-    "timeout_ms": 2100000,
+    "timeout_ms": 3400000,
     "tools": [
       "sh@0.5.12",
       "cargo@1.96.1",
@@ -720,21 +741,11 @@
       "secrets": [],
       "wall_ms": 3600000
     },
-    "cmd": [
-      "cargo",
-      "nextest",
-      "run",
-      "--offline",
-      "--locked",
-      "--all-features",
-      "--no-fail-fast",
-      "-E",
-      "package(xtask) | binary(olog) | binary(goal_corpus)"
-    ],
+    "cmd": [],
     "disk_mb": 8192,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 300000,
+    "measured_ms": 1493565,
     "mem_mb": 8192,
     "name": "test-audit",
     "outputs": [],
@@ -748,13 +759,55 @@
     "seeds": [
       "warm@sha256:f84b9b6862fdac743bc228dd13c545cfa425dc55101c4a4ab342ce5ccf8cd288"
     ],
-    "steps": [],
-    "timeout_ms": 900000,
+    "steps": [
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/gatehouse-verifier-sdk.sh",
+        "reads": [
+          "**",
+          "scripts/**"
+        ],
+        "uid": 0,
+        "writes": [
+          "target/**",
+          "sdks/verifier-js/pkg/**",
+          "sdks/verifier-js/target/**"
+        ]
+      },
+      {
+        "args": [
+          "nextest",
+          "run",
+          "--offline",
+          "--locked",
+          "--all-features",
+          "--no-fail-fast",
+          "-E",
+          "package(xtask) | binary(olog) | binary(goal_corpus)"
+        ],
+        "loopback": 0,
+        "program": "cargo",
+        "reads": [
+          "**",
+          "scripts/**"
+        ],
+        "uid": 0,
+        "writes": [
+          "target/**",
+          "sdks/verifier-js/pkg/**",
+          "sdks/verifier-js/target/**"
+        ]
+      }
+    ],
+    "timeout_ms": 3600000,
     "tools": [
       "sh@0.5.12",
       "cargo@1.96.1",
       "rustc@1.96.1",
       "cargo-nextest@0.9.145",
+      "wasm-pack@0.13.1",
+      "wasm-bindgen@0.2.122",
       "git@2.39.5"
     ]
   },
@@ -847,7 +900,7 @@
         ]
       }
     ],
-    "timeout_ms": 1200000,
+    "timeout_ms": 400000,
     "tools": [
       "lake@4.30.0",
       "lean@4.30.0"
@@ -855,7 +908,7 @@
   },
   {
     "cap": {
-      "cpu_ms": 900000,
+      "cpu_ms": 1200000,
       "exec": "scoped",
       "fs_read": [
         "Cargo.toml",
@@ -876,13 +929,13 @@
       "mem_mb": 4096,
       "net": "none",
       "secrets": [],
-      "wall_ms": 900000
+      "wall_ms": 1200000
     },
     "cmd": [],
     "disk_mb": 4096,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 92000,
+    "measured_ms": 448000,
     "mem_mb": 4096,
     "name": "ci-spec",
     "outputs": [],
@@ -982,7 +1035,7 @@
         ]
       }
     ],
-    "timeout_ms": 300000,
+    "timeout_ms": 950000,
     "tools": [
       "sh@0.5.12",
       "cargo@1.96.1",

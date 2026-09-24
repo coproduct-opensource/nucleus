@@ -2397,17 +2397,20 @@ async fn spawn_firecracker_pod(
 
         // Hold the artifacts to what the spec pinned, AFTER placement: in the jail these are the
         // hard-linked inodes that will boot, so there is no window between measuring and using.
-        if let Err(err) = image_identity::verify(image, jail_layout.as_ref()).await {
-            cleanup_net_resources(
-                &state.network_allocator,
-                &mut net_plan,
-                &mut netns_name,
-                &mut dns_proxy,
-                jail_layout.as_ref(),
-            )
-            .await;
-            return Err(ApiError::Driver(err));
-        }
+        let measured = match image_identity::verify(image, jail_layout.as_ref()).await {
+            Ok(measured) => measured,
+            Err(err) => {
+                cleanup_net_resources(
+                    &state.network_allocator,
+                    &mut net_plan,
+                    &mut netns_name,
+                    &mut dns_proxy,
+                    jail_layout.as_ref(),
+                )
+                .await;
+                return Err(ApiError::Driver(err));
+            }
+        };
 
         #[expect(
             clippy::disallowed_methods,
@@ -2507,6 +2510,7 @@ async fn spawn_firecracker_pod(
         firecracker_config::apply_seccomp_flags(&mut command, spec, jail_layout.is_some())?;
         let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
         let prepared_identity = match pod_boot_identity::prepare(pod_boot_identity::Inputs {
+            measured,
             state,
             pod_dir,
             spec,

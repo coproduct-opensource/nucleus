@@ -153,49 +153,110 @@ pub fn confine_to_nucleus_settings(cmd: &mut Command) -> &mut Command {
         .arg("--strict-mcp-config")
 }
 
-/// The settings document that registers `exe` as the `PreToolUse` hook for
-/// every tool (no matcher = all tools), with `args` appended to the command.
+/// The settings document that registers the mediation hook, as a type.
 ///
-/// The ONE place that knows this shape, because the shape is fail-open: the
-/// nested `hooks` array is load-bearing, and an entry carrying `type` and
-/// `command` at the matcher-group level instead registers NOTHING — no error,
-/// no warning, and every tool call proceeds unhooked. Verified against the
-/// wrapped CLI at 2.1.278. A launch site must not hand-roll this JSON.
-pub fn hook_settings_for_exe(exe: &Path, args: &[&str]) -> serde_json::Value {
-    let mut command = shell_quote(exe);
-    for arg in args {
-        command.push(' ');
-        command.push_str(arg);
-    }
-    serde_json::json!({
-        "hooks": {
-            "PreToolUse": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": command,
-                }]
-            }]
+/// Opaque on purpose. The shape is FAIL-OPEN — the nested `hooks` array is
+/// load-bearing, and an entry carrying `type` and `command` at the
+/// matcher-group level registers NOTHING, with no error and no warning, while
+/// every tool call proceeds unhooked (verified against the wrapped CLI at
+/// 2.1.278). A launch site that builds this JSON itself can reintroduce that
+/// silently, so there is no way to build one except the constructors below and
+/// no way to spend one except [`HookSettings::write_to`].
+///
+/// Before this type the same guarantee was a `grep` in a unit test: the shape
+/// lived in one function by convention, and a second author was caught by a
+/// structural assertion rather than by the compiler. ADR 0007 C-1 — a type that
+/// names evidence has a private constructor — read across to a document whose
+/// wrongness is invisible.
+///
+/// NOT `#[must_use]`, and `write_to` takes `&self`. The first draft made this
+/// affine — consumed by value, "the document exists to become one file" — and
+/// the `life` census was right to charge for it: a `#[must_use]` non-`Clone`
+/// type joins the population of one-shot RIGHTS, every member of which is
+/// expected to carry a validity interval, and this one has nothing to expire.
+/// Writing the same document twice is harmless. The guarantee here is the
+/// private field and the two constructors; affinity was ornament, and ornament
+/// that moves a security census is not free.
+pub struct HookSettings(serde_json::Value);
+
+impl HookSettings {
+    /// Register `exe` as the `PreToolUse` hook for every tool (no matcher =
+    /// all tools), with `args` appended to the command line.
+    pub fn for_exe(exe: &Path, args: &[&str]) -> Self {
+        let mut command = shell_quote(exe);
+        for arg in args {
+            command.push(' ');
+            command.push_str(arg);
         }
-    })
+        Self(serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": command,
+                    }]
+                }]
+            }
+        }))
+    }
+
+    /// Register THIS binary's hidden hook subcommand.
+    ///
+    /// # Errors
+    ///
+    /// If the running executable's path cannot be resolved — without it the
+    /// hook command line cannot be written, and a settings file naming no
+    /// hook is the fail-open shape this type exists to prevent.
+    pub fn for_self() -> Result<Self> {
+        let self_exe = std::env::current_exe().context("resolving own executable for the hook")?;
+        Ok(Self::for_exe(&self_exe, &[HOOK_SUBCOMMAND]))
+    }
+
+    /// Write the document into `dir` and return the path `--settings` takes.
+    ///
+    /// # Errors
+    ///
+    /// If serialization or the write fails.
+    pub fn write_to(&self, dir: &Path, file_name: &str) -> Result<SettingsPath> {
+        let path = dir.join(file_name);
+        std::fs::write(&path, serde_json::to_string_pretty(&self.0)?)
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(SettingsPath(path))
+    }
+
+    /// The document, for tests that assert its shape. `#[cfg(test)]`, so no
+    /// production caller can reach the JSON and hand it somewhere else.
+    #[cfg(test)]
+    pub(crate) fn as_json(&self) -> &serde_json::Value {
+        &self.0
+    }
 }
 
-/// The settings document that registers this binary as the `PreToolUse`
-/// hook for every tool (no matcher = all tools).
-pub fn hook_settings(self_exe: &Path) -> serde_json::Value {
-    hook_settings_for_exe(self_exe, &[HOOK_SUBCOMMAND])
+/// A path known to hold a [`HookSettings`] document.
+///
+/// The only thing a launch site may pass to `--settings`. Minted only by
+/// [`HookSettings::write_to`], so an arbitrary path — or one holding a
+/// hand-rolled document — cannot get there.
+pub struct SettingsPath(PathBuf);
+
+impl SettingsPath {
+    /// The path, for the command line.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
 }
 
-/// Write the hook settings into `dir` and return the path to pass as
-/// `--settings`.
-pub fn write_hook_settings(dir: &Path) -> Result<PathBuf> {
-    let self_exe = std::env::current_exe().context("resolving own executable for the hook")?;
-    let path = dir.join("mediation-hook-settings.json");
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&hook_settings(&self_exe))?,
-    )
-    .with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
+/// Write the mediation hook's settings into `dir`.
+///
+/// The ordinary route for a launch site: build the document for this binary
+/// and write it under the conventional name.
+///
+/// # Errors
+///
+/// As [`HookSettings::for_self`] and [`HookSettings::write_to`].
+pub fn write_hook_settings(dir: &Path) -> Result<SettingsPath> {
+    HookSettings::for_self()?.write_to(dir, "mediation-hook-settings.json")
 }
 
 /// Single-quote a path for the hook's shell command line.
@@ -332,7 +393,8 @@ mod tests {
 
     #[test]
     fn settings_register_this_binary_for_every_tool() {
-        let v = hook_settings(Path::new("/opt/nuc leus/nucleus"));
+        let s = HookSettings::for_exe(Path::new("/opt/nuc leus/nucleus"), &[HOOK_SUBCOMMAND]);
+        let v = s.as_json();
         let entry = &v["hooks"]["PreToolUse"][0];
         assert!(entry.get("matcher").is_none(), "no matcher = every tool");
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
@@ -426,6 +488,33 @@ mod tests {
         );
     }
 
+    /// The document reaches disk with the nested array intact, and the path
+    /// that comes back is the one `--settings` is given. A round trip, because
+    /// the failure this type exists to prevent is invisible in the written
+    /// file: a flat entry is valid JSON and registers nothing.
+    #[test]
+    fn the_written_document_keeps_the_nested_hooks_array() {
+        let dir =
+            std::env::temp_dir().join(format!("nucleus-hook-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let written = HookSettings::for_exe(Path::new("/opt/hook"), &["run"])
+            .write_to(&dir, "settings.json")
+            .expect("write");
+        let raw = std::fs::read_to_string(written.as_path()).expect("read back");
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("valid json");
+        let group = &v["hooks"]["PreToolUse"][0];
+        assert!(
+            group.get("hooks").is_some(),
+            "the nested array is what registers the hook: {raw}"
+        );
+        assert!(
+            group.get("command").is_none(),
+            "a command at the matcher-group level registers nothing"
+        );
+        assert_eq!(group["hooks"][0]["command"], "'/opt/hook' run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The fail-open shape has exactly one author.
     ///
     /// A matcher-group entry carrying `type`/`command` without the nested
@@ -441,7 +530,7 @@ mod tests {
             assert!(
                 !src.contains("\"PreToolUse\""),
                 "{name}: builds a hook registration itself; call \
-                 mediation::hook_settings_for_exe instead"
+                 mediation::HookSettings instead"
             );
         }
     }
@@ -450,7 +539,8 @@ mod tests {
     fn the_registration_nests_the_hooks_array_and_quotes_the_path() {
         // The nested array is the load-bearing part: without it the CLI
         // registers no hook and does not say so.
-        let v = hook_settings_for_exe(Path::new("/opt/nuc leus/hook"), &[]);
+        let s = HookSettings::for_exe(Path::new("/opt/nuc leus/hook"), &[]);
+        let v = s.as_json();
         let group = &v["hooks"]["PreToolUse"][0];
         assert!(
             group.get("hooks").is_some(),
@@ -468,8 +558,8 @@ mod tests {
         );
         // And the self-registering form still agrees with it.
         assert_eq!(
-            hook_settings(Path::new("/opt/nucleus"))["hooks"]["PreToolUse"][0]["hooks"][0]
-                ["command"]
+            HookSettings::for_exe(Path::new("/opt/nucleus"), &[HOOK_SUBCOMMAND]).as_json()["hooks"]
+                ["PreToolUse"][0]["hooks"][0]["command"]
                 .as_str()
                 .unwrap(),
             "'/opt/nucleus' mediation-hook"

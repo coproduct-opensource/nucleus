@@ -83,6 +83,20 @@ enum Command {
         #[arg(long)]
         entries: bool,
     },
+    /// A declared `measuredMs` that a real run has already beaten is not a measurement.
+    /// `ci.timeoutMeasured_b` proves a relation between two DECLARATIONS; nothing compares
+    /// either to what the builder did. On 2026-09-22 `test-audit` declared 776241 ms and a
+    /// run took 1493565 ms within two hours, putting the timeout under the 2x floor while
+    /// `admissible` went on proving. Lane-side: it reads the builder's own `gate_measured`
+    /// events, so it cannot be one of the tree-side required gates.
+    PlanMeasurements {
+        /// JSONL carrying the builder's `gate_measured` events (`/var/log/gatehouse/gates.log`).
+        #[arg(long)]
+        events: std::path::PathBuf,
+        /// The committed elaboration that declares each gate's `measured_ms`.
+        #[arg(long, default_value = ".gatehouse/plan-gates.json")]
+        plan: std::path::PathBuf,
+    },
     /// A SHA of this repo pinned by this repo must still match the working tree.
     SelfPin,
     /// One fact written in several files must have one value: the elan release and its
@@ -138,6 +152,10 @@ enum Command {
         #[arg(long)]
         network: bool,
     },
+    /// Economics never widens authority (#2514): the authority crates reach no economic
+    /// crate in the resolved graph, the decision functions in run_gate.rs and all of
+    /// pod_authority.rs name none, and the one permitted meet is still in cert_bridge.rs.
+    EconBoundary,
     /// ADR 0008: nucleus depends on nothing private. Refuses any git dependency, alternate
     /// registry, or path dependency escaping the repository — in the resolved graph per
     /// `cargo metadata`, and in every manifest's own declarations including the satellites.
@@ -340,6 +358,9 @@ enum CiSpecCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Every required context is decided by the fast gauntlet, or declared NOT-LOCAL with a
+    /// reason. Both directions, plus: a declared `prepush:` command must be IN prepush.
+    LocalCoverage,
     /// Print the inline-gate inventory (ci/inline-gates.txt shape).
     /// Every check context a workflow produces that ci/required-checks.txt does
     /// NOT list. Advisory contexts block nothing, so one can be red on main
@@ -399,6 +420,7 @@ mod clippy_config;
 mod command_grammar;
 mod convergence;
 mod coverage_floor;
+mod econ_boundary;
 mod fly_pools;
 mod gate_budget;
 mod gatehouse_pin;
@@ -408,8 +430,10 @@ mod law_mechanisms;
 mod lean_action_builds;
 mod life;
 mod line_ratchet;
+mod local_coverage;
 mod pin_parity;
 mod pipefail;
+mod plan_measurements;
 mod portability;
 mod push_auth;
 mod rerun_plan;
@@ -461,11 +485,28 @@ fn main() -> Result<()> {
         Command::PushAuth => push_auth::check(&std::env::current_dir()?),
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
+        Command::PlanMeasurements { events, plan } => {
+            // Exit 2 is "could not look", which is never a pass AND never a finding. Mapped
+            // here rather than exited from inside the check, so a unit test calling it
+            // survives -- the same shape as `SelfPin` above.
+            match plan_measurements::check(&events, &plan) {
+                plan_measurements::Outcome::Clean => Ok(()),
+                plan_measurements::Outcome::Overtaken(why) => {
+                    println!("VIOLATION: {why}");
+                    std::process::exit(1)
+                }
+                plan_measurements::Outcome::CouldNotLook(why) => {
+                    println!("COULD NOT LOOK: {why}");
+                    std::process::exit(2)
+                }
+            }
+        }
         Command::Pipefail => pipefail::check(&std::env::current_dir()?),
         Command::Portability => portability::check(&std::env::current_dir()?),
         Command::ActionInputs { network } => {
             action_inputs::check(&std::env::current_dir()?, network)
         }
+        Command::EconBoundary => econ_boundary::check(&std::env::current_dir()?),
         Command::Visibility => visibility::check(&std::env::current_dir()?),
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::Grammar => match command_grammar::run(&std::env::current_dir()?)? {
@@ -525,6 +566,7 @@ fn main() -> Result<()> {
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
             CiSpecCmd::Advisory { repo } => ci_spec::advisory(repo),
+            CiSpecCmd::LocalCoverage => local_coverage::run(),
             CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
             CiSpecCmd::LiveParity { repo, github, json } => {
                 ci_spec::live_parity(repo, &github, json)

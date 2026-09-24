@@ -22,11 +22,52 @@
     )
 )]
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use nucleus_action_key::census::{self, Outcome};
-use nucleus_action_key::{closure, derive};
+use nucleus_action_key::{closure, derive, pin};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+/// Hold the census to its pins and report.
+///
+/// Exits `Ok` when both floors are met, and errors otherwise — including when
+/// the census saw a different population than `ci/required-checks.txt` pins, a
+/// case reported as "could not look" rather than as a regression, because a
+/// scan over the wrong set says nothing about the floors.
+fn check(root: &Path, census: &census::Census) -> Result<()> {
+    let pins_path = root.join("ci/action-key-census.txt");
+    let pins_text = std::fs::read_to_string(&pins_path)
+        .with_context(|| format!("reading {}", pins_path.display()))?;
+    let pins = pin::parse_pins(&pins_text)?;
+
+    let ledger_path = root.join("ci/required-checks.txt");
+    let ledger_text = std::fs::read_to_string(&ledger_path)
+        .with_context(|| format!("reading {}", ledger_path.display()))?;
+    let population = pin::ledger_population(&ledger_text)?;
+
+    match pin::judge(
+        &pins,
+        population,
+        census.keyed(),
+        census.refused(),
+        census.unmeasured(),
+    ) {
+        pin::Verdict::Held {
+            keyed,
+            refused,
+            population,
+        } => {
+            println!(
+                "ok: {population} required context(s) — {keyed} keyed (floor {}), {refused} \
+                 refused for want of a declared read-set, 0 unmeasured",
+                pins.keyed_floor
+            );
+            Ok(())
+        }
+        pin::Verdict::Regressed(why) => bail!("action-key census regressed: {why}"),
+        pin::Verdict::CouldNotLook(why) => bail!("action-key census could not look: {why}"),
+    }
+}
 
 fn main() -> Result<()> {
     let root = std::env::var("NUCLEUS_REPO_ROOT")
@@ -43,6 +84,13 @@ fn main() -> Result<()> {
     }
 
     let census = census::run(&root)?;
+
+    // `--check` holds the census to ci/action-key-census.txt and exits non-zero
+    // on a regression. This is the binding: before it, the audit below ran only
+    // when a person typed the command, which is to say never.
+    if std::env::args().nth(1).as_deref() == Some("--check") {
+        return check(&root, &census);
+    }
 
     let mut keyed: Vec<&Outcome> = Vec::new();
     let mut refused: Vec<&Outcome> = Vec::new();

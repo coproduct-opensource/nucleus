@@ -850,7 +850,11 @@ pub fn recompute_assurance_rung_js(layers_json: &str) -> Result<JsValue, JsError
         .iter()
         .map(|l| DimRung {
             dimension: l.dimension.clone(),
-            rung: nucleus_externality::assess_rung(
+            // DECLARED, not derived: these four booleans come from the
+            // caller's JSON. The function name says so, and
+            // `nucleus_externality::assess_rung` — which takes witnesses —
+            // is deliberately unreachable from here.
+            rung: nucleus_externality::rung_from_declared_outcomes(
                 l.signature_ok,
                 l.tee_ok,
                 l.multi_source_disputed,

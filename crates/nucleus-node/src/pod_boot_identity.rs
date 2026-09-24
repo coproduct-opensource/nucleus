@@ -76,6 +76,9 @@ pub(crate) struct Inputs<'a> {
     pub task_token: Option<session_mint::MintedTaskToken>,
     pub pod_certificate: Option<pod_authority::BootCertificate>,
     pub broker_serve: broker_launch::ServeToken,
+    /// What `image_identity::verify` read for this pod, so the attestation reports the bytes
+    /// that were held to the pin rather than a second read of the same file.
+    pub measured: crate::image_identity::Measured,
 }
 
 pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiError> {
@@ -91,6 +94,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
         task_token,
         pod_certificate,
         broker_serve,
+        measured,
     } = inputs;
     let identity_source = net::identity_registration(state.identity_manager.as_ref(), grant);
     let mut ready = PreparedIdentity(Some(IdentityParts {
@@ -123,6 +127,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 &image.kernel_path,
                 &image.rootfs_path,
                 &config_bytes,
+                measured,
             )
             .await
         {

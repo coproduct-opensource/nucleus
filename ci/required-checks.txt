@@ -50,7 +50,22 @@
 # from the tree for it, and live parity instead holds branch protection to that app id. It also
 # requires the plan's `ci-spec` and `test-core` gates; `Tests` stays required here because it
 # additionally runs the SDK tests (node, python) that the gate image does not carry.
-# PINNED = 47
+# 2026-09-20: 47 -> 38. The SECOND SUBTRACTION of the 2026-09-17 cutover, nine lines late.
+#
+# `ci/gatehouse-replacements.txt` records eleven contexts retiring to the gatehouse `text-gates`
+# gate, and says what retiring one costs: "a line out of ci/required-checks.txt and a rule out of
+# the GitHub ruleset". The ruleset subtraction happened; this one did not, so for weeks
+# `live-parity` reported nine CI-LP-MISSING and the gate that reports it was itself not required.
+#
+# Read from this side alone the drift looks like GitHub having lost nine required contexts, and
+# that is how it was first read today -- the nine were ADDED to branch protection, taking it to
+# 47, before `gatehouse-replacements.txt` turned up and said they had been retired on purpose.
+# Branch protection has been returned to the 38 it held; this is the file that was wrong.
+#
+# The nine still RUN -- ci.yml's `text-gates` job and its relays are untouched -- and they still
+# gate a merge, through `gatehouse/required`, which is context 14 here. What changed in September
+# is which context carries them, not whether anything does.
+# PINNED = 38
 
 # --- the gatehouse App ---
 gatehouse/required @app 4853870
@@ -60,23 +75,14 @@ Detect changed crates
 Tests
 Fuzz
 OWASP LLM Security Gauntlet
-Ed25519 verify_strict gate (M-3)
-Sandbox trusted-base gate
-Fail-closed verifier gate
-Mediation backstop gate (North Star)
 test-helpers is not reachable from a shipping build
 Every lean_lib is type-checked by something
 Declassify sink scope is enforced
 Declassification is value-bound, single-use, and live
-Governor trusted-key set is not workload-writable
 C1 inbound fences are enforced
-The North Star status table cannot outrun its wiring
-Extracted predicates have live call sites (C8)
 The node records pod lineage on the live path (C2)
 Gates must fail on their own subject
 The CI assurance ledger cannot outrun its wiring
-No-unwitnessed-ingest gate (InputsAuthorized)
-Sealed-home integrity gate (North Star)
 Policy-kernel model↔Rust parity (K4)
 musl type-check (nucleus-node, nucleus-tool-proxy)
 

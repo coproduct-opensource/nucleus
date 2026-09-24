@@ -45,6 +45,36 @@ for s in check-declassify-governor-keys-sealed check-dep-ceiling check-extracted
     esac
 done
 run "check-line-ratchet --strict" bash scripts/check-line-ratchet.sh --strict
+# Three gates CI decides that this file did not, measured 2026-09-20 by pushing five branches
+# green and watching CI red on each. All three already existed in the tree; none was a cost
+# trade-off, just a list nobody reconciled. Timed before adding: 0 s and 3 s, against a fast
+# gauntlet of about a minute. `check-clippy-ratchet` is the fourth and is NOT here -- 53 s warm
+# and minutes cold, so it sits in --full below with the other clippy work.
+run "check-gate-defs-match-plan" bash scripts/check-gate-defs-match-plan.sh
+run "ci-spec check" cargo run -q -p xtask -- ci-spec check
+# The gauntlet checking its own list. Cheap, and the only thing that stops a gate being added to
+# CI and never reaching the fast path -- which is how three of today's five misses happened.
+run "ci-spec local-coverage" cargo run -q -p xtask -- ci-spec local-coverage
+
+# The Lean gates. Declared NOT-LOCAL on 2026-09-20 on the assumption that a developer has no
+# Lean toolchain -- which was never tested and is wrong: `lean-toolchain` pins v4.30.0 and elan
+# fetches it, none of these four projects `require` mathlib, and their `.lake` dirs are 1-3 MB.
+# Measured warm: 5 s, 4 s, 2 s, 1 s. Four required contexts that CI alone was deciding.
+# UNROLLED on purpose. A `for d in ...` loop hides the paths from
+# `ci-spec local-coverage`, which checks that a declared decider appears VERBATIM in this file --
+# and it caught the loop immediately. A list a checker cannot read is a list nobody reconciles,
+# which is the whole reason that gate exists.
+lean_build() {
+    [ -f "$1/lakefile.lean" ] || return 0
+    if have lake; then run "$2" sh -c "cd '$1' && lake build"
+    else echo "  skip  $2 — lake not installed"; fi
+}
+lean_build ci/lean                          "lake build (ci/lean)"
+lean_build crates/ck-policy/lean            "lake build (crates/ck-policy/lean)"
+lean_build crates/nucleus-econ-kernels/lean "lake build (crates/nucleus-econ-kernels/lean)"
+lean_build crates/nucleus-rubric/lean       "lake build (crates/nucleus-rubric/lean)"
+run "check-lean-libs-built" bash scripts/check-lean-libs-built.sh
+run "policy-kernel parity (K4)" cargo test -q -p nucleus-policy-kernel
 [ -x scripts/formal-numbers.sh ] && run "formal-numbers (census vs docs)" bash scripts/formal-numbers.sh
 if printf '%s\n' "$changed" | grep -q '^\.github/workflows/'; then
     if have actionlint; then
@@ -72,6 +102,12 @@ if printf '%s\n' "$changed" | grep -q '\.rs$'; then
 fi
 
 # ── full tier ─────────────────────────────────────────────────────────────
+if [ "$FULL" = 1 ]; then
+    # 53 s warm, minutes cold: real, and not worth a minute on every push. It reds when a crate
+    # that was unanalysable starts compiling, which is how a one-line feature gate turned out to
+    # restore clippy coverage over a whole crate (#2979).
+    run "check-clippy-ratchet --strict" bash scripts/check-clippy-ratchet.sh --strict
+fi
 if [ "$FULL" = 1 ] && printf '%s\n' "$changed" | grep -q '\.rs$'; then
     run "cargo clippy --all-targets --all-features -D warnings" cargo clippy --all-targets --all-features -- -D warnings
     if [ "$affected" = ALL ] || [ -z "$affected" ]; then
