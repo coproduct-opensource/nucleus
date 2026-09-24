@@ -358,6 +358,9 @@ enum CiSpecCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Every required context is decided by the fast gauntlet, or declared NOT-LOCAL with a
+    /// reason. Both directions, plus: a declared `prepush:` command must be IN prepush.
+    LocalCoverage,
     /// Print the inline-gate inventory (ci/inline-gates.txt shape).
     /// Every check context a workflow produces that ci/required-checks.txt does
     /// NOT list. Advisory contexts block nothing, so one can be red on main
@@ -427,6 +430,7 @@ mod law_mechanisms;
 mod lean_action_builds;
 mod life;
 mod line_ratchet;
+mod local_coverage;
 mod pin_parity;
 mod pipefail;
 mod plan_measurements;
@@ -562,6 +566,7 @@ fn main() -> Result<()> {
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
             CiSpecCmd::Advisory { repo } => ci_spec::advisory(repo),
+            CiSpecCmd::LocalCoverage => local_coverage::run(),
             CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
             CiSpecCmd::LiveParity { repo, github, json } => {
                 ci_spec::live_parity(repo, &github, json)
