@@ -2,6 +2,8 @@
   "scope": {
     "include": [
       "Cargo.toml",
+      "PolicyManifest.toml",
+      "docs/**",
       "Cargo.lock",
       "rust-toolchain.toml",
       ".cargo/config.toml",
@@ -37,6 +39,8 @@
     "net": "none",
     "fs_read": [
       "Cargo.toml",
+      "PolicyManifest.toml",
+      "docs/**",
       "Cargo.lock",
       "rust-toolchain.toml",
       ".cargo/config.toml",
@@ -152,7 +156,7 @@
     "git@2.39.5"
   ],
   "cwd": "",
-  "timeout_s": 2100,
+  "timeout_s": 3400,
   "outputs": [],
   "resources": {
     "cpus": 3,

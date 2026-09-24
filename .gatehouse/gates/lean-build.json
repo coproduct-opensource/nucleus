@@ -92,7 +92,7 @@
     "lean@4.30.0"
   ],
   "cwd": "",
-  "timeout_s": 1200,
+  "timeout_s": 400,
   "outputs": [],
   "resources": {
     "cpus": 2,
