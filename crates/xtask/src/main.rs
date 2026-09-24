@@ -152,6 +152,10 @@ enum Command {
         #[arg(long)]
         network: bool,
     },
+    /// Economics never widens authority (#2514): the authority crates reach no economic
+    /// crate in the resolved graph, the decision functions in run_gate.rs and all of
+    /// pod_authority.rs name none, and the one permitted meet is still in cert_bridge.rs.
+    EconBoundary,
     /// ADR 0008: nucleus depends on nothing private. Refuses any git dependency, alternate
     /// registry, or path dependency escaping the repository — in the resolved graph per
     /// `cargo metadata`, and in every manifest's own declarations including the satellites.
@@ -413,6 +417,7 @@ mod clippy_config;
 mod command_grammar;
 mod convergence;
 mod coverage_floor;
+mod econ_boundary;
 mod fly_pools;
 mod gate_budget;
 mod gatehouse_pin;
@@ -497,6 +502,7 @@ fn main() -> Result<()> {
         Command::ActionInputs { network } => {
             action_inputs::check(&std::env::current_dir()?, network)
         }
+        Command::EconBoundary => econ_boundary::check(&std::env::current_dir()?),
         Command::Visibility => visibility::check(&std::env::current_dir()?),
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::Grammar => match command_grammar::run(&std::env::current_dir()?)? {

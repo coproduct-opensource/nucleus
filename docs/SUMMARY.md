@@ -25,6 +25,7 @@
   - [The Agency Frontier](agency-frontier.md)
   - [Hardening Checklist](assurance/hardening-checklist.md)
   - [CI Assurance](assurance/ci-assurance.md)
+  - [The economic layer boundary](econ-layer-boundary.md)
 - [Decision Records]()
   - [0009 — The public/private line](adr/0009-the-public-private-line.md)
   - [0007 — Make the defect unwritable](adr/0007-make-the-defect-unwritable.md)

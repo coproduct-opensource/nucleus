@@ -16,6 +16,7 @@
 //! * **Percentiles, not just a mean.** Under contention the tail is the story.
 
 mod agency;
+mod exchange;
 mod guest_transcript;
 mod node_mtls;
 mod stress;
@@ -53,6 +54,10 @@ enum Cli {
     /// Measure one point on the safely-delegatable-agency frontier: how much
     /// useful work a pod completes, and what the authority cost (ADR 0005).
     Agency(AgencyArgs),
+    /// What clearing a contended authority slot by auction actually buys: the
+    /// contested fraction, the clearing-price distribution, and what FIFO leaves
+    /// on the table at this arrival rate.
+    Exchange(exchange::Args),
 }
 
 #[derive(Parser)]
@@ -179,6 +184,12 @@ fn main() -> Result<()> {
         Cli::Toolcall(t) => toolcall(t),
         Cli::Symmetry(s) => symmetry_report(s),
         Cli::Agency(a) => agency_run(a),
+        // The only subcommand that needs a runtime, built here rather than by
+        // making every other subcommand async for one caller's sake.
+        Cli::Exchange(e) => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(exchange::run(e)),
         Cli::GuestTranscript(g) => std::process::exit(guest_transcript::run(g)?),
         Cli::TeardownBarrier(t) => std::process::exit(teardown_barrier::run(t)?),
         // An error is "could not look" (2), never "violated" (1): a proxy that fails

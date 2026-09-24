@@ -1379,6 +1379,18 @@ perturb_scorecard_first_expiry() {
     sed -i.gate-bak 's/^pub struct ServeToken {$/pub struct ServeToken {\n    expires_at: u64,/' "$1" && rm -f "$1.gate-bak"
 }
 
+# ECON BOUNDARY (#2514). The gate refuses any path from a capability DECISION
+# into the economic layer, so the perturbation is the defect itself: one
+# decision function reaching for the market. This is the perturbation the gate
+# was driven red on before it was allowed green, registered here so the meta
+# gate can re-drive it on every run rather than trusting that it once happened.
+perturb_econ_boundary_reach() {
+    sed -i.gate-bak 's#^    let requested = state.runtime.policy().capabilities.level_for(op);$#    let _ = nucleus_permission_market::PermissionMarket::new();\n    let requested = state.runtime.policy().capabilities.level_for(op);#' "$1" && rm -f "$1.gate-bak"
+}
+
+probe_xtask econ-boundary crates/nucleus-tool-proxy/src/run_gate.rs \
+    "a capability decision reaching into the economic layer" perturb_econ_boundary_reach
+
 probe_xtask convergence crates/nucleus-tool-proxy/src/run_gate.rs \
     "one more affine type taken by reference" perturb_convergence_linearity
 probe_xtask bound crates/nucleus-tool-proxy/src/run_gate.rs \
