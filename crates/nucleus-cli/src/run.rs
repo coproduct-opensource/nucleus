@@ -516,10 +516,9 @@ async fn run_hook(
     // the nested `hooks` array, which registers no hook at all — silently, with
     // every tool call proceeding unhooked. In this mode the hook is the only
     // boundary there is, so that made the enforcement vacuous.
-    let settings_path = tmp_dir.join("settings.json");
     let profile_name = &args.profile;
-    let settings = crate::mediation::hook_settings_for_exe(&hook_bin, &[]);
-    fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    let settings_path = crate::mediation::HookSettings::for_exe(&hook_bin, &[])
+        .write_to(&tmp_dir, "settings.json")?;
 
     info!(
         hook_bin = %hook_bin.display(),
@@ -538,7 +537,7 @@ async fn run_hook(
     cmd.arg("--max-budget-usd")
         .arg(policy.budget.max_cost_usd.to_string())
         .arg("--settings")
-        .arg(&settings_path)
+        .arg(settings_path.as_path())
         .arg(prompt)
         .current_dir(work_dir)
         .env("NUCLEUS_PROFILE", profile_name);
@@ -1150,7 +1149,7 @@ fn run_agent_mcp(
         .arg("--disallowedTools")
         .arg(crate::constants::DISALLOWED_BUILTIN_TOOLS)
         .arg("--settings")
-        .arg(&settings_path)
+        .arg(settings_path.as_path())
         .env(
             crate::mediation::ALLOWED_TOOLS_ENV,
             guard.allowed_tools().join(","),
