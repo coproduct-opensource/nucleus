@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ci/no-vendor-strings.sh
 #
-# Vendor-neutrality CI gate for nucleus-oidc-provider + nucleus-oidc-core
-# (the public, MIT-licensed slice of the OIDC stack). Scans the source
+# Vendor-neutrality CI gate for nucleus-oidc-provider + nucleus-oidc-core +
+# nucleus-federation (the public, MIT-licensed slice of the OIDC and
+# federation stack). Scans the source
 # tree for vendor names, vendor hostnames, vendor token-prefix patterns,
 # and vendor-coupled synthetic-uid prefixes.
 #
@@ -30,6 +31,7 @@ set -euo pipefail
 SCAN_PATHS=(
     "crates/nucleus-oidc-core"
     "crates/nucleus-oidc-provider"
+    "crates/nucleus-federation"
 )
 if [[ $# -gt 0 ]]; then
     SCAN_PATHS=("$@")
