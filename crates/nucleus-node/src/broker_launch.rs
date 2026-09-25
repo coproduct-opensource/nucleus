@@ -334,9 +334,13 @@ impl BrokerCapability {
 ///
 /// # What comes from where
 ///
-/// The operator writes the upstream's `name` and `credential_env` in the pod
-/// spec — those are configuration, not secrets. The VALUE comes from the node's
-/// environment, where an operator put it and where no guest can reach.
+/// The operator writes the upstream's `name` and `credential_env` in the
+/// node's upstream registry (`--upstreams`, `upstreams.rs`) — configuration,
+/// not secrets. A pod spec only SELECTS entries, and `start_broker_for_pod`
+/// passes this function the registry's own copies of the ones admission
+/// granted, so the variable named here is one the operator named. The VALUE
+/// comes from the node's environment, where an operator put it and where no
+/// guest can reach.
 ///
 /// An upstream whose variable is unset (or empty) registers nothing, so the
 /// broker refuses it by absence — the same refusal a policy denial gives, which
@@ -423,14 +427,29 @@ pub fn start_broker_for_pod(
         }
     };
 
-    // The upstreams the HOST may be asked to call, straight from the pod spec.
+    // The upstreams the HOST may be asked to call: the operator registry's own
+    // entries for what this pod was ADMITTED.
     //
-    // This is the only source: a `PerformRequest` names an upstream, it does not
-    // describe one, so the base URL, the header and its prefix are all facts the
-    // operator wrote and the guest can only select among. An empty list — the
-    // ordinary case today — means every perform request is refused by name,
-    // which is the right answer for a pod whose operator configured none.
-    let upstreams = std::sync::Arc::new(spec.spec.credentialed_egress.clone());
+    // `spec.spec.credentialed_egress` here is no longer what the caller wrote —
+    // `create_pod_internal` replaced it with the set `pod_authority` admitted,
+    // each entry equal to a registry entry. Resolving through the registry
+    // anyway means the `credential_env` text `store_from_node_environment` hands
+    // to `std::env::var` is copied out of the operator's file, not out of a pod
+    // spec that merely matched it. No registry, no upstreams: admission gave
+    // this pod none either, and the two agreeing should not rest on admission
+    // alone.
+    //
+    // A `PerformRequest` names an upstream, it does not describe one, so the
+    // base URL, the header and its prefix are all facts the operator wrote and
+    // the guest can only select among. An empty list means every perform
+    // request is refused by name.
+    let upstreams = std::sync::Arc::new(
+        state
+            .authority
+            .upstream_registry()
+            .map(|registry| registry.resolve(&spec.spec.credentialed_egress))
+            .unwrap_or_default(),
+    );
 
     // The comment here used to read "Empty until `cred_split` has a call site on
     // this driver", and a `CredentialStore::new()` sat under it refusing

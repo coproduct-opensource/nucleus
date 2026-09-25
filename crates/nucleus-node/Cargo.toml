@@ -35,6 +35,8 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+# The operator upstream registry (`upstreams.rs`, `--upstreams`).
+toml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full", "process"] }
 tokio-stream = "0.1"
