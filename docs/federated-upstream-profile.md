@@ -240,6 +240,7 @@ grant              = "token-exchange"   # or "jwt-bearer"
 encoding           = "form"             # or "json"
 audience           = "https://auth.model.example.com"
 scope              = "inference"        # optional; sent only if set
+request_audience   = "https://api.model.example.com"  # optional; RFC 8693 `audience` body param
 assertion_ttl_secs = 300                # default 300, cap 3600
 
 [upstream.credential.federated.params]  # opaque, sent verbatim

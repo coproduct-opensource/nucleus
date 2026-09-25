@@ -70,7 +70,9 @@ The node takes `--upstreams <toml>`. Each entry is `name`, `base_url`, `header`,
 `value_prefix`, and `credential`, which is one of:
 
 - `env { var }` — today's behavior, now chosen by the operator rather than the spec author;
-- `federated { token_endpoint, grant, encoding, audience, params, assertion_ttl }`.
+- `federated { token_endpoint, grant, encoding, audience, scope?, request_audience?, params, assertion_ttl_secs? }`.
+  `request_audience` is the RFC 8693 `audience` body parameter, kept separate from the
+  assertion's `aud` because the token client refuses `audience` inside the opaque `params`.
 
 A pod spec's `credentialed_egress` names upstreams by `name`. Admission refuses a spec whose
 entry differs from the registry's in any field. The clamp is one function in `nucleus-spec`
@@ -131,8 +133,9 @@ pods**. The answer is that the provider's rule is not the gate. The node mints o
 - for a registry upstream the pod was admitted to,
 - with that upstream's `aud` and no other.
 
-`refill` takes `&AuthorizedRequest`, which only the PDP's approval constructs, so a mint
-before the decision does not compile. The profile tells providers to match exact `iss`,
+`refill` takes `&broker::Approved`, which only `pdp_decide` returns and whose field is private
+to `broker.rs`, so a mint before the decision does not compile. (`AuthorizedRequest` alone
+could not carry this: its fields are public and its constructor takes a `bool`.) The profile tells providers to match exact `iss`,
 exact `aud`, and `nucleus_upstream` (and `nucleus_tenant` where one provider account serves
 one tenant); that is defense in depth on top of the node's decision, not a substitute for
 it.
