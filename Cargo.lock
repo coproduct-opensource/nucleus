@@ -7110,6 +7110,7 @@ dependencies = [
  "nucleus-client",
  "nucleus-cred-broker",
  "nucleus-cred-protocol",
+ "nucleus-federation",
  "nucleus-identity",
  "nucleus-ifc-kernel",
  "nucleus-jsonl",
@@ -7146,6 +7147,7 @@ dependencies = [
  "tracing-subscriber 0.3.23",
  "uuid",
  "webpki-roots 1.0.9",
+ "wiremock",
  "x509-parser",
 ]
 

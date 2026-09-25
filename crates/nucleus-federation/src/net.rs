@@ -28,6 +28,12 @@ pub(crate) const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 /// final URL is not the endpoint, but by then the body has gone, so the
 /// client must not follow in the first place. Callers that build their own
 /// client must set `redirect::Policy::none()` too.
+///
+/// A rustls crypto provider must already be installed: this crate links
+/// reqwest with `rustls-no-provider`, like the rest of the workspace, and
+/// reqwest PANICS building a TLS client without one rather than returning the
+/// `Err` this signature suggests. A caller that cannot guarantee the ordering
+/// checks `rustls::crypto::CryptoProvider::get_default()` first.
 pub fn default_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

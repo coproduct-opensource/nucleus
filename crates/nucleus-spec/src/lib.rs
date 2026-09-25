@@ -1009,6 +1009,20 @@ pub struct CredentialedEgressSpec {
     ///
     /// An unset or empty variable registers nothing and the broker refuses that
     /// upstream by absence.
+    ///
+    /// # Empty means "not an environment variable", and that is all it says
+    ///
+    /// An operator registry entry whose credential is `federated` — minted per
+    /// exchange on the host, ADR 0010 — has no variable, and its projection
+    /// into this type carries `""` here. A pod selects it by writing the entry
+    /// with this field empty (or absent: it defaults). What the spec does NOT
+    /// gain is any description of the federation itself — token endpoint,
+    /// audience, parameters. On Firecracker this type is baked into the guest
+    /// rootfs, so those stay in the node's registry, where the guest can
+    /// neither read nor choose them. Admission's whole-struct equality then
+    /// holds on what the guest can see, and the source is resolved from the
+    /// registry by that equality.
+    #[serde(default)]
     pub credential_env: String,
     /// Header the credential is injected as (e.g. `authorization`).
     pub header: String,
@@ -1230,6 +1244,31 @@ mod credentialed_egress_fixity {
         );
         assert_eq!((kept.len(), dropped.len()), (1, 1));
         assert_eq!(kept[0], spec());
+    }
+
+    /// A selection of a federated upstream omits `credential_env`, and the
+    /// omission is the empty string — which is what the registry's projection
+    /// of a federated entry carries, so the two compare equal. And an empty
+    /// variable is not a wildcard: it does not match an entry that names one.
+    #[test]
+    fn an_omitted_credential_env_is_empty_and_not_a_wildcard() {
+        let selected: CredentialedEgressSpec = serde_json::from_value(serde_json::json!({
+            "name": "model-api",
+            "upstream": "https://upstream.invalid/v1",
+            "header": "authorization",
+            "value_prefix": "Bearer ",
+        }))
+        .expect("credential_env may be omitted");
+        assert_eq!(selected.credential_env, "");
+        let federated = CredentialedEgressSpec {
+            credential_env: String::new(),
+            ..spec()
+        };
+        assert!(selected.admitted_by(std::slice::from_ref(&federated)));
+        assert!(
+            !selected.admitted_by(&[spec()]),
+            "an empty variable matched an entry that names one"
+        );
     }
 
     /// **The control, first.** Everything below asserts a refusal, and an

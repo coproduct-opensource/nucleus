@@ -23,9 +23,14 @@ jsonwebtoken = { workspace = true }
 # The JWKS wire shapes (`Jwk`, `Jwks`) are reused from here rather than
 # redeclared, so there is one definition of what a JWK looks like on the wire.
 nucleus-oidc-core = { path = "../nucleus-oidc-core" }
-# `rustls` so an https token endpoint or JWKS URI is reachable; the Client
-# itself is always supplied by the caller.
-reqwest = { workspace = true, features = ["rustls"] }
+# TLS so an https token endpoint or JWKS URI is reachable; the Client itself
+# is always supplied by the caller. `rustls-no-provider`, the workspace
+# convention (nucleus-node, nucleus-tool-proxy): the plain `rustls` feature
+# brings reqwest's own aws-lc-rs provider along, and linking this crate into
+# the node would then have changed which provider the node's OWN clients use
+# — by feature unification, with no line in the node saying so. The caller
+# installs a provider (the node's `main` installs ring first thing).
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
 # ES256 signing (fixed-length r||s, the JOSE form) and the jti randomness.
 ring = { workspace = true }
 serde = { workspace = true }

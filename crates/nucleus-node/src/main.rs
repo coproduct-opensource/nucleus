@@ -72,6 +72,7 @@ mod driver;
 #[cfg(test)]
 mod effect_footprint;
 mod envelope_frame;
+mod federated_credential;
 mod guest_socket;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod host_requirements;
@@ -2858,13 +2859,13 @@ async fn spawn_firecracker_pod(
             prepared_identity.identity(),
             id,
             broker_verify,
-            // The SAME expression the workload API bridge uses. That socket was
-            // chowned and this one was not, which is why no guest could have
-            // reached the broker under the jailer.
+            // The SAME expression the workload API bridge uses. That socket was chowned and this
+            // one was not, which is why no guest could have reached the broker under the jailer.
             jail_layout
                 .as_ref()
                 .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
-        )?;
+        )
+        .await?;
 
         let pod_boot_identity::IdentityParts {
             identity: pod_identity,
