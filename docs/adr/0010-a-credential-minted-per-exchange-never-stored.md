@@ -183,6 +183,12 @@ answers `404` (ADR 0001, decision 3). The budget ledger for node-rooted certific
 keyed by the binding's trust domain — not by certificate fingerprint, and not by the
 token's `sub`, which may be per-invocation and would give every exchange a fresh budget.
 
+Implementing this (P5, #3022) exposed that the rule was not true for non-pod callers before:
+`pod_api::caller_may_manage` scoped only pod callers, so any other mTLS caller could list,
+get and cancel every pod. The caller is now a `Caller` enum (`Operator | Pod | Tenant`), so
+the compiler makes every handler decide what a tenant may do. Tenants may never snapshot
+and are refused on gRPC.
+
 ### 8. Inbound replay is keyed on the token hash
 
 A presented token is refused if `sha256(compact token)` was seen before and has not yet

@@ -189,16 +189,19 @@ operator bound to it.
    (A binding may instead configure a JWKS URL or an inline JWKS, in which case discovery
    is not fetched.)
 2. The issuer **MUST** sign every token for a given binding with a **single** algorithm,
-   which the operator pins in the binding. Nucleus supports `ES256`, `RS256`, `PS256`, and
-   `EdDSA`; `none` and `HS*` are never accepted.
+   which the operator pins in the binding. Nucleus accepts `ES256`, `ES384`, `RS256`,
+   `RS384`, `RS512`, `PS256`, `PS384`, and `PS512`; `none`, `HS*`, and `EdDSA` are not
+   accepted. RSA keys **MUST** be at least 2048 bits, and a key's `kty`/`crv` **MUST** match
+   the header `alg`.
 3. Every token **MUST** carry `kid` in its header, naming a key in the issuer's JWKS.
 4. `aud` **MUST** equal the binding's audience exactly.
 5. `exp` and `iat` are **REQUIRED**, and `exp − iat` **MUST NOT** exceed the binding's
    `max_lifetime`.
-6. `sub` **MUST** be stable for the principal the binding maps — or the binding names
-   another stable top-level string claim that nucleus maps instead. A `sub` that changes
-   per invocation still works for authentication, but the principal and the budget are the
-   binding's, never the `sub`'s.
+6. `sub` **MUST** be present and non-empty. Nucleus maps `sub` into the principal, so a
+   `sub` that is stable per principal gives stable pod ownership. A `sub` that changes per
+   invocation still authenticates, but each value is a distinct principal. The budget is
+   the binding's (one per binding trust domain), never the `sub`'s. The escaped `sub` must
+   fit in 200 bytes.
 7. `jti` is **OPTIONAL**. Nucleus keys replay on `sha256(compact token)` until `exp`, so a
    token is accepted at most once whether or not it carries a `jti`.
 8. Any claim the binding lists in `required_claims` **MUST** be present with the configured
@@ -207,23 +210,29 @@ operator bound to it.
 ### 3.1 What nucleus does with it (informative)
 
 - The token is presented once, at `POST /v1/federation/exchange` on a server-auth-only TLS
-  listener, as `Authorization: Bearer <token>` together with a PKCS#10 CSR whose SAN is the
-  mapped principal.
-- The principal is `spiffe://<binding.trust_domain>/ns/<label>/sa/<sanitized sub>`.
+  listener, as `Authorization: Bearer <token>`. The JSON body is
+  `{ "csr": "<PEM or base64 DER PKCS#10>", "requested_ceiling"?: {"profile": "…"} | {"inline": {…}} }`.
+  The CSR **MUST** carry exactly one SAN: a SPIFFE URI equal to the mapped principal.
+- The principal is `spiffe://<binding.trust_domain>/ns/<label>/sa/<escaped sub>`. Letters,
+  digits and `-` are kept; every other byte, including `_`, becomes `_xx` (hex), so the
+  mapping is injective. Nothing is truncated.
+- A token that validates is spent, even if its CSR is then refused.
 - The response is a short-lived X.509 SVID for that principal (lifetime at most the token's
   remaining lifetime and the binding's `svid_ttl`), plus a node-rooted delegation
   certificate whose ceiling is the binding's and whose `provenance` is `sha256(token)`.
+- The response is `{ "spiffe_id", "svid_chain_pem", "trust_bundle_pem", "delegation_cert",
+  "expires_at" }`. Errors carry only `{"error": "<word>"}`: `400` malformed body, `401`
+  anything about the token, `403` CSR or unmappable `sub`, `503` issuer keys unreachable or
+  too many exchanges in flight.
 - The caller then uses mTLS `POST /v1/pods` with that certificate in
   `x-nucleus-delegation-cert`. Pods are visible only to callers in the same trust domain;
   every other caller sees `404`. The budget is shared by every exchange under the binding.
 
-Field names of the exchange request and response are fixed when P5 lands; the token
-requirements above are not expected to change.
 
 ## 4. Operator configuration
 
-These are nucleus-side examples with placeholder values. Key names are illustrative until
-P0, P3, and P5 land.
+These are nucleus-side examples with placeholder values, in the shapes P0 (#3017), P3
+(#3020) and P5 (#3022) implement.
 
 ### 4.1 An Upstream entry (`--upstreams upstreams.toml`)
 
@@ -278,14 +287,19 @@ label            = "example-runtime"
 issuer           = "https://oidc.runtime.example.com/org/example-org-0001"
 audience         = "https://federation.nodes.example.com"
 algs             = ["ES256"]
-jwks             = { discovery = true }          # or { uri = "…" } or { inline = "…" }
+jwks             = { discovery = true }          # or { uri = "…" } or { inline = '<JWKS JSON>' }
 max_lifetime_secs = 900
+leeway_secs      = 30                            # optional; at most 60
 trust_domain     = "runtime.example.com"
 required_claims  = { org = "example-org-0001" }
-ceiling          = { profile = "codegen" }
+ceiling          = { profile = "codegen" }       # or { inline = { …lattice… } }
 upstreams        = ["model-api"]
-svid_ttl_secs    = 600
+svid_ttl_secs    = 600                           # optional; default 600, 5-3600
 ```
+
+`[[caller]]` entries live in the same file as `[[upstream]]` entries, because a binding's
+`upstreams` must name entries in it. Label, issuer and trust domain are each unique across
+bindings, and a trust domain may never be the node's own.
 
 ## 5. For a runtime that already issues tokens but accepts only static keys
 
