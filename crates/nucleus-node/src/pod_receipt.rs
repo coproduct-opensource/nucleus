@@ -612,10 +612,14 @@ mod tests {
                     root_minter_spiffe_id: None,
                     cert_trust_anchors: Vec::new(),
                     max_children_per_pod: 8,
+                    upstreams: None,
+                    federation_issuer: None,
+                    ingress: Default::default(),
                 },
                 "nucleus.local",
                 dir,
             )
+            .expect("no registry to fail to load")
         }
 
         /// **The claim, end to end.** Every other signature test builds a `Receipt`
@@ -701,6 +705,7 @@ mod tests {
                 })),
                 parent_pod_id: None,
                 posture_stamp: None,
+                owner: None,
             });
 
             if exit {

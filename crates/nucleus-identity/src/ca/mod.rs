@@ -196,6 +196,39 @@ pub trait CaClient: Send + Sync {
     /// PEM-encoded certificate chain (leaf cert + intermediates).
     async fn sign_csr_only(&self, csr: &str, identity: &Identity, ttl: Duration) -> Result<String>;
 
+    /// Sign a CSR for an identity in ANOTHER trust domain — a federated caller
+    /// whose tenant is its own trust domain (ADR 0001), vouched for by this CA
+    /// on the strength of a token the node validated.
+    ///
+    /// # Why this is not `sign_csr_only` with the check removed
+    ///
+    /// `sign_csr_only` refusing a foreign trust domain is what stops a caller of
+    /// it minting an identity in someone else's namespace, and it has callers
+    /// that rely on that. This is the one deliberate exception, and it is
+    /// disjoint from it: it REFUSES this CA's own trust domain, so no federated
+    /// exchange can ever yield a node-domain identity (an operator or a pod),
+    /// whatever the binding says.
+    ///
+    /// The CSR is read by [`crate::spiffe_uri_from_csr_der`]: its signature must
+    /// verify, and it must request exactly one name, the SPIFFE URI of
+    /// `identity`.
+    ///
+    /// # Default Implementation
+    ///
+    /// Refuses. A CA that has not opted in (SPIRE, which cannot sign an external
+    /// CSR at all) fails closed rather than inheriting a permissive default.
+    async fn sign_csr_for_foreign_trust_domain(
+        &self,
+        _csr: &str,
+        identity: &Identity,
+        _ttl: Duration,
+    ) -> Result<String> {
+        Err(crate::Error::NotSupported(format!(
+            "this CA does not issue identities outside its trust domain ({})",
+            identity.trust_domain()
+        )))
+    }
+
     /// Returns the trust bundle (root CA certificates) for this CA.
     fn trust_bundle(&self) -> &crate::certificate::TrustBundle;
 
@@ -282,6 +315,17 @@ impl CaClient for Arc<dyn CaClient> {
 
     async fn sign_csr_only(&self, csr: &str, identity: &Identity, ttl: Duration) -> Result<String> {
         (**self).sign_csr_only(csr, identity, ttl).await
+    }
+
+    async fn sign_csr_for_foreign_trust_domain(
+        &self,
+        csr: &str,
+        identity: &Identity,
+        ttl: Duration,
+    ) -> Result<String> {
+        (**self)
+            .sign_csr_for_foreign_trust_domain(csr, identity, ttl)
+            .await
     }
 
     fn trust_bundle(&self) -> &crate::certificate::TrustBundle {

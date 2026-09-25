@@ -35,6 +35,8 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+# The operator upstream registry (`upstreams.rs`, `--upstreams`).
+toml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full", "process"] }
 tokio-stream = "0.1"
@@ -52,11 +54,10 @@ hex = { workspace = true }
 serde_json_canonicalizer = "0.3"
 ipnet = "2.12"
 
-# GitHub OIDC support. Use the workspace pin (aws_lc_rs backend) so node doesn't
-# pull a second jsonwebtoken crypto backend / dalek line.
-jsonwebtoken = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-no-provider"] }
 rustls = { workspace = true }
+# The federation exchange listener's server-auth-only TLS (`federation_ingress.rs`).
+tokio-rustls = { workspace = true }
 webpki-roots = "1.0"
 base64 = { workspace = true }
 # `alloc` is required (alongside `pkcs8`) for the EncodePrivateKey/DecodePrivateKey
@@ -94,6 +95,11 @@ nucleus-cred-broker = { path = "../nucleus-cred-broker" }
 # Wire types only, and the guest links the same crate. Nothing here can hold a
 # secret — the host needs `PerformRequest` to READ what a guest asked for.
 nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
+# Keyless upstream credentials (ADR 0010): the ES256 assertion, the signer
+# trait and the token client. The node decides WHEN to mint
+# (`federated_credential.rs`); this crate only makes the assertion honest about
+# who asked.
+nucleus-federation = { path = "../nucleus-federation" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 portcullis = { path = "../portcullis", features = ["serde"] }
@@ -101,6 +107,11 @@ portcullis = { path = "../portcullis", features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+# Decodes the node's own federated assertions in `federated_credential` tests.
+# Only a dev-dependency since the single-vendor inbound route (its one
+# production user) was replaced by `federation_ingress.rs`, which validates
+# through `nucleus-federation`. Workspace pin: one crypto backend.
+jsonwebtoken = { workspace = true }
 # Drives the SPIFFE Workload API vsock bridge as a REAL client would.
 spiffe = { version = "0.16", features = ["workload-api-x509"] }
 tempfile = { workspace = true }
@@ -110,6 +121,13 @@ tokio-test = { workspace = true }
 # seccomp flags). The lowering seams are pure + platform-independent so these
 # run on every host, not only Linux.
 proptest = { workspace = true }
+# A real token endpoint and a real upstream for the federated-credential tests,
+# driven through the broker's own serving path. Same version the federation
+# crate's tests use.
+wiremock = "0.6"
+# CSRs with arbitrary SANs for the federation exchange's refusal tests. The
+# version nucleus-identity uses.
+rcgen = { version = "0.14", features = ["x509-parser"] }
 
 [lints]
 workspace = true

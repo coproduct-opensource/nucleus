@@ -867,6 +867,44 @@ impl CaClient for SelfSignedCa {
         Ok(pem)
     }
 
+    async fn sign_csr_for_foreign_trust_domain(
+        &self,
+        csr: &str,
+        identity: &Identity,
+        ttl: Duration,
+    ) -> Result<String> {
+        // Disjoint from `sign_csr_only` by construction: see the trait docs.
+        if identity.trust_domain() == self.trust_domain {
+            return Err(Error::TrustDomainMismatch {
+                expected: "a trust domain other than this CA's own".to_string(),
+                actual: identity.trust_domain().to_string(),
+            });
+        }
+        let csr_der = Self::pem_to_der(csr, "CERTIFICATE REQUEST")?;
+        let requested = crate::certificate::spiffe_uri_from_csr_der(&csr_der)?;
+        if requested != identity.to_spiffe_uri() {
+            return Err(Error::VerificationFailed(
+                "CSR SPIFFE URI is not the identity being issued".to_string(),
+            ));
+        }
+        let (_, parsed_csr) = X509CertificationRequest::from_der(&csr_der)
+            .map_err(|e| Error::CsrGeneration(format!("failed to parse CSR: {e}")))?;
+        let spki = &parsed_csr.certification_request_info.subject_pki;
+        let algorithm = detect_algorithm(&spki.algorithm).ok_or_else(|| {
+            Error::CaSigning("unsupported public key algorithm in CSR".to_string())
+        })?;
+        let public_key = CsrPublicKey {
+            spki_der: spki.raw.to_vec(),
+            algorithm,
+        };
+        let chain = self.sign_with_public_key(&public_key, identity, ttl)?;
+        Ok(chain
+            .iter()
+            .map(|c| c.to_pem())
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
     fn trust_bundle(&self) -> &TrustBundle {
         &self.trust_bundle
     }
@@ -1518,5 +1556,48 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "key file mode was {mode:o}");
         }
+    }
+
+    /// The federated exchange's signer: a foreign-domain identity is issued
+    /// when the CSR asks for exactly it, and never for this CA's own domain.
+    #[tokio::test]
+    async fn a_foreign_trust_domain_is_issued_only_what_its_csr_names() {
+        let ca = SelfSignedCa::new("node.local").unwrap();
+        let ttl = Duration::from_secs(300);
+        let principal = Identity::new("tenant.example", "rt", "alice");
+
+        let csr = crate::CsrOptions::new(principal.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let pem = ca
+            .sign_csr_for_foreign_trust_domain(csr.csr(), &principal, ttl)
+            .await
+            .expect("the named identity is issued");
+        let leaf = crate::certificate::Certificate::from_pem(&pem).unwrap();
+        assert_eq!(
+            crate::spiffe_uri_from_svid(leaf.der()).unwrap(),
+            principal.to_spiffe_uri()
+        );
+
+        // A CSR for someone else is refused, not re-labelled.
+        let bob = crate::CsrOptions::new("spiffe://tenant.example/ns/rt/sa/bob")
+            .generate()
+            .unwrap();
+        assert!(
+            ca.sign_csr_for_foreign_trust_domain(bob.csr(), &principal, ttl)
+                .await
+                .is_err()
+        );
+
+        // This CA's own domain never goes through the federated door.
+        let own = Identity::new("node.local", "system", "cli");
+        let own_csr = crate::CsrOptions::new(own.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        assert!(
+            ca.sign_csr_for_foreign_trust_domain(own_csr.csr(), &own, ttl)
+                .await
+                .is_err()
+        );
     }
 }

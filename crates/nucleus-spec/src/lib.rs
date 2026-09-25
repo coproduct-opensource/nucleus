@@ -1009,6 +1009,20 @@ pub struct CredentialedEgressSpec {
     ///
     /// An unset or empty variable registers nothing and the broker refuses that
     /// upstream by absence.
+    ///
+    /// # Empty means "not an environment variable", and that is all it says
+    ///
+    /// An operator registry entry whose credential is `federated` — minted per
+    /// exchange on the host, ADR 0010 — has no variable, and its projection
+    /// into this type carries `""` here. A pod selects it by writing the entry
+    /// with this field empty (or absent: it defaults). What the spec does NOT
+    /// gain is any description of the federation itself — token endpoint,
+    /// audience, parameters. On Firecracker this type is baked into the guest
+    /// rootfs, so those stay in the node's registry, where the guest can
+    /// neither read nor choose them. Admission's whole-struct equality then
+    /// holds on what the guest can see, and the source is resolved from the
+    /// registry by that equality.
+    #[serde(default)]
     pub credential_env: String,
     /// Header the credential is injected as (e.g. `authorization`).
     pub header: String,
@@ -1074,6 +1088,43 @@ impl CredentialedEgressSpec {
         let base = self.upstream.trim_end_matches('/');
         let path = path.trim_start_matches('/');
         Some(format!("{base}/{path}"))
+    }
+
+    /// Whether this entry is one the `ceiling` already grants, WHOLE.
+    ///
+    /// # One definition, for the same reason `url_for` has one
+    ///
+    /// Two components decide which upstreams a pod may hold: the node, when it
+    /// admits a pod (against its operator registry or the parent pod's admitted
+    /// set), and the in-guest tool-proxy, when an agent asks for a sub-pod. They
+    /// ask the same question, and a copy in each would be two chances to widen
+    /// one and not the other.
+    ///
+    /// # Whole-struct equality, not a hand-listed field set
+    ///
+    /// An entry carries BOTH halves of an exfiltration primitive: `upstream`,
+    /// where the request goes, and `credential_env`, which of the node's
+    /// environment variables rides along. Matching on `name` would let a caller
+    /// keep a granted `credential_env` and change `upstream`, re-targeting a real
+    /// credential at a server it chose. Matching on an enumerated set of fields
+    /// would let a field added later (another header, a prefix, a credential
+    /// source) silently widen what may be inherited. The derived `PartialEq`
+    /// covers every field, including ones not yet written.
+    #[must_use]
+    pub fn admitted_by(&self, ceiling: &[Self]) -> bool {
+        ceiling.iter().any(|granted| granted == self)
+    }
+
+    /// Split `requested` into what the `ceiling` grants and what it does not.
+    ///
+    /// Dropping rather than refusing is the caller's policy, not this
+    /// function's: it returns both halves so each caller can log what it
+    /// removed (by `name`, never by `credential_env`) and keep what survived.
+    #[must_use]
+    pub fn clamp(requested: Vec<Self>, ceiling: &[Self]) -> (Vec<Self>, Vec<Self>) {
+        requested
+            .into_iter()
+            .partition(|up| up.admitted_by(ceiling))
     }
 }
 
@@ -1154,6 +1205,70 @@ mod credentialed_egress_fixity {
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
         }
+    }
+
+    /// The subset check the node and the tool-proxy both call. An identical
+    /// entry is admitted; changing ANY one field, including ones a hand-written
+    /// comparison would be likely to forget, is not.
+    #[test]
+    fn admission_is_whole_struct_equality() {
+        let granted = [spec()];
+        assert!(
+            spec().admitted_by(&granted),
+            "the control: an equal entry is admitted"
+        );
+        let perturbations: [fn(&mut CredentialedEgressSpec); 5] = [
+            |s| s.name = "other".into(),
+            |s| s.upstream = "https://attacker.invalid".into(),
+            |s| s.credential_env = "SOME_OTHER_NODE_VAR".into(),
+            |s| s.header = "x-api-key".into(),
+            |s| s.value_prefix = String::new(),
+        ];
+        for perturb in perturbations {
+            let mut changed = spec();
+            perturb(&mut changed);
+            assert!(
+                !changed.admitted_by(&granted),
+                "{changed:?} differs and was admitted"
+            );
+        }
+        assert!(!spec().admitted_by(&[]), "an empty ceiling grants nothing");
+
+        let (kept, dropped) = CredentialedEgressSpec::clamp(
+            vec![spec(), {
+                let mut s = spec();
+                s.credential_env = "SOME_OTHER_NODE_VAR".into();
+                s
+            }],
+            &granted,
+        );
+        assert_eq!((kept.len(), dropped.len()), (1, 1));
+        assert_eq!(kept[0], spec());
+    }
+
+    /// A selection of a federated upstream omits `credential_env`, and the
+    /// omission is the empty string — which is what the registry's projection
+    /// of a federated entry carries, so the two compare equal. And an empty
+    /// variable is not a wildcard: it does not match an entry that names one.
+    #[test]
+    fn an_omitted_credential_env_is_empty_and_not_a_wildcard() {
+        let selected: CredentialedEgressSpec = serde_json::from_value(serde_json::json!({
+            "name": "model-api",
+            "upstream": "https://upstream.invalid/v1",
+            "header": "authorization",
+            "value_prefix": "Bearer ",
+        }))
+        .expect("credential_env may be omitted");
+        assert_eq!(selected.credential_env, "");
+        let federated = CredentialedEgressSpec {
+            credential_env: String::new(),
+            ..spec()
+        };
+        assert!(selected.admitted_by(std::slice::from_ref(&federated)));
+        assert!(
+            !selected.admitted_by(&[spec()]),
+            "an empty variable matched an entry that names one"
+        );
     }
 
     /// **The control, first.** Everything below asserts a refusal, and an

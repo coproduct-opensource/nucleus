@@ -268,7 +268,9 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                 Op::Logs { caller, target } => {
                     let caller_id = model.caller_id(caller);
                     let id = model.target_id(target, unknown);
-                    let got = pod_logs(State(st.clone()), Extension(caller_id), AxumPath(id)).await;
+                    let got =
+                        pod_logs(State(st.clone()), Extension(caller_id.into()), AxumPath(id))
+                            .await;
                     check_scoped(&model, caller_id, id, got.map(|_| id), &mut stats).map_err(at)?;
                 }
                 Op::Cancel { caller, target } => {
@@ -276,7 +278,8 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                     let id = model.target_id(target, unknown);
                     let already = model.pod(id).is_some_and(|p| p.cancelled);
                     let got =
-                        cancel_pod(State(st.clone()), Extension(caller_id), AxumPath(id)).await;
+                        cancel_pod(State(st.clone()), Extension(caller_id.into()), AxumPath(id))
+                            .await;
                     let allowed = model.may_manage(caller_id, id);
                     check_scoped(&model, caller_id, id, got.map(|_| id), &mut stats).map_err(at)?;
                     if allowed {

@@ -66,7 +66,8 @@ pub use ca::{CaClient, SelfSignedCa};
 #[cfg(feature = "spire")]
 pub use ca::{DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV, SpireCaClient, auto_detect_ca};
 pub use certificate::{
-    TrustBundle, WorkloadCertificate, spiffe_uri_from_parsed_svid, spiffe_uri_from_svid,
+    TrustBundle, WorkloadCertificate, spiffe_uri_from_csr_der, spiffe_uri_from_parsed_svid,
+    spiffe_uri_from_svid,
 };
 pub use cross_agent::{CrossAgentExchange, CrossAgentReceipt, join_cross_agent};
 pub use csr::{CertSign, CsrOptions};

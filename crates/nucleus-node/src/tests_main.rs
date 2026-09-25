@@ -695,8 +695,9 @@ fn create_pod_internal_still_consults_the_authority_gate() {
         "create_pod_internal must consult pod_authority::admit before any driver spawns"
     );
     assert!(
-        body.contains("PolicySpec::Inline"),
-        "the issued effective lattice must replace the requested policy before spawn"
+        body.contains("issued.apply_to(&mut spec);"),
+        "the issued effective lattice and admitted upstreams must replace the requested \
+         policy and credentialed_egress before spawn (`IssuedAuthority::apply_to`)"
     );
     assert!(
         body.contains("state.authority.release_child("),
@@ -784,6 +785,7 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         driver_state: DriverState::Container(Box::new(pod)),
         parent_pod_id: None,
         posture_stamp: None,
+        owner: None,
     };
     handle.cancel().await.expect("cancel");
     let after = handle.status().await;

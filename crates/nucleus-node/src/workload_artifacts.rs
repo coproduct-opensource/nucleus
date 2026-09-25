@@ -32,12 +32,12 @@ pub(crate) struct Bundle {
 
 pub(crate) async fn collect(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<crate::pod_api::Caller>,
     Path(id): Path<Uuid>,
     Json(request): Json<Request>,
 ) -> Result<Json<Bundle>, ApiError> {
     validate_manifest(&request.artifacts)?;
-    let pod = crate::pod_api::get_pod_for_caller(&state, id, caller).await?;
+    let pod = crate::pod_api::get_pod_for_caller(&state, id, caller.clone()).await?;
     let declared = pod
         .spec
         .spec

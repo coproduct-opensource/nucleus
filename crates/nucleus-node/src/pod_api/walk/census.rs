@@ -156,7 +156,12 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
     let u = Universe { r, c, g };
     for role in cancelled {
         if let Some(id) = u.id(*role) {
-            let _ = cancel_pod(State(st.clone()), Extension(None), AxumPath(id)).await;
+            let _ = cancel_pod(
+                State(st.clone()),
+                Extension(crate::pod_api::Caller::Operator),
+                AxumPath(id),
+            )
+            .await;
         }
     }
 
@@ -165,7 +170,13 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
         let s = match *letter {
             Letter::Cancel(caller, target) => {
                 let id = u.id(target).expect("a pod");
-                match cancel_pod(State(st.clone()), Extension(u.id(caller)), AxumPath(id)).await {
+                match cancel_pod(
+                    State(st.clone()),
+                    Extension(u.id(caller).into()),
+                    AxumPath(id),
+                )
+                .await
+                {
                     Ok(_) => Seen::Cancelled,
                     Err(ApiError::NotFound) => Seen::NotFound,
                     Err(e) => Seen::Other(e.to_string()),
