@@ -85,6 +85,7 @@ mod snapshot_restore;
 mod snapshot_store;
 mod snapshot_vmm;
 mod trust_gate;
+mod upstreams;
 mod vsock_bridge;
 
 pub use nucleus_proto::nucleus_node as proto;
@@ -682,7 +683,7 @@ async fn main() -> Result<(), ApiError> {
             None
         };
 
-    let authority = Arc::new(pod_authority::PodAuthority::from_args(&args));
+    let authority = pod_authority::PodAuthority::from_args(&args).map_err(ApiError::Driver)?;
 
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
@@ -742,7 +743,7 @@ async fn main() -> Result<(), ApiError> {
         container_pool,
         docker,
         trust_gate: trust_gate::TrustGateConfig::from_env(&args.state_dir),
-        authority,
+        authority: Arc::new(authority),
         http_client: reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
@@ -1157,9 +1158,9 @@ async fn create_pod_internal(
     // is a REQUEST, meet-clamped and never trusted alone. See pod_authority.rs.
     let issued = state.authority.admit(&admission, &spec, id).await?;
     tracing::Span::current().record("chain_depth", issued.chain_depth);
-    spec.spec.policy = nucleus_spec::PolicySpec::Inline {
-        lattice: Box::new(issued.effective),
-    };
+    // The issued lattice AND the admitted credentialed upstreams replace what
+    // the spec requested, in one call so neither can be applied without the other.
+    issued.apply_to(&mut spec);
 
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
