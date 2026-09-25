@@ -737,6 +737,13 @@ impl CredentialsSpec {
 
 /// A single OIDC workload-identity binding.
 ///
+/// **Superseded by ADR 0010** (`docs/adr/0010-a-credential-minted-per-exchange-never-stored.md`).
+/// This type would write a JWT *into the guest* and refresh it there, so a
+/// workload could read, copy, and replay it. ADR 0010 goes the other way: the
+/// node mints an assertion per exchange after the PDP approves a call, holds
+/// the resulting token on the host, and the guest receives only the upstream's
+/// response. Kept so existing specs still parse; do not give it a consumer.
+///
 /// **Status: draft RFC, no runtime consumer in this repo today.** This type
 /// parses and serializes; nothing in `nucleus`, `nucleus-tool-proxy`,
 /// `nucleus-node`, or `nucleus-mcp` reads `credentials.workload_identity` yet.
