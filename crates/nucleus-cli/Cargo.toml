@@ -26,6 +26,9 @@ nucleus-proto = { path = "../nucleus-proto" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-bundle-cas = { path = "../nucleus-bundle-cas" }
+# `nucleus federation`: the issuer key's files, rotation and discovery document
+# are defined once there and shared with the node's signer.
+nucleus-federation = { path = "../nucleus-federation" }
 
 # Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
 # pre-1.0; see nucleus-bundle-cas for version pins + rationale.
