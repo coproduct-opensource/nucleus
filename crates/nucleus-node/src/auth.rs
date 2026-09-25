@@ -139,6 +139,11 @@ pub struct AuthorizationPolicy {
     pod_prefixes: Vec<String>,
     /// Exact SPIFFE IDs with full access — the certificate root minter.
     operator_identities: Vec<String>,
+    /// Trust domains of federated tenants (`[[caller]]` bindings,
+    /// `federation_ingress.rs`). An identity in one of these got its SVID from
+    /// the federation exchange; it may create pods and manage ITS TENANT'S
+    /// pods (scoped in `pod_api::Caller`), and nothing else.
+    federated_trust_domains: std::collections::BTreeSet<String>,
 }
 
 impl Default for AuthorizationPolicy {
@@ -160,8 +165,31 @@ impl AuthorizationPolicy {
             cicd_prefixes: vec![format!("spiffe://{}/ns/github/sa/", trust_domain)],
             pod_prefixes: vec![format!("spiffe://{}/ns/pods/sa/", trust_domain)],
             operator_identities: Vec::new(),
+            federated_trust_domains: std::collections::BTreeSet::new(),
             trust_domain,
         }
+    }
+
+    /// Admit the federated tenants' trust domains (see the field). The node's
+    /// own trust domain is never one — `CallerBindings` refuses it at load —
+    /// and is ignored here as well, so no configuration can turn the
+    /// operator's own identities into tenant-scoped ones.
+    pub fn with_federated_trust_domains<'a>(
+        mut self,
+        domains: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        for td in domains {
+            if td != self.trust_domain {
+                self.federated_trust_domains.insert(td.to_string());
+            }
+        }
+        self
+    }
+
+    /// The federated tenant a SPIFFE ID belongs to, if it belongs to one.
+    pub fn federated_tenant<'a>(&self, spiffe_id: &'a str) -> Option<&'a str> {
+        crate::federation_ingress::trust_domain_of(spiffe_id)
+            .filter(|td| self.federated_trust_domains.contains(*td))
     }
 
     /// Add an orchestrator prefix.
@@ -207,6 +235,26 @@ impl AuthorizationPolicy {
 
     /// Check if a SPIFFE ID is authorized to perform an operation.
     fn authorize_spiffe(&self, spiffe_id: &str, op: Operation) -> Result<(), AuthorizationError> {
+        // A federated tenant: pod management over its own pods — which ones is
+        // `pod_api::Caller`'s scoping, not this table's. Never a snapshot, for
+        // the reason on `Operation::SnapshotPod`, which applies to a tenant
+        // outside the node at least as much as to a pod inside it.
+        if self.federated_tenant(spiffe_id).is_some() {
+            return match op {
+                Operation::CreatePod
+                | Operation::ListPods
+                | Operation::GetPod
+                | Operation::CancelPod
+                | Operation::StreamLogs
+                | Operation::GetReceipt
+                | Operation::PodManagement => Ok(()),
+                Operation::SnapshotPod => Err(AuthorizationError::NotAuthorized {
+                    identity: spiffe_id.to_string(),
+                    operation: format!("{op:?}"),
+                }),
+            };
+        }
+
         // Verify trust domain
         let expected_prefix = format!("spiffe://{}/", self.trust_domain);
         if !spiffe_id.starts_with(&expected_prefix) {
@@ -467,6 +515,17 @@ pub fn authorize_grpc_operation<T>(
 ) -> Result<(), tonic::Status> {
     let auth_ctx =
         get_auth_context(request).ok_or_else(|| tonic::Status::internal("missing auth context"))?;
+
+    // Federated tenants are served over HTTP only. The gRPC pod handlers scope
+    // by the pod-caller token alone (`pod_api::grpc_scoped_pod`), which a
+    // tenant never holds — so an admitted tenant there would read as the
+    // operator. Refused here, the one gate every gRPC handler calls, rather
+    // than threaded through each of them.
+    if policy.federated_tenant(&auth_ctx.spiffe_id).is_some() {
+        return Err(tonic::Status::permission_denied(
+            "federated callers are served over HTTP only",
+        ));
+    }
 
     policy
         .authorize(auth_ctx, operation)

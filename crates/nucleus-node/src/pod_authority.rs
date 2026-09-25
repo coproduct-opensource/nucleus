@@ -64,12 +64,31 @@
 //! 1. a pod caller: to what the PARENT was admitted (kept per pod, persisted
 //!    with its certificate) AND still in the operator registry, so delegation
 //!    can narrow and never invent;
-//! 2. an external caller: to the operator registry (`--upstreams`);
+//! 2. an external caller: to the operator registry (`--upstreams`) — or, for a
+//!    caller admitted through a `[[caller]]` binding, to that binding's
+//!    `upstreams`, never the whole registry;
 //! 3. the root minter: to the operator registry.
 //!
 //! With no registry configured every requested entry is dropped, for every
 //! case. See `upstreams.rs` for why that is fail-closed rather than "trust the
 //! root minter".
+//!
+//! # Federated callers (`federation_ingress.rs`)
+//!
+//! A caller whose mTLS identity is in a `[[caller]]` binding's trust domain got
+//! its SVID and its certificate from this node's federation exchange. It is
+//! still case 2 — there is no separate admission path — with three
+//! differences, all keyed by the binding:
+//!
+//! * **Trust anchor.** Its chain must verify against THIS node's root key. The
+//!   node's own key has always been an anchor, so federated certificates need
+//!   no `--cert-trust-anchors` entry; what is new is that for a federated
+//!   tenant it is the ONLY anchor, so an operator-added anchor cannot mint
+//!   around a binding's ceiling.
+//! * **Budget.** One ledger per binding trust domain, bounded by the binding's
+//!   ceiling — not one per presented chain, which would give every exchange a
+//!   fresh budget and make the ceiling's budget a per-token allowance.
+//! * **Upstreams.** Clamped to the binding's list.
 //!
 //! # Persistence
 //!
@@ -93,6 +112,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::federated_credential::{FederatedSource, FederationSubject};
+use crate::federation_ingress::CallerBindings;
 use crate::upstreams::UpstreamRegistry;
 use crate::{ApiError, NodeState, keys};
 
@@ -138,6 +158,9 @@ pub(crate) struct AuthorityArgs {
     /// the node refuses to start without it rather than refuse every call.
     #[arg(long = "federation-issuer", env = "NUCLEUS_FEDERATION_ISSUER")]
     pub federation_issuer: Option<String>,
+    /// The inbound exchange listener (`federation_ingress.rs`).
+    #[command(flatten)]
+    pub ingress: crate::federation_ingress::FederationArgs,
 }
 
 /// Who is asking for a pod, as established by the node — never by the spec.
@@ -208,6 +231,9 @@ pub(crate) struct IssuedAuthority {
     /// The credentialed upstreams this pod was admitted: the requested entries
     /// that survived the per-case clamp in [`PodAuthority::admit`].
     pub upstreams: Vec<CredentialedEgressSpec>,
+    /// The certificate's root identity: whose authority this pod runs under,
+    /// and so (by its trust domain) which tenant owns it (ADR 0001).
+    pub root_identity: String,
 }
 
 impl IssuedAuthority {
@@ -220,11 +246,16 @@ impl IssuedAuthority {
     /// egress list went through untouched; a single call that does both is what
     /// stops the next spec field of this kind from being replaced in one place
     /// and forgotten in the other.
-    pub fn apply_to(self, spec: &mut PodSpec) {
+    ///
+    /// Returns the root identity, for the pod's record of who owns it: taken
+    /// from the same value, so the owner recorded is the authority issued.
+    #[must_use]
+    pub fn apply_to(self, spec: &mut PodSpec) -> String {
         spec.spec.policy = nucleus_spec::PolicySpec::Inline {
             lattice: Box::new(self.effective),
         };
         spec.spec.credentialed_egress = self.upstreams;
+        self.root_identity
     }
 }
 
@@ -238,7 +269,7 @@ struct PodCert {
     upstreams: Vec<CredentialedEgressSpec>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum Parent {
     /// Minted by the bootstrap identity: no budget parent.
     Root,
@@ -246,6 +277,9 @@ enum Parent {
     Pod(Uuid),
     /// Re-rooted from an external caller's chain, identified by fingerprint.
     External([u8; 32]),
+    /// Re-rooted from a federated caller's chain; the ledger is the binding's,
+    /// keyed by its trust domain.
+    Federated(String),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -265,6 +299,8 @@ struct Inner {
     pods: HashMap<Uuid, PodCert>,
     /// Ledgers for external callers' chains, keyed by chain fingerprint.
     external: HashMap<[u8; 32], BudgetLedger>,
+    /// Ledgers for federated tenants, keyed by binding trust domain.
+    federated: HashMap<String, BudgetLedger>,
 }
 
 /// Domain separator for pod-receipt signatures.
@@ -327,6 +363,8 @@ pub(crate) struct PodAuthority {
     /// The node's federation issuer; `None` when `--federation-issuer` is unset,
     /// which is refused at start-up if the registry has a federated entry.
     federation: Option<std::sync::Arc<FederatedSource>>,
+    /// The `[[caller]]` bindings; empty when there are none.
+    bindings: std::sync::Arc<CallerBindings>,
     inner: tokio::sync::Mutex<Inner>,
 }
 
@@ -388,6 +426,16 @@ impl PodAuthority {
             registry.as_deref(),
             state_dir,
         )?;
+        let bindings = match registry.as_deref() {
+            Some(reg) => CallerBindings::from_files(reg.callers(), reg, trust_domain)?,
+            None => CallerBindings::default(),
+        };
+        if !bindings.is_empty() {
+            tracing::info!(
+                tenants = ?bindings.trust_domains().collect::<Vec<_>>(),
+                "loaded federated caller bindings"
+            );
+        }
 
         Ok(Self {
             trust_domain: trust_domain.to_string(),
@@ -399,9 +447,11 @@ impl PodAuthority {
             state_dir: state_dir.to_path_buf(),
             registry,
             federation,
+            bindings: std::sync::Arc::new(bindings),
             inner: tokio::sync::Mutex::new(Inner {
                 pods: HashMap::new(),
                 external: HashMap::new(),
+                federated: HashMap::new(),
             }),
         })
     }
@@ -513,6 +563,47 @@ impl PodAuthority {
             );
         }
         kept
+    }
+
+    /// The `[[caller]]` bindings (possibly none).
+    pub fn caller_bindings(&self) -> &CallerBindings {
+        &self.bindings
+    }
+
+    /// Mint the node-rooted delegation a federated caller presents at
+    /// `POST /v1/pods`: root identity `principal`, permissions `ceiling`,
+    /// `provenance` = `token_hash` (sha256 of the token that vouched for it).
+    /// Base64 [`AttenuationToken`].
+    ///
+    /// The holder key is ephemeral and discarded. `mint_with_holder_key`
+    /// needs the holder's PRIVATE key to sign proof-of-possession, and the
+    /// caller's key is theirs — the CSR carries only its public half, and may
+    /// not be Ed25519 at all. Discarding it means the caller cannot extend the
+    /// chain; it does not need to, because admission requires the chain's leaf
+    /// to BE the mTLS peer, and the SVID is what binds that peer to the
+    /// caller's own key. The certificate alone is useless to anyone else.
+    ///
+    /// # Errors
+    /// Key generation or serialisation failed.
+    pub fn mint_federated_delegation(
+        &self,
+        ceiling: PermissionLattice,
+        principal: String,
+        not_after: DateTime<Utc>,
+        token_hash: [u8; 32],
+    ) -> Result<String, ApiError> {
+        let holder = ephemeral_key()?;
+        let cert = LatticeCertificate::mint_with_holder_key(
+            ceiling,
+            principal,
+            not_after,
+            Some(token_hash),
+            &self.root_key,
+            &holder,
+        );
+        AttenuationToken::seal(cert, self.root_pubkey.clone())
+            .to_base64()
+            .map_err(|e| ApiError::Authority(format!("delegation encoding: {e}")))
     }
 
     /// The one identity allowed to mint from a bare policy.
@@ -636,10 +727,20 @@ impl PodAuthority {
             // ── Case 2: external caller proving its own chain ───────────
             let token = AttenuationToken::from_base64(header.trim())
                 .map_err(|e| ApiError::Authority(format!("malformed delegation cert: {e}")))?;
+            // A caller in a federated tenant's trust domain is held to its
+            // binding: see the module docs. Decided by the AUTHENTICATED
+            // identity, not by anything in the presented chain.
+            let binding = crate::federation_ingress::trust_domain_of(&admission.caller_spiffe_id)
+                .and_then(|td| self.bindings.by_trust_domain(td));
             // The trust decision is against OUR anchors, never the token's
-            // own embedded root key (which is self-asserted).
-            let verified = self
-                .anchors
+            // own embedded root key (which is self-asserted) — and for a
+            // federated tenant, against this node's own root key alone.
+            let anchors: &[Vec<u8>] = if binding.is_some() {
+                std::slice::from_ref(&self.root_pubkey)
+            } else {
+                &self.anchors
+            };
+            let verified = anchors
                 .iter()
                 .find_map(|anchor| {
                     verify_certificate(token.certificate(), anchor, now, DEFAULT_MAX_CHAIN_DEPTH)
@@ -658,10 +759,25 @@ impl PodAuthority {
                 )));
             }
             let fingerprint = token.fingerprint();
-            let ledger = inner
-                .external
-                .entry(fingerprint)
-                .or_insert_with(|| BudgetLedger::for_parent(&verified.effective().budget));
+            // One ledger per binding for a federated tenant, bounded by the
+            // binding's ceiling; one per presented chain otherwise.
+            let (parent, ledger) = match binding {
+                Some(b) => {
+                    let td = b.trust_domain().to_string();
+                    let ledger = inner
+                        .federated
+                        .entry(td.clone())
+                        .or_insert_with(|| BudgetLedger::for_parent(&b.ceiling().budget));
+                    (Parent::Federated(td), ledger)
+                }
+                None => {
+                    let ledger = inner
+                        .external
+                        .entry(fingerprint)
+                        .or_insert_with(|| BudgetLedger::for_parent(&verified.effective().budget));
+                    (Parent::External(fingerprint), ledger)
+                }
+            };
             if ledger.live_children() >= self.max_children {
                 return Err(ApiError::Authority(format!(
                     "caller chain already has {} live children (cap {})",
@@ -693,12 +809,17 @@ impl PodAuthority {
                     &child_key,
                 )
                 .map_err(|e| {
-                    if let Some(l) = inner.external.get_mut(&fingerprint) {
+                    let ledger = match &parent {
+                        Parent::Federated(td) => inner.federated.get_mut(td),
+                        _ => inner.external.get_mut(&fingerprint),
+                    };
+                    if let Some(l) = ledger {
                         let _ = l.release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
                     }
                     ApiError::Authority(format!("delegation refused: {e}"))
                 })?;
-            (cert, Parent::External(fingerprint), None)
+            let ceiling = binding.map(|b| b.upstreams().to_vec());
+            (cert, parent, ceiling)
         } else if admission.caller_spiffe_id == self.root_minter {
             // ── Case 3: the bootstrap identity ──────────────────────────
             let not_after = now + ttl;
@@ -738,12 +859,13 @@ impl PodAuthority {
         );
         let effective = cert.effective_permissions().clone();
         let chain_depth = cert.chain_depth();
+        let root_identity = cert.root_identity().to_string();
         let entry = PodCert {
             ledger: BudgetLedger::for_parent(&effective.budget),
             cert,
             holder: child_key,
             holder_pkcs8: child_pkcs8.as_ref().to_vec(),
-            parent,
+            parent: parent.clone(),
             upstreams: upstreams.clone(),
         };
         if let Err(e) = self.persist(child_id, &entry).await {
@@ -762,6 +884,7 @@ impl PodAuthority {
             effective,
             chain_depth,
             upstreams,
+            root_identity,
         })
     }
 
@@ -811,6 +934,10 @@ impl PodAuthority {
                 None => Ok(rust_decimal::Decimal::ZERO),
             },
             Parent::External(fp) => match inner.external.get_mut(&fp) {
+                Some(l) => l.release(pod_id.as_u128(), consumed),
+                None => Ok(rust_decimal::Decimal::ZERO),
+            },
+            Parent::Federated(td) => match inner.federated.get_mut(&td) {
                 Some(l) => l.release(pod_id.as_u128(), consumed),
                 None => Ok(rust_decimal::Decimal::ZERO),
             },
@@ -877,7 +1004,7 @@ impl PodAuthority {
             .map(|(id, c)| {
                 (
                     *id,
-                    c.parent,
+                    c.parent.clone(),
                     c.cert.effective_permissions().budget.max_cost_usd,
                 )
             })
@@ -905,6 +1032,19 @@ impl PodAuthority {
                         })
                         .try_allocate(child.as_u128(), amount)
                 }
+                // The binding's ceiling, if the binding is still configured;
+                // otherwise what was restored, as for an external chain.
+                Parent::Federated(td) => {
+                    let ceiling = self.bindings.by_trust_domain(&td).map_or_else(
+                        || portcullis::BudgetLattice::with_cost_limit_decimal(amount),
+                        |b| b.ceiling().budget.clone(),
+                    );
+                    inner
+                        .federated
+                        .entry(td)
+                        .or_insert_with(|| BudgetLedger::for_parent(&ceiling))
+                        .try_allocate(child.as_u128(), amount)
+                }
             };
             if let Err(e) = result {
                 tracing::warn!(pod = %child, error = %e, "restored child exceeds its parent's ledger");
@@ -929,7 +1069,7 @@ impl PodAuthority {
             version: 1,
             certificate: entry.cert.clone(),
             holder_pkcs8_b64: base64_encode(&entry.holder_pkcs8),
-            parent: entry.parent,
+            parent: entry.parent.clone(),
             upstreams: entry.upstreams.clone(),
         };
         let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
@@ -1091,6 +1231,7 @@ mod tests {
             max_children_per_pod: 8,
             upstreams: None,
             federation_issuer: None,
+            ingress: Default::default(),
         }
     }
 
@@ -1645,13 +1786,15 @@ credential.env.var = "SEARCH_API_TOKEN"
     #[test]
     fn apply_to_replaces_the_requested_upstreams_with_the_admitted_ones() {
         let mut spec = requesting(loot(), 5);
-        IssuedAuthority {
+        let owner = IssuedAuthority {
             effective: lattice(1),
             chain_depth: 1,
             upstreams: vec![registered("model-api")],
+            root_identity: MINTER.to_string(),
         }
         .apply_to(&mut spec);
         assert_eq!(spec.spec.credentialed_egress, vec![registered("model-api")]);
+        assert_eq!(owner, MINTER, "the owner recorded is the root issued");
     }
 
     /// ...and `create_pod_internal` calls it, unconditionally, right after
@@ -1665,7 +1808,7 @@ credential.env.var = "SEARCH_API_TOKEN"
             .find("state.authority.admit(&admission, &spec, id)")
             .expect("admission is called from main.rs");
         let apply = main
-            .find("issued.apply_to(&mut spec);")
+            .find("let owner = issued.apply_to(&mut spec);")
             .expect("the issued authority is applied to the spec in main.rs");
         assert!(admit < apply, "applied after it is issued");
         let spawn = main[admit..]

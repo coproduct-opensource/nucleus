@@ -785,6 +785,7 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         driver_state: DriverState::Container(Box::new(pod)),
         parent_pod_id: None,
         posture_stamp: None,
+        owner: None,
     };
     handle.cancel().await.expect("cancel");
     let after = handle.status().await;

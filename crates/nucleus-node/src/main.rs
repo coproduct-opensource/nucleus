@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Extension, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response as AxumResponse};
+
+use axum::response::Response as AxumResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use clap::Parser;
@@ -42,7 +42,6 @@ mod keys;
 mod lockdown;
 mod mediation;
 mod mediation_receipt_collector;
-mod oidc;
 mod pod_api;
 mod pod_authority;
 mod pod_boot_identity;
@@ -73,6 +72,7 @@ mod driver;
 mod effect_footprint;
 mod envelope_frame;
 mod federated_credential;
+mod federation_ingress;
 mod guest_socket;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod host_requirements;
@@ -309,35 +309,6 @@ struct Args {
     /// When set, clients must present valid certificates signed by this CA.
     #[arg(long, env = "NUCLEUS_NODE_GRPC_TLS_CA")]
     grpc_tls_ca: Option<PathBuf>,
-
-    // GitHub OIDC configuration
-    /// Enable GitHub OIDC token exchange for CI/CD authentication.
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_OIDC_GITHUB_ENABLED",
-        default_value_t = false
-    )]
-    oidc_github_enabled: bool,
-    /// Expected audience in GitHub OIDC tokens.
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_OIDC_GITHUB_AUDIENCE",
-        default_value = "nucleus"
-    )]
-    oidc_github_audience: String,
-    /// Comma-separated list of allowed GitHub repositories (e.g., "org/repo1,org/repo2").
-    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ALLOWED_REPOS")]
-    oidc_github_allowed_repos: Option<String>,
-    /// Comma-separated list of allowed GitHub organizations (all repos in these orgs are allowed).
-    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ALLOWED_ORGS")]
-    oidc_github_allowed_orgs: Option<String>,
-    /// Certificate TTL in seconds for GitHub OIDC-issued certificates (default: 1 hour).
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_OIDC_GITHUB_CERT_TTL_SECS",
-        default_value_t = 3600
-    )]
-    oidc_github_cert_ttl_secs: u64,
 }
 
 #[derive(Clone)]
@@ -417,8 +388,6 @@ struct NodeState {
     /// Vsock port the guest uses to reach the credential broker.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_vsock_port: u32,
-    /// GitHub OIDC validator for CI/CD authentication.
-    github_oidc: Option<Arc<oidc::GitHubOidcValidator>>,
     /// Authorization policy for SPIFFE-based access control.
     authz_policy: auth::AuthorizationPolicy,
     // Container driver state
@@ -461,6 +430,10 @@ struct PodHandle {
     /// the pod carried no claim. Surfaced in `PodInfo` so an operator can see the
     /// claim was checked, not merely present. See `posture.rs`.
     posture_stamp: Option<String>,
+    /// Root identity of the certificate this node issued the pod, recorded at
+    /// creation and never re-derived: its trust domain is the pod's tenant
+    /// (ADR 0001; `pod_api::Caller::Tenant`). `None` only for fixtures.
+    owner: Option<String>,
 }
 
 /// Whether a teardown has to stop the pod's process, or it already exited.
@@ -735,9 +708,9 @@ async fn main() -> Result<(), ApiError> {
         broker_listen: args.broker_listen,
         broker_enforcing: args.broker_enforcing,
         broker_vsock_port: args.broker_vsock_port,
-        github_oidc: build_github_oidc(&args),
         authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain)
-            .with_operator_identity(authority.root_minter()),
+            .with_operator_identity(authority.root_minter())
+            .with_federated_trust_domains(authority.caller_bindings().trust_domains()),
         container_image: args.container_image.clone(),
         container_network: args.container_network.clone(),
         container_proxy_unix: args.container_proxy_unix,
@@ -792,14 +765,14 @@ async fn main() -> Result<(), ApiError> {
             auth_middleware,
         ));
 
-    // Routes that don't require auth (OIDC has its own token validation)
+    // Routes that don't require auth. The federation exchange is NOT here: it
+    // is served on its own server-auth-only listener (`federation_ingress`).
     let public_routes = Router::new()
         .route(
             "/v1/art12/{session_id}",
             post(art12_collector::art12_append),
         )
         .route("/v1/health", get(health))
-        .route("/v1/oidc/github", post(oidc_github_exchange))
         .with_state(state.clone());
 
     let app = public_routes.merge(authenticated_routes);
@@ -860,6 +833,7 @@ async fn main() -> Result<(), ApiError> {
 
     start_pod_reaper(state.clone());
 
+    federation_ingress::spawn(&state, &args.authority.ingress).await?;
     http_serve::serve(&state, &args.listen, app).await?;
 
     Ok(())
@@ -869,195 +843,9 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
 }
 
-/// GitHub OIDC token exchange endpoint.
-///
-/// Accepts a GitHub OIDC token and a client-generated CSR.
-/// Returns a signed X.509 certificate with a SPIFFE identity based on the repository.
-///
-/// # Security
-///
-/// The client generates and keeps its private key locally - it is never sent to
-/// or stored by the server. Only the CSR (containing the public key) is transmitted.
-///
-/// The workflow is:
-/// 1. Client generates a key pair
-/// 2. Client creates a CSR with the SPIFFE ID they expect to receive
-/// 3. Client sends GitHub OIDC token + CSR to this endpoint
-/// 4. Server validates token, verifies CSR's SPIFFE ID matches token claims
-/// 5. Server returns only the certificate chain (no private key)
-async fn oidc_github_exchange(
-    State(state): State<NodeState>,
-    headers: axum::http::HeaderMap,
-    Json(request): Json<oidc::OidcExchangeRequest>,
-) -> Result<Json<oidc::OidcExchangeResponse>, OidcApiError> {
-    // Check if OIDC is enabled
-    let validator = state.github_oidc.as_ref().ok_or(OidcApiError::NotEnabled)?;
-
-    // Extract token from Authorization header
-    let auth_header = headers
-        .get("Authorization")
-        .and_then(|h| h.to_str().ok())
-        .ok_or(OidcApiError::MissingToken)?;
-
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or(OidcApiError::InvalidFormat)?;
-
-    // Validate the token (includes replay protection)
-    let claims = validator
-        .validate(token)
-        .await
-        .map_err(OidcApiError::Oidc)?;
-
-    // Get the SPIFFE ID for this identity based on token claims
-    let spiffe_id = validator.spiffe_id(&claims);
-
-    // Issue a certificate using the identity manager
-    let identity_mgr = state
-        .identity_manager
-        .as_ref()
-        .ok_or_else(|| OidcApiError::Internal("Identity manager not configured".to_string()))?;
-
-    // Parse SPIFFE ID into Identity
-    let identity = parse_spiffe_to_identity(&spiffe_id)?;
-
-    // Sign the client's CSR (CSR must contain matching SPIFFE ID)
-    let cert_ttl = validator.cert_ttl();
-    let certificate_pem = identity_mgr
-        .ca()
-        .sign_csr_only(&request.csr, &identity, cert_ttl)
-        .await
-        .map_err(|e| OidcApiError::Internal(format!("Certificate signing failed: {e}")))?;
-
-    // Get trust bundle
-    let trust_bundle_pem = identity_mgr
-        .ca()
-        .trust_bundle()
-        .roots()
-        .iter()
-        .map(|c| c.to_pem())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Calculate expiration
-    let expires_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        + cert_ttl.as_secs();
-
-    info!(
-        repository = %claims.repository,
-        actor = %claims.actor,
-        spiffe_id = %spiffe_id,
-        expires_at = expires_at,
-        "Issued certificate for GitHub OIDC identity (client-side key)"
-    );
-
-    Ok(Json(oidc::OidcExchangeResponse {
-        certificate: certificate_pem,
-        spiffe_id,
-        expires_at,
-        trust_bundle: trust_bundle_pem,
-    }))
-}
-
-/// Parse a SPIFFE ID into a nucleus Identity.
-fn parse_spiffe_to_identity(spiffe_id: &str) -> Result<nucleus_identity::Identity, OidcApiError> {
-    // Format: spiffe://trust-domain/ns/github/sa/{org}/{repo}
-    let rest = spiffe_id
-        .strip_prefix("spiffe://")
-        .ok_or_else(|| OidcApiError::Internal("Invalid SPIFFE URI".to_string()))?;
-
-    let parts: Vec<&str> = rest.split('/').collect();
-    if parts.len() < 5 || parts[1] != "ns" || parts[3] != "sa" {
-        return Err(OidcApiError::Internal(
-            "Invalid SPIFFE path format".to_string(),
-        ));
-    }
-
-    let trust_domain = parts[0];
-    let namespace = parts[2];
-    // Combine org and repo for service account name (repo already sanitized)
-    let service_account = if parts.len() >= 6 {
-        format!("{}-{}", parts[4], parts[5])
-    } else {
-        parts[4].to_string()
-    };
-
-    Ok(nucleus_identity::Identity::new(
-        trust_domain,
-        namespace,
-        &service_account,
-    ))
-}
-
-/// Error type for OIDC API endpoint.
-#[derive(Debug)]
-enum OidcApiError {
-    NotEnabled,
-    MissingToken,
-    InvalidFormat,
-    Oidc(oidc::OidcError),
-    Internal(String),
-}
-
-impl IntoResponse for OidcApiError {
-    fn into_response(self) -> AxumResponse {
-        let (status, error, description) = match &self {
-            OidcApiError::NotEnabled => (
-                StatusCode::NOT_FOUND,
-                "not_enabled",
-                Some("GitHub OIDC is not enabled on this server"),
-            ),
-            OidcApiError::MissingToken => (
-                StatusCode::UNAUTHORIZED,
-                "missing_token",
-                Some("Authorization header with Bearer token required"),
-            ),
-            OidcApiError::InvalidFormat => (
-                StatusCode::UNAUTHORIZED,
-                "invalid_format",
-                Some("Authorization header must be 'Bearer <token>'"),
-            ),
-            OidcApiError::Oidc(e) => {
-                let (status, desc) = match e {
-                    oidc::OidcError::RepoNotAllowed(_) => (StatusCode::FORBIDDEN, e.to_string()),
-                    oidc::OidcError::ValidationFailed(_) => {
-                        (StatusCode::UNAUTHORIZED, e.to_string())
-                    }
-                    _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-                };
-                return (
-                    status,
-                    Json(oidc::OidcErrorResponse {
-                        error: "oidc_error".to_string(),
-                        error_description: Some(desc),
-                    }),
-                )
-                    .into_response();
-            }
-            OidcApiError::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                Some(msg.as_str()),
-            ),
-        };
-
-        (
-            status,
-            Json(oidc::OidcErrorResponse {
-                error: error.to_string(),
-                error_description: description.map(|s| s.to_string()),
-            }),
-        )
-            .into_response()
-    }
-}
-
 async fn create_pod(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<pod_api::Caller>,
     Extension(auth_ctx): Extension<auth::AuthContext>,
     headers: axum::http::HeaderMap,
     body: Bytes,
@@ -1082,7 +870,7 @@ async fn create_pod(
     // `x-nucleus-parent-pod-id` is unauthenticated, so lineage built on it is
     // forgeable in both directions -- see `pod_api::resolve_parent_pod_id`.
     let admission =
-        pod_authority::Admission::from_http(&state.authz_policy, caller, &auth_ctx, &headers);
+        pod_authority::Admission::from_http(&state.authz_policy, caller.pod(), &auth_ctx, &headers);
     let parent_pod_id = pod_api::resolve_parent_pod_id(
         admission.caller_pod,
         headers
@@ -1117,8 +905,12 @@ async fn auth_middleware(
         pod_caller_identity::identify_from_headers(state.caller_secret.as_ref(), &parts.headers);
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
+    req.extensions_mut().insert(pod_api::Caller::resolve(
+        &state.authz_policy,
+        caller.ok(),
+        &context,
+    ));
     req.extensions_mut().insert(context);
-    req.extensions_mut().insert(caller.ok());
     Ok(next.run(req).await)
 }
 
@@ -1161,7 +953,7 @@ async fn create_pod_internal(
     tracing::Span::current().record("chain_depth", issued.chain_depth);
     // The issued lattice AND the admitted credentialed upstreams replace what
     // the spec requested, in one call so neither can be applied without the other.
-    issued.apply_to(&mut spec);
+    let owner = issued.apply_to(&mut spec);
 
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
@@ -1200,6 +992,7 @@ async fn create_pod_internal(
         driver_state,
         parent_pod_id,
         posture_stamp,
+        owner: Some(owner),
     });
 
     state.pods.lock().await.insert(id, handle);
@@ -2987,42 +2780,6 @@ fn build_firecracker_pool(args: &Args) -> Option<Arc<Semaphore>> {
         return None;
     }
     Some(Arc::new(Semaphore::new(args.firecracker_max_pods)))
-}
-
-fn build_github_oidc(args: &Args) -> Option<Arc<oidc::GitHubOidcValidator>> {
-    if !args.oidc_github_enabled {
-        return None;
-    }
-
-    let mut config = oidc::GitHubOidcConfig::new(&args.identity_trust_domain)
-        .enabled()
-        .with_audience(&args.oidc_github_audience)
-        .with_cert_ttl(Duration::from_secs(args.oidc_github_cert_ttl_secs));
-
-    if let Some(ref repos) = args.oidc_github_allowed_repos {
-        config = config.with_allowed_repos(repos);
-    }
-    if let Some(ref orgs) = args.oidc_github_allowed_orgs {
-        config = config.with_allowed_orgs(orgs);
-    }
-
-    // Require at least one allowed repo or org
-    if config.allowed_repos.is_empty() && config.allowed_orgs.is_empty() {
-        error!(
-            "GitHub OIDC enabled but no repos or orgs allowed. Set --oidc-github-allowed-repos or --oidc-github-allowed-orgs"
-        );
-        return None;
-    }
-
-    info!(
-        repos = ?config.allowed_repos,
-        orgs = ?config.allowed_orgs,
-        audience = %config.audience,
-        cert_ttl_secs = config.cert_ttl.as_secs(),
-        "GitHub OIDC enabled"
-    );
-
-    Some(Arc::new(oidc::GitHubOidcValidator::new(config)))
 }
 
 fn start_pod_reaper(state: NodeState) {

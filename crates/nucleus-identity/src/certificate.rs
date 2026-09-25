@@ -454,6 +454,59 @@ pub fn spiffe_uri_from_parsed_svid(
     }
 }
 
+/// The one SPIFFE ID a PKCS#10 request asks for, held to the X.509-SVID rules
+/// the certificate it becomes must meet.
+///
+/// Lives beside [`spiffe_uri_from_svid`] because it is the same decision made
+/// one step earlier — what identity a key is asking to be bound to — and two
+/// parsers of that fact are how the first-match bug in this file's history
+/// happened. `ca/self_signed.rs` keeps its own lenient CSR reader for the
+/// node-internal paths that predate this; the federation exchange, where the
+/// requester is outside the node and chose every byte of the CSR, uses this.
+///
+/// Refused unless:
+///
+/// * the request's self-signature verifies (proof the requester holds the key
+///   the certificate will name);
+/// * the request carries exactly ONE subject-alternative name in total, and it
+///   is a URI — a DNS name or e-mail alongside it is refused, not ignored, since
+///   an SVID carries one name and an extra requested name is either a mistake
+///   or a probe of what the signer copies through;
+/// * that URI is a well-formed SPIFFE ID ([`Identity::from_spiffe_uri`]).
+pub fn spiffe_uri_from_csr_der(csr_der: &[u8]) -> Result<String> {
+    use x509_parser::certification_request::X509CertificationRequest;
+    use x509_parser::extensions::{GeneralName, ParsedExtension};
+    use x509_parser::prelude::FromDer;
+
+    let (_, csr) = X509CertificationRequest::from_der(csr_der)
+        .map_err(|e| Error::Certificate(format!("failed to parse CSR: {e}")))?;
+    csr.verify_signature()
+        .map_err(|e| Error::Certificate(format!("CSR signature does not verify: {e}")))?;
+
+    let mut names = Vec::new();
+    for ext in csr.requested_extensions().into_iter().flatten() {
+        if let ParsedExtension::SubjectAlternativeName(san) = ext {
+            names.extend(san.general_names.iter());
+        }
+    }
+    match names.as_slice() {
+        [GeneralName::URI(uri)] => {
+            Identity::from_spiffe_uri(uri)?;
+            Ok((*uri).to_string())
+        }
+        [] => Err(Error::Certificate(
+            "CSR requests no subject-alternative name".to_string(),
+        )),
+        [_] => Err(Error::Certificate(
+            "CSR's one subject-alternative name is not a URI".to_string(),
+        )),
+        many => Err(Error::Certificate(format!(
+            "CSR requests {} subject-alternative names, expected exactly one SPIFFE URI",
+            many.len()
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,5 +709,50 @@ mod tests {
         let cert = Certificate::from_der(vec![0x30, 0x00]); // Minimal DER
         let bundle = TrustBundle::new(vec![cert]);
         assert_eq!(bundle.roots().len(), 1);
+    }
+
+    // ---- CSR reading (the federation exchange) ------------------------------
+
+    fn csr_with(sans: Vec<SanType>) -> Vec<u8> {
+        let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut params = CertificateParams::new(vec![]).unwrap();
+        params.subject_alt_names = sans;
+        params.serialize_request(&key).unwrap().der().to_vec()
+    }
+
+    fn uri(u: &str) -> SanType {
+        SanType::URI(rcgen::string::Ia5String::try_from(u.to_string()).unwrap())
+    }
+
+    #[test]
+    fn a_csr_naming_one_spiffe_id_yields_it() {
+        let der = csr_with(vec![uri("spiffe://tenant.example/ns/rt/sa/alice")]);
+        assert_eq!(
+            spiffe_uri_from_csr_der(&der).unwrap(),
+            "spiffe://tenant.example/ns/rt/sa/alice"
+        );
+    }
+
+    #[test]
+    fn a_csr_asking_for_any_second_name_is_refused() {
+        let principal = "spiffe://tenant.example/ns/rt/sa/alice";
+        let dns = SanType::DnsName(rcgen::string::Ia5String::try_from("x.example").unwrap());
+        for sans in [
+            vec![uri(principal), dns],
+            vec![uri(principal), uri("spiffe://tenant.example/ns/rt/sa/bob")],
+            vec![],
+        ] {
+            let der = csr_with(sans);
+            assert!(spiffe_uri_from_csr_der(&der).is_err());
+        }
+    }
+
+    #[test]
+    fn a_csr_whose_signature_does_not_verify_is_refused() {
+        let mut der = csr_with(vec![uri("spiffe://tenant.example/ns/rt/sa/alice")]);
+        // The signature BIT STRING is the tail of the DER; flip its last byte.
+        let last = der.len() - 1;
+        der[last] ^= 0x01;
+        assert!(spiffe_uri_from_csr_der(&der).is_err());
     }
 }

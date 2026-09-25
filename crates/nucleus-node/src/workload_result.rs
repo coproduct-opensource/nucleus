@@ -28,7 +28,7 @@ pub(crate) fn routes() -> axum::Router<NodeState> {
 
 pub(crate) async fn get(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<crate::pod_api::Caller>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<WorkloadResult>, ApiError> {
     let pod = pod_api::get_pod_for_caller(&state, id, caller).await?;
@@ -44,7 +44,7 @@ pub(crate) async fn get(
 /// as such and the public microVM verifier refuses it.
 pub(crate) async fn receipt(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<crate::pod_api::Caller>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Receipt>, ApiError> {
     let (claim, _) = observe_claim(&state, caller, id).await?;
@@ -53,7 +53,7 @@ pub(crate) async fn receipt(
 
 pub(crate) async fn observe_claim(
     state: &NodeState,
-    caller: Option<Uuid>,
+    caller: crate::pod_api::Caller,
     id: Uuid,
 ) -> Result<(ExecutionClaim, String), ApiError> {
     let pod = pod_api::get_pod_for_caller(state, id, caller).await?;
