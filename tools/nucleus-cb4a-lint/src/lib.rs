@@ -131,7 +131,14 @@ dylint_linting::impl_late_lint! {
 const PDP_ROOTS: &[&str] = &["::pdp_decide", "::decide_identity_grant"];
 
 /// Function paths that are CDP entry points, matched by suffix.
-const CDP_ROOTS: &[&str] = &["::cdp_fetch", "::for_request"];
+///
+/// `::refill` is `nucleus-node`'s `PodCredentials::refill` (ADR 0010): it mints
+/// an assertion and exchanges it for the token the store then serves, so it
+/// dispenses credential material exactly as `cdp_fetch` does and is held to the
+/// same MUST — nothing it reaches may name policy. That it runs only AFTER the
+/// decision is carried by its signature (it takes `broker::Approved`, which
+/// only `pdp_decide` constructs), not by this pass.
+const CDP_ROOTS: &[&str] = &["::cdp_fetch", "::for_request", "::refill"];
 
 /// Paths naming credential material. A PDP path that mentions any of these
 /// violates CB4A's first MUST.
@@ -255,6 +262,22 @@ impl<'a, 'tcx> Scan<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for Scan<'a, 'tcx> {
+    // DESCEND INTO NESTED BODIES — closures, and the coroutine an `async fn` or
+    // `async` block is lowered to. With the default filter (`None`) the visitor
+    // stops at them, and an `async fn`'s entire body is one: `check_fn` below
+    // skips closures, so everything an async root did was seen by NOTHING. That
+    // was measured, not reasoned about — `refill` (an async CDP root) was made to
+    // call a helper returning a `PermissionLattice`, and the pass stayed silent.
+    // A nested body belongs to its owner's typeck results, so the expression
+    // types read below resolve for it exactly as for the enclosing function, and
+    // attributing a closure's names and calls to the function that contains it
+    // is the conservative reading.
+    type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+        self.cx.tcx
+    }
+
     fn visit_expr(&mut self, ex: &'tcx Expr<'tcx>) {
         // The TYPE of every expression counts as a name, not just called
         // functions. A function that merely holds a `Credential` in a local
