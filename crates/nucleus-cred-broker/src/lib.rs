@@ -34,14 +34,19 @@
 //! # Status
 //!
 //! Types, the separation invariant, and credential *storage* with its
-//! containment properties. No minting and no injection yet — the structure and
-//! its enforcement land before the material they are meant to contain, the same
-//! way `nucleus_node::snapshot` refused unsafe snapshots before the snapshot
-//! path existed.
+//! containment properties. This said "no minting and no injection yet" and
+//! "nothing is wired into `nucleus-node`"; both have stopped being true.
 //!
-//! Nothing is wired into `nucleus-node` yet, which is why cargo-deny reports an
-//! accurate `unused-wrapper` warning for the entry in `deny.toml`: the
-//! permission is declared ahead of its first use.
+//! * **Wired.** `nucleus-node` is this crate's one dependent, as `deny.toml`'s
+//!   `wrappers` entry permits: `broker_launch::store_from_node_environment`
+//!   builds a [`CredentialStore`] per pod from the node's environment, for the
+//!   upstreams the node's operator registry defines and admission granted that
+//!   pod, and `broker_perform` fetches from it after the PDP decides.
+//! * **Injected, host-side.** The host performs the call and puts the value in
+//!   the request header itself; the guest receives the upstream's reply, never
+//!   the credential.
+//! * **Not minted.** The value is still a static one an operator put in the
+//!   node's environment. Nothing here creates a credential per exchange.
 
 // ADR 0007 totality: a function whose signature says it returns is lying if it
 // panics. Denied for the shipped build only — `assert!` IS a panic, so denying
