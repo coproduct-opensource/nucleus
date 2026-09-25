@@ -35,6 +35,8 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+# The operator upstream registry (`upstreams.rs`, `--upstreams`).
+toml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full", "process"] }
 tokio-stream = "0.1"
@@ -94,6 +96,11 @@ nucleus-cred-broker = { path = "../nucleus-cred-broker" }
 # Wire types only, and the guest links the same crate. Nothing here can hold a
 # secret — the host needs `PerformRequest` to READ what a guest asked for.
 nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
+# Keyless upstream credentials (ADR 0010): the ES256 assertion, the signer
+# trait and the token client. The node decides WHEN to mint
+# (`federated_credential.rs`); this crate only makes the assertion honest about
+# who asked.
+nucleus-federation = { path = "../nucleus-federation" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 portcullis = { path = "../portcullis", features = ["serde"] }
@@ -110,6 +117,10 @@ tokio-test = { workspace = true }
 # seccomp flags). The lowering seams are pure + platform-independent so these
 # run on every host, not only Linux.
 proptest = { workspace = true }
+# A real token endpoint and a real upstream for the federated-credential tests,
+# driven through the broker's own serving path. Same version the federation
+# crate's tests use.
+wiremock = "0.6"
 
 [lints]
 workspace = true

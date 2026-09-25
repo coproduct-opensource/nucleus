@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # ci/alg-pin-check.sh
 #
-# Algorithm-pin CI gate for nucleus-oidc-provider + nucleus-oidc-core.
-# Refuses any code path that references HS*, RS*, ES*, or alg=none
-# OUTSIDE of explicit-reject negative-test fixtures.
+# Algorithm-pin CI gate for nucleus-oidc-provider + nucleus-oidc-core +
+# nucleus-federation. Refuses any code path that references HS*, RS*, ES*,
+# or alg=none OUTSIDE of explicit-reject negative-test fixtures.
+#
+# nucleus-federation is a SECOND issuer with its own pin: it signs ES256 and
+# nothing else (distinct `iss` from the EdDSA OP, so T04's one-issuer-one-
+# algorithm property holds for each). Its extra checks are at the bottom:
+# the pin constant exists once and says ES256, no other signing primitive
+# appears in its source, and any bare algorithm-name literal carries a reason.
+# What it may VERIFY for an outside issuer is operator config, drawn from an
+# enum with no `none`/HS* variant.
 #
 # Per `crates/nucleus-oidc-provider/THREAT_MODEL.md` T04 (algorithm
 # downgrade / confusion), the OP signs and verifies EdDSA exclusively.
@@ -27,6 +35,7 @@ set -euo pipefail
 SCAN_PATHS=(
     "crates/nucleus-oidc-core"
     "crates/nucleus-oidc-provider"
+    "crates/nucleus-federation"
 )
 if [[ $# -gt 0 ]]; then
     SCAN_PATHS=("$@")
@@ -65,6 +74,34 @@ for pattern in "${PATTERNS[@]}"; do
         --exclude-dir=.git \
         --exclude-dir=corpus \
         "${SCAN_PATHS[@]}" 2>/dev/null \
+        | grep -v 'alg-pin-allow:' >>"$tmpfile" || true
+done
+
+# ── nucleus-federation: ES256 is the only SIGNING algorithm ───────────────
+FED="crates/nucleus-federation"
+for p in "${SCAN_PATHS[@]}"; do
+    [[ "${p%/}" == "$FED" ]] || continue
+    src="$FED/src"
+    [[ -d "$src" ]] || continue
+
+    # 1. The pin is declared exactly once, and it says ES256. `mint` writes
+    #    this constant into every header; the signer is never asked.
+    pins=$(grep -RHnE 'const SIGNING_ALG' --include="*.rs" "$src" || true)
+    if [[ $(printf '%s\n' "$pins" | grep -c .) -ne 1 ]] \
+        || ! printf '%s\n' "$pins" | grep -qE 'pub const SIGNING_ALG: &str = "ES256";'; then
+        echo "$FED: SIGNING_ALG must be declared exactly once, as \"ES256\" (found: ${pins:-none})" >>"$tmpfile"
+    fi
+
+    # 2. No signing primitive other than ring's fixed-length P-256 ECDSA in
+    #    production source. A second one is a second algorithm, whatever the
+    #    constant says. (Tests may use others to build negative fixtures.)
+    grep -RHnE 'jsonwebtoken::encode|EncodingKey|crypto::sign\(|ECDSA_P384_SHA384_(FIXED|ASN1)_SIGNING|ECDSA_P256_SHA256_ASN1_SIGNING|RSA_PKCS1_SHA|RSA_PSS_SHA|Ed25519KeyPair|hmac::(sign|Key)' \
+        --include="*.rs" "$src" 2>/dev/null \
+        | grep -v 'alg-pin-allow:' >>"$tmpfile" || true
+
+    # 3. A bare algorithm-name literal in production source needs a reason on
+    #    its line (the verification allowlist's names carry one each).
+    grep -RHnE '"(HS|RS|PS|ES)[0-9]{3}"' --include="*.rs" "$src" 2>/dev/null \
         | grep -v 'alg-pin-allow:' >>"$tmpfile" || true
 done
 

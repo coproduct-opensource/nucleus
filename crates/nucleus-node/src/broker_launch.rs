@@ -334,32 +334,45 @@ impl BrokerCapability {
 ///
 /// # What comes from where
 ///
-/// The operator writes the upstream's `name` and `credential_env` in the pod
-/// spec — those are configuration, not secrets. The VALUE comes from the node's
-/// environment, where an operator put it and where no guest can reach.
+/// The operator writes the upstream's `name` and its `credential.env.var` in
+/// the node's upstream registry (`--upstreams`, `upstreams.rs`) —
+/// configuration, not secrets. A pod spec only SELECTS entries, and
+/// `start_broker_for_pod` passes this function the registry's own copies of the
+/// ones admission granted, so the variable named here is one the operator
+/// named. The VALUE comes from the node's environment, where an operator put it
+/// and where no guest can reach.
+///
+/// A `federated` entry has no variable and registers nothing here: its
+/// credential is minted per exchange, after the PDP approves a call
+/// (`federated_credential.rs`), and exists in the store only for its own short
+/// lifetime.
 ///
 /// An upstream whose variable is unset (or empty) registers nothing, so the
 /// broker refuses it by absence — the same refusal a policy denial gives, which
 /// is what stops a guest probing which credentials the host holds.
 pub fn store_from_node_environment(
-    upstreams: &[nucleus_spec::CredentialedEgressSpec],
+    upstreams: &[crate::upstreams::RegistryEntry],
 ) -> nucleus_cred_broker::CredentialStore {
     let mut store = nucleus_cred_broker::CredentialStore::new();
-    for spec in upstreams {
+    for entry in upstreams {
+        let crate::upstreams::CredentialSource::Env { var } = entry.credential() else {
+            continue;
+        };
+        let name = &entry.spec().name;
         // Keyed by NAME, because that is what `PerformRequest.target` carries and
         // what `cdp_fetch` looks up. Keying by host would let two upstreams on
         // one host share a credential without anyone saying so.
-        match std::env::var(&spec.credential_env) {
+        match std::env::var(var) {
             Ok(value) if !value.is_empty() => {
-                store.insert(&spec.name, nucleus_cred_broker::Credential::new(value));
+                store.insert(name, nucleus_cred_broker::Credential::new(value));
             }
             _ => {
                 // Logged by variable NAME, never by value, and at info because an
                 // operator who configured an upstream and forgot its credential
                 // otherwise sees only a coarse refusal from inside the guest.
                 tracing::info!(
-                    upstream = %spec.name,
-                    variable = %spec.credential_env,
+                    upstream = %name,
+                    variable = %var,
                     "no credential in the node's environment for this upstream; the broker \
                      will refuse requests for it"
                 );
@@ -367,6 +380,40 @@ pub fn store_from_node_environment(
         }
     }
     store
+}
+
+/// One pod's credentials, as its broker will hold them: the static ones from
+/// the node's environment, and — if any admitted upstream is federated — the
+/// node's issuer and this pod's host-observed subject to mint with.
+///
+/// Platform-neutral on purpose: `start_broker_for_pod` is linux-only, and this
+/// is the part of its job that decides what a pod may mint as, so it is the
+/// part that must be tested on every host.
+///
+/// With a federated upstream but no issuer or no subject (a pod this node
+/// issued no certificate), the pod gets no federation, and every refill for it
+/// refuses — the same coarse refusal the guest gets for any failed call.
+pub async fn pod_credentials(
+    authority: &crate::pod_authority::PodAuthority,
+    pod_id: Uuid,
+    identity: &PodIdentity,
+    upstreams: &[crate::upstreams::RegistryEntry],
+) -> crate::federated_credential::PodCredentials {
+    let store = store_from_node_environment(upstreams);
+    let federation = match authority.federation_source() {
+        Some(source)
+            if upstreams
+                .iter()
+                .any(crate::upstreams::RegistryEntry::is_federated) =>
+        {
+            authority
+                .federation_subject(pod_id, identity)
+                .await
+                .map(|subject| (std::sync::Arc::clone(source), subject))
+        }
+        _ => None,
+    };
+    crate::federated_credential::PodCredentials::new(store, federation)
 }
 
 /// Start the credential broker for a pod, if the rollout and the pod's identity
@@ -377,7 +424,7 @@ pub fn store_from_node_environment(
 /// requested dishonestly, or when the socket could not be created *and*
 /// credentials had already been withheld in exchange for it.
 #[cfg(target_os = "linux")]
-pub fn start_broker_for_pod(
+pub async fn start_broker_for_pod(
     state: &crate::NodeState,
     spec: &nucleus_spec::PodSpec,
     vsock_path: &std::path::Path,
@@ -423,14 +470,29 @@ pub fn start_broker_for_pod(
         }
     };
 
-    // The upstreams the HOST may be asked to call, straight from the pod spec.
+    // The upstreams the HOST may be asked to call: the operator registry's own
+    // entries for what this pod was ADMITTED.
     //
-    // This is the only source: a `PerformRequest` names an upstream, it does not
-    // describe one, so the base URL, the header and its prefix are all facts the
-    // operator wrote and the guest can only select among. An empty list — the
-    // ordinary case today — means every perform request is refused by name,
-    // which is the right answer for a pod whose operator configured none.
-    let upstreams = std::sync::Arc::new(spec.spec.credentialed_egress.clone());
+    // `spec.spec.credentialed_egress` here is no longer what the caller wrote —
+    // `create_pod_internal` replaced it with the set `pod_authority` admitted,
+    // each entry equal to a registry entry. Resolving through the registry
+    // anyway means the `credential_env` text `store_from_node_environment` hands
+    // to `std::env::var` is copied out of the operator's file, not out of a pod
+    // spec that merely matched it. No registry, no upstreams: admission gave
+    // this pod none either, and the two agreeing should not rest on admission
+    // alone.
+    //
+    // A `PerformRequest` names an upstream, it does not describe one, so the
+    // base URL, the header and its prefix are all facts the operator wrote and
+    // the guest can only select among. An empty list means every perform
+    // request is refused by name.
+    let upstreams = std::sync::Arc::new(
+        state
+            .authority
+            .upstream_registry()
+            .map(|registry| registry.resolve(&spec.spec.credentialed_egress))
+            .unwrap_or_default(),
+    );
 
     // The comment here used to read "Empty until `cred_split` has a call site on
     // this driver", and a `CredentialStore::new()` sat under it refusing
@@ -438,7 +500,11 @@ pub fn start_broker_for_pod(
     // the pod spec, for the reason `store_from_node_environment` gives at
     // length: on Firecracker the pod spec is baked into the guest rootfs, so a
     // credential taken from it would ship inside the image.
-    let store = std::sync::Arc::new(store_from_node_environment(&upstreams));
+    //
+    // Federated entries are minted per exchange instead, in this pod's name as
+    // its certificate records it (`pod_credentials`).
+    let credentials =
+        std::sync::Arc::new(pod_credentials(&state.authority, id, &identity, &upstreams).await);
 
     match crate::broker_transport::BrokerListener::start(
         vsock_path,
@@ -446,7 +512,7 @@ pub fn start_broker_for_pod(
         crate::broker_transport::PodBrokerConfig {
             identity,
             policy,
-            store,
+            credentials,
             upstreams,
             // The SAME value the workload API serves the guest. Passing `None`
             // here is what made the capability inert; see `BrokerCapability`.
@@ -638,14 +704,14 @@ mod store_population {
     /// Each env-touching test uses its OWN variable name. Tests share a process
     /// and run in parallel, so two of them on one name is a race that surfaces
     /// as an unrelated flake — which teaches people to re-run rather than look.
-    fn upstream(name: &str, credential_env: &str) -> CredentialedEgressSpec {
-        CredentialedEgressSpec {
+    fn upstream(name: &str, credential_env: &str) -> crate::upstreams::RegistryEntry {
+        crate::upstreams::RegistryEntry::env(CredentialedEgressSpec {
             name: name.into(),
             upstream: "https://upstream.invalid/v1".into(),
             credential_env: credential_env.into(),
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
-        }
+        })
     }
 
     /// Look a credential up exactly as the broker does.

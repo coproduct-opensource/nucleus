@@ -6597,6 +6597,7 @@ dependencies = [
  "nucleus-bundle-cas",
  "nucleus-client",
  "nucleus-envelope",
+ "nucleus-federation",
  "nucleus-identity",
  "nucleus-lineage",
  "nucleus-node-binding",
@@ -6841,6 +6842,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-federation"
+version = "1.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "jsonwebtoken",
+ "nucleus-oidc-core",
+ "reqwest 0.13.5",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "wiremock",
+ "zeroize",
+]
+
+[[package]]
 name = "nucleus-flow-replay"
 version = "1.0.0"
 dependencies = [
@@ -6875,6 +6896,7 @@ version = "1.0.0"
 dependencies = [
  "base64 0.23.1",
  "jsonwebtoken",
+ "nucleus-federation",
  "nucleus-lineage",
  "nucleus-oidc-core",
  "proptest",
@@ -7090,6 +7112,7 @@ dependencies = [
  "nucleus-client",
  "nucleus-cred-broker",
  "nucleus-cred-protocol",
+ "nucleus-federation",
  "nucleus-identity",
  "nucleus-ifc-kernel",
  "nucleus-jsonl",
@@ -7119,12 +7142,14 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-test",
+ "toml 1.1.6+spec-1.1.0",
  "tonic",
  "tonic-prost",
  "tracing",
  "tracing-subscriber 0.3.23",
  "uuid",
  "webpki-roots 1.0.9",
+ "wiremock",
  "x509-parser",
 ]
 
