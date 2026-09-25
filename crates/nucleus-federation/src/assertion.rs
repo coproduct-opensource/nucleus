@@ -173,10 +173,7 @@ impl AssertionClaims {
         now_unix: u64,
         ttl: Duration,
     ) -> Result<Self, ClaimsError> {
-        let issuer_ok = issuer
-            .strip_prefix("https://")
-            .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'));
-        if !issuer_ok {
+        if !is_valid_issuer(issuer) {
             return Err(ClaimsError::Issuer);
         }
         if audience.is_empty() || upstream.is_empty() {
@@ -224,6 +221,20 @@ impl AssertionClaims {
     pub fn expires_at(&self) -> u64 {
         self.exp
     }
+}
+
+/// Whether `issuer` can be this crate's `iss`: an `https://` URL with a
+/// non-empty authority.
+///
+/// One definition, because two things depend on it agreeing: the claims every
+/// assertion carries ([`AssertionClaims::new`]) and the discovery document the
+/// operator publishes for them ([`crate::keyring::discovery_document`]). An
+/// issuer one accepted and the other refused would be a node whose assertions
+/// no provider could ever resolve.
+pub fn is_valid_issuer(issuer: &str) -> bool {
+    issuer
+        .strip_prefix("https://")
+        .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
 }
 
 /// 128 random bits, base64url without padding (22 characters).
@@ -306,6 +317,45 @@ pub trait AssertionSigner: Send + Sync {
 
     /// The public half, for publishing in a JWKS.
     fn public_jwk(&self) -> PublicJwk;
+}
+
+/// Where the signer for the NEXT assertion comes from.
+///
+/// # Why this is separate from [`AssertionSigner`]
+///
+/// A node's key rotates (`keyring`): an operator promotes a staged key while
+/// the node runs, and the node must sign with the new key from then on without
+/// a restart. An [`AssertionSigner`] cannot be that thing, because [`mint`]
+/// asks it for `kid` and then for a signature in two calls — a key swapped
+/// between them would put one key's id on another key's signature, and every
+/// provider would refuse the assertion. So the rotating source hands out a
+/// FIXED signer per assertion ([`CurrentSigner::current`]), and `kid` and
+/// signature come from that one value by construction.
+///
+/// Every fixed signer is trivially its own source (the blanket impl), so a
+/// caller holding `Arc<dyn CurrentSigner>` accepts a plain
+/// [`EcdsaP256Signer`], the file-backed rotating
+/// [`crate::keyring::KeyDirSigner`], or a KMS-held signer alike.
+pub trait CurrentSigner: Send + Sync {
+    /// The signer to use for one assertion. The returned value must not change
+    /// key for as long as the caller holds it.
+    ///
+    /// # Errors
+    /// The key could not be obtained — for the file-backed source, the key
+    /// file changed and the new one failed its permission, ownership or
+    /// parse checks. A source must fail rather than fall back to a key the
+    /// operator replaced.
+    fn current(
+        self: std::sync::Arc<Self>,
+    ) -> Result<std::sync::Arc<dyn AssertionSigner>, SignError>;
+}
+
+impl<T: AssertionSigner + 'static> CurrentSigner for T {
+    fn current(
+        self: std::sync::Arc<Self>,
+    ) -> Result<std::sync::Arc<dyn AssertionSigner>, SignError> {
+        Ok(self)
+    }
 }
 
 /// A published P-256 verification key (RFC 7517, RFC 7518 §6.2).

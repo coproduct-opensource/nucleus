@@ -28,6 +28,7 @@ mod constants;
 mod doctor;
 mod envelope;
 mod envelope_verify;
+mod federation;
 mod goal;
 mod grant;
 mod guard;
@@ -139,6 +140,9 @@ enum Commands {
     /// JWT-SVID inspection + OP token-exchange affordances (#48)
     Identity(identity::IdentityArgs),
 
+    /// Publish, inspect and rotate a node's federation issuer key (ADR 0010)
+    Federation(federation::FederationArgs),
+
     /// Interact with a running nucleus-node (test utilities)
     Node(node::NodeArgs),
 
@@ -217,6 +221,7 @@ async fn main() -> Result<()> {
         Commands::Grant(args) => grant::execute(args),
         Commands::Trust(args) => trust::execute(args),
         Commands::Identity(args) => identity::execute(args),
+        Commands::Federation(args) => federation::execute(args),
         Commands::Node(args) => node::execute(args).await,
         Commands::Lineage(args) => lineage::execute(args),
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),

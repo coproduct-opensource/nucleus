@@ -83,7 +83,7 @@ use std::time::Duration;
 
 use nucleus_cred_broker::{Credential, CredentialStore};
 use nucleus_federation::{
-    AssertionClaims, AssertionSigner, AssertionSubject, ExchangeError, ExchangedToken, TokenRequest,
+    AssertionClaims, AssertionSubject, CurrentSigner, ExchangeError, ExchangedToken, TokenRequest,
 };
 
 use crate::broker::Approved;
@@ -121,7 +121,12 @@ pub fn cache_expiry(now: u64, expires_in: Option<u64>, cert_not_after: u64) -> O
 /// client. One per node, shared by every pod's [`PodCredentials`]; it holds no
 /// token and no per-pod state, so sharing it shares nothing between pods.
 pub struct FederatedSource {
-    signer: Arc<dyn AssertionSigner>,
+    /// Where each assertion's signer comes from. A source, not a signer: the
+    /// node's key rotates under it (`keys::load_or_create_jwt_svid_signing_key`
+    /// returns one that follows a promote), and each mint takes ONE fixed
+    /// signer from it so an assertion's `kid` and signature always come from
+    /// the same key.
+    signer: Arc<dyn CurrentSigner>,
     issuer: String,
     http: reqwest::Client,
 }
@@ -130,7 +135,6 @@ impl fmt::Debug for FederatedSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FederatedSource")
             .field("issuer", &self.issuer)
-            .field("kid", &self.signer.kid())
             .finish_non_exhaustive()
     }
 }
@@ -148,7 +152,7 @@ impl FederatedSource {
     /// too, but as every pod's first call failing rather than as a node that
     /// will not start.
     pub fn new(
-        signer: Arc<dyn AssertionSigner>,
+        signer: Arc<dyn CurrentSigner>,
         issuer: impl Into<String>,
         http: reqwest::Client,
     ) -> Result<Self, String> {
@@ -313,8 +317,13 @@ impl PodFederation {
         )
         .map_err(|_| RefillError::Claims)?;
         let jti = claims.jti().to_string();
-        let assertion = nucleus_federation::mint(&claims, self.source.signer.as_ref())
+        // The key as of THIS assertion. Only the current key is ever handed
+        // out; a staged key is published but never selected here.
+        let signer = Arc::clone(&self.source.signer)
+            .current()
             .map_err(|_| RefillError::Sign)?;
+        let assertion =
+            nucleus_federation::mint(&claims, signer.as_ref()).map_err(|_| RefillError::Sign)?;
         let spent = |error| RefillError::Exchange {
             jti: jti.clone(),
             error,
@@ -963,7 +972,7 @@ policy_id = "example-policy-0001"
 
         // …and it verifies under the issuer's published key, as the provider
         // would check it.
-        let jwk = source.signer.public_jwk();
+        let jwk = Arc::clone(&source.signer).current().unwrap().public_jwk();
         let key = jsonwebtoken::DecodingKey::from_ec_components(&jwk.x, &jwk.y).unwrap();
         let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
         validation.set_issuer(&[ISSUER]);

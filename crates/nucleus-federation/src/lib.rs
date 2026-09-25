@@ -35,6 +35,16 @@
 //! the pod was admitted to, and only with that upstream's audience. This crate
 //! makes the assertion honest about who asked; the node makes it rare.
 //!
+//! # The issuer key: published, then rotated
+//!
+//! [`keyring`] owns the key's files and the only way they change: stage a next
+//! key (published, never signing), promote it once providers have had time to
+//! see it, retire the old one once nothing it signed can still be accepted.
+//! The node's signer ([`keyring::KeyDirSigner`]) follows a promote without a
+//! restart; the operator's `nucleus federation` CLI publishes the discovery
+//! document and JWKS from the same files. Operator steps are in
+//! `docs/federation-issuer-runbook.md`.
+//!
 //! # Inbound: a token from an issuer nucleus does not run
 //!
 //! [`inbound::ExternalIssuerValidator`] checks one outside issuer's tokens
@@ -55,13 +65,15 @@
 
 pub mod assertion;
 pub mod inbound;
+pub mod keyring;
 pub mod token_client;
 
 mod net;
 
 pub use assertion::{
-    AssertionClaims, AssertionSigner, AssertionSubject, ClaimsError, CompactJwt, DEFAULT_TTL,
-    EcdsaP256Signer, Es256Signature, MAX_TTL, PublicJwk, SIGNING_ALG, SignError, jwks, mint,
+    AssertionClaims, AssertionSigner, AssertionSubject, ClaimsError, CompactJwt, CurrentSigner,
+    DEFAULT_TTL, EcdsaP256Signer, Es256Signature, MAX_TTL, PublicJwk, SIGNING_ALG, SignError,
+    is_valid_issuer, jwks, mint,
 };
 pub use inbound::{
     ConfigError, ExternalIssuerConfig, ExternalIssuerValidator, InboundError, JwksSource,
