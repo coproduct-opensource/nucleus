@@ -613,6 +613,7 @@ mod tests {
                     cert_trust_anchors: Vec::new(),
                     max_children_per_pod: 8,
                     upstreams: None,
+                    federation_issuer: None,
                 },
                 "nucleus.local",
                 dir,
