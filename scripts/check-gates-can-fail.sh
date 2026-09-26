@@ -48,6 +48,29 @@ set -uo pipefail
 # This is a strictly weaker check run early, not a replacement: it says the
 # perturbation still bites, never that the gate reds on it.
 VACUITY_ONLY=0
+
+# `--baseline-only`: run each probed gate ONCE, on the tree as it stands, and perturb
+# nothing.
+#
+# This is the other cheap half. `--vacuity-only` establishes that each perturbation still
+# bites; this establishes that each gate is GREEN before one is applied -- the `baseline_rc`
+# check below, lifted out of the loop that costs an hour.
+#
+# It is not a nicety. A gate that is already red makes the full probe report
+# "already red BEFORE any perturbation" and FAIL, so a red in ANY gate here -- including
+# gates that are advisory on their own -- turns the required `Gates must fail on their own
+# subject` red. Measured 2026-09-20 on #2981: `check-line-ratchet.sh` was over its ceiling,
+# which is advisory, and the required context failed for it thirty-five minutes into CI.
+# The line ratchet takes 0.8 s to run.
+#
+# Because it perturbs nothing it writes nothing, so unlike the other two modes it is safe
+# over a DIRTY tree -- which is the state a developer is actually in before a push, and the
+# reason this can live in the fast gauntlet at all.
+BASELINE_ONLY=0
+if [[ "${1:-}" == "--baseline-only" ]]; then
+    BASELINE_ONLY=1
+    shift
+fi
 if [[ "${1:-}" == "--vacuity-only" ]]; then
     VACUITY_ONLY=1
     shift
@@ -57,12 +80,18 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 # A dirty tree cannot be safely perturbed: the restore step would have to guess
 # what was yours. Refuse rather than risk it — `git checkout -- <file>` has
 # destroyed uncommitted work in this repo before.
-if [[ -n "$(git status --porcelain)" ]]; then
+if [[ "$BASELINE_ONLY" != "1" ]] && [[ -n "$(git status --porcelain)" ]]; then
     echo "ERROR: the working tree is dirty. This script edits real files and"
     echo "restores them from a copy; running it over uncommitted work risks that"
     echo "work. Commit or stash first."
     exit 1
 fi
+
+# Gates probed already, as "<gate>|<flags>". Only `--baseline-only` consults it: the
+# baseline is a property of the GATE, so running it once per perturbation would pay for
+# the same answer up to four times (33 probe calls name 28 distinct invocations). In the
+# full run each perturbation is its own question and no deduplication is possible.
+BASELINE_SEEN=""
 
 RESTORE_FROM=""
 RESTORE_TO=""
@@ -89,6 +118,13 @@ covered=0
 probe() {
     local gate="$1" ci_flags="$2" target="$3" desc="$4"
     shift 4
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<$gate|$ci_flags>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<$gate|$ci_flags>"
+    fi
 
     # The invocation must match the workflows, or this script is testing
     # something CI does not run.
@@ -150,6 +186,14 @@ probe() {
         echo "        this tree for its own reasons, so nothing it says under perturbation"
         echo "        would be evidence. Fix that red first, then this probe means something."
         failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        # Green on this tree, which is all this mode claims. Say so per gate so the
+        # gauntlet's output still names what ran.
+        echo "  ok    $gate${ci_flags:+ $ci_flags}"
+        covered=$((covered + 1))
         return
     fi
 
@@ -252,6 +296,41 @@ probe_xtask_flagged() {
     if [[ ! -f "$target" ]]; then
         echo "  ERROR: $target does not exist"
         failures=$((failures + 1))
+        return
+    fi
+
+    # The BASELINE, before anything is touched. This family shipped without one: a gate
+    # that was already red on arrival produced "still failing after restore", which names
+    # the one thing that did not happen and sends the reader to debug the restore. Same
+    # fix, same reason, as probe() and probe_xtask() carry -- and it is what makes this
+    # family answerable in `--baseline-only`.
+    # Deduplicate on the COMMAND, so a sub probed by several perturbations -- or by two
+    # families -- is baselined once. Only in `--baseline-only`: in the full run each
+    # perturbation is its own question.
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<xtask $sub $flags>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<xtask $sub $flags>"
+    fi
+
+    local baseline_rc=0
+    if [[ "$VACUITY_ONLY" != "1" ]]; then
+        # shellcheck disable=SC2086
+        cargo run -q -p xtask -- "$sub" $flags >/dev/null 2>&1 || baseline_rc=$?
+    fi
+    if [[ "$baseline_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub $flags — already red (exit $baseline_rc) BEFORE any perturbation."
+        echo "        Not a restore failure and not a broken probe: this gate is failing on"
+        echo "        this tree for its own reasons, so nothing it says under perturbation"
+        echo "        would be evidence. Fix that red first, then this probe means something."
+        failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "  ok    xtask $sub $flags"
+        covered=$((covered + 1))
         return
     fi
 
@@ -362,12 +441,34 @@ probe_xtask_partial() {
     fi
 
     # The clean bare run, BEFORE perturbing: green, or the probe measures nothing.
+    #
+    # This is a BASELINE and it ran unconditionally, which made `--vacuity-only` a liar:
+    # that mode prints "NO GATE WAS RUN" and this family ran one, every time. Guarded now,
+    # like every other baseline in this script.
+    # Deduplicate on the COMMAND, so a sub probed by several perturbations -- or by two
+    # families -- is baselined once. Only in `--baseline-only`: in the full run each
+    # perturbation is its own question.
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<xtask $sub>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<xtask $sub>"
+    fi
+
     local clean_rc=0
-    cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || clean_rc=$?
+    if [[ "$VACUITY_ONLY" != "1" ]]; then
+        cargo run -q -p xtask -- "$sub" >/dev/null 2>&1 || clean_rc=$?
+    fi
     if [[ "$clean_rc" -ne 0 ]]; then
         echo "  FAIL  xtask $sub — bare (without '$ci_flags') the gate already exits $clean_rc"
         echo "        on a clean tree, so a red under perturbation would not be evidence."
         failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "  ok    xtask $sub"
+        covered=$((covered + 1))
         return
     fi
 
@@ -421,6 +522,13 @@ probe_xtask_partial() {
 probe_xtask() {
     local sub="$1" target="$2" desc="$3"
     shift 3
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<xtask $sub>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<xtask $sub>"
+    fi
 
     local invocations
     # Backslash continuations joined FIRST. A workflow may spell the invocation over
@@ -477,6 +585,12 @@ probe_xtask() {
         echo "        this tree for its own reasons, so nothing it says under perturbation"
         echo "        would be evidence. Fix that red first, then this probe means something."
         failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "  ok    xtask $sub"
+        covered=$((covered + 1))
         return
     fi
 
@@ -637,6 +751,41 @@ probe_xtask_generated() {
     if [[ ! -f "$target" ]]; then
         echo "  ERROR: $target does not exist"
         failures=$((failures + 1))
+        return
+    fi
+
+    # The BASELINE, before anything is touched. This family shipped without one: a gate
+    # that was already red on arrival produced "still failing after restore", which names
+    # the one thing that did not happen and sends the reader to debug the restore. Same
+    # fix, same reason, as probe() and probe_xtask() carry -- and it is what makes this
+    # family answerable in `--baseline-only`.
+    # Deduplicate on the COMMAND, so a sub probed by several perturbations -- or by two
+    # families -- is baselined once. Only in `--baseline-only`: in the full run each
+    # perturbation is its own question.
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        case "$BASELINE_SEEN" in
+            *"<xtask $sub $expected_local>"*) return ;;
+        esac
+        BASELINE_SEEN="$BASELINE_SEEN<xtask $sub $expected_local>"
+    fi
+
+    local baseline_rc=0
+    if [[ "$VACUITY_ONLY" != "1" ]]; then
+        # shellcheck disable=SC2086
+        cargo run -q -p xtask -- "$sub" $expected_local >/dev/null 2>&1 || baseline_rc=$?
+    fi
+    if [[ "$baseline_rc" -ne 0 ]]; then
+        echo "  FAIL  xtask $sub — already red (exit $baseline_rc) BEFORE any perturbation."
+        echo "        Not a restore failure and not a broken probe: this gate is failing on"
+        echo "        this tree for its own reasons, so nothing it says under perturbation"
+        echo "        would be evidence. Fix that red first, then this probe means something."
+        failures=$((failures + 1))
+        return
+    fi
+
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "  ok    xtask $sub"
+        covered=$((covered + 1))
         return
     fi
 
@@ -1920,12 +2069,25 @@ fi
 
 echo
 if [[ "$failures" -gt 0 ]]; then
+    if [[ "$BASELINE_ONLY" == "1" ]]; then
+        echo "FAILED: $failures gate(s) do not pass on this tree. Until they do, the full probe"
+        echo "        cannot say anything about them -- and because it FAILS on a gate that is"
+        echo "        already red, a red here is a red on 'Gates must fail on their own subject',"
+        echo "        whether or not the gate is required on its own."
+        exit 1
+    fi
     if [[ "$VACUITY_ONLY" == "1" ]]; then
         echo "FAILED: $failures perturbation(s) change nothing. A probe that cannot bite tests nothing."
     else
         echo "FAILED: $failures problem(s). A gate that cannot fail is not a gate."
     fi
     exit 1
+fi
+if [[ "$BASELINE_ONLY" == "1" ]]; then
+    # Same discipline as the vacuity message: claim the half that was established.
+    echo "OK: all $covered probed gate(s) pass on this tree. NOTHING WAS PERTURBED:"
+    echo "    this says they are green, not that they red on their own subject."
+    exit 0
 fi
 if [[ "$VACUITY_ONLY" == "1" ]]; then
     # Say exactly what was established and no more. This mode ran no gate, so it has
