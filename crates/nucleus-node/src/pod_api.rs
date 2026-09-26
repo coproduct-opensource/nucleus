@@ -925,7 +925,8 @@ mod handler_tests {
         // it. Idempotent, so every test may call it.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let a = args(dir.path());
-        let authority = Arc::new(crate::pod_authority::PodAuthority::from_args(&a));
+        let authority =
+            Arc::new(crate::pod_authority::PodAuthority::from_args(&a).expect("authority"));
         NodeState {
             pods: Arc::new(Mutex::new(HashMap::new())),
             state_dir: a.state_dir.clone(),

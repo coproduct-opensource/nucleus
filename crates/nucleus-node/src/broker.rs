@@ -32,14 +32,18 @@
 //! socket from the launch path and `broker_perform` performs the call, and both
 //! call into this file — `pdp_decide` and `cdp_fetch` are on the live path.
 //!
-//! What remains missing is the GUEST half: `broker_client` builds and parses
-//! frames but has no vsock transport, so nothing submits one. And
-//! `CredentialStore` is still constructed empty, so a request that survived
-//! every check would still be refused for want of a credential.
+//! The rest of it went on to say the GUEST half was missing and the store was
+//! constructed empty. **Both are now false too.** The guest submits frames:
+//! the tool-proxy's `egress::credentialed_egress` composes a `PerformRequest`
+//! past its own discharge and sends it with `broker_client::perform_line` over
+//! vsock. And the store is populated: `broker_launch::store_from_node_environment`
+//! fills it from the node's environment, for the upstreams the operator's
+//! `--upstreams` registry defines and `pod_authority` admitted to this pod.
 //!
-//! The distinction matters because the two failures look identical from inside
-//! the guest — everything is refused either way — and only one of them is the
-//! design working.
+//! What this file still does not do is choose WHICH upstreams a pod may use:
+//! that is admission's decision, made once per pod, and by the time a frame
+//! reaches `cdp_fetch` the store holds only what was admitted. A target outside
+//! it is refused by absence, the same refusal a policy denial gives.
 
 // The blanket allow this replaced said "nothing calls into the PDP -> CDP flow
 // during pod spawn, because the guest still has no way to submit an envelope."
