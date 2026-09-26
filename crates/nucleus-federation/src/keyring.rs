@@ -242,14 +242,16 @@ impl RotationPolicy {
     /// How long `next` must have been published before it may sign:
     /// JWKS cache lifetime + maximum assertion lifetime.
     pub fn promote_overlap(&self) -> Duration {
-        self.jwks_cache_ttl + self.max_assertion_ttl
+        // Saturating: an overflowing sum can only lengthen the wait, which is
+        // the safe direction for a window that exists to be waited out.
+        self.jwks_cache_ttl.saturating_add(self.max_assertion_ttl)
     }
 
     /// How long after a promote the old key must stay published: the longest
     /// assertion it could have signed just before the swap, plus the skew a
     /// provider may allow on that assertion's `exp`.
     pub fn retire_after(&self) -> Duration {
-        self.max_assertion_ttl + MAX_CLOCK_SKEW
+        self.max_assertion_ttl.saturating_add(MAX_CLOCK_SKEW)
     }
 }
 
@@ -902,7 +904,9 @@ impl FileStamp {
                 dev: meta.dev(),
                 ino: meta.ino(),
                 len: meta.len(),
-                mtime_ns: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+                mtime_ns: i128::from(meta.mtime())
+                    .saturating_mul(1_000_000_000)
+                    .saturating_add(i128::from(meta.mtime_nsec())),
             }
         }
         #[cfg(not(unix))]
