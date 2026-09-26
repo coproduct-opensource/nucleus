@@ -14,7 +14,7 @@
 //! `FixedPriceClearing` is implemented today… so the UI never implies VCG/Pigou
 //! pricing that isn't actually running").
 
-use nucleus_econ_kernels::{IntegerBid, IntegerProposal, VcgError};
+use nucleus_econ_kernels::{HeteroError, IntegerBid, IntegerProposal, VcgError};
 use nucleus_econ_types::{AgentId, MicroUsd};
 use nucleus_permission_market::{PermissionBid, PermissionDimension, PermissionMarket, TrustTier};
 use nucleus_recompute::ClearingReceipt;
@@ -56,6 +56,25 @@ pub enum ClearError {
     /// The proven kernel rejected the declared inputs.
     #[error("VCG kernel rejected the round: {0}")]
     Kernel(#[from] VcgError),
+    /// `clear_vcg` could not ROUTE the round to a sound kernel, which is a
+    /// different fact from a kernel rejecting it. Two shapes reach here, and
+    /// only one is about the inputs being wrong:
+    ///
+    /// * `NotHeterogeneous` — the heterogeneous entry point was handed a
+    ///   single proposal, which belongs in the homogeneous regime.
+    /// * `TooManyBidsForExact` — the input is heterogeneous and above the
+    ///   exact enumerator's bid cap, so **no sound kernel exists for this
+    ///   shape** and no receipt is issued for it.
+    ///
+    /// The second is a refusal to claim rather than a complaint about the
+    /// caller, and that is why this is its own variant instead of being
+    /// flattened into [`ClearError::Kernel`]. `HeteroError` already wraps
+    /// `VcgError`, so collapsing the two would report "the kernel rejected
+    /// your inputs" for a round the kernel never saw — the greedy path this
+    /// crate stopped trusting is exactly the case where agreeing too readily
+    /// mispriced a winner.
+    #[error("no sound VCG kernel for this round: {0}")]
+    Routing(#[from] HeteroError),
     /// The kernel allocated the slot to nobody despite admissible bids. Not
     /// reachable through this crate's inputs (one zero-cost proposal, a
     /// zero budget, every bid strictly positive) — surfaced rather than
