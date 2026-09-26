@@ -695,8 +695,9 @@ fn create_pod_internal_still_consults_the_authority_gate() {
         "create_pod_internal must consult pod_authority::admit before any driver spawns"
     );
     assert!(
-        body.contains("PolicySpec::Inline"),
-        "the issued effective lattice must replace the requested policy before spawn"
+        body.contains("issued.apply_to(&mut spec);"),
+        "the issued effective lattice and admitted upstreams must replace the requested \
+         policy and credentialed_egress before spawn (`IssuedAuthority::apply_to`)"
     );
     assert!(
         body.contains("state.authority.release_child("),
