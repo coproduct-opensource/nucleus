@@ -64,6 +64,15 @@ jobs:
           fi
           echo "cargo metadata OK (empty stderr)"
 
+      # The action-key census, bound. `census.rs` calls itself "the audit the
+      # design rests on" and until 2026-09-21 nothing ran it — no workflow, no
+      # script, no ledger entry named the crate. A step here rather than its own
+      # job on purpose: a new required context would change the pinned count in
+      # ci/required-checks.txt, and this measurement does not need to gate the
+      # merge queue to be worth having.
+      - name: Which required contexts can have a receipt key
+        run: cargo run -q -p nucleus-action-key -- --check
+
       - name: Vendor neutrality (no claude/anthropic/openai in source)
         run: bash ci/no-vendor-strings.sh
 
@@ -193,6 +202,11 @@ jobs:
       # returned zero. It checks TOTALITY, not correctness -- a leaf declared `observe`
       # that boots a VM passes -- and the design doc says so rather than letting the green
       # light imply more.
+      - name: Economics never widens authority
+        # #2514. The authority crates reach no economic crate; the decision functions in
+        # run_gate.rs and all of pod_authority.rs name none; the one permitted meet is
+        # still where six epics say it is. docs/econ-layer-boundary.md is the prose.
+        run: cargo run -q -p xtask -- econ-boundary
       - name: Every command declares its authority band
         run: cargo run -q -p xtask -- command-grammar
 

@@ -26,6 +26,7 @@ impl MsFlags {
     const MS_NODEV: MsFlags = MsFlags;
     const MS_REMOUNT: MsFlags = MsFlags;
     const MS_RDONLY: MsFlags = MsFlags;
+    const MS_BIND: MsFlags = MsFlags;
     fn empty() -> MsFlags {
         MsFlags
     }
@@ -116,15 +117,37 @@ fn mount_work(_past_barrier: &identity::PastBarrier) {
 /// Every failure here is optional. A pod with no data drive, a kernel without overlayfs, a seed
 /// that will not mount: the gate then compiles from nothing, which is exactly what it does today.
 /// It costs time and can never change a verdict, so it must not abort a boot.
+///
+/// **`/cache` IS WRITABLE ON EVERY PATH, INCLUDING ALL THE FAILING ONES**, and that is what makes
+/// it safe for a gate to point `CARGO_TARGET_DIR` inside it. Before, this returned early with
+/// `/cache` either absent (no data drive — the directory is created after that check) or an empty
+/// directory on the read-only rootfs. Either is fine while nothing points at it, and both turn
+/// into a HARD gate failure the moment something does: cargo cannot create its target directory
+/// and the gate fails for a reason that has nothing to do with the tree under test.
+///
+/// So the seed is now an optimisation layered on top of a directory that always exists: when
+/// everything works, `/cache` is the overlay and reads come from the pinned bytes; when anything
+/// fails, `/cache` is a bind mount of the same scratch directory the overlay would have written
+/// through. Cold instead of warm — today's behaviour — rather than broken.
 fn mount_cache(_past_barrier: &identity::PastBarrier) {
-    if !Path::new("/dev/vdc").exists() {
-        return;
-    }
-    for dir in [CACHE_SEED, CACHE_UPPER, CACHE_WORK, CACHE_MERGED] {
+    // Made FIRST and unconditionally: the fallback needs them even when there is no seed.
+    for dir in [CACHE_UPPER, CACHE_WORK, CACHE_MERGED] {
         if let Err(err) = ensure_dir(dir) {
             eprintln!("optional cache: {err} — continuing without it");
             return;
         }
+    }
+    for dir in [CACHE_UPPER, CACHE_WORK, CACHE_MERGED] {
+        chown_nobody(dir);
+    }
+    if !Path::new("/dev/vdc").exists() {
+        bind_scratch_over_cache("no data drive");
+        return;
+    }
+    if let Err(err) = ensure_dir(CACHE_SEED) {
+        eprintln!("optional cache: {err} — continuing without it");
+        bind_scratch_over_cache("seed mountpoint");
+        return;
     }
     if let Err(err) = mount_fs(
         "/dev/vdc",
@@ -134,13 +157,8 @@ fn mount_cache(_past_barrier: &identity::PastBarrier) {
         None,
     ) {
         eprintln!("optional cache seed did not mount — continuing without it: {err}");
+        bind_scratch_over_cache("seed would not mount");
         return;
-    }
-    // The workload does not run as root, so the layer it writes through must be its own.
-    // `mke2fs -E root_owner=65534:65534` gives the scratch that owner; the overlay's upper
-    // inherits nothing, so it is set here.
-    for dir in [CACHE_UPPER, CACHE_WORK] {
-        chown_nobody(dir);
     }
     let options = format!("lowerdir={CACHE_SEED},upperdir={CACHE_UPPER},workdir={CACHE_WORK}");
     if let Err(err) = mount_fs(
@@ -151,6 +169,59 @@ fn mount_cache(_past_barrier: &identity::PastBarrier) {
         Some(&options),
     ) {
         eprintln!("optional cache overlay did not mount — continuing without it: {err}");
+        bind_scratch_over_cache("overlay would not mount");
+    }
+}
+
+/// Make `/cache` a writable directory on the pod's own scratch when the seed could not be used.
+///
+/// The cold half of [`mount_cache`]'s contract. `CACHE_UPPER` is the directory the overlay would
+/// have written through, so binding it over `CACHE_MERGED` gives exactly the layout a gate
+/// expects, minus the pinned bytes underneath: same path, same owner, same writability, empty.
+///
+/// Best effort like everything else here. If even this fails the gate is no worse off than it was
+/// before any of it existed, and the reason is on the console -- which is the only place a silent
+/// fallback can be told apart from a working cache.
+fn bind_scratch_over_cache(why: &str) {
+    if let Err(err) = mount_fs(
+        CACHE_UPPER,
+        CACHE_MERGED,
+        "none",
+        MsFlags::MS_BIND | MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+        None,
+    ) {
+        eprintln!("optional cache: {why}; scratch bind also failed: {err}");
+        return;
+    }
+    eprintln!("optional cache: {why} — /cache is empty scratch, the gate compiles cold");
+}
+
+/// The invariant the cold path rests on: the directory bound over `/cache` when the seed is
+/// unusable must live on the pod's own SCRATCH, not on the rootfs.
+///
+/// If `CACHE_UPPER` ever moved off `/work`, `bind_scratch_over_cache` would bind a read-only
+/// rootfs directory over `/cache` and every gate would fail to create its target directory --
+/// the exact hard failure the fallback exists to prevent, reintroduced by a path edit that looks
+/// harmless. A string comparison is enough to make that unwritable.
+#[cfg(test)]
+mod cache_layout {
+    use super::{CACHE_MERGED, CACHE_UPPER, CACHE_WORK};
+
+    #[test]
+    fn the_overlays_writable_layers_live_on_scratch() {
+        assert!(
+            CACHE_UPPER.starts_with("/work/"),
+            "the overlay upper must be on the pod scratch, got {CACHE_UPPER}"
+        );
+        assert!(
+            CACHE_WORK.starts_with("/work/"),
+            "the overlay workdir must be on the pod scratch, got {CACHE_WORK}"
+        );
+        assert!(
+            !CACHE_MERGED.starts_with("/work/"),
+            "the merged mount is the gate-facing path and must not be inside the scratch it \
+             writes through, got {CACHE_MERGED}"
+        );
     }
 }
 

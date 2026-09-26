@@ -152,6 +152,10 @@ enum Command {
         #[arg(long)]
         network: bool,
     },
+    /// Economics never widens authority (#2514): the authority crates reach no economic
+    /// crate in the resolved graph, the decision functions in run_gate.rs and all of
+    /// pod_authority.rs name none, and the one permitted meet is still in cert_bridge.rs.
+    EconBoundary,
     /// ADR 0008: nucleus depends on nothing private. Refuses any git dependency, alternate
     /// registry, or path dependency escaping the repository — in the resolved graph per
     /// `cargo metadata`, and in every manifest's own declarations including the satellites.
@@ -354,6 +358,9 @@ enum CiSpecCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Every required context is decided by the fast gauntlet, or declared NOT-LOCAL with a
+    /// reason. Both directions, plus: a declared `prepush:` command must be IN prepush.
+    LocalCoverage,
     /// Print the inline-gate inventory (ci/inline-gates.txt shape).
     /// Every check context a workflow produces that ci/required-checks.txt does
     /// NOT list. Advisory contexts block nothing, so one can be red on main
@@ -413,6 +420,7 @@ mod clippy_config;
 mod command_grammar;
 mod convergence;
 mod coverage_floor;
+mod econ_boundary;
 mod fly_pools;
 mod gate_budget;
 mod gatehouse_pin;
@@ -422,6 +430,7 @@ mod law_mechanisms;
 mod lean_action_builds;
 mod life;
 mod line_ratchet;
+mod local_coverage;
 mod pin_parity;
 mod pipefail;
 mod plan_measurements;
@@ -497,6 +506,7 @@ fn main() -> Result<()> {
         Command::ActionInputs { network } => {
             action_inputs::check(&std::env::current_dir()?, network)
         }
+        Command::EconBoundary => econ_boundary::check(&std::env::current_dir()?),
         Command::Visibility => visibility::check(&std::env::current_dir()?),
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::Grammar => match command_grammar::run(&std::env::current_dir()?)? {
@@ -556,6 +566,7 @@ fn main() -> Result<()> {
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
             CiSpecCmd::Advisory { repo } => ci_spec::advisory(repo),
+            CiSpecCmd::LocalCoverage => local_coverage::run(),
             CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
             CiSpecCmd::LiveParity { repo, github, json } => {
                 ci_spec::live_parity(repo, &github, json)

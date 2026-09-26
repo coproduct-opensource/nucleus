@@ -6521,6 +6521,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-authority-exchange"
+version = "1.0.0"
+dependencies = [
+ "nucleus-authority-exchange",
+ "nucleus-econ-kernels",
+ "nucleus-econ-types",
+ "nucleus-permission-market",
+ "nucleus-recompute",
+ "portcullis",
+ "proptest",
+ "rust_decimal",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "nucleus-blast-radius"
 version = "1.0.0"
 dependencies = [
@@ -7229,8 +7246,14 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "hmac 0.13.0",
+ "nucleus-authority-exchange",
  "nucleus-client",
+ "nucleus-creditworthiness",
+ "nucleus-econ-kernels",
+ "nucleus-econ-types",
+ "nucleus-permission-market",
  "nucleus-provenance-memory",
+ "nucleus-recompute",
  "nucleus-spec",
  "nucleus-task-compiler",
  "portcullis",
@@ -7241,6 +7264,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
+ "tokio",
  "ureq",
  "uuid",
 ]
@@ -7483,15 +7507,19 @@ dependencies = [
  "http-body-util",
  "libc",
  "nucleus",
+ "nucleus-authority-exchange",
  "nucleus-client",
  "nucleus-cred-protocol",
+ "nucleus-econ-types",
  "nucleus-identity",
  "nucleus-ifc-kernel",
  "nucleus-jsonl",
+ "nucleus-lineage",
  "nucleus-otel-bootstrap",
  "nucleus-permission-market",
  "nucleus-proto",
  "nucleus-provenance-memory",
+ "nucleus-recompute",
  "nucleus-spec",
  "opentelemetry",
  "opentelemetry-otlp",

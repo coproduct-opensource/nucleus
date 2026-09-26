@@ -170,4 +170,91 @@ theorem at_the_cap_even_one_launch_is_refused :
     (Slots.mk 100 96 1 1).fits = true := by
   decide
 
+-- ── The 2026-09-21 gatehouse timeouts, concretely ─────────────────────────
+
+/-- #2973 as it stood at 20:21: four gates verified, the fifth never
+    serviced. Finish times are small because the deadline is the only
+    comparison that matters. -/
+def gates2973 : List Service :=
+  [Service.decided 100 true, Service.decided 100 true, Service.decided 100 true,
+   Service.decided 100 true, Service.starved]
+
+/-- **Bite of T7 (the missing case).** Four of five gates held and the run is
+    UNDECIDED, not four-fifths of a verdict — and the four are discarded with
+    it. `Capacity.Sched` cannot state this shape, which is why
+    `T7_no_timeout_ejection` was silent about the afternoon it happened. -/
+theorem four_held_and_one_starved_is_undecided :
+    requiredOf 1000 gates2973 = Verdict.undecided := by decide
+
+/-- **Bite of T7 (no deadline reaches it).** Raising the five-hour limit
+    changes nothing: starvation has no finish time, so no bound on finish
+    times constrains it. This is the theorem that refutes "add capacity". -/
+theorem no_deadline_decides_2973 (d : Nat) :
+    requiredOf d gates2973 = Verdict.undecided :=
+  one_starvation_undecides (by decide)
+
+/-- **Bite of the `Bool` collapse.** GitHub's rollup passes a required context
+    with no verdict at all; the three-valued rollup says undecided and names
+    it. Same input, and only one of them can tell an operator which of "ran
+    and failed" or "never ran" they are looking at. -/
+theorem bool_rollup_hides_what_three_values_keep :
+    rollup (fun _ => none) ["gatehouse/required"] = true ∧
+    rollupV [Verdict.undecided] = Verdict.undecided := by decide
+
+-- ── The scope a push did not touch ────────────────────────────────────────
+
+/-- `test-core`'s declared `scope.include`, as `.gatehouse/gates/test-core.json`
+    carries it (the `sdks/verifier-js` file list elided: every entry of it is
+    under a prefix already listed here or irrelevant to the two paths below). -/
+def testCoreScope : List Pattern :=
+  [["Cargo.toml"], ["Cargo.lock"], ["rust-toolchain.toml"], [".cargo", "config.toml"],
+   ["clippy.toml"], ["crates"], ["tests"], ["benchmarks"], ["scripts"], ["examples"]]
+
+/-- The file the 2026-09-21 scorecard fix touched, and nothing else. -/
+def ratchetFile : Path := [".scorecard-ratchet.toml"]
+
+/-- A file that IS in scope, so the theorem below is not about an empty set. -/
+def nodeSource : Path := ["crates", "nucleus-node", "src", "lib.rs"]
+
+/-- **Bite of scope determinacy.** The ratchet file is outside `test-core`'s
+    declared read-set, and a crate source file is inside it. So the gate's
+    population is real and the ratchet file is genuinely not in it. -/
+theorem ratchet_is_outside_test_core :
+    matched testCoreScope ratchetFile = false ∧
+    matched testCoreScope nodeSource = true := by decide
+
+/-- **The restart that need not have happened.** For ANY scope-determined
+    gate with `test-core`'s read-set, changing only the ratchet file cannot
+    change the verdict — whatever the file's new contents. The push that
+    raised a scorecard floor on 2026-09-21 invalidated this gate anyway,
+    because the cache key is the whole tree rather than the projection. -/
+theorem the_ratchet_push_could_not_have_changed_test_core
+    (run : Tree → Verdict) (hd : ScopeDetermined testCoreScope run)
+    (t : Tree) (d d' : Digest) :
+    run ((ratchetFile, d) :: t) = run ((ratchetFile, d') :: t) :=
+  -- The projections are `matched … (ratchetFile, _).1`, which reduces to the
+  -- fact just proved; `decide` cannot see through the pair with `d` free.
+  verdict_survives_an_unmatched_change hd
+    ratchet_is_outside_test_core.left ratchet_is_outside_test_core.left
+
+-- ── The floor that refused an improvement ─────────────────────────────────
+
+/-- **Bite of the pinned floor.** The first occurrence on 2026-09-21: the
+    totality floor stood at 3176 basis points and the branch measured 3255,
+    because a new crate declared all seven panic lints on arrival. The gate
+    refused it. A floor derived from the base admits it and still ratchets. -/
+theorem scorecard_refused_an_improvement :
+    pinnedAtMeasure 3176 3255 = false ∧ passesDerived 3176 3255 = true := by decide
+
+/-- And the second occurrence, on another branch within the hour: 3255 against
+    a measured 3333. Two branches, two edits to one line, and both edits were
+    forced by the number getting better. -/
+theorem and_again_an_hour_later :
+    pinnedAtMeasure 3255 3333 = false ∧ passesDerived 3255 3333 = true := by decide
+
+/-- Non-vacuity for the pair above: the derived floor is not the constant
+    `true`. A measurement that actually fell is still refused. -/
+theorem derived_floor_still_refuses_a_fall :
+    passesDerived 3255 3100 = false := by decide
+
 end CiSpecBite
