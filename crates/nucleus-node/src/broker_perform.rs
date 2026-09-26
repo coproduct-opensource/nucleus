@@ -467,7 +467,13 @@ where
     let refilled = match entry.credential() {
         CredentialSource::Federated(federated) => {
             match ctx.credentials.refill(&approved, federated, now_unix).await {
-                Ok(refilled) => Some(refilled),
+                // A proof past its own end is no proof: refused like any other
+                // refill failure, before the store is read.
+                Ok(refilled) if refilled.valid_at(now_unix) => Some(refilled),
+                Ok(_expired) => {
+                    ctx.ledger.release(&req.idempotency_key);
+                    return refused("upstream call failed");
+                }
                 Err(_) => {
                     ctx.ledger.release(&req.idempotency_key);
                     return refused("upstream call failed");

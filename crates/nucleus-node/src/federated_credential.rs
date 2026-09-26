@@ -450,6 +450,7 @@ impl PodCredentials {
                 pod: self,
                 target: upstream.name.clone(),
                 single_use: false,
+                not_after: fed.subject.cert_not_after_unix,
                 record,
                 _flight: flight,
             });
@@ -489,6 +490,7 @@ impl PodCredentials {
             pod: self,
             target: upstream.name.clone(),
             single_use,
+            not_after: until,
             record,
             _flight: flight,
         })
@@ -499,16 +501,28 @@ impl PodCredentials {
 ///
 /// Dropping a use-once token's `Refilled` removes the token from the store, so
 /// it cannot serve a second fetch.
+///
+/// It is a proof about a credential with an end, so it carries that end: a
+/// `Refilled` held past `not_after` vouches for nothing, and the fetch path
+/// refuses it ([`Refilled::valid_at`]). On a fresh exchange that is the cache
+/// entry's own end; on a cache hit it is the pod certificate's, the outer bound
+/// every cache entry already sits inside (the store enforces the tighter one).
 #[must_use = "fetch while this is held, then drop it before the upstream call"]
 pub struct Refilled<'a> {
     pod: &'a PodCredentials,
     target: String,
     single_use: bool,
+    not_after: u64,
     record: ExchangeRecord,
     _flight: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl Refilled<'_> {
+    /// Whether this proof still vouches for a credential at `now`.
+    pub fn valid_at(&self, now: u64) -> bool {
+        now < self.not_after
+    }
+
     /// What this refill is recorded as.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn record(&self) -> &ExchangeRecord {
@@ -1001,6 +1015,40 @@ policy_id = "example-policy-0001"
         assert_eq!(
             up.seen(),
             ["minted-token-1", "minted-token-1", "minted-token-2"].map(|t| format!("Bearer {t}"))
+        );
+    }
+
+    /// **The proof ends with what it vouches for.** A `Refilled` from a fresh
+    /// exchange is valid exactly until the cache entry it wrote stops being
+    /// served; one from a cache hit is valid until the pod's certificate ends,
+    /// the outer bound every entry sits inside.
+    #[tokio::test]
+    async fn a_refill_proof_ends_with_the_credential_it_vouches_for() {
+        let tokens = TokenEndpoint::start(Some(3600), Duration::ZERO, &[]).await;
+        let up = Upstream::start(&[]).await;
+        let pod = Pod::new(POD_A, &source(), registry(&tokens, &up), NOW + DAY);
+        let fed = pod.federated();
+
+        let until = cache_expiry(NOW, Some(3600), NOW + DAY).expect("cacheable");
+        {
+            let miss = pod
+                .credentials
+                .refill(&approval(POD_A, NOW), &fed, NOW)
+                .await
+                .expect("exchange");
+            assert!(miss.valid_at(until - 1));
+            assert!(!miss.valid_at(until), "a proof outlived its cache entry");
+        }
+        let hit = pod
+            .credentials
+            .refill(&approval(POD_A, NOW + 1), &fed, NOW + 1)
+            .await
+            .expect("cached");
+        assert_eq!(tokens.minted(), 1, "the second refill should hit the cache");
+        assert!(hit.valid_at(NOW + DAY - 1));
+        assert!(
+            !hit.valid_at(NOW + DAY),
+            "a proof outlived the pod's authority"
         );
     }
 

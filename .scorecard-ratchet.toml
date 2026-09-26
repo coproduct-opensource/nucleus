@@ -257,8 +257,15 @@ population_floor = 86
 # 5/12 (41.66%), and that exposed a real hole: the proof did not say WHICH record it
 # proved, so one record's proof could acknowledge another. It now carries a
 # state_hash of the log and the record, checked at both acknowledgement sites. 6/12.
-floor_bp = 5000
-population_floor = 12
+# 2026-09-26 (#3020): federated_credential::Refilled, the proof a federated
+# credential was minted or found cached, entered as an affine right. Unbounded it
+# reddened CI at 6/13 (46.15%), and it was a real gap: the proof vouched for a
+# credential with an end and carried none, so only the store stood between a
+# held proof and an expired token. It now carries not_after (the cache entry's
+# end, or the pod certificate's on a hit) and handle_perform refuses a proof past
+# it before the store is read. 7/13.
+floor_bp = 5384
+population_floor = 13
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
