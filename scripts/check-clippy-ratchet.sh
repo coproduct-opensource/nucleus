@@ -126,7 +126,18 @@ FAILED=$(jq -r 'select(.reason=="compiler-message") | .message
 # manifest directory, which is the same crate spelling the list above uses.
 BUILD_FAILED=$(sed -n 's/.*failed to run custom build command for `[^(]*(\(.*\))`.*/\1/p' "$ERRS" \
          | sed 's#.*/##' | sort -u)
-FAILED=$(printf '%s\n%s\n' "$FAILED" "$BUILD_FAILED" | grep -v '^$' | sort -u)
+# `sed`, not `grep -v`. GREP EXITS 1 WHEN NOTHING MATCHES, and nothing matches exactly when both
+# lists are empty -- which is the HEALTHY case, no crate failed to compile. Under `set -euo
+# pipefail` that killed the script here, silently, after a clean clippy run.
+#
+# So the gate died precisely when the workspace was fine. It went unnoticed while some crate was
+# always unanalysable; when the last one was fixed and `.clippy-unanalysed.txt` emptied, every
+# pull request started failing `Check clippy ceiling` with no output at all -- seven at once on
+# 2026-09-26, including rebases of previously-green branches and this very PR.
+#
+# `sed '/^$/d'` deletes the same lines and always exits 0, so the healthy case cannot be a
+# failure. Whether a filter found anything is not a verdict about the tree.
+FAILED=$(printf '%s\n%s\n' "$FAILED" "$BUILD_FAILED" | sed '/^$/d' | sort -u)
 
 # Unique (file, line, column, lint) SITES, not raw messages: a file compiled as
 # both lib and test yields the same warning twice, and which targets cargo
