@@ -175,7 +175,14 @@ population_floor = 278
 # then refused the old floor for the opposite reason to the two notes above --
 # a floor with slack under it has already stopped gating (ADR 0007 I-1). Raised
 # to the measured value, which is the only direction this pin moves.
-floor_bp = 3255
+# 2026-09-26 (#3019): new crate nucleus-federation, the token validator and
+# exchange client a node runs on every federated call, shipped WITHOUT the
+# declaration and diluted the ratio to 32.18%; Manifest Guards went red.
+# Declaring it found eight real sites -- slicing a SEC1 point by fixed offsets,
+# slicing a JWS signing input by summed lengths, a hex-table index, and five
+# unchecked additions or multiplications on lengths and times. With it the ratio is
+# 29/87, 33.33%, and the floor follows it up.
+floor_bp = 3333
 population_floor = 86
 
 [family.life]

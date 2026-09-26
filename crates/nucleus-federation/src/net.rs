@@ -69,7 +69,7 @@ pub(crate) async fn read_capped(mut resp: reqwest::Response) -> Option<Zeroizing
     loop {
         match resp.chunk().await {
             Ok(Some(chunk)) => {
-                if buf.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                if buf.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
                     return None;
                 }
                 buf.extend_from_slice(&chunk);

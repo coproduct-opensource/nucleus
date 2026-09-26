@@ -375,7 +375,7 @@ impl VerifyKey {
                 let nb = URL_SAFE_NO_PAD.decode(n).ok()?;
                 let significant = nb.iter().skip_while(|b| **b == 0).count();
                 let shape = KeyShape::Rsa {
-                    modulus_bits: significant * 8,
+                    modulus_bits: significant.saturating_mul(8),
                 };
                 (shape, DecodingKey::from_rsa_components(n, e).ok()?)
             }
@@ -595,7 +595,15 @@ impl ExternalIssuerValidator {
         }
 
         // 4. Signature.
-        let signing_input = &token[..h64.len() + 1 + p64.len()];
+        // The header and payload segments, with the dot between them: exactly
+        // what was signed. Taken by checked length so a token the split above
+        // accepted can never index past its own end.
+        let signing_input = h64
+            .len()
+            .checked_add(1)
+            .and_then(|n| n.checked_add(p64.len()))
+            .and_then(|end| token.get(..end))
+            .ok_or_else(|| refused(RefusalReason::Malformed))?;
         let ok = jsonwebtoken::crypto::verify(
             s64,
             signing_input.as_bytes(),
@@ -663,7 +671,7 @@ impl ExternalIssuerValidator {
                 _ => return Err(refused(RefusalReason::NotYetValid)),
             },
         }
-        if exp <= iat || exp - iat > self.cfg.max_lifetime.as_secs() {
+        if exp <= iat || exp.saturating_sub(iat) > self.cfg.max_lifetime.as_secs() {
             return Err(refused(RefusalReason::Lifetime));
         }
         let sub = c

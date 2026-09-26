@@ -369,13 +369,11 @@ impl EcdsaP256Signer {
             .map_err(|_| SignError::Key)?;
         // Uncompressed SEC1 point: 0x04 || x (32) || y (32).
         let point = key.public_key().as_ref();
-        if point.len() != 65 || point[0] != 0x04 {
-            return Err(SignError::Key);
-        }
-        let jwk = PublicJwk::p256(
-            URL_SAFE_NO_PAD.encode(&point[1..33]),
-            URL_SAFE_NO_PAD.encode(&point[33..65]),
-        );
+        let (x, y) = match point.split_first() {
+            Some((0x04, xy)) if xy.len() == 64 => xy.split_at_checked(32).ok_or(SignError::Key)?,
+            _ => return Err(SignError::Key),
+        };
+        let jwk = PublicJwk::p256(URL_SAFE_NO_PAD.encode(x), URL_SAFE_NO_PAD.encode(y));
         Ok(Self { key, rng, jwk })
     }
 

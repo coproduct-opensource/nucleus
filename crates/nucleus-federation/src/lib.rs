@@ -52,6 +52,23 @@
 //! crate. Every endpoint, audience and extra parameter is operator
 //! configuration. `ci/no-vendor-strings.sh` and `ci/alg-pin-check.sh` both
 //! scan this crate.
+//!
+//! It is also declared panic-free outside tests. A token validator or an
+//! exchange client that can panic hands a malformed input a way to take down
+//! the node that called it, so the whole `tot` family is denied here rather
+//! than audited.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
 
 pub mod assertion;
 pub mod inbound;

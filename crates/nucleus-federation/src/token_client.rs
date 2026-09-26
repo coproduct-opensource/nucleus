@@ -26,6 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Write as _;
 
 use reqwest::Url;
 use serde::Deserialize;
@@ -138,7 +139,7 @@ impl TokenRequest {
     /// The body's fields, in a fixed order: the grant, the subject, the
     /// optional standard fields, then operator params in key order.
     fn fields(&self) -> Vec<(&str, &str)> {
-        let mut out: Vec<(&str, &str)> = Vec::with_capacity(5 + self.params.len());
+        let mut out: Vec<(&str, &str)> = Vec::with_capacity(self.params.len().saturating_add(5));
         match self.grant {
             Grant::TokenExchange8693 => {
                 out.push(("grant_type", GRANT_TOKEN_EXCHANGE));
@@ -201,10 +202,9 @@ fn form_encode_into(out: &mut String, s: &str) {
                 out.push(b as char)
             }
             _ => {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                out.push('%');
-                out.push(HEX[(b >> 4) as usize] as char);
-                out.push(HEX[(b & 0xF) as usize] as char);
+                // Writing to a String cannot fail; the Result is fmt's shape, not
+                // a runtime outcome.
+                let _ = write!(out, "%{b:02X}");
             }
         }
     }
