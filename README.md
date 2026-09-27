@@ -8,11 +8,20 @@
 [![Security Audit](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
 [![scorecard](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fbadges%2Fscorecard.json)](docs/adr/0007-make-the-defect-unwritable.md)
+[![sealed mediation](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fbadges%2Fmediation.json)](crates/xtask/src/mediate.rs)
 
-The last badge names the **weakest** of four defect families, not an average —
+The scorecard badge names the **weakest** of its defect families, not an average —
 `cargo xtask scorecard` reports how much of what this repo declares is actually
 enforced, family by family, and an average would let a family at zero hide behind
 one at a hundred. It is deliberately uncomfortable.
+
+The sealed-mediation badge counts the tool-proxy's agent-reachable entry points —
+every HTTP route and MCP tool — whose effect is reachable only by spending an
+`Authority` minted from a preflight. The rest are *checked* (a runtime decision is
+on the path, but the effect does not need its result) or *unchecked*;
+`cargo xtask mediation` prints which is which. It measures wiring, not whether the
+decisions are right, and not the VM isolation that keeps the tool-proxy the pod's
+only way out.
 
 **Nucleus expands the frontier of safely delegatable machine agency: any agent should be able to do as much useful real-world work as its principal is willing to authorize, while being structurally incapable of exceeding that authorization.**
 

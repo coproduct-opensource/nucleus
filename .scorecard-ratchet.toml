@@ -395,3 +395,21 @@ population_floor = 23
 # rather than carried over from either side.
 floor_bp = 1388
 population_floor = 143
+
+[family.mediate]
+# How much of what an agent can call is SEALED: the handler mints an
+# `Authority` (only mintable from a `run_gate::preflight_*`'s DischargedBundle),
+# so the effect method -- which takes it by value -- is reachable only through
+# the decision. `crates/xtask/src/mediate.rs` enumerates every tool-proxy HTTP
+# route and MCP `#[tool]` and classifies each handler Sealed / Checked /
+# Unchecked; `cargo xtask mediation` prints the table.
+#
+# 2026-09-27: seeded at the measurement, 12 of 25 = 48.00%. The 13 not sealed are
+# all CHECKED -- a runtime decision is on the path but the effect does not need
+# its result: glob, grep, memory/{write,recall} and pod/* over HTTP, MCP glob,
+# and approve/declassify/escalate on authority of their own. None is Unchecked.
+# Four routes are declared not-an-effect (health, workload result/logs) and sit
+# outside the population. Raise this as Checked handlers are made to take an
+# Authority.
+floor_bp = 4800
+population_floor = 25

@@ -177,6 +177,7 @@ pub fn families() -> Vec<Box<dyn Family>> {
         Box::new(crate::life::Life),
         Box::new(crate::typed::Typed),
         Box::new(crate::suppress::Suppress),
+        Box::new(crate::mediate::Mediate),
     ]
 }
 
@@ -376,8 +377,12 @@ pub enum Finding {
     Unpinned { family: String },
     /// A pin names a family that is not on the card.
     Stale { family: String },
-    /// The committed badge disagrees with the card.
+    /// A committed badge disagrees with the card.
     BadgeStale {
+        /// Which badge: the scorecard's or the mediation family's own.
+        path: &'static str,
+        /// The command that regenerates it.
+        regen: &'static str,
         /// What the tracked file says.
         have: String,
         /// What the card says.
@@ -430,10 +435,15 @@ impl std::fmt::Display for Finding {
                 "{RATCHET} pins [family.{family}] and no family by that name is on the card. A \
                  stale pin is a gate ranging over nothing."
             ),
-            Self::BadgeStale { have, want } => write!(
+            Self::BadgeStale {
+                path,
+                regen,
+                have,
+                want,
+            } => write!(
                 f,
-                "{BADGE} is stale. It says\n    {have}\nand the card says\n    {want}\n\
-                 Regenerate it with `cargo run -q -p xtask -- scorecard --badge > {BADGE}`. A \
+                "{path} is stale. It says\n    {have}\nand the card says\n    {want}\n\
+                 Regenerate it with `cargo run -q -p xtask -- {regen} --badge > {path}`. A \
                  badge that lags the number it reports is worse than no badge: a reader trusts \
                  it more than the file it came from."
             ),
@@ -494,7 +504,7 @@ pub fn weakest(card: &[(String, Census)]) -> Option<(&str, Census)> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Basis points as a percentage, for messages a human reads.
-fn pct(bp: u32) -> String {
+pub(crate) fn pct(bp: u32) -> String {
     format!("{}.{:02}%", bp / 100, bp % 100)
 }
 
@@ -686,6 +696,11 @@ fn write_pins(card: &[(String, Census)], pins: &BTreeMap<String, Pin>) -> Result
     std::fs::write(RATCHET, &text).with_context(|| format!("writing {RATCHET}"))?;
     std::fs::write(BADGE, format!("{}\n", badge_json(card)?))
         .with_context(|| format!("writing {BADGE}"))?;
+    if let Some((_, c)) = card.iter().find(|(n, _)| n == "mediate") {
+        let mediation = crate::mediate::BADGE;
+        std::fs::write(mediation, format!("{}\n", crate::mediate::badge_json(*c)))
+            .with_context(|| format!("writing {mediation}"))?;
+    }
     if moved.is_empty() {
         println!("ok: the pins already say what this tree measures.");
     } else {
@@ -745,16 +760,31 @@ pub fn run(measure: bool, badge: bool, write: bool) -> Result<i32> {
     // The committed badge must say what the card says. Checked inside the
     // flagless run rather than behind a flag, because `probe_xtask`'s CI-PARITY
     // guard refuses to probe a gate CI invokes with arguments.
-    let want = badge_json(&card)?;
-    let have = std::fs::read_to_string(BADGE)
-        .with_context(|| format!("reading {BADGE}"))?
-        .trim()
-        .to_string();
-    if have != want {
-        findings.push(Finding::BadgeStale {
-            have,
-            want: want.clone(),
-        });
+    //
+    // Two badges: the card's weakest family, and the `mediate` family's own
+    // (the README shows it beside the card because "how much of what an agent
+    // can call is sealed" is the question a reader asks first).
+    let mut badges = vec![(BADGE, "scorecard", badge_json(&card)?)];
+    if let Some((_, c)) = card.iter().find(|(n, _)| n == "mediate") {
+        badges.push((
+            crate::mediate::BADGE,
+            "mediation",
+            crate::mediate::badge_json(*c),
+        ));
+    }
+    for (path, regen, want) in badges {
+        let have = std::fs::read_to_string(path)
+            .with_context(|| format!("reading {path}"))?
+            .trim()
+            .to_string();
+        if have != want {
+            findings.push(Finding::BadgeStale {
+                path,
+                regen,
+                have,
+                want,
+            });
+        }
     }
     if findings.is_empty() {
         println!(
@@ -984,6 +1014,8 @@ mod tests {
     #[test]
     fn a_stale_badge_is_a_finding() {
         let m = Finding::BadgeStale {
+            path: BADGE,
+            regen: "scorecard",
             have: "{\"message\":\"life 99.00%\"}".to_string(),
             want: "{\"message\":\"life 14.28%\"}".to_string(),
         }
