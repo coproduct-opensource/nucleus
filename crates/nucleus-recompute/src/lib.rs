@@ -35,8 +35,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use nucleus_econ_kernels::{
-    Clearing, CommonsAllocation, CommonsError, CommonsShare, IntegerBid, IntegerProposal, VcgError,
-    Verdict, classify, refund, route_to_commons, run_vcg, seller_gross,
+    Clearing, CommonsAllocation, CommonsError, CommonsShare, HeteroError, IntegerBid,
+    IntegerProposal, Verdict, classify, clear_vcg, refund, route_to_commons, seller_gross,
 };
 // The Aeneas-extracted integrity primitives the D1 non-interference theorem is
 // proven over. `verify_ifc_trace`'s anti-laundering check is the runtime witness
@@ -201,7 +201,7 @@ pub fn verify_receipt(receipt: &ClearingReceipt) -> RecomputeOutcome {
             }
             Err(e) => RecomputeOutcome::Invalid(e.to_string()),
         },
-        ClearingReceipt::Vcg(c) => match run_vcg(&c.bids, &c.proposals, c.budget_micro_usd) {
+        ClearingReceipt::Vcg(c) => match clear_vcg(&c.bids, &c.proposals, c.budget_micro_usd) {
             Ok(clearing) => {
                 if clearing != c.clearing {
                     mismatch("clearing", &c.clearing, &clearing)
@@ -254,14 +254,22 @@ pub fn issue_commons(
     }))
 }
 
-/// Issue a VCG-clearing receipt by running the proven `run_vcg` kernel
-/// (truthful / individually-rational). Errors if VCG input validation fails.
+/// Issue a VCG-clearing receipt through `clear_vcg`, which routes to whichever
+/// kernel is sound for the input: the homogeneous `run_vcg` for one proposal,
+/// the exact enumerator for more (#2521). Errors if input validation fails, or
+/// if the input is heterogeneous and above the exact kernel's bid cap — there
+/// is no sound kernel for that shape, so no receipt is issued for it.
+///
+/// Returns `HeteroError` rather than `VcgError` because the routing can now
+/// fail for reasons that are not the homogeneous kernel's: `NotHeterogeneous`
+/// and `TooManyBidsForExact`. Collapsing them into `VcgError` would lose which
+/// refusal happened.
 pub fn issue_vcg(
     bids: Vec<IntegerBid>,
     proposals: Vec<IntegerProposal>,
     budget_micro_usd: u64,
-) -> Result<ClearingReceipt, VcgError> {
-    let clearing = run_vcg(&bids, &proposals, budget_micro_usd)?;
+) -> Result<ClearingReceipt, HeteroError> {
+    let clearing = clear_vcg(&bids, &proposals, budget_micro_usd)?;
     Ok(ClearingReceipt::Vcg(VcgClaim {
         bids,
         proposals,
@@ -1389,7 +1397,7 @@ mod tests {
 
     fn honest_vcg() -> ClearingReceipt {
         let (bids, proposals, budget) = vcg_inputs();
-        let clearing = run_vcg(&bids, &proposals, budget).unwrap();
+        let clearing = clear_vcg(&bids, &proposals, budget).unwrap();
         ClearingReceipt::Vcg(VcgClaim {
             bids,
             proposals,
