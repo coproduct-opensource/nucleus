@@ -581,6 +581,7 @@ impl PodBoot {
         let response = self
             .mtls_client
             .post(format!("{NODE_URL}/v1/pods"))
+            .timeout(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT)
             .header("content-type", "application/json")
             .body(body)
             .send()
