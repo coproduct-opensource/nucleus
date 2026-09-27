@@ -60,17 +60,28 @@ impl fmt::Display for VmmVersion {
 
 /// The Firecracker release `nucleus setup` installs.
 ///
-/// 1.16.1 (2026-07-02) is the first release carrying the CVE-2026-5747 fix on
-/// the current branch, and is also the build the jailer argv in
-/// `nucleus-node::firecracker_config` was validated against — before this the
-/// pin was 1.14.1 while the argv comments cited testing against 1.16.1.
-pub const PINNED: VmmVersion = VmmVersion::new(1, 16, 1);
+/// 1.17.0 (2026-09) adds opt-in virtio-blk discard for writable `Sync` IO
+/// engine drives through the `discard` drive field. That is the only reason to
+/// move: below it the device never advertises `VIRTIO_BLK_F_DISCARD`, the guest
+/// sets `discard_max_bytes` to 0, and every discard the guest filesystem issues
+/// is dropped before reaching the host — so a sparse image only ever ratchets
+/// up, and `fstrim` in a pod returns nothing to the builder's disk.
+///
+/// Carries the CVE-2026-5747 fix, as 1.16.1 did. Moving the pin does not move
+/// [`FLOOR`]: an acceptable version was never required to be the pinned one, so
+/// a host still on 1.16.1 keeps launching pods rather than being locked out by
+/// this change.
+///
+/// 1.16.1 (2026-07-02) was the previous pin: the first release carrying the
+/// CVE-2026-5747 fix on that branch, and the build the jailer argv in
+/// `nucleus-node::firecracker_config` was validated against.
+pub const PINNED: VmmVersion = VmmVersion::new(1, 17, 0);
 
 /// [`PINNED`] as a string, for building release download URLs.
 ///
 /// A separate literal because `Display` is not `const`. It cannot drift from
 /// `PINNED` — `pinned_str_matches_pinned` compares them.
-pub const PINNED_STR: &str = "1.16.1";
+pub const PINNED_STR: &str = "1.17.0";
 
 /// The oldest release nucleus will launch a microVM on.
 ///
@@ -265,11 +276,18 @@ mod tests {
 
     #[test]
     fn parses_the_shapes_firecracker_actually_prints() {
-        assert_eq!(parse_version("Firecracker v1.16.1"), Some(PINNED));
+        // Written against `PINNED_STR` rather than a copy of it: these assert that the SHAPES
+        // firecracker prints parse, and hard-coding the pinned number made two of them fail for
+        // the pin moving, which is not what they are about. The fixed literals below keep the
+        // parser honest -- if it echoed `PINNED` regardless of input they would catch it.
+        assert_eq!(
+            parse_version(&format!("Firecracker v{PINNED_STR}")),
+            Some(PINNED)
+        );
         assert_eq!(parse_version("v1.14.4"), Some(VmmVersion::new(1, 14, 4)));
         assert_eq!(parse_version("1.15.0"), Some(VmmVersion::new(1, 15, 0)));
         assert_eq!(
-            parse_version("Firecracker v1.16.1-dev\nbuild 123"),
+            parse_version(&format!("Firecracker v{PINNED_STR}-dev\nbuild 123")),
             Some(PINNED)
         );
     }
@@ -345,6 +363,9 @@ mod tests {
     fn refusals_name_the_version_and_the_remedy() {
         let msg = judge_version(VmmVersion::new(1, 14, 1)).to_string();
         assert!(msg.contains("1.14.1"), "must name what was found: {msg}");
-        assert!(msg.contains("1.16.1"), "must name the remedy: {msg}");
+        assert!(
+            msg.contains(PINNED_STR),
+            "must name the remedy, which is whatever is pinned now: {msg}"
+        );
     }
 }

@@ -750,6 +750,15 @@ impl axum::serve::Listener for VsockAxumListener {
 /// Entries are dropped rather than rejected, matching `strip_requested_workload`
 /// so a spec that carries an extra upstream is still usable, and each drop is
 /// logged by NAME (never by `credential_env` value) so the attempt is visible.
+///
+/// # This is the second gate, not the only one
+///
+/// The node now applies the same clamp when it admits the sub-pod
+/// (`nucleus_node::pod_authority`), against the upstreams it recorded for this
+/// pod, because a caller that reaches `POST /v1/pods` directly never passes
+/// through here. The comparison is ONE function in `nucleus-spec`,
+/// `CredentialedEgressSpec::admitted_by`, so the two gates cannot disagree about
+/// what "the parent holds it" means.
 pub(crate) fn clamp_credentialed_egress(
     spec: &mut PodSpec,
     parent_upstreams: &[nucleus_spec::CredentialedEgressSpec],
@@ -758,23 +767,13 @@ pub(crate) fn clamp_credentialed_egress(
         return;
     }
     let requested = std::mem::take(&mut spec.spec.credentialed_egress);
-    let mut kept = Vec::with_capacity(requested.len());
-    for up in requested {
-        // WHOLE-STRUCT equality, not a hand-listed field set. `CredentialedEgressSpec`
-        // derives PartialEq, so a field added later (another header, a prefix, a
-        // timeout) is covered automatically. Enumerating fields here would mean a
-        // new one silently widens what a child may inherit — the failure this
-        // codebase has already had with hand-maintained lists standing in for a
-        // computable domain.
-        if parent_upstreams.iter().any(|p| p == &up) {
-            kept.push(up);
-        } else {
-            tracing::warn!(
-                upstream = %up.name,
-                "sub-pod request named a credentialed upstream the parent does not hold; \
-                 dropped -- ManagePods does not confer the node's credentials"
-            );
-        }
+    let (kept, dropped) = nucleus_spec::CredentialedEgressSpec::clamp(requested, parent_upstreams);
+    for up in dropped {
+        tracing::warn!(
+            upstream = %up.name,
+            "sub-pod request named a credentialed upstream the parent does not hold; \
+             dropped -- ManagePods does not confer the node's credentials"
+        );
     }
     spec.spec.credentialed_egress = kept;
 }

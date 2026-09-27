@@ -32,18 +32,44 @@ affected=$(scripts/affected-crates.sh "$BASE" 2>/dev/null); arc=$?
 echo "prepush against $BASE — $(printf '%s\n' "$changed" | grep -c .) file(s) changed; affected crates: $(printf '%s' "$affected" | tr '\n' ' ')"
 
 # ── cheap tier ────────────────────────────────────────────────────────────
-echo "gate scripts:"
-for s in check-declassify-governor-keys-sealed check-dep-ceiling check-extracted-callsites check-law-mechanisms \
-         check-failclosed-verifiers check-ingest-hashed check-mediation check-no-hmac-auth \
-         check-north-star-ledger check-sandbox-trusted-base check-sealed-home \
-         check-test-helpers-not-in-production check-verify-strict check-wasm-closure \
-         check-kani-divergence check-kani-proof-count check-gate-defs-match-plan; do
-    [ -x "scripts/$s.sh" ] || continue
-    case $s in
-        check-kani-proof-count) run "$s --strict" bash "scripts/$s.sh" --strict ;;
-        *) run "$s" bash "scripts/$s.sh" ;;
-    esac
-done
+# The gate scripts, DERIVED rather than listed.
+#
+# This was a hand-written list of sixteen, and it had drifted: `check-gates-can-fail.sh`
+# probes 44 gates and the list named 17 of them, so eight gates CI runs were absent from
+# the gauntlet entirely -- among them `check-ci-spec`, `check-inert-authority` and
+# `check-lean-libs-built`. The same defect `ci/local-deciders.txt` exists to stop, one
+# level down: a set maintained by hand beside a set derived from the tree.
+#
+# `--baseline-only` runs each probed gate ONCE on the tree as it stands and perturbs
+# nothing, so it is safe over uncommitted work and adds no restore risk. It is also the
+# cheap half of a REQUIRED context: the full probe FAILS on a gate that is already red,
+# so any red here -- including in a gate that is only advisory by itself -- is a red on
+# `Gates must fail on their own subject`. Measured on #2981: the line ratchet was over
+# its ceiling, and that required context failed for it 35 minutes into CI. Here: 48 s.
+#
+# What it does NOT decide is whether a gate REDs on its own subject; that is the full
+# probe, and it stays NOT-LOCAL at ~35 minutes. See ci/local-deciders.txt.
+echo "gate scripts (derived from the gate-of-gates probe table):"
+# Not via `run`, which hides output on success. The old hand-written loop printed a line
+# per gate, and that is the point of the tier -- a gauntlet that says only "ok" does not
+# tell you what it decided, or how much of the domain it covered.
+gb=$(mktemp)
+if bash scripts/check-gates-can-fail.sh --baseline-only >"$gb" 2>&1; then
+    grep '^  ok    ' "$gb" || true
+    sed -n '/^OK: all /,$p' "$gb" | sed 's/^/  /'
+    pass=$((pass+1))
+else
+    printf '  FAIL  gate baselines (check-gates-can-fail --baseline-only)\n'
+    grep -E '^  FAIL  |^        ' "$gb" | sed 's/^/      /' | tail -25
+    fail=$((fail+1))
+fi
+rm -f "$gb"
+
+# Kept from main across #2990's rebase: these are NOT `check-*.sh` gates, so the derived
+# probe table above cannot cover them. `ci-spec local-coverage` is what stops a gate being
+# added to CI and never reaching the fast path, and the Lean builds were four required
+# contexts CI alone was deciding. Dropping either is the defect both sides exist to prevent;
+# running a gate twice is merely wasteful, so the union errs toward running more.
 run "check-line-ratchet --strict" bash scripts/check-line-ratchet.sh --strict
 # Three gates CI decides that this file did not, measured 2026-09-20 by pushing five branches
 # green and watching CI red on each. All three already existed in the tree; none was a cost

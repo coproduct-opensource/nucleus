@@ -1075,6 +1075,43 @@ impl CredentialedEgressSpec {
         let path = path.trim_start_matches('/');
         Some(format!("{base}/{path}"))
     }
+
+    /// Whether this entry is one the `ceiling` already grants, WHOLE.
+    ///
+    /// # One definition, for the same reason `url_for` has one
+    ///
+    /// Two components decide which upstreams a pod may hold: the node, when it
+    /// admits a pod (against its operator registry or the parent pod's admitted
+    /// set), and the in-guest tool-proxy, when an agent asks for a sub-pod. They
+    /// ask the same question, and a copy in each would be two chances to widen
+    /// one and not the other.
+    ///
+    /// # Whole-struct equality, not a hand-listed field set
+    ///
+    /// An entry carries BOTH halves of an exfiltration primitive: `upstream`,
+    /// where the request goes, and `credential_env`, which of the node's
+    /// environment variables rides along. Matching on `name` would let a caller
+    /// keep a granted `credential_env` and change `upstream`, re-targeting a real
+    /// credential at a server it chose. Matching on an enumerated set of fields
+    /// would let a field added later (another header, a prefix, a credential
+    /// source) silently widen what may be inherited. The derived `PartialEq`
+    /// covers every field, including ones not yet written.
+    #[must_use]
+    pub fn admitted_by(&self, ceiling: &[Self]) -> bool {
+        ceiling.iter().any(|granted| granted == self)
+    }
+
+    /// Split `requested` into what the `ceiling` grants and what it does not.
+    ///
+    /// Dropping rather than refusing is the caller's policy, not this
+    /// function's: it returns both halves so each caller can log what it
+    /// removed (by `name`, never by `credential_env`) and keep what survived.
+    #[must_use]
+    pub fn clamp(requested: Vec<Self>, ceiling: &[Self]) -> (Vec<Self>, Vec<Self>) {
+        requested
+            .into_iter()
+            .partition(|up| up.admitted_by(ceiling))
+    }
 }
 
 /// A process the pod runs under its own mediation.
@@ -1154,6 +1191,45 @@ mod credentialed_egress_fixity {
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
         }
+    }
+
+    /// The subset check the node and the tool-proxy both call. An identical
+    /// entry is admitted; changing ANY one field, including ones a hand-written
+    /// comparison would be likely to forget, is not.
+    #[test]
+    fn admission_is_whole_struct_equality() {
+        let granted = [spec()];
+        assert!(
+            spec().admitted_by(&granted),
+            "the control: an equal entry is admitted"
+        );
+        let perturbations: [fn(&mut CredentialedEgressSpec); 5] = [
+            |s| s.name = "other".into(),
+            |s| s.upstream = "https://attacker.invalid".into(),
+            |s| s.credential_env = "SOME_OTHER_NODE_VAR".into(),
+            |s| s.header = "x-api-key".into(),
+            |s| s.value_prefix = String::new(),
+        ];
+        for perturb in perturbations {
+            let mut changed = spec();
+            perturb(&mut changed);
+            assert!(
+                !changed.admitted_by(&granted),
+                "{changed:?} differs and was admitted"
+            );
+        }
+        assert!(!spec().admitted_by(&[]), "an empty ceiling grants nothing");
+
+        let (kept, dropped) = CredentialedEgressSpec::clamp(
+            vec![spec(), {
+                let mut s = spec();
+                s.credential_env = "SOME_OTHER_NODE_VAR".into();
+                s
+            }],
+            &granted,
+        );
+        assert_eq!((kept.len(), dropped.len()), (1, 1));
+        assert_eq!(kept[0], spec());
     }
 
     /// **The control, first.** Everything below asserts a refusal, and an

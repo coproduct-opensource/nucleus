@@ -22,7 +22,7 @@
 // the regenerated file; until then it points to the hand-translated
 // mirror whose freshness `coproduct-opensource/aeneas-ci@v1` guards.
 use nucleus_econ_kernels::extracted::vcg_aeneas::greedy_pack;
-use nucleus_econ_kernels::{IntegerBid, IntegerProposal, run_vcg};
+use nucleus_econ_kernels::{IntegerBid, IntegerProposal, clear_vcg, run_vcg};
 use proptest::prelude::*;
 use std::collections::HashMap;
 
@@ -201,7 +201,12 @@ proptest! {
         // discard and the test author sees the discard ratio. A high
         // discard ratio is a SIGNAL that the input shape is wrong —
         // unlike `return Ok(())` which silently masks low coverage.
-        let clearing = match run_vcg(&bids, &proposals, budget) {
+        // Routed (#2521): `run_vcg` refuses two or more proposals, so the
+        // heterogeneous regime goes to the exact enumerator. The invariant
+        // under test is the KERNEL's — Σ winner costs ≤ budget — and it is
+        // certified for whichever kernel is sound for the input, not for
+        // greedy specifically.
+        let clearing = match clear_vcg(&bids, &proposals, budget) {
             Ok(c) => c,
             Err(_) => {
                 prop_assume!(

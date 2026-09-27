@@ -179,6 +179,27 @@ pub enum VcgError {
     /// A bid references a proposal id that isn't in the proposals list.
     #[error("bid references unknown proposal: {proposal_id}")]
     UnknownProposal { proposal_id: String },
+
+    /// Two or more proposals were supplied (#2521). This kernel packs
+    /// GREEDILY, and the Clarke pivot preserves individual rationality only
+    /// when the allocator is OPTIMAL. Greedy is optimal in the homogeneous
+    /// regime (one proposal, so equal costs) and not in the general
+    /// heterogeneous knapsack: at `proposal_costs = [21744, 20252, 1]` a
+    /// proptest found `bidder-003` paying 98_624 on a bid of 91_857 — a
+    /// winner charged MORE than it offered, which is the one thing a
+    /// second-price rule may never do.
+    ///
+    /// The heterogeneous regime has an IR-correct entry,
+    /// [`crate::clear_heterogeneous_exact`], which enumerates the optimal
+    /// allocation. Use [`crate::clear_vcg`] to be routed to whichever of the
+    /// two is sound for the input. This variant exists so the unsound
+    /// composition is refused rather than documented.
+    #[error(
+        "heterogeneous input ({proposals} proposals) requires exact VCG; \
+         run_vcg packs greedily and the Clarke pivot is IR-correct only on an \
+         optimal allocator — route through clear_vcg"
+    )]
+    HeterogeneousRequiresExact { proposals: usize },
 }
 
 /// Run the integer VCG auction.
@@ -203,14 +224,14 @@ pub enum VcgError {
 /// allocation `n` times. Fine for the bid counts a single agent auction
 /// produces (typically <100); a more sophisticated implementation can
 /// land later if combinatorial markets demand it.
-pub fn run_vcg(
-    bids: &[IntegerBid],
-    proposals: &[IntegerProposal],
-    budget_micro_usd: u64,
-) -> Result<Clearing, VcgError> {
-    // ── Validate inputs ──────────────────────────────────────────────
-
-    // Sum-of-effective-values ceiling check (in u128 for headroom).
+/// The sum-of-effective-values ceiling, which every VCG kernel must enforce.
+///
+/// `MAX_TOTAL_EFFECTIVE_VALUE_MICRO_USD` is the headroom the `u128` payment
+/// arithmetic is sized against, so it is a property of the ARITHMETIC, not of
+/// one allocator. `clear_heterogeneous_exact` had no copy of this check; when
+/// #2521 made it the only heterogeneous entry, routing there would have lost
+/// the guard. One function, called by both, rather than two that must agree.
+pub(crate) fn check_total_effective_ceiling(bids: &[IntegerBid]) -> Result<(), VcgError> {
     let total_submitted: u128 = bids
         .iter()
         .map(|b| u128::from(b.effective_value_micro_usd))
@@ -221,6 +242,29 @@ pub fn run_vcg(
             limit: MAX_TOTAL_EFFECTIVE_VALUE_MICRO_USD,
         });
     }
+    Ok(())
+}
+
+pub fn run_vcg(
+    bids: &[IntegerBid],
+    proposals: &[IntegerProposal],
+    budget_micro_usd: u64,
+) -> Result<Clearing, VcgError> {
+    // ── Validate inputs ──────────────────────────────────────────────
+
+    // HOMOGENEOUS ONLY, and refused rather than documented (#2521). Greedy
+    // packing plus a Clarke pivot is IR-correct only when the allocator is
+    // optimal; with one proposal every bid costs the same, so taking the
+    // highest values IS optimal. With two or more, it is not, and the
+    // counterexample on `HeterogeneousRequiresExact` is what that costs.
+    // `clear_vcg` routes heterogeneous input to the exact enumerator.
+    if proposals.len() >= 2 {
+        return Err(VcgError::HeterogeneousRequiresExact {
+            proposals: proposals.len(),
+        });
+    }
+
+    check_total_effective_ceiling(bids)?;
 
     let proposals_by_id: HashMap<&str, &IntegerProposal> =
         proposals.iter().map(|p| (p.id.as_str(), p)).collect();
@@ -305,6 +349,39 @@ pub fn run_vcg(
 /// Greedy welfare-maximizing allocation under a budget constraint.
 /// Returns (winners, losers) in the deterministic sort order so the
 /// caller can fold over them stably.
+/// The canonical order over bids: ratio descending, then higher effective
+/// value, then lex-ascending `sha256(bidder)`. Every tie-break is a pure
+/// function of the bid SET, so the order — and therefore the order winners are
+/// reported in — does not depend on submission order.
+///
+/// Shared because it is what makes a clearing RECOMPUTABLE, and a receipt that
+/// recomputes only under the submission order it was issued in is not a
+/// receipt. `clear_heterogeneous_exact` reported winners in input order until
+/// #2521 made it the only heterogeneous entry and the determinism test caught
+/// it; it now sorts by this.
+pub(crate) fn canonical_bid_order(
+    a: &IntegerBid,
+    b: &IntegerBid,
+    proposals: &HashMap<&str, &IntegerProposal>,
+) -> Ordering {
+    let pa = proposals[a.proposal_id.as_str()];
+    let pb = proposals[b.proposal_id.as_str()];
+    ratio_compare(
+        (a.effective_value_micro_usd, pa.cost_micro_usd),
+        (b.effective_value_micro_usd, pb.cost_micro_usd),
+    )
+    // Higher ratio comes first.
+    .reverse()
+    // Tie-break 1: higher effective_value first.
+    .then_with(|| {
+        b.effective_value_micro_usd
+            .cmp(&a.effective_value_micro_usd)
+    })
+    // Tie-break 2: lex-ascending sha256(bidder). Deterministic and
+    // unaffected by submission order.
+    .then_with(|| sha256_bytes(&a.bidder).cmp(&sha256_bytes(&b.bidder)))
+}
+
 fn optimal_allocation<'a>(
     bids: &'a [IntegerBid],
     proposals: &HashMap<&str, &IntegerProposal>,
@@ -315,24 +392,7 @@ fn optimal_allocation<'a>(
     // Tie-breakers: higher effective_value first; then sha256(bidder)
     // lex-ascending. Both are pure functions of the input set.
     let mut sorted: Vec<&IntegerBid> = bids.iter().collect();
-    sorted.sort_by(|a, b| {
-        let pa = proposals[a.proposal_id.as_str()];
-        let pb = proposals[b.proposal_id.as_str()];
-        ratio_compare(
-            (a.effective_value_micro_usd, pa.cost_micro_usd),
-            (b.effective_value_micro_usd, pb.cost_micro_usd),
-        )
-        // Higher ratio comes first.
-        .reverse()
-        // Tie-break 1: higher effective_value first.
-        .then_with(|| {
-            b.effective_value_micro_usd
-                .cmp(&a.effective_value_micro_usd)
-        })
-        // Tie-break 2: lex-ascending sha256(bidder). Deterministic and
-        // unaffected by submission order.
-        .then_with(|| sha256_bytes(&a.bidder).cmp(&sha256_bytes(&b.bidder)))
-    });
+    sorted.sort_by(|a, b| canonical_bid_order(a, b, proposals));
 
     let mut winners = Vec::new();
     let mut losers = Vec::new();
@@ -450,6 +510,8 @@ fn sha256_bytes(s: &str) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The heterogeneous entry production uses; `run_vcg` refuses that shape.
+    use crate::clear_vcg;
 
     fn p(id: &str, cost: u64) -> IntegerProposal {
         IntegerProposal {
@@ -488,7 +550,7 @@ mod tests {
         // proposal value.
         let proposals = vec![p("high", 60_000_000), p("low", 60_000_000)];
         let bids = vec![b("alice", "high", 70_000_000), b("bob", "low", 65_000_000)];
-        let clearing = run_vcg(&bids, &proposals, 100_000_000).unwrap();
+        let clearing = clear_vcg(&bids, &proposals, 100_000_000).unwrap();
         assert_eq!(clearing.winners.len(), 1);
         assert_eq!(clearing.losers.len(), 1);
         assert_eq!(clearing.winners[0].proposal_id, "high");
@@ -501,7 +563,7 @@ mod tests {
         // When everyone fits, nobody displaces anyone → payments are 0.
         let proposals = vec![p("p1", 30_000_000), p("p2", 30_000_000)];
         let bids = vec![b("alice", "p1", 35_000_000), b("bob", "p2", 35_000_000)];
-        let clearing = run_vcg(&bids, &proposals, 100_000_000).unwrap();
+        let clearing = clear_vcg(&bids, &proposals, 100_000_000).unwrap();
         assert_eq!(clearing.winners.len(), 2);
         assert_eq!(clearing.losers.len(), 0);
         for w in &clearing.winners {
@@ -522,8 +584,8 @@ mod tests {
         let truthful = vec![b("alice", "p1", 100_000_000), other.clone()];
         let over_bid = vec![b("alice", "p1", 150_000_000), other.clone()];
 
-        let c1 = run_vcg(&truthful, &proposals, budget).unwrap();
-        let c2 = run_vcg(&over_bid, &proposals, budget).unwrap();
+        let c1 = clear_vcg(&truthful, &proposals, budget).unwrap();
+        let c2 = clear_vcg(&over_bid, &proposals, budget).unwrap();
 
         // Alice wins in both cases (higher value/cost ratio); her
         // payment is identical because it's the externality on bob, not
@@ -549,7 +611,7 @@ mod tests {
             b("alice", "p1", 100_000_000), // truthful (matches value)
             b("bob", "p2", 80_000_000),    // truthful
         ];
-        let clearing = run_vcg(&bids, &proposals, 100_000_000).unwrap();
+        let clearing = clear_vcg(&bids, &proposals, 100_000_000).unwrap();
         for w in &clearing.winners {
             let bid_effective = bids
                 .iter()
@@ -582,7 +644,7 @@ mod tests {
             b("c", "p3", 100_000_000),
         ];
         let budget = 100_000_000;
-        let clearing = run_vcg(&bids, &proposals, budget).unwrap();
+        let clearing = clear_vcg(&bids, &proposals, budget).unwrap();
         let proposals_by_id: HashMap<&str, &IntegerProposal> =
             proposals.iter().map(|p| (p.id.as_str(), p)).collect();
         let total_cost: u64 = clearing
@@ -614,9 +676,9 @@ mod tests {
             b("bob", "p2", 40_000_000),
             b("carol", "p3", 35_000_000),
         ];
-        let original = run_vcg(&bids, &proposals, 60_000_000).unwrap();
+        let original = clear_vcg(&bids, &proposals, 60_000_000).unwrap();
         bids.reverse();
-        let reversed = run_vcg(&bids, &proposals, 60_000_000).unwrap();
+        let reversed = clear_vcg(&bids, &proposals, 60_000_000).unwrap();
         // Compare as sets — winning order is the canonical sort, so it
         // should also be identical here.
         assert_eq!(original.winners, reversed.winners);
@@ -628,8 +690,10 @@ mod tests {
 
     #[test]
     fn duplicate_bidder_rejected() {
-        let proposals = vec![p("p1", 10), p("p2", 10)];
-        let bids = vec![b("alice", "p1", 50), b("alice", "p2", 50)];
+        // One proposal: bidder uniqueness is checked regardless of the
+        // regime, and a second proposal would now be refused first (#2521).
+        let proposals = vec![p("p1", 10)];
+        let bids = vec![b("alice", "p1", 50), b("alice", "p1", 50)];
         let err = run_vcg(&bids, &proposals, 100).unwrap_err();
         assert!(matches!(err, VcgError::DuplicateBidder { .. }));
     }
@@ -646,10 +710,22 @@ mod tests {
     fn over_ceiling_total_effective_rejected() {
         // Two bids whose effective values sum > u63 max.
         let huge = MAX_TOTAL_EFFECTIVE_VALUE_MICRO_USD;
-        let proposals = vec![p("p1", 10), p("p2", 10)];
-        let bids = vec![b("a", "p1", huge), b("b", "p2", huge)];
+        let proposals = vec![p("p1", 10)];
+        let bids = vec![b("a", "p1", huge), b("b", "p1", huge)];
         let err = run_vcg(&bids, &proposals, u64::MAX).unwrap_err();
         assert!(matches!(err, VcgError::BudgetExceedsLimit { .. }));
+        // And the exact kernel enforces the same ceiling, which it did not
+        // before it became the only heterogeneous entry.
+        let hetero = vec![p("p1", 10), p("p2", 10)];
+        let hetero_bids = vec![b("a", "p1", huge), b("b", "p2", huge)];
+        let err = crate::clear_heterogeneous_exact(&hetero_bids, &hetero, u64::MAX).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::HeteroError::Kernel(VcgError::BudgetExceedsLimit { .. })
+            ),
+            "exact must enforce the ceiling too, got {err:?}"
+        );
     }
 
     #[test]
@@ -673,7 +749,7 @@ mod tests {
         let proposals = vec![p("p1", 50_000_000), p("p2", 50_000_000)];
         let bids = vec![b("alice", "p1", 100_000_000), b("bob", "p2", 100_000_000)];
         let budget = 50_000_000; // only one fits
-        let c = run_vcg(&bids, &proposals, budget).unwrap();
+        let c = clear_vcg(&bids, &proposals, budget).unwrap();
         assert_eq!(c.winners.len(), 1);
         let hash_alice = sha256_bytes("alice");
         let hash_bob = sha256_bytes("bob");

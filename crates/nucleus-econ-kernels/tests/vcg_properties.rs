@@ -43,7 +43,7 @@
 //! values up to 1B µUSD) so proptest's default 256 cases run in
 //! milliseconds.
 
-use nucleus_econ_kernels::{IntegerBid, IntegerProposal, run_vcg};
+use nucleus_econ_kernels::{IntegerBid, IntegerProposal, clear_vcg};
 use proptest::prelude::*;
 use std::collections::HashMap;
 
@@ -110,7 +110,7 @@ proptest! {
     fn budget_conservation_holds(
         (proposals, bids, budget) in auction_strategy()
     ) {
-        let clearing = run_vcg(&bids, &proposals, budget).unwrap();
+        let clearing = clear_vcg(&bids, &proposals, budget).unwrap();
         let by_id: HashMap<&str, &IntegerProposal> =
             proposals.iter().map(|p| (p.id.as_str(), p)).collect();
         let total_cost: u64 = clearing
@@ -137,9 +137,9 @@ proptest! {
     fn permutation_invariance(
         (proposals, mut bids, budget) in auction_strategy()
     ) {
-        let original = run_vcg(&bids, &proposals, budget).unwrap();
+        let original = clear_vcg(&bids, &proposals, budget).unwrap();
         bids.reverse();
-        let reversed = run_vcg(&bids, &proposals, budget).unwrap();
+        let reversed = clear_vcg(&bids, &proposals, budget).unwrap();
         prop_assert_eq!(original.winners, reversed.winners);
         prop_assert_eq!(
             original.total_payments_micro_usd,
@@ -182,7 +182,7 @@ proptest! {
             .collect();
         // Budget exactly admits one. (Budget = cost ensures only one fits
         // since 2*cost > budget for cost ≥ 1.)
-        let clearing = run_vcg(&bids, &proposals, proposal_cost).unwrap();
+        let clearing = clear_vcg(&bids, &proposals, proposal_cost).unwrap();
         prop_assert_eq!(
             clearing.winners.len(), 1,
             "homogeneous-proposal budget=cost admits exactly one winner"
@@ -235,8 +235,8 @@ proptest! {
     fn idempotent_under_repeated_calls(
         (proposals, bids, budget) in auction_strategy()
     ) {
-        let a = run_vcg(&bids, &proposals, budget).unwrap();
-        let b = run_vcg(&bids, &proposals, budget).unwrap();
+        let a = clear_vcg(&bids, &proposals, budget).unwrap();
+        let b = clear_vcg(&bids, &proposals, budget).unwrap();
         prop_assert_eq!(a, b);
     }
 }
@@ -269,7 +269,7 @@ fn tie_break_total_order_explicit_8_bidder_fixture() {
             effective_value_micro_usd: tied_value,
         })
         .collect();
-    let canonical = run_vcg(&base_bids, &proposals, 10_000).unwrap();
+    let canonical = clear_vcg(&base_bids, &proposals, 10_000).unwrap();
     let canonical_winner = canonical.winners[0].bidder.clone();
 
     // Iterative Heap's algorithm: yields every permutation exactly once.
@@ -287,7 +287,7 @@ fn tie_break_total_order_explicit_8_bidder_fixture() {
                 perm.swap(counters[i], i);
             }
             let shuffled: Vec<IntegerBid> = perm.iter().map(|&j| base_bids[j].clone()).collect();
-            let c = run_vcg(&shuffled, &proposals, 10_000).unwrap();
+            let c = clear_vcg(&shuffled, &proposals, 10_000).unwrap();
             assert_eq!(
                 c.winners[0].bidder, canonical_winner,
                 "permutation {perm:?} broke total-order; expected {canonical_winner}, got {}",
@@ -343,7 +343,7 @@ proptest::proptest! {
             proposal_id: "p".into(),
             effective_value_micro_usd: tied_value,
         }).collect();
-        let c = run_vcg(&bids, &proposals, 10).unwrap();
+        let c = clear_vcg(&bids, &proposals, 10).unwrap();
         // Total-order axiom: exactly one winner.
         proptest::prop_assert_eq!(c.winners.len(), 1);
         // Same bid set in a different order produces the same winner —
@@ -351,7 +351,7 @@ proptest::proptest! {
         // claim: only a total order over bidder names can do this).
         let mut reversed = bids.clone();
         reversed.reverse();
-        let c2 = run_vcg(&reversed, &proposals, 10).unwrap();
+        let c2 = clear_vcg(&reversed, &proposals, 10).unwrap();
         proptest::prop_assert_eq!(&c.winners[0].bidder, &c2.winners[0].bidder);
     }
 }
@@ -379,13 +379,13 @@ fn tied_homogeneous_bids_sha256_tiebreak_deterministic_under_payment() {
         })
         .collect();
 
-    let c = run_vcg(&bids, &proposals, 50_000_000).unwrap();
+    let c = clear_vcg(&bids, &proposals, 50_000_000).unwrap();
     assert_eq!(c.winners.len(), 1, "exactly one winner");
 
     // Determinism: re-run with shuffled input must produce same winner.
     let mut shuffled = bids.clone();
     shuffled.reverse();
-    let c2 = run_vcg(&shuffled, &proposals, 50_000_000).unwrap();
+    let c2 = clear_vcg(&shuffled, &proposals, 50_000_000).unwrap();
     assert_eq!(
         c.winners[0].bidder, c2.winners[0].bidder,
         "tied bids must pick the same winner under input permutation"
@@ -450,7 +450,7 @@ fn truthfulness_survives_rounding_on_single_item_displacement() {
             proposal_id: "p1".into(),
             effective_value_micro_usd: alice_bid,
         };
-        let c = run_vcg(&[alice, bob.clone()], &proposals, 70_000_000).unwrap();
+        let c = clear_vcg(&[alice, bob.clone()], &proposals, 70_000_000).unwrap();
         assert_eq!(c.winners.len(), 1, "exactly one winner with budget 70M");
         assert_eq!(c.winners[0].bidder, "alice");
         assert_eq!(

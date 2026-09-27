@@ -65,6 +65,7 @@ members = [
     "crates/nucleus-oidc-core",          # Provider-agnostic OIDC primitives (JWKS, JtiCache, federation)
     "crates/nucleus-fly-oidc",           # Per-provider validator: Fly.io machine OIDC → SPIFFE
     "crates/nucleus-github-oidc",        # Per-provider validator: GitHub Actions OIDC → SPIFFE
+    "crates/nucleus-federation",         # Keyless federation: ES256 assertions out, token exchange, outside-issuer validation in
     "crates/nucleus-agent-card",         # Verify-before-you-act: signed Agent Card → TrustAnchor
     "crates/nucleus-trust-registry",     # "Let's Encrypt for agents": PR-rooted, OIDC-attested, transparency-logged SPIFFE federation enrollment
     "crates/xtask",                      # Rust-native dev/CI task runner (cargo xtask <cmd>); migrating scripts/*.sh
