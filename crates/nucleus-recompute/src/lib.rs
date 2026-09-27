@@ -41,7 +41,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use nucleus_econ_kernels::{
+pub use nucleus_econ_kernels::{
     Clearing, CommonsAllocation, CommonsError, CommonsShare, HeteroError, IntegerBid,
     IntegerProposal, Verdict, classify, clear_vcg, refund, route_to_commons, seller_gross,
 };
@@ -2489,3 +2489,17 @@ mod ifc_flow_tests {
         );
     }
 }
+
+// Why the kernel types near the top of this file are `pub use`: they are part
+// of THIS crate's public API. `VcgClaim` holds `Vec<IntegerBid>`, so a caller
+// that builds or reads a receipt has to name them. Without the re-export every
+// consumer needed a direct dependency on `nucleus-econ-kernels` just to spell a
+// field's type, which pulls an economic crate into graphs that only wanted to
+// CHECK a receipt, and the right to check is meant to reach further than the
+// economics does.
+//
+// This note sits at the END of the file on purpose. `sdks/verifier-js` embeds
+// this crate, the wasm records panic locations as `file:line`, and its digest is
+// pinned in `nucleus-verifier-service/embedded-wasm.pins`. A comment above any
+// code shifts every line below it and moves the pinned artifact with no change
+// in behaviour; one after all code moves nothing.

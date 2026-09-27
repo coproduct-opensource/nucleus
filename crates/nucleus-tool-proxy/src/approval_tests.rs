@@ -489,7 +489,7 @@ fn hmac_signs_only_where_no_keys_are_configured() {
 #[test]
 fn an_svid_without_a_signature_grants_nothing() {
     for pubkeys in [false, true] {
-        let tier = auth::select_auth_tier(true, true, pubkeys, false);
+        let tier = auth::select_auth_tier(true, true, pubkeys, false, false);
         assert!(
             matches!(
                 tier,

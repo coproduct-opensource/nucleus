@@ -50,8 +50,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::good::ScarceGood;
 use nucleus_econ_types::{AgentId, AuctionId, MicroUsd};
-use nucleus_permission_market::PermissionDimension;
 use nucleus_recompute::ClearingReceipt;
 use tokio::sync::oneshot;
 
@@ -235,7 +235,7 @@ struct OpenRound {
 pub struct RoundScheduler<C: Charger> {
     window: Duration,
     charger: C,
-    open: Mutex<HashMap<PermissionDimension, OpenRound>>,
+    open: Mutex<HashMap<ScarceGood, OpenRound>>,
     seq: Mutex<u64>,
 }
 
@@ -256,7 +256,7 @@ impl<C: Charger> RoundScheduler<C> {
     /// path, so a caller cannot accidentally treat a failure as a grant by
     /// ignoring an error type.
     pub async fn join(self: &Arc<Self>, bid: SignedBid) -> Verdict {
-        let dimension = bid.dimension();
+        let dimension = bid.dimension().clone();
         let bidder = bid.bidder().clone();
         let (tx, rx) = oneshot::channel();
 
@@ -272,8 +272,8 @@ impl<C: Charger> RoundScheduler<C> {
             };
             // `entry` rather than insert-then-get: there is no second lookup
             // to be wrong about, so no `expect` is needed to say it cannot fail.
-            let entry = open.entry(dimension).or_insert_with(|| OpenRound {
-                round: Round::open(AuctionId::new(round_id), dimension),
+            let entry = open.entry(dimension.clone()).or_insert_with(|| OpenRound {
+                round: Round::open(AuctionId::new(round_id), dimension.clone()),
                 waiters: Vec::new(),
             });
             match entry.round.submit(bid) {
@@ -292,7 +292,7 @@ impl<C: Charger> RoundScheduler<C> {
             // Detached on purpose — see the module docs on cancellation.
             tokio::spawn(async move {
                 tokio::time::sleep(window).await;
-                me.close(dimension);
+                me.close(dimension.clone());
             });
         }
 
@@ -314,7 +314,7 @@ impl<C: Charger> RoundScheduler<C> {
 
     /// Close the open round for `dimension`, clear it, charge the winner, and
     /// dispatch a verdict to every waiter.
-    fn close(&self, dimension: PermissionDimension) {
+    fn close(&self, dimension: ScarceGood) {
         let Some(entry) = self
             .open
             .lock()
@@ -347,10 +347,9 @@ impl<C: Charger> RoundScheduler<C> {
                 MicroUsd::ZERO,
                 Arc::new((**receipt).clone()),
             ),
-            // `PostedPrice` cannot arise: this scheduler clears with
-            // `VcgClearing`. `NoBids` cannot either, since a waiter exists only
-            // because its bid was admitted.
-            RoundOutcome::PostedPrice { .. } | RoundOutcome::NoBids => {
+            // `NoBids` cannot arise: a waiter exists only because its bid was
+            // admitted. Denying is what happens if it somehow does.
+            RoundOutcome::NoBids => {
                 for (_, tx) in waiters {
                     let _ = tx.send(Verdict::Denied(DenyReason::ClearFailed));
                 }
@@ -391,10 +390,21 @@ impl<C: Charger> RoundScheduler<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The good these tests contend for. A function rather than a `const`
+    /// because a good owns its label; `PermissionDimension` is the source so
+    /// the tests exercise the conversion the in-pod path uses.
+    fn other_good() -> ScarceGood {
+        ScarceGood::from(nucleus_permission_market::PermissionDimension::CommandExec)
+    }
+
+    fn egress() -> ScarceGood {
+        ScarceGood::from(nucleus_permission_market::PermissionDimension::NetworkEgress)
+    }
+
     use crate::test_support::bid;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    const EGRESS: PermissionDimension = PermissionDimension::NetworkEgress;
     const WINDOW: Duration = Duration::from_millis(40);
 
     /// Records what it was asked to charge, and always succeeds.
@@ -436,11 +446,11 @@ mod tests {
 
         let a = {
             let s = Arc::clone(&s);
-            tokio::spawn(async move { s.join(bid("a", 100, EGRESS)).await })
+            tokio::spawn(async move { s.join(bid("a", 100, egress())).await })
         };
         let b = {
             let s = Arc::clone(&s);
-            tokio::spawn(async move { s.join(bid("b", 70, EGRESS)).await })
+            tokio::spawn(async move { s.join(bid("b", 70, egress())).await })
         };
 
         let (va, vb) = (a.await.unwrap(), b.await.unwrap());
@@ -465,11 +475,11 @@ mod tests {
         let s = RoundScheduler::new(WINDOW, Arc::clone(&rec));
         let a = {
             let s = Arc::clone(&s);
-            tokio::spawn(async move { s.join(bid("a", 100, EGRESS)).await })
+            tokio::spawn(async move { s.join(bid("a", 100, egress())).await })
         };
         let b = {
             let s = Arc::clone(&s);
-            tokio::spawn(async move { s.join(bid("b", 70, EGRESS)).await })
+            tokio::spawn(async move { s.join(bid("b", 70, egress())).await })
         };
         let (va, vb) = (a.await.unwrap(), b.await.unwrap());
         let Verdict::Lost { round, receipt } = &vb else {
@@ -504,11 +514,11 @@ mod tests {
         let s = RoundScheduler::new(WINDOW, Arc::clone(&rec));
         let a = {
             let s = Arc::clone(&s);
-            tokio::spawn(async move { s.join(bid("a", 10, EGRESS)).await })
+            tokio::spawn(async move { s.join(bid("a", 10, egress())).await })
         };
         let b = {
             let s = Arc::clone(&s);
-            tokio::spawn(async move { s.join(bid("b", 20, EGRESS)).await })
+            tokio::spawn(async move { s.join(bid("b", 20, egress())).await })
         };
         let _ = (a.await.unwrap(), b.await.unwrap());
         assert_eq!(rec.calls.load(Ordering::SeqCst), 1);
@@ -520,11 +530,11 @@ mod tests {
         let s = RoundScheduler::new(WINDOW, Broke);
         let a = {
             let s = Arc::clone(&s);
-            tokio::spawn(async move { s.join(bid("a", 100, EGRESS)).await })
+            tokio::spawn(async move { s.join(bid("a", 100, egress())).await })
         };
         let b = {
             let s = Arc::clone(&s);
-            tokio::spawn(async move { s.join(bid("b", 70, EGRESS)).await })
+            tokio::spawn(async move { s.join(bid("b", 70, egress())).await })
         };
         let (va, vb) = (a.await.unwrap(), b.await.unwrap());
         assert!(
@@ -541,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn an_unwired_charger_grants_nothing() {
         let s = RoundScheduler::new(WINDOW, UnwiredCharger);
-        let v = s.join(bid("a", 100, EGRESS)).await;
+        let v = s.join(bid("a", 100, egress())).await;
         assert!(
             matches!(v, Verdict::Denied(DenyReason::ChargeRefused)),
             "{v:?}"
@@ -554,7 +564,7 @@ mod tests {
     async fn a_lone_bidder_clears_uncontested_at_zero() {
         let rec = Arc::new(Recording::default());
         let s = RoundScheduler::new(WINDOW, Arc::clone(&rec));
-        let v = s.join(bid("a", 100, EGRESS)).await;
+        let v = s.join(bid("a", 100, egress())).await;
         assert!(
             matches!(v, Verdict::Won { price, .. } if price == MicroUsd::ZERO),
             "{v:?}"
@@ -568,13 +578,11 @@ mod tests {
         let s = RoundScheduler::new(WINDOW, Arc::clone(&rec));
         let a = {
             let s = Arc::clone(&s);
-            tokio::spawn(async move { s.join(bid("a", 100, EGRESS)).await })
+            tokio::spawn(async move { s.join(bid("a", 100, egress())).await })
         };
         let b = {
             let s = Arc::clone(&s);
-            tokio::spawn(
-                async move { s.join(bid("b", 70, PermissionDimension::CommandExec)).await },
-            )
+            tokio::spawn(async move { s.join(bid("b", 70, other_good())).await })
         };
         let (va, vb) = (a.await.unwrap(), b.await.unwrap());
         // Each is alone in its own round, so each wins uncontested at zero.
@@ -651,10 +659,10 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         {
             let mut open = s.open.lock().unwrap();
-            let mut round = Round::open(AuctionId::new("stuck"), EGRESS);
-            round.submit(bid("a", 100, EGRESS)).unwrap();
+            let mut round = Round::open(AuctionId::new("stuck"), egress());
+            round.submit(bid("a", 100, egress())).unwrap();
             open.insert(
-                EGRESS,
+                egress(),
                 OpenRound {
                     round,
                     waiters: vec![(AgentId::new("a"), tx)],

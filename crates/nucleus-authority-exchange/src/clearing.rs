@@ -1,13 +1,13 @@
 //! The mechanism seam: how a round's bids become an allocation and a price.
 //!
-//! Two implementations, and the difference between them is the point of this
-//! crate. [`VcgClearing`] runs the proven kernel and emits a receipt that a
-//! stranger can re-derive. [`PostedPriceClearing`] runs the Lagrangian screen
-//! that is live on the tool-proxy hot path today, and emits **no receipt**,
-//! because there is nothing to recompute — the λ curve is a heuristic with no
-//! truthfulness property and no Lean statement. That absence is in the type
-//! ([`RoundOutcome::PostedPrice`] has no receipt field), so a caller cannot
-//! report a discovered, verifiable price for a round that had neither.
+//! One implementation: [`VcgClearing`] runs the proven kernel and emits a
+//! receipt that a stranger can re-derive. A `PostedPriceClearing` adapter over
+//! the Lagrangian screen used to sit beside it as a fallback; it was deleted
+//! when `PermissionBid` became constructible only from a verified certificate
+//! (#2526), because the adapter built one by struct literal — and because the
+//! proxy already runs that screen itself on the non-auctioned path, so a second
+//! copy here was a second decider for the same fact (G-1). A round is cleared
+//! by the mechanism or not at all.
 //!
 //! The seam mirrors `nucleus-marketplace-dashboard`'s `Clearing` trait, which
 //! was written with the same intent and the same honesty note ("only
@@ -16,7 +16,10 @@
 
 use nucleus_econ_kernels::{HeteroError, IntegerBid, IntegerProposal, VcgError};
 use nucleus_econ_types::{AgentId, MicroUsd};
-use nucleus_permission_market::{PermissionBid, PermissionDimension, PermissionMarket, TrustTier};
+// No `nucleus_permission_market` import survives the merge: `PermissionBid`,
+// `PermissionMarket` and `TrustTier` came with `PostedPriceClearing`, which
+// this branch deleted (G-1), and the slot id now keys on `ScarceGood`.
+use crate::good::ScarceGood;
 use nucleus_recompute::ClearingReceipt;
 
 use crate::round::{Round, RoundOutcome};
@@ -24,31 +27,6 @@ use crate::round::{Round, RoundOutcome};
 /// The proposal id prefix. One proposal per round is what makes `run_vcg`
 /// reduce to the threshold mechanism — see [`crate::Round`].
 const SLOT_PREFIX: &str = "authority-slot/";
-
-/// The proposal id for a round: the prefix plus the dimension's label.
-///
-/// The dimension is part of the id **on purpose**: the proposal is a declared
-/// input, so it is under the receipt's content hash, so the receipt says what
-/// was auctioned. A receipt that only said "a slot" could not be attributed to
-/// egress or exec afterwards, and an index over receipts — the price of egress
-/// this week — would have to trust a label kept somewhere the hash does not
-/// reach. [`slot_dimension`] is the inverse, and a reader with only the receipt
-/// uses it to recover the good.
-#[must_use]
-pub fn slot_id(dimension: PermissionDimension) -> String {
-    format!("{SLOT_PREFIX}{}", dimension.label())
-}
-
-/// Recover the dimension a receipt's proposal names, or `None` for a proposal
-/// this crate did not issue.
-#[must_use]
-pub fn slot_dimension(proposal_id: &str) -> Option<PermissionDimension> {
-    let label = proposal_id.strip_prefix(SLOT_PREFIX)?;
-    PermissionDimension::ALL
-        .iter()
-        .copied()
-        .find(|d| d.label() == label)
-}
 
 /// Why a round could not be cleared.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -204,91 +182,62 @@ impl Clearing for VcgClearing {
     }
 }
 
-/// The incumbent screen, kept as a fallback so a dimension can be moved back
-/// without a deploy.
+// Below the round logic rather than above `ClearError`, deliberately: the
+// `life` census (xtask `convergence::affine_types`) credits the first
+// `pub struct`/`pub enum` within seven lines of a `#[must_use]` with affine
+// intent, and a short `#[must_use] fn` directly above `ClearError` counted an
+// error enum as a one-shot right its author never declared.
+
+/// The proposal id for a round: the prefix plus the good's label.
 ///
-/// It prices each bid independently against the Lagrangian shadow price and
-/// awards the contended slot to the highest-valued bid that clears it. Two
-/// deliberate differences from the live `evaluate_permission_bid` path:
+/// The good is part of the id **on purpose**: the proposal is a declared
+/// input, so it is under the receipt's content hash, so the receipt says what
+/// was auctioned. A receipt that only said "a slot" could not be attributed to
+/// egress or exec afterwards, and an index over receipts — the price of egress
+/// this week — would have to trust a label kept somewhere the hash does not
+/// reach. [`slot_good`] is the inverse, and a reader with only the receipt uses
+/// it to recover the good.
 ///
-/// 1. **The trust tier is not taken from the bidder.** Today's header path reads
-///    `trust_tier` out of the request and uses it to pick a discount factor as
-///    low as 0.1× — a self-scored screen. This adapter always uses
-///    [`TrustTier::Unverified`] (no discount). A tier belongs to a verified
-///    certificate chain, and until it is read from one it is not an input.
-/// 2. **No receipt.** There is nothing to recompute, and the outcome type says
-///    so by having nowhere to put one.
-#[derive(Debug, Default)]
-pub struct PostedPriceClearing {
-    market: PermissionMarket,
+/// Keyed on [`ScarceGood`] rather than on `PermissionDimension`, because a
+/// round carries a good and not every scarce good is a permission — that is
+/// what `good.rs` is for. A `PermissionDimension` still reaches this through
+/// its `From` impl, so nothing that auctions a permission dimension changed.
+#[must_use]
+pub fn slot_id(good: &ScarceGood) -> String {
+    format!("{SLOT_PREFIX}{}", good.label())
 }
 
-impl PostedPriceClearing {
-    /// Wrap an existing market.
-    #[must_use]
-    pub fn new(market: PermissionMarket) -> Self {
-        PostedPriceClearing { market }
-    }
-}
-
-impl Clearing for PostedPriceClearing {
-    fn clear(&self, round: &Round) -> Result<RoundOutcome, ClearError> {
-        let mut admitted: Vec<&crate::bid::SignedBid> = Vec::new();
-        for b in round.bids() {
-            let grant = self.market.evaluate_bid(&PermissionBid {
-                skill_id: b.bidder().as_str().to_owned(),
-                requested: vec![b.dimension()],
-                // Micro-USD as the abstract unit the market documents
-                // (`value_estimate` is "an abstract unit — the orchestrator
-                // calibrates what 1.0 means"). Converted losslessly through u32:
-                // a bid above u32::MAX µUSD ($4 294) is clamped, which for a
-                // screen that grants at the asking value changes nothing below
-                // the clamp and nothing this crate would put a proof on above it.
-                value_estimate: f64::from(u32::try_from(b.value().get()).unwrap_or(u32::MAX)),
-                trust_tier: TrustTier::Unverified,
-            });
-            if grant.granted.is_empty() {
-                continue;
-            }
-            admitted.push(b);
-        }
-        // Highest values take the slots. The screen's own price is an `f64`
-        // cost; the slot's price is what the winner bid, because a posted price
-        // grants at the asking value. Rounding a float into money is not
-        // something this crate will do.
-        admitted.sort_by_key(|b| std::cmp::Reverse(b.value()));
-        admitted.truncate(round.slots().get() as usize);
-        Ok(if admitted.is_empty() {
-            RoundOutcome::NoBids
-        } else {
-            // The lowest admitted value, so the reported price is one every
-            // winner actually cleared rather than the top bid alone.
-            let price = admitted.last().map_or(MicroUsd::ZERO, |b| b.value());
-            RoundOutcome::PostedPrice {
-                winners: admitted.iter().map(|b| b.bidder().clone()).collect(),
-                price,
-            }
-        })
-    }
+/// Recover the good a receipt's proposal names, or `None` for a proposal this
+/// crate did not issue or whose label is not a good this crate would mint.
+#[must_use]
+pub fn slot_good(proposal_id: &str) -> Option<ScarceGood> {
+    let label = proposal_id.strip_prefix(SLOT_PREFIX)?;
+    ScarceGood::new(label).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The good these tests contend for. A function rather than a `const`
+    /// because a good owns its label; `PermissionDimension` is the source so
+    /// the tests exercise the conversion the in-pod path uses.
+    fn egress() -> ScarceGood {
+        ScarceGood::from(nucleus_permission_market::PermissionDimension::NetworkEgress)
+    }
+
     use crate::bid::{CertifiedCeiling, SignedBid};
+    use crate::good::ScarceGood;
     use nucleus_econ_types::AuctionId;
-    use nucleus_permission_market::PermissionDimension;
     use nucleus_recompute::{RecomputeOutcome, verify_receipt};
 
-    const EGRESS: PermissionDimension = PermissionDimension::NetworkEgress;
-
     fn round_of(values: &[(&str, u64)]) -> Round {
-        let mut r = Round::open(AuctionId::new("r1"), EGRESS);
+        let mut r = Round::open(AuctionId::new("r1"), egress());
         for (agent, v) in values {
             r.submit(
                 SignedBid::new(
                     AgentId::new(*agent),
-                    EGRESS,
+                    egress(),
                     MicroUsd::new(*v),
                     CertifiedCeiling::for_test(1_000_000),
                 )
@@ -358,10 +307,10 @@ mod tests {
     }
 
     /// The receipt must say what was auctioned. A reader holding only the
-    /// bytes recovers the dimension from the declared proposal — which is under
+    /// bytes recovers the good from the declared proposal — which is under
     /// the content hash — not from anything the hash does not cover.
     #[test]
-    fn the_receipt_declares_which_dimension_was_sold() {
+    fn the_receipt_declares_which_good_was_sold() {
         let out = VcgClearing
             .clear(&round_of(&[("a", 100), ("b", 70)]))
             .expect("clears");
@@ -369,32 +318,22 @@ mod tests {
             panic!("vcg");
         };
         let ids: Vec<&str> = claim.proposals.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, [slot_id(EGRESS).as_str()]);
-        assert_eq!(slot_dimension(&claim.proposals[0].id), Some(EGRESS));
-        assert_eq!(slot_dimension("authority-slot/not-a-dimension"), None);
-        assert_eq!(slot_dimension("something-else"), None);
+        assert_eq!(ids, [slot_id(&egress()).as_str()]);
+        assert_eq!(slot_good(&claim.proposals[0].id), Some(egress()));
+        // A good is whatever the operator named, not one of a fixed four, so
+        // an unfamiliar label round-trips. What does not is a proposal that is
+        // not a slot, or a label no `ScarceGood` can carry.
+        assert_eq!(
+            slot_good("authority-slot/ci-runner"),
+            ScarceGood::new("ci-runner").ok()
+        );
+        assert_eq!(slot_good("authority-slot/"), None);
+        assert_eq!(slot_good("something-else"), None);
     }
 
     #[test]
     fn an_empty_round_clears_to_nothing() {
-        let r = Round::open(AuctionId::new("r1"), EGRESS);
+        let r = Round::open(AuctionId::new("r1"), egress());
         assert_eq!(VcgClearing.clear(&r).expect("clears"), RoundOutcome::NoBids);
-    }
-
-    /// The fallback allocates, and carries no receipt — the absence is the
-    /// honest signal, not an omission.
-    #[test]
-    fn the_posted_price_fallback_awards_without_a_receipt() {
-        let c = PostedPriceClearing::new(PermissionMarket::new());
-        let out = c
-            .clear(&round_of(&[("a", 100), ("b", 70)]))
-            .expect("clears");
-        let RoundOutcome::PostedPrice { winners, price } = &out else {
-            panic!("expected a posted price: {out:?}");
-        };
-        assert_eq!(winners.len(), 1, "one slot, one winner");
-        assert_eq!(winners[0].as_str(), "a");
-        assert_eq!(*price, MicroUsd::new(100));
-        assert!(out.receipt().is_none(), "the screen recomputes nothing");
     }
 }

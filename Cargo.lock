@@ -6605,10 +6605,12 @@ name = "nucleus-authority-exchange"
 version = "1.0.0"
 dependencies = [
  "nucleus-authority-exchange",
+ "nucleus-creditworthiness",
  "nucleus-econ-kernels",
  "nucleus-econ-types",
  "nucleus-permission-market",
  "nucleus-recompute",
+ "nucleus-witness-olog",
  "portcullis",
  "proptest",
  "rust_decimal",
@@ -7222,6 +7224,7 @@ dependencies = [
  "nucleus-proto",
  "nucleus-provenance-memory",
  "nucleus-receipt",
+ "nucleus-recompute",
  "nucleus-spec",
  "oid-registry",
  "portcullis",
@@ -7419,7 +7422,9 @@ dependencies = [
 name = "nucleus-permission-market"
 version = "1.0.0"
 dependencies = [
+ "portcullis",
  "proptest",
+ "rust_decimal",
  "serde",
  "serde_json",
  "tracing",

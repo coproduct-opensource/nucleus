@@ -222,7 +222,11 @@ population_floor = 278
 # 2026-10-02 (#3119, rebased): the population pin had not followed the three
 # crates above -- the tree measures 31/89 on main and here, while the pin still
 # said 86. Re-pinned to the measurement; the ratio is unchanged.
-floor_bp = 3483
+# 2026-10-02 (#3002, rebased onto main): nucleus-permission-market declares all
+# seven and goes integer -- the f64 λ curve became a u128 fixed-point
+# exponential, every price a micro-USD u64, `deny(float_arithmetic)` on the
+# shipped build. 32/89, 35.95%.
+floor_bp = 3595
 floor_set = "measurement"
 population_floor = 89
 

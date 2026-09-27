@@ -14,7 +14,7 @@
 #
 #   mediation/spawn      2 files,  1 matching line,  1 entry   scripts/mediation-allowlist.txt
 #   mediation/net        3 files,  7 matching lines, 4 entries scripts/mediation-net-allowlist.txt
-#   mediation/vsock      1 file,   1 matching line,  1 entry   scripts/mediation-vsock-allowlist.txt
+#   mediation/vsock      2 files,  2 matching lines, 2 entries scripts/mediation-vsock-allowlist.txt
 #   sealed-home/spawn    3 files,  6 matching lines, 7 entries scripts/sealed-home-allowlist.txt
 #   sealed-home/net      1 file,   1 matching line,  7 entries  (the SAME file — see below)
 #   ingest-hashed        2 files,  5 matching lines, 5 entries scripts/ingest-hashed-allowlist.txt
@@ -40,7 +40,7 @@
 
 mediation/spawn=1
 mediation/net=4
-mediation/vsock=1
+mediation/vsock=2
 sealed-home/spawn=7
 sealed-home/net=7
 ingest-hashed=5
