@@ -343,7 +343,7 @@ it, is already most of the way there.
 ### Caller issuer
 
 - [ ] Discovery at `<iss>/.well-known/openid-configuration` with `issuer` equal to `iss` byte-for-byte (or a configured JWKS URL / inline JWKS)
-- [ ] One signing algorithm per binding, from `ES256`, `RS256`, `PS256`, `EdDSA`
+- [ ] One signing algorithm per binding, from `ES256`, `ES384`, `RS256`, `RS384`, `RS512`, `PS256`, `PS384` or `PS512` (never `none`, `HS*` or `EdDSA`; see §3.2)
 - [ ] `kid` in every header
 - [ ] Exact `aud` per binding
 - [ ] `exp` and `iat` present; `exp − iat` ≤ the binding's maximum
