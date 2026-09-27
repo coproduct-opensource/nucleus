@@ -12,6 +12,7 @@ on:
     paths:
       - 'crates/nucleus-oidc-provider/**'
       - 'crates/nucleus-oidc-core/**'
+      - 'crates/nucleus-federation/**'
       - 'ci/no-vendor-strings.sh'
       - 'ci/alg-pin-check.sh'
       - '.github/workflows/oidc-gates.yml'
@@ -19,6 +20,7 @@ on:
     paths:
       - 'crates/nucleus-oidc-provider/**'
       - 'crates/nucleus-oidc-core/**'
+      - 'crates/nucleus-federation/**'
       - 'ci/no-vendor-strings.sh'
       - 'ci/alg-pin-check.sh'
       - '.github/workflows/oidc-gates.yml'
@@ -59,6 +61,7 @@ jobs:
           bash ci/no-vendor-strings.sh \
             crates/nucleus-oidc-provider \
             crates/nucleus-oidc-core \
+            crates/nucleus-federation \
             2>&1 | tee gate-output.txt
         continue-on-error: false
       - name: Surface failure as PR comment
@@ -106,6 +109,7 @@ jobs:
           bash ci/alg-pin-check.sh \
             crates/nucleus-oidc-provider \
             crates/nucleus-oidc-core \
+            crates/nucleus-federation \
             2>&1 | tee gate-output.txt
         continue-on-error: false
       - name: Surface failure as PR comment

@@ -18,8 +18,10 @@ workspace = true
 # The keyless-auth primitive (src/token_exchange.rs): a generic RFC 7523
 # jwt-bearer exchange. Off by default so the base identity crate builds
 # network-free (no reqwest on any production path); the exchange pulls reqwest in
-# only when a consumer opts in.
-token-exchange = ["dep:reqwest"]
+# only when a consumer opts in. The client itself now lives in nucleus-federation
+# (the neutral one, with a redacting token type and body-free errors) and this
+# feature's module forwards to it.
+token-exchange = ["dep:reqwest", "dep:nucleus-federation"]
 
 [dependencies]
 base64 = { workspace = true }
@@ -33,6 +35,7 @@ tracing = { workspace = true }
 # Only for the `token-exchange` feature (the HTTP exchange). Optional so the
 # default build stays network-free.
 reqwest = { workspace = true, optional = true }
+nucleus-federation = { path = "../nucleus-federation", optional = true }
 
 [dev-dependencies]
 # `rt-multi-thread` for the example's `#[tokio::main]`; `reqwest` for the live
