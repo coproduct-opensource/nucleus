@@ -376,7 +376,32 @@ impl<'a> Executor<'a> {
     /// un-preflighted spawn is a compile error rather than a runtime check. The
     /// bundle is a sealed 7-witness proof that only `preflight_action` can mint;
     /// it is now threaded on into `run_argv` (the sealed home requires it too).
+    /// Every synchronous spawn, inside the execute-on-consume guard: the watched
+    /// files are snapshotted before the child runs and any change it made is
+    /// reverted and refused after it exits, whatever its exit status
+    /// (`consume_guard`).
     fn spawn_checked(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &std::path::Path,
+        stdin_data: Option<&str>,
+        authority: Authority,
+    ) -> Result<Output> {
+        let before = crate::consume_guard::Snapshot::take(self.sandbox.root_dir())?;
+        let result = self.spawn_unguarded(program, args, cwd, stdin_data, authority);
+        let reverted = before.revert_changes(self.sandbox.root_dir())?;
+        if !reverted.is_empty() {
+            let command = std::iter::once(program)
+                .chain(args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Err(crate::consume_guard::refusal(&command, &reverted));
+        }
+        result.map_err(NucleusError::from)
+    }
+
+    fn spawn_unguarded(
         &self,
         program: &str,
         args: &[String],
@@ -620,7 +645,6 @@ impl<'a> Executor<'a> {
         };
 
         self.spawn_checked(program, program_args, &work_dir, stdin_data, authority)
-            .map_err(Into::into)
     }
 
     /// Execute a command with an approval token for approval-gated operations.
@@ -815,10 +839,16 @@ impl<'a> Executor<'a> {
                 &HostSandbox::harden_tokio as &(dyn Fn(&mut tokio::process::Command) + Send + Sync),
             );
 
+        // The execute-on-consume guard, as on the synchronous path: a timed-out
+        // command can have written before it was killed, so the comparison runs
+        // on every outcome.
+        let before = crate::consume_guard::Snapshot::take(self.sandbox.root_dir())?;
+
         // The previous inline spawn used `Stdio::null()` for stdin (no input), so
         // pass `None`. `Some(timeout)` asks the sealed home to wrap the wait in
         // `tokio::time::timeout`.
-        self.effects
+        let result = self
+            .effects
             .run_argv_async(
                 program,
                 program_args,
@@ -838,7 +868,16 @@ impl<'a> Executor<'a> {
                 } else {
                     NucleusError::from(e)
                 }
-            })
+            });
+        let reverted = before.revert_changes(self.sandbox.root_dir())?;
+        if !reverted.is_empty() {
+            let command = std::iter::once(program)
+                .chain(program_args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Err(crate::consume_guard::refusal(&command, &reverted));
+        }
+        result
     }
 
     /// Check if the command requires a certain capability level.
@@ -1119,6 +1158,42 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
+    }
+
+    /// The trust-handoff escape through the shell: one `RunBash` decision about
+    /// a command string, and the process writes a git hook the next host
+    /// `git commit` would run. The executor reverts it and refuses the command;
+    /// the ordinary file the same command wrote is the control, and survives.
+    #[test]
+    fn a_command_that_writes_a_git_hook_is_reverted_and_refused() {
+        let tmp = tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/hooks")).unwrap();
+        let policy = test_policy();
+        let budget = AtomicBudget::new(&test_budget());
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
+
+        let cmd = "touch .git/hooks/pre-commit";
+        let dt = run_token(&mut kernel, cmd);
+        match executor.run(cmd, dt, Authority::new(run_bundle(cmd))) {
+            Err(NucleusError::CommandDenied { reason, .. }) => {
+                assert!(reason.contains(".git/hooks/pre-commit"), "{reason}")
+            }
+            other => panic!("expected CommandDenied naming the hook, got {other:?}"),
+        }
+        assert!(!tmp.path().join(".git/hooks/pre-commit").exists());
+
+        // The control: the same command against an unwatched path runs as before.
+        let cmd = "touch src.txt";
+        let dt = run_token(&mut kernel, cmd);
+        executor
+            .run(cmd, dt, Authority::new(run_bundle(cmd)))
+            .expect("an unwatched write is not refused");
+        assert!(tmp.path().join("src.txt").exists());
     }
 
     #[test]

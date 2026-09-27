@@ -118,6 +118,81 @@ pub const AGENT_HARNESS_CONFIG: &[&str] = &[
     "**/.gemini/**",
 ];
 
+/// Files a tool OUTSIDE the sandbox executes, or takes a command to execute
+/// from, merely because they exist or changed.
+///
+/// # The class this names
+///
+/// Six of the seven AI-coding-agent sandbox escapes CSA surveyed in July 2026
+/// broke no mediator. The agent wrote a file the policy allowed, and an
+/// unsandboxed host tool later ran it: a git `core.fsmonitor` script, an editor
+/// task file, a swapped virtualenv interpreter, a CI workflow. Mediation decides
+/// whether a write may happen; it cannot know what the file does when someone
+/// else reads it. So these paths are named, and a write to one needs an
+/// approval rather than a capability level (the file sandbox), and a shell
+/// command that changes one is reverted (the command executor).
+///
+/// # What is deliberately NOT here
+///
+/// Package-manager scripts (`package.json`, `Makefile`, `setup.py`, `build.rs`)
+/// also run on a host, and producing code that runs is a coding agent's job. A
+/// list that included them would require approval for the work itself; the
+/// defence there is review of the output, not a path rule.
+///
+/// `.git/config` is not a glob here: `git init` and `git clone` write it, so the
+/// executor compares only its exec-bearing keys (`core.fsmonitor`,
+/// `core.hooksPath`, `alias.*`, filter drivers, ...). The file sandbox already
+/// blocks it outright via [`PathLattice::block_sensitive`].
+///
+/// Matched case-insensitively: the on-disk casing is the writer's choice, and a
+/// case-insensitive filesystem treats `.GITHUB/workflows` as the same directory.
+pub const EXECUTE_ON_CONSUME: &[&str] = &[
+    // A gitlink FILE named `.git` points git at a directory the writer chose,
+    // whose own config can name an fsmonitor.
+    "**/.git",
+    "**/.git/hooks/**",
+    // Editors and IDEs that run tasks or settings from the workspace
+    "**/.vscode/tasks.json",
+    "**/.vscode/settings.json",
+    "**/.vscode/launch.json",
+    "**/*.code-workspace",
+    "**/.idea/**",
+    // Environments entered automatically
+    "**/.devcontainer/**",
+    "**/.envrc",
+    // Virtualenv interpreters an editor extension invokes
+    "**/pyvenv.cfg",
+    "**/bin/python",
+    "**/bin/python3",
+    "**/bin/python3.*",
+    "**/bin/activate",
+    "**/bin/activate.*",
+    // CI definitions a remote runner executes
+    "**/.github/workflows/**",
+    "**/.gitlab-ci.yml",
+    "**/.circleci/**",
+    "**/jenkinsfile",
+    "**/.buildkite/**",
+    "**/azure-pipelines.yml",
+    // Commit-time hook frameworks
+    "**/.husky/**",
+    "**/.pre-commit-config.yaml",
+    "**/lefthook.yml",
+];
+
+/// The [`EXECUTE_ON_CONSUME`] glob `path` (relative, `/`-separated) matches, if
+/// any. Git's `*.sample` hooks are inert and never match.
+pub fn executes_on_consume(path: &str) -> Option<&'static str> {
+    let path = path.trim_start_matches("./").to_ascii_lowercase();
+    if path.ends_with(".sample") {
+        return None;
+    }
+    EXECUTE_ON_CONSUME
+        .iter()
+        .copied()
+        .find(|glob| glob_match(glob, &path))
+}
+
 /// Path access lattice with allowed/blocked semantics.
 ///
 /// - `allowed`: Glob patterns for allowed paths. Empty means "all allowed".
@@ -678,6 +753,42 @@ fn glob_to_regex(pattern: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execute_on_consume_names_the_escape_paths_and_not_ordinary_code() {
+        for hit in [
+            ".git/hooks/pre-commit",
+            "sub/.git",
+            ".vscode/tasks.json",
+            ".github/workflows/ci.yml",
+            "pkg/.venv/bin/python3",
+            ".venv/bin/python3.12",
+            ".venv/bin/activate.fish",
+            ".venv/bin/activate",
+            ".envrc",
+            "Jenkinsfile",
+            ".husky/pre-push",
+        ] {
+            assert!(executes_on_consume(hit).is_some(), "{hit} should match");
+        }
+        for miss in [
+            "src/main.rs",
+            "package.json",
+            "Makefile",
+            ".git/hooks/pre-commit.sample",
+            ".github/CODEOWNERS",
+            "docs/bin/python-notes.md",
+            ".vscode/extensions.json",
+        ] {
+            assert_eq!(executes_on_consume(miss), None, "{miss} should not match");
+        }
+    }
+
+    #[test]
+    fn execute_on_consume_ignores_the_writers_casing() {
+        assert!(executes_on_consume(".GITHUB/Workflows/x.yml").is_some());
+        assert!(executes_on_consume("./.Git/Hooks/post-checkout").is_some());
+    }
 
     #[test]
     fn test_glob_matching() {
