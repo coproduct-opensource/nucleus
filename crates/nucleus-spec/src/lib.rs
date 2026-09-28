@@ -1,5 +1,6 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
+pub mod boot_budget;
 pub mod exit_report_auth;
 pub mod identity;
 pub mod tier2_artifacts;
