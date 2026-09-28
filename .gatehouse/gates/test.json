@@ -56,8 +56,7 @@
         "--locked",
         "--all-features",
         "--no-fail-fast",
-        "-E",
-        "package(xtask) | binary(olog) | binary(goal_corpus)"
+        "--no-tests=fail"
       ],
       "reads": [
         "**",
@@ -67,7 +66,9 @@
         "target/**",
         "sdks/verifier-js/pkg/**",
         "sdks/verifier-js/target/**"
-      ]
+      ],
+      "loopback": true,
+      "uid": 1001
     }
   ],
   "tools": [
@@ -77,6 +78,8 @@
     "cargo-nextest@0.9.145",
     "wasm-pack@0.13.1",
     "wasm-bindgen@0.2.122",
+    "unshare@2.38.1",
+    "ip@6.1.0",
     "git@2.39.5"
   ],
   "cwd": "",
