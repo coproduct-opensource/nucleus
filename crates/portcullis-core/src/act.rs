@@ -25,17 +25,17 @@
 //! # Only admissible pairs are representable
 //!
 //! `discharge::operation_allowed_for_sink` decides which of the 13 × 19 = 247
-//! `(Operation, SinkClass)` pairs a bundle can be earned for. Exactly 27 pass.
+//! `(Operation, SinkClass)` pairs a bundle can be earned for. Exactly 28 pass.
 //! That relation is a runtime predicate: nothing stops a caller from building
 //! an [`ActionTerm`](nucleus_ifc_kernel::ActionTerm) naming one of the other
-//! 220 and finding out at preflight.
+//! 219 and finding out at preflight.
 //!
 //! `Act` makes the relation structural. Where a verb admits more than one
 //! sink, the variant carries a sink enum containing *only* that verb's
 //! admissible sinks — [`ReadSink`], [`WriteSink`], [`EditSink`], [`PodSink`].
 //! An inadmissible pair is not constructible, and
 //! `act_projects_onto_exactly_the_admissible_pairs` proves the projection of
-//! every shape is precisely the 27 the kernel admits — two computations of one
+//! every shape is precisely the 28 the kernel admits — two computations of one
 //! number, neither written down twice.
 //!
 //! # Why the sink is chosen, not defaulted
@@ -288,6 +288,10 @@ pub enum WriteSink {
     SearchIndex,
     /// The audit log.
     AuditLog,
+    /// Agent memory: a record admitted into the session's provenance memory
+    /// (2026-09-27). The target is `memory://<sha256 of the value>`, so an
+    /// authority earned for one record cannot admit another.
+    Memory,
 }
 
 /// Where an in-place edit can land.
@@ -450,6 +454,7 @@ impl Act {
                 WriteSink::Cache => SinkClass::CacheWrite,
                 WriteSink::SearchIndex => SinkClass::SearchIndexWrite,
                 WriteSink::AuditLog => SinkClass::AuditLogAppend,
+                WriteSink::Memory => SinkClass::MemoryPersist,
             },
             Act::Edit { sink, .. } => match sink {
                 EditSink::Workspace => SinkClass::WorkspaceWrite,
@@ -620,6 +625,7 @@ mod tests {
             WriteSink::Cache,
             WriteSink::SearchIndex,
             WriteSink::AuditLog,
+            WriteSink::Memory,
         ] {
             acts.push(Act::Write {
                 path: FilePath::new(t),
@@ -708,7 +714,7 @@ mod tests {
     /// **Two computations of one number.**
     ///
     /// Sweeping every `Act` shape and projecting to `(Operation, SinkClass)`
-    /// must produce exactly the pairs the kernel admits — the 27 of 247 that
+    /// must produce exactly the pairs the kernel admits — the 28 of 247 that
     /// `operation_allowed_for_sink` accepts, probed here through the only
     /// public door onto it, `discharge::test_helpers::try_bundle_for`.
     ///
@@ -719,7 +725,7 @@ mod tests {
     /// too little). Either would mean `Act` and the kernel disagree about what
     /// the boundary can express.
     ///
-    /// 27 is also `EARNABLE_PAIRS` in `extracted/mediation.rs`, where it pins
+    /// 28 is also `EARNABLE_PAIRS` in `extracted/mediation.rs`, where it pins
     /// the domain the mediation proof covers. The same number arrived at from
     /// a third direction.
     #[test]
@@ -739,7 +745,7 @@ mod tests {
         assert_eq!(swept, 247, "the product of 13 verbs and 19 sinks");
         assert_eq!(
             admissible.len(),
-            27,
+            28,
             "the kernel's admissible set changed; `Act`'s per-verb sink enums \
              must change with it, and this number is the visible diff"
         );

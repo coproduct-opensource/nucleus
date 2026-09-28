@@ -1445,6 +1445,11 @@ fn operation_allowed_for_sink(op: Operation, sink: SinkClass) -> bool {
                     | SinkClass::CacheWrite
                     | SinkClass::SearchIndexWrite
                     | SinkClass::AuditLogAppend
+                    // Agent memory (2026-09-27). `/v1/memory/write` had no pair
+                    // to discharge, so it ran on a dropped `DecisionToken`
+                    // instead. Acting: memory outlives the session, so a write
+                    // pays `NoAdversarialAncestry` and the `Untrusted` floor.
+                    | SinkClass::MemoryPersist
             )
         }
         Operation::EditFiles => {
