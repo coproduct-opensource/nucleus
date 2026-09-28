@@ -67,5 +67,12 @@
 # constructed, so they leave the surface with the code: D=171, B=170, dropped=1
 # (still CaClient). B/D moves from 173/174 to 170/171 by arithmetic, with no
 # binding lost. Decided by the owner's LOC plan (T1).
-floor_bp = 9941
-declared_floor = 171
+# 2026-09-27: declassification became a sealed witness. `VerifiedDeclassification`
+# joins the WITNESS vocabulary (its one site, `FlowGraph::apply_verified`, binds
+# it), and `kernel/declassify_authority.rs` now names `DeclassificationToken`
+# bare instead of path-qualified, so four sites that were always there become
+# visible to the scan (verify, the two fused applies, the witness's own field).
+# All five are bound: D=177, B=176, dropped=1 (still CaClient). A visibility
+# gain, not new enforcement counted twice.
+floor_bp = 9943
+declared_floor = 177
