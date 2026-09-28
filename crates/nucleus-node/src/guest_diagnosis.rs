@@ -134,10 +134,25 @@ pub(crate) fn diagnose(console_path: &Path) -> Option<String> {
 /// attributes bind to the following item regardless of the blank line between
 /// them, so this compiled, ran, and mislabelled a long-lived task as a boot
 /// stage while the real stage went unmeasured.
+///
+/// # Why it takes the VMM
+///
+/// A guest whose PID 1 exits panics its kernel, and with `panic=1 reboot=k` the VMM
+/// exits a second later. Everything the health probe can then see is a refused
+/// connection, the same thing it sees from a guest still booting, so it used to
+/// spend the whole budget polling a machine that no longer existed. That is #2904:
+/// every boot stage done, then `proxy.health_wait=29790ms` of `Connection refused`,
+/// and the caller's own 30 s clock expiring first, so the console's reason was never
+/// read by anyone.
+///
+/// The VMM process is a parameter rather than an option so there is no way to wait
+/// on a guest's health without also watching whether the guest still exists. Its
+/// exit ends the wait at once, with the exit status and the console diagnosis.
 #[tracing::instrument(skip_all, fields(boot.stage = "proxy.health_wait"))]
 pub(crate) async fn wait_for_proxy_health(
     addr: SocketAddr,
     console: &Path,
+    vmm: &mut tokio::process::Child,
 ) -> Result<(), ApiError> {
     // An EXPLICIT setting is honoured as-is: an operator who names a number is
     // not asking to have it scaled behind their back.
@@ -151,7 +166,7 @@ pub(crate) async fn wait_for_proxy_health(
             live_microvms(),
         )),
     };
-    wait_for_proxy_health_within(addr, budget)
+    wait_while_the_vmm_lives(addr, budget, vmm)
         .await
         .map_err(|e| {
             // The console the node already captured usually says exactly why.
@@ -215,6 +230,34 @@ impl std::fmt::Display for HealthProbe {
                  end and the guest is refusing, so this is an authorization or routing \
                  question, not a liveness one"
             ),
+        }
+    }
+}
+
+/// The health wait, ended early by the VMM's exit.
+///
+/// `Child::wait` is cancel-safe, so losing the race to a healthy guest leaves the
+/// child exactly as it was for the caller's later `status`, `kill` and teardown.
+async fn wait_while_the_vmm_lives(
+    addr: SocketAddr,
+    budget: Duration,
+    vmm: &mut tokio::process::Child,
+) -> Result<(), ApiError> {
+    let started = std::time::Instant::now();
+    tokio::select! {
+        healthy = wait_for_proxy_health_within(addr, budget) => healthy,
+        exited = vmm.wait() => {
+            let status = match exited {
+                Ok(status) => status.to_string(),
+                Err(e) => format!("status unreadable: {e}"),
+            };
+            Err(ApiError::Driver(format!(
+                "the VMM exited ({status}) {}ms into the {}s health wait, before the \
+                 guest's tool-proxy answered. The guest is gone, so the wait was ended \
+                 rather than run out; its console says why.",
+                started.elapsed().as_millis(),
+                budget.as_secs()
+            )))
         }
     }
 }
@@ -344,6 +387,85 @@ mod tests {
         }
         assert!(SIGNATURES.len() >= 4, "the table has shrunk unexpectedly");
     }
+
+    /// An address nothing listens on: what the node's probe met for thirty
+    /// seconds in #2904, after the guest had died.
+    async fn refused_addr() -> SocketAddr {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        l.local_addr().expect("addr")
+    }
+
+    /// #2904, host side. The guest's PID 1 died, the VMM exited, and the node went
+    /// on probing a refused port for its whole budget while the caller's clock ran
+    /// out first. A dead VMM must end the wait at once, carrying the exit status
+    /// and the console's reason.
+    ///
+    /// Driven red: with the `vmm.wait()` arm removed, this runs the full 30 s
+    /// budget and fails on the elapsed-time assertion.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dead_vmm_ends_the_health_wait_with_the_consoles_reason() {
+        let addr = refused_addr().await;
+        let f = console("[  0.9] Kernel panic - not syncing: Attempted to kill init!\n");
+        let mut vmm = tokio::process::Command::new("sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .expect("spawn a stand-in VMM");
+
+        let started = std::time::Instant::now();
+        let err = wait_for_proxy_health(addr, f.path(), &mut vmm)
+            .await
+            .expect_err("a guest whose VMM is gone cannot become healthy");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the wait ran {elapsed:?} against a VMM that had already exited"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("VMM exited"), "{msg}");
+        assert!(msg.contains('7'), "the exit status is evidence: {msg}");
+        assert!(
+            msg.contains("PID 1 exited"),
+            "the console diagnosis must still reach the caller: {msg}"
+        );
+    }
+
+    /// Non-vacuity: watching the VMM must not cut short a guest that is alive and
+    /// answers, nor disturb the child the caller keeps using afterwards.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_live_vmm_leaves_a_healthy_wait_alone() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                let mut buf = [0u8; 512];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        let mut vmm = tokio::process::Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a stand-in VMM");
+
+        let f = console("");
+        wait_for_proxy_health(addr, f.path(), &mut vmm)
+            .await
+            .expect("a live VMM with a healthy proxy is healthy");
+        assert!(
+            matches!(vmm.try_wait(), Ok(None)),
+            "the health wait must leave a live VMM running and unreaped"
+        );
+    }
 }
 
 /// How many microVMs are already running on this host.
@@ -369,13 +491,14 @@ fn live_microvms() -> usize {
         .count()
 }
 
-/// Cap on how far contention may stretch the health budget.
-///
-/// Without it a host with fifty live pods would give each new one a 25-minute
-/// budget, so a genuinely broken guest would hang the caller instead of
-/// failing. The point is to stop punishing slow-because-busy, not to wait
-/// forever.
-const HEALTH_BUDGET_MAX_MULTIPLIER: u64 = 8;
+// Cap on how far contention may stretch the health budget.
+//
+// Without it a host with fifty live pods would give each new one a 25-minute
+// budget, so a genuinely broken guest would hang the caller instead of
+// failing. The point is to stop punishing slow-because-busy, not to wait
+// forever. Stated in `nucleus_spec::boot_budget`, where a client's deadline is
+// derived from it.
+use nucleus_spec::boot_budget::HEALTH_BUDGET_MAX_MULTIPLIER;
 
 /// Scale the health budget by how many microVMs are already running.
 ///
