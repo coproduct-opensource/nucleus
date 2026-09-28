@@ -934,10 +934,13 @@ impl NucleusMcpServer {
             return Ok(err_result(e));
         }
 
-        match self.kernel_decide(Operation::GlobSearch, &subject).await {
-            Ok(_decision_token) => {} // glob doesn't go through Sandbox I/O
+        // Kept, not dropped: `Sandbox::glob` redeems it. This arm used to read
+        // `Ok(_decision_token) => {} // glob doesn't go through Sandbox I/O`,
+        // which was true, and was the defect (2026-09-27).
+        let decision_token = match self.kernel_decide(Operation::GlobSearch, &subject).await {
+            Ok(dt) => dt,
             Err(result) => return Ok(result),
-        }
+        };
 
         let act = Act::Glob {
             pattern: Pattern::new(&params.pattern),
@@ -970,59 +973,61 @@ impl NucleusMcpServer {
             return Ok(err_result("glob_search capability is disabled"));
         }
 
+        // One discharge for one listing, against THIS transport's graph —
+        // `self.flow_graph`, the one `observe_flow` writes. Under `--mcp` no
+        // HTTP handler runs, so `state.flow_graph` stays empty and a preflight
+        // against it could never see taint (the grep defect, pinned below by
+        // `grep_consults_the_graph_this_transport_writes`).
+        let glob_authority = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let ceiling = stdio_ceiling(&self.state, Operation::GlobSearch);
+            let flow = self.flow_graph.lock().await;
+            let result =
+                crate::run_gate::preflight_glob_fs(verified_scope, ceiling, &subject, &flow);
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => {
+                    portcullis_effects::authority::Authority::new(bundle)
+                }
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    self.record_verdict(
+                        Operation::GlobSearch,
+                        &subject,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+            }
+        };
+
         // The audit subject, taken from the proof before
         // `execute_and_record` consumes it: the record below names what the
         // guard decided on, not a string that travelled beside the decision.
         let checked = proof.subject();
 
-        let state = self.state.clone();
+        const MCP_GLOB_MAX: std::num::NonZeroUsize = std::num::NonZeroUsize::new(1000).unwrap();
         match self.guard.execute_and_record(proof, || {
-            tokio::task::block_in_place(move || -> Result<Vec<String>, String> {
-                let sandbox_root = state.runtime.sandbox().root_path();
-                let sandbox_canonical = sandbox_root
-                    .canonicalize()
-                    .map_err(|e| format!("sandbox root error: {e}"))?;
-
-                // Resolve search root within sandbox
-                let search_root = if let Some(ref root) = params.root {
-                    let root_path = std::path::Path::new(root);
-                    if root_path.is_absolute() {
-                        return Err(format!("absolute paths not allowed: {root}"));
-                    }
-                    let resolved = sandbox_root.join(root);
-                    let canonical = resolved
-                        .canonicalize()
-                        .map_err(|e| format!("path resolution error: {e}"))?;
-                    if !canonical.starts_with(&sandbox_canonical) {
-                        return Err(format!("path escapes sandbox: {root}"));
-                    }
-                    canonical
-                } else {
-                    sandbox_canonical.clone()
-                };
-
-                let full_pattern = search_root.join(&params.pattern);
-                let pattern_str = full_pattern.to_string_lossy();
-
-                let mut results = Vec::new();
-                let entries =
-                    glob::glob(&pattern_str).map_err(|e| format!("invalid glob pattern: {e}"))?;
-
-                for entry in entries {
-                    if let Ok(path) = entry {
-                        if let Ok(canonical) = path.canonicalize() {
-                            if canonical.starts_with(&sandbox_canonical) {
-                                if let Ok(relative) = canonical.strip_prefix(&sandbox_canonical) {
-                                    results.push(relative.to_string_lossy().to_string());
-                                }
-                            }
-                        }
-                    }
-                    if results.len() >= 1000 {
-                        break;
-                    }
-                }
-                Ok(results)
+            tokio::task::block_in_place(|| -> Result<Vec<String>, String> {
+                let listing = self
+                    .state
+                    .runtime
+                    .sandbox()
+                    .glob(
+                        params.root.as_deref().map(std::path::Path::new),
+                        &params.pattern,
+                        MCP_GLOB_MAX,
+                        decision_token,
+                        glob_authority,
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(listing
+                    .matches
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect())
             })
         }) {
             Ok(paths) => {
@@ -2198,24 +2203,7 @@ mod tests {
     /// non-vacuity assertion so it cannot pass by the preflight being deleted.
     #[test]
     fn grep_consults_the_graph_this_transport_writes() {
-        let src = include_str!("mcp.rs");
-        let handler = src
-            .split("async fn grep(")
-            .nth(1)
-            .expect("the grep handler must exist");
-        // Stop at the next `#[tool …]` so this reads only grep's own body.
-        let body = &handler[..handler.find("\n    #[tool").unwrap_or(handler.len())];
-        // Comments stripped first. The fix's own explanatory comment names the
-        // wrong handle in order to say "not this one", and the first version of
-        // this test failed on that prose — the same false positive
-        // `.dead-code-ratchet.toml` records its counter hitting inside string
-        // literals, "including the gate's own test fixtures".
-        let code: String = body
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
+        let code = handler_code("grep");
         assert!(
             !code.contains("state.flow_graph"),
             "grep's per-file preflight must read the graph `observe_flow` writes \
@@ -2228,6 +2216,56 @@ mod tests {
              preflight. Deleting the preflight would satisfy the assertion above \
              while removing the check entirely"
         );
+    }
+
+    /// The glob sibling of the pin above (2026-09-27). Glob gained its
+    /// preflight in the same change that sealed it behind `Sandbox::glob`, and
+    /// the natural copy to make was HTTP's, which locks `state.flow_graph` —
+    /// correct there, vacuous here. It must also spend the decision token it
+    /// used to drop, and reach the sandbox rather than walk `std::fs`.
+    #[test]
+    fn glob_preflights_against_the_transport_graph() {
+        let code = handler_code("glob");
+        assert!(
+            !code.contains("state.flow_graph"),
+            "glob's preflight must read `self.flow_graph`, the graph `observe_flow` \
+             writes, not `AppState`'s"
+        );
+        for needle in [
+            "self.flow_graph.lock()",
+            "preflight_glob_fs(",
+            ".sandbox()",
+            ".glob(",
+            "decision_token,",
+        ] {
+            assert!(
+                code.contains(needle),
+                "non-vacuity: glob must still contain `{needle}` — the preflight, \
+                 the sealed walk, and the token it pays with"
+            );
+        }
+        assert!(
+            !code.contains("_decision_token") && !code.contains("glob::glob"),
+            "glob may neither drop its decision token nor walk std::fs itself"
+        );
+    }
+
+    /// One handler's body, from `async fn {name}(` to the next `#[tool …]`,
+    /// with comment lines stripped. Stripped because the fix's own comment
+    /// names the wrong handle in order to say "not this one", and the first
+    /// version of the grep pin failed on that prose — the false positive
+    /// `.dead-code-ratchet.toml` records inside "the gate's own test fixtures".
+    fn handler_code(name: &str) -> String {
+        let src = include_str!("mcp.rs");
+        let handler = src
+            .split(&format!("async fn {name}("))
+            .nth(1)
+            .unwrap_or_else(|| panic!("the {name} handler must exist"));
+        let body = &handler[..handler.find("\n    #[tool").unwrap_or(handler.len())];
+        body.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     // ── build_action_term coverage ──────────────────────────────────────

@@ -67,5 +67,9 @@
 # constructed, so they leave the surface with the code: D=171, B=170, dropped=1
 # (still CaClient). B/D moves from 173/174 to 170/171 by arithmetic, with no
 # binding lost. Decided by the owner's LOC plan (T1).
-floor_bp = 9941
-declared_floor = 171
+# 2026-09-27: `Sandbox::glob` joins the surface with its `DecisionToken` and
+# `Authority` both taken by value and both consumed before the walk. Glob had
+# no witness before (both transports walked `std::fs`), so D and B rise
+# together: 171/172 -> 173/174, dropped still 1 (CaClient).
+floor_bp = 9942
+declared_floor = 174
