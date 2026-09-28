@@ -55,9 +55,7 @@ pub use vcg::{Clearing, IntegerBid, IntegerProposal, VcgError, WinningBid, run_v
 pub use vcg_combo::{
     Combinatorial2GoodClearing, CombinatorialBid, CombinatorialError, clear_combinatorial_2good,
 };
-pub use vcg_hetero::{
-    EXACT_VCG_MAX_BIDS, HeteroError, clear_heterogeneous, clear_heterogeneous_exact,
-};
+pub use vcg_hetero::{EXACT_VCG_MAX_BIDS, HeteroError, clear_heterogeneous_exact, clear_vcg};
 pub use vcg_pigou::{
     LAMBDA_CARBON_SCC_MICRO_USD_PER_GRAM, LAMBDA_WATER_SHADOW_MICRO_USD_PER_LITRE,
     PigouvianClearing, PigouvianError, PigouvianRates, effective_minus_pigou_micro,

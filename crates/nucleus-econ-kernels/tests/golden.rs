@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 use nucleus_econ_kernels::{
-    CommonsShare, IntegerBid, IntegerProposal, Verdict, classify, refund, route_to_commons,
-    run_vcg, seller_gross,
+    CommonsShare, IntegerBid, IntegerProposal, Verdict, classify, clear_vcg, refund,
+    route_to_commons, seller_gross,
 };
 use serde_json::Value;
 
@@ -89,7 +89,10 @@ fn vcg_matches_golden() {
         let proposals: Vec<IntegerProposal> =
             serde_json::from_value(vec["proposals"].clone()).unwrap();
         let budget = u64f(vec, "budget_micro_usd");
-        let clearing = run_vcg(&bids, &proposals, budget).unwrap();
+        // Through the router (#2521): vector 1 is heterogeneous, and `run_vcg`
+        // now refuses that shape. `exact_agrees_with_greedy_on_the_sealed_
+        // displacement_vector` is why the recorded expectation is unchanged.
+        let clearing = clear_vcg(&bids, &proposals, budget).unwrap();
 
         let want_winners = vec["winners"].as_array().unwrap();
         assert_eq!(clearing.winners.len(), want_winners.len(), "winner count");

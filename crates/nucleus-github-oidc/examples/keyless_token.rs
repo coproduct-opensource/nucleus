@@ -26,15 +26,26 @@ async fn main() {
     let audience = require_env("LLM_OAUTH_AUDIENCE");
     let grant = std::env::var("LLM_OAUTH_GRANT").unwrap_or_else(|_| GRANT_JWT_BEARER.to_string());
 
-    let client = reqwest::Client::new();
+    // Bounded timeouts and no redirects: a redirected POST re-sends the JWT.
+    let client = match nucleus_federation::default_client() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("keyless: could not build an HTTP client: {e}");
+            std::process::exit(1);
+        }
+    };
     match exchange_jwt_bearer(&client, &endpoint, &jwt, &audience, &grant).await {
         Ok(token) => {
-            eprintln!(
-                "keyless: exchanged an OIDC JWT for a Bearer (expires in {}s)",
-                token.expires_in
-            );
+            match token.expires_in() {
+                Some(s) => {
+                    eprintln!("keyless: exchanged an OIDC JWT for a Bearer (expires in {s}s)")
+                }
+                None => {
+                    eprintln!("keyless: exchanged an OIDC JWT for a Bearer (lifetime not stated)")
+                }
+            }
             // stdout carries ONLY the token, so `TOKEN=$(... example ...)` works.
-            println!("{}", token.bearer);
+            println!("{}", token.expose());
         }
         Err(err) => {
             // Fail-closed: no token on stdout, non-zero exit.
