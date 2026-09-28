@@ -432,6 +432,35 @@ pub(crate) fn preflight_memory_write(
     )
 }
 
+/// Discharge obligations for one pod-management act (2026-09-27).
+///
+/// Takes the [`Act`](portcullis::Act) rather than an `(op, sink, subject)`
+/// triple so the pair and target are derived from the same value the node
+/// client will spend against (`node_client::acts`) — minting and spending
+/// cannot render the target differently. The kernel decides the kind from the
+/// pair: create (`AgentSpawn`) is Acting, list/status/logs (`AuditLogAppend`)
+/// a pure read, and cancel (`CloudMutation`) authority-reducing, so a tainted
+/// session can still stop its children and still cannot spawn one.
+pub(crate) fn preflight_pod(
+    act: &portcullis::Act,
+    verified_scope: Option<&TokenScope>,
+    levels: GateLevels,
+    flow: &FlowGraph,
+) -> PreflightResult {
+    debug_assert!(
+        matches!(act, portcullis::Act::ManagePod { .. }),
+        "preflight_pod is only for pod-management acts",
+    );
+    preflight_scoped(
+        act.operation(),
+        act.sink_class(),
+        verified_scope,
+        levels,
+        &act.subject(),
+        flow,
+    )
+}
+
 /// Consume a [`DischargedBundle`] into an audit-record string.
 ///
 /// Satisfies the bundle's `#[must_use]` by reading it, and threads the sealed

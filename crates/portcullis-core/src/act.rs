@@ -25,17 +25,17 @@
 //! # Only admissible pairs are representable
 //!
 //! `discharge::operation_allowed_for_sink` decides which of the 13 × 19 = 247
-//! `(Operation, SinkClass)` pairs a bundle can be earned for. Exactly 28 pass.
+//! `(Operation, SinkClass)` pairs a bundle can be earned for. Exactly 29 pass.
 //! That relation is a runtime predicate: nothing stops a caller from building
 //! an [`ActionTerm`](nucleus_ifc_kernel::ActionTerm) naming one of the other
-//! 219 and finding out at preflight.
+//! 218 and finding out at preflight.
 //!
 //! `Act` makes the relation structural. Where a verb admits more than one
 //! sink, the variant carries a sink enum containing *only* that verb's
 //! admissible sinks — [`ReadSink`], [`WriteSink`], [`EditSink`], [`PodSink`].
 //! An inadmissible pair is not constructible, and
 //! `act_projects_onto_exactly_the_admissible_pairs` proves the projection of
-//! every shape is precisely the 28 the kernel admits — two computations of one
+//! every shape is precisely the 29 the kernel admits — two computations of one
 //! number, neither written down twice.
 //!
 //! # Why the sink is chosen, not defaulted
@@ -308,12 +308,24 @@ pub enum EditSink {
 }
 
 /// What managing a pod touches.
+///
+/// **Three sinks, one per thing the proxy does to a pod (2026-09-27).** This
+/// was `{Cloud, AgentSpawn}`, and `Cloud` — "deploy, scale, delete" — named
+/// every mutation at once. That was harmless while nothing discharged
+/// `(ManagePods, CloudMutation)`; it stopped being harmless when the kernel
+/// made that pair `ActionKind::AuthorityReducing` so a tainted session can
+/// still stop its children. A pair that is exempt from the taint obligations
+/// must be one that can only remove authority, so the variant is renamed to
+/// what it now means — [`PodSink::Teardown`], spent only by cancel — and reads
+/// get their own pair, [`PodSink::Observe`], rather than borrowing either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PodSink {
-    /// Mutating cloud infrastructure (deploy, scale, delete).
-    Cloud,
-    /// Bringing a child agent into being.
+    /// Stopping a pod (cancel) — `CloudMutation`, authority-reducing.
+    Teardown,
+    /// Bringing a child agent into being (create) — `AgentSpawn`, acting.
     AgentSpawn,
+    /// Reading pod state: list, status, logs — `AuditLogAppend`, a pure read.
+    Observe,
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -466,8 +478,9 @@ impl Act {
             Act::Push { .. } => SinkClass::GitPush,
             Act::OpenPr { .. } => SinkClass::PRCommentWrite,
             Act::ManagePod { sink, .. } => match sink {
-                PodSink::Cloud => SinkClass::CloudMutation,
+                PodSink::Teardown => SinkClass::CloudMutation,
                 PodSink::AgentSpawn => SinkClass::AgentSpawn,
+                PodSink::Observe => SinkClass::AuditLogAppend,
             },
             Act::Spawn { .. } => SinkClass::AgentSpawn,
         }
@@ -582,7 +595,7 @@ impl Act {
             },
             Operation::ManagePods => Act::ManagePod {
                 pod: PodId::new(T),
-                sink: PodSink::Cloud,
+                sink: PodSink::Teardown,
             },
             Operation::SpawnAgent => Act::Spawn {
                 agent: PodId::new(T),
@@ -638,7 +651,7 @@ mod tests {
                 sink,
             });
         }
-        for sink in [PodSink::Cloud, PodSink::AgentSpawn] {
+        for sink in [PodSink::Teardown, PodSink::AgentSpawn, PodSink::Observe] {
             acts.push(Act::ManagePod {
                 pod: PodId::new(t),
                 sink,
@@ -714,7 +727,7 @@ mod tests {
     /// **Two computations of one number.**
     ///
     /// Sweeping every `Act` shape and projecting to `(Operation, SinkClass)`
-    /// must produce exactly the pairs the kernel admits — the 28 of 247 that
+    /// must produce exactly the pairs the kernel admits — the 29 of 247 that
     /// `operation_allowed_for_sink` accepts, probed here through the only
     /// public door onto it, `discharge::test_helpers::try_bundle_for`.
     ///
@@ -725,7 +738,7 @@ mod tests {
     /// too little). Either would mean `Act` and the kernel disagree about what
     /// the boundary can express.
     ///
-    /// 28 is also `EARNABLE_PAIRS` in `extracted/mediation.rs`, where it pins
+    /// 29 is also `EARNABLE_PAIRS` in `extracted/mediation.rs`, where it pins
     /// the domain the mediation proof covers. The same number arrived at from
     /// a third direction.
     #[test]
@@ -745,7 +758,7 @@ mod tests {
         assert_eq!(swept, 247, "the product of 13 verbs and 19 sinks");
         assert_eq!(
             admissible.len(),
-            28,
+            29,
             "the kernel's admissible set changed; `Act`'s per-verb sink enums \
              must change with it, and this number is the visible diff"
         );
