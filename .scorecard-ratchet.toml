@@ -62,8 +62,11 @@
 # and consumes both before it opens a directory -- two new witness-accepting
 # sites, both bound. Glob used to walk `std::fs` with no witness at all, so this
 # is coverage arriving, not a denominator moving: 171/172 -> 173/174.
-floor_bp = 9942
-population_floor = 174
+# 2026-09-27, merging the memory commit into the glob/grep branch: both moves apply
+# to one tree -- Sandbox::glob's two sites and the two memory cores -- so the pin is
+# this tree's measurement, not either branch's: D=176, B=175, dropped=1 (CaClient).
+floor_bp = 9943
+population_floor = 176
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`

@@ -427,6 +427,42 @@ fn preflight_scoped(
     preflight_action(&term)
 }
 
+/// Discharge obligations for a memory WRITE (`/v1/memory/write`, 2026-09-27).
+///
+/// Memory is the one store an agent writes that a LATER session reads back, so
+/// a poisoned record admitted today steers tomorrow. Until this existed the
+/// handler bound its `DecisionToken` to `_dt`, dropped it, and admitted the
+/// record: the decision ran and the effect did not need it. It had no choice —
+/// `(WriteFiles, MemoryPersist)` was not an earnable pair, so there was nothing
+/// to discharge.
+///
+/// The pair is [`Acting`](nucleus_ifc_kernel::discharge::ActionKind::Acting):
+/// `MemoryPersist`'s `Untrusted` integrity floor and `NoAdversarialAncestry`
+/// both apply, so a tainted session cannot write memory. That is the point —
+/// the honest web record `verified_admit` quarantines is admitted by an
+/// UNtainted session that has not yet read it back.
+///
+/// There is no `preflight_memory_recall`. A recall is a read: it discharges
+/// `(ReadFiles, AuditLogAppend)` through [`preflight_read_fs`], the one decider
+/// for that pair (G-1), with the recall's own subject. The subject is not a
+/// filesystem path, and it does not need to be — `InScopeWithTask` checks the
+/// operation, not the path, and the spend binds whatever string was rendered.
+pub(crate) fn preflight_memory_write(
+    verified_scope: Option<&TokenScope>,
+    levels: GateLevels,
+    subject: &str,
+    flow: &FlowGraph,
+) -> PreflightResult {
+    preflight_scoped(
+        Operation::WriteFiles,
+        SinkClass::MemoryPersist,
+        verified_scope,
+        levels,
+        subject,
+        flow,
+    )
+}
+
 /// Consume a [`DischargedBundle`] into an audit-record string.
 ///
 /// Satisfies the bundle's `#[must_use]` by reading it, and threads the sealed
@@ -822,6 +858,47 @@ mod tests {
             );
         }
     }
+
+    /// **A tainted session cannot write memory** (2026-09-27). Memory outlives
+    /// the session, so `(WriteFiles, MemoryPersist)` is Acting: the session's
+    /// adversarial label fails the `Untrusted` floor. Non-vacuity: the same
+    /// request on a clean session mints, so the refusal is the taint and not
+    /// the pair, the scope or the ceiling.
+    #[test]
+    fn tainted_session_cannot_write_memory() {
+        let scope = TokenScope::new(vec![Operation::WriteFiles], vec![]);
+        let levels = GateLevels::honest(FS_CEILING);
+        let result = preflight_memory_write(Some(&scope), levels, "memory://x", &tainted_flow());
+        assert!(result.is_denied(), "got {result:?}");
+        let clean = preflight_memory_write(Some(&scope), levels, "memory://x", &FlowGraph::new());
+        assert!(clean.is_allowed(), "a clean session must mint: {clean:?}");
+    }
+
+    /// **…and can still recall.** A recall is a pure read through
+    /// [`preflight_read_fs`], so the taint that refuses the write above does not
+    /// refuse bringing a record back in — the record's own label is what the
+    /// recall observes afterwards.
+    #[test]
+    fn tainted_session_can_still_recall() {
+        let scope = TokenScope::new(vec![Operation::ReadFiles], vec![]);
+        let levels = GateLevels::honest(FS_CEILING);
+        let result = preflight_read_fs(Some(&scope), levels, "memory://recall/x", &tainted_flow());
+        assert!(result.is_allowed(), "got {result:?}");
+    }
+
+    /// The certificate-ceiling middleware now sees both memory routes: they
+    /// were `_ => None` in `endpoint_operation`, so no ceiling applied to them.
+    #[test]
+    fn memory_routes_have_an_operation() {
+        assert_eq!(
+            endpoint_operation("/v1/memory/write"),
+            Some(Operation::WriteFiles)
+        );
+        assert_eq!(
+            endpoint_operation("/v1/memory/recall"),
+            Some(Operation::ReadFiles)
+        );
+    }
 }
 
 /// Operation of each HTTP effect endpoint. Approval is a market meta-dimension,
@@ -837,6 +914,8 @@ pub(crate) fn endpoint_operation(path: &str) -> Option<Operation> {
         "/v1/web_search" => Some(Operation::WebSearch),
         "/v1/pod/create" | "/v1/pod/list" | "/v1/pod/status" | "/v1/pod/logs"
         | "/v1/pod/cancel" => Some(Operation::ManagePods),
+        "/v1/memory/write" => Some(Operation::WriteFiles),
+        "/v1/memory/recall" => Some(Operation::ReadFiles),
         p if p.starts_with("/v1/egress/") => Some(Operation::WebFetch),
         _ => None,
     }

@@ -2030,8 +2030,8 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/glob", post(glob_search))
         .route("/v1/grep", post(grep_search))
         .route("/v1/web_search", post(web_search))
-        .route("/v1/memory/write", post(memory_write))
-        .route("/v1/memory/recall", post(memory_recall))
+        .route("/v1/memory/write", post(memory::memory_write))
+        .route("/v1/memory/recall", post(memory::memory_recall))
         .route("/v1/approve", post(approve_operation))
         .route("/v1/escalate", post(escalate::escalate_permissions))
         // Governor declassification: signature-gated, one-shot, sink-scoped.
@@ -2658,66 +2658,6 @@ fn check_identity_policy(
     }
 
     !requires_approval
-}
-
-/// POST `/v1/memory/write` — provenance-verified memory admission (next-bet #1).
-/// A write maps to `WriteFiles` (so it is itself subject to the egress gate),
-/// then goes through `verified_admit`: a forged label is rejected; an honest
-/// web-ingest record is admitted-but-quarantined.
-async fn memory_write(
-    State(state): State<AppState>,
-    auth: Option<axum::Extension<auth::AuthContext>>,
-    Json(req): Json<memory::MemoryWriteReq>,
-) -> Result<Json<memory::MemoryWriteResp>, ApiError> {
-    let _dt = http_kernel_decide(
-        &state,
-        Operation::WriteFiles,
-        "memory://write",
-        auth.as_ref().map(|e| &e.0),
-    )
-    .await?;
-    let mut set = state.provenance_memory.lock().await;
-    Ok(Json(memory::memory_write_core(
-        &mut set,
-        state.memory_transforms.as_ref(),
-        req,
-    )))
-}
-
-/// POST `/v1/memory/recall` — taint-labeled recall gated through the IFC flow
-/// tracker (next-bet #1). Recall maps to `ReadFiles` (a read, never an outbound
-/// action) so it always runs and injects the recalled record's own label into
-/// the session: an un-declassified adversarial record taints the session, so the
-/// agent's NEXT privileged tool call is denied by the existing egress gate.
-async fn memory_recall(
-    State(state): State<AppState>,
-    auth: Option<axum::Extension<auth::AuthContext>>,
-    Json(req): Json<memory::MemoryRecallReq>,
-) -> Result<Json<memory::MemoryRecallResp>, ApiError> {
-    let _dt = http_kernel_decide(
-        &state,
-        Operation::ReadFiles,
-        "memory://recall",
-        auth.as_ref().map(|e| &e.0),
-    )
-    .await?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let set = state.provenance_memory.lock().await;
-    // Project the recall's effective label onto the single authoritative graph
-    // the egress verdict reads.
-    let mut graph = state.flow_graph.lock().await;
-    let resp = memory::memory_recall_core(
-        &set,
-        &mut graph,
-        state.declassify_trusted_keys.as_ref(),
-        state.declassify_threshold,
-        now,
-        req,
-    )?;
-    Ok(Json(resp))
 }
 
 /// HTTP enforcement chokepoint: locks the kernel THEN the flow graph (same

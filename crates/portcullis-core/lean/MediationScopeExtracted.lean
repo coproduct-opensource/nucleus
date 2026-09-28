@@ -39,8 +39,8 @@
 
   The generated defs mirror production `DischargedBundle::authorizes` — see the
   EXHAUSTIVE parity test in `src/extracted/mediation.rs`, which sweeps every
-  earnable pair (27 of 247 pass `PathAllowed`) against all 247 attempted pairs,
-  6 669 comparisons, the complete domain. Those Rust tests close the model↔code
+  earnable pair (28 of 247 pass `PathAllowed`) against all 247 attempted pairs,
+  6 916 comparisons, the complete domain. Those Rust tests close the model↔code
   gap; THIS file closes the property-over-extracted gap.
 
   # What this file now covers, and what it does not
