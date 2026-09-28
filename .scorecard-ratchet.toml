@@ -22,6 +22,10 @@
 #
 #   floor_bp          minimum discharged/population in basis points. May only RISE.
 #   population_floor  minimum population. A shrinking surface is a decision.
+#   floor_set         how the floor came to hold its value: "measurement" when it
+#                     equals what the tree measures, or "waiver" with waiver_dated,
+#                     waiver_by and waiver_because when it sits below by decision.
+#                     Required: a bare digit cannot tell a raise from a concession.
 #
 # Both, because neither alone is a gate. A floor on the ratio rewards deleting
 # obligations: remove one and numerator and denominator fall together while the
@@ -59,6 +63,7 @@
 # deletion, not a regression: the one undischarged site (`trait CaClient`) is
 # unchanged, so the ratio moves only because the denominator shrank. 170/171.
 floor_bp = 9941
+floor_set = "measurement"
 population_floor = 171
 
 [family.alg]
@@ -93,6 +98,7 @@ population_floor = 171
 # absorption checked -- so it is its own commit. This number rises when that
 # lands.
 floor_bp = 3956
+floor_set = "measurement"
 population_floor = 278
 
 [family.tot]
@@ -183,6 +189,7 @@ population_floor = 278
 # unchecked additions or multiplications on lengths and times. With it the ratio is
 # 29/87, 33.33%, and the floor follows it up.
 floor_bp = 3333
+floor_set = "measurement"
 population_floor = 86
 
 [family.life]
@@ -265,6 +272,7 @@ population_floor = 86
 # end, or the pod certificate's on a hit) and handle_perform refuses a proof past
 # it before the store is read. 7/13.
 floor_bp = 5384
+floor_set = "measurement"
 population_floor = 13
 
 [family.typed]
@@ -313,6 +321,7 @@ population_floor = 13
 # obvious tag pair -- McpToolResult and ToolResponse are adversarial, EnvVar and
 # Secret are confidential -- and each is a struct plus a registry row.
 floor_bp = 869
+floor_set = "measurement"
 population_floor = 23
 
 [family.suppress]
@@ -401,4 +410,5 @@ population_floor = 23
 # branch's number describes the merged tree -- 19 of 143 = 13.28%, re-measured
 # rather than carried over from either side.
 floor_bp = 1388
+floor_set = "measurement"
 population_floor = 143
