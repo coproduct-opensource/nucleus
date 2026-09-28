@@ -394,6 +394,12 @@ impl ApprovalVerifier {
     pub fn key_count(&self) -> usize {
         self.keys.len()
     }
+
+    /// The accepted timestamp skew — so how long a signed request stays
+    /// replayable, which is how long its nonce must be remembered.
+    pub fn max_skew(&self) -> Duration {
+        self.max_skew
+    }
 }
 
 /// Verify an approval request signed with an approver's Ed25519 key.
@@ -583,8 +589,10 @@ pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
 /// dead code, and every request would still need a key the agent can read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthTier {
-    /// A client certificate was presented — strongest, and independent of how
-    /// the server was bound.
+    /// A client certificate was presented — the strongest proof of WHO is
+    /// calling, and independent of how the server was bound. It is not an
+    /// approval: `/v1/approve` never selects this tier (see
+    /// [`select_auth_tier`]).
     SpiffeMtls,
     /// The approval endpoint with approver PUBLIC keys configured: Ed25519 +
     /// drand. Takes precedence over the HMAC approval tier — when the guest
@@ -607,18 +615,25 @@ pub enum AuthTier {
 /// `host_verified_transport` is a property of how the server was STARTED, never
 /// of the request — see `AppState::host_verified_transport`. Likewise
 /// `has_approval_pubkeys` is startup configuration, not request content.
+///
+/// The approval path is decided FIRST, before the certificate. An approval
+/// tier is not a stronger or weaker way to say who is calling; it is the only
+/// way to say that a person agreed, and an SVID says nothing about that. Until
+/// 2026-09-27 `has_spiffe_identity` was tested first, and any workload with a
+/// certificate under the trust bundle could grant itself approvals with no
+/// approver signature (`the_approval_path_outranks_spiffe`).
 pub fn select_auth_tier(
     has_spiffe_identity: bool,
     is_approval_path: bool,
     has_approval_pubkeys: bool,
     host_verified_transport: bool,
 ) -> AuthTier {
-    if has_spiffe_identity {
-        AuthTier::SpiffeMtls
-    } else if is_approval_path && has_approval_pubkeys {
+    if is_approval_path && has_approval_pubkeys {
         AuthTier::ApprovalEd25519Drand
     } else if is_approval_path {
         AuthTier::ApprovalHmacDrand
+    } else if has_spiffe_identity {
+        AuthTier::SpiffeMtls
     } else if host_verified_transport {
         AuthTier::HostVsock
     } else {
@@ -999,7 +1014,8 @@ mod auth_tier_precedence_tests {
 
     /// A certificate outranks the transport: mTLS identifies WHO, the transport
     /// only identifies WHERE FROM. Losing the SPIFFE identity would discard the
-    /// stronger claim.
+    /// stronger claim. Off the approval path only — see
+    /// `the_approval_path_outranks_spiffe`.
     #[test]
     fn mtls_outranks_the_transport() {
         assert_eq!(
@@ -1007,9 +1023,31 @@ mod auth_tier_precedence_tests {
             AuthTier::SpiffeMtls
         );
         assert_eq!(
-            select_auth_tier(true, true, true, true),
+            select_auth_tier(true, false, true, false),
             AuthTier::SpiffeMtls
         );
+    }
+
+    /// **A certificate is not an approver's signature.** An SVID says which
+    /// workload is calling; `/v1/approve` needs to know that a PERSON said
+    /// yes, and only the approver's signature over the body carries that.
+    /// Until 2026-09-27 the SPIFFE tier was consulted first, so any caller
+    /// holding a certificate under the trust bundle reached the approval
+    /// handler with no signature at all and granted itself whatever it had
+    /// been told to ask a human for.
+    #[test]
+    fn the_approval_path_outranks_spiffe() {
+        for (pubkeys, host) in [(false, false), (false, true), (true, false), (true, true)] {
+            let tier = select_auth_tier(true, true, pubkeys, host);
+            assert!(
+                matches!(
+                    tier,
+                    AuthTier::ApprovalEd25519Drand | AuthTier::ApprovalHmacDrand
+                ),
+                "an SVID on /v1/approve must still need the approver's signature \
+                 (pubkeys={pubkeys} host_verified={host}), got {tier:?}"
+            );
+        }
     }
 
     /// The approval path keeps its drand anchoring even on a host-verified
@@ -1068,10 +1106,10 @@ mod auth_tier_precedence_tests {
             ((true, false, false, true), AuthTier::SpiffeMtls),
             ((true, false, true, false), AuthTier::SpiffeMtls),
             ((true, false, true, true), AuthTier::SpiffeMtls),
-            ((true, true, false, false), AuthTier::SpiffeMtls),
-            ((true, true, false, true), AuthTier::SpiffeMtls),
-            ((true, true, true, false), AuthTier::SpiffeMtls),
-            ((true, true, true, true), AuthTier::SpiffeMtls),
+            ((true, true, false, false), AuthTier::ApprovalHmacDrand),
+            ((true, true, false, true), AuthTier::ApprovalHmacDrand),
+            ((true, true, true, false), AuthTier::ApprovalEd25519Drand),
+            ((true, true, true, true), AuthTier::ApprovalEd25519Drand),
         ];
         for ((spiffe, approval, pubkeys, host), expected) in cases {
             assert_eq!(
