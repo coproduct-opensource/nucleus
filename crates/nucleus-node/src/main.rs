@@ -2788,7 +2788,7 @@ async fn spawn_firecracker_pod(
         let health_addr = proxy.listen_addr();
         let signed_proxy = Some(proxy);
 
-        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id).await {
+        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id, &mut child).await {
             if let Some(proxy) = signed_proxy {
                 proxy.shutdown().await;
             }
@@ -3156,7 +3156,7 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 /// host round-trips during startup, and would be wrong even once the host chain
 /// is fixed. It is not a workaround for that defect and should not be read as
 /// one.
-pub(crate) const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
+pub(crate) use nucleus_spec::boot_budget::PROXY_HEALTH_TIMEOUT_SECS_DEFAULT;
 
 async fn serve_grpc(
     state: NodeState,
