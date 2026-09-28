@@ -625,6 +625,98 @@ mod tests {
             "bundle must carry the InScopeWithTask witness"
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Tests — a tainted session may read, and may still not egress
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// A session that has observed web content, built the way the live ingest
+    /// path builds it (`observe_with_content_hash(NodeKind::WebContent, ..)`).
+    fn tainted_flow() -> FlowGraph {
+        use portcullis::NodeKind;
+        let mut flow = FlowGraph::new();
+        flow.observe_with_content_hash(
+            NodeKind::WebContent,
+            &[],
+            0,
+            crate::ingest_content_hash(b"<hostile page>"),
+        )
+        .expect("the web observation must land");
+        assert!(
+            flow.is_tainted(),
+            "non-vacuity: the session must be tainted"
+        );
+        flow
+    }
+
+    /// **A tainted session can read a file** (2026-09-27).
+    ///
+    /// `/v1/read` and MCP `read` discharge `(ReadFiles, AuditLogAppend)`
+    /// through this function. Before `ActionKind`, the first web page an agent
+    /// fetched put an `Adversarial` source label in the session and
+    /// `NoAdversarialAncestry` refused every later read, so the agent could
+    /// not inspect its own workspace. A read carries nothing outward; its bytes
+    /// are observed back into this graph by the ingest path, and egress still
+    /// pays for them (`tainted_session_still_cannot_web_fetch`).
+    ///
+    /// RED-FIRST: on the unmodified kernel this is denied by
+    /// `NoAdversarialAncestry`.
+    #[test]
+    fn tainted_session_can_read_a_file() {
+        let flow = tainted_flow();
+        let scope = TokenScope::new(
+            vec![Operation::ReadFiles],
+            vec!["/workspace/**".to_string()],
+        );
+        let result = preflight_read_fs(
+            Some(&scope),
+            GateLevels::honest(FS_CEILING),
+            "/workspace/notes.txt",
+            &flow,
+        );
+        assert!(
+            result.is_allowed(),
+            "a tainted session must still be able to read, got {result:?}"
+        );
+    }
+
+    /// The other half: taint still refuses the effect that could carry the
+    /// read bytes out. `HTTPEgress` is Acting, so both the integrity floor and
+    /// `NoAdversarialAncestry` still apply to `web_fetch` and `web_search`.
+    #[test]
+    fn tainted_session_still_cannot_web_fetch() {
+        let flow = tainted_flow();
+        let scope = TokenScope::new(
+            vec![Operation::WebFetch, Operation::WebSearch],
+            vec!["/workspace/**".to_string()],
+        );
+        for op in [Operation::WebFetch, Operation::WebSearch] {
+            let result = preflight_web(
+                op,
+                Some(&scope),
+                GateLevels::honest(WEB_CEILING),
+                "https://api.example",
+                &flow,
+            );
+            assert!(
+                result.is_denied(),
+                "{op:?} on a tainted session must be refused, got {result:?}"
+            );
+            // Non-vacuity: the same request on a clean session mints, so the
+            // refusal is the taint and not the scope or ceiling.
+            assert!(
+                preflight_web(
+                    op,
+                    Some(&scope),
+                    GateLevels::honest(WEB_CEILING),
+                    "https://api.example",
+                    &FlowGraph::new(),
+                )
+                .is_allowed(),
+                "{op:?} on a clean session must mint"
+            );
+        }
+    }
 }
 
 /// Operation of each HTTP effect endpoint. Approval is a market meta-dimension,

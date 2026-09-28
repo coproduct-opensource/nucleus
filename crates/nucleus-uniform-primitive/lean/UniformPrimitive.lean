@@ -96,7 +96,16 @@ theorem preserves_seq {L1 L2 L3 : Layer}
 
 /-- The eight sealed discharge obligations, verbatim from `DischargedBundle`
     (`discharge.rs`): the exact set `preflight_action` must clear to mint the
-    unforgeable proof-token that the effect fns require at compile time. -/
+    unforgeable proof-token that the effect fns require at compile time.
+
+    Since 2026-09-27 the Rust side CHARGES `noAdversarialAncestry` only to an
+    `ActionKind::Acting` pair. The three `ActionKind::PureRead` pairs (a read
+    verb at `AuditLogAppend`) mint the witness without the source-label check:
+    a read carries nothing outward, so there is no sink for adversarial content
+    to reach, and its bytes are observed back into the session graph where every
+    later Acting pair still pays the check. The bit is therefore vacuously `true`
+    for a pure read, which is what `OcapLeak` below reads — this model and its
+    theorems are unchanged; only what the bit means for a pure read is stated. -/
 inductive Obligation
   | integrityGate           -- artifact integrity ≥ sink minimum
   | pathAllowed             -- operation structurally permitted for the sink

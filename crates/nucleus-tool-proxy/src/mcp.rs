@@ -2179,6 +2179,15 @@ mod tests {
     /// stays empty for the life of the process — making the
     /// `NoAdversarialAncestry` obligation in `preflight_grep_fs` vacuous.
     ///
+    /// Since 2026-09-27 `(GrepSearch, AuditLogAppend)` is an
+    /// `ActionKind::PureRead`, so grep is no longer charged that obligation at
+    /// all: the original consequence of the wrong graph (a taint check that
+    /// could not fire) is now the intended behaviour. The property is kept
+    /// because the per-file preflight still builds its `InputsAuthorized`
+    /// channel and artifact label from the graph it locks, and because a pair
+    /// whose kind changes back to Acting must find the right graph already
+    /// wired rather than silently reopen this hole.
+    ///
     /// This is the same class `declassify.rs` records fixing in Phase 4.5:
     /// a scope landing on "the kernel's separate, never-populated
     /// `flow_graph`" rather than the one the live verdict reads.

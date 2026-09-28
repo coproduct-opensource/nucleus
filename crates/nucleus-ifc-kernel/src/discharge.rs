@@ -20,7 +20,8 @@
 //! `DischargedBundle` is **sealed** — its constructor is private to this
 //! module. The only code path that produces one is a successful
 //! `preflight_action` call. Receiving a `DischargedBundle` is a compile-time
-//! proof that all eight obligations passed.
+//! proof that all eight obligations passed — obligation 4 for the pairs it is
+//! charged to (see [`ActionKind`]).
 //!
 //! ## Obligations checked
 //!
@@ -29,7 +30,7 @@
 //! | `Discharged<IntegrityGate>` | Artifact integrity ≥ sink minimum |
 //! | `Discharged<PathAllowed>` | Operation is structurally permitted for this sink |
 //! | `Discharged<DerivationClear>` | Derivation class is compatible with this sink |
-//! | `Discharged<NoAdversarialAncestry>` | No source label has `Adversarial` integrity |
+//! | `Discharged<NoAdversarialAncestry>` | No source label has `Adversarial` integrity — charged to [`ActionKind::Acting`] pairs; a [`ActionKind::PureRead`] pair (a read verb at `AuditLogAppend`) mints it without the check |
 //! | `Discharged<BudgetNotExceeded>` | Estimated cost is within budget |
 //! | `Discharged<WithinDelegationCeiling>` | Requested capability ≤ policy ceiling for the op |
 //! | `Discharged<InScopeWithTask>` | Operation is within the verified task token's scope |
@@ -51,7 +52,11 @@
 //! - **`NoAdversarialAncestry`** canonical semantics = the discharge
 //!   source-label check (`no source label carries `IntegLevel::Adversarial``).
 //!   Upstream keys off input `DerivationClass`; the discharge layer keys off
-//!   the propagated IFC integrity label, which is the source of truth.
+//!   the propagated IFC integrity label, which is the source of truth. Since
+//!   2026-09-27 the discharge layer charges it only to [`ActionKind::Acting`]
+//!   pairs; upstream has no notion of kind yet, so a pure read on a tainted
+//!   session is refused there and admitted here. That is a known G-1 residue
+//!   (two deciders), pinned by `cross_layer_discharge_consistency`.
 //! - **`InputsAuthorized`** (upstream) fails if any input's `source_hash` is
 //!   empty (`term.inputs.any(|i| i.source_hash.trim().is_empty())`). The
 //!   discharge layer attests the same property structurally: a kernel
@@ -646,7 +651,9 @@ pub struct DischargedBundle {
     pub path_allowed: Discharged<PathAllowed>,
     /// Derivation class is compatible with this sink.
     pub derivation_clear: Discharged<DerivationClear>,
-    /// No source label carries adversarial integrity.
+    /// No source label carries adversarial integrity — or, for a
+    /// [`ActionKind::PureRead`] pair, the check does not apply: a read carries
+    /// nothing outward. [`DischargedBundle::kind`] says which.
     pub no_adversarial_ancestry: Discharged<NoAdversarialAncestry>,
     /// Estimated cost fits within the budget gate.
     pub budget_not_exceeded: Discharged<BudgetNotExceeded>,
@@ -711,6 +718,15 @@ impl DischargedBundle {
     /// The sink class this bundle authorises.
     pub fn sink_class(&self) -> SinkClass {
         self.sink_class
+    }
+
+    /// What this bundle's pair does — derived from the sealed
+    /// `(operation, sink_class)`, never stored and never supplied by a caller.
+    /// See [`ActionKind`] for why a [`ActionKind::PureRead`] bundle cannot pay
+    /// for anything but a read.
+    #[must_use]
+    pub fn kind(&self) -> ActionKind {
+        action_kind(self.operation, self.sink_class)
     }
 
     /// The subject this bundle authorises — the target, not its category.
@@ -929,7 +945,9 @@ impl PreflightResult {
 /// 1. **IntegrityGate** — artifact integrity ≥ sink minimum requirement
 /// 2. **PathAllowed** — operation/sink class pair is structurally consistent
 /// 3. **DerivationClear** — derivation class is compatible with this sink
-/// 4. **NoAdversarialAncestry** — no source label carries `Adversarial` integrity
+/// 4. **NoAdversarialAncestry** — no source label carries `Adversarial` integrity;
+///    charged to [`ActionKind::Acting`] pairs only — a [`ActionKind::PureRead`]
+///    pair skips it (see [`ActionKind`]). Every other obligation applies to both.
 /// 5. **BudgetNotExceeded** — zero-cost always passes; non-zero requires budget gate
 /// 6. **WithinDelegationCeiling** — requested capability ≤ policy ceiling for the op;
 ///    fail-closed if either level is absent
@@ -1188,20 +1206,29 @@ pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
         };
     }
 
-    // 4. NoAdversarialAncestry: no source label may carry Adversarial integrity.
-    for label in &term.source_labels {
-        if label.integrity == IntegLevel::Adversarial {
-            return PreflightResult::Denied {
-                reason: format!(
-                    "NoAdversarialAncestry: adversarial-integrity source label present \
-                     in action by subject '{}'",
-                    term.subject
-                ),
-                hint: RepairHint::DeclassifyOrReplaceInput {
-                    subject: term.subject.clone(),
-                },
-            };
+    // 4. NoAdversarialAncestry: no source label may carry Adversarial integrity
+    //    — for a pair that can act. A pure read carries nothing outward, and the
+    //    bytes it returns are observed back into the session graph, so every
+    //    later Acting pair still pays this for them (see `ActionKind`). The kind
+    //    is derived from the pair here, never read from the term.
+    match action_kind(term.operation, term.sink_class) {
+        ActionKind::Acting => {
+            for label in &term.source_labels {
+                if label.integrity == IntegLevel::Adversarial {
+                    return PreflightResult::Denied {
+                        reason: format!(
+                            "NoAdversarialAncestry: adversarial-integrity source label present \
+                             in action by subject '{}'",
+                            term.subject
+                        ),
+                        hint: RepairHint::DeclassifyOrReplaceInput {
+                            subject: term.subject.clone(),
+                        },
+                    };
+                }
+            }
         }
+        ActionKind::PureRead => {}
     }
 
     // 5. BudgetNotExceeded: non-zero cost requires a wired budget gate.
@@ -1437,6 +1464,76 @@ fn operation_allowed_for_sink(op: Operation, sink: SinkClass) -> bool {
             sink,
             SinkClass::AuditLogAppend | SinkClass::MemoryPersist | SinkClass::CacheWrite
         ),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ActionKind — what an admitted pair does to the world
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// What an `(Operation, SinkClass)` pair does, as far as the obligations care.
+///
+/// **Why this exists (2026-09-27).** `NoAdversarialAncestry` is the
+/// non-interference clause — adversarial content must not steer an effect —
+/// and it ran for every pair. So the first hostile web page an agent fetched
+/// refused every later file read: `/v1/read`, `/v1/artifact`, MCP `read` and
+/// `grep`, and `NucleusRuntime::preflight_read` all discharge a read at
+/// `AuditLogAppend`, and all failed #4 for the rest of the session. A read
+/// carries nothing outward. The taint is still recorded when its bytes come
+/// back in (the ingest observe paths join them into the session graph), and
+/// every pair that could carry them out is [`ActionKind::Acting`] and still
+/// pays #4. Refusing the read protected nothing and blinded the agent.
+///
+/// **Never an input, never stored.** [`ActionTerm`] gains no field and the
+/// bundle holds no kind: [`DischargedBundle::kind`] recomputes it from the
+/// `(operation, sink_class)` the bundle already seals. So a caller cannot
+/// *claim* a pure read — it can only discharge a pair, and the pair decides
+/// (G-1: one decider for the fact).
+///
+/// **Why a pure-read bundle cannot pay for a write.** Nothing about binding
+/// changed: [`DischargedBundle::authorizes`] is still pair equality, and the
+/// Aeneas-extracted `scope_admits` mirror of it is untouched. The table below
+/// keys on the operation first, so `(WriteFiles, AuditLogAppend)` — admissible,
+/// and a write — is Acting even though its sink is the read sink. A table that
+/// keyed on the sink alone would have made it a pure read;
+/// `adversarial_ancestry_still_blocks_a_write_to_the_audit_log` is the test
+/// that sees the difference.
+///
+/// Two variants, not a `bool` (A-1): a third kind (authority-reducing, for
+/// teardown) is planned, and a `bool` would have to be widened at every use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionKind {
+    /// The pair can change the world or carry data outward. Every obligation
+    /// applies. This is the default for any pair not named below.
+    Acting,
+    /// The pair only brings bytes in. `NoAdversarialAncestry` is not charged;
+    /// every other obligation is, unchanged.
+    PureRead,
+}
+
+/// The single decider of [`ActionKind`].
+///
+/// Exhaustive over `Operation` so a new verb is a compile error here, not a
+/// silent classification. The three read verbs are PureRead at
+/// `AuditLogAppend` only: a read whose result is persisted (`MemoryPersist`,
+/// `CacheWrite`) outlives the session and is Acting. Every inner fallthrough
+/// yields `Acting` (B-3: a catch-all arm never grants).
+fn action_kind(op: Operation, sink: SinkClass) -> ActionKind {
+    match op {
+        Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => match sink {
+            SinkClass::AuditLogAppend => ActionKind::PureRead,
+            _ => ActionKind::Acting,
+        },
+        Operation::WriteFiles
+        | Operation::EditFiles
+        | Operation::RunBash
+        | Operation::GitCommit
+        | Operation::GitPush
+        | Operation::CreatePr
+        | Operation::WebSearch
+        | Operation::WebFetch
+        | Operation::ManagePods
+        | Operation::SpawnAgent => ActionKind::Acting,
     }
 }
 
@@ -1792,6 +1889,272 @@ mod tests {
             ..workspace_write_term()
         };
         assert!(preflight_action(&term).is_denied());
+    }
+
+    /// A term for a pure read on a session that has seen adversarial content:
+    /// the source labels carry `Adversarial` integrity and the artifact label is
+    /// their join, exactly as `run_gate::preflight_scoped` builds it on a tainted
+    /// session.
+    fn tainted_read_term(operation: Operation, sink_class: SinkClass) -> ActionTerm {
+        ActionTerm {
+            operation,
+            sink_class,
+            source_labels: vec![trusted_label(), adversarial_label()],
+            artifact_label: trusted_label().join(adversarial_label()),
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![operation],
+                allowed_paths: vec![],
+            }),
+            ..workspace_write_term()
+        }
+    }
+
+    /// **A read cannot exfiltrate, so taint does not refuse it** (2026-09-27).
+    ///
+    /// `NoAdversarialAncestry` is the non-interference clause: adversarial
+    /// content must not steer an effect. Before this, it ran for every pair,
+    /// so the first web page an agent fetched made every later file read
+    /// fail — an agent that read a hostile page could no longer look at its
+    /// own workspace, which is the opposite of what a defender wants it to do
+    /// next. A read at `AuditLogAppend` writes nothing outward; the taint is
+    /// still recorded when the bytes come back in (the ingest observe paths),
+    /// and every Acting pair that could carry those bytes out still pays #4.
+    ///
+    /// RED-FIRST: on the unmodified kernel this fails with a
+    /// `NoAdversarialAncestry` denial for all three pairs.
+    #[test]
+    fn adversarial_ancestry_does_not_block_a_pure_read() {
+        for op in [
+            Operation::ReadFiles,
+            Operation::GlobSearch,
+            Operation::GrepSearch,
+        ] {
+            let result = preflight_action(&tainted_read_term(op, SinkClass::AuditLogAppend));
+            assert!(
+                result.is_allowed(),
+                "{op:?} at AuditLogAppend on a tainted session must mint, got {result:?}"
+            );
+            assert_eq!(result.unwrap_bundle().kind(), ActionKind::PureRead);
+        }
+    }
+
+    /// The operation decides, not the sink: `(WriteFiles, AuditLogAppend)` is
+    /// admissible and writes, so it still pays `NoAdversarialAncestry`. This
+    /// is the test a sink-keyed table would fail.
+    #[test]
+    fn adversarial_ancestry_still_blocks_a_write_to_the_audit_log() {
+        let term = tainted_read_term(Operation::WriteFiles, SinkClass::AuditLogAppend);
+        let result = preflight_action(&term);
+        assert!(result.is_denied(), "got {result:?}");
+        assert!(
+            result
+                .denial_reason()
+                .unwrap()
+                .contains("NoAdversarialAncestry"),
+            "the denial must be #4, not an earlier gate: {result:?}"
+        );
+        // Non-vacuity: the identical term on a clean session mints, so the
+        // denial above is #4 firing and not the pair being inadmissible.
+        let clean = ActionTerm {
+            source_labels: vec![trusted_label()],
+            artifact_label: trusted_label(),
+            ..term
+        };
+        assert!(preflight_action(&clean).is_allowed());
+    }
+
+    /// A read whose result is persisted is not a pure read. `(ReadFiles,
+    /// MemoryPersist)` is admissible (PathAllowed) and carries tainted bytes
+    /// into the next session, so it stays Acting and pays #4.
+    #[test]
+    fn adversarial_ancestry_still_blocks_a_read_persisted_to_memory() {
+        for sink in [SinkClass::MemoryPersist, SinkClass::CacheWrite] {
+            let term = ActionTerm {
+                // Trusted artifact label so `MemoryPersist`'s Untrusted floor
+                // (#1) passes and #4 is the gate under test.
+                artifact_label: trusted_label(),
+                ..tainted_read_term(Operation::ReadFiles, sink)
+            };
+            let result = preflight_action(&term);
+            assert!(result.is_denied(), "{sink:?}: got {result:?}");
+            assert!(
+                result
+                    .denial_reason()
+                    .unwrap()
+                    .contains("NoAdversarialAncestry"),
+                "{sink:?}: the denial must be #4: {result:?}"
+            );
+        }
+    }
+
+    // ── ActionKind: the pair decides, and only three pairs are pure reads ──
+
+    /// The pure-read pairs, written out once for the tests. The production
+    /// decider is `action_kind`; this list is its expectation, and
+    /// `pure_read_pairs_are_exactly_these` compares them over all 247 pairs.
+    const PURE_READ_PAIRS: [(Operation, SinkClass); 3] = [
+        (Operation::ReadFiles, SinkClass::AuditLogAppend),
+        (Operation::GlobSearch, SinkClass::AuditLogAppend),
+        (Operation::GrepSearch, SinkClass::AuditLogAppend),
+    ];
+
+    /// A clean term for `(op, sink)` that clears every obligation whenever the
+    /// pair is admissible — trusted, deterministic, in scope, zero cost.
+    fn clean_term(op: Operation, sink: SinkClass, subject: &str) -> ActionTerm {
+        ActionTerm {
+            operation: op,
+            sink_class: sink,
+            source_labels: vec![trusted_label()],
+            artifact_label: trusted_label(),
+            subject: subject.to_string(),
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![op],
+                allowed_paths: vec![],
+            }),
+            ..workspace_write_term()
+        }
+    }
+
+    #[test]
+    fn pure_read_pairs_are_exactly_these() {
+        let mut pure = Vec::new();
+        for op in Operation::ALL {
+            for sink in SinkClass::ALL {
+                if action_kind(op, sink) == ActionKind::PureRead {
+                    pure.push((op, sink));
+                }
+            }
+        }
+        assert_eq!(
+            pure,
+            PURE_READ_PAIRS.to_vec(),
+            "the pure-read pairs drifted; a new one must be argued, not inherited"
+        );
+        // Every pure-read pair is admissible — a PureRead kind on a pair
+        // PathAllowed refuses would be dead policy.
+        for (op, sink) in PURE_READ_PAIRS {
+            assert!(operation_allowed_for_sink(op, sink), "{op:?}/{sink:?}");
+        }
+    }
+
+    /// **A pure-read bundle pays only for a pure read.** Over all 247 pairs:
+    /// every admissible pair mints a bundle whose `kind()` is `action_kind`
+    /// of that pair, and a bundle authorises its own pair and no other — so a
+    /// PureRead bundle cannot be presented to an Acting effect, whatever the
+    /// sink.
+    #[test]
+    fn a_pure_read_bundle_pays_only_for_pure_reads() {
+        let mut minted = 0usize;
+        let mut minted_pure = 0usize;
+        for op in Operation::ALL {
+            for sink in SinkClass::ALL {
+                let kind = action_kind(op, sink);
+                if kind == ActionKind::PureRead {
+                    assert!(PURE_READ_PAIRS.contains(&(op, sink)), "{op:?}/{sink:?}");
+                }
+                if !operation_allowed_for_sink(op, sink) {
+                    continue;
+                }
+                let bundle = match preflight_action(&clean_term(op, sink, "pair-sweep")) {
+                    PreflightResult::Allowed(b) => b,
+                    other => panic!("admissible {op:?}/{sink:?} must mint cleanly: {other:?}"),
+                };
+                minted += 1;
+                assert_eq!(bundle.kind(), kind, "{op:?}/{sink:?}");
+                if bundle.kind() == ActionKind::PureRead {
+                    minted_pure += 1;
+                    for other_op in Operation::ALL {
+                        for other_sink in SinkClass::ALL {
+                            if bundle.authorizes(other_op, other_sink) {
+                                assert_eq!((other_op, other_sink), (op, sink));
+                                assert_eq!(action_kind(other_op, other_sink), ActionKind::PureRead);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Non-vacuity: the sweep actually minted, and saw all three reads.
+        assert!(minted > 20, "only {minted} admissible pairs minted");
+        assert_eq!(minted_pure, PURE_READ_PAIRS.len());
+    }
+
+    /// The kind depends on the pair and nothing else on the term: the same
+    /// pair under a different subject, labels, or taint yields the same kind.
+    #[test]
+    fn kind_is_a_function_of_the_pair() {
+        for (op, sink) in [
+            (Operation::ReadFiles, SinkClass::AuditLogAppend),
+            (Operation::WriteFiles, SinkClass::WorkspaceWrite),
+        ] {
+            let a = preflight_action(&clean_term(op, sink, "a")).unwrap_bundle();
+            let b = preflight_action(&clean_term(op, sink, "some/other/subject")).unwrap_bundle();
+            assert_eq!(a.kind(), b.kind());
+            assert_eq!(a.kind(), action_kind(op, sink));
+        }
+        let tainted = preflight_action(&tainted_read_term(
+            Operation::GrepSearch,
+            SinkClass::AuditLogAppend,
+        ))
+        .unwrap_bundle();
+        let clean = preflight_action(&clean_term(
+            Operation::GrepSearch,
+            SinkClass::AuditLogAppend,
+            "x",
+        ))
+        .unwrap_bundle();
+        assert_eq!(tainted.kind(), clean.kind());
+    }
+
+    /// Only #4 is waived. A pure read with no task scope, over the ceiling, or
+    /// with an un-plumbed inputs channel is still denied by that obligation.
+    #[test]
+    fn pure_read_still_needs_scope_ceiling_and_inputs() {
+        let base = || tainted_read_term(Operation::ReadFiles, SinkClass::AuditLogAppend);
+        let cases: [(&str, ActionTerm); 4] = [
+            (
+                "InScopeWithTask",
+                ActionTerm {
+                    verified_scope: None,
+                    ..base()
+                },
+            ),
+            (
+                "InScopeWithTask",
+                ActionTerm {
+                    verified_scope: Some(VerifiedScope {
+                        allowed_operations: vec![Operation::WriteFiles],
+                        allowed_paths: vec![],
+                    }),
+                    ..base()
+                },
+            ),
+            (
+                "WithinDelegationCeiling",
+                ActionTerm {
+                    capability_ceiling: Some(CapabilityLevel::Never),
+                    requested_capability: Some(CapabilityLevel::LowRisk),
+                    ..base()
+                },
+            ),
+            (
+                "InputsAuthorized",
+                ActionTerm {
+                    content_addressed_inputs: None,
+                    ..base()
+                },
+            ),
+        ];
+        for (obligation, term) in cases {
+            let result = preflight_action(&term);
+            assert!(result.is_denied(), "{obligation}: got {result:?}");
+            assert!(
+                result.denial_reason().unwrap().contains(obligation),
+                "expected {obligation}, got {result:?}"
+            );
+        }
+        // Non-vacuity: the base term itself mints.
+        assert!(preflight_action(&base()).is_allowed());
     }
 
     #[test]

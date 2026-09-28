@@ -29,6 +29,12 @@
   * `scope_admits_no_escalation` — a concrete instance: a ReadFiles authority
     does not buy a GitPush. This is the live bug the theorem generalizes.
 
+  The `ActionKind` split in `discharge.rs` (2026-09-27: a pure read at
+  `AuditLogAppend` is not charged `NoAdversarialAncestry`) changes which
+  obligations a pair must clear, not which pair a bundle admits. The kind is
+  computed from the same pair these theorems are about, and `scope_admits` is
+  unchanged, so a pure-read authority still buys exactly its own pure read.
+
   # Ground truth (Rust↔model parity)
 
   The generated defs mirror production `DischargedBundle::authorizes` — see the
