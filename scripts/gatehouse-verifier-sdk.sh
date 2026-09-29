@@ -13,6 +13,129 @@
 # Anywhere without that image (a developer machine, the GitHub shadow lane) it is the plain
 # build CI runs.
 set -eu
+
+# ── Keeping a seed's SDK output at the seed's instant ─────────────────────────────────────────
+# A seeded gate restamps its sources by CONTENT against the manifest the seed carries
+# (`/cache/.gatehouse/seed-sources.sha256`, lines `<sha256>  <path relative to the source root>`),
+# so a file byte-equal to the seed's copy keeps the seed's old mtime and cargo sees it as fresh.
+# wasm-pack then rewrites every file under sdks/verifier-js/pkg/ on every run -- byte-identical
+# output, measured 7 of 7 files -- and the fresh mtime undoes that restamp:
+# nucleus-verifier-service's build script watches pkg/nucleus_verifier_wasm.js (rerun-if-changed)
+# and its routes.rs `include_bytes!`/`include_str!`s two pkg files, so the crate and everything
+# above it rebuilt on every seeded run for bytes that had not changed.
+#
+# restamp_seed_pkg puts back the pre-stamp instant (1230768000, 2009-01-01T00:00:00Z, older than
+# the seed's own 2010 stamp) on EXACTLY the pkg files whose sha256 matches the manifest. A file
+# that differs, is unlisted, is a symlink, or lies outside pkg/ is left alone, so it keeps
+# wasm-pack's fresh mtime and cargo rebuilds from it as before.
+#
+# SOUNDNESS. Back-dating a file tells cargo "the outputs you hold were built from this". That is
+# true here, and only here, because this script is step 0 of the clippy and test gates
+# (.gatehouse/pipeline.writ, .gatehouse/gates/{clippy,test}.json): no cargo step has written the
+# seed's target dir in this pod yet, wasm-pack builds into its own sdks/verifier-js/target
+# (CARGO_TARGET_DIR is unset for it below), and a file byte-equal to the seed's source yields the
+# same compilation as the seed's did. Two guards keep it from running anywhere else:
+#   - The manifest exists only in a seeded gate pod. Without it (a developer machine, the shadow
+#     lane, an unseeded gate) the restamp is a no-op, and outside the gate image it is not reached
+#     at all: that branch `exec`s wasm-pack.
+#   - Position in the step list is a property of the plan, not of this script, so the script
+#     checks it: if anything in the target dir cargo would use is newer than this pod's boot,
+#     cargo has already run here and the restamp is skipped. Any doubt (no /proc/uptime, a failed
+#     find) also skips it. Skipping only costs the rebuild this exists to avoid; it is never wrong.
+PRESTAMP=200901010000.00 # `touch -t` under TZ=UTC0: 1230768000, 2009-01-01T00:00:00Z
+
+sum256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-64
+}
+
+# restamp_seed_pkg <manifest> <source root> <target dir> <boot reference file>
+restamp_seed_pkg() {
+  manifest=$1 root=$2 target=$3 bootref=$4
+  [ -f "$manifest" ] || return 0
+  if [ -e "$target" ]; then
+    newer=$(find "$target" -mindepth 1 -maxdepth 3 -newer "$bootref" -print -quit 2>/dev/null) || newer=unknown
+    [ -f "$bootref" ] || newer=unknown
+    if [ -n "$newer" ]; then
+      echo "gatehouse-verifier-sdk: not restamping sdks/verifier-js/pkg: cargo has written $target in this pod ($newer)" >&2
+      return 0
+    fi
+  fi
+  [ -d "$root/sdks/verifier-js/pkg" ] && [ ! -L "$root/sdks/verifier-js/pkg" ] || return 0
+  # Paths resolve against <source root>, which is what the manifest's relative paths are
+  # relative to -- not against whatever the cwd happens to be.
+  while IFS= read -r line || [ -n "$line" ]; do
+    want=${line%%  *}
+    rel=${line#*  }
+    [ "$rel" != "$line" ] || continue
+    case $want in *[!0-9a-f]*) continue ;; esac
+    [ ${#want} -eq 64 ] || continue
+    case $rel in sdks/verifier-js/pkg/*) ;; *) continue ;; esac
+    case "/$rel/" in */../* | */./*) continue ;; esac
+    f=$root/$rel
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    [ "$(sum256 <"$f")" = "$want" ] || continue
+    TZ=UTC0 touch -t "$PRESTAMP" -- "$f"
+  done <"$manifest"
+}
+
+# A file whose mtime is this pod's boot, less a second. Fails when the boot cannot be known.
+boot_reference() {
+  up=$(cut -d. -f1 /proc/uptime 2>/dev/null) && [ -n "$up" ] || return 1
+  stamp=$(date -u -d "@$(($(date +%s) - up - 1))" +%Y%m%d%H%M.%S 2>/dev/null) || return 1
+  TZ=UTC0 touch -t "$stamp" -- "$1"
+}
+
+self_test() {
+  t=$(mktemp -d)
+  trap 'rm -rf "$t"' EXIT
+  src=$t/src pkg=$t/src/sdks/verifier-js/pkg
+  mkdir -p "$pkg" "$t/src/crates" "$t/target/debug/deps"
+  printf 'same' >"$pkg/nucleus_verifier_wasm.js"
+  printf 'same too' >"$pkg/with space.wasm"
+  printf 'rebuilt differently' >"$pkg/changed.js"
+  printf 'unlisted' >"$pkg/unlisted.js"
+  printf 'outside' >"$t/src/crates/outside.rs"
+  ln -s ../../../crates/outside.rs "$pkg/link.js"
+  {
+    printf '%s  %s\n' "$(printf 'same' | sum256)" sdks/verifier-js/pkg/nucleus_verifier_wasm.js
+    printf '%s  %s\n' "$(printf 'same too' | sum256)" 'sdks/verifier-js/pkg/with space.wasm'
+    printf '%s  %s\n' "$(printf 'what the seed had' | sum256)" sdks/verifier-js/pkg/changed.js
+    printf '%s  %s\n' "$(printf 'outside' | sum256)" crates/outside.rs
+    printf '%s  %s\n' "$(printf 'outside' | sum256)" sdks/verifier-js/pkg/link.js
+    printf '%s  %s' "$(printf 'outside' | sum256)" sdks/verifier-js/pkg/../../../crates/outside.rs
+  } >"$t/manifest"
+  TZ=UTC0 touch -t "$PRESTAMP" "$t/prestamp"
+  TZ=UTC0 touch -t 202001010000.00 "$t/boot"
+  TZ=UTC0 touch -t 201001010000.00 "$t/target/debug/deps/libseed.rlib" "$t/target/debug/deps" "$t/target/debug"
+  old() { [ -z "$(find "$1" -newer "$t/prestamp")" ]; }
+  fail() { echo "self-test: $*" >&2; exit 1; }
+
+  # 1. Cargo has run in this pod: a target entry newer than boot. Nothing may move.
+  touch "$t/target/debug/deps/libfresh.rlib"
+  restamp_seed_pkg "$t/manifest" "$src" "$t/target" "$t/boot" 2>/dev/null
+  for f in "$pkg"/* "$t/src/crates/outside.rs"; do old "$f" && fail "restamped $f after cargo ran"; done
+  rm "$t/target/debug/deps/libfresh.rlib"
+  TZ=UTC0 touch -t 201001010000.00 "$t/target/debug/deps"
+
+  # 2. No manifest: a no-op.
+  restamp_seed_pkg "$t/absent" "$src" "$t/target" "$t/boot"
+  for f in "$pkg"/*; do old "$f" && fail "restamped $f with no manifest"; done
+
+  # 3. The seeded step 0: exactly the byte-equal pkg files take the old instant.
+  restamp_seed_pkg "$t/manifest" "$src" "$t/target" "$t/boot"
+  old "$pkg/nucleus_verifier_wasm.js" || fail "a matching file kept its fresh mtime"
+  old "$pkg/with space.wasm" || fail "a matching file with a space kept its fresh mtime"
+  old "$pkg/changed.js" && fail "a file that differs from the seed was restamped"
+  old "$pkg/unlisted.js" && fail "an unlisted file was restamped"
+  old "$t/src/crates/outside.rs" && fail "a file outside pkg/ was restamped (by name, symlink or ..)"
+  echo "ok: self-test -- only byte-equal pkg files restamped; none with no manifest or after cargo ran"
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  self_test
+  exit 0
+fi
+
 tools=/opt/gate-tools
 if [ ! -f "$tools/pins.json" ] || [ ! -x "$tools/bin/rustc-ci-host" ]; then
   exec wasm-pack build sdks/verifier-js --target web --release
@@ -37,9 +160,20 @@ test -n "$workspace" && test -n "$registry"
 mkdir -p /work/.cache /work/cargo-js
 cp -a "$tools/cache/." /work/.cache/
 sed "s#^directory = .*#directory = \"$registry\"#" /opt/nucleus-build/cargo-js/config.toml > /work/cargo-js/config.toml
-exec unshare -Urm sh -c '
+src=$(pwd -P)
+unshare -Urm sh -c '
   mount --bind "$1" "$2"
   cd "$2"
   exec env -u CARGO_TARGET_DIR RUSTC=/opt/gate-tools/bin/rustc-ci-host RUSTUP_HOME=/usr/local/rustup \
     RUSTUP_TOOLCHAIN=1.96.1 CARGO_HOME=/work/cargo-js XDG_CACHE_HOME=/work/.cache \
-    wasm-pack build sdks/verifier-js --target web --release' sh "$(pwd -P)" "$workspace"
+    wasm-pack build sdks/verifier-js --target web --release' sh "$src" "$workspace" || exit $?
+# wasm-pack succeeded. Back-date its byte-identical output to the seed's instant (see the top of
+# this file for why that is sound only here). The bind mount above shares inodes with $src, so
+# the files are restamped at the paths the manifest names, relative to the source root.
+bootref=$(mktemp)
+if boot_reference "$bootref"; then
+  restamp_seed_pkg /cache/.gatehouse/seed-sources.sha256 "$src" "${CARGO_TARGET_DIR:-$src/target}" "$bootref"
+else
+  echo "gatehouse-verifier-sdk: not restamping sdks/verifier-js/pkg: this pod's boot time is unknown" >&2
+fi
+rm -f "$bootref"

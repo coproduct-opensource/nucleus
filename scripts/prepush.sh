@@ -77,6 +77,9 @@ run "check-line-ratchet --strict" bash scripts/check-line-ratchet.sh --strict
 # gauntlet of about a minute. `check-clippy-ratchet` is the fourth and is NOT here -- 53 s warm
 # and minutes cold, so it sits in --full below with the other clippy work.
 run "check-gate-defs-match-plan" bash scripts/check-gate-defs-match-plan.sh
+# The seeded-gate restamp in the SDK step runs only inside a gate pod, so its logic is proved
+# here: only byte-equal pkg files move, and nothing moves once cargo has run. Under 1 s.
+run "gatehouse-verifier-sdk --self-test" sh scripts/gatehouse-verifier-sdk.sh --self-test
 run "ci-spec check" cargo run -q -p xtask -- ci-spec check
 # The gauntlet checking its own list. Cheap, and the only thing that stops a gate being added to
 # CI and never reaching the fast path -- which is how three of today's five misses happened.
