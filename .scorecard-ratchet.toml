@@ -22,6 +22,10 @@
 #
 #   floor_bp          minimum discharged/population in basis points. May only RISE.
 #   population_floor  minimum population. A shrinking surface is a decision.
+#   floor_set         how the floor came to hold its value: "measurement" when it
+#                     equals what the tree measures, or "waiver" with waiver_dated,
+#                     waiver_by and waiver_because when it sits below by decision.
+#                     Required: a bare digit cannot tell a raise from a concession.
 #
 # Both, because neither alone is a gate. A floor on the ratio rewards deleting
 # obligations: remove one and numerator and denominator fall together while the
@@ -58,8 +62,16 @@
 # #2197 -- taking 3 bound witness-accepting sites with them (174 -> 171). A
 # deletion, not a regression: the one undischarged site (`trait CaClient`) is
 # unchanged, so the ratio moves only because the denominator shrank. 170/171.
-floor_bp = 9941
-population_floor = 171
+# 2026-09-27: the two memory cores take an Authority by value and spend it before
+# mutating — two new sites, both bound. 173/174.
+# 2026-09-27: NodeClient::{create_pod, list_pods, pod_logs, cancel_pod} take an
+# Authority by value and spend it before building the request — four new sites,
+# all bound. 177/178.
+# 2026-09-29: `Sandbox::glob` joins with its DecisionToken and Authority taken by value
+# and consumed before the walk — two new sites, both bound, on top of main's 177/178. 179/180.
+floor_bp = 9944
+floor_set = "measurement"
+population_floor = 180
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -93,6 +105,7 @@ population_floor = 171
 # absorption checked -- so it is its own commit. This number rises when that
 # lands.
 floor_bp = 3956
+floor_set = "measurement"
 population_floor = 278
 
 [family.tot]
@@ -183,6 +196,7 @@ population_floor = 278
 # unchecked additions or multiplications on lengths and times. With it the ratio is
 # 29/87, 33.33%, and the floor follows it up.
 floor_bp = 3333
+floor_set = "measurement"
 population_floor = 86
 
 [family.life]
@@ -257,8 +271,16 @@ population_floor = 86
 # 5/12 (41.66%), and that exposed a real hole: the proof did not say WHICH record it
 # proved, so one record's proof could acknowledge another. It now carries a
 # state_hash of the log and the record, checked at both acknowledgement sites. 6/12.
-floor_bp = 5000
-population_floor = 12
+# 2026-09-26 (#3020): federated_credential::Refilled, the proof a federated
+# credential was minted or found cached, entered as an affine right. Unbounded it
+# reddened CI at 6/13 (46.15%), and it was a real gap: the proof vouched for a
+# credential with an end and carried none, so only the store stood between a
+# held proof and an expired token. It now carries not_after (the cache entry's
+# end, or the pod certificate's on a hit) and handle_perform refuses a proof past
+# it before the store is read. 7/13.
+floor_bp = 5384
+floor_set = "measurement"
+population_floor = 13
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
@@ -306,6 +328,7 @@ population_floor = 12
 # obvious tag pair -- McpToolResult and ToolResponse are adversarial, EnvVar and
 # Secret are confidential -- and each is a struct plus a registry row.
 floor_bp = 869
+floor_set = "measurement"
 population_floor = 23
 
 [family.suppress]
@@ -393,7 +416,18 @@ population_floor = 23
 # 2026-09-18: rebased onto the tree that deleted WorkloadApiServer, so neither
 # branch's number describes the merged tree -- 19 of 143 = 13.28%, re-measured
 # rather than carried over from either side.
-floor_bp = 1388
+#
+# LOWERED 1388 -> 1328 on 2026-09-27, and the reason is the one this family was
+# written to reward. HTTP `grep_search` carried
+# `#[expect(clippy::disallowed_methods, reason = "#1216 OPEN ...")]` over a raw
+# `std::fs::File::open`. The handler now reads through
+# `Sandbox::read_to_string_for_search`, so the lint stopped firing and the
+# expectation had to go -- the one suppression form that CAN fail, failing as
+# designed. Removing a discharged waiver lowers a discharged ratio (20/144 ->
+# 19/143), because the census counts waivers, not the defects under them; the
+# population floor is re-pinned with it so nothing else can slip under.
+floor_bp = 1328
+floor_set = "measurement"
 population_floor = 143
 
 [family.mediate]
@@ -411,5 +445,9 @@ population_floor = 143
 # Four routes are declared not-an-effect (health, workload result/logs) and sit
 # outside the population. Raise this as Checked handlers are made to take an
 # Authority.
-floor_bp = 4800
+# 2026-09-29, merging main: #3036 (memory), #3041 (pod/*) and #3040 (glob, grep) sealed the
+# ten Checked handlers named above. 22/25 sealed; the three left are approve, declassify and
+# escalate, each Checked on an authority of its own (signature, token, certificate chain).
+floor_bp = 8800
+floor_set = "measurement"
 population_floor = 25

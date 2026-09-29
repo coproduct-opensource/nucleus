@@ -327,6 +327,32 @@ pub fn ceiling_routes(src: &str) -> Result<Vec<String>> {
     Ok(l.0)
 }
 
+/// The module a bare handler name was imported from by `src`'s top-level `use` items, as a path
+/// of module names (`use approval::{approve_operation, ..}` gives `["approval"]`). A router names
+/// a handler bare once it moves into a module and is imported, so the census follows the import
+/// the compiler follows instead of guessing by name. `None` when no import names it.
+fn imported_from(src: &str, name: &str) -> Result<Option<Vec<String>>> {
+    fn walk(tree: &syn::UseTree, prefix: &mut Vec<String>, name: &str) -> Option<Vec<String>> {
+        match tree {
+            syn::UseTree::Path(p) => {
+                prefix.push(p.ident.to_string());
+                let found = walk(&p.tree, prefix, name);
+                prefix.pop();
+                found
+            }
+            syn::UseTree::Name(n) if n.ident == name => Some(prefix.clone()),
+            syn::UseTree::Rename(r) if r.rename == name => Some(prefix.clone()),
+            syn::UseTree::Group(g) => g.items.iter().find_map(|t| walk(t, prefix, name)),
+            _ => None,
+        }
+    }
+    let file: syn::File = syn::parse_str(src).context("parsing the router")?;
+    Ok(file.items.iter().find_map(|item| match item {
+        syn::Item::Use(u) => walk(&u.tree, &mut Vec::new(), name),
+        _ => None,
+    }))
+}
+
 fn under_ceiling(path: &str, ceiling: &[String]) -> bool {
     ceiling
         .iter()
@@ -391,7 +417,18 @@ pub fn entries(corpus: &BTreeMap<String, String>) -> Result<Vec<Entry>> {
     for (path, handler) in routes {
         let name = format!("http {path}");
         let (file, func) = match handler.as_slice() {
-            [f] => (ROUTER.to_string(), f.clone()),
+            // A bare name is the router's own function, or one it imports from a crate module.
+            [f] => match imported_from(router, f)?.as_deref() {
+                Some([m]) if m != "crate" && m != "self" && m != "super" => {
+                    (format!("{SRC}/{m}.rs"), f.clone())
+                }
+                Some(other) if !other.is_empty() => bail!(
+                    "{name}: handler `{f}` is imported from `{}`, a path the census does not \
+                     resolve. Teach it the path rather than let the route read as a missing fn.",
+                    other.join("::")
+                ),
+                _ => (ROUTER.to_string(), f.clone()),
+            },
             [.., m, f] => (format!("{SRC}/{m}.rs"), f.clone()),
             [] => bail!("{name}: a route with no handler path"),
         };
