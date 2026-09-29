@@ -113,8 +113,12 @@ pub enum EgressChannel {
     /// sockets; the container path registers no identity, so the broker refuses
     /// — a structural refusal, not a token.
     PodDirSocket = 7,
-    /// node gRPC control plane — operator-provisioned endpoint, never
-    /// agent-controlled.
+    /// node control plane — operator-provisioned endpoint, never
+    /// agent-controlled. `partial` since 2026-09-27: the agent-driven frames
+    /// (pod create/list/status/logs/cancel through `node_client.rs`) are reachable
+    /// only by spending an `Authority` earned for that exact pod act; the rest
+    /// (the lockdown client) are proxy-originated, with no agent authority to
+    /// discharge.
     NodeGrpc = 8,
     /// netns raw socket (`std::net`, any linked lib) anywhere in the guest —
     /// same open class as in-shell egress.
@@ -215,8 +219,10 @@ impl EgressChannel {
             EgressChannel::InShellEgress | EgressChannel::Dns | EgressChannel::NetnsRawSocket => {
                 MediationStatus::BackstoppedOnly
             }
-            EgressChannel::VsockTransport | EgressChannel::PodDirSocket => MediationStatus::Partial,
-            EgressChannel::NodeGrpc | EgressChannel::AuditEgress => MediationStatus::InfraOutOfSet,
+            EgressChannel::VsockTransport
+            | EgressChannel::PodDirSocket
+            | EgressChannel::NodeGrpc => MediationStatus::Partial,
+            EgressChannel::AuditEgress => MediationStatus::InfraOutOfSet,
             // #1248 closed: unmediated_effects requires opt-in token + strictest-
             // sink discharge + FlowTracker observe, and the effect methods take
             // Authority by value (compile-error on an un-preflighted call).

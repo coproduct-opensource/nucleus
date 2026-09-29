@@ -84,7 +84,7 @@ no open hole at all — the machine meaning of "every".
 | 6 | DNS (tunnel/exfil) | `dns` | dnsmasq guest config | `backstopped-only` | `no-resolv`, no upstream → an unlisted name fails locally (`the_dns_proxy_has_no_upstream_and_cannot_forward`) |
 | 7 | vsock (broker/task-token/SVID transport) | `vsock_transport` | `crates/nucleus-tool-proxy/src/broker_client.rs:223`, `crates/nucleus-node/src/workload_api_vsock.rs` | `partial` | Broker perform is mediated (#4); other frames are host-issued, peer-CID pinned to `VMADDR_CID_HOST` — no agent authority to discharge |
 | 8 | pod-dir Unix socket (container broker) | `pod_dir_socket` | `crates/nucleus-node/src/broker_transport.rs` `BrokerTransport::PodDirSocket` | `partial` | The container path registers no identity, so the broker refuses — a structural refusal, not a token |
-| 9 | node gRPC (control plane) | `node_grpc` | `crates/nucleus-tool-proxy/src/node_client.rs` (whole-file infra grep-gate) | `infra-out-of-set` | Operator-provisioned endpoint, never agent-controlled |
+| 9 | node gRPC (control plane) | `node_grpc` | `crates/nucleus-tool-proxy/src/node_client.rs` (pod management), `lockdown_client.rs` | `partial` | Operator-provisioned endpoint, never agent-controlled. Every agent-driven frame — `NodeClient::{create_pod, list_pods, pod_logs, cancel_pod}` — takes an `Authority` by value and spends it on the exact `node_client::acts` value before the request is built (create is bound to the spec's SHA-256); the lockdown frames are proxy-originated. Cancel is `AuthorityReducing` (a tainted session can still stop its children), and the node admits it only for the caller and its direct children (`get_pod_for_caller`) |
 | 10 | netns raw socket (`std::net`, any linked lib) | `netns_raw_socket` | anywhere in the guest | `backstopped-only` | Same open class as #5 — `apply_default_deny` netns egress policy, **proven applied on boot** by `scripts/check-egress-probe.sh` |
 | 11 | Audit / Article-12 egress (S3, webhook) | `audit_egress` | `crates/nucleus-tool-proxy/src/main.rs`, `art12_shipper.rs` (net allowlist) | `infra-out-of-set` | The runtime's record OF the agent, an operator sink |
 | 12 | Effect escape hatch `NucleusRuntime::unmediated_effects` | `effects_escape_hatch` | `crates/portcullis-effects/src/runtime.rs:690` (#1248) | `type-enforced` | The raw `effects()` accessor is gone; `unmediated_effects` requires an `UnmediatedAccess` opt-in token + a `DischargedBundle` discharged against the strictest sink (`HTTPEgress`, fails on a tainted session) + a `FlowTracker` observe, and the returned effect methods take `Authority` by value. Fail-closed tested (`unmediated_preflight_denies_adversarial_session`) + all-profile isolation invariant. Audit-DAG granularity is coarse (one `OutboundAction` node per grant) |
@@ -96,7 +96,9 @@ type-enforced, grep-backstopped. The three surfaces that once kept C6 honestly
 NOT-YET are now closed: (a) the in-shell/raw-socket surface (5, 10) is confined by
 the netns default-deny, **proven applied on boot** (`check-egress-probe.sh`); (b)
 the partial transport channels (7, 8) rest on tested structural refusals (host-CID
-pin `only_the_host_cid_is_accepted`; broker refusal by absence); and (c) the
+pin `only_the_host_cid_is_accepted`; broker refusal by absence), and the node
+control plane (9) is `partial` because its agent-driven pod frames spend an
+`Authority` (2026-09-27) while its lockdown frames are proxy-originated; and (c) the
 `effects()` escape hatch (12) is closed (`unmediated_effects`, #1248). The
 inventory now carries **no open hole** — `no_channel_is_an_open_hole` asserts it.
 The remaining step to move C6 off NOT-YET is the ledger-promotion decision itself
