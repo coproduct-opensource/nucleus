@@ -434,10 +434,13 @@ fn adversarial_ancestry_still_blocks_a_read_persisted_to_memory() {
 /// The pure-read pairs, written out once for the tests. The production
 /// decider is `action_kind`; this list is its expectation, and
 /// `pure_read_pairs_are_exactly_these` compares them over all 247 pairs.
-const PURE_READ_PAIRS: [(Operation, SinkClass); 3] = [
+/// In `Operation::ALL` order, which is the order the sweep finds them.
+const PURE_READ_PAIRS: [(Operation, SinkClass); 4] = [
     (Operation::ReadFiles, SinkClass::AuditLogAppend),
     (Operation::GlobSearch, SinkClass::AuditLogAppend),
     (Operation::GrepSearch, SinkClass::AuditLogAppend),
+    // Pod observe — list, status, logs (2026-09-27).
+    (Operation::ManagePods, SinkClass::AuditLogAppend),
 ];
 
 /// A clean term for `(op, sink)` that clears every obligation whenever the
@@ -516,7 +519,7 @@ fn a_pure_read_bundle_pays_only_for_pure_reads() {
             }
         }
     }
-    // Non-vacuity: the sweep actually minted, and saw all three reads.
+    // Non-vacuity: the sweep actually minted, and saw every pure read.
     assert!(minted > 20, "only {minted} admissible pairs minted");
     assert_eq!(minted_pure, PURE_READ_PAIRS.len());
 }
@@ -1301,4 +1304,198 @@ fn the_documented_sinks_are_the_unreachable_ones() {
         operation_allowed_for_sink(Operation::GitPush, SinkClass::GitPush),
         "a control pairing must be reachable, or the gate proves nothing"
     );
+}
+
+// ── AuthorityReducing: a tainted session can still stop its children ──
+
+/// The authority-reducing pairs, written out once. `action_kind` is the
+/// decider; `authority_reducing_pairs_are_exactly_these` compares them.
+const AUTHORITY_REDUCING_PAIRS: [(Operation, SinkClass); 1] =
+    [(Operation::ManagePods, SinkClass::CloudMutation)];
+
+/// A pod term on a session that has read adversarial content: the source
+/// labels carry `Adversarial` integrity AND the artifact label is their join,
+/// so both obligation 1 (the sink floor) and obligation 4 would bite.
+fn tainted_pod_term(sink_class: SinkClass) -> ActionTerm {
+    ActionTerm {
+        subject: "00000000-0000-0000-0000-00000000000b".to_string(),
+        ..tainted_read_term(Operation::ManagePods, sink_class)
+    }
+}
+
+/// **A tainted session can still cancel** (2026-09-27).
+///
+/// Teardown was `(ManagePods, CloudMutation)`, an Acting pair at a sink with
+/// an `Untrusted` floor. So the first hostile page a parent agent read made it
+/// unable to stop the children it had spawned — obligation 1 refused on the
+/// artifact label, and obligation 4 on the source labels. The taint that
+/// should make an agent more willing to stop things made stopping impossible.
+/// Now the pair is `AuthorityReducing`: floor `Adversarial`, #4 not charged.
+///
+/// RED-FIRST: on the kernel before `AuthorityReducing` this is denied with an
+/// `IntegrityGate` reason. A-19 probe: making `action_kind` return `Acting`
+/// for this pair turns it red again.
+#[test]
+fn a_tainted_session_can_cancel() {
+    let term = tainted_pod_term(SinkClass::CloudMutation);
+    assert_eq!(term.artifact_label.integrity, IntegLevel::Adversarial);
+    let result = preflight_action(&term);
+    assert!(
+        result.is_allowed(),
+        "a tainted session must still be able to cancel: {result:?}"
+    );
+    let bundle = result.unwrap_bundle();
+    assert_eq!(bundle.kind(), ActionKind::AuthorityReducing);
+    assert!(bundle.authorizes(Operation::ManagePods, SinkClass::CloudMutation));
+}
+
+/// The same tainted session cannot CREATE a sub-pod: `(ManagePods,
+/// AgentSpawn)` is Acting, so the `AgentSpawn` floor refuses it at #1 — and
+/// with a trusted artifact label, #4 still refuses it on the source labels.
+#[test]
+fn a_tainted_session_cannot_create_a_sub_pod() {
+    let term = tainted_pod_term(SinkClass::AgentSpawn);
+    let result = preflight_action(&term);
+    assert!(result.is_denied(), "got {result:?}");
+    assert!(
+        result.denial_reason().unwrap().contains("IntegrityGate"),
+        "{result:?}"
+    );
+    let floor_cleared = ActionTerm {
+        artifact_label: trusted_label(),
+        ..tainted_pod_term(SinkClass::AgentSpawn)
+    };
+    let result = preflight_action(&floor_cleared);
+    assert!(result.is_denied(), "got {result:?}");
+    assert!(
+        result
+            .denial_reason()
+            .unwrap()
+            .contains("NoAdversarialAncestry"),
+        "{result:?}"
+    );
+    // Non-vacuity: the pair itself is earnable on a clean session.
+    let clean = clean_term(Operation::ManagePods, SinkClass::AgentSpawn, "x");
+    assert!(preflight_action(&clean).is_allowed());
+}
+
+/// A teardown bundle authorises teardown and nothing else — in particular not
+/// a spawn, the pair that shares its operation. The exemption is keyed on the
+/// pair, and `authorizes` is pair equality, so it cannot leak to create.
+#[test]
+fn a_teardown_bundle_cannot_pay_for_a_spawn() {
+    let bundle = preflight_action(&tainted_pod_term(SinkClass::CloudMutation)).unwrap_bundle();
+    assert!(!bundle.authorizes(Operation::ManagePods, SinkClass::AgentSpawn));
+    assert!(!bundle.authorizes(Operation::SpawnAgent, SinkClass::AgentSpawn));
+    assert!(!bundle.authorizes(Operation::ManagePods, SinkClass::AuditLogAppend));
+    let mut authorised = 0usize;
+    for op in Operation::ALL {
+        for sink in SinkClass::ALL {
+            if bundle.authorizes(op, sink) {
+                authorised += 1;
+                assert_eq!((op, sink), AUTHORITY_REDUCING_PAIRS[0]);
+            }
+        }
+    }
+    assert_eq!(authorised, 1, "it must authorise its own pair");
+}
+
+/// Only #1's floor and #4 are waived. A cancel with no task scope, a scope
+/// that does not name `ManagePods`, over the ceiling, over budget, or with an
+/// un-plumbed inputs channel is still refused by that obligation.
+#[test]
+fn cancel_still_needs_task_scope() {
+    let base = || tainted_pod_term(SinkClass::CloudMutation);
+    let cases: [(&str, ActionTerm); 5] = [
+        (
+            "InScopeWithTask",
+            ActionTerm {
+                verified_scope: None,
+                ..base()
+            },
+        ),
+        (
+            "InScopeWithTask",
+            ActionTerm {
+                verified_scope: Some(VerifiedScope {
+                    allowed_operations: vec![Operation::ReadFiles],
+                    allowed_paths: vec![],
+                }),
+                ..base()
+            },
+        ),
+        (
+            "WithinDelegationCeiling",
+            ActionTerm {
+                capability_ceiling: Some(CapabilityLevel::Never),
+                requested_capability: Some(CapabilityLevel::LowRisk),
+                ..base()
+            },
+        ),
+        (
+            "InputsAuthorized",
+            ActionTerm {
+                content_addressed_inputs: None,
+                ..base()
+            },
+        ),
+        (
+            "BudgetNotExceeded",
+            ActionTerm {
+                estimated_cost_micro_usd: 1,
+                ..base()
+            },
+        ),
+    ];
+    for (obligation, term) in cases {
+        let result = preflight_action(&term);
+        assert!(result.is_denied(), "{obligation}: got {result:?}");
+        assert!(
+            result.denial_reason().unwrap().contains(obligation),
+            "expected {obligation}, got {result:?}"
+        );
+    }
+    // Non-vacuity: the base term itself mints.
+    assert!(preflight_action(&base()).is_allowed());
+}
+
+#[test]
+fn authority_reducing_pairs_are_exactly_these() {
+    let mut reducing = Vec::new();
+    for op in Operation::ALL {
+        for sink in SinkClass::ALL {
+            if action_kind(op, sink) == ActionKind::AuthorityReducing {
+                reducing.push((op, sink));
+            }
+        }
+    }
+    assert_eq!(
+        reducing,
+        AUTHORITY_REDUCING_PAIRS.to_vec(),
+        "the authority-reducing pairs drifted; an exemption from the taint \
+         obligations must be argued, not inherited"
+    );
+    for (op, sink) in AUTHORITY_REDUCING_PAIRS {
+        assert!(operation_allowed_for_sink(op, sink), "{op:?}/{sink:?}");
+        // Only this kind's floor moved: the sink's own floor is still the
+        // publish floor, so an Acting pair at CloudMutation would pay it.
+        assert_eq!(
+            integrity_floor(ActionKind::AuthorityReducing, sink),
+            IntegLevel::Adversarial
+        );
+        assert_eq!(
+            integrity_floor(ActionKind::Acting, sink),
+            IntegLevel::Untrusted
+        );
+    }
+}
+
+/// Pod observe is a pure read: a tainted session can still list its pods and
+/// read their logs, and the bytes that come back are observed into the graph
+/// by the node client, so every later Acting pair pays for them.
+#[test]
+fn a_tainted_session_can_observe_its_pods() {
+    let result = preflight_action(&tainted_pod_term(SinkClass::AuditLogAppend));
+    assert!(result.is_allowed(), "got {result:?}");
+    assert_eq!(result.unwrap_bundle().kind(), ActionKind::PureRead);
 }

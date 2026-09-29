@@ -257,8 +257,8 @@ discharge fails (`no_replay_without_a_fresh_discharge`).
   `crates/nucleus-ifc-kernel/src/extracted/mediation.rs` → charon (scoped
   `--start-from`) → aeneas → `generated-mediation/PortcullisCoreMediation/`.
 - Rust↔model parity: exhaustive sweep in `src/extracted/mediation.rs` over every
-  earnable pair (28 of 247 pass `PathAllowed`) against all 247 attempted pairs —
-  6,916 comparisons, the complete domain, so this is an equivalence proof rather
+  earnable pair (29 of 247 pass `PathAllowed`) against all 247 attempted pairs —
+  7,163 comparisons, the complete domain, so this is an equivalence proof rather
   than a sample.
 
 **Axiom set:** `[propext, Classical.choice, Quot.sound]` — no `sorryAx`, and no

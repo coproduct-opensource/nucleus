@@ -64,9 +64,12 @@
 # unchanged, so the ratio moves only because the denominator shrank. 170/171.
 # 2026-09-27: the two memory cores take an Authority by value and spend it before
 # mutating — two new sites, both bound. 173/174.
-floor_bp = 9942
+# 2026-09-27: NodeClient::{create_pod, list_pods, pod_logs, cancel_pod} take an
+# Authority by value and spend it before building the request — four new sites,
+# all bound. 177/178.
+floor_bp = 9943
 floor_set = "measurement"
-population_floor = 174
+population_floor = 178
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`

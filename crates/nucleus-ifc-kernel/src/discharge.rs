@@ -27,10 +27,10 @@
 //!
 //! | Token | Obligation |
 //! |---|---|
-//! | `Discharged<IntegrityGate>` | Artifact integrity ≥ sink minimum |
+//! | `Discharged<IntegrityGate>` | Artifact integrity ≥ sink minimum — `Adversarial` (never refuses) for an [`ActionKind::AuthorityReducing`] pair |
 //! | `Discharged<PathAllowed>` | Operation is structurally permitted for this sink |
 //! | `Discharged<DerivationClear>` | Derivation class is compatible with this sink |
-//! | `Discharged<NoAdversarialAncestry>` | No source label has `Adversarial` integrity — charged to [`ActionKind::Acting`] pairs; a [`ActionKind::PureRead`] pair (a read verb at `AuditLogAppend`) mints it without the check |
+//! | `Discharged<NoAdversarialAncestry>` | No source label has `Adversarial` integrity — charged to [`ActionKind::Acting`] pairs; a [`ActionKind::PureRead`] pair (a read verb, or pod observe, at `AuditLogAppend`) or [`ActionKind::AuthorityReducing`] pair (pod teardown) mints it without the check |
 //! | `Discharged<BudgetNotExceeded>` | Estimated cost is within budget |
 //! | `Discharged<WithinDelegationCeiling>` | Requested capability ≤ policy ceiling for the op |
 //! | `Discharged<InScopeWithTask>` | Operation is within the verified task token's scope |
@@ -645,15 +645,16 @@ impl<O: ProofObligation> std::fmt::Debug for Discharged<O> {
 /// all obligations passed.
 #[must_use = "a DischargedBundle must be passed to the effect function it authorizes"]
 pub struct DischargedBundle {
-    /// Artifact integrity ≥ sink minimum.
+    /// Artifact integrity ≥ the floor for this pair's kind at its sink.
     pub integrity_gate: Discharged<IntegrityGate>,
     /// Operation is structurally permitted for this sink.
     pub path_allowed: Discharged<PathAllowed>,
     /// Derivation class is compatible with this sink.
     pub derivation_clear: Discharged<DerivationClear>,
     /// No source label carries adversarial integrity — or, for a
-    /// [`ActionKind::PureRead`] pair, the check does not apply: a read carries
-    /// nothing outward. [`DischargedBundle::kind`] says which.
+    /// [`ActionKind::PureRead`] or [`ActionKind::AuthorityReducing`] pair, the
+    /// check does not apply: neither carries anything outward.
+    /// [`DischargedBundle::kind`] says which.
     pub no_adversarial_ancestry: Discharged<NoAdversarialAncestry>,
     /// Estimated cost fits within the budget gate.
     pub budget_not_exceeded: Discharged<BudgetNotExceeded>,
@@ -947,7 +948,9 @@ impl PreflightResult {
 /// 3. **DerivationClear** — derivation class is compatible with this sink
 /// 4. **NoAdversarialAncestry** — no source label carries `Adversarial` integrity;
 ///    charged to [`ActionKind::Acting`] pairs only — a [`ActionKind::PureRead`]
-///    pair skips it (see [`ActionKind`]). Every other obligation applies to both.
+///    or [`ActionKind::AuthorityReducing`] pair skips it (see [`ActionKind`]).
+///    Obligation 1's floor is also per kind (`integrity_floor`). Every other
+///    obligation applies to every kind.
 /// 5. **BudgetNotExceeded** — zero-cost always passes; non-zero requires budget gate
 /// 6. **WithinDelegationCeiling** — requested capability ≤ policy ceiling for the op;
 ///    fail-closed if either level is absent
@@ -1159,8 +1162,13 @@ pub mod test_helpers {
 }
 
 pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
-    // 1. IntegrityGate: artifact integrity must meet the sink minimum.
-    let min_integ = sink_min_integrity(term.sink_class);
+    // The kind is derived from the pair once, here, and never read from the
+    // term (G-1). Obligations 1 and 4 are the only two it changes.
+    let kind = action_kind(term.operation, term.sink_class);
+
+    // 1. IntegrityGate: artifact integrity must meet the sink minimum — the
+    //    floor for this KIND at this sink (see `integrity_floor`).
+    let min_integ = integrity_floor(kind, term.sink_class);
     if term.artifact_label.integrity < min_integ {
         return PreflightResult::Denied {
             reason: format!(
@@ -1209,9 +1217,11 @@ pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
     // 4. NoAdversarialAncestry: no source label may carry Adversarial integrity
     //    — for a pair that can act. A pure read carries nothing outward, and the
     //    bytes it returns are observed back into the session graph, so every
-    //    later Acting pair still pays this for them (see `ActionKind`). The kind
-    //    is derived from the pair here, never read from the term.
-    match action_kind(term.operation, term.sink_class) {
+    //    later Acting pair still pays this for them (see `ActionKind`). An
+    //    AuthorityReducing pair skips it too: stopping a child carries nothing
+    //    outward either, and refusing it is what left a tainted parent unable
+    //    to stop the children it started.
+    match kind {
         ActionKind::Acting => {
             for label in &term.source_labels {
                 if label.integrity == IntegLevel::Adversarial {
@@ -1228,7 +1238,7 @@ pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
                 }
             }
         }
-        ActionKind::PureRead => {}
+        ActionKind::PureRead | ActionKind::AuthorityReducing => {}
     }
 
     // 5. BudgetNotExceeded: non-zero cost requires a wired budget gate.
@@ -1379,6 +1389,32 @@ fn sink_min_integrity(sink: SinkClass) -> IntegLevel {
     }
 }
 
+/// The integrity floor obligation 1 charges a pair of this `kind` at `sink`.
+///
+/// **Why the kind enters obligation 1 (2026-09-27).** Teardown is
+/// `(ManagePods, CloudMutation)`, and `CloudMutation` is a publish sink with an
+/// `Untrusted` floor — correct for a pair that creates or changes cloud state,
+/// and wrong for one that can only remove it. A session that had read one
+/// hostile page carried an `Adversarial` artifact label, failed this floor, and
+/// could no longer cancel the pods it had spawned: the taint that should make
+/// an agent *more* willing to stop things made stopping them impossible. An
+/// [`ActionKind::AuthorityReducing`] pair's floor is `Adversarial`, i.e. this
+/// obligation never refuses it on integrity.
+///
+/// It is safe because of what the pair reaches, not what it claims: the node
+/// resolves a cancel through `get_pod_for_caller`, which admits only the
+/// calling pod itself and its direct children, over HTTP and gRPC alike. The
+/// worst a steered cancel can do is stop work this session started.
+///
+/// Exhaustive over [`ActionKind`] (no `bool`, no `_ =>`): a fourth kind must
+/// decide its floor here before it compiles.
+fn integrity_floor(kind: ActionKind, sink: SinkClass) -> IntegLevel {
+    match kind {
+        ActionKind::Acting | ActionKind::PureRead => sink_min_integrity(sink),
+        ActionKind::AuthorityReducing => IntegLevel::Adversarial,
+    }
+}
+
 /// Returns `true` if the operation/sink pairing is structurally consistent.
 ///
 /// This is the `PathAllowed` gate: it ensures that the `Operation` variant
@@ -1461,7 +1497,14 @@ fn operation_allowed_for_sink(op: Operation, sink: SinkClass) -> bool {
         Operation::RunBash => matches!(sink, SinkClass::BashExec),
         Operation::WebSearch | Operation::WebFetch => matches!(sink, SinkClass::HTTPEgress),
         Operation::SpawnAgent => matches!(sink, SinkClass::AgentSpawn),
-        Operation::ManagePods => matches!(sink, SinkClass::CloudMutation | SinkClass::AgentSpawn),
+        // CloudMutation is TEARDOWN only (cancel), AgentSpawn is create, and
+        // AuditLogAppend (2026-09-27) is observe — list, status, logs. Before
+        // the observe pair existed a pod read had nothing to discharge, so the
+        // proxy's list and logs routes ran on a decision nothing consumed.
+        Operation::ManagePods => matches!(
+            sink,
+            SinkClass::CloudMutation | SinkClass::AgentSpawn | SinkClass::AuditLogAppend
+        ),
         // Read-only operations: structurally they produce no writes.
         // Accept AuditLogAppend and MemoryPersist (reading can trigger audit events
         // or cache population). All other write sinks are incoherent for reads.
@@ -1504,8 +1547,9 @@ fn operation_allowed_for_sink(op: Operation, sink: SinkClass) -> bool {
 /// `adversarial_ancestry_still_blocks_a_write_to_the_audit_log` is the test
 /// that sees the difference.
 ///
-/// Two variants, not a `bool` (A-1): a third kind (authority-reducing, for
-/// teardown) is planned, and a `bool` would have to be widened at every use.
+/// Three variants, not a `bool` (A-1). The third, [`ActionKind::AuthorityReducing`]
+/// (2026-09-27), is teardown: `(ManagePods, CloudMutation)`, which the proxy
+/// spends only on cancel. It is why this was never a `bool`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     /// The pair can change the world or carry data outward. Every obligation
@@ -1514,6 +1558,12 @@ pub enum ActionKind {
     /// The pair only brings bytes in. `NoAdversarialAncestry` is not charged;
     /// every other obligation is, unchanged.
     PureRead,
+    /// The pair can only take authority away — stop a pod this session may
+    /// manage. `NoAdversarialAncestry` is not charged and the integrity floor
+    /// is `Adversarial` (see `integrity_floor`); scope, ceiling, inputs,
+    /// budget and derivation are charged unchanged, so a session whose task
+    /// token does not name `ManagePods` still cannot cancel anything.
+    AuthorityReducing,
 }
 
 /// The single decider of [`ActionKind`].
@@ -1521,12 +1571,21 @@ pub enum ActionKind {
 /// Exhaustive over `Operation` so a new verb is a compile error here, not a
 /// silent classification. The three read verbs are PureRead at
 /// `AuditLogAppend` only: a read whose result is persisted (`MemoryPersist`,
-/// `CacheWrite`) outlives the session and is Acting. Every inner fallthrough
-/// yields `Acting` (B-3: a catch-all arm never grants).
+/// `CacheWrite`) outlives the session and is Acting. `ManagePods` is split by
+/// sink: observe (`AuditLogAppend`) is PureRead, teardown (`CloudMutation`) is
+/// AuthorityReducing, and create (`AgentSpawn`) is Acting — a spawned child
+/// runs whatever it was told, so creating one is the most Acting pair there
+/// is. Every inner fallthrough yields `Acting` (B-3: a catch-all arm never
+/// grants).
 fn action_kind(op: Operation, sink: SinkClass) -> ActionKind {
     match op {
         Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => match sink {
             SinkClass::AuditLogAppend => ActionKind::PureRead,
+            _ => ActionKind::Acting,
+        },
+        Operation::ManagePods => match sink {
+            SinkClass::AuditLogAppend => ActionKind::PureRead,
+            SinkClass::CloudMutation => ActionKind::AuthorityReducing,
             _ => ActionKind::Acting,
         },
         Operation::WriteFiles
@@ -1537,7 +1596,6 @@ fn action_kind(op: Operation, sink: SinkClass) -> ActionKind {
         | Operation::CreatePr
         | Operation::WebSearch
         | Operation::WebFetch
-        | Operation::ManagePods
         | Operation::SpawnAgent => ActionKind::Acting,
     }
 }

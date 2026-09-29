@@ -9,10 +9,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use axum::Json;
-use axum::Router;
 use axum::extract::State;
 use axum::http::HeaderMap;
+use axum::{Extension, Json, Router};
+use nucleus_ifc_kernel::discharge::PreflightResult;
+use portcullis_effects::authority::Authority;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use tracing::info;
@@ -26,7 +27,8 @@ use portcullis::verdict_sink::{VerdictContext, VerdictOutcome};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
-use crate::node_client;
+use crate::node_client::{self, acts};
+use crate::pod_cert::CertifiedPermissions;
 use crate::{ApiError, AppState, PodRuntime, actor_from_auth};
 
 // ---------------------------------------------------------------------------
@@ -133,10 +135,28 @@ fn narrow_to_ceiling(
 // Handlers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Pod handlers spend a preflight (2026-09-27)
+// ---------------------------------------------------------------------------
+//
+// Each handler below discharges `run_gate::preflight_pod` for the exact
+// `node_client::acts` value it is about to perform and hands the resulting
+// `Authority` to the node client BY VALUE, which spends it before building the
+// request. Before this, all five ran `check_manage_pods` and called the node
+// directly: a decision ran and the request did not need it. The kernel decides
+// what each act costs from its pair — create is Acting (a tainted session
+// cannot spawn), list/status/logs are pure reads, cancel is authority-reducing
+// (a tainted session CAN still stop its children; the node admits a cancel only
+// for the caller and its direct children). `check_manage_pods` and
+// `sub_pod_ifc_gate` stay: the first gives the capability refusal its own
+// message, the second refuses a POISONED session, which the discharge does not
+// see.
+
 pub(crate) async fn create_sub_pod(
     State(state): State<AppState>,
     _headers: HeaderMap,
-    auth: Option<axum::Extension<crate::auth::AuthContext>>,
+    auth: Option<Extension<crate::auth::AuthContext>>,
+    certified: Option<Extension<CertifiedPermissions>>,
     Json(req): Json<CreateSubPodRequest>,
 ) -> Result<Json<CreateSubPodResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -277,6 +297,27 @@ pub(crate) async fn create_sub_pod(
         task_grant_id: _task_grant_id, // child-asserted task grant
     } = &spec.metadata;
 
+    // 5a. Serialize the child spec — the exact bytes the node will receive — and
+    //     discharge the create FOR THOSE BYTES (their SHA-256 is the subject).
+    //     Before the reservation, so a refusal here has nothing to hand back.
+    let spec_yaml = serde_yaml::to_string(&spec)
+        .map_err(|e| ApiError::Spec(format!("failed to serialize sub-pod spec: {e}")))?;
+    let authority = {
+        let act = acts::create(&spec_yaml);
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&act, scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
+
     // 5b. Reserve the child's budget from THIS pod's live budget (#2426):
     //     the child's max_cost is debited here, atomically, before the node
     //     call, and mirrored into the kernel so its own BudgetExhausted arm
@@ -302,9 +343,7 @@ pub(crate) async fn create_sub_pod(
     }
 
     // 6. Forward to nucleus-node; a refusal hands the reservation back.
-    let spec_yaml = serde_yaml::to_string(&spec)
-        .map_err(|e| ApiError::Spec(format!("failed to serialize sub-pod spec: {e}")))?;
-    let result = match node.create_pod(&spec_yaml).await {
+    let result = match node.create_pod(&spec_yaml, authority).await {
         Ok(r) => r,
         Err(e) => {
             state.runtime.budget().release(reservation);
@@ -341,6 +380,7 @@ pub(crate) async fn create_sub_pod(
 pub(crate) async fn list_sub_pods(
     State(state): State<AppState>,
     _headers: HeaderMap,
+    certified: Option<Extension<CertifiedPermissions>>,
 ) -> Result<Json<Vec<node_client::PodInfo>>, ApiError> {
     check_manage_pods(&state)?;
 
@@ -349,16 +389,33 @@ pub(crate) async fn list_sub_pods(
         .as_ref()
         .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
 
+    let authority = {
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&acts::list(), scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
     let pods = node
-        .list_pods()
+        .list_pods(authority)
         .await
         .map_err(|e| ApiError::Spec(format!("node list_pods failed: {e}")))?;
 
     Ok(Json(pods))
 }
 
+/// Spends the LIST act (`*`), because what it sends the node is a listing;
+/// the filter to one pod happens here, after the bytes are back.
 pub(crate) async fn get_pod_status(
     State(state): State<AppState>,
+    certified: Option<Extension<CertifiedPermissions>>,
     Json(req): Json<PodIdRequest>,
 ) -> Result<Json<Vec<node_client::PodInfo>>, ApiError> {
     check_manage_pods(&state)?;
@@ -368,8 +425,22 @@ pub(crate) async fn get_pod_status(
         .as_ref()
         .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
 
+    let authority = {
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&acts::list(), scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
     let pods = node
-        .list_pods()
+        .list_pods(authority)
         .await
         .map_err(|e| ApiError::Spec(format!("node list_pods failed: {e}")))?;
 
@@ -383,6 +454,7 @@ pub(crate) async fn get_pod_status(
 
 pub(crate) async fn get_pod_logs(
     State(state): State<AppState>,
+    certified: Option<Extension<CertifiedPermissions>>,
     Json(req): Json<PodIdRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     check_manage_pods(&state)?;
@@ -397,8 +469,22 @@ pub(crate) async fn get_pod_logs(
         .parse()
         .map_err(|e| ApiError::Spec(format!("invalid pod_id: {e}")))?;
 
+    let authority = {
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&acts::logs(pod_id), scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
     let logs = node
-        .pod_logs(pod_id)
+        .pod_logs(pod_id, authority)
         .await
         .map_err(|e| ApiError::Spec(format!("node pod_logs failed: {e}")))?;
 
@@ -410,7 +496,8 @@ pub(crate) async fn get_pod_logs(
 pub(crate) async fn cancel_sub_pod(
     State(state): State<AppState>,
     _headers: HeaderMap,
-    auth: Option<axum::Extension<crate::auth::AuthContext>>,
+    auth: Option<Extension<crate::auth::AuthContext>>,
+    certified: Option<Extension<CertifiedPermissions>>,
     Json(req): Json<PodIdRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let sink = &state.verdict_sink;
@@ -429,7 +516,23 @@ pub(crate) async fn cancel_sub_pod(
         .parse()
         .map_err(|e| ApiError::Spec(format!("invalid pod_id: {e}")))?;
 
-    node.cancel_pod(pod_id)
+    // Authority-reducing: a tainted session still discharges this (see the
+    // section comment above), and still needs ManagePods in its task scope.
+    let authority = {
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&acts::cancel(pod_id), scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
+    node.cancel_pod(pod_id, authority)
         .await
         .map_err(|e| ApiError::Spec(format!("node cancel_pod failed: {e}")))?;
 
