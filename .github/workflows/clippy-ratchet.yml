@@ -51,12 +51,30 @@ jobs:
 
           # Perturb: a ceiling of 0 is below any real count.
           sed -i 's/^ceiling = .*/ceiling = 0/' .clippy-ratchet.toml
-          if scripts/check-clippy-ratchet.sh --strict >/dev/null 2>&1; then
+          # RED FOR THE RIGHT REASON, not merely red.
+          #
+          # This asserted only a non-zero exit -- and a script that fails for an UNRELATED reason
+          # exits non-zero too, so the falsifier passed vacuously and reported "ok: red on a
+          # ceiling below actual" about a measurement that had broken. Measured 2026-09-25 on
+          # #3017/#3018/#3019: this arm said ok, the restore arm below then failed, and between
+          # them they produced no diagnostic at all. A falsifier that cannot tell the failure it
+          # is testing for from any other failure is not falsifying anything.
+          out=$(scripts/check-clippy-ratchet.sh --strict 2>&1) && {
             echo "::error::the ratchet PASSED with ceiling 0 — it cannot go red, so it is not a gate"
             cp /tmp/ratchet.bak .clippy-ratchet.toml
             exit 1
-          fi
-          echo "ok: red on a ceiling below actual"
+          }
+          case "$out" in
+            *"clippy ratchet exceeded"*) ;;
+            *)
+              echo "::error::the ratchet went red with ceiling 0, but NOT because the count exceeded it."
+              echo "That is a broken measurement wearing a passing falsifier. What it said:"
+              printf '%s\n' "$out" | tail -30
+              cp /tmp/ratchet.bak .clippy-ratchet.toml
+              exit 1
+              ;;
+          esac
+          echo "ok: red on a ceiling below actual, and red for that reason"
 
           # Restore: the real ceiling must pass, or the gate is stuck red and
           # would block every PR for a reason unrelated to the code.

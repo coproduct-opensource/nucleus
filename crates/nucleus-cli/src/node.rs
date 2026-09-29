@@ -334,6 +334,9 @@ fn load_mtls_config(args: &NodeArgs) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     }
 }
 
+/// How long an ordinary management request (health, list, cancel) may take.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The two transports this command speaks: plaintext HMAC (ureq, unchanged
 /// from before mTLS support existed) or mTLS (reqwest — see the Cargo.toml
 /// comment on the reqwest dependency for why ureq can't do this).
@@ -347,7 +350,7 @@ fn create_client(args: &NodeArgs) -> Result<HttpClient> {
     match load_mtls_config(args)? {
         None => {
             let config = ureq::Agent::config_builder()
-                .timeout_global(Some(Duration::from_secs(30)))
+                .timeout_global(Some(REQUEST_TIMEOUT))
                 .build();
             Ok(HttpClient::Plain(config.into()))
         }
@@ -368,7 +371,7 @@ fn create_client(args: &NodeArgs) -> Result<HttpClient> {
 
             let builder = reqwest::Client::builder()
                 .identity(identity)
-                .timeout(Duration::from_secs(30))
+                .timeout(REQUEST_TIMEOUT)
                 // `tls_certs_only` — not repeated `add_root_certificate` —
                 // is required here: reqwest refuses to combine
                 // `danger_accept_invalid_hostnames` with the platform/webpki
@@ -396,12 +399,18 @@ impl HttpClient {
     /// Sends a request and returns `(status, body)`. Not used for
     /// `stream_logs`, which needs a streaming read rather than a buffered
     /// body and branches on the backend itself.
+    ///
+    /// `within` is required rather than defaulted because the right deadline
+    /// is the operation's, not the client's: a pod create waits on a boot the
+    /// node itself bounds, and cutting it off at the management default is
+    /// what turned #2904's diagnosable failure into `timeout: global`.
     async fn send(
         &self,
         method: reqwest::Method,
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
+        within: Duration,
     ) -> Result<(u16, Vec<u8>)> {
         match self {
             HttpClient::Plain(agent) => {
@@ -409,13 +418,17 @@ impl HttpClient {
                 // types (`WithoutBody` / `WithBody`), so the two must stay
                 // in separate branches rather than a common `let` binding.
                 let result = if method == reqwest::Method::GET {
-                    let mut req = agent.get(url);
+                    let mut req = agent.get(url).config().timeout_global(Some(within)).build();
                     for (key, value) in headers {
                         req = req.header(key, value);
                     }
                     req.call()
                 } else {
-                    let mut req = agent.post(url);
+                    let mut req = agent
+                        .post(url)
+                        .config()
+                        .timeout_global(Some(within))
+                        .build();
                     for (key, value) in headers {
                         req = req.header(key, value);
                     }
@@ -433,7 +446,7 @@ impl HttpClient {
                 }
             }
             HttpClient::Mtls(client) => {
-                let mut req = client.request(method, url);
+                let mut req = client.request(method, url).timeout(within);
                 for (key, value) in headers {
                     req = req.header(key.as_str(), value.as_str());
                 }
@@ -508,7 +521,13 @@ async fn health(client: &HttpClient, url: &str, secret: Option<&[u8]>, actor: &s
     let headers = maybe_sign(secret, actor, b"");
 
     let (status, body) = client
-        .send(reqwest::Method::GET, &endpoint, &headers, b"")
+        .send(
+            reqwest::Method::GET,
+            &endpoint,
+            &headers,
+            b"",
+            REQUEST_TIMEOUT,
+        )
         .await
         .context("Health check failed")?;
     ensure_ok(status, &body, "Health check")?;
@@ -527,7 +546,13 @@ async fn list_pods(
     let headers = maybe_sign(secret, actor, b"");
 
     let (status, body) = client
-        .send(reqwest::Method::GET, &endpoint, &headers, b"")
+        .send(
+            reqwest::Method::GET,
+            &endpoint,
+            &headers,
+            b"",
+            REQUEST_TIMEOUT,
+        )
         .await
         .context("List pods failed")?;
     ensure_ok(status, &body, "List pods")?;
@@ -563,7 +588,13 @@ async fn create_pod(
     }
 
     let (status, resp_body) = client
-        .send(reqwest::Method::POST, &endpoint, &headers, body.as_bytes())
+        .send(
+            reqwest::Method::POST,
+            &endpoint,
+            &headers,
+            body.as_bytes(),
+            nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT,
+        )
         .await
         .context("Create pod failed")?;
     ensure_ok(status, &resp_body, "Create pod")?;
@@ -583,7 +614,13 @@ async fn cancel_pod(
     let headers = maybe_sign(secret, actor, b"");
 
     let (status, resp_body) = client
-        .send(reqwest::Method::POST, &endpoint, &headers, b"")
+        .send(
+            reqwest::Method::POST,
+            &endpoint,
+            &headers,
+            b"",
+            REQUEST_TIMEOUT,
+        )
         .await
         .context("Cancel pod failed")?;
     match status {
@@ -712,6 +749,95 @@ fn sign_request(secret: &[u8], actor: &str, method: &str, body: Option<&str>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node that answers only after `delay`, with a 200 and an empty JSON body.
+    fn slow_node(delay: Duration) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    std::thread::sleep(delay);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\ncontent-type: application/json\r\n\r\n{}",
+                    );
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// #2904, client side. The node's health budget and the CLI's request clock
+    /// were both 30 s, so the CLI always gave up first and the node's diagnosis of
+    /// a pod that would not boot was never read. The operation's deadline must win
+    /// over the client's default on BOTH transports, or passing a longer one for
+    /// `create` changes nothing.
+    ///
+    /// Driven red: dropping the per-request `timeout_global`/`timeout` in `send`
+    /// fails both halves at the one-second client default.
+    #[tokio::test]
+    async fn an_operations_deadline_outlasts_the_clients_default() {
+        let url = slow_node(Duration::from_millis(1500));
+        let short = Duration::from_secs(1);
+        let long = Duration::from_secs(10);
+
+        let plain = HttpClient::Plain(
+            ureq::Agent::config_builder()
+                .timeout_global(Some(short))
+                .build()
+                .into(),
+        );
+        let (status, _) = plain
+            .send(reqwest::Method::POST, &url, &[], b"{}", long)
+            .await
+            .expect("the plain transport must honour the operation's deadline");
+        assert_eq!(status, 200);
+
+        // `rustls-no-provider`: the client refuses to build without one, whichever
+        // test in this binary happens to run first.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mtls = HttpClient::Mtls(reqwest::Client::builder().timeout(short).build().unwrap());
+        let (status, _) = mtls
+            .send(reqwest::Method::POST, &url, &[], b"{}", long)
+            .await
+            .expect("the mTLS transport must honour the operation's deadline");
+        assert_eq!(status, 200);
+
+        // Non-vacuity: the server really is slower than the short deadline.
+        assert!(
+            plain
+                .send(reqwest::Method::GET, &url, &[], b"", short)
+                .await
+                .is_err(),
+            "the stand-in node must be slow enough for the deadline to matter"
+        );
+    }
+
+    /// Every CLI path that POSTs a pod names the node-derived deadline. A census,
+    /// not a proof: it catches a new create site written with the client default,
+    /// which is how the four existing ones came to share the node's 30 s.
+    #[test]
+    fn every_pod_create_site_waits_on_the_node_derived_deadline() {
+        let sources = [
+            ("node.rs", include_str!("node.rs")),
+            ("verify.rs", include_str!("verify.rs")),
+            ("twosafety_boot.rs", include_str!("twosafety_boot.rs")),
+            ("run.rs", include_str!("run.rs")),
+        ];
+        for (name, src) in sources {
+            assert!(
+                src.contains("/v1/pods\""),
+                "{name} no longer creates pods; update this census"
+            );
+            assert!(
+                src.contains("POD_CREATE_CLIENT_TIMEOUT"),
+                "{name} POSTs /v1/pods without POD_CREATE_CLIENT_TIMEOUT: its client would give \
+                 up before the node reports why a pod did not boot (#2904)"
+            );
+        }
+    }
 
     #[test]
     fn test_load_secret_from_file() {
