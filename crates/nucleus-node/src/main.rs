@@ -72,6 +72,7 @@ mod driver;
 #[cfg(test)]
 mod effect_footprint;
 mod envelope_frame;
+mod federated_credential;
 mod guest_socket;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod host_requirements;
@@ -2787,7 +2788,7 @@ async fn spawn_firecracker_pod(
         let health_addr = proxy.listen_addr();
         let signed_proxy = Some(proxy);
 
-        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id).await {
+        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id, &mut child).await {
             if let Some(proxy) = signed_proxy {
                 proxy.shutdown().await;
             }
@@ -2858,13 +2859,13 @@ async fn spawn_firecracker_pod(
             prepared_identity.identity(),
             id,
             broker_verify,
-            // The SAME expression the workload API bridge uses. That socket was
-            // chowned and this one was not, which is why no guest could have
-            // reached the broker under the jailer.
+            // The SAME expression the workload API bridge uses. That socket was chowned and this
+            // one was not, which is why no guest could have reached the broker under the jailer.
             jail_layout
                 .as_ref()
                 .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
-        )?;
+        )
+        .await?;
 
         let pod_boot_identity::IdentityParts {
             identity: pod_identity,
@@ -3155,7 +3156,7 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 /// host round-trips during startup, and would be wrong even once the host chain
 /// is fixed. It is not a workaround for that defect and should not be read as
 /// one.
-pub(crate) const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
+pub(crate) use nucleus_spec::boot_budget::PROXY_HEALTH_TIMEOUT_SECS_DEFAULT;
 
 async fn serve_grpc(
     state: NodeState,

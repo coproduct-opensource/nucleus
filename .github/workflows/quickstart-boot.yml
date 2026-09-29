@@ -285,9 +285,15 @@ jobs:
           sudo apt-get install -y -qq musl-tools e2fsprogs
           rustup target add aarch64-unknown-linux-musl
           rustup target list --installed | grep -q aarch64-unknown-linux-musl
+          # DERIVED, as the x86_64 job below does. This list was hand-written, and because the
+          # job was inert until 2026-09-27 nothing noticed it drift: its first run built five
+          # packages and build-rootfs.sh stopped at the first one it needed and did not have
+          # (`Missing …/nucleus-workload-probe`).
+          rootfs_pkgs=$(bash scripts/cross-build.sh --list-packages | sed 's/^/-p /' | tr '\n' ' ')
+          echo "rootfs packages: $rootfs_pkgs"
+          # shellcheck disable=SC2086
           cargo build --release --target aarch64-unknown-linux-musl \
-            -p nucleus-cli -p nucleus-node -p nucleus-guest-init \
-            -p nucleus-tool-proxy -p nucleus-net-probe
+            -p nucleus-cli -p nucleus-node $rootfs_pkgs
 
       - name: Build the guest rootfs
         run: |

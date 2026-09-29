@@ -48,7 +48,8 @@
 # can go green. `gatehouse/required` is produced by the coproduct-gatehouse GitHub App (4853870),
 # not a workflow, so it carries `@app`: the producer and merge-group invariants cannot be decided
 # from the tree for it, and live parity instead holds branch protection to that app id. It also
-# requires the plan's `ci-spec` and `test-core` gates; `Tests` stays required here because it
+# requires the plan's `ci-spec` and `test` gates (`test` replaced `test-core` + `test-audit` on
+# 2026-09-28: one build of the workspace instead of two); `Tests` stays required here because it
 # additionally runs the SDK tests (node, python) that the gate image does not carry.
 # 2026-09-20: 47 -> 38. The SECOND SUBTRACTION of the 2026-09-17 cutover, nine lines late.
 #

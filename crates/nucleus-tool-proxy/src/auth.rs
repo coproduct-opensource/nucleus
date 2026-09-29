@@ -18,7 +18,8 @@
 //! The recommended configuration is mTLS mode with SPIFFE certificates,
 //! which eliminates static secrets entirely.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::HeaderMap;
@@ -30,6 +31,82 @@ const HEADER_TIMESTAMP: &str = "x-nucleus-timestamp";
 const HEADER_SIGNATURE: &str = "x-nucleus-signature";
 const HEADER_ACTOR: &str = "x-nucleus-actor";
 const HEADER_DRAND_ROUND: &str = "x-nucleus-drand-round";
+/// Per-request uniqueness token that `nucleus_client::sign_http_headers` sends
+/// and binds into the signed message (#2375). It is part of the signed bytes,
+/// so it cannot be stripped: removing the header changes the message the
+/// verifier reconstructs and the signature stops verifying.
+const HEADER_NONCE: &str = "x-nucleus-nonce";
+
+/// Default bound on remembered signatures. Far above what a real client
+/// produces inside one skew window; reaching it means something is flooding,
+/// and [`ReplayCache::remember`] refuses rather than evicting.
+const DEFAULT_REPLAY_CAPACITY: usize = 8192;
+
+/// Remembers recently-accepted HMAC signatures so a captured request cannot be
+/// sent again inside the timestamp window. Same design as the node's cache from
+/// #2375, which left with the node's HMAC path in #2454; this is the verifier
+/// that still accepts a shared-secret signature.
+///
+/// # Why the key is the signature
+///
+/// A replay is byte-identical to the original, so it reproduces the identical
+/// signature and collides here. A legitimate repeat carrying a fresh
+/// `x-nucleus-nonce` signs different bytes, so it does not. A signer that sends
+/// no nonce still gets replay protection -- it merely cannot repeat a
+/// byte-identical request inside the window, which is indistinguishable from a
+/// replay anyway.
+///
+/// # Why it is not a plain LRU
+///
+/// An LRU evicts the oldest entry to make room, which reopens the hole: flood
+/// the cache with fresh signatures, push a captured one out while its timestamp
+/// is still inside the window, replay it. So an entry is dropped only once it
+/// has expired -- once `ensure_skew` would refuse its timestamp anyway. A cache
+/// full of live entries refuses the request instead.
+#[derive(Debug)]
+pub struct ReplayCache {
+    seen: Mutex<HashMap<String, i64>>,
+    capacity: usize,
+}
+
+impl ReplayCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            seen: Mutex::new(HashMap::new()),
+            capacity,
+        }
+    }
+
+    /// Record a signature as used; `Err(AuthError::Replay)` if already seen
+    /// inside the window.
+    ///
+    /// Callers MUST verify the signature first. Remembering unverified
+    /// signatures would let anyone fill the cache with garbage and trip the
+    /// capacity refusal -- turning a replay defence into a denial of service.
+    fn remember(&self, signature: &str, timestamp: i64, window: Duration) -> Result<(), AuthError> {
+        let now = unix_now();
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Anything `ensure_skew` would already refuse can never be replayed, so
+        // dropping it is free. `abs` because the window is two-sided.
+        let window = window.as_secs();
+        seen.retain(|_, ts| (now - *ts).unsigned_abs() <= window);
+
+        if seen.contains_key(signature) {
+            return Err(AuthError::Replay);
+        }
+        if seen.len() >= self.capacity {
+            return Err(AuthError::ReplayCapacity);
+        }
+        seen.insert(signature.to_string(), timestamp);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
 
 /// Configuration for request authentication.
 #[derive(Clone, Debug)]
@@ -37,6 +114,7 @@ pub struct AuthConfig {
     secret: Arc<Vec<u8>>,
     max_skew: Duration,
     drand_config: Option<DrandConfig>,
+    replay: Arc<ReplayCache>,
 }
 
 impl AuthConfig {
@@ -46,7 +124,14 @@ impl AuthConfig {
             secret: Arc::new(secret.as_ref().to_vec()),
             max_skew,
             drand_config: None,
+            replay: Arc::new(ReplayCache::new(DEFAULT_REPLAY_CAPACITY)),
         }
+    }
+
+    #[cfg(test)]
+    fn with_replay_capacity(mut self, capacity: usize) -> Self {
+        self.replay = Arc::new(ReplayCache::new(capacity));
+        self
     }
 
     /// Add drand configuration for anchored signature verification.
@@ -180,11 +265,25 @@ pub enum AuthError {
     /// Drand is required but no round was provided.
     #[error("drand anchoring required but no round provided")]
     DrandRequired,
+
+    /// This exact signature was already accepted inside the skew window.
+    #[error("request replayed")]
+    Replay,
+
+    /// The replay cache is full of still-live entries. Refused rather than
+    /// evicting, because eviction is what would let a flood push a captured
+    /// signature out early.
+    #[error("replay cache is full of live entries; retry after the skew window")]
+    ReplayCapacity,
 }
 
 /// Verify an HTTP request with standard timestamp-based authentication.
 ///
-/// Message format: `"{timestamp}.{actor}.{body}"`
+/// Message format: `"{timestamp}.{actor}.{nonce}.{body}"` when the signer sent
+/// `x-nucleus-nonce` (every `nucleus_client::sign_http_headers` caller does),
+/// else `"{timestamp}.{actor}.{body}"` -- the same framing
+/// `nucleus_client::build_message` produces. A verified signature is then
+/// recorded so the identical request cannot be accepted twice.
 pub fn verify_http(
     headers: &HeaderMap,
     body: &[u8],
@@ -197,18 +296,32 @@ pub fn verify_http(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
     let actor_value = actor.clone().unwrap_or_default();
+    let nonce = match headers.get(HEADER_NONCE) {
+        Some(v) => Some(
+            v.to_str()
+                .map_err(|_| AuthError::InvalidHeader(HEADER_NONCE))?,
+        ),
+        None => None,
+    };
 
     let timestamp = parse_timestamp(ts)?;
     ensure_skew(timestamp, auth.max_skew())?;
 
-    let mut message = Vec::with_capacity(ts.len() + actor_value.len() + 2 + body.len());
+    let nonce_len = nonce.map_or(0, |n| n.len() + 1);
+    let mut message = Vec::with_capacity(ts.len() + actor_value.len() + nonce_len + 2 + body.len());
     message.extend_from_slice(ts.as_bytes());
     message.push(b'.');
     message.extend_from_slice(actor_value.as_bytes());
     message.push(b'.');
+    if let Some(nonce) = nonce {
+        message.extend_from_slice(nonce.as_bytes());
+        message.push(b'.');
+    }
     message.extend_from_slice(body);
 
     verify_signature(auth.secret(), &message, sig)?;
+    // Only after verification: see `ReplayCache::remember`.
+    auth.replay.remember(sig, timestamp, auth.max_skew())?;
 
     Ok(AuthContext {
         actor,
@@ -393,6 +506,12 @@ impl ApprovalVerifier {
     /// How many keys are configured (for startup logging — never the keys).
     pub fn key_count(&self) -> usize {
         self.keys.len()
+    }
+
+    /// The accepted timestamp skew — so how long a signed request stays
+    /// replayable, which is how long its nonce must be remembered.
+    pub fn max_skew(&self) -> Duration {
+        self.max_skew
     }
 }
 
@@ -583,8 +702,10 @@ pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
 /// dead code, and every request would still need a key the agent can read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthTier {
-    /// A client certificate was presented — strongest, and independent of how
-    /// the server was bound.
+    /// A client certificate was presented — the strongest proof of WHO is
+    /// calling, and independent of how the server was bound. It is not an
+    /// approval: `/v1/approve` never selects this tier (see
+    /// [`select_auth_tier`]).
     SpiffeMtls,
     /// The approval endpoint with approver PUBLIC keys configured: Ed25519 +
     /// drand. Takes precedence over the HMAC approval tier — when the guest
@@ -607,18 +728,25 @@ pub enum AuthTier {
 /// `host_verified_transport` is a property of how the server was STARTED, never
 /// of the request — see `AppState::host_verified_transport`. Likewise
 /// `has_approval_pubkeys` is startup configuration, not request content.
+///
+/// The approval path is decided FIRST, before the certificate. An approval
+/// tier is not a stronger or weaker way to say who is calling; it is the only
+/// way to say that a person agreed, and an SVID says nothing about that. Until
+/// 2026-09-27 `has_spiffe_identity` was tested first, and any workload with a
+/// certificate under the trust bundle could grant itself approvals with no
+/// approver signature (`the_approval_path_outranks_spiffe`).
 pub fn select_auth_tier(
     has_spiffe_identity: bool,
     is_approval_path: bool,
     has_approval_pubkeys: bool,
     host_verified_transport: bool,
 ) -> AuthTier {
-    if has_spiffe_identity {
-        AuthTier::SpiffeMtls
-    } else if is_approval_path && has_approval_pubkeys {
+    if is_approval_path && has_approval_pubkeys {
         AuthTier::ApprovalEd25519Drand
     } else if is_approval_path {
         AuthTier::ApprovalHmacDrand
+    } else if has_spiffe_identity {
+        AuthTier::SpiffeMtls
     } else if host_verified_transport {
         AuthTier::HostVsock
     } else {
@@ -652,11 +780,15 @@ fn parse_timestamp(ts: &str) -> Result<i64, AuthError> {
         .map_err(|_| AuthError::InvalidHeader(HEADER_TIMESTAMP))
 }
 
-fn ensure_skew(timestamp: i64, max_skew: Duration) -> Result<(), AuthError> {
-    let now = SystemTime::now()
+fn unix_now() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64;
+        .as_secs() as i64
+}
+
+fn ensure_skew(timestamp: i64, max_skew: Duration) -> Result<(), AuthError> {
+    let now = unix_now();
     let skew = (now - timestamp).unsigned_abs();
     if skew > max_skew.as_secs() {
         return Err(AuthError::Skew);
@@ -999,7 +1131,8 @@ mod auth_tier_precedence_tests {
 
     /// A certificate outranks the transport: mTLS identifies WHO, the transport
     /// only identifies WHERE FROM. Losing the SPIFFE identity would discard the
-    /// stronger claim.
+    /// stronger claim. Off the approval path only — see
+    /// `the_approval_path_outranks_spiffe`.
     #[test]
     fn mtls_outranks_the_transport() {
         assert_eq!(
@@ -1007,9 +1140,31 @@ mod auth_tier_precedence_tests {
             AuthTier::SpiffeMtls
         );
         assert_eq!(
-            select_auth_tier(true, true, true, true),
+            select_auth_tier(true, false, true, false),
             AuthTier::SpiffeMtls
         );
+    }
+
+    /// **A certificate is not an approver's signature.** An SVID says which
+    /// workload is calling; `/v1/approve` needs to know that a PERSON said
+    /// yes, and only the approver's signature over the body carries that.
+    /// Until 2026-09-27 the SPIFFE tier was consulted first, so any caller
+    /// holding a certificate under the trust bundle reached the approval
+    /// handler with no signature at all and granted itself whatever it had
+    /// been told to ask a human for.
+    #[test]
+    fn the_approval_path_outranks_spiffe() {
+        for (pubkeys, host) in [(false, false), (false, true), (true, false), (true, true)] {
+            let tier = select_auth_tier(true, true, pubkeys, host);
+            assert!(
+                matches!(
+                    tier,
+                    AuthTier::ApprovalEd25519Drand | AuthTier::ApprovalHmacDrand
+                ),
+                "an SVID on /v1/approve must still need the approver's signature \
+                 (pubkeys={pubkeys} host_verified={host}), got {tier:?}"
+            );
+        }
     }
 
     /// The approval path keeps its drand anchoring even on a host-verified
@@ -1068,10 +1223,10 @@ mod auth_tier_precedence_tests {
             ((true, false, false, true), AuthTier::SpiffeMtls),
             ((true, false, true, false), AuthTier::SpiffeMtls),
             ((true, false, true, true), AuthTier::SpiffeMtls),
-            ((true, true, false, false), AuthTier::SpiffeMtls),
-            ((true, true, false, true), AuthTier::SpiffeMtls),
-            ((true, true, true, false), AuthTier::SpiffeMtls),
-            ((true, true, true, true), AuthTier::SpiffeMtls),
+            ((true, true, false, false), AuthTier::ApprovalHmacDrand),
+            ((true, true, false, true), AuthTier::ApprovalHmacDrand),
+            ((true, true, true, false), AuthTier::ApprovalEd25519Drand),
+            ((true, true, true, true), AuthTier::ApprovalEd25519Drand),
         ];
         for ((spiffe, approval, pubkeys, host), expected) in cases {
             assert_eq!(
@@ -1251,6 +1406,160 @@ mod ed25519_approval_tests {
         assert!(
             ApprovalVerifier::from_hex_list("  ", Duration::from_secs(60), None).is_err(),
             "an empty list is not a verifier"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hmac_nonce_and_replay_tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderName, HeaderValue};
+
+    /// Long enough for `nucleus_client`'s key-quality floor.
+    const SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+    fn headers_from(signed: &nucleus_client::SignedHeaders) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in &signed.headers {
+            h.insert(
+                HeaderName::from_bytes(k.as_bytes()).expect("static header name"),
+                HeaderValue::from_str(v).expect("ascii header value"),
+            );
+        }
+        h
+    }
+
+    fn auth() -> AuthConfig {
+        AuthConfig::new(SECRET, Duration::from_secs(60))
+    }
+
+    /// THE REGRESSION. What `nucleus-mcp` sends -- a request signed by the real
+    /// `nucleus_client::sign_http_headers`, nonce and all -- must pass the real
+    /// verifier. #2375 changed the signer and not this verifier, and every
+    /// mediated tool call became a 401; a test built from the two real
+    /// functions is what notices the next time they drift.
+    #[test]
+    fn the_client_http_signer_satisfies_this_verifier() {
+        let body = br#"{"path":"notes.md"}"#;
+        let signed = nucleus_client::sign_http_headers(SECRET, Some("nucleus-mcp"), body);
+        assert!(
+            signed.headers.iter().any(|(k, _)| k == HEADER_NONCE),
+            "precondition: the client signs a nonce, or this test proves nothing"
+        );
+        let ctx = verify_http(&headers_from(&signed), body, &auth())
+            .expect("the client's signature must verify");
+        assert_eq!(ctx.actor.as_deref(), Some("nucleus-mcp"));
+        assert_eq!(ctx.auth_method, AuthMethod::Hmac);
+    }
+
+    /// The nonce is bound, not decorative: stripping the header must break the
+    /// signature rather than downgrade to the nonce-less form.
+    #[test]
+    fn stripping_the_nonce_breaks_the_signature() {
+        let body = b"body";
+        let signed = nucleus_client::sign_http_headers(SECRET, Some("a"), body);
+        let mut headers = headers_from(&signed);
+        headers.remove(HEADER_NONCE);
+        assert!(matches!(
+            verify_http(&headers, body, &auth()),
+            Err(AuthError::InvalidSignature)
+        ));
+    }
+
+    /// A captured request sent again verbatim is refused. The first send is
+    /// asserted to SUCCEED, so the refusal cannot pass vacuously on a request
+    /// that was never valid.
+    #[test]
+    fn a_verbatim_replay_is_refused() {
+        let body = b"body";
+        let auth = auth();
+        let headers = headers_from(&nucleus_client::sign_http_headers(SECRET, Some("a"), body));
+        verify_http(&headers, body, &auth).expect("first send is legitimate");
+        assert!(matches!(
+            verify_http(&headers, body, &auth),
+            Err(AuthError::Replay)
+        ));
+    }
+
+    /// The same request signed again carries a fresh nonce, so it is a
+    /// different signature and is not mistaken for a replay -- polling one
+    /// endpoint twice a second is normal.
+    #[test]
+    fn a_legitimate_repeat_with_a_fresh_nonce_is_accepted() {
+        let body = b"body";
+        let auth = auth();
+        for _ in 0..3 {
+            let signed = nucleus_client::sign_http_headers(SECRET, Some("a"), body);
+            verify_http(&headers_from(&signed), body, &auth).expect("fresh nonce each time");
+        }
+    }
+
+    /// A signer that sends no nonce still verifies (the pre-#2375 framing), and
+    /// still gets replay protection.
+    #[test]
+    fn a_nonceless_signature_verifies_once() {
+        let body = b"body";
+        let ts = unix_now();
+        let sig = sign_message(SECRET, format!("{ts}.a.body").as_bytes());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HEADER_TIMESTAMP,
+            HeaderValue::from_str(&ts.to_string()).unwrap(),
+        );
+        headers.insert(HEADER_SIGNATURE, HeaderValue::from_str(&sig).unwrap());
+        headers.insert(HEADER_ACTOR, HeaderValue::from_static("a"));
+        let auth = auth();
+        verify_http(&headers, body, &auth).expect("legacy framing still verifies");
+        assert!(matches!(
+            verify_http(&headers, body, &auth),
+            Err(AuthError::Replay)
+        ));
+    }
+
+    /// Unverified signatures are never remembered: a flood of garbage must not
+    /// fill the cache and lock legitimate callers out.
+    #[test]
+    fn a_bad_signature_is_not_remembered() {
+        let auth = auth().with_replay_capacity(1);
+        let body = b"body";
+        for _ in 0..10 {
+            let signed = nucleus_client::sign_http_headers(
+                b"wrong-secret-wrong-secret-wrong!",
+                Some("a"),
+                body,
+            );
+            assert!(matches!(
+                verify_http(&headers_from(&signed), body, &auth),
+                Err(AuthError::InvalidSignature)
+            ));
+        }
+        assert_eq!(auth.replay.len(), 0);
+        let good = nucleus_client::sign_http_headers(SECRET, Some("a"), body);
+        verify_http(&headers_from(&good), body, &auth).expect("the cache still has room");
+    }
+
+    /// Full of live entries, the cache refuses rather than evicting. Evicting
+    /// is what would let a flood push a captured signature out early.
+    #[test]
+    fn a_full_cache_refuses_instead_of_evicting() {
+        let auth = auth().with_replay_capacity(2);
+        let body = b"body";
+        let first = headers_from(&nucleus_client::sign_http_headers(SECRET, Some("a"), body));
+        verify_http(&first, body, &auth).unwrap();
+        verify_http(
+            &headers_from(&nucleus_client::sign_http_headers(SECRET, Some("a"), body)),
+            body,
+            &auth,
+        )
+        .unwrap();
+        let third = nucleus_client::sign_http_headers(SECRET, Some("a"), body);
+        assert!(matches!(
+            verify_http(&headers_from(&third), body, &auth),
+            Err(AuthError::ReplayCapacity)
+        ));
+        assert!(
+            matches!(verify_http(&first, body, &auth), Err(AuthError::Replay)),
+            "the first signature must still be remembered, not evicted"
         );
     }
 }

@@ -96,6 +96,35 @@ pub fn parse_operation(name: &str) -> Option<Operation> {
     }
 }
 
+/// A PDP approval, as a value only [`pdp_decide`] can produce.
+///
+/// # Why the node needs its own proof type
+///
+/// `nucleus_cred_broker::AuthorizedRequest` is the CDP's input, and it is
+/// honest about what it is: its fields are public and `from_approved` takes the
+/// approval as a `bool`, because the CDP crate cannot link the policy kernel and
+/// so cannot demand a proof from it. Inside this crate, where both halves live,
+/// that leaves "only the PDP produces one" as a convention — any function here
+/// could write the struct literal.
+///
+/// That was tolerable while the only thing an approval unlocked was a lookup.
+/// It is not once an approval unlocks a MINT: `federated_credential`'s refill
+/// signs an assertion in the pod's name and spends it at an upstream's token
+/// endpoint, and ADR 0010's answer to "a provider rule matching `iss` matches
+/// every pod" is that the node mints only for a request the PDP approved. So the
+/// wrapper's field is private to this module, [`pdp_decide`] is the one place
+/// that fills it, and the refill and [`cdp_fetch`] both take `&Approved`. A mint
+/// placed before the decision has nothing to pass and does not compile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Approved(AuthorizedRequest);
+
+impl Approved {
+    /// The decided request, for the CDP.
+    pub fn request(&self) -> &AuthorizedRequest {
+        &self.0
+    }
+}
+
 /// **PDP.** Decide whether the policy permits this envelope.
 ///
 /// Takes no [`CredentialStore`] — deliberately. The decision cannot depend on
@@ -111,7 +140,7 @@ pub fn pdp_decide(
     identity: &PodIdentity,
     policy: &PermissionLattice,
     now_unix: u64,
-) -> Result<AuthorizedRequest, BrokerDenied> {
+) -> Result<Approved, BrokerDenied> {
     let op = parse_operation(&envelope.operation)
         .ok_or_else(|| BrokerDenied::UnknownOperation(envelope.operation.clone()))?;
 
@@ -121,11 +150,11 @@ pub fn pdp_decide(
         });
     }
 
-    AuthorizedRequest::from_approved(envelope, identity, true, now_unix).ok_or(
-        BrokerDenied::PolicyDenied {
+    AuthorizedRequest::from_approved(envelope, identity, true, now_unix)
+        .map(Approved)
+        .ok_or(BrokerDenied::PolicyDenied {
             operation: envelope.operation.clone(),
-        },
-    )
+        })
 }
 
 /// **CDP.** Fetch the credential for an already-approved request.
@@ -135,12 +164,12 @@ pub fn pdp_decide(
 /// also takes an [`AuthorizedRequest`] rather than an envelope, so there is no
 /// way to reach a credential from an unapproved ask.
 pub fn cdp_fetch<'a>(
-    approved: &AuthorizedRequest,
+    approved: &Approved,
     store: &'a CredentialStore,
     now_unix: u64,
 ) -> Result<&'a Credential, BrokerDenied> {
     store
-        .for_request(approved, now_unix)
+        .for_request(approved.request(), now_unix)
         .map_err(BrokerDenied::NoCredential)
 }
 

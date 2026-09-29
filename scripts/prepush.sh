@@ -81,6 +81,11 @@ run "ci-spec check" cargo run -q -p xtask -- ci-spec check
 # The gauntlet checking its own list. Cheap, and the only thing that stops a gate being added to
 # CI and never reaching the fast path -- which is how three of today's five misses happened.
 run "ci-spec local-coverage" cargo run -q -p xtask -- ci-spec local-coverage
+# The scorecard families (bound, alg, tot, life, typed, suppress) and their ratchet. Manifest
+# Guards runs it and this file did not: on 2026-09-26 #3019 and #3020 each passed this gauntlet
+# 31/31 and then went red in CI -- a new crate diluting `tot` below its floor, a new affine
+# right entering `life` without a validity interval. 2.8 s warm.
+run "xtask scorecard" cargo run -q -p xtask -- scorecard
 
 # The Lean gates. Declared NOT-LOCAL on 2026-09-20 on the assumption that a developer has no
 # Lean toolchain -- which was never tested and is wrong: `lean-toolchain` pins v4.30.0 and elan
