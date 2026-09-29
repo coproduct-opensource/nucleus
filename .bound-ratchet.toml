@@ -74,5 +74,11 @@
 # the Authority their handler minted from `run_gate::preflight_pod` and spend it
 # before the request is built. Four new sites, all bound: D=178, B=177,
 # dropped=1 (still CaClient).
-floor_bp = 9943
-declared_floor = 178
+# 2026-09-27: `Sandbox::glob` joins the surface with its `DecisionToken` and
+# `Authority` both taken by value and both consumed before the walk. Glob had
+# no witness before (both transports walked `std::fs`), so D and B rise
+# together: 171/172 -> 173/174, dropped still 1 (CaClient).
+# 2026-09-29, rebuilding the glob/grep branch onto main after #3041 landed: all three moves
+# apply to one tree, so the pin is this tree's measurement.
+floor_bp = 9944
+declared_floor = 180

@@ -13,7 +13,7 @@ described but not enforced is a claim, not a boundary.
 | In the set | Why |
 |---|---|
 | `portcullis-effects` | The effect traits. All 13 methods take an `Authority` by value. |
-| `nucleus` (`Sandbox`, `Executor`) | The other filesystem and process path. All 22 `DecisionToken`-taking `Sandbox` methods take an `Authority`; the `Executor` threads one to the spawn. |
+| `nucleus` (`Sandbox`, `Executor`) | The other filesystem and process path. 24 of the 26 `DecisionToken`-taking `Sandbox` methods take an `Authority`, `glob` among them since 2026-09-27; `exists`/`exists_approved` return a `bool` and take none. `read_to_string_for_search` takes an `Authority` without a token. The `Executor` threads one to the spawn. |
 | `portcullis-core::capability_traits` | The typed-context surface. Reachable from `NucleusRuntime::with_typed_context`, so it is agent-facing. |
 
 Everything else is outside, and the guarantee says nothing about it.
@@ -36,7 +36,8 @@ default-deny network policy.
 Mediated does not mean "refused on a tainted session". Since 2026-09-27 the
 `NoAdversarialAncestry` obligation is charged only to pairs that can act; the
 pure reads (`ReadFiles`, `GlobSearch`, `GrepSearch` at `AuditLogAppend`, i.e.
-`/v1/read`, `/v1/artifact`, MCP `read` and `grep`) are still mediated by every
+`/v1/read`, `/v1/artifact`, `/v1/glob`, `/v1/grep`, MCP `read`, `glob` and
+`grep`) are still mediated by every
 other obligation but are no longer refused for taint. Their bytes are observed
 back into the session `FlowGraph`, so the egress rows below still refuse a
 tainted session. See `ActionKind` in `crates/nucleus-ifc-kernel/src/discharge.rs`.
@@ -162,6 +163,29 @@ a grep over N files runs N preflights. That is the affine model working as desig
 an `Authority` buys one read — and the alternative, one authority covering a whole
 directory walk, is exactly the replay the by-value cutover removed. If the cost ever
 matters, the answer is a coarser sink class, not a reusable token.
+
+Until 2026-09-27 only the MCP grep used it. HTTP `/v1/grep` opened each file with a
+raw `std::fs::File::open` under an `#[expect(clippy::disallowed_methods)]` naming
+#1216 — no discharge, no path policy — and both glob transports dropped their
+decision token and walked `std::fs` through `glob::glob`, following symlinks and
+canonicalizing afterwards to see whether they had left the root. Glob and grep were
+*Checked*: a decision ran, and the effect did not need its result.
+
+Now HTTP grep preflights each file (`run_gate::preflight_grep_fs`, no longer
+feature-gated) and reads through `read_to_string_for_search`; the `#[expect]` is
+deleted, so a raw open there reds clippy again. Both globs mint one
+`(GlobSearch, AuditLogAppend)` discharge (`run_gate::preflight_glob_fs`; MCP against
+its own `FlowGraph`, pinned by `glob_preflights_against_the_transport_graph`) and
+call `Sandbox::glob`, which redeems the token and spends the authority before it
+opens a directory, walks the cap-std `Dir` without following or listing symlinks,
+refuses `..` and absolute patterns, and runs the path policy on every entry it
+reports. The listing's `Completeness` is `Complete | Truncated`, and `skipped`
+counts what it withheld.
+
+Behaviour change: both routes now need `InScopeWithTask` — a verified task token whose
+scope names `GlobSearch` / `GrepSearch` — plus the certificate ceiling. A standalone
+proxy with no task token loses them; HTTP grep skips any file the preflight refuses,
+as MCP grep already did.
 
 ## Enforcement
 

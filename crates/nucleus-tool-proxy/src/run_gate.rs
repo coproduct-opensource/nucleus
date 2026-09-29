@@ -295,9 +295,11 @@ pub(crate) fn preflight_read_fs(
 /// oversight: an `Authority` buys one read, so a search over N files needs N
 /// discharges. The alternative — one authority covering a whole directory walk —
 /// is exactly the replay the by-value cutover removed.
-/// Only the MCP search tool greps, and `mod mcp` is feature-gated, so this is
-/// dead code without it — `-D warnings` in the musl type-check job caught that.
-#[cfg(feature = "mcp")]
+///
+/// No longer `#[cfg(feature = "mcp")]` (2026-09-27): HTTP `/v1/grep_search`
+/// opened each file with a raw `std::fs::File::open` under an `#[expect]` that
+/// named #1216, so only the MCP search tool preflighted. Both transports now
+/// spend one of these per file, so the function is live in every build.
 pub(crate) fn preflight_grep_fs(
     verified_scope: Option<&TokenScope>,
     levels: GateLevels,
@@ -306,6 +308,35 @@ pub(crate) fn preflight_grep_fs(
 ) -> PreflightResult {
     preflight_scoped(
         Operation::GrepSearch,
+        SinkClass::AuditLogAppend,
+        verified_scope,
+        levels,
+        subject,
+        flow,
+    )
+}
+
+/// Discharge obligations for one directory listing by pattern.
+///
+/// `GlobSearch` against `AuditLogAppend`, which `ActionKind` classifies as a
+/// pure read: a listing names paths and carries nothing outward, so a tainted
+/// session may glob and egress still pays for whatever it learned.
+///
+/// Until 2026-09-27 neither glob transport minted a bundle. HTTP
+/// `/v1/glob_search` discarded the decision token (`let _ =`) and walked
+/// `std::fs` through the `glob` crate; MCP `glob` did the same with
+/// `Ok(_decision_token) => {}`. So the listing was Checked, never Sealed: the
+/// decision ran, and the walk did not need its result. One call buys one
+/// listing through `Sandbox::glob`, which takes the resulting `Authority` by
+/// value.
+pub(crate) fn preflight_glob_fs(
+    verified_scope: Option<&TokenScope>,
+    levels: GateLevels,
+    subject: &str,
+    flow: &FlowGraph,
+) -> PreflightResult {
+    preflight_scoped(
+        Operation::GlobSearch,
         SinkClass::AuditLogAppend,
         verified_scope,
         levels,
@@ -742,6 +773,80 @@ mod tests {
         assert!(
             result.is_allowed(),
             "a tainted session must still be able to read, got {result:?}"
+        );
+    }
+
+    /// Glob has the same fail-closed shape as every other scoped preflight:
+    /// no verified task scope, no listing. And a scope that names only
+    /// `ReadFiles` does not buy a `GlobSearch` — the discharge is bound to the
+    /// operation, so a read grant cannot be spent on a directory walk.
+    #[test]
+    fn glob_denies_without_task_scope() {
+        let flow = FlowGraph::new();
+        let missing = preflight_glob_fs(None, GateLevels::honest(FS_CEILING), "**/*.rs", &flow);
+        assert!(
+            missing.is_denied() && missing.denial_reason().unwrap().contains("InScopeWithTask"),
+            "no verified scope must deny a glob by InScopeWithTask, got {missing:?}"
+        );
+        let read_only = TokenScope::new(
+            vec![Operation::ReadFiles],
+            vec!["/workspace/**".to_string()],
+        );
+        let wrong_op = preflight_glob_fs(
+            Some(&read_only),
+            GateLevels::honest(FS_CEILING),
+            "**/*.rs",
+            &flow,
+        );
+        assert!(
+            wrong_op.is_denied(),
+            "a ReadFiles scope must not pay for GlobSearch, got {wrong_op:?}"
+        );
+        // Non-vacuity: the same inputs with GlobSearch in scope mint.
+        let glob_scope = TokenScope::new(
+            vec![Operation::GlobSearch],
+            vec!["/workspace/**".to_string()],
+        );
+        assert!(
+            preflight_glob_fs(
+                Some(&glob_scope),
+                GateLevels::honest(FS_CEILING),
+                "**/*.rs",
+                &flow,
+            )
+            .is_allowed(),
+            "an in-scope glob on a clean session must mint"
+        );
+    }
+
+    /// A listing is a pure read, so a tainted session may glob and grep —
+    /// the same reason it may read (`tainted_session_can_read_a_file`).
+    #[test]
+    fn glob_allowed_on_tainted_session() {
+        let flow = tainted_flow();
+        let scope = TokenScope::new(
+            vec![Operation::GlobSearch, Operation::GrepSearch],
+            vec!["/workspace/**".to_string()],
+        );
+        let glob = preflight_glob_fs(
+            Some(&scope),
+            GateLevels::honest(FS_CEILING),
+            "**/*.rs",
+            &flow,
+        );
+        assert!(
+            glob.is_allowed(),
+            "a tainted session must still be able to glob, got {glob:?}"
+        );
+        let grep = preflight_grep_fs(
+            Some(&scope),
+            GateLevels::honest(FS_CEILING),
+            "src/lib.rs",
+            &flow,
+        );
+        assert!(
+            grep.is_allowed(),
+            "a tainted session must still be able to grep, got {grep:?}"
         );
     }
 

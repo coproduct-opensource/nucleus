@@ -67,9 +67,11 @@
 # 2026-09-27: NodeClient::{create_pod, list_pods, pod_logs, cancel_pod} take an
 # Authority by value and spend it before building the request — four new sites,
 # all bound. 177/178.
-floor_bp = 9943
+# 2026-09-29: `Sandbox::glob` joins with its DecisionToken and Authority taken by value
+# and consumed before the walk — two new sites, both bound, on top of main's 177/178. 179/180.
+floor_bp = 9944
 floor_set = "measurement"
-population_floor = 178
+population_floor = 180
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -414,6 +416,16 @@ population_floor = 23
 # 2026-09-18: rebased onto the tree that deleted WorkloadApiServer, so neither
 # branch's number describes the merged tree -- 19 of 143 = 13.28%, re-measured
 # rather than carried over from either side.
-floor_bp = 1388
+#
+# LOWERED 1388 -> 1328 on 2026-09-27, and the reason is the one this family was
+# written to reward. HTTP `grep_search` carried
+# `#[expect(clippy::disallowed_methods, reason = "#1216 OPEN ...")]` over a raw
+# `std::fs::File::open`. The handler now reads through
+# `Sandbox::read_to_string_for_search`, so the lint stopped firing and the
+# expectation had to go -- the one suppression form that CAN fail, failing as
+# designed. Removing a discharged waiver lowers a discharged ratio (20/144 ->
+# 19/143), because the census counts waivers, not the defects under them; the
+# population floor is re-pinned with it so nothing else can slip under.
+floor_bp = 1328
 floor_set = "measurement"
 population_floor = 143

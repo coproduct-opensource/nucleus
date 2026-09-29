@@ -3369,10 +3369,16 @@ async fn web_fetch(
 }
 
 /// Glob pattern search within the sandbox.
+///
+/// The listing is `Sandbox::glob`, paid for by the decision token and a
+/// `(GlobSearch, AuditLogAppend)` discharge (2026-09-27). This handler used to
+/// drop the token (`let _ =`) and walk `std::fs` itself through `glob::glob`,
+/// so the decision ran and the walk did not need it.
 async fn glob_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<GlobRequest>,
 ) -> Result<Json<GlobResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -3388,7 +3394,8 @@ async fn glob_search(
 
     // Kernel mediation + IFC flow consult. GlobSearch is a FileRead (observed
     // below on success); not an outbound action, so never IFC-denied.
-    let _ = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
+    let decision_token =
+        http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
 
     // Check glob_search capability
     let policy = state.runtime.policy();
@@ -3438,73 +3445,45 @@ async fn glob_search(
         }
     }
 
-    // Determine search root
-    let sandbox_root = state.runtime.sandbox().root_path();
-    let sandbox_canonical = sandbox_root
-        .canonicalize()
-        .map_err(|e| ApiError::Spec(format!("sandbox root not accessible: {e}")))?;
-
-    let search_root = if let Some(ref dir) = req.directory {
-        // An absolute directory under the root names the same directory as its
-        // relative spelling; one outside it is still an escape (#2787).
-        let dir = state
-            .runtime
-            .sandbox()
-            .root_relative(Path::new(dir))
-            .map_err(ApiError::Nucleus)?;
-        let resolved = sandbox_root.join(&dir);
-        // Canonicalize to resolve symlinks and .. components (path must exist)
-        let canonical = resolved.canonicalize().map_err(|_| {
-            ApiError::Nucleus(NucleusError::SandboxEscape {
-                path: resolved.clone(),
-            })
-        })?;
-        // Security: ensure canonicalized path is within sandbox
-        if !canonical.starts_with(&sandbox_canonical) {
-            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
-                path: resolved,
-            }));
+    // One discharge for one listing. `InScopeWithTask` and the certificate
+    // ceiling decide here; the sandbox spends it before it opens a directory.
+    let authority = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let ceiling = state.ceiling(Operation::GlobSearch, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let r = run_gate::preflight_glob_fs(verified_scope, ceiling, &req.pattern, &flow);
+        drop(flow);
+        match r {
+            PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
         }
-        canonical
-    } else {
-        sandbox_canonical.clone()
     };
 
-    // Build full glob pattern
-    let full_pattern = search_root.join(&req.pattern);
-    let pattern_str = full_pattern.to_string_lossy();
-
-    // Perform glob search
-    let max_results = req.max_results.unwrap_or(1000);
-    let mut matches = Vec::new();
-    let mut truncated = false;
-
-    for entry in glob::glob(&pattern_str)
-        .map_err(|e| ApiError::Spec(format!("invalid glob pattern: {e}")))?
-    {
-        match entry {
-            Ok(path) => {
-                // Security: canonicalize and verify path is within sandbox
-                // This prevents symlink-based escapes
-                let canonical = match path.canonicalize() {
-                    Ok(c) => c,
-                    Err(_) => continue, // Skip inaccessible paths
-                };
-                if !canonical.starts_with(&sandbox_canonical) {
-                    continue;
-                }
-                // Convert to relative path (use canonical sandbox root)
-                if let Ok(relative) = canonical.strip_prefix(&sandbox_canonical) {
-                    matches.push(relative.to_string_lossy().to_string());
-                    if matches.len() >= max_results {
-                        truncated = true;
-                        break;
-                    }
-                }
-            }
-            Err(_) => continue, // Skip inaccessible paths
-        }
-    }
+    // `max_results: 0` used to return one match; the bound is now non-zero by
+    // type and 0 keeps meaning one.
+    let max = std::num::NonZeroUsize::new(req.max_results.unwrap_or(1000))
+        .unwrap_or(std::num::NonZeroUsize::MIN);
+    let listing = state
+        .runtime
+        .sandbox()
+        .glob(
+            req.directory.as_deref().map(Path::new),
+            &req.pattern,
+            max,
+            decision_token,
+            authority,
+        )
+        .map_err(ApiError::Nucleus)?;
+    let truncated = listing.completeness == nucleus::Completeness::Truncated;
+    let matches: Vec<String> = listing
+        .matches
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
 
     if let Err(e) = sink.record(VerdictContext {
         operation,
@@ -3527,18 +3506,21 @@ async fn glob_search(
 }
 
 /// Grep (regex content search) within the sandbox.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "#1216 OPEN (see #2806): agent-directed read still on raw File::open, not FileEffect -- annotated so a NEW raw read is still caught, not to bless this one"
-)]
+///
+/// Each file is read through `Sandbox::read_to_string_for_search`, paid for by
+/// its own `(GrepSearch, AuditLogAppend)` discharge — the MCP grep's shape.
+/// Until 2026-09-27 this handler opened every file with a raw
+/// `std::fs::File::open` under `#[expect(clippy::disallowed_methods)]` naming
+/// #1216, so HTTP grep read the workspace with no discharge and no path policy.
+/// The `#[expect]` is gone: a raw open here reds clippy again.
 async fn grep_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<GrepRequest>,
 ) -> Result<Json<GrepResponse>, ApiError> {
     use regex::RegexBuilder;
-    use std::io::{BufRead, BufReader};
     use walkdir::WalkDir;
 
     let sink = &state.verdict_sink;
@@ -3680,21 +3662,37 @@ async fn grep_search(
             .collect()
     };
 
-    // Search each file
+    // Search each file. One discharge per file: an `Authority` buys one read.
+    // A file this session may not read is skipped, as an unreadable one is.
     'outer: for file_path in files {
-        let file = match std::fs::File::open(&file_path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        let Ok(relative_path) = file_path.strip_prefix(&sandbox_canonical) else {
+            continue;
         };
-        let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+        let relative = relative_path.to_string_lossy().to_string();
+        let authority = {
+            use nucleus_ifc_kernel::discharge::PreflightResult;
+            let verified_scope = state.session_task_token.verified_scope();
+            let ceiling = state.ceiling(Operation::GrepSearch, certified.as_ref());
+            let flow = state.flow_graph.lock().await;
+            let r = run_gate::preflight_grep_fs(verified_scope, ceiling, &relative, &flow);
+            drop(flow);
+            match r {
+                PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
+                _ => continue,
+            }
+        };
+        let Ok(contents) = state
+            .runtime
+            .sandbox()
+            .read_to_string_for_search(relative_path, authority)
+        else {
+            continue;
+        };
+        let lines: Vec<String> = contents.lines().map(str::to_string).collect();
 
         for (idx, line) in lines.iter().enumerate() {
             if regex.is_match(line) {
-                let relative = file_path
-                    .strip_prefix(&sandbox_canonical)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| file_path.to_string_lossy().to_string());
+                let relative = relative.clone();
 
                 let context_before = if context_lines > 0 {
                     let start = idx.saturating_sub(context_lines);
