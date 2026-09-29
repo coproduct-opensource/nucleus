@@ -67,15 +67,14 @@
 # constructed, so they leave the surface with the code: D=171, B=170, dropped=1
 # (still CaClient). B/D moves from 173/174 to 170/171 by arithmetic, with no
 # binding lost. Decided by the owner's LOC plan (T1).
+# 2026-09-27: memory_write_core and memory_recall_core take the Authority their
+# handler minted from a preflight and spend it before mutating. Two new sites,
+# both bound: D=174, B=173, dropped=1 (from 172/171 on the base branch).
 # 2026-09-27: `Sandbox::glob` joins the surface with its `DecisionToken` and
 # `Authority` both taken by value and both consumed before the walk. Glob had
 # no witness before (both transports walked `std::fs`), so D and B rise
 # together: 171/172 -> 173/174, dropped still 1 (CaClient).
-# 2026-09-27: memory_write_core and memory_recall_core take the Authority their
-# handler minted from a preflight and spend it before mutating. Two new sites,
-# both bound: D=174, B=173, dropped=1 (from 172/171 on the base branch).
-# 2026-09-27, merging the memory commit into the glob/grep branch: both moves apply
-# to one tree -- Sandbox::glob's two sites and the two memory cores -- so the pin is
-# this tree's measurement, not either branch's: D=176, B=175, dropped=1 (CaClient).
+# 2026-09-29, rebuilding the glob/grep branch onto main after #3036 squash-merged: both
+# moves apply to one tree, so the pin is this tree's measurement, not either branch's.
 floor_bp = 9943
 declared_floor = 176
