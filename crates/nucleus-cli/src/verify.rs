@@ -424,6 +424,7 @@ async fn create_pod(admission: &AdmissionMaterial) -> Result<Pod> {
     let client = mtls_client()?;
     let response = client
         .post(format!("{NODE_URL}/v1/pods"))
+        .timeout(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT)
         .header("content-type", "application/json")
         .body(body)
         .send()

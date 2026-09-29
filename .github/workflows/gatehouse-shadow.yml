@@ -1,6 +1,6 @@
 # gatehouse shadow mode — INFORMATIONAL (not a required context).
 #
-# Runs this repository's CHEAP gates (fmt, clippy, ci-spec; test-core and lean-build are defined
+# Runs this repository's CHEAP gates (fmt, clippy, ci-spec; test and lean-build are defined
 # in .gatehouse/gates too but an hour of tests and a Lean build are the executor's job) through
 # the one-step gatehouse action (.github/actions/gatehouse): the scope materialized from HEAD,
 # the declared environment, the command under its timeout, a receipt signed by a key this run

@@ -43,6 +43,17 @@
 > both the operator's rule and that delegation. What is still open is the
 > operational half — the issuer has to be hosted at a stable HTTPS URL before
 > any of it reaches a real relying party.
+> **A second issuer (2026-09-24, [ADR 0010](adr/0010-a-credential-minted-per-exchange-never-stored.md), proposed).**
+> The node gains a federation issuer that signs ES256 assertions for host-performed
+> upstream calls, under its own `iss`, separate from the EdDSA OP. It changes none of the
+> rows above for the OP. Its assertions are not access tokens (`typ: JWT`, not `at+jwt`),
+> carry `sub` = the pod's SPIFFE ID (conformant per AIMS §3), and carry the delegation facts
+> as flat, bare-named claims (`nucleus_tenant`, `nucleus_upstream`, `nucleus_root`,
+> `nucleus_chain`) rather than `act` or a namespaced URN — deliberately, because the relying
+> parties it targets match only top-level string claims. That is the GAP-7 trade-off taken
+> the other way for interop; the claim set is pinned by the
+> [profile URI](federated-upstream-profile.md). It adds no `cnf`: still bearer-only.
+
 **Subject:** `crates/nucleus-lineage/src/id.rs` (`CallSpiffeId`) + `crates/nucleus-lineage/src/local_issuer.rs` (JWT claims)
 **Goal:** Catalog where the current implementation deviates from `draft-klrc-aiagent-auth-01` (AIMS) and `draft-ietf-wimse-identifier-00` (WIMSE Workload Identifier), and produce PR-sized actions for #40 (WIMSE conformance on `CallSpiffeId`) and #34 (`JwtIssuer` claims).
 **Cited drafts** (verified May 2026):

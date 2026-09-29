@@ -38,4 +38,13 @@
 # check-gates-can-fail.sh's UNCOVERED_CEILING going 2 -> 10 when ten xtask gates entered its
 # domain — not a relaxation, a widening of what is looked at. A rise for any other reason is not
 # this, and should be refused.
-DRIFT=5
+#
+# 5 -> 0, 2026-09-29. The deployed secret WAS what decided this, and it was read by
+# reconstruction rather than from Fly (a checkout still cannot read a secret): every build
+# machine's mounted volume from `fly machine list --json`, index by index. Live, the build pool is
+# 24 indexes with one volume each (7 x 40 GB + 17 x 20 GB) and the gate pool 40 machines with
+# none, both standby = size. BOTH sides moved to that: manager.toml's POOLS now carries the full
+# definition with the 24 volume ids, and the README's build row says 24 / 24 / 7 x 40 + 17 x 20.
+# The gate row already said 40 / 40 / no volume and was right. The secret that overrode the file
+# is to be unset, so there is no second copy left to disagree with.
+DRIFT=0
