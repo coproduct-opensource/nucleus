@@ -1,7 +1,7 @@
 //! The node's role-separated signing keys.
 //!
-//! Four persisted Ed25519 identities, each a DISTINCT trust role, and the
-//! shared load-or-create machinery behind them:
+//! Four persisted Ed25519 identities and one P-256 key, each a DISTINCT trust
+//! role, and the shared load-or-create machinery behind them:
 //!
 //! | key | role |
 //! |---|---|
@@ -9,6 +9,7 @@
 //! | task issuer | signs live-path session capability tokens at pod spawn |
 //! | approval | signs `/v1/approve`, verified in-guest by the tool proxy |
 //! | certificate root | the anchor every pod's `LatticeCertificate` chains to |
+//! | federation issuer (P-256) | signs the ES256 assertions a pod's upstream credential is exchanged for (ADR 0010) |
 //!
 //! # Why this is its own module (#2512)
 //!
@@ -61,6 +62,17 @@ const APPROVAL_SIGNING_KEY_FILE: &str = "approval_signing_key.der";
 /// authority that says what a pod MAY do must not double as the executor's
 /// receipt identity, the task-token root, or the approval authority.
 const CERT_ROOT_KEY_FILE: &str = "cert_root_signing_key.der";
+
+/// Filename (under `state_dir`) holding the persisted **federation issuer**
+/// key: P-256, PKCS#8 DER, signing the ES256 assertions `federated_credential`
+/// exchanges for upstream tokens.
+///
+/// A different CURVE from the four keys above, not only a different file,
+/// because the relying parties are different: model providers' token endpoints
+/// accept RSA or ECDSA and refuse EdDSA, so this issuer cannot share the
+/// Ed25519 machinery — and must not share a key with any of those roles
+/// regardless, since its signatures are presented OFF the node.
+const JWT_SVID_P256_KEY_FILE: &str = "jwt_svid_p256_signing_key.der";
 
 /// Generate a fresh Ed25519 signing key from the OS CSPRNG.
 ///
@@ -132,6 +144,63 @@ pub fn load_or_create_cert_root_signing_key(state_dir: &Path) -> SigningKey {
         CERT_ROOT_KEY_FILE,
         "certificate root signing key",
     )
+}
+
+/// Load the **federation issuer** P-256 key from `state_dir`, creating and
+/// persisting a fresh one on first run.
+///
+/// Same discipline as the Ed25519 role keys — PKCS#8 DER, `0o400`, and a
+/// present-but-unreadable file is logged and replaced rather than crashing the
+/// node — with one consequence worth stating: persistence is what keeps the
+/// `kid` stable. Upstreams register this issuer's JWKS, some of them inline,
+/// so a node that minted a new key per restart would be refused by every such
+/// upstream until someone re-registered it. A replaced corrupt key has that
+/// cost too, and the warning says so.
+///
+/// # Errors
+/// Only if a fresh key cannot be generated at all. A failure to PERSIST is a
+/// warning, as for the other keys: the node can still sign, it just will not
+/// keep its `kid` across a restart.
+pub fn load_or_create_jwt_svid_signing_key(
+    state_dir: &Path,
+) -> Result<nucleus_federation::EcdsaP256Signer, String> {
+    use nucleus_federation::EcdsaP256Signer;
+    let label = "federation issuer signing key";
+    let path = state_dir.join(JWT_SVID_P256_KEY_FILE);
+
+    if path.exists() {
+        match std::fs::read(&path) {
+            Ok(bytes) => match EcdsaP256Signer::from_pkcs8(&bytes) {
+                Ok(signer) => {
+                    debug!(path = %path.display(), "loaded persisted {label}");
+                    return Ok(signer);
+                }
+                Err(e) => warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "{label} file is unreadable; regenerating — every upstream that registered                      the old key (by kid) will refuse this node's assertions until updated"
+                ),
+            },
+            Err(e) => warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to read {label} file; regenerating"
+            ),
+        }
+    }
+
+    let der = EcdsaP256Signer::generate_pkcs8().map_err(|e| format!("{label}: {e}"))?;
+    let signer = EcdsaP256Signer::from_pkcs8(&der).map_err(|e| format!("{label}: {e}"))?;
+    if let Err(e) = write_key_file(&path, &der) {
+        warn!(
+            path = %path.display(),
+            error = %e,
+            "failed to persist {label}; its kid will not survive restart"
+        );
+    } else {
+        info!(path = %path.display(), "generated and persisted new {label}");
+    }
+    Ok(signer)
 }
 
 /// Shared implementation for the persisted per-node Ed25519 keys. `filename` is
@@ -265,6 +334,40 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o400, "private key must be mode 0400");
+    }
+
+    /// The federation issuer key persists at 0400 and reloads as the SAME key —
+    /// the same `kid` — across a restart, which is what an upstream that
+    /// registered this node's JWKS depends on.
+    #[test]
+    fn the_federation_issuer_key_persists_read_only_with_a_stable_kid() {
+        use nucleus_federation::AssertionSigner as _;
+        let dir = tempfile::tempdir().unwrap();
+        let first = load_or_create_jwt_svid_signing_key(dir.path()).expect("generates");
+        let path = dir.path().join(JWT_SVID_P256_KEY_FILE);
+        assert!(path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o400, "private key must be mode 0400");
+        }
+        let restarted = load_or_create_jwt_svid_signing_key(dir.path()).expect("reloads");
+        assert_eq!(
+            first.kid(),
+            restarted.kid(),
+            "the kid changed across a restart"
+        );
+        assert_eq!(first.public_jwk(), restarted.public_jwk());
+
+        // And it is its own key, not one of the Ed25519 role keys' files.
+        let other = tempfile::tempdir().unwrap();
+        let elsewhere = load_or_create_jwt_svid_signing_key(other.path()).unwrap();
+        assert_ne!(
+            first.kid(),
+            elsewhere.kid(),
+            "two nodes share a federation key"
+        );
     }
 
     #[test]
