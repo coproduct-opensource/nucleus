@@ -200,9 +200,11 @@ mod tests {
 use std::sync::Arc;
 use std::time::Duration;
 
-use nucleus_cred_broker::{CredentialStore, PodIdentity};
-use nucleus_spec::CredentialedEgressSpec;
+use nucleus_cred_broker::PodIdentity;
 use portcullis::PermissionLattice;
+
+use crate::federated_credential::PodCredentials;
+use crate::upstreams::RegistryEntry;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::broker_perform::{
@@ -345,10 +347,11 @@ pub struct PodBrokerConfig {
     pub identity: PodIdentity,
     /// This pod's policy.
     pub policy: Arc<PermissionLattice>,
-    /// This pod's credentials, from the node's environment.
-    pub store: Arc<CredentialStore>,
-    /// The upstreams the operator configured.
-    pub upstreams: Arc<Vec<CredentialedEgressSpec>>,
+    /// This pod's credentials: static ones from the node's environment, and
+    /// what it needs to mint federated ones.
+    pub credentials: Arc<PodCredentials>,
+    /// The registry entries this pod was admitted.
+    pub upstreams: Arc<Vec<RegistryEntry>>,
     /// The capability the guest is served and this listener verifies.
     pub broker_secret: Arc<Vec<u8>>,
 }
@@ -366,11 +369,11 @@ pub struct PodBroker {
     /// This pod's policy.
     pub policy: Arc<PermissionLattice>,
     /// This pod's credentials.
-    pub store: Arc<CredentialStore>,
+    pub credentials: Arc<PodCredentials>,
     /// This pod's capability. `None` refuses every frame.
     pub broker_secret: Option<Arc<Vec<u8>>>,
-    /// The upstreams the operator configured for this pod.
-    pub upstreams: Arc<Vec<CredentialedEgressSpec>>,
+    /// The registry entries this pod was admitted.
+    pub upstreams: Arc<Vec<RegistryEntry>>,
     /// How to make an outbound call.
     pub caller: UpstreamCaller,
 }
@@ -389,11 +392,11 @@ pub struct BrokerServing<'a> {
     /// This pod's policy.
     pub policy: &'a PermissionLattice,
     /// This pod's credentials.
-    pub store: &'a CredentialStore,
+    pub credentials: &'a PodCredentials,
     /// This pod's capability. `None` refuses every frame.
     pub broker_secret: Option<&'a [u8]>,
     /// The upstreams this pod may reach, by name, with their bases fixed.
-    pub upstreams: &'a [CredentialedEgressSpec],
+    pub upstreams: &'a [RegistryEntry],
     /// This pod's idempotency memory.
     pub ledger: &'a IdempotencyLedger,
     /// How to make the call.
@@ -495,18 +498,29 @@ pub async fn serve_connection_with_timeout<S>(
             // confused for one another — see `GuestAsk`, where the property is
             // held by the types rather than by the order tried here.
             match crate::broker_perform::classify(&frame) {
-                Ok(GuestAsk::Query(envelope)) => encode(&crate::broker::decide_envelope(
-                    &envelope,
-                    serving.identity,
-                    serving.policy,
-                    serving.store,
-                    now,
-                )),
+                // A query decides against the store under its read lock, in a
+                // synchronous closure. A query never MINTS: it has no effect by
+                // definition, so for a federated upstream it reports only what
+                // is already held.
+                Ok(GuestAsk::Query(envelope)) => encode(
+                    &serving
+                        .credentials
+                        .read(|store| {
+                            crate::broker::decide_envelope(
+                                &envelope,
+                                serving.identity,
+                                serving.policy,
+                                store,
+                                now,
+                            )
+                        })
+                        .unwrap_or_else(|| crate::broker::BrokerResponse::refused("not permitted")),
+                ),
                 Ok(GuestAsk::Perform(request)) => {
                     let ctx = PerformContext {
                         identity: serving.identity,
                         policy: serving.policy,
-                        store: serving.store,
+                        credentials: serving.credentials,
                         upstreams: serving.upstreams,
                         ledger: serving.ledger,
                     };
@@ -543,10 +557,10 @@ mod serving_tests {
         PodIdentity::observed_by_host("spiffe://nucleus/pod/abc")
     }
 
-    fn store_with(target: &str, value: &str) -> CredentialStore {
-        let mut s = CredentialStore::new();
+    fn store_with(target: &str, value: &str) -> PodCredentials {
+        let mut s = nucleus_cred_broker::CredentialStore::new();
         s.insert(target, Credential::new(value));
-        s
+        PodCredentials::static_only(s)
     }
 
     /// The capability these tests speak with. Real pods get a minted one.
@@ -568,7 +582,7 @@ mod serving_tests {
     async fn round_trip(
         request: &str,
         policy: &PermissionLattice,
-        store: &CredentialStore,
+        store: &PodCredentials,
     ) -> String {
         round_trip_raw(&sign(request.trim_end(), TEST_SECRET), policy, store).await
     }
@@ -576,7 +590,7 @@ mod serving_tests {
     /// The upstreams a test pod may reach. Empty unless a test says otherwise:
     /// a perform request naming an upstream nobody configured is refused, which
     /// is the correct default for every test that is not about perform.
-    fn no_upstreams() -> Vec<CredentialedEgressSpec> {
+    fn no_upstreams() -> Vec<RegistryEntry> {
         Vec::new()
     }
 
@@ -601,16 +615,16 @@ mod serving_tests {
     fn serving<'a>(
         identity: &'a PodIdentity,
         policy: &'a PermissionLattice,
-        store: &'a CredentialStore,
+        credentials: &'a PodCredentials,
         secret: Option<&'a [u8]>,
-        upstreams: &'a [CredentialedEgressSpec],
+        upstreams: &'a [RegistryEntry],
         ledger: &'a IdempotencyLedger,
         caller: UpstreamCaller,
     ) -> BrokerServing<'a> {
         BrokerServing {
             identity,
             policy,
-            store,
+            credentials,
             broker_secret: secret,
             upstreams,
             ledger,
@@ -622,7 +636,7 @@ mod serving_tests {
     async fn round_trip_raw(
         request: &str,
         policy: &PermissionLattice,
-        store: &CredentialStore,
+        store: &PodCredentials,
     ) -> String {
         let (client, server) = tokio::io::duplex(512 * 1024);
         let id = who();
@@ -653,8 +667,8 @@ mod serving_tests {
     async fn perform_round_trip(
         frame: &str,
         policy: &PermissionLattice,
-        store: &CredentialStore,
-        upstreams: &[CredentialedEgressSpec],
+        store: &PodCredentials,
+        upstreams: &[RegistryEntry],
         secret: Option<&[u8]>,
     ) -> (String, Vec<UpstreamCall>) {
         let (client, server) = tokio::io::duplex(512 * 1024);
@@ -676,14 +690,14 @@ mod serving_tests {
         (reply, calls)
     }
 
-    fn test_upstream() -> CredentialedEgressSpec {
-        CredentialedEgressSpec {
+    fn test_upstream() -> RegistryEntry {
+        RegistryEntry::env(nucleus_spec::CredentialedEgressSpec {
             name: "model-api".into(),
             upstream: "https://upstream.invalid/v1".into(),
             credential_env: "NUCLEUS_TEST_TRANSPORT_CRED".into(),
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
-        }
+        })
     }
 
     fn perform_frame(path: &str) -> String {
@@ -704,8 +718,7 @@ mod serving_tests {
     #[tokio::test]
     async fn a_signed_perform_request_is_dispatched_to_the_upstream() {
         let policy = PermissionLattice::permissive();
-        let mut store = CredentialStore::new();
-        store.insert("model-api", Credential::new("upstream-token"));
+        let store = store_with("model-api", "upstream-token");
         let ups = vec![test_upstream()];
 
         let (reply, calls) = perform_round_trip(
@@ -734,8 +747,7 @@ mod serving_tests {
     #[tokio::test]
     async fn an_unsigned_perform_request_is_refused_without_calling_anything() {
         let policy = PermissionLattice::permissive();
-        let mut store = CredentialStore::new();
-        store.insert("model-api", Credential::new("upstream-token"));
+        let store = store_with("model-api", "upstream-token");
         let ups = vec![test_upstream()];
 
         let (reply, calls) = perform_round_trip(
@@ -760,8 +772,7 @@ mod serving_tests {
     #[tokio::test]
     async fn a_perform_request_cannot_redirect_the_upstream_over_the_socket() {
         let policy = PermissionLattice::permissive();
-        let mut store = CredentialStore::new();
-        store.insert("model-api", Credential::new("upstream-token"));
+        let store = store_with("model-api", "upstream-token");
         let ups = vec![test_upstream()];
 
         let (reply, calls) = perform_round_trip(
@@ -785,8 +796,7 @@ mod serving_tests {
     #[tokio::test]
     async fn a_pod_with_no_upstreams_refuses_every_perform_request() {
         let policy = PermissionLattice::permissive();
-        let mut store = CredentialStore::new();
-        store.insert("model-api", Credential::new("upstream-token"));
+        let store = store_with("model-api", "upstream-token");
 
         let (reply, calls) = perform_round_trip(
             &sign(&perform_frame("/messages"), TEST_SECRET),
@@ -1166,7 +1176,7 @@ pub async fn serve_broker(
     let PodBroker {
         identity,
         policy,
-        store,
+        credentials,
         broker_secret,
         upstreams,
         caller,
@@ -1189,7 +1199,7 @@ pub async fn serve_broker(
                 match accepted {
                     Ok((stream, _addr)) => {
                         let policy = Arc::clone(&policy);
-                        let store = Arc::clone(&store);
+                        let credentials = Arc::clone(&credentials);
                         let identity = identity.clone();
                         let broker_secret = broker_secret.clone();
                         let upstreams = Arc::clone(&upstreams);
@@ -1201,7 +1211,7 @@ pub async fn serve_broker(
                                 &BrokerServing {
                                     identity: &identity,
                                     policy: &policy,
-                                    store: &store,
+                                    credentials: &credentials,
                                     broker_secret: broker_secret
                                         .as_deref()
                                         .map(|v| v.as_slice()),
@@ -1278,7 +1288,7 @@ impl BrokerListener {
         let PodBrokerConfig {
             identity,
             policy,
-            store,
+            credentials,
             upstreams,
             broker_secret,
         } = pod;
@@ -1321,7 +1331,7 @@ impl BrokerListener {
                 PodBroker {
                     identity,
                     policy,
-                    store,
+                    credentials,
                     // NOT `None`. This used to be `None` while the workload
                     // API served the guest a freshly minted secret, so the
                     // guest held a capability the verifier had never seen and
@@ -1424,10 +1434,10 @@ mod listener_lifecycle_tests {
         Arc::new(PermissionLattice::default())
     }
 
-    fn store(target: &str, value: &str) -> Arc<CredentialStore> {
-        let mut s = CredentialStore::new();
+    fn store(target: &str, value: &str) -> Arc<PodCredentials> {
+        let mut s = nucleus_cred_broker::CredentialStore::new();
         s.insert(target, Credential::new(value));
-        Arc::new(s)
+        Arc::new(PodCredentials::static_only(s))
     }
 
     /// **Never the runtime's own socket.** A guest that could reach the Docker
@@ -1471,7 +1481,7 @@ mod listener_lifecycle_tests {
             PodBrokerConfig {
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/dead"),
                 policy: policy(),
-                store: store("api.example.test", "v"),
+                credentials: store("api.example.test", "v"),
                 upstreams: Arc::new(Vec::new()),
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
             },
@@ -1498,7 +1508,7 @@ mod listener_lifecycle_tests {
             PodBrokerConfig {
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/alive"),
                 policy: policy(),
-                store: store("api.example.test", "v"),
+                credentials: store("api.example.test", "v"),
                 upstreams: Arc::new(Vec::new()),
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
             },
@@ -1533,7 +1543,7 @@ mod listener_lifecycle_tests {
             PodBrokerConfig {
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/abc"),
                 policy: policy(),
-                store: store("api.example.test", "v"),
+                credentials: store("api.example.test", "v"),
                 upstreams: Arc::new(Vec::new()),
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
             },
@@ -1590,10 +1600,10 @@ mod listener_tests {
     use nucleus_cred_broker::Credential;
     use std::os::unix::fs::PermissionsExt;
 
-    fn store_with(target: &str, value: &str) -> CredentialStore {
-        let mut s = CredentialStore::new();
+    fn store_with(target: &str, value: &str) -> PodCredentials {
+        let mut s = nucleus_cred_broker::CredentialStore::new();
         s.insert(target, Credential::new(value));
-        s
+        PodCredentials::static_only(s)
     }
 
     /// **The socket must not be reachable by other local processes.** Linux
@@ -1654,7 +1664,7 @@ mod listener_tests {
         let listener = prepare_socket(&path).expect("bind");
 
         let policy = Arc::new(PermissionLattice::permissive());
-        let store = Arc::new(store_with("api.example.test", "super-secret-token"));
+        let credentials = Arc::new(store_with("api.example.test", "super-secret-token"));
         let (tx, rx) = tokio::sync::oneshot::channel();
         let (caller, _seen) = serving_tests::recording_caller();
         let server = tokio::spawn(serve_broker(
@@ -1662,7 +1672,7 @@ mod listener_tests {
             PodBroker {
                 identity: who(),
                 policy,
-                store,
+                credentials,
                 broker_secret: Some(std::sync::Arc::new(TEST_SECRET.to_vec())),
                 upstreams: Arc::new(Vec::new()),
                 caller,

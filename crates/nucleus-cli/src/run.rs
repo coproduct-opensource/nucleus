@@ -924,6 +924,7 @@ async fn create_pod_via_node(
     if let Some(client) = mtls_client {
         let response = client
             .post(&url)
+            .timeout(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT)
             .header("content-type", "application/yaml")
             .body(body)
             .send()
@@ -947,7 +948,11 @@ async fn create_pod_via_node(
 
     let auth_secret = auth_secret
         .ok_or_else(|| anyhow!("neither an mTLS identity nor an auth secret is available"))?;
-    let mut request = ureq::post(&url).header("content-type", "application/yaml");
+    let mut request = ureq::post(&url)
+        .config()
+        .timeout_global(Some(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT))
+        .build()
+        .header("content-type", "application/yaml");
     let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
     for (key, value) in signed.headers {
         request = request.header(&key, &value);

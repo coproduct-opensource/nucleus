@@ -167,12 +167,15 @@ pub(crate) async fn gate(
     pod_dir: &Path,
     spec: &PodSpec,
     pod_id: uuid::Uuid,
+    vmm: &mut tokio::process::Child,
 ) -> Result<(), crate::ApiError> {
     // `wait_for_proxy_health` moved into `guest_diagnosis` (#2355), which also
     // enriches a timeout with the guest console's actual cause. Both halves read
     // the same console: one to explain why the pod never came up, this one to
-    // require it proved its fence.
-    crate::guest_diagnosis::wait_for_proxy_health(addr, &pod_dir.join("firecracker.log")).await?;
+    // require it proved its fence. The VMM goes in so a dead guest ends the wait
+    // instead of running it out (#2904).
+    let console = pod_dir.join("firecracker.log");
+    crate::guest_diagnosis::wait_for_proxy_health(addr, &console, vmm).await?;
     attest(pod_dir, spec, &pod_id.to_string())
         .await
         .map_err(crate::ApiError::Driver)

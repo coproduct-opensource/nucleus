@@ -28,7 +28,6 @@ jobs:
     outputs:
       all: ${{ steps.detect.outputs.all }}
       crates: ${{ steps.detect.outputs.crates }}
-      gates: ${{ steps.detect.outputs.gates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,18 +81,8 @@ jobs:
             crates="$(printf '%s\n' "$changed" | grep -oE '^crates/[^/]+' | sed 's#^crates/##' | sort -u | paste -sd' ' - || true)"
           fi
 
-          # What can change what the gate of gates CONCLUDES: a gate script, the workflows that
-          # invoke them, or the xtask gates they call. A change elsewhere cannot make a gate stop
-          # being able to fail — and the cheap half (`--vacuity-only`, ten seconds) runs on every
-          # commit regardless, which is the half that catches a perturbation the tree moved under.
-          gates=false
-          if [ "$all" = "true" ] || printf '%s\n' "$changed" | grep -qE '^scripts/|^\.github/workflows/|^crates/xtask/'; then
-            gates=true
-          fi
-
           echo "all=$all" >> "$GITHUB_OUTPUT"
           echo "crates=$crates" >> "$GITHUB_OUTPUT"
-          echo "gates=$gates" >> "$GITHUB_OUTPUT"
 
           {
             echo "### Changed-crate detection"
@@ -533,7 +522,12 @@ jobs:
       c1: ${{ steps.c1.outcome }}
       gates: ${{ steps.gates.outcome }}
     steps:
+      # Depth 2: the gate of gates diffs against the commit this one is built on (a pull
+      # request's merge commit's first parent; the merge group's base), and needs it present.
+      # If it is not, the script runs every probe rather than guess.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
@@ -588,23 +582,34 @@ jobs:
       # Every gate is a claim that something is checked. This checks the claim:
       # each check-*.sh must RED on a real violation of its own subject and
       # GREEN when restored. Needs a clean tree (it perturbs and restores).
-      # The slow half, and 573 s of an 801-second job — 72 % of the merge queue's own critical
-      # path once the gate lane is warm. It asks whether each gate REDS on a violation of its own
-      # subject, which is a property of the GATE: a change that touches no gate script, no
-      # workflow and no xtask gate cannot alter the answer. The cheap half above still runs on
-      # every commit and is the half that catches a perturbation the tree moved under.
       #
-      # When this is skipped the relay reads `skipped`, which `gates-can-fail` already treats as a
-      # pass — it has to, because the job is skipped for drafts too.
+      # The slow half: 573 s of an 801-second job when it runs everything. How much it runs is
+      # decided by the script, per event, from each probe's INPUTS -- derived from the gate's own
+      # text by scripts/gate-inputs.sh (its code, the files it names, the probe's target):
+      #   pull_request  only the probes whose inputs this change touched, each skip printed
+      #                 with its reason. A change to the engine, its derivation or this file
+      #                 runs every probe.
+      #   merge_group   the BACKSTOP: every probe when the queued change touches gate code
+      #                 (scripts/, .github/, crates/xtask/, manifests, toolchain) -- at least the
+      #                 queue's filter before scoping -- otherwise the scoped selection.
+      #   push          every probe, unconditionally.
+      # The soundness argument, and what an undeclared input would take, is at the top of the
+      # script ("SCOPED RUNS"). The cheap half above is unscoped and runs on every commit.
       - name: Every gate REDs on a real violation and GREENs when restored
         id: gates
-        if: ${{ needs.changed-crates.outputs.gates == 'true' }}
         continue-on-error: true
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          # Only a merge_group payload carries this; on pull_request and push it is ''. The
+          # script takes it positionally and may receive it empty -- a pull request's base is
+          # its merge commit's first parent (HEAD^1, hence fetch-depth 2), and an empty or
+          # unresolvable merge-group base runs every probe, with the reason printed.
+          MERGE_BASE: ${{ github.event.merge_group.base_sha }}
         # The script itself refuses a dirty tree (its first check), so the step is the gate
         # and nothing else: the CI-spec model reads an inline `exit 1` under
         # continue-on-error as a decision that changes no outcome (GI004).
-        run: scripts/check-gates-can-fail.sh
+        run: scripts/check-gates-can-fail.sh --for-event "$EVENT_NAME" "$MERGE_BASE"
       - name: Outcomes
         if: always()
         env:

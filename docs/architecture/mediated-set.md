@@ -13,7 +13,7 @@ described but not enforced is a claim, not a boundary.
 | In the set | Why |
 |---|---|
 | `portcullis-effects` | The effect traits. All 13 methods take an `Authority` by value. |
-| `nucleus` (`Sandbox`, `Executor`) | The other filesystem and process path. All 22 `DecisionToken`-taking `Sandbox` methods take an `Authority`; the `Executor` threads one to the spawn. |
+| `nucleus` (`Sandbox`, `Executor`) | The other filesystem and process path. 24 of the 26 `DecisionToken`-taking `Sandbox` methods take an `Authority`, `glob` among them since 2026-09-27; `exists`/`exists_approved` return a `bool` and take none. `read_to_string_for_search` takes an `Authority` without a token. The `Executor` threads one to the spawn. |
 | `portcullis-core::capability_traits` | The typed-context surface. Reachable from `NucleusRuntime::with_typed_context`, so it is agent-facing. |
 
 Everything else is outside, and the guarantee says nothing about it.
@@ -32,6 +32,15 @@ DischargedBundle` (`crates/portcullis-effects/src/runtime.rs`) whose verdict is
 decided on the single proven `FlowGraph`. "Backstopped" means it is not mediated
 by the sink lattice but is physically confined by the netns/Firecracker
 default-deny network policy.
+
+Mediated does not mean "refused on a tainted session". Since 2026-09-27 the
+`NoAdversarialAncestry` obligation is charged only to pairs that can act; the
+pure reads (`ReadFiles`, `GlobSearch`, `GrepSearch` at `AuditLogAppend`, i.e.
+`/v1/read`, `/v1/artifact`, `/v1/glob`, `/v1/grep`, MCP `read`, `glob` and
+`grep`) are still mediated by every
+other obligation but are no longer refused for taint. Their bytes are observed
+back into the session `FlowGraph`, so the egress rows below still refuse a
+tainted session. See `ActionKind` in `crates/nucleus-ifc-kernel/src/discharge.rs`.
 
 Status vocabulary (the `Status` column, machine-stable):
 
@@ -75,7 +84,7 @@ no open hole at all — the machine meaning of "every".
 | 6 | DNS (tunnel/exfil) | `dns` | dnsmasq guest config | `backstopped-only` | `no-resolv`, no upstream → an unlisted name fails locally (`the_dns_proxy_has_no_upstream_and_cannot_forward`) |
 | 7 | vsock (broker/task-token/SVID transport) | `vsock_transport` | `crates/nucleus-tool-proxy/src/broker_client.rs:223`, `crates/nucleus-node/src/workload_api_vsock.rs` | `partial` | Broker perform is mediated (#4); other frames are host-issued, peer-CID pinned to `VMADDR_CID_HOST` — no agent authority to discharge |
 | 8 | pod-dir Unix socket (container broker) | `pod_dir_socket` | `crates/nucleus-node/src/broker_transport.rs` `BrokerTransport::PodDirSocket` | `partial` | The container path registers no identity, so the broker refuses — a structural refusal, not a token |
-| 9 | node gRPC (control plane) | `node_grpc` | `crates/nucleus-tool-proxy/src/node_client.rs` (whole-file infra grep-gate) | `infra-out-of-set` | Operator-provisioned endpoint, never agent-controlled |
+| 9 | node gRPC (control plane) | `node_grpc` | `crates/nucleus-tool-proxy/src/node_client.rs` (pod management), `lockdown_client.rs` | `partial` | Operator-provisioned endpoint, never agent-controlled. Every agent-driven frame — `NodeClient::{create_pod, list_pods, pod_logs, cancel_pod}` — takes an `Authority` by value and spends it on the exact `node_client::acts` value before the request is built (create is bound to the spec's SHA-256); the lockdown frames are proxy-originated. Cancel is `AuthorityReducing` (a tainted session can still stop its children), and the node admits it only for the caller and its direct children (`get_pod_for_caller`) |
 | 10 | netns raw socket (`std::net`, any linked lib) | `netns_raw_socket` | anywhere in the guest | `backstopped-only` | Same open class as #5 — `apply_default_deny` netns egress policy, **proven applied on boot** by `scripts/check-egress-probe.sh` |
 | 11 | Audit / Article-12 egress (S3, webhook) | `audit_egress` | `crates/nucleus-tool-proxy/src/main.rs`, `art12_shipper.rs` (net allowlist) | `infra-out-of-set` | The runtime's record OF the agent, an operator sink |
 | 12 | Effect escape hatch `NucleusRuntime::unmediated_effects` | `effects_escape_hatch` | `crates/portcullis-effects/src/runtime.rs:690` (#1248) | `type-enforced` | The raw `effects()` accessor is gone; `unmediated_effects` requires an `UnmediatedAccess` opt-in token + a `DischargedBundle` discharged against the strictest sink (`HTTPEgress`, fails on a tainted session) + a `FlowTracker` observe, and the returned effect methods take `Authority` by value. Fail-closed tested (`unmediated_preflight_denies_adversarial_session`) + all-profile isolation invariant. Audit-DAG granularity is coarse (one `OutboundAction` node per grant) |
@@ -87,7 +96,9 @@ type-enforced, grep-backstopped. The three surfaces that once kept C6 honestly
 NOT-YET are now closed: (a) the in-shell/raw-socket surface (5, 10) is confined by
 the netns default-deny, **proven applied on boot** (`check-egress-probe.sh`); (b)
 the partial transport channels (7, 8) rest on tested structural refusals (host-CID
-pin `only_the_host_cid_is_accepted`; broker refusal by absence); and (c) the
+pin `only_the_host_cid_is_accepted`; broker refusal by absence), and the node
+control plane (9) is `partial` because its agent-driven pod frames spend an
+`Authority` (2026-09-27) while its lockdown frames are proxy-originated; and (c) the
 `effects()` escape hatch (12) is closed (`unmediated_effects`, #1248). The
 inventory now carries **no open hole** — `no_channel_is_an_open_hole` asserts it.
 The remaining step to move C6 off NOT-YET is the ledger-promotion decision itself
@@ -152,6 +163,29 @@ a grep over N files runs N preflights. That is the affine model working as desig
 an `Authority` buys one read — and the alternative, one authority covering a whole
 directory walk, is exactly the replay the by-value cutover removed. If the cost ever
 matters, the answer is a coarser sink class, not a reusable token.
+
+Until 2026-09-27 only the MCP grep used it. HTTP `/v1/grep` opened each file with a
+raw `std::fs::File::open` under an `#[expect(clippy::disallowed_methods)]` naming
+#1216 — no discharge, no path policy — and both glob transports dropped their
+decision token and walked `std::fs` through `glob::glob`, following symlinks and
+canonicalizing afterwards to see whether they had left the root. Glob and grep were
+*Checked*: a decision ran, and the effect did not need its result.
+
+Now HTTP grep preflights each file (`run_gate::preflight_grep_fs`, no longer
+feature-gated) and reads through `read_to_string_for_search`; the `#[expect]` is
+deleted, so a raw open there reds clippy again. Both globs mint one
+`(GlobSearch, AuditLogAppend)` discharge (`run_gate::preflight_glob_fs`; MCP against
+its own `FlowGraph`, pinned by `glob_preflights_against_the_transport_graph`) and
+call `Sandbox::glob`, which redeems the token and spends the authority before it
+opens a directory, walks the cap-std `Dir` without following or listing symlinks,
+refuses `..` and absolute patterns, and runs the path policy on every entry it
+reports. The listing's `Completeness` is `Complete | Truncated`, and `skipped`
+counts what it withheld.
+
+Behaviour change: both routes now need `InScopeWithTask` — a verified task token whose
+scope names `GlobSearch` / `GrepSearch` — plus the certificate ceiling. A standalone
+proxy with no task token loses them; HTTP grep skips any file the preflight refuses,
+as MCP grep already did.
 
 ## Enforcement
 

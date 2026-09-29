@@ -4,6 +4,16 @@ Pattern for federating `nucleus-oidc-provider` with an external Relying Party (R
 
 This document validates that the public `nucleus-oidc-provider` (the OP shipped in this repo) exposes everything an external RP needs to federate without requiring vendor-specific code in the public nucleus tree. Vendor-specific adapters (the per-RP wire-up + secret extraction) live in downstream closed-source orchestrators per the project's vendor-neutrality discipline (see `nucleus/CLAUDE.md`).
 
+> **Outbound calls to a provider move host-side (2026-09-24, [ADR 0010](adr/0010-a-credential-minted-per-exchange-never-stored.md), proposed).**
+> The flow below has the **pod** perform the exchange and hold the resulting token. Under
+> ADR 0010 the pod no longer does: the node mints a per-exchange assertion after the PDP
+> approves the call, exchanges it at the provider's token endpoint, and makes the call; the
+> guest sees only the response. That path uses a separate ES256 issuer, because the
+> providers checked reject EdDSA tokens, and this OP signs EdDSA only (T04). The wire
+> contract for such a provider is [`federated-upstream-profile.md`](federated-upstream-profile.md).
+> What follows still describes this OP's federation surface for relying parties that accept
+> EdDSA.
+
 ## Flow
 
 ```

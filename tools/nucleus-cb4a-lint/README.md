@@ -89,9 +89,19 @@ result above rests on three perturbations, each of which produced a report:
 | `pdp_decide` → helper → helper that builds a `CredentialStore` | `nucleus-node` | flagged, at the two-hop helper |
 | `cdp_fetch` → helper that reads a `PermissionLattice` | `nucleus-node` | flagged |
 | `for_request` → helper naming a policy type | `nucleus-cred-broker` | flagged |
+| `refill` (an `async fn`) → helper returning a `PermissionLattice` | `nucleus-node` | **silent** before nested bodies were scanned; flagged after |
 
 The first two also establish that `pdp_decide` and `cdp_fetch` are actually
 matched as roots; the third does the same for `for_request` in a different crate.
+
+The fourth found a hole rather than confirming a root. An `async fn`'s body is
+lowered to a nested coroutine body, and the scan used the default nested filter,
+so it never entered it: every async root was checked against an empty body and
+passed. The scan now uses `OnlyBodies`, attributing a closure's or async block's
+calls and types to the function that contains it (the conservative reading), and
+the same perturbation reports. With that change the four crates above are still
+clean — after two calls inside `refill` that the pass could not resolve (a local
+closure, and a generic `FnOnce` parameter) were rewritten as direct calls.
 
 ## What a clean pass does NOT establish
 
