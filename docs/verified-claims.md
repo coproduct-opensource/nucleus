@@ -148,6 +148,19 @@ deputy. The check itself is a runtime comparison, but it can no longer be
 *skipped*: effect methods take an owned `Authority`, so reaching the effect
 requires surrendering one.
 
+**Which obligations a bundle carries depends on its pair (2026-09-27).**
+`NoAdversarialAncestry` is charged only to `ActionKind::Acting` pairs. The three
+`ActionKind::PureRead` pairs — `ReadFiles`, `GlobSearch` and `GrepSearch` at
+`AuditLogAppend` — mint without it, so a session that has seen adversarial content
+can still read its workspace. The kind is derived from the sealed pair, never
+supplied by the caller, and the scope binding above is unchanged, so a pure-read
+bundle authorizes a pure read and nothing else. Every other obligation applies to
+every pair, and every Acting pair — including `(WriteFiles, AuditLogAppend)`,
+reads persisted to `MemoryPersist`/`CacheWrite`, and all egress — still refuses a
+tainted session. Pinned by `a_pure_read_bundle_pays_only_for_pure_reads` (all 247
+pairs) and `adversarial_ancestry_still_blocks_a_write_to_the_audit_log` in
+`nucleus-ifc-kernel/src/discharge.rs`.
+
 **Proved in:** Compile-fail doc-test on `DischargedBundle`
 (portcullis-core/src/discharge.rs); scope binding by
 `a_read_bundle_will_not_authorize_a_write` and siblings in
@@ -244,8 +257,8 @@ discharge fails (`no_replay_without_a_fresh_discharge`).
   `crates/nucleus-ifc-kernel/src/extracted/mediation.rs` → charon (scoped
   `--start-from`) → aeneas → `generated-mediation/PortcullisCoreMediation/`.
 - Rust↔model parity: exhaustive sweep in `src/extracted/mediation.rs` over every
-  earnable pair (27 of 247 pass `PathAllowed`) against all 247 attempted pairs —
-  6,669 comparisons, the complete domain, so this is an equivalence proof rather
+  earnable pair (28 of 247 pass `PathAllowed`) against all 247 attempted pairs —
+  6,916 comparisons, the complete domain, so this is an equivalence proof rather
   than a sample.
 
 **Axiom set:** `[propext, Classical.choice, Quot.sound]` — no `sorryAx`, and no

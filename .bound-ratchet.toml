@@ -67,5 +67,8 @@
 # constructed, so they leave the surface with the code: D=171, B=170, dropped=1
 # (still CaClient). B/D moves from 173/174 to 170/171 by arithmetic, with no
 # binding lost. Decided by the owner's LOC plan (T1).
-floor_bp = 9941
-declared_floor = 171
+# 2026-09-27: memory_write_core and memory_recall_core take the Authority their
+# handler minted from a preflight and spend it before mutating. Two new sites,
+# both bound: D=174, B=173, dropped=1 (from 172/171 on the base branch).
+floor_bp = 9942
+declared_floor = 174

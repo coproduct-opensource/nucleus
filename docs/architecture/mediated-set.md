@@ -33,6 +33,14 @@ decided on the single proven `FlowGraph`. "Backstopped" means it is not mediated
 by the sink lattice but is physically confined by the netns/Firecracker
 default-deny network policy.
 
+Mediated does not mean "refused on a tainted session". Since 2026-09-27 the
+`NoAdversarialAncestry` obligation is charged only to pairs that can act; the
+pure reads (`ReadFiles`, `GlobSearch`, `GrepSearch` at `AuditLogAppend`, i.e.
+`/v1/read`, `/v1/artifact`, MCP `read` and `grep`) are still mediated by every
+other obligation but are no longer refused for taint. Their bytes are observed
+back into the session `FlowGraph`, so the egress rows below still refuse a
+tainted session. See `ActionKind` in `crates/nucleus-ifc-kernel/src/discharge.rs`.
+
 Status vocabulary (the `Status` column, machine-stable):
 
 - **`type-enforced`** — the effect method takes an owned `Authority` by value, so
