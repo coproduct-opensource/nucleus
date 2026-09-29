@@ -67,6 +67,19 @@
 # constructed, so they leave the surface with the code: D=171, B=170, dropped=1
 # (still CaClient). B/D moves from 173/174 to 170/171 by arithmetic, with no
 # binding lost. Decided by the owner's LOC plan (T1).
+# 2026-09-27: memory_write_core and memory_recall_core take the Authority their
+# handler minted from a preflight and spend it before mutating. Two new sites,
+# both bound: D=174, B=173, dropped=1 (from 172/171 on the base branch).
+# 2026-09-27: the four NodeClient pod methods (create, list, logs, cancel) take
+# the Authority their handler minted from `run_gate::preflight_pod` and spend it
+# before the request is built. Four new sites, all bound: D=178, B=177,
+# dropped=1 (still CaClient).
+# 2026-09-27: `Sandbox::glob` joins the surface with its `DecisionToken` and
+# `Authority` both taken by value and both consumed before the walk. Glob had
+# no witness before (both transports walked `std::fs`), so D and B rise
+# together: 171/172 -> 173/174, dropped still 1 (CaClient).
+# 2026-09-29, rebuilding the glob/grep branch onto main after #3041 landed: all three moves
+# apply to one tree, so the pin is this tree's measurement.
 # 2026-09-27: declassification became a sealed witness. `VerifiedDeclassification`
 # joins the WITNESS vocabulary (its one site, `FlowGraph::apply_verified`, binds
 # it), and `kernel/declassify_authority.rs` now names `DeclassificationToken`
@@ -74,5 +87,7 @@
 # visible to the scan (verify, the two fused applies, the witness's own field).
 # All five are bound: D=177, B=176, dropped=1 (still CaClient). A visibility
 # gain, not new enforcement counted twice.
-floor_bp = 9943
-declared_floor = 177
+# 2026-09-29, merging main into the declassification branch: every move above applies to
+# one tree, so the pin is this tree's measurement.
+floor_bp = 9945
+declared_floor = 185

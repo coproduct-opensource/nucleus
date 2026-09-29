@@ -77,10 +77,18 @@ run "check-line-ratchet --strict" bash scripts/check-line-ratchet.sh --strict
 # gauntlet of about a minute. `check-clippy-ratchet` is the fourth and is NOT here -- 53 s warm
 # and minutes cold, so it sits in --full below with the other clippy work.
 run "check-gate-defs-match-plan" bash scripts/check-gate-defs-match-plan.sh
+# The seeded-gate restamp in the SDK step runs only inside a gate pod, so its logic is proved
+# here: only byte-equal pkg files move, and nothing moves once cargo has run. Under 1 s.
+run "gatehouse-verifier-sdk --self-test" sh scripts/gatehouse-verifier-sdk.sh --self-test
 run "ci-spec check" cargo run -q -p xtask -- ci-spec check
 # The gauntlet checking its own list. Cheap, and the only thing that stops a gate being added to
 # CI and never reaching the fast path -- which is how three of today's five misses happened.
 run "ci-spec local-coverage" cargo run -q -p xtask -- ci-spec local-coverage
+# The scorecard families (bound, alg, tot, life, typed, suppress) and their ratchet. Manifest
+# Guards runs it and this file did not: on 2026-09-26 #3019 and #3020 each passed this gauntlet
+# 31/31 and then went red in CI -- a new crate diluting `tot` below its floor, a new affine
+# right entering `life` without a validity interval. 2.8 s warm.
+run "xtask scorecard" cargo run -q -p xtask -- scorecard
 
 # The Lean gates. Declared NOT-LOCAL on 2026-09-20 on the assumption that a developer has no
 # Lean toolchain -- which was never tested and is wrong: `lean-toolchain` pins v4.30.0 and elan

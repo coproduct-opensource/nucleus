@@ -77,6 +77,26 @@ jobs:
             echo "as a required status check."
           fi
 
+      # Reuse the previous run's Lake output. Lake decides freshness by content-hash
+      # traces, not mtimes, so an older .lake is sound: what changed rebuilds, the
+      # rest replays. Saved from main only (a merge-group or PR cache is visible to
+      # that ref alone). A miss or a failed restore costs time, never a verdict.
+      - name: Restore Lake build output
+        id: lake-cache
+        if: steps.scope.outputs.relevant == 'true'
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "5"
+        with:
+          path: |
+            crates/nucleus-ifc-kernel/lean/.lake
+          key: lake-v1-nucleus-ifc-kernel-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/nucleus-ifc-kernel/lean/lean-toolchain', 'crates/nucleus-ifc-kernel/lean/lake-manifest.json', 'crates/nucleus-ifc-kernel/lean/lakefile.lean') }}-${{ github.job }}-${{ hashFiles('crates/nucleus-ifc-kernel/lean/**/*.lean', '!crates/nucleus-ifc-kernel/lean/.lake/**') }}
+          restore-keys: |
+            lake-v1-nucleus-ifc-kernel-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/nucleus-ifc-kernel/lean/lean-toolchain', 'crates/nucleus-ifc-kernel/lean/lake-manifest.json', 'crates/nucleus-ifc-kernel/lean/lakefile.lean') }}-${{ github.job }}-
+            lake-v1-nucleus-ifc-kernel-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/nucleus-ifc-kernel/lean/lean-toolchain', 'crates/nucleus-ifc-kernel/lean/lake-manifest.json', 'crates/nucleus-ifc-kernel/lean/lakefile.lean') }}-
+
       - name: Build Lean project with cached artifacts
         if: steps.scope.outputs.relevant == 'true'
         uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
@@ -89,7 +109,19 @@ jobs:
           test: "false"
           lint: "false"
           use-mathlib-cache: "false"
-          use-github-cache: "${{ runner.environment == 'github-hosted' }}"
+          use-github-cache: "false"
+
+      # Only reached when the build above succeeded, so a failed build never
+      # becomes the next run's starting point.
+      - name: Save Lake build output
+        if: ${{ steps.scope.outputs.relevant == 'true' && github.ref == 'refs/heads/main' && steps.lake-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            crates/nucleus-ifc-kernel/lean/.lake
+          key: ${{ steps.lake-cache.outputs.cache-primary-key }}
 
       - name: Per-theorem axiom audit (every declaration under Ifc)
         if: steps.scope.outputs.relevant == 'true'
