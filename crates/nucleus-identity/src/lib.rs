@@ -13,6 +13,7 @@
 //! - [`certificate`] - X.509 certificate handling
 //! - [`manager`] - SecretManager for multi-identity cert caching and rotation
 //! - [`verifier`] - SPIFFE-aware mTLS verification
+//! - [`node_tls`] - The TLS client configuration every node-facing client uses
 //! - [`ca`] - CA client trait and implementations (self-signed, SPIRE)
 //! - [`workload_api`] - Workload API server for VMs
 //! - [`did`] - W3C DID Document types for did:web method
@@ -41,6 +42,7 @@ pub mod identity;
 pub mod ifc_extension;
 pub mod manager;
 pub mod mtls;
+pub mod node_tls;
 pub mod oid;
 pub mod session;
 pub mod spiffe_workload_api;
