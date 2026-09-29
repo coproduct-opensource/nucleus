@@ -26,18 +26,25 @@ primary_region = "iad"
   # time); `gate` is the other 52 sites on CI_RUNNER — mostly seconds-long script gates, but the
   # Lean builds (ci-spec-lean, ck-policy-lean, econ-lean, ifc-lean, rubric-lean), `ci/test`,
   # `doctests`, `owasp-gauntlet` and `gates-can-fail` are on that label too, which is why it is
-  # shared-cpu-8x with 16 GB and not the 2x/4 GB a pure script pool would want. Volumes are
-  # per build Machine and set with `fly secrets set POOLS=...` when the ids are known.
-  # This tracked default has none, and therefore declares `requires_volume: false`:
-  # with `true` and no ids the manager REFUSES the config outright -- "requires_volume,
-  # but 0 volumes for 8 machines" -- so the default a fresh deployment falls back to was
-  # one that could not start. The comment here used to claim the opposite. Corrected
-  # 2026-09-10 and now gated by `cargo xtask fly-pools`, which runs the manager's own
-  # validator over this value. The DEPLOYED POOLS secret carries `requires_volume: true`
-  # alongside the real ids, which is where that safety property belongs: it caps `size`
-  # at the volume count, and a compile pool without a volume fills the 8 GB rootfs
-  # (`ld terminated with signal 7`, then ENOSPC, then four ejected required checks).
-  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":8,"standby":8,"requires_volume":false,"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":8,"memory_mb":16384},"size":16,"standby":16}]'
+  # shared-cpu-8x with 16 GB and not the 2x/4 GB a pure script pool would want.
+  #
+  # POOLS LIVES HERE, WHOLE -- volume ids included -- and the Fly secret of the same name must
+  # stay UNSET (`fly secrets unset POOLS -a nucleus-fly-runner-manager`). Until 2026-09-29 the
+  # deployed pool was a secret that overrode this file, on the theory that volume ids are only
+  # known at deploy time. It went stale: slots 2, 10, 16 and 17 named volumes that had since been
+  # replaced (runner_cache_2b and runner_cache_10 were recreated 2026-09-12, after the last
+  # manager deploy), so every create for those four slots failed with HTTP 400 -- a status the
+  # manager logs WITHOUT its body, on purpose, because a body may carry a runner token. The same
+  # request by hand against the current volume ids succeeds (slot 10: machine 82d1451fd21078).
+  # Nothing could see the secret from a checkout, so ci/fly-pools-drift.txt recorded the README
+  # and this file disagreeing without being able to say which was true. The ids are identifiers,
+  # not credentials; a file the deploy reads is the only copy that cannot drift from itself.
+  #
+  # `requires_volume: true` now holds for real: every one of the 24 build indexes has its own
+  # volume (index order = machine index, `volumes[i]` mounts on nucleus-fly-build-i), so the
+  # manager's validator refuses any edit that leaves a compile machine on the 8 GB rootfs.
+  # standby = size for both pools, for the reason under IDLE_MINUTES above.
+  POOLS = '[{"label":"nucleus-fly-build","guest":{"cpu_kind":"performance","cpus":8,"memory_mb":32768},"size":24,"standby":24,"requires_volume":true,"volumes":["vol_re1kmly3gy8q3p14","vol_r7yjqnwl3zokyyyr","vol_42kez7mygx601034","vol_rkgmy36y0kgx55o4","vol_458n3d0qzll3kgx4","vol_4oj1qmk768jze69r","vol_rnzeyqww5ko7gg1r","vol_40o0gw0lqymw96p4","vol_vjyqy6dkzdo7o9ov","vol_r7yjye935pmq8knr","vol_vp265wy66epmwxw4","vol_vly0ywe255e1kqg4","vol_r7yjye9q28663dgr","vol_vgnpn5g5yklk1x14","vol_4y8q8oy5q17yom9r","vol_458n8mp7x9l253x4","vol_v3g19987k5qxolw4","vol_40o0987dy3zqddp4","vol_r68woozmxlooj2j4","vol_vly0ddozj2wzj7g4","vol_4qlnoozqy9xm8l8r","vol_vjyqzzmnqxwy9d9v","vol_4919qqgonw0qky6r","vol_vz8mgg1d9071nnev"],"env":{"CARGO_BUILD_JOBS":"8","SCCACHE_CACHE_SIZE":"20G"}},{"label":"nucleus-fly-gate","guest":{"cpu_kind":"shared","cpus":8,"memory_mb":16384},"size":40,"standby":40}]'
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
