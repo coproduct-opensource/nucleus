@@ -36,7 +36,8 @@
 #        scripts/check-gates-can-fail.sh --baseline-only       # each gate green; nothing perturbed
 #        scripts/check-gates-can-fail.sh --changed-from <rev>  # probes whose inputs moved since <rev>
 #        scripts/check-gates-can-fail.sh --backstop-from <rev> # every probe if gate code moved, else as above
-#        scripts/check-gates-can-fail.sh --for-event <event> [<merge-group base>]   # what CI calls
+#        scripts/check-gates-can-fail.sh --for-event <event> <merge-group base>     # what CI calls; base may be ''
+
 #          ... [--changed-files <file>] [--plan]               # a given diff; print, run nothing
 #
 # SCOPED RUNS
@@ -130,21 +131,30 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --baseline-only)  BASELINE_ONLY=1 ;;
         --vacuity-only)   VACUITY_ONLY=1 ;;
-        --changed-from)   SCOPE=scoped;   SCOPE_BASE="${2:?--changed-from needs a revision}"; shift ;;
-        --backstop-from)  SCOPE=backstop; SCOPE_BASE="${2:?--backstop-from needs a revision}"; shift ;;
+        # The revision may be EMPTY (a workflow expression that evaluated to nothing). That is
+        # not an error: a base nobody can name is a diff nobody can read, and the scope setup
+        # below runs every probe and says so. Only a MISSING argument is refused.
+        --changed-from)   [[ $# -ge 2 ]] || { echo "ERROR: --changed-from needs a revision"; exit 2; }
+                          SCOPE=scoped;   SCOPE_BASE="$2"; shift ;;
+        --backstop-from)  [[ $# -ge 2 ]] || { echo "ERROR: --backstop-from needs a revision"; exit 2; }
+                          SCOPE=backstop; SCOPE_BASE="$2"; shift ;;
         --for-event)
             # The workflow's one call, so which events get which scope is decided HERE, beside
             # the argument for it, and not in YAML. A pull request's checkout is its merge
             # commit, whose first parent is the base it merges into; the merge queue names its
             # base. Anything else -- a push to main above all -- is the full run.
-            case "${2:?--for-event needs an event name}" in
+            #
+            # ALWAYS two arguments, the second possibly empty: ci.yml passes
+            # `github.event.merge_group.base_sha`, which only a merge_group payload carries, so
+            # on every other event it is ''. Consuming it only for merge_group left that '' to
+            # the loop as an argument of its own, and every pull request exited 2 (#3062).
+            [[ $# -ge 3 ]] || { echo "ERROR: --for-event needs <event> <merge-group base> (the base may be empty)"; exit 2; }
+            case "$2" in
                 pull_request) SCOPE=scoped;   SCOPE_BASE="HEAD^1" ;;
-                merge_group)  SCOPE=backstop; SCOPE_BASE="${3:-}"
-                              [[ -n "$SCOPE_BASE" ]] || SCOPE_BASE="(no merge-group base given)"
-                              shift ;;
+                merge_group)  SCOPE=backstop; SCOPE_BASE="$3" ;;
                 *)            SCOPE=full ;;
             esac
-            shift ;;
+            shift 2 ;;
         --changed-files)  CHANGED_FILES="${2:?--changed-files needs a file}"; shift ;;
         --plan)           PLAN=1 ;;
         *) echo "ERROR: unknown argument '$1'"; exit 2 ;;
@@ -197,6 +207,10 @@ if [[ "$SCOPE" != full ]]; then
     CHANGED="$GI_TMP/changed.$$"
     if [[ -n "$CHANGED_FILES" ]]; then
         grep -v '^$' "$CHANGED_FILES" > "$CHANGED" || true
+    elif [[ -z "$SCOPE_BASE" ]]; then
+        SCOPE_BASE="(no base)"
+        SCOPE_ALL="no base revision was given, so the diff cannot be read"
+        : > "$CHANGED"
     elif ! git rev-parse --verify -q "${SCOPE_BASE}^{commit}" >/dev/null; then
         SCOPE_ALL="$SCOPE_BASE is not present in this checkout, so the diff cannot be read"
         : > "$CHANGED"

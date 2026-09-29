@@ -417,6 +417,30 @@ gi_self_test() {
         echo "  ok    self-test: $undeclared is no probe's input: 0 scoped, all $total in the merge-queue backstop"
     fi
 
+    # 2c. A base nobody can read is every probe, with the reason printed -- never an error.
+    #     Exactly the call ci.yml makes on a pull request is included: `--for-event` with the
+    #     merge-group base EMPTY, which exited 2 on #3062's first run. (On a pull request the
+    #     base is HEAD^1, which a fresh fixture checkout may not have; either way it must parse
+    #     and decide.)
+    local call rc
+    for call in "--for-event merge_group ''" "--changed-from ''" "--backstop-from ''" \
+                "--changed-from no-such-revision-xyz" "--for-event pull_request ''"; do
+        eval "bash \"\$engine\" --plan $call" > "$out" 2>&1
+        rc=$?
+        got="$(grep -cE '^  run   ' "$out")"
+        if [[ "$rc" -ne 0 ]] || grep -q '^ERROR' "$out"; then
+            echo "  FAIL  self-test: --plan $call exited $rc: $(grep -m1 '^ERROR' "$out")"
+            fails=$((fails + 1))
+        elif [[ "$call" == "--for-event pull_request ''" ]]; then
+            echo "  ok    self-test: --plan $call parses and decides ($got probe(s) selected)"
+        elif [[ "$got" -ne "$total" ]] || ! grep -q '^scope: running EVERY probe — .*cannot be read' "$out"; then
+            echo "  FAIL  self-test: --plan $call selected $got of $total, or did not say why"
+            fails=$((fails + 1))
+        else
+            echo "  ok    self-test: --plan $call runs all $total and says why: $(grep -m1 '^scope: running EVERY' "$out" | sed 's/^scope: running EVERY probe — //')"
+        fi
+    done
+
     # 3. Empty: nothing, each skip with its reason, and the cheap half unaffected.
     : > "$fx"
     bash "$engine" --plan --changed-files "$fx" > "$out" 2>&1
