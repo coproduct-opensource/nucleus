@@ -1367,10 +1367,13 @@ perturb_exemplar_baseline() {
 }
 
 perturb_fly_pool_volumes() {
-    # The exact configuration the manager refuses, and the one that was committed:
-    # requires_volume with no volumes for eight machines, so the machines past the
-    # end of the list compile onto the root filesystem and run out of disk.
-    sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
+    # The configuration the manager refuses: a pool that requires a volume per machine with no
+    # volumes to give them, so the machines past the end of the list compile onto the root
+    # filesystem and run out of disk. It was once COMMITTED that way (requires_volume flipped on
+    # for eight volume-less machines). Since #3057 the build pool legitimately requires_volume
+    # with all 24 volumes listed, so the old probe -- flip false->true -- changed nothing and
+    # bit nothing; the refused state is now reached by dropping the volume list instead.
+    perl -0pi -e 's/,"volumes":\[[^\]]*\]//' "$1"
 }
 # gatehouse-pin: a second pin naming a different commit. The real one -- the plan
 # lane ran 4d42510 while the shadow lane ran 7326bfa9 -- is what put the third pin
