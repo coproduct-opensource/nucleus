@@ -695,13 +695,14 @@ fn create_pod_internal_still_consults_the_authority_gate() {
         "create_pod_internal must consult pod_authority::admit before any driver spawns"
     );
     assert!(
-        body.contains("issued.apply_to(&mut spec);"),
+        body.contains("let reservation = issued.apply_to(&mut spec);"),
         "the issued effective lattice and admitted upstreams must replace the requested \
          policy and credentialed_egress before spawn (`IssuedAuthority::apply_to`)"
     );
     assert!(
-        body.contains("state.authority.release_child("),
-        "a failed spawn must hand the budget reservation back"
+        body.contains("reservation.release().await;") && body.contains("reservation.commit();"),
+        "a failed spawn hands the budget reservation back, and only a registered pod keeps it \
+         (a dropped create releases through the guard's Drop, #3032)"
     );
     // Both entry points build an Admission — neither bypasses the gate.
     assert!(src.contains("pod_authority::Admission::from_http("));
