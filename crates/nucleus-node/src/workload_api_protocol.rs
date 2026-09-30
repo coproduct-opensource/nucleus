@@ -38,7 +38,8 @@ pub const MAX_COMMAND_LEN: usize = 256;
 /// every byte string that does not map to one of these is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkloadApiCommand {
-    /// `FETCH_SVID` — request this pod's X.509 SVID (cert chain + private key).
+    /// `FETCH_SVID` — request this pod's X.509 SVID: the cert chain, and the
+    /// private key on the FIRST request only (see `PodMaterial::svid_key_served`).
     FetchSvid,
     /// `FETCH_BUNDLE` — request the trust bundle (root CA certificates).
     FetchBundle,

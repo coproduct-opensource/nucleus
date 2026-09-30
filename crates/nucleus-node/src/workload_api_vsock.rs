@@ -329,6 +329,15 @@ pub struct PodMaterial {
     /// Whether the mediation key has been served — one flag across connections,
     /// for the same reason as `broker_secret_served`.
     pub mediation_key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether this pod's SVID private key has been served — one flag across
+    /// connections, for the same reason as `broker_secret_served`.
+    ///
+    /// The key goes out ONCE, to `nucleus-guest-init`, which asks before any
+    /// workload exists. Every later `FETCH_SVID` gets the public chain only: the
+    /// channel carries no peer credentials (virtio-vsock clears them on connect),
+    /// so "asked first" is the only thing that separates the pod's init from its
+    /// workload, and a re-serve would hand the pod's identity to whoever asked.
+    pub svid_key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The pod's node-side directory, where shipped `MediationReceipt`s are
     /// durably collected (`SHIP_RECEIPT`). `None` disables collection.
     pub receipt_dir: Option<std::path::PathBuf>,
@@ -520,6 +529,7 @@ impl WorkloadApiVsockBridge {
             SPIFFE_WORKLOAD_API_PORT,
             pod_id,
             &identity_manager_for_spiffe,
+            std::sync::Arc::clone(&material_for_bridge.svid_key_served),
             jail_owner,
         )
         .await
@@ -560,6 +570,7 @@ impl WorkloadApiVsockBridge {
         port: u32,
         pod_id: uuid::Uuid,
         identity_manager: &IdentityManager,
+        key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
         jail_owner: Option<(u32, u32)>,
     ) -> std::io::Result<(oneshot::Sender<()>, JoinHandle<()>, PathBuf)> {
         use nucleus_identity::spiffe_workload_api::SpiffeWorkloadApiService;
@@ -593,7 +604,10 @@ impl WorkloadApiVsockBridge {
             identity_manager.secret_manager(),
             identity,
             identity_manager.trust_bundle().clone(),
-        );
+        )
+        // The SAME latch the JSON listener spends: one key, served once, whichever
+        // protocol asks first.
+        .key_served_once(key_served);
 
         let (tx, rx) = oneshot::channel();
         let path_for_log = socket_path.clone();
@@ -929,7 +943,7 @@ where
     match parsed {
         Ok(WorkloadApiCommand::FetchSvid) => {
             debug!("workload API FETCH_SVID for pod {}", pod_id);
-            handle_fetch_svid(manager, pod_id).await
+            handle_fetch_svid(manager, pod_id, &material.svid_key_served).await
         }
         Ok(WorkloadApiCommand::FetchBundle) => {
             debug!("workload API FETCH_BUNDLE for pod {}", pod_id);
@@ -1092,7 +1106,11 @@ where
 /// Each pod gets a unique SPIFFE identity based on its pod_id:
 /// `spiffe://{trust_domain}/ns/pods/sa/{pod_id}`
 #[allow(dead_code)]
-async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> Reply {
+async fn handle_fetch_svid(
+    manager: &IdentityManager,
+    pod_id: uuid::Uuid,
+    key_served: &std::sync::atomic::AtomicBool,
+) -> Reply {
     // THE pod identity — the same function the spawn path registers and caches
     // the attested certificate under. These used to be two spellings: this
     // served `ns/pods/sa/<uuid>` while the spawn path registered the
@@ -1107,14 +1125,26 @@ async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> Rep
             struct SvidResponse {
                 spiffe_id: String,
                 certificate_chain: String,
-                private_key: String,
+                /// Present on the first serve only. See [`PodMaterial::svid_key_served`].
+                #[serde(skip_serializing_if = "Option::is_none")]
+                private_key: Option<String>,
                 expires_at: i64,
             }
 
+            // Spent only once there is a certificate to go with it: a failed
+            // issue must not burn the one serve before the guest's init can use it.
+            // `swap`, not load-then-store: two connections must not both see "not yet".
+            let first = !key_served.swap(true, std::sync::atomic::Ordering::AcqRel);
+            if !first {
+                tracing::warn!(
+                    "FETCH_SVID for pod {pod_id} after the key was served: answered with the \
+                     public chain only"
+                );
+            }
             let response = SvidResponse {
                 spiffe_id: identity.to_spiffe_uri(),
                 certificate_chain: cert.chain_pem(),
-                private_key: cert.private_key_pem().to_string(),
+                private_key: first.then(|| cert.private_key_pem().to_string()),
                 expires_at: cert.expiry().timestamp(),
             };
 
@@ -1313,6 +1343,90 @@ mod tests {
         assert!(response.contains("ok"));
 
         bridge.shutdown().await;
+    }
+
+    /// The pod's SVID private key crosses the socket once. The first `FETCH_SVID`
+    /// (guest-init's, before any workload exists) carries it; a later one — on a
+    /// FRESH connection, since vsock cannot say who is asking — carries the same
+    /// public chain and no key. Remove the latch in `handle_fetch_svid` and the
+    /// second reply carries a key again: this test is what goes red.
+    #[tokio::test]
+    async fn the_svid_private_key_is_served_once_across_connections() {
+        let temp_dir = tempdir().unwrap();
+        let vsock_uds_path = temp_dir.path().join("vsock.sock");
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            15012,
+            uuid::Uuid::new_v4(),
+            manager,
+            PodMaterial::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut replies = Vec::new();
+        for _ in 0..2 {
+            let stream = tokio::net::UnixStream::connect(bridge.socket_path())
+                .await
+                .unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = tokio::io::BufReader::new(reader);
+            writer.write_all(b"FETCH_SVID\n").await.unwrap();
+            writer.flush().await.unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            replies.push(line);
+        }
+
+        // The standard API is the same key behind a different wire format: it
+        // must not serve what the JSON listener already has.
+        let spiffe_sock = format!(
+            "unix:{}_{}",
+            vsock_uds_path.display(),
+            SPIFFE_WORKLOAD_API_PORT
+        );
+        for _ in 0..100 {
+            if std::path::Path::new(&spiffe_sock["unix:".len()..]).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let client = spiffe::WorkloadApiClient::connect_to(spiffe_sock)
+            .await
+            .expect("the standard API is up");
+        let over_grpc = client.fetch_x509_svid().await;
+        bridge.shutdown().await;
+        assert!(
+            over_grpc.is_err(),
+            "the standard API must not serve a key the JSON listener already served"
+        );
+
+        let first: serde_json::Value = serde_json::from_str(&replies[0]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&replies[1]).unwrap();
+        assert!(
+            first["private_key"]
+                .as_str()
+                .is_some_and(|k| k.contains("PRIVATE KEY")),
+            "the first FETCH_SVID must carry the key guest-init writes: {first}"
+        );
+        assert!(
+            second.get("private_key").is_none() && !replies[1].contains("PRIVATE KEY"),
+            "a later FETCH_SVID must carry no key: {}",
+            replies[1]
+        );
+        assert_eq!(
+            first["spiffe_id"], second["spiffe_id"],
+            "the repeat still names the pod"
+        );
+        assert!(
+            second["certificate_chain"]
+                .as_str()
+                .is_some_and(|c| c.contains("BEGIN CERTIFICATE")),
+            "and still serves the public chain a relying party verifies: {second}"
+        );
     }
 
     /// `POD_LIST` is wired end-to-end: a guest frame reaches `PodListView` and
