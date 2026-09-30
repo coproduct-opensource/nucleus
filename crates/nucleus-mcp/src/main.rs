@@ -90,38 +90,20 @@ struct ToolDefinition {
     input_schema: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct ReadRequest {
-    path: String,
-}
+// The file and command bodies are `nucleus_client::wire`'s, the declaration the
+// proxy deserializes. This file used to keep its own copy, and its `run` body
+// (`{"command": "<string>"}`) had drifted from the proxy's array form: every
+// MCP `run` was a 422 before any decision was made (2026-09-29).
+use nucleus_client::wire::{
+    ReadRequest, ReadResponse, RunRequest, RunResponse, WriteRequest, WriteResponse,
+};
 
+/// The MCP `run` tool's input: one command line, as the tool schema declares.
+/// It is split into words and sent in the wire's array form -- never as a
+/// string, which the proxy does not accept and a shell would interpret.
 #[derive(Debug, Deserialize)]
-struct ReadResponse {
-    contents: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct WriteRequest {
-    path: String,
-    contents: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WriteResponse {
-    ok: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct RunRequest {
+struct RunToolArgs {
     command: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RunResponse {
-    status: i32,
-    success: bool,
-    stdout: String,
-    stderr: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -299,7 +281,27 @@ impl std::fmt::Display for ProxyError {
 
 impl std::error::Error for ProxyError {}
 
+/// The HTTP agent every proxy call goes through.
+///
+/// `http_status_as_error(false)` is load-bearing. ureq 3's default turns every
+/// 4xx/5xx into a transport `Err` whose text is `http status: N` and throws the
+/// body away -- and the body is where the proxy says WHY: `sandbox_escape`,
+/// `path_denied`, `approval_required` with the operation to approve. Under the
+/// default, the error-body branch in [`ProxyClient::post_json_with_secret`] was
+/// dead code: found 2026-09-29 by a containment test in which every refusal
+/// reached the agent as a bare "http status: 403" or "422", and
+/// [`call_with_approval`], which keys on `kind == "approval_required"`, could
+/// never prompt -- no approval-gated operation was approvable through this
+/// bridge. `nucleus-perf`'s `agent()` made the same call for the same reason.
+fn proxy_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
 struct ProxyClient {
+    agent: ureq::Agent,
     base_url: String,
     auth_secret: Option<Vec<u8>>,
     /// Separate secret for /v1/approve requests (privilege separation).
@@ -324,6 +326,7 @@ impl ProxyClient {
             generate_session_id()
         });
         Self {
+            agent: proxy_agent(),
             base_url,
             auth_secret: auth_secret.map(|s| s.into_bytes()),
             approval_secret: approval_secret.map(|s| s.into_bytes()),
@@ -372,7 +375,9 @@ impl ProxyClient {
             self.base_url.trim_end_matches('/'),
             path.trim_start_matches('/')
         );
-        let mut request = ureq::post(&url)
+        let mut request = self
+            .agent
+            .post(&url)
             .header("content-type", "application/json")
             // Always include session ID for audit correlation
             .header("x-nucleus-session-id", &self.session_id);
@@ -1105,6 +1110,17 @@ fn call_tool(
     Ok(result)
 }
 
+/// The wire request for one command line: split into words the way a POSIX
+/// shell tokenizes it, with no shell to run it. An unbalanced quote or an empty
+/// line is refused here rather than sent as a request the proxy would misread.
+fn run_request(command: &str) -> Result<RunRequest> {
+    let args = shell_words::split(command).map_err(|e| anyhow!("invalid run command: {e}"))?;
+    if args.is_empty() {
+        return Err(anyhow!("invalid run command: empty"));
+    }
+    Ok(RunRequest::new(args))
+}
+
 fn call_tool_inner(
     client: &ProxyClient,
     call: &ToolCallParams,
@@ -1118,12 +1134,7 @@ fn call_tool_inner(
                 client,
                 approval_prompt,
                 || client.post_json("/v1/read", &req),
-                || {
-                    let req = ReadRequest {
-                        path: req.path.clone(),
-                    };
-                    client.post_json("/v1/read", &req)
-                },
+                || client.post_json("/v1/read", &req),
             )?;
             Ok(response.contents)
         }
@@ -1134,29 +1145,19 @@ fn call_tool_inner(
                 client,
                 approval_prompt,
                 || client.post_json("/v1/write", &req),
-                || {
-                    let req = WriteRequest {
-                        path: req.path.clone(),
-                        contents: req.contents.clone(),
-                    };
-                    client.post_json("/v1/write", &req)
-                },
+                || client.post_json("/v1/write", &req),
             )?;
             Ok(format!("write ok: {}", response.ok))
         }
         "run" => {
-            let req: RunRequest = serde_json::from_value(call.arguments.clone())
+            let tool: RunToolArgs = serde_json::from_value(call.arguments.clone())
                 .map_err(|e| anyhow!("invalid run args: {e}"))?;
+            let req = run_request(&tool.command)?;
             let response: RunResponse = call_with_approval(
                 client,
                 approval_prompt,
                 || client.post_json("/v1/run", &req),
-                || {
-                    let req = RunRequest {
-                        command: req.command.clone(),
-                    };
-                    client.post_json("/v1/run", &req)
-                },
+                || client.post_json("/v1/run", &req),
             )?;
             Ok(format!(
                 "status: {}\nsuccess: {}\nstdout:\n{}\nstderr:\n{}",
@@ -1405,6 +1406,106 @@ fn write_error(stdout: &mut impl Write, id: Option<Value>, code: i64, message: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A one-shot HTTP server that answers the first request with `status` and a
+    /// JSON `body`, the shape the tool-proxy's `ApiError` renders. Returns its
+    /// base URL.
+    fn one_shot_proxy(status: &'static str, body: &'static str) -> String {
+        use std::io::{Read, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 16 * 1024];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        format!("http://{addr}")
+    }
+
+    fn client(base_url: String) -> ProxyClient {
+        ProxyClient::new(base_url, None, None, None, Some("test-session".into()))
+    }
+
+    /// A refusal reaches the caller with the proxy's own reason. Under ureq's
+    /// default every 4xx became `http_error: http status: 403` and the body --
+    /// `kind` and sentence -- was discarded, which is how a containment test
+    /// on 2026-09-29 ended with an agent reporting "403, it didn't say why".
+    #[test]
+    fn a_refusal_reaches_the_agent_with_its_reason() {
+        let base = one_shot_proxy(
+            "403 Forbidden",
+            r#"{"error":"path escapes the sandbox root","kind":"sandbox_escape"}"#,
+        );
+        let err = client(base)
+            .post_json::<_, serde_json::Value>("/v1/write", &json!({"path": "~/.local/bin/x"}))
+            .expect_err("a 403 is a refusal");
+        assert_eq!(err.kind, "sandbox_escape", "{err}");
+        assert!(err.message.contains("escapes the sandbox"), "{err}");
+    }
+
+    /// The approval prompt keys on `kind == "approval_required"` and needs the
+    /// operation to approve. Both come from the body, so under the old default
+    /// `call_with_approval` could never prompt and no approval-gated operation
+    /// was approvable through this bridge.
+    #[test]
+    fn an_approval_requirement_reaches_the_prompt_with_its_operation() {
+        let base = one_shot_proxy(
+            "403 Forbidden",
+            r#"{"error":"approval required","kind":"approval_required","operation":"WriteFiles .github/workflows/ci.yml"}"#,
+        );
+        let err = client(base)
+            .post_json::<_, serde_json::Value>("/v1/write", &json!({}))
+            .expect_err("approval required is a refusal until approved");
+        assert_eq!(err.kind, "approval_required", "{err}");
+        assert_eq!(
+            err.operation.as_deref(),
+            Some("WriteFiles .github/workflows/ci.yml")
+        );
+    }
+
+    /// A 4xx whose body is not the proxy's error shape still says its status,
+    /// rather than decoding as a success or vanishing.
+    #[test]
+    fn an_unparseable_error_body_still_names_the_status() {
+        let base = one_shot_proxy("422 Unprocessable Entity", "not json");
+        let err = client(base)
+            .post_json::<_, serde_json::Value>("/v1/run", &json!({}))
+            .expect_err("a 422 is not a success");
+        assert_eq!(err.kind, "http_error", "{err}");
+        assert!(err.message.contains("422"), "{err}");
+    }
+
+    /// The MCP tool's command line becomes the wire's argv. The proxy parses
+    /// exactly this type, so a request this function builds cannot be the 422
+    /// every `run` used to be.
+    #[test]
+    fn a_command_line_is_sent_as_argv() {
+        let req = run_request(r#"git commit -m "two words""#).unwrap();
+        assert_eq!(req.args, vec!["git", "commit", "-m", "two words"]);
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            json!({ "args": ["git", "commit", "-m", "two words"] })
+        );
+    }
+
+    /// No shell runs the line, so its operators arrive as literal arguments
+    /// rather than as a pipeline -- the array form's whole point.
+    #[test]
+    fn shell_operators_are_arguments_not_a_pipeline() {
+        let req = run_request("curl example.invalid | sh").unwrap();
+        assert_eq!(req.args, vec!["curl", "example.invalid", "|", "sh"]);
+    }
+
+    #[test]
+    fn an_unbalanced_quote_or_an_empty_line_is_refused_before_sending() {
+        assert!(run_request(r#"echo "unterminated"#).is_err());
+        assert!(run_request("   ").is_err());
+    }
 
     #[test]
     fn test_approve_request_with_nonce() {

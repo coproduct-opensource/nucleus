@@ -714,55 +714,12 @@ pub(crate) fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ReadRequest {
-    path: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ReadResponse {
-    contents: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WriteRequest {
-    path: String,
-    contents: String,
-}
-
-#[derive(Debug, Serialize)]
-struct WriteResponse {
-    ok: bool,
-}
-
-/// Run command request using secure array-based format.
-///
-/// The array form prevents shell injection by executing commands directly
-/// without shell interpretation. Each array element is passed as a separate
-/// argument to the process.
-#[derive(Debug, Deserialize)]
-struct RunRequest {
-    /// Command as array, e.g. ["ls", "-la", "/tmp"]
-    args: Vec<String>,
-    /// Optional input to pass to command stdin
-    #[serde(default)]
-    stdin: Option<String>,
-    /// Optional working directory (relative to sandbox)
-    #[serde(default)]
-    directory: Option<String>,
-    /// Optional timeout in seconds (clamped to policy limit)
-    #[serde(default)]
-    #[allow(dead_code)] // Reserved for future timeout implementation
-    timeout_seconds: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct RunResponse {
-    status: i32,
-    success: bool,
-    stdout: String,
-    stderr: String,
-}
+// The file and command bodies are `nucleus_client::wire`'s, the single
+// declaration every client serializes: a private copy here drifted from
+// nucleus-mcp's and made every MCP `run` a 422 (2026-09-29).
+use nucleus_client::wire::{
+    ReadRequest, ReadResponse, RunRequest, RunResponse, WriteRequest, WriteResponse,
+};
 
 #[derive(Debug, Deserialize)]
 struct WebFetchRequest {
