@@ -115,6 +115,46 @@ pub enum Operation {
     PodManagement,
 }
 
+/// The label the node stamps on a pod created by a CI/CD identity: that
+/// identity's full SPIFFE ID. Node-assigned, like the pod's own SVID: a spec
+/// that carries it is refused (`AuthorizationPolicy::stamp_ci_principal`), so
+/// the only way a pod comes to bear a CI identity's label is for that identity
+/// to have created it.
+pub const CI_PRINCIPAL_LABEL: &str = "nucleus.io/ci-principal";
+
+/// WHICH pods an authenticated caller may list, read and manage.
+///
+/// Three answers, not an `Option<Uuid>`: "no pod" used to mean "every pod",
+/// and a CI/CD identity, which is not a pod, fell into that arm although the
+/// policy restricts it to the pods it created. Every consumer now matches the
+/// kind it was handed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallerScope {
+    /// The operator or an orchestrator: every pod on the node.
+    NodeWide,
+    /// A pod: itself and its direct children (`pod_api::caller_may_manage`).
+    Pod(uuid::Uuid),
+    /// A CI/CD identity: the pods stamped [`CI_PRINCIPAL_LABEL`] = this ID.
+    CiPrincipal(String),
+}
+
+impl CallerScope {
+    /// The calling pod, when the caller is one.
+    pub fn pod(&self) -> Option<uuid::Uuid> {
+        match self {
+            CallerScope::Pod(p) => Some(*p),
+            CallerScope::NodeWide | CallerScope::CiPrincipal(_) => None,
+        }
+    }
+
+    /// A walk model's caller (`None` = the operator) as a scope. Test-only: in
+    /// production "no pod" is never read as "node-wide".
+    #[cfg(test)]
+    pub fn from_model(caller: Option<uuid::Uuid>) -> Self {
+        caller.map_or(CallerScope::NodeWide, CallerScope::Pod)
+    }
+}
+
 /// Authorization policy for nucleus operations.
 ///
 /// This policy defines what SPIFFE identities are allowed to do.
@@ -127,7 +167,8 @@ pub struct AuthorizationPolicy {
     /// Identities matching these prefixes can perform any operation.
     orchestrator_prefixes: Vec<String>,
     /// Allowed SPIFFE ID prefixes for CI/CD (GitHub OIDC).
-    /// These identities can only manage pods with matching labels.
+    /// These identities can only manage pods with matching labels: the pods
+    /// they created, which the node stamps [`CI_PRINCIPAL_LABEL`] = their ID.
     cicd_prefixes: Vec<String>,
     /// SPIFFE ID prefixes of PODS this node minted (`ns/pods/sa/<uuid>`).
     ///
@@ -181,38 +222,73 @@ impl AuthorizationPolicy {
         })
     }
 
-    /// Which pod an authenticated caller acts as, for scoping WHICH pods it may
-    /// list, read and cancel. The one resolver both transports use
-    /// (`resolve_http_caller`, `pod_api::grpc_caller`), so HTTP and gRPC cannot
-    /// disagree about a caller's reach.
+    /// Which pods an authenticated caller may list, read and manage. The one
+    /// resolver both transports use (`resolve_http_caller`,
+    /// `pod_api::grpc_caller`), so HTTP and gRPC cannot disagree about a
+    /// caller's reach.
     ///
-    /// * `Ok(Some(pod))` — a pod: the one its caller token proves, else the one
-    ///   its own SVID names. A pod peer is its own pod with or without a token.
-    /// * `Ok(None)` — unscoped, and ONLY for an identity this policy positively
-    ///   grants node-wide pod management: the operator, an orchestrator, CI/CD.
+    /// * `Pod(pod)` — a pod: the one its caller token proves, else the one its
+    ///   own SVID names. A pod peer is its own pod with or without a token.
+    /// * `NodeWide` — ONLY an identity this policy positively grants every pod:
+    ///   the operator or an orchestrator.
+    /// * `CiPrincipal(id)` — a CI/CD identity: the pods it created.
     /// * `Err` — anything else, including an identity under a pod prefix that
-    ///   names no pod. The unscoped answer is never a fallthrough.
+    ///   names no pod. No arm is a fallthrough.
     pub fn caller_scope(
         &self,
         caller_token_pod: Option<uuid::Uuid>,
         spiffe_id: &str,
-    ) -> Result<Option<uuid::Uuid>, AuthorizationError> {
+    ) -> Result<CallerScope, AuthorizationError> {
         if let Some(pod) = caller_token_pod.or_else(|| self.pod_id_from_spiffe(spiffe_id)) {
-            return Ok(Some(pod));
+            return Ok(CallerScope::Pod(pod));
         }
         let node_wide = self.operator_identities.iter().any(|id| id == spiffe_id)
             || self
                 .orchestrator_prefixes
                 .iter()
-                .chain(&self.cicd_prefixes)
                 .any(|prefix| spiffe_id.starts_with(prefix.as_str()));
         if node_wide {
-            return Ok(None);
+            return Ok(CallerScope::NodeWide);
+        }
+        if self.is_cicd(spiffe_id) {
+            return Ok(CallerScope::CiPrincipal(spiffe_id.to_string()));
         }
         Err(AuthorizationError::NotAuthorized {
             identity: spiffe_id.to_string(),
             operation: "node-wide pod management".to_string(),
         })
+    }
+
+    fn is_cicd(&self, spiffe_id: &str) -> bool {
+        self.cicd_prefixes
+            .iter()
+            .any(|prefix| spiffe_id.starts_with(prefix.as_str()))
+    }
+
+    /// Record who created a pod, where the CI/CD scope reads it: a pod created
+    /// by a CI/CD identity is stamped [`CI_PRINCIPAL_LABEL`] = that identity.
+    ///
+    /// A spec that already carries the label is refused, whoever sends it. The
+    /// label is the node's record, not the creator's claim: accepting it from a
+    /// spec would let one CI identity file a pod under another's name, or a pod
+    /// hand one of its children to a CI identity.
+    pub fn stamp_ci_principal(
+        &self,
+        creator_spiffe_id: &str,
+        spec: &mut nucleus_spec::PodSpec,
+    ) -> Result<(), String> {
+        if spec.metadata.labels.contains_key(CI_PRINCIPAL_LABEL) {
+            return Err(format!(
+                "label {CI_PRINCIPAL_LABEL} is assigned by the node; a spec may not set it"
+            ));
+        }
+        if self.is_cicd(creator_spiffe_id) {
+            spec.metadata.labels.insert(
+                CI_PRINCIPAL_LABEL.to_string(),
+                creator_spiffe_id.to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// Add a CI/CD prefix.
@@ -492,7 +568,7 @@ pub fn resolve_http_caller(
     state: &crate::NodeState,
     ctx: &AuthContext,
     headers: &axum::http::HeaderMap,
-) -> Result<Option<uuid::Uuid>, crate::ApiError> {
+) -> Result<CallerScope, crate::ApiError> {
     let token_pod =
         crate::pod_caller_identity::identify_from_headers(state.caller_secret.as_ref(), headers);
     Ok(state
@@ -530,32 +606,40 @@ mod tests {
     /// node-wide; a pod is its own pod with or without a token; anything else
     /// is refused rather than defaulted.
     #[test]
-    fn caller_scope_is_unscoped_only_for_a_named_node_wide_identity() {
+    fn caller_scope_is_node_wide_only_for_a_named_node_wide_identity() {
         let policy = AuthorizationPolicy::default()
             .with_operator_identity("spiffe://nucleus.local/ns/system/sa/cli");
         let pod = uuid::Uuid::new_v4();
         let other = uuid::Uuid::new_v4();
         let pod_svid = format!("spiffe://nucleus.local/ns/pods/sa/{pod}");
 
-        assert_eq!(policy.caller_scope(None, &pod_svid).unwrap(), Some(pod));
+        assert_eq!(
+            policy.caller_scope(None, &pod_svid).unwrap(),
+            CallerScope::Pod(pod)
+        );
         assert_eq!(
             policy.caller_scope(Some(pod), &pod_svid).unwrap(),
-            Some(pod)
+            CallerScope::Pod(pod)
         );
         let orch = "spiffe://nucleus.local/ns/default/sa/orchestrator";
-        assert_eq!(policy.caller_scope(Some(other), orch).unwrap(), Some(other));
+        assert_eq!(
+            policy.caller_scope(Some(other), orch).unwrap(),
+            CallerScope::Pod(other)
+        );
 
-        for node_wide in [
-            orch,
-            "spiffe://nucleus.local/ns/github/sa/ci",
-            "spiffe://nucleus.local/ns/system/sa/cli",
-        ] {
+        for node_wide in [orch, "spiffe://nucleus.local/ns/system/sa/cli"] {
             assert_eq!(
                 policy.caller_scope(None, node_wide).unwrap(),
-                None,
+                CallerScope::NodeWide,
                 "{node_wide}"
             );
         }
+        // A CI/CD identity is NOT node-wide: it reaches the pods it created.
+        let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";
+        assert_eq!(
+            policy.caller_scope(None, ci).unwrap(),
+            CallerScope::CiPrincipal(ci.to_string())
+        );
         for unplaced in [
             "spiffe://nucleus.local/ns/pods/sa/not-a-pod",
             "spiffe://nucleus.local/ns/system/sa/cli-other",
@@ -563,6 +647,60 @@ mod tests {
             "spiffe://other.domain/ns/default/sa/orchestrator",
         ] {
             assert!(policy.caller_scope(None, unplaced).is_err(), "{unplaced}");
+        }
+    }
+
+    fn bare_spec() -> nucleus_spec::PodSpec {
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            .expect("minimal spec")
+    }
+
+    /// A pod a CI/CD identity creates carries that identity's label; a pod
+    /// anyone else creates carries none.
+    #[test]
+    fn a_ci_identitys_pod_is_stamped_with_that_identity() {
+        let policy = AuthorizationPolicy::default();
+        let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";
+        let mut spec = bare_spec();
+        policy.stamp_ci_principal(ci, &mut spec).unwrap();
+        assert_eq!(
+            spec.metadata
+                .labels
+                .get(CI_PRINCIPAL_LABEL)
+                .map(String::as_str),
+            Some(ci)
+        );
+        for creator in [
+            "spiffe://nucleus.local/ns/default/sa/orchestrator",
+            &format!("spiffe://nucleus.local/ns/pods/sa/{}", uuid::Uuid::new_v4()),
+        ] {
+            let mut spec = bare_spec();
+            policy.stamp_ci_principal(creator, &mut spec).unwrap();
+            assert!(
+                !spec.metadata.labels.contains_key(CI_PRINCIPAL_LABEL),
+                "{creator} is not a CI identity"
+            );
+        }
+    }
+
+    /// The label is the node's record: a spec that sets it is refused, from a
+    /// CI identity (another's name) and from anyone else alike.
+    #[test]
+    fn a_spec_may_not_set_the_ci_principal_label() {
+        let policy = AuthorizationPolicy::default();
+        for creator in [
+            "spiffe://nucleus.local/ns/github/sa/org-repo",
+            "spiffe://nucleus.local/ns/default/sa/orchestrator",
+        ] {
+            let mut spec = bare_spec();
+            spec.metadata.labels.insert(
+                CI_PRINCIPAL_LABEL.to_string(),
+                "spiffe://nucleus.local/ns/github/sa/someone-else".to_string(),
+            );
+            assert!(
+                policy.stamp_ci_principal(creator, &mut spec).is_err(),
+                "{creator}"
+            );
         }
     }
 
