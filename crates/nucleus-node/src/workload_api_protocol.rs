@@ -232,7 +232,7 @@ pub enum WorkloadApiCommand {
     /// OPTIONAL, deliberately. A guest built before this command exists simply never sends it,
     /// stays exactly as it was, and is refused as a snapshot base — which is the right answer
     /// for an image that cannot say where its barrier is. That is why adding it needs no
-    /// `GUEST_RELEASE_FLOOR` bump: nothing that works today stops working.
+    /// `GuestCapability` entry: nothing that works today stops working.
     SnapshotReady,
 }
 
