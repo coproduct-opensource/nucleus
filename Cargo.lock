@@ -6914,6 +6914,7 @@ name = "nucleus-guest-init"
 version = "1.0.0"
 dependencies = [
  "hex",
+ "libc",
  "netlink-sys 0.9.0",
  "nix",
  "nucleus-spec",

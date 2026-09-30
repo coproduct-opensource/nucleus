@@ -6,11 +6,11 @@ use std::process::Command;
 mod identity;
 
 use nucleus_guest_init::boot::{self, Boot, MountSpec, SealedProof};
+use nucleus_guest_init::fence::{self, Fenced};
 use nucleus_guest_init::net::{self, NetConfig};
 use nucleus_spec::guest_layout::{
     self, APPROVAL_SECRET, AUDIT_PATH_FILE, AUTH_SECRET, CaBundle, EGRESS_PROBE_BIN,
-    FALLBACK_POD_SPEC, GUEST_NET_SH, NET_ALLOW, NET_DENY, POD_SPEC_PATH, PROXY_BIN, SANDBOX_TOKEN,
-    WORK_DIR,
+    FALLBACK_POD_SPEC, POD_SPEC_PATH, PROXY_BIN, SANDBOX_TOKEN, WORK_DIR,
 };
 
 #[cfg(target_os = "linux")]
@@ -348,10 +348,20 @@ fn run() -> Result<(), String> {
         timed("network", || configure_network(net));
     }
 
-    if (Path::new(NET_ALLOW).exists() || Path::new(NET_DENY).exists())
-        && Path::new(GUEST_NET_SH).exists()
-    {
-        let _ = Command::new(GUEST_NET_SH).status();
+    // The in-guest egress fence, from the guest layer's own policy files and
+    // nothing the image supplies. Before the egress probe (spawned at exec) and
+    // before any workload exists, so neither ever sees an unfenced guest.
+    //
+    // FATAL when a policy file exists and cannot be enforced: the image builder
+    // asked for this fence, and a guest that boots without it while looking
+    // fenced is the outcome the whole layer exists to rule out. The script this
+    // replaces failed silently, and on this repository's rootfs installed
+    // nothing at all (see `fence`).
+    match timed("egress_fence", fence::install_from_files).map_err(|e| e.to_string())? {
+        Fenced::NoPolicy => {}
+        Fenced::Installed { allow, deny } => {
+            eprintln!("egress fence installed: {allow} allow, {deny} deny, default DROP");
+        }
     }
 
     // Fetch SPIFFE identity from host if configured
@@ -1154,7 +1164,8 @@ fn is_writable(dir: &str) -> bool {
 /// makes a slow-but-successful connect look like a denial — PASS is the
 /// dangerous direction here.
 fn attest_egress_confinement() {
-    let spawned = Command::new(EGRESS_PROBE_BIN)
+    let spawned = GuestBin::EgressProbe
+        .command()
         // Inherit stderr so the verdict lands on the console the node captures.
         .env("NUCLEUS_EGRESS_PROBE_TIMEOUT_MS", "150")
         .spawn();
@@ -1162,6 +1173,35 @@ fn attest_egress_confinement() {
         // Do NOT invent a verdict. The host fails closed on a missing PASS, so
         // saying nothing is the safe outcome; this only explains the absence.
         eprintln!("nucleus-egress-probe could not start: {err}");
+    }
+}
+
+/// The only programs PID 1 starts: the guest layer's own.
+///
+/// guest-init used to run `ip` three times and `/bin/sh guest-net.sh` once —
+/// programs the IMAGE supplied, as root, before the rootfs was sealed. Both are
+/// now done in-process (`net`, `fence`), and what remains is closed over this
+/// enum: there is no way to name another program from here, and
+/// `the_only_programs_pid1_starts_are_the_guest_layers` fails the build's tests
+/// if a `Command::new` appears anywhere else.
+#[derive(Debug, Clone, Copy)]
+enum GuestBin {
+    /// The mediating runtime, exec'd in place of PID 1.
+    Proxy,
+    /// The egress confinement probe, spawned beside it.
+    EgressProbe,
+}
+
+impl GuestBin {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Proxy => PROXY_BIN,
+            Self::EgressProbe => EGRESS_PROBE_BIN,
+        }
+    }
+
+    fn command(self) -> Command {
+        Command::new(self.path())
     }
 }
 
@@ -1184,7 +1224,8 @@ fn exec_proxy(
     // Scoped to this child: see `child_env` above.
     attest_egress_confinement();
 
-    Command::new(PROXY_BIN)
+    GuestBin::Proxy
+        .command()
         .arg("--spec")
         .arg(spec_path)
         .arg("--art12-log")
@@ -1270,6 +1311,55 @@ fn parse_cmdline_secret(cmdline: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// PID 1 runs nothing from the image: every `Command::new` in this crate
+    /// is the one inside `GuestBin::command`, plus the parity test's reference
+    /// tool, which runs on a developer's host and never in a guest.
+    ///
+    /// Driven red by putting `Command::new("ip")` back into `configure_network`.
+    #[test]
+    fn the_only_programs_pid1_starts_are_the_guest_layers() {
+        const SOURCES: [(&str, &str); 6] = [
+            ("main.rs", include_str!("main.rs")),
+            ("identity.rs", include_str!("identity.rs")),
+            ("lib.rs", include_str!("lib.rs")),
+            ("boot.rs", include_str!("boot.rs")),
+            ("net.rs", include_str!("net.rs")),
+            ("fence.rs", include_str!("fence.rs")),
+        ];
+        // Spelled in pieces so this test's own text is not a match.
+        let needle = ["Command", "::new("].concat();
+        let allowed = [
+            ("main.rs", format!("{needle}self.path())")),
+            (
+                "fence.rs",
+                format!("let out = std::process::{needle}\"iptables-legacy-save\")"),
+            ),
+        ];
+        let mut found = Vec::new();
+        for (file, text) in SOURCES {
+            for line in text.lines().map(str::trim) {
+                if line.contains(&needle) && !line.starts_with("//") {
+                    found.push((file, line.to_string()));
+                }
+            }
+        }
+        assert_eq!(
+            found,
+            allowed.to_vec(),
+            "a new program is started from PID 1"
+        );
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".rs"))
+            .collect();
+        on_disk.sort();
+        let mut scanned: Vec<String> = SOURCES.iter().map(|(f, _)| (*f).to_string()).collect();
+        scanned.sort();
+        assert_eq!(on_disk, scanned, "a source file is not scanned");
+    }
+
     #[test]
     fn is_mountpoint_root_yes_fresh_dir_no() {
         assert!(super::is_mountpoint("/"));

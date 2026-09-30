@@ -123,10 +123,6 @@ pub const PODLIST_PROBE_BIN: &str = nucleus_bin!("podlist-probe");
 /// The adversary probe (probe-pod boot lane).
 pub const ADVERSARY_PROBE_BIN: &str = nucleus_bin!("adversary-probe");
 
-/// The legacy in-guest egress script. Reserved while any guest layer still
-/// runs it: an image that replaced it would run as root at boot.
-pub const GUEST_NET_SH: &str = "/usr/local/bin/guest-net.sh";
-
 /// The per-pod scratch mount.
 pub const WORK_DIR: &str = "/work";
 
@@ -161,11 +157,6 @@ pub const RESERVED: &[Reserved] = &[
         path: FALLBACK_POD_SPEC,
         kind: ReservedKind::Exact,
         why: "outranks the host-fetched pod spec, so it would choose the pod's command",
-    },
-    Reserved {
-        path: GUEST_NET_SH,
-        kind: ReservedKind::Exact,
-        why: "run as root at boot by guest layers that still ship it",
     },
     Reserved {
         path: "/run/",
@@ -294,7 +285,6 @@ mod tests {
             WORKLOAD_PROBE_BIN,
             PODLIST_PROBE_BIN,
             ADVERSARY_PROBE_BIN,
-            GUEST_NET_SH,
         ] {
             assert!(
                 reserved_by(path).is_some(),
@@ -350,7 +340,7 @@ mod tests {
             "etc/nucleus-extra/x",
             "initrd.img",
             "workspace/file",
-            "usr/local/bin/guest-net.sh.bak",
+            "usr/local/bin/guest-net.sh",
         ] {
             assert_eq!(reserved_by(p), None, "{p}");
         }
