@@ -52,3 +52,10 @@ hmac = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-no-provider", "json", "blocking"] }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+# `oci_e2e` (an #[ignore]d live proof): the import record it derives the workload
+# from, the oci-archive's index.json, and the node's base64 artifact bundle.
+nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
+tar = { version = "0.4", default-features = false }
+base64 = { workspace = true }

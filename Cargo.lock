@@ -7386,6 +7386,7 @@ name = "nucleus-perf"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "ed25519-dalek 3.0.0",
@@ -7396,6 +7397,7 @@ dependencies = [
  "nucleus-creditworthiness",
  "nucleus-econ-kernels",
  "nucleus-econ-types",
+ "nucleus-oci-rootfs",
  "nucleus-permission-market",
  "nucleus-provenance-memory",
  "nucleus-recompute",
@@ -7409,6 +7411,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
+ "tar",
  "tokio",
  "ureq",
  "uuid",

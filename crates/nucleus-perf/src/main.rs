@@ -19,6 +19,9 @@ mod agency;
 mod exchange;
 mod guest_transcript;
 mod node_mtls;
+// OCI-H: an #[ignore]d end-to-end proof, test-only (see its module docs).
+#[cfg(test)]
+mod oci_e2e;
 mod stress;
 mod symmetry;
 mod teardown_barrier;

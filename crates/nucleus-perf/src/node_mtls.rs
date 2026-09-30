@@ -94,6 +94,30 @@ impl Node {
         serde_json::from_str(&text).map_err(|e| format!("{url}: not JSON: {e}"))
     }
 
+    /// GET a body as text (a pod's console, a workload's stdout). Errors as
+    /// [`Self::get_json`] does, with the node's own words.
+    #[cfg(test)]
+    pub fn get_text(&self, path: &str) -> Result<String, String> {
+        let url = format!("{}{path}", self.url);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .map_err(|e| format!("{url}: {e}"))?;
+        let status = resp.status();
+        let text = resp.text().map_err(|e| format!("{url}: body: {e}"))?;
+        if !status.is_success() {
+            return Err(format!("{url}: HTTP {status}: {}", text.trim()));
+        }
+        Ok(text)
+    }
+
+    /// POST a JSON body; the JSON reply.
+    #[cfg(test)]
+    pub fn post_json(&self, path: &str, body: &Value, what: &str) -> Result<Value> {
+        self.post(path, &body.to_string(), what)
+    }
+
     fn post(&self, path: &str, body: &str, what: &str) -> Result<Value> {
         let resp = self
             .client
