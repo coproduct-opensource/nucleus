@@ -12,95 +12,78 @@
 //! jail. A second hash here would be a second decider for the same fact, free to
 //! drift from the one the node enforces.
 //!
+//! # Owned by the workload
+//!
+//! The workload runs unprivileged, so a tree seeded with the host's ownership
+//! can be read in the guest and not edited. [`seed`] therefore does not hand
+//! mke2fs the directory: it writes the tree as a normalized tar with every
+//! entry owned by `owner` (see [`crate::ext4`]'s `tree_tar`), and builds the
+//! image from that. The same step makes the image a function of the tree's
+//! content and modes alone, not of when or where it was checked out.
+//!
 //! # Where the image must live
 //!
 //! The node admits a caller-supplied scratch image only from inside its
-//! `--scratch-root`, so [`seed`]'s `image` belongs there.
+//! `--scratch-root`, so [`seed`]'s `image` belongs there. The staging tar is
+//! written beside it and removed.
 
 use std::path::Path;
 
 use nucleus_spec::ArtifactDigest;
 
+use crate::ext4::{self, Ext4Error, Ext4Input, Ext4Spec, RootOwner, tree_tar};
 use crate::scratch_readback::{self, ReadbackError};
 
-/// A mebibyte, in bytes.
-const MIB: u64 = 1024 * 1024;
+/// Free inodes per free MiB: ext4's default ratio of one per 16 KiB, so the
+/// workload can create files as well as grow them.
+const INODES_PER_FREE_MIB: u32 = 64;
 
-/// Why a seed did not produce an image.
-#[derive(Debug)]
-pub enum SeedError {
-    /// `mkfs.ext4` is not installed.
-    ToolMissing(String),
-    /// The tree is not a directory, or the image already exists.
-    Refused(String),
-    /// `size_mib` does not fit in bytes.
-    TooLarge(u64),
-    /// I/O around `mkfs.ext4`.
-    Io(String),
-    /// `mkfs.ext4` ran and failed (the tree may not fit, for one).
-    Failed(String),
-}
-
-impl std::fmt::Display for SeedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SeedError::ToolMissing(e) => write!(
-                f,
-                "mkfs.ext4 is not available ({e}); install e2fsprogs to seed a workspace image"
-            ),
-            SeedError::Refused(why) => write!(f, "refusing to seed: {why}"),
-            SeedError::TooLarge(mib) => write!(f, "{mib} MiB does not fit in a u64 byte count"),
-            SeedError::Io(e) => write!(f, "seeding the workspace image: {e}"),
-            SeedError::Failed(e) => write!(f, "mkfs.ext4 failed: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for SeedError {}
-
-/// Build an ext4 image of `size_mib` MiB at `image` holding `tree`, and return its
-/// digest in the form `image.scratch_digest` takes.
+/// Build an ext4 image at `image` holding `tree`, every entry owned by `owner`
+/// (the workload's uid:gid), with `free_mib` MiB of room beyond the content,
+/// and return its digest in the form `image.scratch_digest` takes.
 ///
-/// `image` must not already exist: overwriting a file is never what seeding means,
-/// and it may be a scratch disk a running pod still has.
-pub async fn seed(tree: &Path, image: &Path, size_mib: u64) -> Result<ArtifactDigest, SeedError> {
+/// The image's UUID is derived from the staging tar's digest, so the same tree
+/// seeded twice is the same image, and the digest can be computed ahead of
+/// the pod. `image` must not already exist: overwriting a file is never what
+/// seeding means, and it may be a scratch disk a running pod still has.
+pub async fn seed(
+    tree: &Path,
+    image: &Path,
+    owner: RootOwner,
+    free_mib: u32,
+) -> Result<ArtifactDigest, Ext4Error> {
     if !tree.is_dir() {
-        return Err(SeedError::Refused(format!(
+        return Err(Ext4Error::Refused(format!(
             "{} is not a directory",
             tree.display()
         )));
     }
-    let bytes = size_mib
-        .checked_mul(MIB)
-        .ok_or(SeedError::TooLarge(size_mib))?;
-    let file = std::fs::File::create_new(image)
-        .map_err(|e| SeedError::Refused(format!("cannot create {} ({e})", image.display())))?;
-    file.set_len(bytes)
-        .map_err(|e| SeedError::Io(format!("sizing {}: {e}", image.display())))?;
-    drop(file);
-
-    let out = std::process::Command::new("mkfs.ext4")
-        .args(["-q", "-F", "-d"])
-        .arg(tree)
-        .arg(image)
-        .output();
-    let failed = match out {
-        Err(e) => Some(SeedError::ToolMissing(e.to_string())),
-        Ok(o) if !o.status.success() => Some(SeedError::Failed(
-            String::from_utf8_lossy(&o.stderr).trim().to_string(),
-        )),
-        Ok(_) => None,
-    };
-    if let Some(err) = failed {
-        // A half-made image left behind would be refused by `create_new` on retry.
-        let _ = std::fs::remove_file(image);
-        return Err(err);
+    if image.exists() {
+        return Err(Ext4Error::Refused(format!("{} exists", image.display())));
     }
-
-    let digest = nucleus_identity::attestation::measure_artifact(image)
-        .await
-        .map_err(|e| SeedError::Io(format!("measuring {}: {e}", image.display())))?;
-    ArtifactDigest::parse(&format!("sha-256:{}", hex::encode(digest))).map_err(SeedError::Io)
+    let entries = tree_tar::walk(tree)?;
+    let beside = match image.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let tar = tempfile::Builder::new()
+        .prefix(".nucleus-seed-")
+        .suffix(".tar")
+        .tempfile_in(beside)
+        .map_err(|e| Ext4Error::Io(format!("staging tar in {}: {e}", beside.display())))?;
+    let digest = tree_tar::emit(
+        tree,
+        &entries,
+        owner,
+        std::io::BufWriter::new(tar.as_file()),
+    )?;
+    let spec = Ext4Spec {
+        seed: digest,
+        owner,
+        extra_mib: free_mib,
+        extra_inodes: free_mib.saturating_mul(INODES_PER_FREE_MIB),
+    };
+    ext4::build(Ext4Input::Tar(tar.path()), image, spec).await
 }
 
 /// Read the whole filesystem in `image` back out into `out`, replaying the
@@ -134,10 +117,15 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
+    /// The workload uid:gid the guest runs as by default.
+    const WORKLOAD: RootOwner = RootOwner {
+        uid: 65534,
+        gid: 65534,
+    };
+
+    /// A seed builds from a tar, so these need what `ext4` needs for one.
     fn have_e2fsprogs() -> bool {
-        ["mkfs.ext4", "e2fsck", "debugfs"]
-            .iter()
-            .all(|t| std::process::Command::new(t).arg("-V").output().is_ok())
+        crate::ext4::tests::tar_capable()
     }
 
     /// Every regular file under `root`, by relative path, with its bytes.
@@ -170,13 +158,12 @@ mod tests {
     #[tokio::test]
     async fn seed_then_harvest_returns_the_same_tree() {
         if !have_e2fsprogs() {
-            eprintln!("skipping: e2fsprogs not installed");
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let t = tree(dir.path());
         let image = dir.path().join("ws.ext4");
-        let digest = seed(&t, &image, 16).await.expect("seed");
+        let digest = seed(&t, &image, WORKLOAD, 16).await.expect("seed");
 
         // The digest is the node's own measurement of the file.
         let measured = nucleus_identity::attestation::measure_artifact(&image)
@@ -204,21 +191,58 @@ mod tests {
         let image = dir.path().join("exists.ext4");
         std::fs::write(&image, b"a running pod's disk").expect("file");
         assert!(matches!(
-            seed(&t, &image, 16).await,
-            Err(SeedError::Refused(_))
+            seed(&t, &image, WORKLOAD, 16).await,
+            Err(Ext4Error::Refused(_))
         ));
         assert_eq!(
             std::fs::read(&image).expect("kept"),
             b"a running pod's disk"
         );
         assert!(matches!(
-            seed(&image, &dir.path().join("new.ext4"), 16).await,
-            Err(SeedError::Refused(_))
+            seed(&image, &dir.path().join("new.ext4"), WORKLOAD, 16).await,
+            Err(Ext4Error::Refused(_))
         ));
-        assert!(matches!(
-            seed(&t, &dir.path().join("huge.ext4"), u64::MAX).await,
-            Err(SeedError::TooLarge(_))
-        ));
+    }
+
+    /// The spike's finding: a seed owned by the host's uid can be read by the
+    /// workload and not edited. Every entry, not just the root, must be the
+    /// workload's.
+    #[tokio::test]
+    async fn every_seeded_entry_is_owned_by_the_workload() {
+        if !have_e2fsprogs() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let t = tree(dir.path());
+        let image = dir.path().join("ws.ext4");
+        seed(&t, &image, WORKLOAD, 16).await.expect("seed");
+        let paths = [
+            "/",
+            "/README",
+            "/src",
+            "/src/lib.rs",
+            "/src/nested",
+            "/src/nested/data.bin",
+        ];
+        for guest in paths {
+            let out = std::process::Command::new("debugfs")
+                .args(["-R", &format!("stat {guest}")])
+                .arg(&image)
+                .output()
+                .expect("debugfs");
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                text.contains("User: 65534   Group: 65534"),
+                "{guest} is not the workload's: {text}"
+            );
+        }
+        // The staging tar is gone; only the image and its record remain.
+        let mut left: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("dir")
+            .map(|e| e.expect("entry").file_name().into_string().expect("utf8"))
+            .collect();
+        left.sort();
+        assert_eq!(left, ["tree", "ws.ext4", "ws.ext4.provenance.json"]);
     }
 
     #[test]
@@ -239,7 +263,6 @@ mod tests {
     #[tokio::test]
     async fn a_dirty_journal_harvests_the_committed_bytes() {
         if !have_e2fsprogs() {
-            eprintln!("skipping: e2fsprogs not installed");
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
@@ -247,7 +270,7 @@ mod tests {
         std::fs::create_dir_all(&t).expect("tree");
         std::fs::write(t.join("f"), vec![b'A'; 4096]).expect("old bytes");
         let image = dir.path().join("ws.ext4");
-        seed(&t, &image, 16).await.expect("seed");
+        seed(&t, &image, WORKLOAD, 16).await.expect("seed");
 
         // Where `f`'s first block lives.
         let bmap = std::process::Command::new("debugfs")
