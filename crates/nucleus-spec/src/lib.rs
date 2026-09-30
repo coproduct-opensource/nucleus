@@ -2,6 +2,7 @@
 
 pub mod boot_budget;
 pub mod exit_report_auth;
+pub mod guest_layout;
 pub mod identity;
 pub mod tier2_artifacts;
 pub mod vmm_version;
