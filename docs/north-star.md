@@ -1,7 +1,7 @@
 # Nucleus North Star
 
 > This is the long form, and it carries the claim ledgers CI parses. The canonical
-> short statement is [`NORTH_STAR.md`](../NORTH_STAR.md); the reasoning behind the
+> short statement is [`NORTH_STAR.md`](NORTH_STAR.md); the reasoning behind the
 > objective is [ADR 0005](adr/0005-delegatable-agency.md).
 
 ## The Objective
@@ -605,7 +605,7 @@ with Session(profile="safe_pr_fixer") as s:
   `StateBlocked`
 - **Trace export**: `session.trace.export_jsonl()`
 
-**Current state (March 2026):** Draft Python SDK at `sdk/python/` with
+**Current state (March 2026):** Draft Python SDK at `sdks/python/` with
 intent-first API, mTLS/SPIFFE auth, and tool wrappers for fs/git/net.
 Functional for direct tool-proxy connections.
 

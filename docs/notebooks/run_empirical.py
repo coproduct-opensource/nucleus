@@ -7,16 +7,16 @@ Same logic as `empirical_rank_h1_gpt2.ipynb`, executable without Jupyter:
   pip install 'transformers==4.46.0' 'scikit-learn==1.5.2' numpy scipy torch tqdm
 
   # Run the full stack:
-  python3 notebooks/run_empirical.py
+  python3 docs/notebooks/run_empirical.py
 
   # Just Phase 1 (scaffold integrity: Tier A + C + B, ~10 min on 20 prompts):
-  python3 notebooks/run_empirical.py --phase 1
+  python3 docs/notebooks/run_empirical.py --phase 1
 
   # Phase 2 (correlation + ablations on 200 prompts, ~30 min):
-  python3 notebooks/run_empirical.py --phase 2 --n 200
+  python3 docs/notebooks/run_empirical.py --phase 2 --n 200
 
   # Custom corpus from JSON file:
-  python3 notebooks/run_empirical.py --benign benign.txt --injected injected.txt
+  python3 docs/notebooks/run_empirical.py --benign benign.txt --injected injected.txt
 
 The outputs are printed to stdout as structured JSON at the end of each
 phase; intermediate progress goes to stderr. Pipe stdout to `jq` for

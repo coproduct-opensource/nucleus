@@ -2,7 +2,7 @@
 # Recount the formal-methods numbers the docs publish, and fail on drift.
 #
 # #2478: the headline counts (Kani harnesses, open `sorry` holes) live in
-# FORMAL_METHODS.md, NORTH_STAR.md and CONJECTURES.md, and every one of them
+# docs/FORMAL_METHODS.md, docs/NORTH_STAR.md and CONJECTURES.md, and every one of them
 # had drifted from the tree. #2751 widened it to the two documents that had
 # drifted *because* they were outside it — README.md (114 for 120, 40 holes for
 # 23) and docs/PROOFS.md — plus the Tier-2 total row inside CONJECTURES.md,
@@ -56,19 +56,19 @@ if [ "$mode" = "--write" ]; then
     if [ "$before" != "$(cat "$1")" ]; then echo "  wrote $1: $3"; changed=1; fi
   }
   bt='`'
-  rewrite FORMAL_METHODS.md 's/Total: [0-9]+ Kani BMC harnesses repo-wide/Total: '"$total_kani"' Kani BMC harnesses repo-wide/' "Kani total $total_kani"
-  rewrite FORMAL_METHODS.md 's/([0-9]+) Kani BMC proofs in the '"$bt"'portcullis'"$bt"' crate \([0-9]+ repo-wide\)/\1 Kani BMC proofs in the '"$bt"'portcullis'"$bt"' crate ('"$total_kani"' repo-wide)/' "repo-wide aside $total_kani"
-  rewrite FORMAL_METHODS.md 's/\| [0-9]+ harnesses repo-wide \(/| '"$total_kani"' harnesses repo-wide (/' "table total $total_kani"
-  rewrite FORMAL_METHODS.md 's/a bare '"$bt"'grep -rc'"$bt"' says [0-9]+ because/a bare '"$bt"'grep -rc'"$bt"' says '"$bare_kani"' because/' "bare-grep aside $bare_kani"
-  rewrite FORMAL_METHODS.md 's/[0-9]+ open '"$bt"'sorry'"$bt"' proof holes across [0-9]+/'"$sorry_total"' open '"$bt"'sorry'"$bt"' proof holes across '"$sorry_files"'/' "sorry $sorry_total across $sorry_files"
+  rewrite docs/FORMAL_METHODS.md 's/Total: [0-9]+ Kani BMC harnesses repo-wide/Total: '"$total_kani"' Kani BMC harnesses repo-wide/' "Kani total $total_kani"
+  rewrite docs/FORMAL_METHODS.md 's/([0-9]+) Kani BMC proofs in the '"$bt"'portcullis'"$bt"' crate \([0-9]+ repo-wide\)/\1 Kani BMC proofs in the '"$bt"'portcullis'"$bt"' crate ('"$total_kani"' repo-wide)/' "repo-wide aside $total_kani"
+  rewrite docs/FORMAL_METHODS.md 's/\| [0-9]+ harnesses repo-wide \(/| '"$total_kani"' harnesses repo-wide (/' "table total $total_kani"
+  rewrite docs/FORMAL_METHODS.md 's/a bare '"$bt"'grep -rc'"$bt"' says [0-9]+ because/a bare '"$bt"'grep -rc'"$bt"' says '"$bare_kani"' because/' "bare-grep aside $bare_kani"
+  rewrite docs/FORMAL_METHODS.md 's/[0-9]+ open '"$bt"'sorry'"$bt"' proof holes across [0-9]+/'"$sorry_total"' open '"$bt"'sorry'"$bt"' proof holes across '"$sorry_files"'/' "sorry $sorry_total across $sorry_files"
   while read -r k n; do
     [ -n "$k" ] || continue
-    rewrite FORMAL_METHODS.md 's/(^|[^A-Za-z0-9_-])'"$k"' [0-9]+([^0-9]|$)/\1'"$k $n"'\2/g' "$k $n"
+    rewrite docs/FORMAL_METHODS.md 's/(^|[^A-Za-z0-9_-])'"$k"' [0-9]+([^0-9]|$)/\1'"$k $n"'\2/g' "$k $n"
   done < <(printf "%b" "$KANI_LINES")
   breakdown="$(printf "%b" "$KANI_LINES" | sort -k2,2nr -k1,1 | awk '{printf "%s%s %s", (NR>1?", ":""), $1, $2}')"
-  rewrite NORTH_STAR.md 's#\| Kani BMC harnesses \| [0-9]+ \| [^|]*#| Kani BMC harnesses | '"$total_kani"' | '"$breakdown"' ('"$bt"'scripts/formal-numbers.sh'"$bt"') #' "Kani total $total_kani"
-  rewrite NORTH_STAR.md 's/\| \*\*Current\*\* \| [0-9]+ \|/| **Current** | '"$total_kani"' |/' "current $total_kani"
-  rewrite NORTH_STAR.md 's/Open '"$bt"'sorry'"$bt"' holes \| [0-9]+ across [0-9]+/Open '"$bt"'sorry'"$bt"' holes | '"$sorry_total"' across '"$sorry_files"'/' "sorry $sorry_total across $sorry_files"
+  rewrite docs/NORTH_STAR.md 's#\| Kani BMC harnesses \| [0-9]+ \| [^|]*#| Kani BMC harnesses | '"$total_kani"' | '"$breakdown"' ('"$bt"'scripts/formal-numbers.sh'"$bt"') #' "Kani total $total_kani"
+  rewrite docs/NORTH_STAR.md 's/\| \*\*Current\*\* \| [0-9]+ \|/| **Current** | '"$total_kani"' |/' "current $total_kani"
+  rewrite docs/NORTH_STAR.md 's/Open '"$bt"'sorry'"$bt"' holes \| [0-9]+ across [0-9]+/Open '"$bt"'sorry'"$bt"' holes | '"$sorry_total"' across '"$sorry_files"'/' "sorry $sorry_total across $sorry_files"
   rewrite "$LEAN/CONJECTURES.md" 's/[0-9]+ proof-hole '"$bt"'sorry'"$bt"' terms across exactly [0-9]+ files/'"$sorry_total"' proof-hole '"$bt"'sorry'"$bt"' terms across exactly '"$sorry_files"' files/' "manifest $sorry_total across $sorry_files"
   rewrite "$LEAN/CONJECTURES.md" 's/\*\*Total\*\* \| \*\*[0-9]+\*\* \| across \*\*[0-9]+\*\* files/**Total** | **'"$sorry_total"'** | across **'"$sorry_files"'** files/' "tier-2 total $sorry_total across $sorry_files"
   rewrite README.md 's/\| [0-9]+ harnesses repo-wide/| '"$total_kani"' harnesses repo-wide/' "README Kani total $total_kani"
@@ -111,12 +111,12 @@ expect() { # expect <file> <regex> <fresh value> <what>
     echo "::error file=$1::$4 says '${got:-<absent>}', fresh count is $3"; fail=1
   fi
 }
-expect FORMAL_METHODS.md 'Total: [0-9]+ Kani BMC harnesses repo-wide' "$total_kani" "Kani total"
-expect FORMAL_METHODS.md '[0-9]+ open `sorry` proof holes across' "$sorry_total" "open sorry count"
-expect FORMAL_METHODS.md 'proof holes across [0-9]+' "$sorry_files" "sorry file count"
-expect NORTH_STAR.md '\| Kani BMC harnesses \| [0-9]+ \|' "$total_kani" "Kani total"
+expect docs/FORMAL_METHODS.md 'Total: [0-9]+ Kani BMC harnesses repo-wide' "$total_kani" "Kani total"
+expect docs/FORMAL_METHODS.md '[0-9]+ open `sorry` proof holes across' "$sorry_total" "open sorry count"
+expect docs/FORMAL_METHODS.md 'proof holes across [0-9]+' "$sorry_files" "sorry file count"
+expect docs/NORTH_STAR.md '\| Kani BMC harnesses \| [0-9]+ \|' "$total_kani" "Kani total"
 expect docs/verified-claims.md '\([0-9]+ harnesses repo-wide' "$total_kani" "Kani total (verified-claims)"
-expect NORTH_STAR.md 'Open `sorry` holes \| [0-9]+ across [0-9]+' "$sorry_total" "open sorry count"
+expect docs/NORTH_STAR.md 'Open `sorry` holes \| [0-9]+ across [0-9]+' "$sorry_total" "open sorry count"
 expect "$LEAN/CONJECTURES.md" '[0-9]+ proof-hole `sorry` terms across exactly' "$sorry_total" "manifest sorry count"
 expect "$LEAN/CONJECTURES.md" 'across exactly [0-9]+ files' "$sorry_files" "manifest file count"
 expect "$LEAN/CONJECTURES.md" '\*\*Total\*\* \| \*\*[0-9]+\*\*' "$sorry_total" "manifest tier-2 total"
@@ -127,7 +127,7 @@ expect docs/PROOFS.md '[0-9]+ `#\[kani::proof\]` harnesses' "$total_kani" "Kani 
 expect docs/PROOFS.md 'reports \([0-9]+ across' "$sorry_total" "live sorry count (PROOFS)"
 while read -r k n; do
   [ -n "$k" ] || continue
-  expect FORMAL_METHODS.md "$k [0-9]+" "$n" "Kani count for $k"
+  expect docs/FORMAL_METHODS.md "$k [0-9]+" "$n" "Kani count for $k"
 done < <(printf "%b" "$KANI_LINES")
 
 if [ "$fail" != "0" ]; then

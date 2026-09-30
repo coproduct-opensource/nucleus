@@ -9,8 +9,8 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "FORMAL_METHODS.md"
-      - "NORTH_STAR.md"
+      - "docs/FORMAL_METHODS.md"
+      - "docs/NORTH_STAR.md"
       - "README.md"
       - "docs/PROOFS.md"
       - "docs/verified-claims.md"
@@ -21,8 +21,8 @@ on:
       - ".github/workflows/formal-numbers.yml"
   pull_request:
     paths:
-      - "FORMAL_METHODS.md"
-      - "NORTH_STAR.md"
+      - "docs/FORMAL_METHODS.md"
+      - "docs/NORTH_STAR.md"
       - "README.md"
       - "docs/PROOFS.md"
       - "docs/verified-claims.md"

@@ -23,7 +23,7 @@ Design principles (all aimed at withstanding scrutiny):
 7. **Honest scope**: an explicit "what this does NOT prove" section
    enumerating known limitations.
 
-Regenerate with: `python3 notebooks/build_empirical_rank_h1.py`
+Regenerate with: `python3 docs/notebooks/build_empirical_rank_h1.py`
 """
 import json
 import sys
@@ -964,7 +964,7 @@ md(
 
 
 def main():
-    out = "notebooks/empirical_rank_h1_gpt2.ipynb"
+    out = "docs/notebooks/empirical_rank_h1_gpt2.ipynb"
     with open(out, "w") as f:
         json.dump(NOTEBOOK, f, indent=1)
     print(f"wrote {out} ({len(NOTEBOOK['cells'])} cells)")

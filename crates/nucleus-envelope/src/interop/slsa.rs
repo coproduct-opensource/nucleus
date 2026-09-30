@@ -21,7 +21,7 @@
 //!
 //! **L3 (`Hardened builds`)** requires hermetic + isolated execution.
 //! Firecracker-microVM-backed sessions satisfy these structurally
-//! (see [`NORTH_STAR.md`](../../../NORTH_STAR.md)), but claiming L3
+//! (see [`NORTH_STAR.md`](../../../../docs/NORTH_STAR.md)), but claiming L3
 //! requires an audited mapping from the nucleus runtime config to
 //! the SLSA hardening checklist — flagged as roadmap work, not
 //! claimed in this adapter.

@@ -17,7 +17,7 @@ Key concepts:
 
 Run:
     export NUCLEUS_NODE_URL="http://localhost:9400"
-    pip install -e sdk/python
+    pip install -e sdks/python
     python examples/delegation_forest.py
 """
 

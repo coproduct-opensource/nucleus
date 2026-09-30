@@ -10,8 +10,8 @@
 #   - `nucleus-claude-hook --setup` completed
 #
 # Usage:
-#   ./tests/red_team_live.sh          # run all attacks
-#   ./tests/red_team_live.sh --dry    # show prompts without running
+#   ./scripts/red_team_live.sh         # run all attacks
+#   ./scripts/red_team_live.sh --dry    # show prompts without running
 
 set -euo pipefail
 

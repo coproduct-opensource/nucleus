@@ -2,9 +2,9 @@
 
 *A point-in-time marketing draft, not a statement of the objective.* It lived at the
 repository root as `north-star.md`, a fourth positioning referenced by nothing, and
-was moved here by [ADR 0005](../docs/adr/0005-delegatable-agency.md). The canonical
+was moved here by [ADR 0005](../adr/0005-delegatable-agency.md). The canonical
 objective is [`NORTH_STAR.md`](../NORTH_STAR.md); the long form and the CI-parsed
-claim ledgers are [`docs/north-star.md`](../docs/north-star.md).
+claim ledgers are [`docs/north-star.md`](../north-star.md).
 
 ---
 

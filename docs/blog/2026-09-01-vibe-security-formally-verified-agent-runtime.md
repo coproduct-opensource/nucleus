@@ -11,7 +11,7 @@
 > "What's Next" have been rewritten to match the tree; the proof narrative and
 > the two counterexamples are kept as written because they still hold. The
 > current, audited numbers live in
-> [`FORMAL_METHODS.md`](https://github.com/coproduct-opensource/nucleus/blob/main/FORMAL_METHODS.md),
+> [`FORMAL_METHODS.md`](https://github.com/coproduct-opensource/nucleus/blob/main/docs/FORMAL_METHODS.md),
 > which CI keeps in sync with the tree, so this post no longer quotes counts.
 
 Andrej Karpathy coined "vibe coding" in February 2025: give in to the vibes, embrace exponentials, forget that the code even exists. Collins Dictionary made it 2025's Word of the Year. By 2026, 92% of US developers use AI coding tools daily. Google says 25% of their new code is AI-generated. Across the industry, the number is [24% and climbing](https://www.aikido.dev/).
@@ -40,7 +40,7 @@ You need a *permission kernel* — something that understands the *relationships
 
 [Nucleus](https://github.com/coproduct-opensource/nucleus) is an open-source security runtime for AI agents. The core is `portcullis`, a ~5,000 LOC Rust library that models permissions as a mathematical lattice: capabilities form a bounded distributive lattice, obligations use reversed subset ordering, and a normalization operator detects the uninhabitable state and adds mandatory approval gates.
 
-Six months ago, we [audited our own platform](https://github.com/coproduct-opensource/nucleus/blob/main/blog/2026-03-04-we-audited-our-own-agent-platform.md) and found 5 critical fail-open vulnerabilities. Every bug followed the same pattern: security was present in code but absent in enforcement. We had Kani model-checking proofs. We had 233 proptest property tests. We had 70 OWASP LLM attack scenarios. None of them caught a single one of the 5 bugs.
+Six months ago, we [audited our own platform](https://github.com/coproduct-opensource/nucleus/blob/main/docs/blog/2026-03-04-we-audited-our-own-agent-platform.md) and found 5 critical fail-open vulnerabilities. Every bug followed the same pattern: security was present in code but absent in enforcement. We had Kani model-checking proofs. We had 233 proptest property tests. We had 70 OWASP LLM attack scenarios. None of them caught a single one of the 5 bugs.
 
 That failure was the catalyst. We decided that if AI agents are going to write and deploy code on our behalf, the system enforcing their permissions needs a level of assurance that no amount of fuzzing or property testing can provide. We decided to formally verify the kernel.
 
@@ -133,7 +133,7 @@ The practical consequence: we proved that the *quotient meet* (which normalizes 
 
 ## The Honest Version
 
-We are not done. The algebraic core is machine-checked, unbounded in Lean 4 and bounded in Kani (the audited inventory is in [`FORMAL_METHODS.md`](https://github.com/coproduct-opensource/nucleus/blob/main/FORMAL_METHODS.md)). The enforcement boundary — the thing that actually stops exfiltration — is gated and tested but not proved. The Firecracker isolation relies on AWS's existing verification work. The SPIFFE identity chain relies on SPIRE's audit trail.
+We are not done. The algebraic core is machine-checked, unbounded in Lean 4 and bounded in Kani (the audited inventory is in [`FORMAL_METHODS.md`](https://github.com/coproduct-opensource/nucleus/blob/main/docs/FORMAL_METHODS.md)). The enforcement boundary — the thing that actually stops exfiltration — is gated and tested but not proved. The Firecracker isolation relies on AWS's existing verification work. The SPIFFE identity chain relies on SPIRE's audit trail.
 
 What we have today is a formally verified permission *algebra* inside a conventionally tested enforcement *runtime*. That's better than nothing, and it's better than what anyone else in the AI agent space is shipping. But it's not the end state.
 
@@ -147,4 +147,4 @@ Because "it's probably fine" is not a security posture. And vibe security is not
 
 *Nucleus is open source under MIT/Apache-2.0: [github.com/coproduct-opensource/nucleus](https://github.com/coproduct-opensource/nucleus)*
 
-*The proofs: the Lean 4 developments under [`crates/portcullis-core/lean`](https://github.com/coproduct-opensource/nucleus/tree/main/crates/portcullis-core/lean) and the Kani harnesses in [`crates/portcullis/src/kani.rs`](https://github.com/coproduct-opensource/nucleus/blob/main/crates/portcullis/src/kani.rs), including the two machine-checked counterexamples. The honest inventory, with what is and is not proved, is [`FORMAL_METHODS.md`](https://github.com/coproduct-opensource/nucleus/blob/main/FORMAL_METHODS.md).*
+*The proofs: the Lean 4 developments under [`crates/portcullis-core/lean`](https://github.com/coproduct-opensource/nucleus/tree/main/crates/portcullis-core/lean) and the Kani harnesses in [`crates/portcullis/src/kani.rs`](https://github.com/coproduct-opensource/nucleus/blob/main/crates/portcullis/src/kani.rs), including the two machine-checked counterexamples. The honest inventory, with what is and is not proved, is [`FORMAL_METHODS.md`](https://github.com/coproduct-opensource/nucleus/blob/main/docs/FORMAL_METHODS.md).*

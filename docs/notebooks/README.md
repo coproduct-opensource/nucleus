@@ -31,7 +31,7 @@ Shows empirical verification on four canonical examples:
 Open any notebook directly in Colab:
 
 ```
-https://colab.research.google.com/github/coproduct-opensource/nucleus/blob/main/notebooks/alignment_tax_demo.ipynb
+https://colab.research.google.com/github/coproduct-opensource/nucleus/blob/main/docs/notebooks/alignment_tax_demo.ipynb
 ```
 
 No setup required — pure Python 3, no dependencies beyond standard library.
@@ -39,7 +39,7 @@ No setup required — pure Python 3, no dependencies beyond standard library.
 ## The Lean formalization
 
 Each notebook cross-references the Lean 4 theorem it demonstrates. The
-formalization lives in [`crates/portcullis-core/lean/`](../crates/portcullis-core/lean/)
+formalization lives in [`crates/portcullis-core/lean/`](../../crates/portcullis-core/lean/)
 and is machine-checked modulo one structural axiom (Gaussian elimination
 correctness over GF(2)) — the single remaining open problem for
 unconditional closure of the Alignment Tax Theorem.

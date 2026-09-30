@@ -38,6 +38,7 @@ nucleus-node/pods/
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
 
 # Node.js
 node_modules/

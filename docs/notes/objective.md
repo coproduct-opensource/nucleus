@@ -1,7 +1,7 @@
 # Objective
 
 > *Superseded as a statement of the project's objective by
-> [ADR 0005](../docs/adr/0005-delegatable-agency.md) and
+> [ADR 0005](../adr/0005-delegatable-agency.md) and
 > [`NORTH_STAR.md`](../NORTH_STAR.md); kept as the June 2026 note it is. The three
 > primary goals below are still the right shape — they are the terms of ℐ's
 > denominator (friction, confidence, risk) with the numerator missing.*
