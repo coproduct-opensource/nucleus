@@ -45,6 +45,7 @@ mod profiles;
 mod provision;
 mod replay;
 mod run;
+mod session_token;
 mod setup;
 mod shell;
 mod start;

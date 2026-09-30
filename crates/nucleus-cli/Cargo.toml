@@ -18,6 +18,8 @@ path = "src/main.rs"
 [dependencies]
 # Core enforcement
 portcullis = { path = "../portcullis", features = ["spec", "dlc"] }
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+ed25519-dalek = { workspace = true }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-task-compiler = { path = "../nucleus-task-compiler" }
 nucleus-client = { path = "../nucleus-client" }
