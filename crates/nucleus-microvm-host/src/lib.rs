@@ -4,6 +4,8 @@
 //! - [`probe`]: the host requirements table the node's launch preflight uses,
 //!   plus [`probe::kvm`], which opens `/dev/kvm` and creates a VM rather than
 //!   trusting that the device node exists.
+//! - [`ext4`]: the one ext4 writer. Builds an image from a tar or a directory
+//!   whose bytes depend on content and a seed, not on the host or the clock.
 //! - [`workspace`]: seed a directory into an ext4 scratch image (returning the
 //!   digest a spec pins) and harvest the guest's tree back out.
 //! - [`scratch_readback`]: reading files out of a guest's ext4 image from the
@@ -25,6 +27,7 @@
     )
 )]
 
+pub mod ext4;
 pub mod probe;
 pub mod scratch_readback;
 pub mod workspace;
