@@ -148,10 +148,25 @@ if [ "$FULL" = 1 ] && printf '%s\n' "$changed" | grep -q '\.rs$'; then
         run "cargo test --workspace (lib, bins, tests)" cargo test --all-features --lib --bins --tests
     else
         pk=$(printf '%s\n' "$affected" | sed 's/^/-p /' | tr '\n' ' ')
+        # `--lib` and `--doc` refuse a selection in which NO package has a library, so a change
+        # confined to bin-only crates (nucleus-node is one) failed here having run no test at all.
+        # Both flags go only where there is a library to aim them at.
+        libs=$(cargo metadata --no-deps --format-version 1 2>/dev/null | jq -r --arg a "$affected" '
+            ($a | split("\n")) as $want
+            | .packages[] | select(.name as $n | $want | index($n))
+            | select(any(.targets[].kind[]; . == "lib" or . == "rlib" or . == "dylib"
+                                            or . == "cdylib" or . == "staticlib" or . == "proc-macro"))
+            | .name')
+        libflag=; [ -n "$libs" ] && libflag=--lib
         # shellcheck disable=SC2086
-        run "cargo test (affected: lib, bins, tests)" cargo test --all-features --lib --bins --tests $pk
-        # shellcheck disable=SC2086
-        run "cargo test --doc (affected)" cargo test --all-features --doc $pk
+        run "cargo test (affected: lib, bins, tests)" cargo test --all-features $libflag --bins --tests $pk
+        if [ -n "$libs" ]; then
+            lk=$(printf '%s\n' "$libs" | sed 's/^/-p /' | tr '\n' ' ')
+            # shellcheck disable=SC2086
+            run "cargo test --doc (affected)" cargo test --all-features --doc $lk
+        else
+            echo "  skip  cargo test --doc (no affected crate has a library)"
+        fi
     fi
     for s in check-declassify-sink-scope-enforced check-declassify-value-bound check-c1-inbound-fences; do
         [ -x "scripts/$s.sh" ] && run "$s" bash "scripts/$s.sh"
