@@ -111,17 +111,89 @@ pub const CA_BUNDLE: &str = etc_nucleus!("ca-bundle.pem");
 pub const LEGACY_CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
 
 /// The mediating runtime.
-pub const PROXY_BIN: &str = nucleus_bin!("tool-proxy");
+pub const PROXY_BIN: &str = GuestBinary::ToolProxy.path();
 /// The in-guest egress confinement probe; its verdict line is required by the node.
-pub const EGRESS_PROBE_BIN: &str = nucleus_bin!("egress-probe");
+pub const EGRESS_PROBE_BIN: &str = GuestBinary::EgressProbe.path();
 /// The network reachability probe.
-pub const NET_PROBE_BIN: &str = nucleus_bin!("net-probe");
+pub const NET_PROBE_BIN: &str = GuestBinary::NetProbe.path();
 /// The workload-mediation probe.
-pub const WORKLOAD_PROBE_BIN: &str = nucleus_bin!("workload-probe");
+pub const WORKLOAD_PROBE_BIN: &str = GuestBinary::WorkloadProbe.path();
 /// The pod-list probe (C2 boot lane).
-pub const PODLIST_PROBE_BIN: &str = nucleus_bin!("podlist-probe");
+pub const PODLIST_PROBE_BIN: &str = GuestBinary::PodlistProbe.path();
 /// The adversary probe (probe-pod boot lane).
-pub const ADVERSARY_PROBE_BIN: &str = nucleus_bin!("adversary-probe");
+pub const ADVERSARY_PROBE_BIN: &str = GuestBinary::AdversaryProbe.path();
+
+/// A binary the guest layer ships, and the one place its guest path and the
+/// cargo package that builds it are written.
+///
+/// The guest layer (`cargo xtask guest-layer`) is built from
+/// [`GuestBinary::ALL`], and the release workflow is checked against the same
+/// list, so a probe added here is a probe the layer carries and the release
+/// must build — nothing else has to be remembered (ADR 0007 G-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GuestBinary {
+    /// `/init`, the guest's PID 1.
+    Init,
+    /// The mediating runtime.
+    ToolProxy,
+    /// The in-guest egress confinement probe.
+    EgressProbe,
+    /// The network reachability probe.
+    NetProbe,
+    /// The workload-mediation probe.
+    WorkloadProbe,
+    /// The pod-list probe.
+    PodlistProbe,
+    /// The adversary probe.
+    AdversaryProbe,
+}
+
+/// `(guest path, cargo package)` for a binary installed under
+/// [`NUCLEUS_BIN_PREFIX`]: both halves from one name, so they cannot disagree.
+macro_rules! guest_bin {
+    ($name:literal) => {
+        (nucleus_bin!($name), concat!("nucleus-", $name))
+    };
+}
+
+impl GuestBinary {
+    /// Every binary the guest layer ships.
+    pub const ALL: [Self; 7] = [
+        Self::Init,
+        Self::ToolProxy,
+        Self::EgressProbe,
+        Self::NetProbe,
+        Self::WorkloadProbe,
+        Self::PodlistProbe,
+        Self::AdversaryProbe,
+    ];
+
+    /// `(guest path, cargo package)`. Each package's binary target carries the
+    /// package's own name.
+    const fn parts(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Init => (INIT, "nucleus-guest-init"),
+            Self::ToolProxy => guest_bin!("tool-proxy"),
+            Self::EgressProbe => guest_bin!("egress-probe"),
+            Self::NetProbe => guest_bin!("net-probe"),
+            Self::WorkloadProbe => guest_bin!("workload-probe"),
+            Self::PodlistProbe => guest_bin!("podlist-probe"),
+            Self::AdversaryProbe => guest_bin!("adversary-probe"),
+        }
+    }
+
+    /// Absolute path inside the guest.
+    #[must_use]
+    pub const fn path(self) -> &'static str {
+        self.parts().0
+    }
+
+    /// The cargo package (and binary target) that builds it.
+    #[must_use]
+    pub const fn package(self) -> &'static str {
+        self.parts().1
+    }
+}
 
 /// The per-pod scratch mount.
 pub const WORK_DIR: &str = "/work";
@@ -290,6 +362,41 @@ mod tests {
                 reserved_by(path).is_some(),
                 "{path} is trusted but not reserved"
             );
+        }
+    }
+
+    /// `ALL` is what the guest layer is built from, so a variant missing from it
+    /// is a binary no layer carries. The match is exhaustive: a new variant does
+    /// not compile until it is given a slot here, beside `ALL`.
+    #[test]
+    fn every_guest_binary_is_in_all_once() {
+        let slot = |b: GuestBinary| match b {
+            GuestBinary::Init => 0,
+            GuestBinary::ToolProxy => 1,
+            GuestBinary::EgressProbe => 2,
+            GuestBinary::NetProbe => 3,
+            GuestBinary::WorkloadProbe => 4,
+            GuestBinary::PodlistProbe => 5,
+            GuestBinary::AdversaryProbe => 6,
+        };
+        for (i, b) in GuestBinary::ALL.iter().enumerate() {
+            assert_eq!(slot(*b), i, "{b:?} out of place in ALL");
+        }
+    }
+
+    /// Every guest binary is reserved, and every one but `/init` sits under the
+    /// binary prefix with its package's name.
+    #[test]
+    fn guest_binaries_are_reserved_and_named_by_their_package() {
+        for b in GuestBinary::ALL {
+            assert!(reserved_by(b.path()).is_some(), "{b:?} not reserved");
+            if b != GuestBinary::Init {
+                assert_eq!(
+                    b.path().strip_prefix("/usr/local/bin/"),
+                    Some(b.package()),
+                    "{b:?}"
+                );
+            }
         }
     }
 
