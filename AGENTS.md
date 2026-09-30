@@ -28,7 +28,7 @@ genuinely impossible and `verify --tier2` cannot pass. **Everything short of a
 microVM still works**, including the whole HTTP/mTLS surface, the CLI client
 path, and — via the local driver — a real pod lifecycle.
 
-`crates/nucleus-node/src/host_requirements.rs` is the tree's own statement of
+`crates/nucleus-microvm-host/src/probe.rs` is the tree's own statement of
 what a launch needs; its `unmet` half is pure and runs anywhere.
 
 ## Booting a node, verified

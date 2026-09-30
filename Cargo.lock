@@ -5546,6 +5546,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
 
 [[package]]
+name = "kvm-bindings"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11cf0ca75d59e9d298647c59cf6c5286fa048120caa77972a7a504a0824d234f"
+dependencies = [
+ "vmm-sys-util",
+]
+
+[[package]]
+name = "kvm-ioctls"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06ac372c120eb893b086d1a12027669cf2b478d1f71204021ffa7adf57948d63"
+dependencies = [
+ "bitflags 2.13.0",
+ "kvm-bindings",
+ "libc",
+ "vmm-sys-util",
+]
+
+[[package]]
 name = "lalrpop"
 version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7148,6 +7169,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-microvm-host"
+version = "1.0.0"
+dependencies = [
+ "clap",
+ "hex",
+ "kvm-ioctls",
+ "nucleus-identity",
+ "nucleus-spec",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "nucleus-net-probe"
 version = "1.0.0"
 
@@ -7177,6 +7213,7 @@ dependencies = [
  "nucleus-identity",
  "nucleus-ifc-kernel",
  "nucleus-jsonl",
+ "nucleus-microvm-host",
  "nucleus-otel-bootstrap",
  "nucleus-proto",
  "nucleus-provenance-memory",
@@ -12486,6 +12523,16 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vmm-sys-util"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "506c62fdf617a5176827c2f9afbcf1be155b03a9b4bf9617a60dbc07e3a1642f"
+dependencies = [
+ "bitflags 1.3.2",
+ "libc",
+]
 
 [[package]]
 name = "vsimd"
