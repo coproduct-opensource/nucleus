@@ -70,6 +70,40 @@ pub fn kernel_for(arch: &str) -> Option<Kernel> {
     }
 }
 
+/// Where a host gets the guest layer an imported image is booted with: the tar
+/// `cargo xtask guest-layer` writes (`/init`, the `nucleus-*` binaries, the CA
+/// bundle — see [`crate::guest_layout`]).
+///
+/// Two cases, not an `Option`: "no pin" is a decision (build it here), and it
+/// is spelled as one rather than as the absence of a digest (ADR 0007 B-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestLayerSource {
+    /// No published layer: the host builds one from this checkout. Its digest
+    /// is whatever that build prints, and nothing here vouches for it.
+    LocalBuild,
+    /// A published layer, checked against this digest (`sha-256:<hex>`, the
+    /// [`ArtifactDigest`](crate::ArtifactDigest) spelling) before it is used.
+    Pinned {
+        /// The layer tar's digest.
+        digest: &'static str,
+    },
+}
+
+/// The guest layer for aarch64 hosts. `LocalBuild` until a release publishes one.
+pub const GUEST_LAYER_AARCH64: GuestLayerSource = GuestLayerSource::LocalBuild;
+
+/// The guest layer for x86_64 hosts. `LocalBuild` until a release publishes one.
+pub const GUEST_LAYER_X86_64: GuestLayerSource = GuestLayerSource::LocalBuild;
+
+/// The guest layer for a Linux architecture name as `uname -m` reports it.
+pub fn guest_layer_for(arch: &str) -> Option<GuestLayerSource> {
+    match arch {
+        "aarch64" | "arm64" => Some(GUEST_LAYER_AARCH64),
+        "x86_64" | "amd64" => Some(GUEST_LAYER_X86_64),
+        _ => None,
+    }
+}
+
 /// The repository guest artifacts are published from.
 pub const RELEASE_REPO: &str = "coproduct-opensource/nucleus";
 
@@ -242,6 +276,25 @@ mod tests {
     fn the_two_kernels_are_different_objects() {
         assert_ne!(KERNEL_AARCH64.url, KERNEL_X86_64.url);
         assert_ne!(KERNEL_AARCH64.sha256, KERNEL_X86_64.sha256);
+    }
+
+    /// A pinned guest layer must be a digest the spec parser accepts, or the
+    /// check against it could never pass (or, worse, compare against garbage).
+    #[test]
+    fn guest_layer_pins_are_artifact_digests() {
+        for arch in ["aarch64", "x86_64"] {
+            match guest_layer_for(arch) {
+                Some(GuestLayerSource::LocalBuild) => {}
+                Some(GuestLayerSource::Pinned { digest }) => {
+                    assert!(
+                        crate::ArtifactDigest::parse(digest).is_ok(),
+                        "{arch}: {digest}"
+                    );
+                }
+                None => panic!("{arch} has no guest layer slot"),
+            }
+        }
+        assert_eq!(guest_layer_for("riscv64"), None);
     }
 
     #[test]
