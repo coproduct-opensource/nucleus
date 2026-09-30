@@ -2,6 +2,7 @@
 
 pub mod boot_budget;
 pub mod exit_report_auth;
+pub mod guest_layout;
 pub mod identity;
 mod rootfs_source;
 pub mod tier2_artifacts;

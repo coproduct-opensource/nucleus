@@ -13,6 +13,10 @@
 //! read as streams, the tree lives in memory (bounded by [`ImportLimits`]),
 //! and the only output is the caller's writer.
 //!
+//! [`AuthoredTree`] writes a tree the caller declares itself — the guest layer,
+//! which is made of exactly the paths an image is refused — through the same
+//! writer, so both come out normalized by one piece of code.
+//!
 //! # Decisions the crate encodes
 //!
 //! - **Tag-only references are refused** ([`PinnedReference`]): a tag can move.
@@ -51,6 +55,7 @@
     )
 )]
 
+mod authored;
 mod config;
 mod digest;
 mod emit;
@@ -64,6 +69,7 @@ mod reserved;
 
 use std::io::Write;
 
+pub use authored::{AuthorError, AuthoredTree};
 pub use config::{
     ImageUser, RunAs, UnresolvableUser, WorkloadConfig, WorkloadUserError, resolve_workload,
 };

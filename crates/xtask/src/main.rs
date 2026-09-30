@@ -51,6 +51,24 @@ enum Command {
     Grammar,
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
+    /// Build the nucleus guest layer — `/init`, the `nucleus-*` binaries, the CA
+    /// bundle, and no pod spec — as one deterministic tar, and print its digest as
+    /// `sha-256:<hex>`. See crates/xtask/src/guest_layer.rs.
+    GuestLayer {
+        /// Guest architecture.
+        #[arg(long, value_enum)]
+        arch: guest_layer::Arch,
+        /// Where to write the tar.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// How to cross-build the static musl binaries.
+        #[arg(long, value_enum, default_value = "zigbuild")]
+        builder: guest_layer::Builder,
+        /// Use binaries already built in this directory (a `target/<triple>/release`)
+        /// instead of building them.
+        #[arg(long)]
+        prebuilt: Option<std::path::PathBuf>,
+    },
     /// Score `nucleus-perf stress` against the bug zoo (crates/nucleus-perf/zoo): each
     /// defect patched into a scratch worktree at HEAD, every mode run against it.
     /// Exit 0 as the manifest says, 1 a mismatch, 2 could not look or zoo rot.
@@ -424,6 +442,7 @@ mod econ_boundary;
 mod fly_pools;
 mod gate_budget;
 mod gatehouse_pin;
+mod guest_layer;
 mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
@@ -451,6 +470,12 @@ mod workspace_members;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::GuestLayer {
+            arch,
+            out,
+            builder,
+            prebuilt,
+        } => guest_layer::run(&repo_root()?, arch, &out, builder, prebuilt),
         Command::StressZoo { only } => std::process::exit(stress_zoo::run(only.as_deref())?),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
@@ -644,7 +669,6 @@ fn policy_gate(base: &str, candidate: &str, changed_files: Option<&str>) -> Resu
 /// Matched by path suffix.
 const KEEP_AS_SHELL: &[&str] = &[
     "scripts/firecracker/guest-init.sh",
-    "scripts/firecracker/guest-net.sh",
     "scripts/firecracker/build-rootfs.sh",
     "scripts/firecracker/build-scratch.sh",
     "scripts/container/smoke-test.sh",

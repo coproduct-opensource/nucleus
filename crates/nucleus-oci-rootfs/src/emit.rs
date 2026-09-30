@@ -15,7 +15,7 @@ use tar::{EntryType, Header};
 
 use crate::digest::HashingWriter;
 use crate::error::ImportError;
-use crate::flatten::{Flattened, Meta, Node};
+use crate::flatten::{Flattened, Inode, Meta, Node};
 use crate::record::{FlattenReport, RootfsRecord};
 
 /// The mtime every emitted entry carries (the Unix epoch, as `SOURCE_DATE_EPOCH=0`).
@@ -41,11 +41,25 @@ impl Flattened {
             inodes,
             report,
         } = self;
+        let rootfs = write_tree(&tree, &inodes, out)?;
+        Ok(Emitted { rootfs, report })
+    }
+}
+
+/// Write `tree` as one normalized tar. The single writer behind both
+/// [`Flattened::emit`] and [`crate::AuthoredTree::emit`], so an imported image
+/// and the guest layer are normalized by the same code.
+pub(crate) fn write_tree<W: Write>(
+    tree: &BTreeMap<Vec<u8>, Node>,
+    inodes: &BTreeMap<u64, Inode>,
+    out: W,
+) -> Result<RootfsRecord, ImportError> {
+    {
         let emit_err = |source: io::Error| ImportError::Emit { source };
         let mut builder = tar::Builder::new(HashingWriter::new(out));
         let mut primary: BTreeMap<u64, &[u8]> = BTreeMap::new();
         let mut entries: u64 = 0;
-        for (path, node) in &tree {
+        for (path, node) in tree {
             match node {
                 Node::Dir(meta) => {
                     let mut name = path.clone();
@@ -94,13 +108,10 @@ impl Flattened {
         let hashing = builder.into_inner().map_err(emit_err)?;
         let (mut out, digest, bytes) = hashing.finish();
         out.flush().map_err(emit_err)?;
-        Ok(Emitted {
-            rootfs: RootfsRecord {
-                digest,
-                bytes,
-                entries,
-            },
-            report,
+        Ok(RootfsRecord {
+            digest,
+            bytes,
+            entries,
         })
     }
 }

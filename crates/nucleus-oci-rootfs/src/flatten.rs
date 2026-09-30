@@ -66,6 +66,17 @@ pub(crate) struct Inode {
     links: u64,
 }
 
+impl Inode {
+    /// A file linked from exactly one path.
+    pub(crate) fn single(meta: Meta, content: Vec<u8>) -> Self {
+        Self {
+            meta,
+            content,
+            links: 1,
+        }
+    }
+}
+
 /// One layer entry after classification, before it is applied.
 enum Op {
     Whiteout(Vec<u8>),
@@ -528,14 +539,7 @@ impl<'r> Flattener<'r> {
                     self.remove_subtree(&p);
                     let ino = self.next_inode;
                     self.next_inode = ino.saturating_add(1);
-                    self.inodes.insert(
-                        ino,
-                        Inode {
-                            meta,
-                            content,
-                            links: 1,
-                        },
-                    );
+                    self.inodes.insert(ino, Inode::single(meta, content));
                     self.tree.insert(p, Node::File(ino));
                 }
                 Op::Symlink(p, meta, target) => {

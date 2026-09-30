@@ -1,5 +1,4 @@
 use std::fs;
-use std::net::Ipv4Addr;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -7,6 +6,12 @@ use std::process::Command;
 mod identity;
 
 use nucleus_guest_init::boot::{self, Boot, MountSpec, SealedProof};
+use nucleus_guest_init::fence::{self, Fenced};
+use nucleus_guest_init::net::{self, NetConfig};
+use nucleus_spec::guest_layout::{
+    self, APPROVAL_SECRET, AUDIT_PATH_FILE, AUTH_SECRET, CaBundle, EGRESS_PROBE_BIN,
+    FALLBACK_POD_SPEC, POD_SPEC_PATH, PROXY_BIN, SANDBOX_TOKEN, WORK_DIR,
+};
 
 #[cfg(target_os = "linux")]
 use nix::mount::{MsFlags, mount};
@@ -52,8 +57,6 @@ const CACHE_UPPER: &str = "/work/.cache-upper";
 const CACHE_WORK: &str = "/work/.cache-work";
 const CACHE_MERGED: &str = "/cache";
 
-const POD_SPEC_PATH: &str = "/etc/nucleus/pod.yaml";
-const FALLBACK_POD_SPEC: &str = "/pod.yaml";
 /// Where a spec fetched from the HOST is written.
 ///
 /// `/run` and not `/etc/nucleus`: a real pod's rootfs is READ-ONLY, so writing
@@ -67,10 +70,9 @@ const FALLBACK_POD_SPEC: &str = "/pod.yaml";
 /// `/run` is a load-bearing tmpfs mounted well before the barrier, so it is
 /// writable by the time the spec arrives and gone when the pod does.
 const HOST_POD_SPEC: &str = "/run/nucleus/pod.yaml";
-const PROXY_BIN: &str = "/usr/local/bin/nucleus-tool-proxy";
-/// The egress backstop probe, baked into the rootfs beside the proxy.
-const EGRESS_PROBE_BIN: &str = "/usr/local/bin/nucleus-egress-probe";
-const GUEST_NET_SH: &str = "/usr/local/bin/guest-net.sh";
+/// Where the resolver config is written when the rootfs is read-only, and
+/// bind-mounted over `/etc/resolv.conf` from.
+const RUN_RESOLV_CONF: &str = "/run/nucleus/resolv.conf";
 
 /// Mount the per-pod scratch at `/work`, if this pod has one.
 ///
@@ -296,8 +298,8 @@ fn run() -> Result<(), String> {
         let _ = umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
     }
 
-    ensure_dir("/etc/nucleus")?;
-    ensure_dir("/work")?;
+    ensure_dir(guest_layout::ETC_NUCLEUS)?;
+    ensure_dir(WORK_DIR)?;
 
     // Booting → Mounted: every load-bearing mount succeeds or the boot stops
     // with a named error (#2589). The typestate carries the boot from here to
@@ -337,20 +339,30 @@ fn run() -> Result<(), String> {
         }
     }
 
-    let net_config = parse_net_config("/proc/cmdline");
-
-    if let Some(net) = net_config.as_ref() {
-        configure_network(net);
-    }
-
-    if (Path::new("/etc/nucleus/net.allow").exists() || Path::new("/etc/nucleus/net.deny").exists())
-        && Path::new(GUEST_NET_SH).exists()
-    {
-        let _ = Command::new(GUEST_NET_SH).status();
-    }
-
     // Read secrets from kernel command line (preferred) or files (legacy/fallback)
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
+
+    let net_config = net::parse_cmdline(&cmdline);
+
+    if let Some(net) = net_config.as_ref() {
+        timed("network", || configure_network(net));
+    }
+
+    // The in-guest egress fence, from the guest layer's own policy files and
+    // nothing the image supplies. Before the egress probe (spawned at exec) and
+    // before any workload exists, so neither ever sees an unfenced guest.
+    //
+    // FATAL when a policy file exists and cannot be enforced: the image builder
+    // asked for this fence, and a guest that boots without it while looking
+    // fenced is the outcome the whole layer exists to rule out. The script this
+    // replaces failed silently, and on this repository's rootfs installed
+    // nothing at all (see `fence`).
+    match timed("egress_fence", fence::install_from_files).map_err(|e| e.to_string())? {
+        Fenced::NoPolicy => {}
+        Fenced::Installed { allow, deny } => {
+            eprintln!("egress fence installed: {allow} allow, {deny} deny, default DROP");
+        }
+    }
 
     // Fetch SPIFFE identity from host if configured
     let workload_api_port = identity::parse_workload_api_port(&cmdline);
@@ -625,8 +637,8 @@ fn run() -> Result<(), String> {
     // unreachable there, so requiring a key would put a world-readable secret
     // on /proc/cmdline for nothing. `enforce_hmac_key_quality` in the proxy
     // still refuses an empty key on every transport that can reach that tier.
-    let auth_secret = parse_cmdline_secret(&cmdline, "nucleus.auth_secret")
-        .or_else(|| read_secret("/etc/nucleus/auth.secret"));
+    let auth_secret =
+        parse_cmdline_secret(&cmdline, "nucleus.auth_secret").or_else(|| read_secret(AUTH_SECRET));
 
     // Signature-based approvals: the node delivers the Ed25519 PUBLIC half of
     // its approval signing key as `nucleus.approval_pubkeys`. A verification
@@ -641,7 +653,7 @@ fn run() -> Result<(), String> {
     }
 
     let approval_secret = parse_cmdline_secret(&cmdline, "nucleus.approval_secret")
-        .or_else(|| read_secret("/etc/nucleus/approval.secret"));
+        .or_else(|| read_secret(APPROVAL_SECRET));
     if approval_pubkeys.is_none() && approval_secret.is_none() {
         // Fail HERE, near the cause: the tool-proxy would refuse to start
         // anyway (its approval endpoint would be unauthenticatable), but its
@@ -681,7 +693,7 @@ fn run() -> Result<(), String> {
     }
 
     if let Some(sandbox_token) = parse_cmdline_secret(&cmdline, "nucleus.sandbox_token")
-        .or_else(|| read_secret("/etc/nucleus/sandbox.token"))
+        .or_else(|| read_secret(SANDBOX_TOKEN))
     {
         export!("NUCLEUS_SANDBOX_TOKEN", sandbox_token);
     }
@@ -750,6 +762,25 @@ fn run() -> Result<(), String> {
     // the region remains here: per-fleet configuration, not a secret.
     if let Some(val) = parse_cmdline_secret(&cmdline, "nucleus.aws_default_region") {
         export!("AWS_DEFAULT_REGION", val);
+    }
+
+    // The TLS stack the tool-proxy builds reads its roots from `SSL_CERT_FILE`
+    // (rustls-native-certs). Pointing it at the guest layer's bundle is what
+    // makes the runtime independent of whether the IMAGE ships a CA store: the
+    // proxy is PID 1 after the exec below, and an HTTPS client it cannot build
+    // takes the whole microVM with it. Scoped to the proxy by `child_env`, and
+    // never reaching the workload, whose environment is declared, not inherited.
+    match CaBundle::resolve(|p| Path::new(p).exists()) {
+        CaBundle::Absent => eprintln!(
+            "no CA bundle at {} or {}; the tool-proxy cannot build an HTTPS client",
+            guest_layout::CA_BUNDLE,
+            guest_layout::LEGACY_CA_BUNDLE
+        ),
+        found @ (CaBundle::GuestLayer | CaBundle::LegacyRootfs) => {
+            if let Some(path) = found.path() {
+                export!("SSL_CERT_FILE", path);
+            }
+        }
     }
 
     let audit_path = resolve_audit_path();
@@ -1051,7 +1082,7 @@ fn read_secret(path: &str) -> Option<String> {
 }
 
 fn resolve_audit_path() -> String {
-    if let Some(path) = read_secret("/etc/nucleus/audit.path") {
+    if let Some(path) = read_secret(AUDIT_PATH_FILE) {
         return path;
     }
     if is_writable("/work") {
@@ -1066,7 +1097,7 @@ fn build_boot_report(
     net_config: Option<&NetConfig>,
     audit_path: &str,
 ) -> Option<String> {
-    let net_addr = net_config.map(|cfg| cfg.addr.as_str()).unwrap_or("");
+    let net_addr = net_config.map(NetConfig::cidr).unwrap_or_default();
     let net_gw = net_config
         .and_then(|cfg| cfg.gw)
         .map(|v| v.to_string())
@@ -1075,9 +1106,9 @@ fn build_boot_report(
         .and_then(|cfg| cfg.dns)
         .map(|v| v.to_string())
         .unwrap_or_default();
-    let auth_secret = Path::new("/etc/nucleus/auth.secret").exists();
-    let approval_secret = Path::new("/etc/nucleus/approval.secret").exists();
-    let sandbox_token = Path::new("/etc/nucleus/sandbox.token").exists();
+    let auth_secret = Path::new(AUTH_SECRET).exists();
+    let approval_secret = Path::new(APPROVAL_SECRET).exists();
+    let sandbox_token = Path::new(SANDBOX_TOKEN).exists();
 
     Some(format!(
         "{{\"spec_path\":\"{spec_path}\",\"net_addr\":\"{net_addr}\",\"net_gw\":\"{net_gw}\",\"net_dns\":\"{net_dns}\",\"audit_path\":\"{audit_path}\",\"auth_secret\":{auth_secret},\"approval_secret\":{approval_secret},\"sandbox_token\":{sandbox_token}}}"
@@ -1133,7 +1164,8 @@ fn is_writable(dir: &str) -> bool {
 /// makes a slow-but-successful connect look like a denial — PASS is the
 /// dangerous direction here.
 fn attest_egress_confinement() {
-    let spawned = Command::new(EGRESS_PROBE_BIN)
+    let spawned = GuestBin::EgressProbe
+        .command()
         // Inherit stderr so the verdict lands on the console the node captures.
         .env("NUCLEUS_EGRESS_PROBE_TIMEOUT_MS", "150")
         .spawn();
@@ -1141,6 +1173,35 @@ fn attest_egress_confinement() {
         // Do NOT invent a verdict. The host fails closed on a missing PASS, so
         // saying nothing is the safe outcome; this only explains the absence.
         eprintln!("nucleus-egress-probe could not start: {err}");
+    }
+}
+
+/// The only programs PID 1 starts: the guest layer's own.
+///
+/// guest-init used to run `ip` three times and `/bin/sh guest-net.sh` once —
+/// programs the IMAGE supplied, as root, before the rootfs was sealed. Both are
+/// now done in-process (`net`, `fence`), and what remains is closed over this
+/// enum: there is no way to name another program from here, and
+/// `the_only_programs_pid1_starts_are_the_guest_layers` fails the build's tests
+/// if a `Command::new` appears anywhere else.
+#[derive(Debug, Clone, Copy)]
+enum GuestBin {
+    /// The mediating runtime, exec'd in place of PID 1.
+    Proxy,
+    /// The egress confinement probe, spawned beside it.
+    EgressProbe,
+}
+
+impl GuestBin {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Proxy => PROXY_BIN,
+            Self::EgressProbe => EGRESS_PROBE_BIN,
+        }
+    }
+
+    fn command(self) -> Command {
+        Command::new(self.path())
     }
 }
 
@@ -1163,7 +1224,8 @@ fn exec_proxy(
     // Scoped to this child: see `child_env` above.
     attest_egress_confinement();
 
-    Command::new(PROXY_BIN)
+    GuestBin::Proxy
+        .command()
         .arg("--spec")
         .arg(spec_path)
         .arg("--art12-log")
@@ -1172,82 +1234,66 @@ fn exec_proxy(
         .exec()
 }
 
-#[derive(Debug)]
-struct NetConfig {
-    addr: String,
-    gw: Option<Ipv4Addr>,
-    dns: Option<Ipv4Addr>,
-}
-
-fn parse_net_config(cmdline_path: &str) -> Option<NetConfig> {
-    let cmdline = fs::read_to_string(cmdline_path).ok()?;
-    for token in cmdline.split_whitespace() {
-        if let Some(value) = token.strip_prefix("nucleus.net=") {
-            return parse_net_value(value);
-        }
-    }
-    None
-}
-
-fn parse_net_value(value: &str) -> Option<NetConfig> {
-    let mut parts = value.split(',');
-    let addr = parts.next()?.trim();
-    if !is_addr_cidr(addr) {
-        return None;
-    }
-    let mut gw = None;
-    let mut dns = None;
-    for part in parts {
-        if let Some(val) = part.strip_prefix("gw=") {
-            gw = val.parse::<Ipv4Addr>().ok();
-        } else if let Some(val) = part.strip_prefix("dns=") {
-            dns = val.parse::<Ipv4Addr>().ok();
-        }
-    }
-    Some(NetConfig {
-        addr: addr.to_string(),
-        gw,
-        dns,
-    })
-}
-
-fn is_addr_cidr(value: &str) -> bool {
-    let mut parts = value.split('/');
-    let ip = parts.next().unwrap_or("");
-    let cidr = parts.next().unwrap_or("");
-    ip.parse::<Ipv4Addr>().is_ok() && cidr.parse::<u8>().is_ok()
-}
-
+/// Configure the guest interface from the node's `nucleus.net=` argument.
+///
+/// Best effort, as it always was: a pod whose network cannot be configured still
+/// has vsock, and the host fence still stands. But every failure is now said,
+/// with the step that failed, where the old `let _ = Command::new("ip")` calls
+/// said nothing -- and on the rootfs this repository builds there was never an
+/// `ip` to run, so every pod booted with `eth0` down.
 fn configure_network(config: &NetConfig) {
-    if !command_exists("ip") {
-        eprintln!("ip not found; skipping network config");
-        return;
-    }
-
-    let _ = Command::new("ip")
-        .args(["link", "set", "eth0", "up"])
-        .status();
-    let _ = Command::new("ip")
-        .args(["addr", "add", &config.addr, "dev", "eth0"])
-        .status();
-    if let Some(gw) = config.gw {
-        let _ = Command::new("ip")
-            .args(["route", "add", "default", "via", &gw.to_string()])
-            .status();
+    #[cfg(target_os = "linux")]
+    match net::configure(config) {
+        Ok(()) => eprintln!(
+            "network configured: {} on {}",
+            config.cidr(),
+            net::GUEST_IFACE
+        ),
+        Err(err) => eprintln!("{err}; continuing without a guest network"),
     }
     if let Some(dns) = config.dns {
-        let _ = fs::write("/etc/resolv.conf", format!("nameserver {dns}\n"));
+        write_resolv_conf(&net::resolv_conf(dns));
     }
 }
 
-fn command_exists(name: &str) -> bool {
-    let mut cmd = Command::new(name);
-    if name == "ip" {
-        cmd.arg("-V");
-    } else {
-        cmd.arg("--version");
+/// Write `/etc/resolv.conf`, falling back to a tmpfs copy bind-mounted over it.
+///
+/// A real pod's rootfs drive is read-only, so the direct write fails there. The
+/// copy lives on `/run` (tmpfs, mounted before this runs) and is bound over the
+/// image's file; an image with no `/etc/resolv.conf` at all gets the direct
+/// write or nothing, since a bind mount needs a target.
+///
+/// Mode 0644 explicitly: `run()` sets umask 077, so a freshly created file would
+/// be readable by root alone and the workload, which runs unprivileged, would
+/// resolve nothing.
+fn write_resolv_conf(body: &str) {
+    const ETC_RESOLV_CONF: &str = "/etc/resolv.conf";
+    let write = |path: &str| -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(path, body)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644))
+    };
+    let direct = match write(ETC_RESOLV_CONF) {
+        Ok(()) => return,
+        Err(err) => err,
+    };
+    let fallback = Path::new(RUN_RESOLV_CONF)
+        .parent()
+        .map_or(Ok(()), fs::create_dir_all)
+        .and_then(|()| write(RUN_RESOLV_CONF))
+        .map_err(|e| e.to_string())
+        .and_then(|()| {
+            mount_fs(
+                RUN_RESOLV_CONF,
+                ETC_RESOLV_CONF,
+                "none",
+                MsFlags::MS_BIND,
+                None,
+            )
+        });
+    if let Err(err) = fallback {
+        eprintln!("resolver not configured: {ETC_RESOLV_CONF}: {direct}; tmpfs bind: {err}");
     }
-    cmd.output().is_ok()
 }
 
 /// Parse a secret from kernel command line (format: key=value)
@@ -1265,6 +1311,55 @@ fn parse_cmdline_secret(cmdline: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// PID 1 runs nothing from the image: every `Command::new` in this crate
+    /// is the one inside `GuestBin::command`, plus the parity test's reference
+    /// tool, which runs on a developer's host and never in a guest.
+    ///
+    /// Driven red by putting `Command::new("ip")` back into `configure_network`.
+    #[test]
+    fn the_only_programs_pid1_starts_are_the_guest_layers() {
+        const SOURCES: [(&str, &str); 6] = [
+            ("main.rs", include_str!("main.rs")),
+            ("identity.rs", include_str!("identity.rs")),
+            ("lib.rs", include_str!("lib.rs")),
+            ("boot.rs", include_str!("boot.rs")),
+            ("net.rs", include_str!("net.rs")),
+            ("fence.rs", include_str!("fence.rs")),
+        ];
+        // Spelled in pieces so this test's own text is not a match.
+        let needle = ["Command", "::new("].concat();
+        let allowed = [
+            ("main.rs", format!("{needle}self.path())")),
+            (
+                "fence.rs",
+                format!("let out = std::process::{needle}\"iptables-legacy-save\")"),
+            ),
+        ];
+        let mut found = Vec::new();
+        for (file, text) in SOURCES {
+            for line in text.lines().map(str::trim) {
+                if line.contains(&needle) && !line.starts_with("//") {
+                    found.push((file, line.to_string()));
+                }
+            }
+        }
+        assert_eq!(
+            found,
+            allowed.to_vec(),
+            "a new program is started from PID 1"
+        );
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".rs"))
+            .collect();
+        on_disk.sort();
+        let mut scanned: Vec<String> = SOURCES.iter().map(|(f, _)| (*f).to_string()).collect();
+        scanned.sort();
+        assert_eq!(on_disk, scanned, "a source file is not scanned");
+    }
+
     #[test]
     fn is_mountpoint_root_yes_fresh_dir_no() {
         assert!(super::is_mountpoint("/"));
