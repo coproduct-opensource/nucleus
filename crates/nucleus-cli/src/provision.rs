@@ -661,25 +661,24 @@ pub fn mtls_client_if_provisioned() -> Result<Option<reqwest::Client>> {
 }
 
 pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
-    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
-
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let identity = reqwest::Identity::from_pem(&identity_pem)
-        .context("failed to build client identity from the provisioned CLI cert/key")?;
-    let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem)
-        .context("failed to parse the provisioned trust bundle")?;
-
-    // Same reasoning as `node.rs::create_client`: `tls_certs_only` pins the
-    // trust store to ONLY the node's own CA, and hostname verification is
-    // skipped because the node's self-issued SVID carries a SPIFFE URI SAN,
-    // never a DNS or IP SAN.
+    let tls = provisioned_node_tls()?;
     reqwest::Client::builder()
-        .identity(identity)
         .timeout(std::time::Duration::from_secs(30))
-        .tls_certs_only(roots)
-        .danger_accept_invalid_hostnames(true)
+        .tls_backend_preconfigured(tls)
         .build()
         .context("failed to build mTLS client")
+}
+
+/// The TLS configuration both provisioned clients use: the provisioned CLI
+/// identity, the provisioned trust bundle, and — because the node's
+/// certificate names it by SPIFFE ID rather than hostname — acceptance of
+/// exactly the node in the trust domain that identity belongs to. See
+/// `nucleus_identity::node_tls`.
+fn provisioned_node_tls() -> Result<rustls::ClientConfig> {
+    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem)
+        .context("failed to build the node TLS configuration from the provisioned identity")
 }
 
 /// The `reqwest::blocking` twin of [`mtls_client_from_provisioned_identity`],
@@ -690,19 +689,10 @@ pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
 /// wrap the call (and every use of the returned client) in
 /// `tokio::task::block_in_place`, as `twosafety_boot::execute` does.
 pub fn mtls_blocking_client_from_provisioned_identity() -> Result<reqwest::blocking::Client> {
-    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
-
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let identity = reqwest::Identity::from_pem(&identity_pem)
-        .context("failed to build client identity from the provisioned CLI cert/key")?;
-    let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem)
-        .context("failed to parse the provisioned trust bundle")?;
-
+    let tls = provisioned_node_tls()?;
     reqwest::blocking::Client::builder()
-        .identity(identity)
         .timeout(std::time::Duration::from_secs(30))
-        .tls_certs_only(roots)
-        .danger_accept_invalid_hostnames(true)
+        .tls_backend_preconfigured(tls)
         .build()
         .context("failed to build mTLS client")
 }
@@ -1296,12 +1286,10 @@ mod tests {
         let bundle_pem = std::fs::read(&paths.trust_bundle).unwrap();
 
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let identity = reqwest::Identity::from_pem(&identity_pem).unwrap();
-        let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem).unwrap();
+        let tls =
+            nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem).unwrap();
         let client = reqwest::Client::builder()
-            .identity(identity)
-            .tls_certs_only(roots)
-            .danger_accept_invalid_hostnames(true)
+            .tls_backend_preconfigured(tls)
             .build()
             .unwrap();
 

@@ -1363,12 +1363,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
             .into_bytes();
-        let identity = reqwest::Identity::from_pem(&identity_pem).unwrap();
-        let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem).unwrap();
+        let tls =
+            nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem).unwrap();
         let client = reqwest::Client::builder()
-            .identity(identity)
-            .tls_certs_only(roots)
-            .danger_accept_invalid_hostnames(true)
+            .tls_backend_preconfigured(tls)
             .build()
             .unwrap();
 

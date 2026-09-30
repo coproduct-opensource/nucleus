@@ -7275,6 +7275,7 @@ dependencies = [
  "nucleus-creditworthiness",
  "nucleus-econ-kernels",
  "nucleus-econ-types",
+ "nucleus-identity",
  "nucleus-permission-market",
  "nucleus-provenance-memory",
  "nucleus-recompute",

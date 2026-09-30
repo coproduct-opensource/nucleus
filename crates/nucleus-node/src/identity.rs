@@ -230,7 +230,7 @@ impl IdentityManager {
     /// with `AuthorizationPolicy`'s orchestrator/CI-CD prefixes in `auth.rs`,
     /// which describe CLIENTS this node accepts, not the node's own identity.
     pub fn node_identity(&self) -> Identity {
-        Identity::new(&self.trust_domain, "system", "node")
+        Identity::node(&self.trust_domain).expect("the manager's trust domain is valid")
     }
 
     /// Fetches (minting and caching on first call) the node's own workload
