@@ -188,6 +188,8 @@ impl Verdict {
 /// warning policy (caught by `cargo hack --each-feature`).
 #[cfg(feature = "crypto")]
 mod declassify_authority;
+#[cfg(feature = "crypto")]
+pub use declassify_authority::VerifiedDeclassification;
 /// Reason an operation was denied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
