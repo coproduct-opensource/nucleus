@@ -5,8 +5,9 @@ mod support;
 use std::path::Path;
 
 use nucleus_oci_rootfs::{
-    Arch, BlobRole, BlobSource, Compression, ImportError, ImportLimits, Imported, LayoutDir,
-    LayoutFile, OciArchive, PinnedReference, Sha256Digest, import,
+    Arch, BlobRole, BlobSource, Compression, ImageUser, ImportError, ImportLimits, Imported,
+    LayoutDir, LayoutFile, OciArchive, PinnedReference, Sha256Digest, UnresolvableUser,
+    WorkloadUserError, import,
 };
 use support::*;
 
@@ -81,8 +82,9 @@ fn layout_dir_imports_with_record_and_workload() {
         rec
     );
 
-    let wl = &imported.workload;
-    assert_eq!((wl.uid, wl.gid), (1000, 1000));
+    let wl = imported.workload();
+    let run_as = wl.for_workload().unwrap();
+    assert_eq!((run_as.uid(), run_as.gid()), (1000, 1000));
     assert_eq!(wl.entrypoint, ["/usr/bin/agent"]);
     assert_eq!(wl.cmd, ["--serve"]);
     assert_eq!(wl.working_dir.as_deref(), Some("/work"));
@@ -116,10 +118,8 @@ fn oci_archive_imports_identically_to_its_directory() {
     .unwrap();
     assert_eq!(dir_out, arch_out);
     assert_eq!(from_dir.record, from_archive.record);
-    assert_eq!(
-        (from_archive.workload.uid, from_archive.workload.gid),
-        (1000, 10)
-    );
+    let run_as = from_archive.workload().for_workload().unwrap();
+    assert_eq!((run_as.uid(), run_as.gid()), (1000, 10));
 }
 
 #[test]
@@ -471,17 +471,27 @@ fn reserved_path_in_an_image_is_refused_and_nothing_is_written() {
 
 // ── config user resolution ──────────────────────────────────────────────
 
-fn user_result(user: &str) -> Result<(u32, u32), ImportError> {
+/// Import an image whose config sets `User` to `user`; the import must succeed
+/// whatever the user is, and the record carries what it resolved to.
+fn image_user(user: &str) -> ImageUser {
     let dir = tempfile::tempdir().unwrap();
     let w = write_image(dir.path(), &[LayerBlob::plain(base_layer())], user);
     let (r, out) = run(dir.path(), &w.manifest, Arch::Amd64);
-    match r {
-        Ok(i) => Ok((i.workload.uid, i.workload.gid)),
-        Err(e) => {
-            assert!(out.is_empty(), "a refused workload still wrote a rootfs");
-            Err(e)
-        }
-    }
+    let imported = r.unwrap_or_else(|e| panic!("{user:?}: import refused: {e}"));
+    assert!(!out.is_empty(), "{user:?}: no rootfs written");
+    // import.json carries the outcome and reads back identically.
+    let json = serde_json::to_string(&imported.record).unwrap();
+    let back: nucleus_oci_rootfs::ImportRecord = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, imported.record);
+    imported.record.workload.user
+}
+
+fn user_result(user: &str) -> Result<(u32, u32), WorkloadUserError> {
+    let dir = tempfile::tempdir().unwrap();
+    let w = write_image(dir.path(), &[LayerBlob::plain(base_layer())], user);
+    let (r, _) = run(dir.path(), &w.manifest, Arch::Amd64);
+    let run_as = r.unwrap().workload().for_workload()?;
+    Ok((run_as.uid(), run_as.gid()))
 }
 
 #[test]
@@ -492,35 +502,88 @@ fn config_user_resolution() {
     assert_eq!(user_result("1000:10").unwrap(), (1000, 10));
     assert_eq!(user_result("app:wheel").unwrap(), (1000, 10));
     assert_eq!(user_result("4242:4242").unwrap(), (4242, 4242));
+    assert!(
+        matches!(image_user("1000:1000"), ImageUser::Usable { run_as }
+        if (run_as.uid(), run_as.gid()) == (1000, 1000))
+    );
 }
 
 #[test]
-fn root_workload_is_refused() {
+fn root_image_imports_and_records_root() {
+    for user in ["", "root", "0", "0:0", "root:app", "root:nogroup"] {
+        assert_eq!(
+            image_user(user),
+            ImageUser::Root {
+                user: user.to_owned()
+            },
+            "{user:?}"
+        );
+    }
+}
+
+#[test]
+fn root_image_user_is_refused_as_a_workload() {
     for user in ["", "root", "0", "0:0", "root:app"] {
         let r = user_result(user);
         assert!(
-            matches!(r, Err(ImportError::RootWorkload { .. })),
+            matches!(r, Err(WorkloadUserError::Root { .. })),
             "{user:?}: {r:?}"
         );
     }
 }
 
 #[test]
-fn absent_user_or_group_is_refused() {
+fn unresolvable_user_imports_and_records_why() {
+    let cases = [
+        (
+            "nobody",
+            UnresolvableUser::UserNotFound {
+                user: "nobody".into(),
+            },
+        ),
+        (
+            "app:nogroup",
+            UnresolvableUser::GroupNotFound {
+                group: "nogroup".into(),
+            },
+        ),
+        (
+            "4242",
+            UnresolvableUser::NumericUserWithoutGroup { uid: 4242 },
+        ),
+        ("app:", UnresolvableUser::Malformed),
+        (":app", UnresolvableUser::Malformed),
+    ];
+    for (user, reason) in cases {
+        assert_eq!(
+            image_user(user),
+            ImageUser::Unresolvable {
+                user: user.to_owned(),
+                reason,
+            },
+            "{user:?}"
+        );
+    }
+}
+
+#[test]
+fn unresolvable_user_is_refused_as_a_workload() {
+    for user in ["nobody", "app:nogroup", "4242", "app:"] {
+        let r = user_result(user);
+        assert!(
+            matches!(r, Err(WorkloadUserError::Unresolvable { .. })),
+            "{user:?}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn a_recorded_run_as_cannot_be_root() {
+    let forged = r#"{"status":"usable","run_as":{"uid":0,"gid":0}}"#;
+    assert!(serde_json::from_str::<ImageUser>(forged).is_err());
+    let ok = r#"{"status":"usable","run_as":{"uid":1000,"gid":1000}}"#;
     assert!(matches!(
-        user_result("nobody"),
-        Err(ImportError::UserNotFound { .. })
-    ));
-    assert!(matches!(
-        user_result("app:nogroup"),
-        Err(ImportError::GroupNotFound { .. })
-    ));
-    assert!(matches!(
-        user_result("4242"),
-        Err(ImportError::NumericUserWithoutGroup { uid: 4242 })
-    ));
-    assert!(matches!(
-        user_result("app:"),
-        Err(ImportError::MalformedUser { .. })
+        serde_json::from_str::<ImageUser>(ok).unwrap(),
+        ImageUser::Usable { .. }
     ));
 }

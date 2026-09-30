@@ -176,4 +176,6 @@ pub struct ImportRecord {
     pub limits: ImportLimits,
     /// The emitted tar.
     pub rootfs: RootfsRecord,
+    /// The image's process, recorded as data, and what its `User` resolved to.
+    pub workload: crate::WorkloadConfig,
 }
