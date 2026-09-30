@@ -505,7 +505,7 @@ Documented in [`SECURITY_TODO.md`](docs/SECURITY_TODO.md) and [`docs/production-
 ```bash
 cargo build --workspace
 cargo test --workspace
-make demo              # taint → block → receipt → compartment switch
+just flow-demo         # taint → block → receipt → compartment switch
 ```
 
 ---

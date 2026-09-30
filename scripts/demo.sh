@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Nucleus demo: taint -> block -> algebraic laws -> delegation
-# Run: make demo (or ./scripts/demo.sh)
+# Run: just flow-demo (or ./scripts/demo.sh)
 set -euo pipefail
 
 BOLD='\033[1m'

@@ -278,6 +278,26 @@ risc0-zkvm = "3.0"
 tonic-prost-build = "0.14"
 protoc-bin-vendored = "3.2"
 
+# Cross-compilation configuration for `cross build` (release.yml), read by
+# cross from the workspace manifest (formerly a root Cross.toml).
+# See: https://github.com/cross-rs/cross/blob/main/docs/config_file.md
+[workspace.metadata.cross.build.env]
+passthrough = ["CARGO_TERM_COLOR"]
+
+# aarch64-unknown-linux-musl (Apple Silicon Macs)
+[workspace.metadata.cross.target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:main"
+
+[workspace.metadata.cross.target.aarch64-unknown-linux-musl.env]
+passthrough = ["CARGO_TERM_COLOR"]
+
+# x86_64-unknown-linux-musl (Intel Macs)
+[workspace.metadata.cross.target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:main"
+
+[workspace.metadata.cross.target.x86_64-unknown-linux-musl.env]
+passthrough = ["CARGO_TERM_COLOR"]
+
 # The OIDC keystore file is passphrase-wrapped with scrypt at a pinned work
 # factor (see nucleus-oidc-provider/src/keystore/file.rs). scrypt's ROMix loop
 # is memory-hard by design; unoptimized it is ~30x slower, which turns every
