@@ -657,7 +657,6 @@ fn policy_gate(base: &str, candidate: &str, changed_files: Option<&str>) -> Resu
 /// Matched by path suffix.
 const KEEP_AS_SHELL: &[&str] = &[
     "scripts/firecracker/guest-init.sh",
-    "scripts/firecracker/guest-net.sh",
     "scripts/firecracker/build-rootfs.sh",
     "scripts/firecracker/build-scratch.sh",
     "scripts/container/smoke-test.sh",

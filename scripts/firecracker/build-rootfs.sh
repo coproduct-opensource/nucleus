@@ -84,8 +84,8 @@ Environment:
   OVERLAY_DIR             Directory copied over the rootfs after the nucleus
                           binaries, for a workload runtime or agent CLI. Opaque
                           to nucleus. Paths that would shadow the mediating
-                          runtime (/init, nucleus-tool-proxy, nucleus-net-probe,
-                          guest-net.sh) are restored and the attempt reported.
+                          runtime (/init, nucleus-tool-proxy, the probes) are
+                          restored and the attempt reported.
     --verify                Verify required binaries exist without building
     -h, --help              Show this help message
 
@@ -332,11 +332,6 @@ if [ ! -f "$GUEST_INIT_BIN" ] && [ ! -f "$INIT_SRC" ]; then
     exit 1
 fi
 
-if [ ! -f "$SCRIPT_DIR/guest-net.sh" ]; then
-    echo "Missing $SCRIPT_DIR/guest-net.sh" >&2
-    exit 1
-fi
-
 # Legacy secrets mode validation
 if [ "$LEGACY_SECRETS" = true ]; then
     if [ -z "$TOOL_PROXY_AUTH_SECRET" ]; then
@@ -510,9 +505,6 @@ else
     echo "Using shell script init (fallback)"
 fi
 
-# Copy network setup script
-cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
-
 # Overlay: an operator-supplied directory copied over the rootfs.
 #
 # This is how a workload gets into the image — a language runtime, an agent CLI,
@@ -539,8 +531,7 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
         "usr/local/bin/nucleus-tool-proxy" \
         "usr/local/bin/nucleus-net-probe" \
         "usr/local/bin/nucleus-workload-probe" \
-        "usr/local/bin/nucleus-egress-probe" \
-        "usr/local/bin/guest-net.sh"; do
+        "usr/local/bin/nucleus-egress-probe"; do
         if [ -e "$OVERLAY_DIR/$guarded" ]; then
             echo "WARNING: overlay shadowed $guarded; restoring the nucleus binary" >&2
         fi
@@ -556,7 +547,6 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
 # runs it as the workload); guarded like podlist so lanes that do not build it
 # skip cleanly rather than error.
 [ -f "$ADVERSARY_PROBE_BIN" ] && cp "$ADVERSARY_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
-    cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
     if [ -e "$OVERLAY_DIR/init" ]; then
         echo "WARNING: overlay shadowed /init; restoring the nucleus init" >&2
     fi
@@ -574,7 +564,6 @@ chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
 [ -f "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe" ] && chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
-chmod +x "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
 
 # Build ext4 image from directory
 rm -f "$ROOTFS_IMG"

@@ -134,12 +134,6 @@ def main [
         exit 1
     }
 
-    let guest_net_sh = ($script_dir | path join "guest-net.sh")
-    if not ($guest_net_sh | path exists) {
-        log-error $"Missing ($guest_net_sh)"
-        exit 1
-    }
-
     # Legacy secrets validation
     let tool_proxy_auth_secret = if ($auth_secret | is-not-empty) { $auth_secret } else { ($env.TOOL_PROXY_AUTH_SECRET? | default "") }
     let approval_secret_val = if ($approval_secret | is-not-empty) { $approval_secret } else { ($env.APPROVAL_SECRET? | default "") }
@@ -235,15 +229,11 @@ def main [
         log-info "Using shell script init (fallback)"
     }
 
-    # Copy network setup script
-    cp $guest_net_sh ($rootfs_dir | path join "usr/local/bin/guest-net.sh")
-
     # Set executable permissions
     ^chmod +x ($rootfs_dir | path join "init")
     ^chmod +x ($rootfs_dir | path join "usr/local/bin/nucleus-tool-proxy")
     ^chmod +x ($rootfs_dir | path join "usr/local/bin/nucleus-net-probe")
     ^chmod +x ($rootfs_dir | path join "usr/local/bin/nucleus-workload-probe")
-    ^chmod +x ($rootfs_dir | path join "usr/local/bin/guest-net.sh")
 
     # Build ext4 image from directory
     rm -f $rootfs_img
