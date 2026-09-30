@@ -382,38 +382,6 @@ pub enum ImportError {
         path: String,
     },
 
-    // ── the workload ─────────────────────────────────────────────────────
-    /// The image would run its workload as uid 0 (explicitly, or by leaving `User` unset).
-    #[error("image user `{user}` resolves to uid 0; a root workload is refused")]
-    RootWorkload {
-        /// The config's `User`, empty if unset.
-        user: String,
-    },
-    /// A `User` that does not parse as `user[:group]`.
-    #[error("image user `{user}` is malformed")]
-    MalformedUser {
-        /// The config's `User`.
-        user: String,
-    },
-    /// A named user absent from the flattened `/etc/passwd`.
-    #[error("user `{user}` is not in the image's /etc/passwd")]
-    UserNotFound {
-        /// The name.
-        user: String,
-    },
-    /// A named group absent from the flattened `/etc/group`.
-    #[error("group `{group}` is not in the image's /etc/group")]
-    GroupNotFound {
-        /// The name.
-        group: String,
-    },
-    /// A numeric uid with no group given and no `/etc/passwd` entry to take one from.
-    #[error("uid {uid} has no /etc/passwd entry and no explicit group; refusing to guess a gid")]
-    NumericUserWithoutGroup {
-        /// The uid.
-        uid: u32,
-    },
-
     // ── output ───────────────────────────────────────────────────────────
     /// Writing the flattened tar failed.
     #[error("writing the rootfs tar: {source}")]

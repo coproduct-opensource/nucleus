@@ -24,7 +24,10 @@
 //! - **uid/gid are preserved exactly**; user and group *names* are dropped.
 //! - **Reserved guest paths come from the caller** ([`ReservedPaths`]). This
 //!   crate has no copy of the table, so it cannot drift from the guest layout.
-//! - **A root workload is refused** ([`resolve_workload`]).
+//! - **A root image user is reported, not refused** ([`ImageUser`]). Most base
+//!   images run as root; that matters only to a caller that runs the image's
+//!   own process as the workload, and [`WorkloadConfig::for_workload`] is where
+//!   uid 0 and an unresolvable user are refused.
 //!
 //! # What this crate does not do
 //!
@@ -61,7 +64,9 @@ mod reserved;
 
 use std::io::Write;
 
-pub use config::{WorkloadConfig, resolve_workload};
+pub use config::{
+    ImageUser, RunAs, UnresolvableUser, WorkloadConfig, WorkloadUserError, resolve_workload,
+};
 pub use digest::{PinnedReference, Sha256Digest};
 pub use emit::{Emitted, NORMALIZED_MTIME};
 pub use error::{BlobRole, ImportError};
@@ -112,8 +117,13 @@ impl std::fmt::Display for Arch {
 pub struct Imported {
     /// What was imported, and everything changed on the way.
     pub record: ImportRecord,
-    /// The workload the image describes, its user resolved.
-    pub workload: WorkloadConfig,
+}
+
+impl Imported {
+    /// The workload the image describes, its user resolved (held in the record).
+    pub fn workload(&self) -> &WorkloadConfig {
+        &self.record.workload
+    }
 }
 
 /// Import the image `reference` pins from `source` for `linux/<arch>`, writing
@@ -139,7 +149,7 @@ pub fn import<W: Write>(
         layout::apply_layer(source, index, layer, &mut flattener)?;
     }
     let flattened = flattener.finish()?;
-    let workload = resolve_workload(&resolved.config, &flattened)?;
+    let workload = resolve_workload(&resolved.config, &flattened);
     let emitted = flattened.emit(out)?;
     let Emitted { rootfs, report } = emitted;
     Ok(Imported {
@@ -166,7 +176,7 @@ pub fn import<W: Write>(
             report,
             limits,
             rootfs,
+            workload,
         },
-        workload,
     })
 }
