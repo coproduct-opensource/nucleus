@@ -74,8 +74,6 @@ mod effect_footprint;
 mod envelope_frame;
 mod federated_credential;
 mod guest_socket;
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-mod host_requirements;
 mod lifecycle;
 mod net;
 mod posture;
@@ -90,6 +88,8 @@ mod trust_gate;
 mod upstreams;
 mod vsock_bridge;
 
+#[cfg(target_os = "linux")]
+use nucleus_microvm_host::probe as host_requirements;
 pub use nucleus_proto::nucleus_node as proto;
 
 use proto::node_service_server::{NodeService, NodeServiceServer};

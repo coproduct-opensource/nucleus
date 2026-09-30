@@ -49,7 +49,7 @@ use std::path::Path;
 
 /// Why a read-back did not produce bytes.
 #[derive(Debug)]
-pub(crate) enum ReadbackError {
+pub enum ReadbackError {
     /// `debugfs` is not installed. Named rather than folded into "no report":
     /// a host that cannot look is not a pod that produced nothing, and
     /// reporting the first as the second is the vacuity ADR 0002 was written
@@ -99,7 +99,7 @@ const NOT_FOUND: &[&str] = &["File not found", "not found by ext2_lookup"];
 /// exited pod, and teardown preserves after the kill and before the jail is
 /// removed — and the image is scratch that teardown deletes, so replaying in
 /// place costs nothing and copying a multi-GiB image to spare it would.
-pub(crate) fn read_file(image: &Path, guest_path: &str) -> Result<Vec<u8>, ReadbackError> {
+pub fn read_file(image: &Path, guest_path: &str) -> Result<Vec<u8>, ReadbackError> {
     replay_journal(image)?;
     let out_dir =
         tempfile_dir().map_err(|e| ReadbackError::Failed(format!("staging directory: {e}")))?;
@@ -134,23 +134,85 @@ pub(crate) fn read_file(image: &Path, guest_path: &str) -> Result<Vec<u8>, Readb
     bytes
 }
 
+/// Classify an `e2fsck -E journal_only` exit. Pure, so the table is testable on a
+/// host without e2fsprogs.
+///
+/// 0, 1 and 2 are success. The code does NOT say whether a replay happened:
+/// measured with e2fsprogs 1.47.0, a journal holding a committed transaction is
+/// replayed ("recovering journal") and e2fsck still exits 0. So success is all
+/// this reports, and the bytes read afterwards are the evidence.
+///
+/// `None` is a signal: the process was killed, and an interrupted replay is not
+/// one that happened. Every other code (4 uncorrected, 8 operational error, 16
+/// usage, 32 cancelled, 128 library error, and combinations) is a failure;
+/// nothing unanticipated reads as success.
+pub fn classify_replay(code: Option<i32>) -> Result<(), String> {
+    match code {
+        Some(0..=2) => Ok(()),
+        Some(c) => Err(format!("e2fsck exit {c}")),
+        None => Err("e2fsck was killed by a signal".to_string()),
+    }
+}
+
 /// Replay the ext4 journal of `image`, changing nothing else.
 ///
-/// `e2fsck -E journal_only` exits 0 (nothing to do), 1 (replayed) or 2 (replayed,
-/// "reboot" — meaningless for an image file); 4 and up mean it could not. A
-/// missing `e2fsck` is `ToolMissing`, never "the pod wrote nothing".
-fn replay_journal(image: &Path) -> Result<(), ReadbackError> {
+/// See [`classify_replay`] for the exit codes. A missing `e2fsck` is
+/// `ToolMissing`, never "the pod wrote nothing".
+pub fn replay_journal(image: &Path) -> Result<(), ReadbackError> {
     let out = std::process::Command::new("e2fsck")
         .args(["-y", "-E", "journal_only"])
         .arg(image)
         .output()
         .map_err(|e| ReadbackError::ToolMissing(format!("e2fsck: {e}")))?;
-    match out.status.code() {
-        Some(0..=2) => Ok(()),
-        code => Err(ReadbackError::Failed(format!(
-            "replaying the scratch disk's journal (e2fsck exit {code:?}): {}",
+    classify_replay(out.status.code()).map_err(|why| {
+        ReadbackError::Failed(format!(
+            "replaying the scratch disk's journal ({why}): {}",
             String::from_utf8_lossy(&out.stderr).trim()
-        ))),
+        ))
+    })
+}
+
+/// Copy the whole filesystem in `image` into the directory `out`, after
+/// replaying its journal. Same precondition as [`read_file`]: no VMM has the
+/// image open.
+///
+/// `out` must already exist. The empty `lost+found` that `mkfs.ext4` creates is
+/// removed; a non-empty one is kept, because it holds what `e2fsck` recovered.
+pub fn dump_tree(image: &Path, out: &Path) -> Result<(), ReadbackError> {
+    replay_journal(image)?;
+    let run = std::process::Command::new("debugfs")
+        .args(["-R", &format!("rdump / {}", out.display())])
+        .arg(image)
+        .output()
+        .map_err(|e| ReadbackError::ToolMissing(e.to_string()))?;
+    // Exit status is not the signal (see `read_file`); stderr is.
+    rdump_verdict(&String::from_utf8_lossy(&run.stderr)).map_err(ReadbackError::Failed)?;
+    let lost = out.join("lost+found");
+    if std::fs::read_dir(&lost).is_ok_and(|mut d| d.next().is_none()) {
+        std::fs::remove_dir(&lost)
+            .map_err(|e| ReadbackError::Failed(format!("removing empty lost+found: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Judge `debugfs rdump`'s stderr. Pure.
+///
+/// The banner and "changing ownership" warnings are benign: an unprivileged
+/// harvest cannot give files the image's owners, and the bytes are what is being
+/// read back. Any other line is a failure — an allowlist of what is harmless, so
+/// a message nobody anticipated refuses rather than passes.
+pub fn rdump_verdict(stderr: &str) -> Result<(), String> {
+    let bad: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter(|l| !l.starts_with("debugfs "))
+        .filter(|l| !l.contains("while changing ownership of"))
+        .collect();
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("debugfs rdump: {}", bad.join("; ")))
     }
 }
 
@@ -252,6 +314,35 @@ mod tests {
         let err = read_file(&image, "/nothing-here.json").expect_err("must not succeed");
         assert!(matches!(err, ReadbackError::Absent(_)), "{err:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The replay table: 0, 1 and 2 succeed, everything else fails,
+    /// including a signal.
+    #[test]
+    fn replay_exit_codes_are_classified_totally() {
+        for c in [0, 1, 2] {
+            assert_eq!(classify_replay(Some(c)), Ok(()), "exit {c} is success");
+        }
+        for c in [3, 4, 8, 12, 16, 32, 128, -1] {
+            assert!(classify_replay(Some(c)).is_err(), "exit {c} must fail");
+        }
+        assert!(
+            classify_replay(None).is_err(),
+            "a killed replay did not happen"
+        );
+    }
+
+    /// rdump's stderr: banner and ownership warnings pass, anything else refuses.
+    #[test]
+    fn rdump_stderr_is_an_allowlist() {
+        let benign = "debugfs 1.47.0 (5-Feb-2023)\n\
+                      rdump: Operation not permitted while changing ownership of out//lost+found\n";
+        assert!(rdump_verdict(benign).is_ok());
+        assert!(rdump_verdict("").is_ok());
+        let bad =
+            "debugfs 1.47.0 (5-Feb-2023)\nrdump: File not found by ext2_lookup while dumping\n";
+        assert!(rdump_verdict(bad).is_err());
+        assert!(rdump_verdict("something new\n").is_err());
     }
 
     /// The three outcomes stay distinct in their own words: a host that cannot
