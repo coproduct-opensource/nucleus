@@ -111,6 +111,15 @@ for path in sorted(gates_dir.glob("*.json")):
         if a != b:
             bad.append(f"{name}: cap.{field} is {b!r} in the gate definition and {a!r} in the plan")
 
+    # The image each lane runs the gate in, per platform (gatehouse#201). The plan's pins are what
+    # `ci.toolsPinned_b` holds a lane to; the JSON's `env.pins` is what the executor receives and
+    # asks `Env::image_for` about. Compared in ORDER, as lists of {platform, image}: both sides
+    # are lists precisely so a platform named twice is visible rather than collapsed by a parser.
+    a = want.get("pins", [])
+    b = (got.get("env") or {}).get("pins", [])
+    if a != b:
+        bad.append(f"{name}: env.pins is {b!r} in the gate definition and {a!r} in the plan")
+
     # The writ `Gate` carries scope as a flat list of globs; the JSON carries an object whose
     # other fields (exclude, external, git_history) the writ term has no room for. The INCLUDE
     # list is the part both spell, so it is the part compared.
@@ -128,5 +137,5 @@ if bad:
         print(f"  {b}", file=sys.stderr)
     sys.exit(1)
 
-print(f"OK: {len(plan)} gate(s) carry the cmd, tools, seeds, outputs, scope, timeout and capability the plan declares")
+print(f"OK: {len(plan)} gate(s) carry the cmd, tools, seeds, outputs, pins, scope, timeout and capability the plan declares")
 PY

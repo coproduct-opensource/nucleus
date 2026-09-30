@@ -51,7 +51,14 @@ jobs:
       # which pins the right bytes, names no repository, and no kubelet can pull — so those
       # five gates could never have run. A pin bump that only moved the ref would have
       # failed the plan check, which is the gate working.
-      GATEHOUSE_REF: 067869b5f832801d24aaaba87a220bff73a65e2e
+      #
+      # Moved 067869b -> 502d787 on 2026-09-30 for per-platform pins (gatehouse#201): the plan
+      # names the gate-tools image for the arm64 lane AND the x86_64 lane, and `ci.toolsPinned_b`
+      # holds each lane to its own. That prelude also carries gatehouse #81, which nucleus had not
+      # taken: the policy stops describing a machine (see the comment above `policy` in
+      # .gatehouse/pipeline.writ). 502d787 is the head of gatehouse#201's PULL REQUEST; move this
+      # pin (both workflows) to the commit it merges as before this lands.
+      GATEHOUSE_REF: 502d7876bbf5954fcc1919602bb03c8d1fb6a682
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
