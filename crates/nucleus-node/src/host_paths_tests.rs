@@ -23,6 +23,7 @@ fn node() -> Node {
         artifacts_root: artifacts,
         data_root: None,
         workspace_root: None,
+        image_root: None,
     }
     .ensure(state.path())
     .expect("roots");
@@ -117,9 +118,10 @@ fn a_rootfs_symlink_escaping_the_artifacts_root_is_refused() {
 }
 
 /// Every role, so a role added without this check is visible here.
-const ALL_ROLES: [Role; 7] = [
+const ALL_ROLES: [Role; 8] = [
     Role::Kernel,
     Role::Rootfs,
+    Role::ImportedRootfs,
     Role::Scratch,
     Role::Data,
     Role::SeccompFilter,
@@ -133,6 +135,7 @@ fn every_role_refuses_a_parent_component_even_landing_inside() {
     let _listed = |r: Role| match r {
         Role::Kernel
         | Role::Rootfs
+        | Role::ImportedRootfs
         | Role::Scratch
         | Role::Data
         | Role::SeccompFilter
@@ -382,6 +385,7 @@ fn the_repositorys_example_specs_are_admitted_under_their_documented_flags() {
             artifacts_root: artifacts,
             data_root: None,
             workspace_root: None,
+            image_root: None,
         }
         .ensure(&t.path().join("state"))
         .expect("roots");
@@ -424,7 +428,7 @@ fn create_pod_internal_confines_host_paths_before_reading_them() {
             .map(|i| body + i)
             .unwrap_or_else(|| panic!("create_pod_internal contains {needle:?}"))
     };
-    let call = at("host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;");
+    let call = at("let image = host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;");
     assert!(
         call < at("posture::admit_posture("),
         "confined before the rootfs is measured"
@@ -437,5 +441,228 @@ fn create_pod_internal_confines_host_paths_before_reading_them() {
     assert_eq!(
         indent, "    ",
         "at function-body level, not under a condition"
+    );
+}
+
+// ── The image store: an `image.rootfs_oci` rootfs ──────────────────────────
+
+const REF_HEX: &str = "a";
+const MANIFEST_HEX: &str = "b";
+const GUEST_HEX: &str = "c";
+
+fn oci_json(reference: &str, manifest: &str, guest: &str) -> String {
+    format!(
+        r#"{{"reference":"registry.example/app@sha256:{}",
+            "manifest_digest":"sha256:{}","guest_layer_digest":"sha-256:{}"}}"#,
+        reference.repeat(64),
+        manifest.repeat(64),
+        guest.repeat(64)
+    )
+}
+
+fn digest_of(bytes: &[u8]) -> ArtifactDigest {
+    let hex = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(bytes));
+    ArtifactDigest::parse(&format!("sha-256:{hex}")).expect("digest")
+}
+
+/// A store entry as `nucleus-hostctl image build` files it: the ext4 under its
+/// own digest, and the record of which image it was built from.
+fn store_entry(n: &Node, bytes: &[u8], manifest: &str, guest: &str) -> ArtifactDigest {
+    let digest = digest_of(bytes);
+    let dir = image_store::entry_dir(&n.roots.images, &digest);
+    std::fs::create_dir_all(&dir).expect("entry");
+    std::fs::write(dir.join(image_store::ROOTFS_FILE), bytes).expect("ext4");
+    let d = |c: &str| format!("sha256:{}", c.repeat(64));
+    let record = format!(
+        r#"{{"format":"nucleus-image-store/v1",
+            "import":{{"crate_version":"9.9.9-test","pinned":"{pinned}","index_digest":null,
+              "manifest_digest":"{manifest}","config_digest":"{cfg}",
+              "platform":{{"os":"linux","architecture":"arm64"}},"layers":[],
+              "report":{{"dropped":[],"stripped_setid":[],"stripped_capabilities":[],
+                        "dropped_xattrs":[]}},
+              "limits":{limits},
+              "rootfs":{{"digest":"{tar}","bytes":1,"entries":1}},
+              "workload":{{"entrypoint":[],"cmd":[],"env":[],"working_dir":null,
+                          "user":{{"status":"root","user":""}}}}}},
+            "guest_layer_digest":"sha-256:{guest}",
+            "mke2fs":{{"major":1,"minor":47,"patch":2}},
+            "builder_version":"test"}}"#,
+        pinned = d(REF_HEX),
+        manifest = d(manifest),
+        cfg = d("e"),
+        tar = d("f"),
+        guest = guest.repeat(64),
+        limits =
+            serde_json::to_string(&nucleus_oci_rootfs::ImportLimits::standard()).expect("limits"),
+    );
+    std::fs::write(dir.join(image_store::RECORD_FILE), record).expect("record");
+    digest
+}
+
+fn oci_pod(n: &Node, oci: &str, rootfs_digest: &ArtifactDigest) -> PodSpec {
+    let kernel = put(n.artifacts(), "vmlinux");
+    serde_json::from_str(&format!(
+        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+            "kernel_path":{kernel:?},"rootfs_digest":"{}","rootfs_oci":{oci}}}}}}}"#,
+        rootfs_digest.as_str()
+    ))
+    .expect("an OCI spec")
+}
+
+fn refusal_of(spec: &mut PodSpec, n: &Node) -> String {
+    match admit(spec, &FC, &n.roots) {
+        Err(ApiError::InvalidSpec(msg)) => msg,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_imported_oci_rootfs_is_admitted_from_the_store_with_its_provenance() {
+    let n = node();
+    let digest = store_entry(&n, b"ext4 A", MANIFEST_HEX, GUEST_HEX);
+    let mut spec = oci_pod(&n, &oci_json(REF_HEX, MANIFEST_HEX, GUEST_HEX), &digest);
+    let admitted = admit(&mut spec, &FC, &n.roots)
+        .expect("the stored image is the one named")
+        .expect("an image");
+    let expected = image_store::rootfs_path(&n.roots.images, &digest)
+        .canonicalize()
+        .expect("canonical");
+    assert_eq!(admitted.rootfs_path(), expected);
+    let p = admitted
+        .provenance()
+        .expect("an OCI rootfs carries provenance");
+    assert_eq!(p.importer_version(), "9.9.9-test");
+    assert_eq!(p.mke2fs(), "1.47.2");
+    assert_eq!(
+        p.oci().manifest_digest.as_str(),
+        format!("sha256:{}", MANIFEST_HEX.repeat(64))
+    );
+    assert!(
+        matches!(image(&spec).rootfs, RootfsSource::Oci(_)),
+        "the spec still names the image, not a path"
+    );
+}
+
+/// THE consistency defect: image B's digest under image A's name. The derived
+/// path exists and B's bytes measure as B's digest, so integrity alone admits
+/// it — and boots B while the spec, the attestation's config hash and the
+/// receipt all say A. Red with the record check neutralised.
+#[test]
+fn a_rootfs_digest_naming_another_images_rootfs_is_refused() {
+    let n = node();
+    let a = store_entry(&n, b"ext4 A", MANIFEST_HEX, GUEST_HEX);
+    let b = store_entry(&n, b"ext4 B", "d", GUEST_HEX);
+    let mut spec = oci_pod(&n, &oci_json(REF_HEX, MANIFEST_HEX, GUEST_HEX), &b);
+    let msg = refusal_of(&mut spec, &n);
+    assert!(msg.contains("manifest_digest"), "{msg}");
+    assert!(msg.contains("another image"), "{msg}");
+
+    // Each field is compared, not only the manifest.
+    let c = store_entry(&n, b"ext4 C", MANIFEST_HEX, "d");
+    let mut spec = oci_pod(&n, &oci_json(REF_HEX, MANIFEST_HEX, GUEST_HEX), &c);
+    assert!(refusal_of(&mut spec, &n).contains("guest_layer_digest"));
+    let mut spec = oci_pod(&n, &oci_json("9", MANIFEST_HEX, GUEST_HEX), &a);
+    assert!(refusal_of(&mut spec, &n).contains("reference digest"));
+}
+
+#[test]
+fn an_oci_rootfs_not_in_the_store_is_refused_with_the_remedy() {
+    let n = node();
+    let absent = digest_of(b"never imported");
+    let mut spec = oci_pod(&n, &oci_json(REF_HEX, MANIFEST_HEX, GUEST_HEX), &absent);
+    let msg = refusal_of(&mut spec, &n);
+    assert!(msg.contains("is not imported on this node"), "{msg}");
+    assert!(
+        msg.contains("nucleus image import registry.example/app@sha256:"),
+        "{msg}"
+    );
+    assert!(msg.contains("--image-root"), "{msg}");
+}
+
+/// A store entry directory that is a symlink out of the image root — at the
+/// node's CA dir, holding a file named like an image — is refused.
+#[test]
+fn a_store_entry_symlinked_out_of_the_image_root_is_refused() {
+    let n = node();
+    let outside = n.state.path().join("ca");
+    std::fs::write(outside.join(image_store::ROOTFS_FILE), b"ext4 A").expect("bait");
+    let digest = digest_of(b"ext4 A");
+    let entry = image_store::entry_dir(&n.roots.images, &digest);
+    std::fs::create_dir_all(entry.parent().expect("sha256 dir")).expect("sha256 dir");
+    std::os::unix::fs::symlink(&outside, &entry).expect("symlink");
+    let mut spec = oci_pod(&n, &oci_json(REF_HEX, MANIFEST_HEX, GUEST_HEX), &digest);
+    let msg = refusal_of(&mut spec, &n);
+    assert!(msg.contains("not inside the node's root"), "{msg}");
+    assert!(msg.contains("--image-root"), "{msg}");
+}
+
+/// The record may not be a symlink out of the root either: it is what vouches
+/// for the image, so it must be the store's own.
+#[test]
+fn a_store_record_symlinked_out_of_the_image_root_is_refused() {
+    let n = node();
+    let digest = store_entry(&n, b"ext4 A", MANIFEST_HEX, GUEST_HEX);
+    let dir = image_store::entry_dir(&n.roots.images, &digest);
+    let record = dir.join(image_store::RECORD_FILE);
+    let elsewhere = n.state.path().join("forged.json");
+    std::fs::rename(&record, &elsewhere).expect("move record");
+    std::os::unix::fs::symlink(&elsewhere, &record).expect("symlink");
+    let mut spec = oci_pod(&n, &oci_json(REF_HEX, MANIFEST_HEX, GUEST_HEX), &digest);
+    assert!(refusal_of(&mut spec, &n).contains("not inside the node's root"));
+}
+
+/// Path specs are unaffected: admitted as before, with no provenance.
+#[test]
+fn a_path_rootfs_is_admitted_without_provenance() {
+    let n = node();
+    let mut spec = pod(&n);
+    let admitted = admit(&mut spec, &FC, &n.roots)
+        .expect("admitted")
+        .expect("an image");
+    assert!(admitted.provenance().is_none());
+    assert_eq!(
+        RootfsSource::Path(admitted.rootfs_path().to_path_buf()),
+        image(&spec).rootfs
+    );
+}
+
+/// `AdmittedImage` is evidence (C-1): admission is its only constructor. Its
+/// fields are private, so no other module can write a literal; this pins that
+/// every literal that does exist is in `host_paths.rs`, so a second minting
+/// site (or a public constructor beside the type) is a red test.
+#[test]
+fn an_admitted_image_is_minted_only_by_admission() {
+    // Built at run time so this file does not contain the needle it counts.
+    let needle = ["Admitted", "Image {"].concat();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut minted: Vec<String> = Vec::new();
+    let mut stack = vec![src];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("source");
+            let literals = text
+                .match_indices(&needle)
+                .filter(|(i, _)| {
+                    let after = text[i + needle.len()..].trim_start();
+                    after.starts_with("rootfs") || after.starts_with("provenance")
+                })
+                .count();
+            for _ in 0..literals {
+                minted.push(path.file_name().expect("name").to_string_lossy().into());
+            }
+        }
+    }
+    assert!(!minted.is_empty(), "the census found no literal at all");
+    assert!(
+        minted.iter().all(|f| f == "host_paths.rs"),
+        "AdmittedImage minted outside admission: {minted:?}"
     );
 }

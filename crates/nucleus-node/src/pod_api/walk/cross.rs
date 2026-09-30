@@ -220,6 +220,7 @@ impl Run {
             .spawn()
             .expect("a child spawns");
         let firecracker = crate::FirecrackerPod {
+            rootfs_provenance: None,
             pod_dir: dir.path().to_path_buf(),
             jail: Mutex::new(None),
             child: Arc::new(Mutex::new(child)),

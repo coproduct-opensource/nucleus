@@ -13,15 +13,18 @@
 //! store and verifies each one while it streams.
 //!
 //! The result is filed as `<cache>/rootfs/sha256/<tar digest>/{rootfs.tar, import.json}`.
-//! Building the ext4 image from it (OCI-E) and publishing it to a node's store
-//! (OCI-G) are the next stages. They attach where [`import`] prints its result:
-//! each takes the [`StagedRootfs`] that `run_import` returns.
+//! With `--guest-layer`, stage two follows ([`store::stage_two`]): the runtime's guest
+//! layer is overlaid, a deterministic ext4 is built, and it is filed in the node's
+//! image store under its own digest — on Linux here, elsewhere by the printed
+//! `nucleus-hostctl image build` command on the node host. `nucleus run --image`
+//! then names it by reference ([`store::find`]).
 
 mod auth;
 mod cache;
 mod reference;
 mod registry;
 mod source;
+pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 
@@ -104,6 +107,16 @@ pub struct ImportArgs {
     #[arg(long, value_name = "DIR")]
     pub cache_dir: Option<PathBuf>,
 
+    /// The runtime guest layer tar to overlay. With it, stage two builds the ext4
+    /// and files it in the node's image store; without it, import stops at the tar
+    #[arg(long, value_name = "TAR")]
+    pub guest_layer: Option<PathBuf>,
+
+    /// The node's image store (its `--image-root`)
+    /// [default: /var/lib/nucleus/state/images]
+    #[arg(long, value_name = "DIR", env = "NUCLEUS_NODE_IMAGE_ROOT")]
+    pub image_root: Option<PathBuf>,
+
     #[command(flatten)]
     pub registry: RegistryOpts,
 }
@@ -149,11 +162,7 @@ enum Source {
     Archive(PathBuf, PinnedReference),
 }
 
-/// A flattened rootfs filed in the cache.
-///
-/// SEAM (OCI-E, OCI-G): this is the input to the second stage. OCI-E builds a
-/// deterministic ext4 image from [`StagedRootfs::tar`]; OCI-G publishes it into a
-/// node's content store. Until they land, `import` stops here.
+/// A flattened rootfs filed in the cache: the input to stage two ([`store::stage_two`]).
 #[derive(Debug)]
 pub struct StagedRootfs {
     /// `<cache>/rootfs/sha256/<hex>`, holding `rootfs.tar` and `import.json`.
@@ -246,7 +255,8 @@ fn cache_root(dir: Option<&Path>) -> Result<PathBuf> {
     }
 }
 
-fn import(args: ImportArgs) -> Result<()> {
+/// Stage one: fetch or read, verify, and flatten into the cache.
+fn stage_one(args: &ImportArgs) -> Result<StagedRootfs> {
     let arch = match args.arch {
         Some(a) => a.into(),
         None => host_arch()?,
@@ -278,10 +288,42 @@ fn import(args: ImportArgs) -> Result<()> {
         insecure: args.registry.insecure_registry.clone(),
         credentials,
     };
-    let staged = run_import(source, &plan)?;
-    // TODO(OCI-E, OCI-G): the second stage consumes `staged` here.
+    run_import(source, &plan)
+}
+
+/// Stage one, then stage two when a guest layer is given.
+pub(crate) fn import_to_store(args: &ImportArgs) -> Result<Option<store::StageTwo>> {
+    let staged = stage_one(args)?;
     print_staged(&staged, &args.reference);
-    Ok(())
+    let image_root = args
+        .image_root
+        .clone()
+        .unwrap_or_else(store::default_image_root);
+    let Some(guest_layer) = &args.guest_layer else {
+        println!(
+            "next       stage two, on the node host:\n  {}",
+            store::hostctl_command(&staged, Path::new("<guest-layer.tar>"), &image_root)
+        );
+        return Ok(None);
+    };
+    let two = store::stage_two(&staged, guest_layer, &image_root)?;
+    match &two {
+        store::StageTwo::Filed(s) => {
+            println!("rootfs_digest {}", s.rootfs_digest.as_str());
+            println!("guest layer   {}", s.record.guest_layer_digest.as_str());
+            println!("mke2fs        {}", s.record.mke2fs);
+            let how = if s.reused { "already present" } else { "filed" };
+            println!("store         {} ({how})", s.dir.display());
+        }
+        store::StageTwo::RunOnNodeHost(cmd) => {
+            println!("stage two runs on the node host (this is not Linux):\n  {cmd}");
+        }
+    }
+    Ok(Some(two))
+}
+
+fn import(args: ImportArgs) -> Result<()> {
+    import_to_store(&args).map(|_| ())
 }
 
 fn resolve(args: ResolveArgs) -> Result<()> {

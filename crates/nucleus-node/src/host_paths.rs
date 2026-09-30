@@ -45,6 +45,7 @@
 //! | scratch              | `--scratch-root` (default `<state>/scratch`)   | file  |
 //! | data                 | `--data-root` (default `<state>/data`)         | file  |
 //! | container `work_dir` | `--workspace-root` (default `<state>/workspaces`) | directory |
+//! | `image.rootfs_oci`   | `--image-root` (default `<state>/images`)      | file  |
 //! | cgroup               | `/sys/fs/cgroup`, lexically             | directory |
 //!
 //! A resolved path must contain no `..` and must resolve — every symlink
@@ -57,6 +58,13 @@
 //! under `--artifacts-root ./build/firecracker --scratch-root ./build/firecracker`.
 //! The cgroup path is checked lexically because it names a directory the node
 //! creates, and cgroupfs has no symlinks for a caller to plant.
+//!
+//! An `image.rootfs_oci` rootfs names no host path at all: the node DERIVES
+//! `<image-root>/sha256/<rootfs_digest hex>/rootfs.ext4` (`image_store`), holds
+//! it and its `import.json` to the same rule, and refuses unless the record is
+//! the image the spec names — so a digest cannot boot one image under another's
+//! name. The resolution is returned as an [`AdmittedImage`], the evidence the
+//! launch path boots from.
 //!
 //! Which fields are host paths is decided by destructuring `PodSpecInner`,
 //! `ImageSpec` and `CgroupSpec` without `..` (E-rule): a new spec field does not
@@ -91,7 +99,11 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use nucleus_spec::{CgroupSpec, ImageSpec, PodSpec, PodSpecInner, RootfsSource, SeccompSpec};
+use nucleus_microvm_host::image_store;
+use nucleus_spec::{
+    ArtifactDigest, CgroupSpec, ImageSpec, OciRootfs, PodSpec, PodSpecInner, RootfsSource,
+    SeccompSpec,
+};
 
 use crate::api_error::ApiError;
 use crate::driver::DriverKind;
@@ -125,6 +137,11 @@ pub(crate) struct HostPathArgs {
     /// Defaults to `<state-dir>/workspaces`, which is created at startup.
     #[arg(long = "workspace-root", env = "NUCLEUS_NODE_WORKSPACE_ROOT")]
     pub workspace_root: Option<PathBuf>,
+    /// The image store: the only directory an `image.rootfs_oci` pod boots from,
+    /// at `<image-root>/sha256/<rootfs_digest hex>/rootfs.ext4`. Defaults to
+    /// `<state-dir>/images`, which is created at startup.
+    #[arg(long = "image-root", env = "NUCLEUS_NODE_IMAGE_ROOT")]
+    pub image_root: Option<PathBuf>,
 }
 
 /// The roots in force. No `Default`: a root is a grant, and there is no neutral one.
@@ -134,6 +151,7 @@ pub(crate) struct Roots {
     artifacts: PathBuf,
     data: PathBuf,
     workspace: PathBuf,
+    images: PathBuf,
 }
 
 impl HostPathArgs {
@@ -151,6 +169,7 @@ impl HostPathArgs {
             artifacts: self.artifacts_root.clone(),
             data: under_state(&self.data_root, "data")?,
             workspace: under_state(&self.workspace_root, "workspaces")?,
+            images: under_state(&self.image_root, image_store::IMAGES_DIR)?,
         })
     }
 }
@@ -160,6 +179,9 @@ impl HostPathArgs {
 pub(crate) enum Role {
     Kernel,
     Rootfs,
+    /// An `image.rootfs_oci` pod's rootfs and its import record, whose paths the
+    /// node derives from `rootfs_digest` rather than reading from the spec.
+    ImportedRootfs,
     Scratch,
     Data,
     SeccompFilter,
@@ -174,6 +196,7 @@ enum RootName {
     Scratch,
     Data,
     Workspace,
+    Images,
     /// Checked lexically: see the module docs.
     CgroupFs,
 }
@@ -186,6 +209,7 @@ impl RootName {
             RootName::Scratch => "--scratch-root",
             RootName::Data => "--data-root",
             RootName::Workspace => "--workspace-root",
+            RootName::Images => "--image-root",
             RootName::CgroupFs => "the cgroup filesystem",
         }
     }
@@ -198,6 +222,7 @@ impl Roots {
             RootName::Scratch => &self.scratch,
             RootName::Data => &self.data,
             RootName::Workspace => &self.workspace,
+            RootName::Images => &self.images,
             RootName::CgroupFs => Path::new(CGROUP_FS),
         }
     }
@@ -215,6 +240,7 @@ impl Role {
         match self {
             Role::Kernel => "image.kernel_path",
             Role::Rootfs => "image.rootfs_path",
+            Role::ImportedRootfs => "image.rootfs_oci",
             Role::Scratch => "image.scratch_path",
             Role::Data => "image.data_path",
             Role::SeccompFilter => "seccomp.filter_path",
@@ -228,6 +254,7 @@ impl Role {
     fn root(self) -> RootName {
         match self {
             Role::Kernel | Role::Rootfs | Role::SeccompFilter => RootName::Artifacts,
+            Role::ImportedRootfs => RootName::Images,
             Role::Scratch => RootName::Scratch,
             Role::Data => RootName::Data,
             Role::ContainerWorkDir => RootName::Workspace,
@@ -239,9 +266,12 @@ impl Role {
     fn shape(self) -> Shape {
         match self {
             Role::ContainerWorkDir | Role::Cgroup => Shape::Directory,
-            Role::Kernel | Role::Rootfs | Role::Scratch | Role::Data | Role::SeccompFilter => {
-                Shape::File
-            }
+            Role::Kernel
+            | Role::Rootfs
+            | Role::ImportedRootfs
+            | Role::Scratch
+            | Role::Data
+            | Role::SeccompFilter => Shape::File,
         }
     }
 }
@@ -268,6 +298,16 @@ pub(crate) enum Reason {
     WrongShape(PathBuf),
     /// A cgroup setting's file name is not exactly one path component.
     NotOneComponent(String),
+    /// No image is filed under the spec's `rootfs_digest`.
+    NotImported {
+        reference: String,
+        path: PathBuf,
+        root: PathBuf,
+    },
+    /// An OCI rootfs must be pinned: its digest is where the node looks.
+    Unpinned,
+    /// The entry's import record is unreadable, or names another image.
+    Record(String),
 }
 
 impl std::fmt::Display for Refusal {
@@ -305,6 +345,20 @@ impl std::fmt::Display for Refusal {
                 f,
                 "cgroup setting file {file:?} must be a single file name inside cgroup.path"
             ),
+            Reason::NotImported {
+                reference,
+                path,
+                root,
+            } => write!(
+                f,
+                "{field} {reference} is not imported on this node: {} does not exist. Import it \
+                 on the node host with `nucleus image import {reference} --guest-layer \
+                 <guest-layer.tar> --image-root {}`",
+                path.display(),
+                root.display()
+            ),
+            Reason::Unpinned => write!(f, "{field} requires image.rootfs_digest"),
+            Reason::Record(why) => write!(f, "{field}: {why}"),
         }
     }
 }
@@ -366,18 +420,140 @@ fn work_dir_role(driver: &DriverKind) -> Option<Role> {
     }
 }
 
+/// Where an `image.rootfs_oci` rootfs came from, as the node's image store recorded it.
+///
+/// Fields private: minted only by [`admit`], from a record that matched the spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImageProvenance {
+    oci: OciRootfs,
+    importer_version: String,
+    mke2fs: String,
+}
+
+impl ImageProvenance {
+    pub(crate) fn oci(&self) -> &OciRootfs {
+        &self.oci
+    }
+
+    /// The `nucleus-oci-rootfs` version that flattened the image.
+    pub(crate) fn importer_version(&self) -> &str {
+        &self.importer_version
+    }
+
+    /// The e2fsprogs release that built the ext4.
+    pub(crate) fn mke2fs(&self) -> &str {
+        &self.mke2fs
+    }
+}
+
+/// A pod's rootfs, admitted: the host file it boots from, resolved and confined,
+/// and — for an OCI rootfs — the store record it was checked against.
+///
+/// EVIDENCE (ADR 0007 C-1): the fields are private and the only constructor is
+/// [`admit`], so nothing downstream can boot a rootfs that admission did not
+/// resolve, and nothing reads an unresolved `RootfsSource` to find a file.
+/// Consumed by value into `rootfs_source::HostImage` (C-4).
+#[derive(Debug)]
+pub(crate) struct AdmittedImage {
+    rootfs: PathBuf,
+    // Read by `into_parts`, which only the Linux launch path calls.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    provenance: Option<ImageProvenance>,
+}
+
+impl AdmittedImage {
+    /// The rootfs file that will boot.
+    pub(crate) fn rootfs_path(&self) -> &Path {
+        &self.rootfs
+    }
+
+    /// `Some` for an `image.rootfs_oci` pod.
+    #[cfg(test)]
+    pub(crate) fn provenance(&self) -> Option<&ImageProvenance> {
+        self.provenance.as_ref()
+    }
+
+    /// Both parts, by value, for the one consumer that holds them afterwards.
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn into_parts(self) -> (PathBuf, Option<ImageProvenance>) {
+        (self.rootfs, self.provenance)
+    }
+
+    /// Tests elsewhere in the crate need a `HostImage` for a spec whose rootfs
+    /// is a path they already made; they get one through the same resolution.
+    #[cfg(test)]
+    pub(crate) fn for_test(image: &ImageSpec) -> Self {
+        match &image.rootfs {
+            RootfsSource::Path(p) => Self {
+                rootfs: p.clone(),
+                provenance: None,
+            },
+            RootfsSource::Oci(_) => panic!("for_test takes a path rootfs"),
+        }
+    }
+}
+
+/// Resolve an `image.rootfs_oci` rootfs through the image store: derive the path
+/// from `rootfs_digest`, confine it and its record, and refuse unless the record
+/// is the image the spec names. Integrity stays with `rootfs_digest`, measured
+/// against these same bytes by `image_identity::verify`.
+fn admit_oci(
+    oci: &OciRootfs,
+    rootfs_digest: Option<&ArtifactDigest>,
+    roots: &Roots,
+) -> Result<AdmittedImage, Refusal> {
+    let refuse = |reason| Refusal {
+        role: Role::ImportedRootfs,
+        reason,
+    };
+    let digest = rootfs_digest.ok_or_else(|| refuse(Reason::Unpinned))?;
+    let derived = image_store::rootfs_path(&roots.images, digest);
+    if let Err(e) = std::fs::symlink_metadata(&derived) {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(refuse(Reason::NotImported {
+                reference: oci.reference.to_string(),
+                path: derived,
+                root: roots.images.clone(),
+            }));
+        }
+    }
+    let rootfs = confine(&derived, Role::ImportedRootfs, roots)?;
+    // The RESOLVED file's sibling, not the derived one's: if the entry links to another
+    // entry's image, the record checked is the one describing the bytes that will boot.
+    let record_path = rootfs.with_file_name(image_store::RECORD_FILE);
+    let record_path = confine(&record_path, Role::ImportedRootfs, roots)?;
+    let record = image_store::read_record(&record_path)
+        .map_err(|e| refuse(Reason::Record(e.to_string())))?;
+    record
+        .check(oci)
+        .map_err(|m| refuse(Reason::Record(m.to_string())))?;
+    Ok(AdmittedImage {
+        rootfs,
+        provenance: Some(ImageProvenance {
+            oci: oci.clone(),
+            importer_version: record.importer_version().to_owned(),
+            mke2fs: record.mke2fs.to_string(),
+        }),
+    })
+}
+
 /// Admission: confine every host path in the spec by its role and replace each
-/// with the resolved path that was checked. Refuses the whole spec on the first
-/// path that fails.
+/// with the resolved path that was checked, and resolve the rootfs into the
+/// [`AdmittedImage`] every later step boots from. Refuses the whole spec on the
+/// first path that fails. `None` only for a pod with no image.
 pub(crate) fn admit(
     spec: &mut PodSpec,
     driver: &DriverKind,
     roots: &Roots,
-) -> Result<(), ApiError> {
+) -> Result<Option<AdmittedImage>, ApiError> {
     admit_inner(&mut spec.spec, driver, roots).map_err(|r| ApiError::InvalidSpec(r.to_string()))
 }
 
-fn admit_inner(spec: &mut PodSpecInner, driver: &DriverKind, roots: &Roots) -> Result<(), Refusal> {
+fn admit_inner(
+    spec: &mut PodSpecInner,
+    driver: &DriverKind,
+    roots: &Roots,
+) -> Result<Option<AdmittedImage>, Refusal> {
     // No `..`: a field added to the spec is a compile error here until it is
     // classified as a host path or not (E-rule).
     let PodSpecInner {
@@ -402,6 +578,7 @@ fn admit_inner(spec: &mut PodSpecInner, driver: &DriverKind, roots: &Roots) -> R
     if let Some(role) = work_dir_role(driver) {
         *work_dir = confine(work_dir, role, roots)?;
     }
+    let mut admitted = None;
     if let Some(image) = image.as_mut() {
         let ImageSpec {
             kernel_path,
@@ -410,17 +587,23 @@ fn admit_inner(spec: &mut PodSpecInner, driver: &DriverKind, roots: &Roots) -> R
             read_only: _,
             scratch_path,
             kernel_digest: _,
-            rootfs_digest: _,
+            rootfs_digest,
             scratch_digest: _,
             data_path,
             data_digest: _,
         } = image;
         *kernel_path = confine(kernel_path, Role::Kernel, roots)?;
-        match rootfs {
-            RootfsSource::Path(path) => *path = confine(path, Role::Rootfs, roots)?,
-            // Not a host path the creator wrote: `rootfs_source` refuses it at create, before this.
-            RootfsSource::Oci(_) => {}
-        }
+        admitted = Some(match rootfs {
+            RootfsSource::Path(path) => {
+                *path = confine(path, Role::Rootfs, roots)?;
+                AdmittedImage {
+                    rootfs: path.clone(),
+                    provenance: None,
+                }
+            }
+            // Not a path the creator wrote: the node derives it from the digest.
+            RootfsSource::Oci(oci) => admit_oci(oci, rootfs_digest.as_ref(), roots)?,
+        });
         for (path, role) in [(scratch_path, Role::Scratch), (data_path, Role::Data)] {
             if let Some(p) = path.as_mut() {
                 *p = confine(p, role, roots)?;
@@ -448,7 +631,7 @@ fn admit_inner(spec: &mut PodSpecInner, driver: &DriverKind, roots: &Roots) -> R
             }
         }
     }
-    Ok(())
+    Ok(admitted)
 }
 
 #[cfg(test)]

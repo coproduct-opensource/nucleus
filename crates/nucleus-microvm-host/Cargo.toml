@@ -26,6 +26,9 @@ hex = { workspace = true }
 # function for the fact, not a second hash here (ADR 0007 G-1).
 nucleus-identity = { path = "../nucleus-identity" }
 nucleus-spec = { path = "../nucleus-spec" }
+# `ImportRecord`: the image store files the flattener's own record beside the
+# ext4 it built, rather than restating its digests in a second shape (F-3).
+nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

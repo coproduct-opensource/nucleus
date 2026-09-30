@@ -6,6 +6,9 @@
 //!   scratch image, every entry owned by the workload, and prints its
 //!   `sha-256:` digest.
 //! - `harvest <image> <out>` replays the image's journal and copies its tree out.
+//! - `image build <rootfs.tar> --import-record <json> --guest-layer <tar> --image-root <dir>`
+//!   is stage two of an OCI import: overlay, deterministic ext4, filed under its
+//!   digest in the node's image store. Prints what it filed as JSON.
 
 #![cfg_attr(
     not(test),
@@ -28,7 +31,7 @@ use nucleus_microvm_host::ext4::RootOwner;
 #[cfg(target_os = "linux")]
 use nucleus_microvm_host::probe::HostRequirement;
 use nucleus_microvm_host::probe::{self, kvm::Kvm};
-use nucleus_microvm_host::workspace;
+use nucleus_microvm_host::{image_store, workspace};
 #[cfg(target_os = "linux")]
 use serde::Serialize;
 
@@ -65,6 +68,40 @@ enum Command {
     },
     /// Replay an image's journal and copy its tree into an empty directory.
     Harvest { image: PathBuf, out: PathBuf },
+    /// The node's image store.
+    Image {
+        #[command(subcommand)]
+        command: ImageCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ImageCommand {
+    /// Overlay the guest layer onto a flattened rootfs tar, build its ext4, and
+    /// file it under `<image-root>/sha256/<digest>/`.
+    Build {
+        /// The flattened rootfs tar `nucleus image import` wrote.
+        rootfs_tar: PathBuf,
+        /// The `import.json` written beside it.
+        #[arg(long)]
+        import_record: PathBuf,
+        /// The runtime's guest layer tar.
+        #[arg(long)]
+        guest_layer: PathBuf,
+        /// The node's `--image-root`.
+        #[arg(long)]
+        image_root: PathBuf,
+    },
+}
+
+/// What `image build` prints.
+#[derive(serde::Serialize)]
+struct Filed<'a> {
+    rootfs_digest: &'a str,
+    dir: &'a std::path::Path,
+    reused: bool,
+    manifest_digest: String,
+    guest_layer_digest: &'a str,
 }
 
 /// One unmet requirement, as printed.
@@ -121,6 +158,20 @@ fn main() -> ExitCode {
                 Err(e) => fail(&e.to_string()),
             }
         }
+        Command::Image {
+            command:
+                ImageCommand::Build {
+                    rootfs_tar,
+                    import_record,
+                    guest_layer,
+                    image_root,
+                },
+        } => run_image_build(image_store::BuildInputs {
+            rootfs_tar: &rootfs_tar,
+            import_record: &import_record,
+            guest_layer: &guest_layer,
+            image_root: &image_root,
+        }),
         Command::Harvest { image, out } => match workspace::harvest(&image, &out) {
             Ok(()) => {
                 eprintln!("harvested {}", out.display());
@@ -168,6 +219,34 @@ fn run_probe(_network: bool) -> ExitCode {
             other => format!("{other:?}"),
         }
     ))
+}
+
+fn run_image_build(inputs: image_store::BuildInputs<'_>) -> ExitCode {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => return fail(&format!("starting a runtime: {e}")),
+    };
+    let stored = match rt.block_on(image_store::build(inputs)) {
+        Ok(stored) => stored,
+        Err(e) => return fail(&e.to_string()),
+    };
+    let filed = Filed {
+        rootfs_digest: stored.rootfs_digest.as_str(),
+        dir: &stored.dir,
+        reused: stored.reused,
+        manifest_digest: stored.record.import.manifest_digest.to_string(),
+        guest_layer_digest: stored.record.guest_layer_digest.as_str(),
+    };
+    match serde_json::to_string_pretty(&filed) {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("serialising the result: {e}")),
+    }
 }
 
 /// `uid:gid`, both decimal.

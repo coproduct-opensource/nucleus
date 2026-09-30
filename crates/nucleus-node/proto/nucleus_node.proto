@@ -138,6 +138,28 @@ message ExecutionReceipt {
   // The root public key that made it, hex, so a relying party can verify
   // without asking the signer.
   string signer_pubkey = 17;
+
+  // === v1.3 Where the rootfs came from ===
+  //
+  // Set only for a pod whose rootfs is an OCI image from the node's image
+  // store; absent for a rootfs named by path. Signed: when present, every
+  // field is in the preimage after cost_usd.
+  RootfsProvenance rootfs_provenance = 18;
+}
+
+// An OCI rootfs's provenance, as the node's image store recorded it at
+// admission. The ext4's own digest is the launch attestation's rootfs_hash.
+message RootfsProvenance {
+  // registry/repository[:tag]@sha256:… as the spec named it.
+  string reference = 1;
+  // The platform manifest the rootfs was flattened from (sha256:…).
+  string manifest_digest = 2;
+  // The runtime guest layer overlaid onto it (sha-256:…).
+  string guest_layer_digest = 3;
+  // The nucleus-oci-rootfs version that flattened the image.
+  string importer_version = 4;
+  // The e2fsprogs release that built the ext4.
+  string e2fsprogs_version = 5;
 }
 
 message GetReceiptRequest {

@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use nucleus_spec::ArtifactDigest;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 pub(crate) mod tree_tar;
@@ -143,7 +143,7 @@ pub struct Ext4Spec {
 }
 
 /// An e2fsprogs release number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Mke2fsVersion {
     pub major: u16,
     pub minor: u16,
@@ -632,6 +632,23 @@ pub async fn build(
     out: &Path,
     spec: Ext4Spec,
 ) -> Result<ArtifactDigest, Ext4Error> {
+    build_recorded(input, out, spec).await.map(|b| b.digest)
+}
+
+/// What [`build_recorded`] made: the image's digest and the mke2fs release that
+/// laid it out, for a caller that files the release beside the image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Built {
+    pub digest: ArtifactDigest,
+    pub mke2fs: Mke2fsVersion,
+}
+
+/// [`build`], also returning the mke2fs release the image was built with.
+pub async fn build_recorded(
+    input: Ext4Input<'_>,
+    out: &Path,
+    spec: Ext4Spec,
+) -> Result<Built, Ext4Error> {
     let version = probe().admit(input.kind())?;
     let content = match input {
         Ext4Input::Tar(tar) if tar.is_file() => Content::of_tar(tar)?,
@@ -677,7 +694,12 @@ pub async fn build(
     let digest = nucleus_identity::attestation::measure_artifact(out)
         .await
         .map_err(|e| Ext4Error::Io(format!("measuring {}: {e}", out.display())))?;
-    ArtifactDigest::parse(&format!("sha-256:{}", hex::encode(digest))).map_err(Ext4Error::Io)
+    let digest = ArtifactDigest::parse(&format!("sha-256:{}", hex::encode(digest)))
+        .map_err(Ext4Error::Io)?;
+    Ok(Built {
+        digest,
+        mke2fs: version,
+    })
 }
 
 /// Create `image` at `layout.bytes` and run mke2fs into it. On failure the

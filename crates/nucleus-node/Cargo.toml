@@ -111,6 +111,8 @@ portcullis = { path = "../portcullis", features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+# The image-store tests file records as the flattener writes them.
+nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
 # Drives the SPIFFE Workload API vsock bridge as a REAL client would.
 spiffe = { version = "0.16", features = ["workload-api-x509"] }
 tempfile = { workspace = true }

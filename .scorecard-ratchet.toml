@@ -199,7 +199,11 @@ population_floor = 278
 # probe, the scratch-image read-back, workspace seed/harvest) declares all seven
 # in lib.rs and main.rs from its first commit; 30/88, 34.09%. Declaring it moved
 # one site: the CAP_NET_ADMIN mask `1u64 << bit` became `checked_shl`.
-floor_bp = 3409
+# 2026-09-30 (feat/node-image-store, integrating #3070 and #3079): with both
+# declaring crates on one tree -- nucleus-microvm-host and nucleus-oci-rootfs --
+# the ratio is 31/89, 34.83%; each branch alone measured against the other's
+# absence. Re-measured on the merged tree, not taken from either side.
+floor_bp = 3483
 floor_set = "measurement"
 population_floor = 86
 

@@ -51,11 +51,62 @@ pub(crate) struct Receipt {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cost_usd: f64,
+    /// Where an `image.rootfs_oci` pod's rootfs came from, as the node's image
+    /// store recorded it at admission. `None` for a rootfs named by path.
+    pub rootfs_provenance: Option<RootfsProvenance>,
     /// The node's signature over [`Receipt::preimage`], and the key that made
     /// it. Empty when this node could not sign — never a receipt that looks
     /// signed and is not.
     pub signature: String,
     pub signer_pubkey: String,
+}
+
+/// The OCI provenance of a pod's rootfs, as served. The ext4's own digest is not
+/// here: it is the attestation's `rootfs_hash`, and the reference's manifest is
+/// already in `manifest_hash` through the spec (F-3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RootfsProvenance {
+    pub reference: String,
+    pub manifest_digest: String,
+    pub guest_layer_digest: String,
+    pub importer_version: String,
+    pub e2fsprogs_version: String,
+}
+
+impl From<&crate::host_paths::ImageProvenance> for RootfsProvenance {
+    fn from(p: &crate::host_paths::ImageProvenance) -> Self {
+        let nucleus_spec::OciRootfs {
+            reference,
+            manifest_digest,
+            guest_layer_digest,
+        } = p.oci();
+        Self {
+            reference: reference.to_string(),
+            manifest_digest: manifest_digest.as_str().to_owned(),
+            guest_layer_digest: guest_layer_digest.as_str().to_owned(),
+            importer_version: p.importer_version().to_owned(),
+            e2fsprogs_version: p.mke2fs().to_owned(),
+        }
+    }
+}
+
+impl From<RootfsProvenance> for crate::proto::RootfsProvenance {
+    fn from(p: RootfsProvenance) -> Self {
+        let RootfsProvenance {
+            reference,
+            manifest_digest,
+            guest_layer_digest,
+            importer_version,
+            e2fsprogs_version,
+        } = p;
+        Self {
+            reference,
+            manifest_digest,
+            guest_layer_digest,
+            importer_version,
+            e2fsprogs_version,
+        }
+    }
 }
 
 impl Receipt {
@@ -88,6 +139,7 @@ impl Receipt {
             output_tokens,
             cache_read_tokens,
             cost_usd,
+            rootfs_provenance,
             signature: _,
             signer_pubkey: _,
         } = self;
@@ -115,6 +167,34 @@ impl Receipt {
         // `to_bits` rather than `to_string`: a float's decimal rendering is a
         // formatting decision, and this is a digest preimage.
         absorb("cost_usd", &cost_usd.to_bits().to_be_bytes());
+        // Appended only when present, so a path-rootfs receipt's preimage is the
+        // bytes it was before provenance existed; the tags keep the two cases apart.
+        if let Some(RootfsProvenance {
+            reference,
+            manifest_digest,
+            guest_layer_digest,
+            importer_version,
+            e2fsprogs_version,
+        }) = rootfs_provenance
+        {
+            absorb("rootfs_provenance.reference", reference.as_bytes());
+            absorb(
+                "rootfs_provenance.manifest_digest",
+                manifest_digest.as_bytes(),
+            );
+            absorb(
+                "rootfs_provenance.guest_layer_digest",
+                guest_layer_digest.as_bytes(),
+            );
+            absorb(
+                "rootfs_provenance.importer_version",
+                importer_version.as_bytes(),
+            );
+            absorb(
+                "rootfs_provenance.e2fsprogs_version",
+                e2fsprogs_version.as_bytes(),
+            );
+        }
         out
     }
 }
@@ -188,6 +268,16 @@ pub(crate) async fn build(
         crate::DriverState::Container(_) => shared_directory_report(handle).await?,
     };
 
+    let rootfs_provenance = match &handle.driver_state {
+        crate::DriverState::Firecracker(pod) => {
+            pod.rootfs_provenance.as_ref().map(RootfsProvenance::from)
+        }
+        // These drivers boot no rootfs image.
+        #[cfg(feature = "local-driver")]
+        crate::DriverState::Local(_) => None,
+        crate::DriverState::Container(_) => None,
+    };
+
     let spec_yaml = serde_yaml::to_string(&handle.spec).unwrap_or_default();
     let manifest_hash =
         nucleus_identity::approval_bundle::compute_manifest_hash(spec_yaml.as_bytes());
@@ -233,6 +323,7 @@ pub(crate) async fn build(
         output_tokens: report.output_tokens,
         cache_read_tokens: report.cache_read_tokens,
         cost_usd: report.cost_usd,
+        rootfs_provenance,
         // Filled below: the preimage is over the OTHER fields, so the
         // receipt has to exist before it can be signed.
         signature: String::new(),
@@ -335,6 +426,7 @@ impl From<Receipt> for crate::proto::ExecutionReceipt {
             output_tokens: r.output_tokens,
             cache_read_tokens: r.cache_read_tokens,
             cost_usd: r.cost_usd,
+            rootfs_provenance: r.rootfs_provenance.map(Into::into),
             signature: r.signature,
             signer_pubkey: r.signer_pubkey,
         }
@@ -509,6 +601,7 @@ mod tests {
             output_tokens: 20,
             cache_read_tokens: 5,
             cost_usd: 0.5,
+            rootfs_provenance: None,
             signature: String::new(),
             signer_pubkey: String::new(),
         }
@@ -546,6 +639,7 @@ mod tests {
             "output_tokens",
             "cache_read_tokens",
             "cost_usd",
+            "rootfs_provenance",
             "signature",
             "signer_pubkey",
         ]
@@ -905,6 +999,7 @@ mod signature_tests {
             output_tokens: 20,
             cache_read_tokens: 30,
             cost_usd: 0.5,
+            rootfs_provenance: None,
             signature: String::new(),
             signer_pubkey: String::new(),
         }
@@ -1015,6 +1110,13 @@ mod signature_tests {
                     ..sample()
                 },
             ),
+            (
+                "rootfs_provenance",
+                Receipt {
+                    rootfs_provenance: Some(provenance()),
+                    ..sample()
+                },
+            ),
         ];
         for (field, perturbed) in cases {
             assert_ne!(
@@ -1024,6 +1126,50 @@ mod signature_tests {
                  still verifying"
             );
         }
+    }
+
+    fn provenance() -> RootfsProvenance {
+        RootfsProvenance {
+            reference: "registry.example/app@sha256:aa".into(),
+            manifest_digest: "sha256:bb".into(),
+            guest_layer_digest: "sha-256:cc".into(),
+            importer_version: "1.0.0".into(),
+            e2fsprogs_version: "1.47.2".into(),
+        }
+    }
+
+    /// Every provenance field is committed, and a path rootfs's preimage is the
+    /// one it had before provenance existed (nothing is appended for `None`).
+    #[test]
+    fn every_provenance_field_reaches_the_preimage() {
+        let with = |p: RootfsProvenance| {
+            Receipt {
+                rootfs_provenance: Some(p),
+                ..sample()
+            }
+            .preimage()
+        };
+        let base = with(provenance());
+        let edits: [(&str, fn(&mut RootfsProvenance)); 5] = [
+            ("reference", |p| p.reference.push('x')),
+            ("manifest_digest", |p| p.manifest_digest.push('x')),
+            ("guest_layer_digest", |p| p.guest_layer_digest.push('x')),
+            ("importer_version", |p| p.importer_version.push('x')),
+            ("e2fsprogs_version", |p| p.e2fsprogs_version.push('x')),
+        ];
+        for (field, edit) in edits {
+            let mut p = provenance();
+            edit(&mut p);
+            assert_ne!(base, with(p), "{field} does not reach the preimage");
+        }
+        let path_rootfs = sample().preimage();
+        let cost_tail = [b"cost_usd".as_slice(), &[0], &8u64.to_be_bytes()].concat();
+        let at = path_rootfs.len() - 8 - cost_tail.len();
+        assert_eq!(
+            &path_rootfs[at..at + cost_tail.len()],
+            cost_tail.as_slice(),
+            "a path-rootfs preimage still ends at cost_usd"
+        );
     }
 
     /// The signature cannot cover itself, so those two fields must NOT move it —

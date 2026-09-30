@@ -189,6 +189,7 @@ impl PostureRegistry {
 ///   refusal point, before any driver is spawned.
 pub(crate) async fn admit_posture(
     spec: &nucleus_spec::PodSpec,
+    admitted: Option<&crate::host_paths::AdmittedImage>,
     id: uuid::Uuid,
     registry: &PostureRegistry,
 ) -> Result<Option<String>, crate::ApiError> {
@@ -202,13 +203,13 @@ pub(crate) async fn admit_posture(
         };
     // A claim names a rootfs digest, so it is only meaningful with an image to
     // measure. Fail-closed if there is nothing to measure.
-    let image = spec.spec.image.as_ref().ok_or_else(|| {
+    // Admission resolved the rootfs (a path, or the image store's file for an OCI rootfs);
+    // this measures the same file that will boot.
+    let rootfs = admitted.map(|a| a.rootfs_path()).ok_or_else(|| {
         ApiError::Driver(
             "pod carries a dlc_posture claim but has no spec.image to measure".to_string(),
         )
     })?;
-    // An OCI rootfs has no file here to measure; refused with the same reason as at create.
-    let rootfs = crate::rootfs_source::host_path(image)?;
     let measured = hex::encode(
         nucleus_identity::attestation::measure_artifact(rootfs)
             .await

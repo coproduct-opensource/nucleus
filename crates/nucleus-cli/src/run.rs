@@ -38,7 +38,28 @@ pub(crate) struct ResolvedConfig {
     node_auth_secret: Option<String>,
     node_actor: String,
     kernel_path: String,
-    rootfs_path: String,
+    rootfs: RunRootfs,
+}
+
+/// The rootfs a node run boots: a file named by path, or an image in the node's store.
+pub(crate) enum RunRootfs {
+    Path(String),
+    Image(crate::image::store::StoredRootfs),
+}
+
+impl std::fmt::Display for RunRootfs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunRootfs::Path(p) => write!(f, "{p}"),
+            RunRootfs::Image(i) => write!(
+                f,
+                "{} ({}, guest layer {})",
+                i.oci.reference,
+                i.rootfs_digest.as_str(),
+                i.oci.guest_layer_digest.as_str()
+            ),
+        }
+    }
 }
 
 /// Resolve configuration from multiple sources (args > keychain > config > defaults).
@@ -106,11 +127,15 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
         config.kernel_path()?.display().to_string()
     };
 
-    // Rootfs path: args > config
-    let rootfs_path = if let Some(ref path) = args.rootfs_path {
-        path.clone()
-    } else {
-        config.rootfs_path()?.display().to_string()
+    // Rootfs: --image (the node's image store) > --rootfs-path > config
+    let rootfs = match (&args.image, &args.rootfs_path) {
+        (Some(reference), _) => RunRootfs::Image(crate::image::store::resolve_for_run(
+            reference,
+            args.guest_layer.as_deref(),
+            args.image_root.as_deref(),
+        )?),
+        (None, Some(path)) => RunRootfs::Path(path.clone()),
+        (None, None) => RunRootfs::Path(config.rootfs_path()?.display().to_string()),
     };
 
     Ok(Some(ResolvedConfig {
@@ -119,7 +144,7 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
         node_auth_secret,
         node_actor,
         kernel_path,
-        rootfs_path,
+        rootfs,
     }))
 }
 
@@ -281,6 +306,20 @@ pub struct RunArgs {
     #[arg(long, env = "NUCLEUS_FIRECRACKER_ROOTFS_PATH")]
     pub rootfs_path: Option<String>,
 
+    /// Boot an OCI image from the node's image store instead of a rootfs path:
+    /// `registry/repository[:tag]@sha256:…`. Imported first when it is missing
+    /// and --guest-layer is given.
+    #[arg(long, value_name = "REFERENCE", conflicts_with = "rootfs_path")]
+    pub image: Option<String>,
+
+    /// With --image: the guest layer to import with, and to choose among builds.
+    #[arg(long, value_name = "TAR", requires = "image")]
+    pub guest_layer: Option<PathBuf>,
+
+    /// With --image: the node's image store [default: /var/lib/nucleus/state/images].
+    #[arg(long, value_name = "DIR", env = "NUCLEUS_NODE_IMAGE_ROOT")]
+    pub image_root: Option<PathBuf>,
+
     /// Firecracker vsock CID.
     #[arg(long, env = "NUCLEUS_FIRECRACKER_VSOCK_CID", default_value_t = 3)]
     pub vsock_cid: u32,
@@ -386,7 +425,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         if let Some(ref resolved) = resolved {
             println!("  Node URL: {}", resolved.node_url);
             println!("  Kernel: {}", resolved.kernel_path);
-            println!("  Rootfs: {}", resolved.rootfs_path);
+            println!("  Rootfs: {}", resolved.rootfs);
             println!("  Vsock: cid={} port={}", args.vsock_cid, args.vsock_port);
             println!("  Rootfs read-only: {}", args.rootfs_read_only);
         }
@@ -785,7 +824,7 @@ async fn run_enforced(
         policy,
         work_dir,
         &resolved.kernel_path,
-        &resolved.rootfs_path,
+        &resolved.rootfs,
     )?;
     write_pod_spec(&spec_path, &pod_spec)?;
 
@@ -852,8 +891,15 @@ fn build_pod_spec(
     policy: &PermissionLattice,
     work_dir: &Path,
     kernel_path: &str,
-    rootfs_path: &str,
+    rootfs: &RunRootfs,
 ) -> Result<SpecPodSpec> {
+    let (rootfs, rootfs_digest) = match rootfs {
+        RunRootfs::Path(p) => (RootfsSource::Path(PathBuf::from(p)), None),
+        RunRootfs::Image(i) => (
+            RootfsSource::Oci(i.oci.clone()),
+            Some(i.rootfs_digest.clone()),
+        ),
+    };
     let mut spec = SpecPodSpec::new(PodSpecInner {
         work_dir: work_dir.to_path_buf(),
         timeout_seconds: args.timeout,
@@ -865,12 +911,12 @@ fn build_pod_spec(
         network: None,
         image: Some(ImageSpec {
             kernel_path: PathBuf::from(kernel_path),
-            rootfs: RootfsSource::Path(PathBuf::from(rootfs_path)),
+            rootfs,
             boot_args: None,
             read_only: args.rootfs_read_only,
             scratch_path: None,
             kernel_digest: None,
-            rootfs_digest: None,
+            rootfs_digest,
             scratch_digest: None,
             data_path: None,
             data_digest: None,
@@ -1411,5 +1457,61 @@ mod tests {
         assert_eq!(proxy_addr, "127.0.0.1:9");
 
         server_handle.await.unwrap();
+    }
+
+    #[derive(clap::Parser)]
+    struct RunCli {
+        #[command(flatten)]
+        run: RunArgs,
+    }
+
+    fn parse_run(argv: &[&str]) -> Result<RunArgs, clap::Error> {
+        use clap::Parser as _;
+        RunCli::try_parse_from(std::iter::once("run").chain(argv.iter().copied())).map(|c| c.run)
+    }
+
+    #[test]
+    fn image_and_rootfs_path_are_exclusive() {
+        let reference = format!("registry.example/app@sha256:{}", "a".repeat(64));
+        let err = parse_run(&["task", "--image", &reference, "--rootfs-path", "/r"])
+            .expect_err("both is refused");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let args = parse_run(&["task", "--image", &reference]).expect("image alone");
+        assert_eq!(args.image.as_deref(), Some(reference.as_str()));
+        assert!(parse_run(&["task", "--guest-layer", "/g.tar"]).is_err());
+    }
+
+    #[test]
+    fn an_image_rootfs_is_named_by_reference_and_pinned_by_its_digest() {
+        let reference = format!("registry.example/app@sha256:{}", "a".repeat(64));
+        let args = parse_run(&["task", "--image", &reference]).expect("parses");
+        let oci: nucleus_spec::OciRootfs = serde_json::from_str(&format!(
+            r#"{{"reference":"{reference}","manifest_digest":"sha256:{}",
+                "guest_layer_digest":"sha-256:{}"}}"#,
+            "b".repeat(64),
+            "c".repeat(64)
+        ))
+        .expect("oci");
+        let digest = nucleus_spec::ArtifactDigest::parse(&format!("sha-256:{}", "d".repeat(64)))
+            .expect("digest");
+        let rootfs = RunRootfs::Image(crate::image::store::StoredRootfs {
+            oci: oci.clone(),
+            rootfs_digest: digest.clone(),
+        });
+        let spec = build_pod_spec(
+            &args,
+            &PermissionLattice::restrictive(),
+            Path::new("/work"),
+            "/k",
+            &rootfs,
+        )
+        .expect("spec");
+        let image = spec.spec.image.expect("image");
+        assert_eq!(image.rootfs, RootfsSource::Oci(oci));
+        assert_eq!(image.rootfs_digest, Some(digest));
+        // And it survives the wire, which refuses an unpinned or writable OCI rootfs.
+        let yaml = serde_yaml::to_string(&image).expect("yaml");
+        assert!(yaml.contains("rootfs_oci"), "{yaml}");
+        serde_yaml::from_str::<ImageSpec>(&yaml).expect("round-trips");
     }
 }

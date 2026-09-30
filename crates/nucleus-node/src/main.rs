@@ -502,6 +502,7 @@ struct FirecrackerPod {
     /// The host-owned pod dir: where teardown preserves the exit report and where
     /// the node's record of the pod's mediation key lives (`pod_receipt`).
     pod_dir: PathBuf,
+    rootfs_provenance: Option<host_paths::ImageProvenance>, // an OCI rootfs's origin (receipt)
     child: Arc<Mutex<tokio::process::Child>>,
     bridge: Mutex<Option<vsock_bridge::VsockBridge>>,
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
@@ -1137,8 +1138,7 @@ async fn create_pod_internal(
 ) -> Result<(Uuid, Option<String>), ApiError> {
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
-    rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
-    host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;
+    let image = host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -1159,7 +1159,7 @@ async fn create_pod_internal(
     // (AssuranceCoverage.lean's reached-vs-unreached distinction), not a carried
     // assertion trusted on the pod's word. See posture.rs / `admit_posture`.
     let posture_stamp: Option<String> =
-        posture::admit_posture(&spec, id, &state.trusted_postures).await?;
+        posture::admit_posture(&spec, image.as_ref(), id, &state.trusted_postures).await?;
 
     // ── Authority Gate: proof of caller authority, budget conserved ──
     // The caller's certificate decides what this pod may do; the spec's policy
@@ -1173,7 +1173,7 @@ async fn create_pod_internal(
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
         DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id).await,
-        DriverKind::Firecracker => spawn_firecracker_pod(state, &pod_dir, &spec, id).await,
+        DriverKind::Firecracker => spawn_firecracker_pod(state, &pod_dir, &spec, id, image).await,
         DriverKind::Container => {
             spawn_container_pod(state, &pod_dir, &spec, id, raw_yaml.as_deref()).await
         }
@@ -2112,10 +2112,11 @@ async fn spawn_firecracker_pod(
     pod_dir: &Path,
     spec: &PodSpec,
     id: Uuid,
+    admitted: Option<host_paths::AdmittedImage>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (state, pod_dir, spec, id);
+        let _ = (state, pod_dir, spec, id, admitted);
         let why = "firecracker requires Linux; run nucleus-node inside Colima on macOS";
         Err(ApiError::Driver(why.to_string()))
     }
@@ -2166,8 +2167,7 @@ async fn spawn_firecracker_pod(
             None => None,
         };
 
-        // Resolved once: every consumer below takes a rootfs that is a host file by construction.
-        let image = rootfs_source::HostImage::of_spec(spec)?;
+        let image = rootfs_source::HostImage::of_spec(spec, admitted)?; // resolved at admission
         let vsock_spec = spec
             .spec
             .vsock
@@ -2873,6 +2873,7 @@ async fn spawn_firecracker_pod(
 
         let handle = FirecrackerPod {
             pod_dir: pod_dir.to_path_buf(),
+            rootfs_provenance: image.provenance().cloned(),
             jail: Mutex::new(jail_layout.clone()),
             child,
             bridge: Mutex::new(Some(bridge)),

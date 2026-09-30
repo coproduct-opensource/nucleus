@@ -686,6 +686,8 @@ fn tag_only_import_is_refused_before_the_network() {
         oci_archive: None,
         arch: Some(super::ArchArg::Amd64),
         cache_dir: Some(dir.path().to_owned()),
+        guest_layer: None,
+        image_root: None,
         registry: super::RegistryOpts {
             insecure_registry: vec![host],
             registry_config: Some(dir.path().join("absent.json")),

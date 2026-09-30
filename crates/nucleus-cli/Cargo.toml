@@ -28,6 +28,9 @@ nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-bundle-cas = { path = "../nucleus-bundle-cas" }
 # `nucleus image`: the one flattener every image source goes through.
 nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
+# `nucleus image import --guest-layer`: stage two and the node image store's
+# layout and record, from the one crate the node reads them with.
+nucleus-microvm-host = { path = "../nucleus-microvm-host" }
 
 # Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
 # pre-1.0; see nucleus-bundle-cas for version pins + rationale.
