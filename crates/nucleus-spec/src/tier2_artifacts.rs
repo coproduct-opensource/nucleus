@@ -34,6 +34,16 @@
 //! because "sha256 verified" reads like a supply-chain guarantee and this half
 //! of it is not one.
 
+/// Where a provisioned node host keeps these artifacts.
+///
+/// *Guest-VM* path space on macOS: `nucleus setup` installs here inside the Lima
+/// VM, not under the user's `~/Library/Application Support`. Here rather than in
+/// `nucleus-cli` because the node reads it too: it is the default of
+/// `nucleus-node --artifacts-root`, the only directory a pod's `kernel_path` and
+/// `rootfs_path` may name (2026-09-29). One constant, so the directory `setup`
+/// installs into and the one the node admits from cannot drift apart.
+pub const HOST_ARTIFACTS_DIR: &str = "/var/lib/nucleus/artifacts";
+
 /// A kernel image pinned by URL and content digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kernel {

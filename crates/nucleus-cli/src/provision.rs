@@ -35,8 +35,9 @@ use std::process::Command;
 /// This is *guest-VM* path space on macOS, which is the distinction the config
 /// previously lost: `Config::artifacts_dir()` resolves under the host's
 /// `~/Library/Application Support`, and a PodSpec built from it named paths the
-/// node — running inside the Lima VM — cannot see.
-pub const HOST_ARTIFACTS_DIR: &str = "/var/lib/nucleus/artifacts";
+/// node — running inside the Lima VM — cannot see. Defined in `nucleus-spec`
+/// because it is also the node's default `--artifacts-root`.
+pub use nucleus_spec::tier2_artifacts::HOST_ARTIFACTS_DIR;
 
 /// Where the node keeps per-pod state inside the Tier 2 host.
 pub const HOST_STATE_DIR: &str = "/var/lib/nucleus/state";
@@ -561,6 +562,7 @@ pub fn node_env_body(
          NUCLEUS_NODE_GRPC_LISTEN=0.0.0.0:9180\n\
          NUCLEUS_NODE_STATE_DIR={HOST_STATE_DIR}\n\
          NUCLEUS_NODE_SCRATCH_ROOT={HOST_SCRATCH_ROOT}\n\
+         NUCLEUS_NODE_ARTIFACTS_ROOT={HOST_ARTIFACTS_DIR}\n\
          NUCLEUS_NODE_AUTH_SECRET={auth_hex}\n\
          NUCLEUS_NODE_PROXY_AUTH_SECRET={proxy_hex}\n\
          NUCLEUS_NODE_PROXY_APPROVAL_SECRET={approval_hex}\n\
@@ -1037,6 +1039,22 @@ mod tests {
         assert!(body.contains(&format!("NUCLEUS_NODE_SCRATCH_ROOT={HOST_SCRATCH_ROOT}\n")));
         assert!(HOST_SCRATCH_ROOT.starts_with(&format!("{HOST_STATE_DIR}/")));
         assert!(!HOST_SCRATCH_ROOT.starts_with(HOST_CA_DIR));
+    }
+
+    /// A provisioned node admits a pod's kernel and rootfs only from the
+    /// directory `setup` installs them into (`--artifacts-root`), which is
+    /// outside the state dir and so nowhere near the CA. `nucleus-node`'s
+    /// `--data-root` and `--workspace-root` default under the state dir
+    /// (`<state>/data`, `<state>/workspaces`), which is already `HOST_STATE_DIR`
+    /// here, so they need no line of their own.
+    #[test]
+    fn a_provisioned_node_admits_kernels_only_from_its_artifacts_dir() {
+        let body = node_env_body("a", "b", "c", "d");
+        assert!(body.contains(&format!(
+            "NUCLEUS_NODE_ARTIFACTS_ROOT={HOST_ARTIFACTS_DIR}\n"
+        )));
+        assert!(!HOST_ARTIFACTS_DIR.starts_with(&format!("{HOST_STATE_DIR}/")));
+        assert!(!HOST_CA_DIR.starts_with(&format!("{HOST_ARTIFACTS_DIR}/")));
     }
 
     /// The node env file is WRITTEN here and READ back by
