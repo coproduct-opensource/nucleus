@@ -123,7 +123,11 @@ fn image_identity(image: &ImageSpec) -> Result<ImageIdentity<'_>, IdentityError>
         // OUT — locations. `/images/a/vmlinux` and `/images/b/vmlinux` may hold identical bytes or
         // wildly different ones, and the path cannot say which. The digests below are the identity.
         kernel_path: _,
-        rootfs_path: _,
+        // A path or an OCI reference, both locations. Where the rootfs was FETCHED from does not
+        // change what boots; `rootfs_digest` below does, and an OCI source is refused at parse
+        // without it. So a path spec and an OCI spec pinning the same bytes are one program, and
+        // every program digest minted before `RootfsSource` existed is unchanged.
+        rootfs: _,
         scratch_path: _,
         data_path: _,
         // IN — the bytes themselves.
@@ -446,6 +450,42 @@ mod tests {
         let no_image =
             spec_from(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"work_dir":"/w"}}"#);
         assert!(program_digest(&no_image).is_ok());
+    }
+
+    /// GOLDEN. Captured on main before `ImageSpec::rootfs` became a `RootfsSource`
+    /// (2026-09-29). Every program digest minted before the enum must still be the same
+    /// program after it, or every snapshot and cache keyed on one silently misses.
+    #[test]
+    fn a_path_spec_keeps_the_program_digest_it_had_before_rootfs_source() {
+        let spec = spec_from(&format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{
+                 "image":{{"kernel_path":"/k","rootfs_path":"/r","boot_args":"console=ttyS0",
+                           "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}}}}}"#
+        ));
+        assert_eq!(
+            program_digest(&spec).unwrap(),
+            "49100ec91a2a5be0b0685f6e0efbb7ec3cb3a29e72844480cc89bc46160a0663"
+        );
+    }
+
+    /// Where the rootfs came from is a location; the digest of what boots is the identity.
+    #[test]
+    fn an_oci_rootfs_pinning_the_same_bytes_is_the_same_program() {
+        let path = pinned("");
+        let oci = spec_from(&format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{
+                 "image":{{"kernel_path":"/k",
+                           "rootfs_oci":{{"reference":"registry.example/app@sha256:{h}",
+                                         "manifest_digest":"sha256:{h}",
+                                         "guest_layer_digest":"{D1}"}},
+                           "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}}}}}"#,
+            h = "a".repeat(64)
+        ));
+        assert!(matches!(
+            oci.spec.image.as_ref().unwrap().rootfs,
+            crate::RootfsSource::Oci(_)
+        ));
+        assert_eq!(program_digest(&path), program_digest(&oci));
     }
 
     /// The digest is domain-separated and stable in shape.

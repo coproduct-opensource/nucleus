@@ -50,6 +50,7 @@ mod pod_caller_identity;
 mod pod_receipt;
 mod pod_view;
 mod production_confinement;
+mod rootfs_source;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
@@ -1131,6 +1132,7 @@ async fn create_pod_internal(
 ) -> Result<(Uuid, Option<String>), ApiError> {
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
+    rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -2165,11 +2167,8 @@ async fn spawn_firecracker_pod(
             None => None,
         };
 
-        let image = spec
-            .spec
-            .image
-            .as_ref()
-            .ok_or_else(|| ApiError::Driver("missing spec.image".to_string()))?;
+        // Resolved once: every consumer below takes a rootfs that is a host file by construction.
+        let image = rootfs_source::HostImage::of_spec(spec)?;
         let vsock_spec = spec
             .spec
             .vsock
@@ -2318,7 +2317,7 @@ async fn spawn_firecracker_pod(
         // declares the drive, so a disk that cannot be made means no drive
         // rather than a dead boot.
         let (effective_image, scratch_is_node_provisioned) = firecracker_config::scratch_for_pod(
-            image,
+            &image,
             jail_layout.as_ref(),
             state.jailer_uid.get(),
             state.jailer_gid,

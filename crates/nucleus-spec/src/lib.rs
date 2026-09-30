@@ -3,6 +3,7 @@
 pub mod boot_budget;
 pub mod exit_report_auth;
 pub mod identity;
+mod rootfs_source;
 pub mod tier2_artifacts;
 pub mod vmm_version;
 pub mod workload_result;
@@ -13,6 +14,9 @@ use std::path::PathBuf;
 use portcullis::PermissionLattice;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use rootfs_source::ImageSpecWire;
+pub use rootfs_source::{OciDigest, OciReference, OciRootfs, RootfsSource};
 
 /// Top-level pod spec document (YAML/JSON).
 /// The only API version this build understands.
@@ -536,15 +540,21 @@ impl<'de> Deserialize<'de> for ArtifactDigest {
     }
 }
 
+// The wire shape carries the rootfs as two optional keys and refuses both-and-neither; this type
+// carries the one that was given. See `rootfs_source` for why the split, and for the defaults.
+// Under `try_from` serde reads `deny_unknown_fields` off the WIRE struct, which carries it; it is
+// kept here so `strict_parsing` still sees this type declare it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(try_from = "ImageSpecWire", into = "ImageSpecWire")]
 pub struct ImageSpec {
     /// Path to the kernel image.
     pub kernel_path: PathBuf,
-    /// Path to the root filesystem image.
-    pub rootfs_path: PathBuf,
+    /// Where the root filesystem comes from: `rootfs_path` (a file on the node) or `rootfs_oci`
+    /// (an OCI artifact) on the wire, exactly one. A LOCATION, like `kernel_path`: the program
+    /// identity takes `rootfs_digest`, never this.
+    pub rootfs: RootfsSource,
     /// Optional kernel boot args.
-    #[serde(default)]
     pub boot_args: Option<String>,
     /// Whether the root filesystem should be mounted read-only.
     ///
@@ -561,23 +571,19 @@ pub struct ImageSpec {
     /// this field got the unsafe value. Omission now means isolation; a caller
     /// that genuinely wants a writable rootfs must say so, and should give the
     /// pod a private image or a `scratch_path`.
-    #[serde(default = "default_read_only")]
     pub read_only: bool,
     /// Optional scratch disk image for writable storage.
-    #[serde(default)]
     pub scratch_path: Option<PathBuf>,
     /// Expected digest of the kernel image, if the spec pins one.
     ///
     /// Absent means unpinned, which is what every spec written before this field says, so absence
     /// cannot be a refusal without breaking them. What it costs is that the node has nothing to
     /// check the bytes against — a later flag can turn absence itself into a refusal; today it simply means unchecked.
-    #[serde(default)]
     pub kernel_digest: Option<ArtifactDigest>,
-    /// Expected digest of the root filesystem, if the spec pins one.
-    #[serde(default)]
+    /// Expected digest of the root filesystem, if the spec pins one. Required for
+    /// `rootfs_oci`: a new source starts pinned (B-2).
     pub rootfs_digest: Option<ArtifactDigest>,
     /// Expected digest of the scratch image, if the spec pins one.
-    #[serde(default)]
     pub scratch_digest: Option<ArtifactDigest>,
     /// An additional READ-ONLY filesystem image handed to the guest.
     ///
@@ -592,7 +598,6 @@ pub struct ImageSpec {
     ///   the way a scratch disk does (see `snapshot::clone_safety`);
     /// * and being immutable, it has a digest, which is what lets it enter the pod's program
     ///   identity rather than being invisible input.
-    #[serde(default)]
     pub data_path: Option<PathBuf>,
     /// Expected digest of the read-only data image, if the spec pins one.
     ///
@@ -603,7 +608,6 @@ pub struct ImageSpec {
     /// paths baked into the snapshot, so a base is only valid for a pod whose data image holds
     /// the same bytes. Without this field in the identity, a base could be restored against a
     /// different corpus and the guest would carry the old one's page cache.
-    #[serde(default)]
     pub data_digest: Option<ArtifactDigest>,
 }
 
@@ -2222,7 +2226,14 @@ spec:
     /// property is about the SET of types, which no value-level test can see.
     #[test]
     fn every_deserializable_spec_type_denies_unknown_fields() {
-        let src = include_str!("lib.rs");
+        // `rootfs_source.rs` too: `ImageSpec` deserializes THROUGH its wire struct there, so
+        // that struct is where the strictness actually lives (`try_from` ignores the attribute
+        // on `ImageSpec` itself).
+        let src = concat!(
+            include_str!("lib.rs"),
+            "\n",
+            include_str!("rootfs_source.rs")
+        );
         let lines: Vec<&str> = src.lines().collect();
         let mut offenders = Vec::new();
         let mut checked = 0;

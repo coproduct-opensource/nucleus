@@ -4,7 +4,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nucleus_client::sign_http_headers;
 use nucleus_spec::{
-    CredentialsSpec, ImageSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec, VsockSpec,
+    CredentialsSpec, ImageSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec, RootfsSource,
+    VsockSpec,
 };
 use portcullis::{CapabilityLevel, PermissionLattice};
 use rust_decimal::Decimal;
@@ -864,7 +865,7 @@ fn build_pod_spec(
         network: None,
         image: Some(ImageSpec {
             kernel_path: PathBuf::from(kernel_path),
-            rootfs_path: PathBuf::from(rootfs_path),
+            rootfs: RootfsSource::Path(PathBuf::from(rootfs_path)),
             boot_args: None,
             read_only: args.rootfs_read_only,
             scratch_path: None,

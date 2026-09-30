@@ -68,7 +68,7 @@ pub(crate) struct Inputs<'a> {
     pub state: &'a NodeState,
     pub pod_dir: &'a Path,
     pub spec: &'a PodSpec,
-    pub image: &'a nucleus_spec::ImageSpec,
+    pub image: &'a crate::rootfs_source::HostImage,
     pub id: Uuid,
     pub grant: &'a net::IdentityGrant,
     pub vsock_path: &'a Path,
@@ -125,7 +125,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
             .compute_attestation(
                 &pod_id_str,
                 &image.kernel_path,
-                &image.rootfs_path,
+                image.rootfs_path(),
                 &config_bytes,
                 measured,
             )

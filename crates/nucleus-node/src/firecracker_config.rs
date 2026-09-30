@@ -25,6 +25,7 @@ use nucleus_spec::PodSpec;
 #[cfg(target_os = "linux")]
 use crate::ApiError;
 use crate::net;
+use crate::rootfs_source::HostImage;
 
 // ---------------------------------------------------------------------------
 // Config structs
@@ -208,7 +209,7 @@ pub(crate) struct JailResource {
 /// relocated, so `prepare_jail` writes them directly.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn jail_resources(
-    image: &nucleus_spec::ImageSpec,
+    image: &HostImage,
     spec: &PodSpec,
     scratch_is_node_provisioned: bool,
 ) -> Vec<JailResource> {
@@ -220,7 +221,7 @@ pub(crate) fn jail_resources(
             placement: Placement::CopyableIfCrossDevice,
         },
         JailResource {
-            host_source: image.rootfs_path.clone(),
+            host_source: image.rootfs_path().to_path_buf(),
             in_jail: in_jail::ROOTFS,
             // Mirrors `lower_drives`' `is_read_only: image.read_only` exactly. If
             // these two ever disagree, a writable rootfs gets copied and the
@@ -228,7 +229,7 @@ pub(crate) fn jail_resources(
             // pin, which until #2784 was named here and never written.
             //
             // The agreement is necessary and NOT sufficient. A hard link means
-            // the guest writes through to `image.rootfs_path` itself, so
+            // the guest writes through to `image.rootfs_path()` itself, so
             // `read_only: false` against the shared installed artifact gives
             // every later pod the previous pod's writes and lets concurrent
             // pods share one writable block device. That is why
@@ -352,11 +353,11 @@ fn place_resource(resource: &JailResource, dest: &Path) -> Result<(), String> {
 /// decision is testable without a node.
 #[cfg(target_os = "linux")]
 pub(crate) fn scratch_for_pod(
-    image: &nucleus_spec::ImageSpec,
+    image: &HostImage,
     jail_layout: Option<&JailLayout>,
     uid: u32,
     gid: u32,
-) -> (nucleus_spec::ImageSpec, bool) {
+) -> (HostImage, bool) {
     let mut effective = image.clone();
     if effective.scratch_path.is_some() {
         return (effective, false);
@@ -366,7 +367,7 @@ pub(crate) fn scratch_for_pod(
     };
     match provision_pod_scratch(&jail.jail_root, DEFAULT_SCRATCH_BYTES, uid, gid) {
         Some(path) => {
-            effective.scratch_path = Some(path);
+            effective.set_scratch_path(path);
             (effective, true)
         }
         None => (effective, false),
@@ -454,7 +455,7 @@ fn build_scratch_image(
 #[tracing::instrument(skip_all, fields(boot.stage = "prepare_jail"))]
 pub(crate) fn prepare_jail(
     layout: &JailLayout,
-    image: &nucleus_spec::ImageSpec,
+    image: &HostImage,
     spec: &PodSpec,
     config_json: &[u8],
     uid: u32,
@@ -935,7 +936,7 @@ impl FirecrackerConfig {
         spec: &PodSpec,
         log_path: &Path,
         vsock_path: &Path,
-        image: &nucleus_spec::ImageSpec,
+        image: &HostImage,
         net_plan: Option<&net::NetPlan>,
         approval_pubkeys: &str,
         workload_api_port: Option<u32>,
@@ -1151,10 +1152,6 @@ impl FirecrackerConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Pure lowering seams
 // ---------------------------------------------------------------------------
 //
@@ -1174,13 +1171,13 @@ impl FirecrackerConfig {
 /// ISOLATION INVARIANT: under the jailer, `path_on_host` is a path in the JAIL.
 /// Firecracker resolves it after `chroot`, so a host path here would simply not
 /// exist for it — and the kernel/rootfs are hard-linked in under these names.
-fn lower_drives(image: &nucleus_spec::ImageSpec, jailed: bool) -> Vec<DriveConfig> {
+fn lower_drives(image: &HostImage, jailed: bool) -> Vec<DriveConfig> {
     let mut drives = vec![DriveConfig {
         drive_id: "rootfs".to_string(),
         path_on_host: if jailed {
             in_jail::ROOTFS.to_string()
         } else {
-            image.rootfs_path.display().to_string()
+            image.rootfs_path().display().to_string()
         },
         is_root_device: true,
         is_read_only: image.read_only,
