@@ -1,6 +1,6 @@
 # Derived files: a measurement of the tree, not a statement about a branch.
 #
-# Both sides of any two PRs move these, so every pair conflicts by construction,
+# Both sides of any two PRs move this, so every pair conflicts by construction,
 # and NEITHER side's number is right afterwards — they describe two trees, and
 # the one that matters is the third. Hand-resolving them (three times on
 # 2026-09-18 alone) invites picking a number that describes nothing.
@@ -20,5 +20,11 @@
 # rather than with an ordinary conflict. That is git's behaviour for a named
 # driver it cannot find, it is noisy rather than silent, and the fix is the one
 # command above.
-.scorecard-ratchet.toml merge=keep-ours
+#
+# `.scorecard-ratchet.toml` is deliberately NOT here (#3050). It holds pins AND
+# schema: `keep-ours` kept a branch's text wholesale, so merging a `main` that
+# had added a required field dropped the field with a clean "Auto-merging" and
+# no warning. A plain 3-way merge keeps what either side added and stops only
+# where both sides moved the same pin — the one case a person should decide.
+# `xtask scorecard`'s `no_ratchet_is_resolved_by_a_merge_driver` holds this.
 badges/scorecard.json   merge=keep-ours
