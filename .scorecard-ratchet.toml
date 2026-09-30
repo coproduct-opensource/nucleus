@@ -195,7 +195,11 @@ population_floor = 278
 # slicing a JWS signing input by summed lengths, a hex-table index, and five
 # unchecked additions or multiplications on lengths and times. With it the ratio is
 # 29/87, 33.33%, and the floor follows it up.
-floor_bp = 3333
+# 2026-09-29: new crate nucleus-microvm-host (the host requirements table and KVM
+# probe, the scratch-image read-back, workspace seed/harvest) declares all seven
+# in lib.rs and main.rs from its first commit; 30/88, 34.09%. Declaring it moved
+# one site: the CAP_NET_ADMIN mask `1u64 << bit` became `checked_shl`.
+floor_bp = 3409
 floor_set = "measurement"
 population_floor = 86
 

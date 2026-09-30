@@ -75,11 +75,10 @@ mod effect_footprint;
 mod envelope_frame;
 mod federated_credential;
 mod guest_socket;
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-mod host_requirements;
 mod lifecycle;
 mod net;
 mod posture;
+mod scratch_root;
 mod session_mint;
 mod signed_proxy;
 mod snapshot;
@@ -90,6 +89,8 @@ mod trust_gate;
 mod upstreams;
 mod vsock_bridge;
 
+#[cfg(target_os = "linux")]
+use nucleus_microvm_host::probe as host_requirements;
 pub use nucleus_proto::nucleus_node as proto;
 
 use proto::node_service_server::{NodeService, NodeServiceServer};
@@ -109,6 +110,8 @@ struct Args {
     state_dir: PathBuf,
     #[command(flatten)]
     authority: pod_authority::AuthorityArgs,
+    #[command(flatten)]
+    scratch: scratch_root::ScratchArgs,
     /// Driver backend.
     #[arg(
         long,
@@ -345,6 +348,7 @@ struct Args {
 struct NodeState {
     pods: pod_api::PodRegistry,
     state_dir: PathBuf,
+    scratch_root: PathBuf,
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
@@ -690,6 +694,7 @@ async fn main() -> Result<(), ApiError> {
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
+        scratch_root: args.scratch.ensure(&args.state_dir)?,
         driver: args.driver.clone(),
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
@@ -1133,6 +1138,7 @@ async fn create_pod_internal(
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
     rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
+    scratch_root::admit(&mut spec, &state.scratch_root)?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -2128,14 +2134,7 @@ async fn spawn_firecracker_pod(
         //
         // See `host_requirements` for the table and why the decision is split
         // from the observation.
-        let needs_network = spec.spec.network.is_some();
-        let missing = host_requirements::unmet(
-            &host_requirements::requirements(needs_network),
-            host_requirements::observe,
-        );
-        if !missing.is_empty() {
-            return Err(ApiError::Driver(host_requirements::explain(&missing)));
-        }
+        host_requirements::preflight(spec.spec.network.is_some()).map_err(ApiError::Driver)?;
 
         // REFUSE A VMM WITH A KNOWN GUEST ESCAPE.
         //

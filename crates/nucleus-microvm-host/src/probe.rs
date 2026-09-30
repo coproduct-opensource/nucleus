@@ -29,9 +29,11 @@
 //! a late, confusing failure into an early, actionable one; it is not a promise
 //! that the operation will succeed.
 
+pub mod kvm;
+
 /// How to observe whether one requirement is satisfied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Probe {
+pub enum Probe {
     /// A path that must exist.
     PathExists(&'static str),
     /// A Linux capability that must be in this process's EFFECTIVE set,
@@ -54,7 +56,7 @@ pub(crate) enum Probe {
 
 /// One thing the launch path needs from the host.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct HostRequirement {
+pub struct HostRequirement {
     /// What is missing, in the operator's vocabulary.
     pub what: &'static str,
     pub probe: Probe,
@@ -73,7 +75,7 @@ const CAP_NET_ADMIN: u32 = 12;
 /// `needs_network` gates the networking requirements: a pod with no `network`
 /// block never enters `setup_network`, so demanding CAP_NET_ADMIN of it would
 /// refuse launches that would have worked.
-pub(crate) fn requirements(needs_network: bool) -> Vec<HostRequirement> {
+pub fn requirements(needs_network: bool) -> Vec<HostRequirement> {
     let mut reqs = vec![
         HostRequirement {
             what: "/dev/kvm",
@@ -120,7 +122,7 @@ pub(crate) fn requirements(needs_network: bool) -> Vec<HostRequirement> {
 /// Sourced from the co-residency analysis. Only the sysfs-readable ones are here — cpuset
 /// pinning, CAT/MBA and ECC are defence in depth that this cannot observe, and claiming them
 /// would be worse than omitting them.
-pub(crate) fn sharing_requirements() -> Vec<HostRequirement> {
+pub fn sharing_requirements() -> Vec<HostRequirement> {
     vec![
         HostRequirement {
             what: "SMT disabled on the host",
@@ -156,10 +158,7 @@ pub(crate) fn sharing_requirements() -> Vec<HostRequirement> {
 ///
 /// `satisfied` is the observation, injected so this can be tested on a host that
 /// has none of these things.
-pub(crate) fn unmet(
-    reqs: &[HostRequirement],
-    satisfied: impl Fn(&Probe) -> bool,
-) -> Vec<HostRequirement> {
+pub fn unmet(reqs: &[HostRequirement], satisfied: impl Fn(&Probe) -> bool) -> Vec<HostRequirement> {
     reqs.iter()
         .filter(|r| !satisfied(&r.probe))
         .copied()
@@ -171,7 +170,7 @@ pub(crate) fn unmet(
 /// Pure, so the wording is testable. Reports ALL missing requirements rather
 /// than the first: a host missing two things should learn both in one run
 /// instead of one per attempt.
-pub(crate) fn explain(missing: &[HostRequirement]) -> String {
+pub fn explain(missing: &[HostRequirement]) -> String {
     let mut s = String::from("the host is missing what this pod needs:\n");
     for r in missing {
         s.push_str(&format!(
@@ -184,11 +183,11 @@ pub(crate) fn explain(missing: &[HostRequirement]) -> String {
 
 /// Observe one probe. I/O; the only part that is not testable here.
 #[cfg(target_os = "linux")]
-pub(crate) fn observe(probe: &Probe) -> bool {
+pub fn observe(probe: &Probe) -> bool {
     match probe {
         Probe::PathExists(p) => std::path::Path::new(p).exists(),
         Probe::Capability { bit, .. } => effective_capabilities()
-            .map(|caps| caps & (1u64 << bit) != 0)
+            .map(|caps| 1u64.checked_shl(*bit).is_some_and(|mask| caps & mask != 0))
             .unwrap_or(true), // unreadable /proc: do not invent a failure
         // Unreadable or unexpected: NOT satisfied. See the variant's doc comment for why this
         // is the opposite of the line above.
@@ -198,13 +197,25 @@ pub(crate) fn observe(probe: &Probe) -> bool {
     }
 }
 
+/// The launch preflight: every requirement a pod needs, observed now, and one
+/// message naming all that are missing.
+#[cfg(target_os = "linux")]
+pub fn preflight(needs_network: bool) -> Result<(), String> {
+    let missing = unmet(&requirements(needs_network), observe);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(explain(&missing))
+    }
+}
+
 /// Whether a sysfs reading satisfies a requirement. Pure, so the polarity is testable.
 ///
 /// `None` — the file is missing, or unreadable — is NOT satisfied. That is the whole point: this
 /// module's other probe treats an unreadable `/proc` as "do not invent a failure", which is right
 /// for a capability that gates a launch and wrong for a hardening property. "Could not tell" and
 /// "it is off" are the same answer to an attacker.
-pub(crate) fn sysfs_satisfied(contents: Option<&str>, any_of: &[&str]) -> bool {
+pub fn sysfs_satisfied(contents: Option<&str>, any_of: &[&str]) -> bool {
     contents.is_some_and(|v| any_of.contains(&v.trim()))
 }
 
