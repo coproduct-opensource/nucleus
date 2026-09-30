@@ -45,6 +45,11 @@
 /// install into it: the Lima VM `provision` builds, and the Apple `container`
 /// image described by [`crate::microvm_host`]. One constant for both, so a
 /// PodSpec written for one names paths the other has (ADR 0007 G-1).
+///
+/// The node reads it too: it is the default of `nucleus-node --artifacts-root`,
+/// the only directory a pod's `kernel_path` and `rootfs_path` may name
+/// (2026-09-29). One constant, so the directory `setup` installs into and the one
+/// the node admits from cannot drift apart.
 pub const HOST_ARTIFACTS_DIR: &str = "/var/lib/nucleus/artifacts";
 
 /// The guest kernel's file name under [`HOST_ARTIFACTS_DIR`].
