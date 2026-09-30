@@ -74,10 +74,10 @@ mod effect_footprint;
 mod envelope_frame;
 mod federated_credential;
 mod guest_socket;
+mod host_paths;
 mod lifecycle;
 mod net;
 mod posture;
-mod scratch_root;
 mod session_mint;
 mod signed_proxy;
 mod snapshot;
@@ -110,7 +110,7 @@ struct Args {
     #[command(flatten)]
     authority: pod_authority::AuthorityArgs,
     #[command(flatten)]
-    scratch: scratch_root::ScratchArgs,
+    host_paths: host_paths::HostPathArgs,
     /// Driver backend.
     #[arg(
         long,
@@ -347,7 +347,7 @@ struct Args {
 struct NodeState {
     pods: pod_api::PodRegistry,
     state_dir: PathBuf,
-    scratch_root: PathBuf,
+    host_roots: host_paths::Roots,
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
@@ -693,7 +693,7 @@ async fn main() -> Result<(), ApiError> {
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
-        scratch_root: args.scratch.ensure(&args.state_dir)?,
+        host_roots: args.host_paths.ensure(&args.state_dir)?,
         driver: args.driver.clone(),
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
@@ -1136,7 +1136,7 @@ async fn create_pod_internal(
 ) -> Result<(Uuid, Option<String>), ApiError> {
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
-    scratch_root::admit(&mut spec, &state.scratch_root)?;
+    host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -1833,12 +1833,12 @@ async fn spawn_container_pod(
         .canonicalize()
         .unwrap_or_else(|_| pod_dir.to_path_buf());
 
-    // Bind mounts: pod_dir → /data/pod (always), workspace dir if specified
-    let mut binds = vec![format!("{}:/data/pod:rw", pod_dir_abs.display())];
-    let work_dir_str = spec.spec.work_dir.to_string_lossy();
-    if !work_dir_str.is_empty() && work_dir_str != "/" {
-        binds.push(format!("{work_dir_str}:/workspace:rw"));
-    }
+    // Bind mounts: pod_dir → /data/pod, work_dir → /workspace. `host_paths::admit`
+    // resolved work_dir to a directory strictly inside --workspace-root.
+    let binds = vec![
+        format!("{}:/data/pod:rw", pod_dir_abs.display()),
+        format!("{}:/workspace:rw", spec.spec.work_dir.display()),
+    ];
 
     // Network mode: per-pod label override or node default
     let network_mode = spec
