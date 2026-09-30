@@ -562,7 +562,7 @@ struct ContainerPod {
     cached_exit: Mutex<Option<PodState>>,
 }
 
-pub(crate) use pod_view::{CreatePodRequest, CreatePodResponse, PodInfo, PodState};
+pub(crate) use pod_view::{CreatePodResponse, PodInfo, PodState};
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
@@ -1069,20 +1069,7 @@ async fn create_pod(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreatePodResponse>, ApiError> {
-    let spec = match serde_yaml::from_slice::<PodSpec>(&body) {
-        Ok(spec) => spec,
-        Err(_) => {
-            let request: CreatePodRequest =
-                serde_yaml::from_slice(&body).map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
-            if let Some(spec) = request.spec {
-                spec
-            } else if let Some(yaml) = request.yaml {
-                serde_yaml::from_str(&yaml).map_err(|e| ApiError::InvalidSpec(e.to_string()))?
-            } else {
-                return Err(ApiError::InvalidSpec("missing spec".to_string()));
-            }
-        }
-    };
+    let spec = pod_view::parse_create_body(&body).map_err(ApiError::InvalidSpec)?;
 
     // WHO the parent is, established by the node rather than declared by the
     // caller: the per-pod caller token, or the caller's own pod SVID.

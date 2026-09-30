@@ -59,3 +59,47 @@ pub(crate) struct CreatePodRequest {
     #[serde(default)]
     pub(crate) yaml: Option<String>,
 }
+
+/// A create-pod body: a pod spec itself, or a [`CreatePodRequest`] wrapping one.
+///
+/// When it is neither, the error names what is wrong with it AS A POD SPEC as well as
+/// as a wrapper. Reporting only the wrapper's error hid the real one: a pod spec with
+/// one bad field (an unqualified OCI reference, found on the OCI-H live run) came back
+/// as "spec: unknown field `work_dir`", pointing at a field that was fine.
+pub(crate) fn parse_create_body(body: &[u8]) -> Result<PodSpec, String> {
+    let direct = match serde_yaml::from_slice::<PodSpec>(body) {
+        Ok(spec) => return Ok(spec),
+        Err(e) => e,
+    };
+    let request: CreatePodRequest = serde_yaml::from_slice(body).map_err(|wrapper| {
+        format!("{direct} (read as a pod spec); {wrapper} (read as a create request)")
+    })?;
+    match (request.spec, request.yaml) {
+        (Some(spec), _) => Ok(spec),
+        (None, Some(yaml)) => serde_yaml::from_str(&yaml).map_err(|e| e.to_string()),
+        (None, None) => Err("missing spec".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_create_body;
+
+    const SPEC: &str = "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: /work\n  \
+                        timeout_seconds: 60\n  policy:\n    type: profile\n    name: restrictive\n";
+
+    #[test]
+    fn a_pod_spec_and_a_wrapped_one_both_parse() {
+        assert!(parse_create_body(SPEC.as_bytes()).is_ok());
+        let wrapped = serde_json::json!({ "yaml": SPEC }).to_string();
+        assert!(parse_create_body(wrapped.as_bytes()).is_ok());
+    }
+
+    /// The pod spec's own error is in the refusal, not only the wrapper's.
+    #[test]
+    fn a_bad_field_in_a_pod_spec_is_named() {
+        let bad = format!("{SPEC}  not_a_field: 1\n");
+        let err = parse_create_body(bad.as_bytes()).expect_err("refused");
+        assert!(err.contains("not_a_field"), "{err}");
+    }
+}
