@@ -272,6 +272,22 @@ pub const RESERVED: &[Reserved] = &[
     },
 ];
 
+/// Every directory the guest mounts over or populates at boot: the
+/// [`ReservedKind::MustBeEmptyDir`] entries of [`RESERVED`], without the
+/// trailing `/`.
+///
+/// The guest layer carries each one as an empty directory. The rootfs is
+/// attached read-only, so PID 1 cannot create a mount point that the image
+/// left out, and an image with no `/work` (most of them) died at boot with
+/// `create /work: Read-only file system`. The stage-two overlay keeps an
+/// image's own directory where both have one, so this only ever adds.
+pub fn mount_points() -> impl Iterator<Item = &'static str> {
+    RESERVED
+        .iter()
+        .filter(|r| r.kind == ReservedKind::MustBeEmptyDir)
+        .map(|r| r.path.strip_suffix('/').unwrap_or(r.path))
+}
+
 /// The [`RESERVED`] entry that claims `path`, if any.
 ///
 /// Accepts an absolute guest path (`/etc/nucleus/pod.yaml`) or an image-layer

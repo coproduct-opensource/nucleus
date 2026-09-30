@@ -222,15 +222,20 @@ fn files(binaries: GuestBinaries, ca: Vec<u8>) -> Vec<(&'static str, u32, Vec<u8
     files
 }
 
-/// The layer as a tree: every file, and exactly the directories they need.
+/// The layer as a tree: every file, the directories they need, and every
+/// mount point the guest mounts over ([`guest_layout::mount_points`]) — the
+/// rootfs is read-only by then, so a mount point the image lacks cannot be made.
 pub fn layer_tree(binaries: GuestBinaries, ca: Vec<u8>) -> Result<AuthoredTree> {
     let files = files(binaries, ca);
-    let dirs: BTreeSet<&str> = files
+    let mut dirs: BTreeSet<&str> = files
         .iter()
         .flat_map(|(path, _, _)| Path::new(path).ancestors().skip(1))
         .filter_map(Path::to_str)
         .filter(|d| *d != "/")
         .collect();
+    for mount_point in guest_layout::mount_points() {
+        dirs.insert(mount_point);
+    }
     let mut tree = AuthoredTree::new();
     // BTreeSet order puts a parent before its children.
     for dir in dirs {
@@ -466,6 +471,15 @@ mod tests {
             "/usr",
             "/usr/local",
             "/usr/local/bin",
+            // The mount points: a read-only rootfs cannot grow them at boot.
+            "/cache",
+            "/cache-seed",
+            "/dev",
+            "/proc",
+            "/run",
+            "/sys",
+            "/tmp",
+            "/work",
         ]
         .into_iter()
         .map(str::to_owned)

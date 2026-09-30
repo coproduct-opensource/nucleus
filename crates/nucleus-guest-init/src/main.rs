@@ -225,6 +225,26 @@ mod cache_layout {
              writes through, got {CACHE_MERGED}"
         );
     }
+
+    /// Every directory PID 1 mounts over is one the guest layer carries. The
+    /// rootfs is read-only by the time these mounts run, so a mount point the
+    /// layer lacks and the image lacks is a boot that dies creating it — the
+    /// OCI-H live run's `create /work: Read-only file system`.
+    #[test]
+    fn every_mount_target_is_a_guest_layer_mount_point() {
+        let carried: Vec<&str> = nucleus_spec::guest_layout::mount_points().collect();
+        let targets = super::GUEST_MOUNTS.iter().map(|m| m.target).chain([
+            super::WORK_DIR,
+            super::CACHE_SEED,
+            CACHE_MERGED,
+        ]);
+        for target in targets {
+            assert!(
+                carried.contains(&target),
+                "{target} is mounted over at boot but the guest layer does not carry it"
+            );
+        }
+    }
 }
 
 /// Give a directory to the unprivileged build user. Best effort: the caller
