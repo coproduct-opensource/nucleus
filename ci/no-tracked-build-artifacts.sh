@@ -16,9 +16,9 @@
 # because the working tree is expected to be full of build output.
 set -euo pipefail
 
-# Directories that are build output by convention. `target/` is cargo's;
-# `.lake/` is Lake's, and the Lean packages are large.
-PATTERNS='/target/|^target/|/\.lake/|^\.lake/'
+# Paths that are build output by convention. `target/` is cargo's;
+# `.lake/` is Lake's, and the Lean packages are large; `.llbc` is Charon's.
+PATTERNS='/target/|^target/|/\.lake/|^\.lake/|\.llbc$'
 
 offenders="$(git ls-files | grep -E "$PATTERNS" || true)"
 
