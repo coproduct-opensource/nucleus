@@ -41,6 +41,12 @@ pub const HOST_ARTIFACTS_DIR: &str = "/var/lib/nucleus/artifacts";
 /// Where the node keeps per-pod state inside the Tier 2 host.
 pub const HOST_STATE_DIR: &str = "/var/lib/nucleus/state";
 
+/// The only directory a caller-supplied `image.scratch_path` may name a file in
+/// (`--scratch-root`). Seeded workspace images are staged here; the node refuses a
+/// writable guest disk from anywhere else, its own CA under `HOST_STATE_DIR/ca`
+/// included.
+pub const HOST_SCRATCH_ROOT: &str = "/var/lib/nucleus/state/scratch";
+
 /// The environment file the node's systemd unit reads.
 pub const NODE_ENV_PATH: &str = "/etc/nucleus/node.env";
 
@@ -554,6 +560,7 @@ pub fn node_env_body(
          NUCLEUS_NODE_LISTEN=0.0.0.0:8080\n\
          NUCLEUS_NODE_GRPC_LISTEN=0.0.0.0:9180\n\
          NUCLEUS_NODE_STATE_DIR={HOST_STATE_DIR}\n\
+         NUCLEUS_NODE_SCRATCH_ROOT={HOST_SCRATCH_ROOT}\n\
          NUCLEUS_NODE_AUTH_SECRET={auth_hex}\n\
          NUCLEUS_NODE_PROXY_AUTH_SECRET={proxy_hex}\n\
          NUCLEUS_NODE_PROXY_APPROVAL_SECRET={approval_hex}\n\
@@ -1020,6 +1027,16 @@ mod tests {
     fn artifact_paths_are_guest_absolute_not_host_relative() {
         assert!(HOST_ARTIFACTS_DIR.starts_with('/'));
         assert!(node_env_body("a", "b", "c", "d").contains(HOST_STATE_DIR));
+    }
+
+    /// A provisioned node confines caller-supplied scratch disks to a directory
+    /// that is inside its state dir but is NOT the state dir, which holds the CA.
+    #[test]
+    fn a_provisioned_node_confines_scratch_away_from_its_ca() {
+        let body = node_env_body("a", "b", "c", "d");
+        assert!(body.contains(&format!("NUCLEUS_NODE_SCRATCH_ROOT={HOST_SCRATCH_ROOT}\n")));
+        assert!(HOST_SCRATCH_ROOT.starts_with(&format!("{HOST_STATE_DIR}/")));
+        assert!(!HOST_SCRATCH_ROOT.starts_with(HOST_CA_DIR));
     }
 
     /// The node env file is WRITTEN here and READ back by

@@ -198,6 +198,18 @@ pub(crate) fn observe(probe: &Probe) -> bool {
     }
 }
 
+/// The launch preflight: every requirement a pod needs, observed now, and one
+/// message naming all that are missing.
+#[cfg(target_os = "linux")]
+pub(crate) fn preflight(needs_network: bool) -> Result<(), String> {
+    let missing = unmet(&requirements(needs_network), observe);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(explain(&missing))
+    }
+}
+
 /// Whether a sysfs reading satisfies a requirement. Pure, so the polarity is testable.
 ///
 /// `None` — the file is missing, or unreadable — is NOT satisfied. That is the whole point: this

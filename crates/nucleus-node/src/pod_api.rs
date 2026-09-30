@@ -924,6 +924,7 @@ mod handler_tests {
         NodeState {
             pods: Arc::new(Mutex::new(HashMap::new())),
             state_dir: a.state_dir.clone(),
+            scratch_root: a.scratch.ensure(&a.state_dir).expect("scratch root"),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
             firecracker_path: a.firecracker_path.clone(),
