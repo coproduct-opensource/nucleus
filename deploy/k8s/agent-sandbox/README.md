@@ -110,6 +110,6 @@ kubectl describe sandbox <name>
 
 ## See Also
 
-- [Agent Sandbox Quickstart](../../docs/quickstart/agent-sandbox.md)
-- [Kubernetes Quickstart](../../docs/quickstart/kubernetes.md)
+- [Agent Sandbox Quickstart](../../../docs/quickstart/agent-sandbox.md)
+- [Kubernetes Quickstart](../../../docs/quickstart/kubernetes.md)
 - [Agent Sandbox GitHub](https://github.com/kubernetes-sigs/agent-sandbox)

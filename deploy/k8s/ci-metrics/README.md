@@ -10,7 +10,7 @@ dashboard.
 
 | half | source | how it gets in |
 | --- | --- | --- |
-| runner side | actions-runner-controller listeners + controller (`gha_*`: assigned/running jobs, busy/idle/desired runners, job start-up and execution histograms) | the collector's `prometheus` receiver scrapes them via pod discovery in `arc-systems`; the controller chart must have `metrics:` set (`k8s/ci-runner/README.md`) |
+| runner side | actions-runner-controller listeners + controller (`gha_*`: assigned/running jobs, busy/idle/desired runners, job start-up and execution histograms) | the collector's `prometheus` receiver scrapes them via pod discovery in `arc-systems`; the controller chart must have `metrics:` set (`deploy/k8s/ci-runner/README.md`) |
 | GitHub side | the Actions API: per-job `created_at` → `started_at` (queue wait) → `completed_at` (duration), conclusion, workflow, event; merge-queue depth | `cargo xtask ci-otel` pushes OTLP/HTTP JSON every 15 min from `.github/workflows/ci-metrics.yml` (self-hosted pool only: the collector is in-cluster) |
 
 Collector → Prometheus (remote write, 60-day retention on a `local-path` PVC)
@@ -19,8 +19,8 @@ Collector → Prometheus (remote write, 60-day retention on a `local-path` PVC)
 ## Deploy / update (on the `pci-k3s` Lima VM)
 
 ```sh
-for f in k8s/ci-metrics/*.yaml; do limactl copy "$f" "pci-k3s:/tmp/ci-metrics/$(basename "$f")"; done
-limactl copy k8s/ci-metrics/dashboards/ci-throughput.json pci-k3s:/tmp/ci-metrics/ci-throughput.json
+for f in deploy/k8s/ci-metrics/*.yaml; do limactl copy "$f" "pci-k3s:/tmp/ci-metrics/$(basename "$f")"; done
+limactl copy deploy/k8s/ci-metrics/dashboards/ci-throughput.json pci-k3s:/tmp/ci-metrics/ci-throughput.json
 limactl shell pci-k3s -- sudo kubectl apply -f /tmp/ci-metrics/00-namespace-rbac.yaml
 # once: the Grafana admin password
 limactl shell pci-k3s -- sudo kubectl -n ci-metrics create secret generic grafana-admin --from-literal=password="$(openssl rand -hex 12)"
@@ -55,7 +55,7 @@ double-count at the edges, so backfill once, then let the schedule run.
 - **Jobs queued for a runner** (ARC `assigned − running`) rising while
   **busy / max** sits at 1.0 is the pool saturated; the fix is fewer or shorter
   jobs, not (on this VM) more runners — see the sizing note in
-  `k8s/ci-runner/README.md`.
+  `deploy/k8s/ci-runner/README.md`.
 - **Job queue wait p95 by runner pool** is the same fact from GitHub's side,
   including hosted runners.
 - **Workflow duration p95 by event** separates pull_request (scoped) from

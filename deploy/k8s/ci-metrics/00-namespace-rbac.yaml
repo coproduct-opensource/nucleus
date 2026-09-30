@@ -1,4 +1,4 @@
-# CI throughput metrics for the self-hosted pools (k8s/ci-metrics/README.md).
+# CI throughput metrics for the self-hosted pools (deploy/k8s/ci-metrics/README.md).
 apiVersion: v1
 kind: Namespace
 metadata:

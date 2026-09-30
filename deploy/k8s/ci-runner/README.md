@@ -46,32 +46,32 @@ podman push --tls-verify=false localhost:30500/nucleus-ci-runner:0.2.5
 # (/etc/rancher/k3s/registries.yaml already declares localhost:30500 insecure.)
 
 # 2. persistent mounts + toolchains
-sudo bash k8s/ci-runner/warm.sh
+sudo bash deploy/k8s/ci-runner/warm.sh
 
 # 3. the job hooks (per-job sccache hit rate + pod resource peaks in every job log)
 #    and the per-pod cargo config (lld for the host target; see cargo-config.toml)
 sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl create configmap runner-cargo-config \
-  -n arc-runners --from-file=config.toml=k8s/ci-runner/cargo-config.toml --dry-run=client -o yaml \
+  -n arc-runners --from-file=config.toml=deploy/k8s/ci-runner/cargo-config.toml --dry-run=client -o yaml \
   | sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl apply -f -
 sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl create configmap runner-hooks \
-  -n arc-runners --from-file=k8s/ci-runner/hooks/ --dry-run=client -o yaml \
+  -n arc-runners --from-file=deploy/k8s/ci-runner/hooks/ --dry-run=client -o yaml \
   | sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl apply -f -
 
 # 4. the scale set (controller `arc` in arc-systems is already installed)
 sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install nucleus-k3s \
   oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
-  --version 0.14.2 -n arc-runners -f k8s/ci-runner/values.yaml
+  --version 0.14.2 -n arc-runners -f deploy/k8s/ci-runner/values.yaml
 ```
 
-Metrics: the controller chart is installed with `-f k8s/ci-runner/controller-values.yaml`
+Metrics: the controller chart is installed with `-f deploy/k8s/ci-runner/controller-values.yaml`
 (`metrics:` on `:8080/metrics` for the controller-manager and every listener);
-`k8s/ci-metrics` scrapes them. After changing it, delete the listener pods so
+`deploy/k8s/ci-metrics` scrapes them. After changing it, delete the listener pods so
 they are recreated with the metrics port:
 
 ```sh
 sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade --install arc \
   oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
-  --version 0.14.2 -n arc-systems -f k8s/ci-runner/controller-values.yaml
+  --version 0.14.2 -n arc-systems -f deploy/k8s/ci-runner/controller-values.yaml
 sudo kubectl delete pod -n arc-systems -l app.kubernetes.io/component=runner-scale-set-listener
 ```
 
@@ -87,7 +87,7 @@ the short jobs. Their reservations are permanent, so CPU *requests* were
 lowered (gate 250m, build 2000m; limits unchanged) after new pods failed
 to schedule on "Insufficient cpu" while the build pool sat half idle.
 
-Install the build pool the same way with `-f k8s/ci-runner/values-build.yaml`
+Install the build pool the same way with `-f deploy/k8s/ci-runner/values-build.yaml`
 and release name `nucleus-k3s-build`.
 
 Then set the repo variables: `gh variable set CI_RUNNER --body nucleus-k3s` and

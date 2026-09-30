@@ -1,17 +1,17 @@
-# DERIVED from values.yaml by k8s/ci-runner/render-build-values.sh — do not
+# DERIVED from values.yaml by deploy/k8s/ci-runner/render-build-values.sh — do not
 # hand-edit. The `nucleus-k3s-build` pool: 4 big runners for the compile-class
 # jobs (see values.yaml for the two-pool rationale).
 #
 #   helm upgrade --install nucleus-k3s-build \
 #     oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
-#     --version 0.14.2 -n arc-runners -f k8s/ci-runner/values-build.yaml
+#     --version 0.14.2 -n arc-runners -f deploy/k8s/ci-runner/values-build.yaml
 # Helm values for the `nucleus-k3s` runner scale set (gha-runner-scale-set
 # 0.14.2) on the Lima `pci-k3s` VM. The GitHub credential is NOT here: it is
 # the pre-existing `gh-token` secret in the arc-runners namespace.
 #
 #   helm upgrade --install nucleus-k3s \
 #     oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
-#     --version 0.14.2 -n arc-runners -f k8s/ci-runner/values.yaml
+#     --version 0.14.2 -n arc-runners -f deploy/k8s/ci-runner/values.yaml
 #
 # Jobs reach these runners with `runs-on: nucleus-k3s` — in this repo through
 # `runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}`, so unsetting the repo
@@ -96,9 +96,9 @@ template:
           # minutes — was capped at four of twelve vCPU and three cargo jobs.
           - name: CARGO_BUILD_JOBS
             value: "9"
-          # Job hooks (k8s/ci-runner/hooks/): per-job sccache hit rate and pod
+          # Job hooks (deploy/k8s/ci-runner/hooks/): per-job sccache hit rate and pod
           # resource peaks in every job log. `kubectl create configmap
-          # runner-hooks --from-file=k8s/ci-runner/hooks/` keeps them current.
+          # runner-hooks --from-file=deploy/k8s/ci-runner/hooks/` keeps them current.
           - name: ACTIONS_RUNNER_HOOK_JOB_STARTED
             value: /home/runner/hooks/job-started.sh
           - name: ACTIONS_RUNNER_HOOK_JOB_COMPLETED
@@ -141,7 +141,7 @@ template:
             readOnly: true
     volumes:
       # Host-path directories on the k3s node, owned by uid 1001 (the image's
-      # `runner` user): created by k8s/ci-runner/README.md's setup step.
+      # `runner` user): created by deploy/k8s/ci-runner/README.md's setup step.
       - name: cargo-registry-cache
         hostPath:
           path: /var/lib/nucleus-ci/cargo/registry/cache
@@ -158,7 +158,7 @@ template:
         configMap:
           name: runner-hooks
           defaultMode: 0755
-      # `kubectl create configmap runner-cargo-config --from-file=config.toml=k8s/ci-runner/cargo-config.toml`
+      # `kubectl create configmap runner-cargo-config --from-file=config.toml=deploy/k8s/ci-runner/cargo-config.toml`
       - name: runner-cargo-config
         configMap:
           name: runner-cargo-config

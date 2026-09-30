@@ -1,5 +1,5 @@
 # Mounted at /home/runner/.cargo/config.toml on every self-hosted runner pod
-# (ConfigMap `runner-cargo-config`, k8s/ci-runner/values.yaml). Cargo merges
+# (ConfigMap `runner-cargo-config`, deploy/k8s/ci-runner/values.yaml). Cargo merges
 # this with the repository's .cargo/config.toml; nothing in-repo sets
 # build.rustflags or a target-level rustflags for the host, so this applies.
 #

@@ -3,7 +3,7 @@
 # on a fresh node does not spend its time installing toolchains. Idempotent.
 # Run ON THE NODE (inside the Lima VM) as root, after the image is imported:
 #
-#   sudo bash k8s/ci-runner/warm.sh
+#   sudo bash deploy/k8s/ci-runner/warm.sh
 #
 # Everything installs as uid 1001 (the image's `runner` user) into the same
 # host paths the scale set mounts (values.yaml), via a throwaway podman

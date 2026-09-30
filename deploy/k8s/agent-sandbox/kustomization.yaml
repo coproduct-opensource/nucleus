@@ -2,10 +2,10 @@
 #
 # Usage:
 #   # Apply all resources
-#   kubectl apply -k k8s/agent-sandbox/
+#   kubectl apply -k deploy/k8s/agent-sandbox/
 #
 #   # Preview what will be applied
-#   kubectl kustomize k8s/agent-sandbox/
+#   kubectl kustomize deploy/k8s/agent-sandbox/
 #
 # Overlays:
 #   Create environment-specific overlays in subdirectories:

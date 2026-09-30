@@ -8,7 +8,7 @@ data:
     receivers:
       # Runner side: the actions-runner-controller listeners (one per scale
       # set) and the controller-manager expose gha_* on :8080/metrics once
-      # the controller chart has `metrics:` set (k8s/ci-runner/README.md).
+      # the controller chart has `metrics:` set (deploy/k8s/ci-runner/README.md).
       prometheus:
         config:
           scrape_configs:
