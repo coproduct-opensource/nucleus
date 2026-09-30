@@ -37,7 +37,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/arm64",
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [
       "Ed25519 verify_strict gate (M-3)",
@@ -311,7 +311,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/arm64",
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [
       "Rustfmt"
@@ -430,7 +430,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/arm64",
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [
       "Clippy"
@@ -457,7 +457,7 @@
       "examples/independent-conformance/**"
     ],
     "seeds": [
-      "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
+      "main-79d4c1a90-x86_64-l@sha256:3014ca35bd661c7507b2c4e5173aa394eb38a74fecd316685abc39d6f591d754"
     ],
     "steps": [
       {
@@ -623,7 +623,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/arm64",
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [],
     "scope": [
@@ -631,7 +631,7 @@
       "scripts/**"
     ],
     "seeds": [
-      "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
+      "main-79d4c1a90-x86_64-t@sha256:b015177901c38be0f8e6631173dd39bc414e05814f33a0f68ee1a41675dce1aa"
     ],
     "steps": [
       {
@@ -724,7 +724,7 @@
     "name": "lean-build",
     "outputs": [],
     "pins": [],
-    "platform": "linux/arm64",
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [],
     "scope": [
@@ -825,7 +825,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/arm64",
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [
       "CI configuration is sound (CI-1)",
@@ -843,7 +843,7 @@
       ".gatehouse/**"
     ],
     "seeds": [
-      "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
+      "main-79d4c1a90-x86_64-l@sha256:3014ca35bd661c7507b2c4e5173aa394eb38a74fecd316685abc39d6f591d754"
     ],
     "steps": [
       {

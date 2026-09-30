@@ -52,13 +52,15 @@ jobs:
       # five gates could never have run. A pin bump that only moved the ref would have
       # failed the plan check, which is the gate working.
       #
-      # Moved 067869b -> 502d787 on 2026-09-30 for per-platform pins (gatehouse#201): the plan
-      # names the gate-tools image for the arm64 lane AND the x86_64 lane, and `ci.toolsPinned_b`
-      # holds each lane to its own. That prelude also carries gatehouse #81, which nucleus had not
-      # taken: the policy stops describing a machine (see the comment above `policy` in
-      # .gatehouse/pipeline.writ). 502d787 is the head of gatehouse#201's PULL REQUEST; move this
-      # pin (both workflows) to the commit it merges as before this lands.
-      GATEHOUSE_REF: 502d7876bbf5954fcc1919602bb03c8d1fb6a682
+      # Moved 067869b -> 0d7a8e6 on 2026-09-30 for per-platform pins (gatehouse#206, merged as
+      # a86048b; 0d7a8e6 is gatehouse main after #208, #209, #211 and #214): the plan names the
+      # gate-tools image for the arm64 lane AND the x86_64 lane, `ci.toolsPinned_b` holds each lane
+      # to its own, and `ci.platformMatches_b` is an EQUALITY with each gate's `platform`, so the
+      # pins never widen where a gate runs. That prelude also carries gatehouse #81, which nucleus
+      # had not taken: the policy stops describing a machine (see the comment above `policy` in
+      # .gatehouse/pipeline.writ). An earlier draft pinned #206's pre-merge head, 502d787, whose
+      # prelude let the pins widen `platformMatches_b`; the merged prelude hashes differently.
+      GATEHOUSE_REF: 0d7a8e604fca05eb717e891a4566f3645855cf6c
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

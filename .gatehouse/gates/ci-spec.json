@@ -16,8 +16,8 @@
     "git_history": false
   },
   "env": {
-    "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
-    "platform": "linux/arm64",
+    "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+    "platform": "linux/amd64",
     "toolchains": {
       "rust": "1.96.1"
     },
@@ -142,6 +142,6 @@
   },
   "falsifier": null,
   "seeds": [
-    "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
+    "main-79d4c1a90-x86_64-l@sha256:3014ca35bd661c7507b2c4e5173aa394eb38a74fecd316685abc39d6f591d754"
   ]
 }
