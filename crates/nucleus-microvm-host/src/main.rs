@@ -2,8 +2,9 @@
 //!
 //! - `probe` prints a JSON report of what this host provides and exits non-zero
 //!   when a microVM cannot launch here.
-//! - `seed <tree> <image> --size-mib N` builds a workspace scratch image and
-//!   prints its `sha-256:` digest.
+//! - `seed <tree> <image> --owner UID:GID [--free-mib N]` builds a workspace
+//!   scratch image, every entry owned by the workload, and prints its
+//!   `sha-256:` digest.
 //! - `harvest <image> <out>` replays the image's journal and copies its tree out.
 
 #![cfg_attr(
@@ -23,6 +24,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use nucleus_microvm_host::ext4::RootOwner;
 #[cfg(target_os = "linux")]
 use nucleus_microvm_host::probe::HostRequirement;
 use nucleus_microvm_host::probe::{self, kvm::Kvm};
@@ -52,8 +54,14 @@ enum Command {
     Seed {
         tree: PathBuf,
         image: PathBuf,
+        /// The workload's `uid:gid`; every seeded entry is owned by it. No
+        /// default: the node decides the workload uid, and a second copy of
+        /// that number here would drift from it.
+        #[arg(long, value_parser = parse_owner)]
+        owner: RootOwner,
+        /// Free space beyond the tree's own size, in MiB.
         #[arg(long, default_value_t = 1024)]
-        size_mib: u64,
+        free_mib: u32,
     },
     /// Replay an image's journal and copy its tree into an empty directory.
     Harvest { image: PathBuf, out: PathBuf },
@@ -95,7 +103,8 @@ fn main() -> ExitCode {
         Command::Seed {
             tree,
             image,
-            size_mib,
+            owner,
+            free_mib,
         } => {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -104,7 +113,7 @@ fn main() -> ExitCode {
                 Ok(rt) => rt,
                 Err(e) => return fail(&format!("starting a runtime: {e}")),
             };
-            match rt.block_on(workspace::seed(&tree, &image, size_mib)) {
+            match rt.block_on(workspace::seed(&tree, &image, owner, free_mib)) {
                 Ok(digest) => {
                     println!("{}", digest.as_str());
                     ExitCode::SUCCESS
@@ -159,6 +168,21 @@ fn run_probe(_network: bool) -> ExitCode {
             other => format!("{other:?}"),
         }
     ))
+}
+
+/// `uid:gid`, both decimal.
+fn parse_owner(s: &str) -> Result<RootOwner, String> {
+    let (uid, gid) = s
+        .split_once(':')
+        .ok_or_else(|| format!("{s:?} is not uid:gid"))?;
+    let num = |n: &str| {
+        n.parse::<u32>()
+            .map_err(|e| format!("{n:?} in {s:?} is not a uid/gid: {e}"))
+    };
+    Ok(RootOwner {
+        uid: num(uid)?,
+        gid: num(gid)?,
+    })
 }
 
 fn fail(msg: &str) -> ExitCode {
