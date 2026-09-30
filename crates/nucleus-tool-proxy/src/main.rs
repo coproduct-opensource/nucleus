@@ -505,7 +505,7 @@ pub(crate) struct AppState {
     /// `authority_exchange` is.
     authority_ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
-    sandbox_proof: sandbox_proof::SandboxProof,
+    sandbox_proof: Arc<sandbox_proof::SandboxProof>,
     /// Root authority Ed25519 public key for delegation certificate verification.
     cert_root_pubkey: Option<Arc<Vec<u8>>>,
     /// Session exposure guard for exit report (set when MCP server starts).
@@ -1047,6 +1047,10 @@ async fn main() -> Result<(), ApiError> {
     // Refuse to start unless we can cryptographically prove we're in a managed sandbox.
     let sandbox_proof_config = sandbox_proof::SandboxProofConfig {
         identity_cert_path: args.identity_cert.clone().or_else(|| args.tls_cert.clone()),
+        trust_bundle_path: args
+            .identity_trust_bundle
+            .clone()
+            .or_else(|| args.trust_bundle.clone()),
         spire_socket: args
             .spire_socket
             .clone()
@@ -1061,14 +1065,8 @@ async fn main() -> Result<(), ApiError> {
         )
         .await
     {
-        Ok(proof) => {
-            info!(
-                "sandbox proof verified: tier={} label={}",
-                proof.tier(),
-                proof.tier_label()
-            );
-            proof
-        }
+        // `verify_sandbox` logs the tier and the containment it decides.
+        Ok(proof) => proof,
         Err(e) => {
             eprintln!("FATAL: {e}");
             std::process::exit(78); // EX_CONFIG
@@ -1118,7 +1116,7 @@ async fn main() -> Result<(), ApiError> {
         };
     }
 
-    let runtime = pod_mgmt::build_runtime(&spec)?;
+    let runtime = pod_mgmt::build_runtime(&spec, sandbox_proof.containment())?;
     let approvals = Arc::new(ApprovalRegistry::default());
 
     // Load signed approval bundle if present
@@ -1607,7 +1605,7 @@ async fn main() -> Result<(), ApiError> {
         clearing_dimensions: clearing_dimensions.clone(),
         authority_exchange,
         authority_ledger,
-        sandbox_proof,
+        sandbox_proof: Arc::new(sandbox_proof),
         cert_root_pubkey: args
             .cert_root_pubkey
             .as_deref()
