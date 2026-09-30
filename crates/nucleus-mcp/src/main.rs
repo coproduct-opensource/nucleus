@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-mcp")]
+#[command(name = "nucleus-mcp", mut_args = |a| a.hide_env_values(true))]
 #[command(
     about = "MCP server that bridges an MCP client (any AI-agent runtime) to nucleus-tool-proxy"
 )]
@@ -2163,3 +2163,6 @@ mod tests {
         assert_eq!(lines.len(), 4);
     }
 }
+
+#[cfg(test)]
+mod help_env_tests;

@@ -26,6 +26,7 @@ use serde_json::Value;
 /// reaches no node (`agency --local`) needs none; [`Node::connect`] refuses a
 /// partial set.
 #[derive(clap::Args, Clone, Debug, Default)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct NodeTls {
     /// Client certificate PEM: a SPIFFE client identity the node authorizes.
     #[arg(long, env = "NUCLEUS_NODE_TLS_CERT")]

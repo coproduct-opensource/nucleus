@@ -71,6 +71,7 @@ pub struct ProposeArgs {
 }
 
 #[derive(Args)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct WidenArgs {
     /// The grant to widen (sealed or plain JSON).
     #[arg(long, value_name = "FILE")]
@@ -110,6 +111,7 @@ pub struct WidenArgs {
 }
 
 #[derive(Args)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct SealArgs {
     /// The outcome you want.
     #[arg(long)]
@@ -157,6 +159,7 @@ pub struct SealArgs {
 }
 
 #[derive(Args)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct ShowArgs {
     /// The sealed grant.
     pub grant: PathBuf,
