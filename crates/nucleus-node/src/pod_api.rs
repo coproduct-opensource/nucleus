@@ -883,7 +883,7 @@ mod grpc_scope_tests;
 // `local-driver` is not a default feature; CI's coverage job runs
 // `--all-features`, which compiles this.
 #[cfg(all(test, feature = "local-driver"))]
-mod handler_tests {
+pub(crate) mod handler_tests {
     mod boot_identity {
         use super::*;
         include!("pod_boot_identity_tests.rs");
@@ -913,7 +913,7 @@ mod handler_tests {
     /// Mirrors `main()`'s construction. A field added to `NodeState` breaks this
     /// at compile time, which is the right failure: the fixture should not drift
     /// silently away from what the node actually runs with.
-    pub(super) fn state(dir: &tempfile::TempDir) -> NodeState {
+    pub(crate) fn state(dir: &tempfile::TempDir) -> NodeState {
         // `main()` installs this before building any client; this crate takes
         // reqwest with `rustls-no-provider`, so `Client::new()` PANICS without
         // it. Idempotent, so every test may call it.
@@ -971,7 +971,7 @@ mod handler_tests {
     }
 
     /// A registered pod, running, optionally owned by `parent`.
-    pub(super) async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
+    pub(crate) async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
         let dir = st.state_dir.join("w");
         std::fs::create_dir_all(&dir).expect("work dir");
         let mut spec: nucleus_spec::PodSpec =

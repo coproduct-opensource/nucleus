@@ -124,3 +124,7 @@ mod tests {
         assert!(lockdown_reaches("something-new", Some(b())));
     }
 }
+
+// Issuing and lifting a lockdown, run against the real `GrpcService` on the pod-API fixture.
+#[cfg(all(test, feature = "local-driver"))]
+mod authz_tests;

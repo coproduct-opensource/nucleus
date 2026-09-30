@@ -3449,11 +3449,11 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::LockdownRequest>,
     ) -> Result<GrpcResponse<proto::LockdownResponse>, Status> {
-        // Red team finding: this was the only RPC without auth.
+        // Issuing and lifting are both operator actions: see `auth::Operation::Lockdown`.
         auth::authorize_grpc_operation(
             &request,
             &self.state.authz_policy,
-            auth::Operation::CancelPod, // Lockdown is at least as privileged as cancel
+            auth::Operation::Lockdown,
         )?;
 
         let req = request.into_inner();
