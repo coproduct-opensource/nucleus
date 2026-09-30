@@ -7,8 +7,8 @@
 [![CI](https://github.com/coproduct-opensource/nucleus/actions/workflows/ci.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/ci.yml)
 [![Security Audit](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
-[![scorecard](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fbadges%2Fscorecard.json)](docs/adr/0007-make-the-defect-unwritable.md)
-[![sealed mediation](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fbadges%2Fmediation.json)](crates/xtask/src/mediate.rs)
+[![scorecard](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fci%2Fbadges%2Fscorecard.json)](docs/adr/0007-make-the-defect-unwritable.md)
+[![sealed mediation](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fci%2Fbadges%2Fmediation.json)](crates/xtask/src/mediate.rs)
 
 The scorecard badge names the **weakest** of its defect families, not an average —
 `cargo xtask scorecard` reports how much of what this repo declares is actually

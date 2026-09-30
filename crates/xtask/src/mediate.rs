@@ -63,7 +63,7 @@ const MCP: &str = "crates/nucleus-tool-proxy/src/mcp.rs";
 const RUN_GATE: &str = "crates/nucleus-tool-proxy/src/run_gate.rs";
 
 /// The dedicated badge. The scorecard's flagless run keeps it fresh.
-pub const BADGE: &str = "badges/mediation.json";
+pub const BADGE: &str = "ci/badges/mediation.json";
 
 /// Entry points that are not agent-directed effects: `(entry, why)`.
 ///

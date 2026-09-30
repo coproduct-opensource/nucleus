@@ -89,7 +89,7 @@ disallow_sites=$(( bypass_sites - mediation_drift ))
 effect_stubs=$(grep -rhcE 'NotImplemented|NotWired' "${RS[@]}" crates/portcullis-effects crates/portcullis-core 2>/dev/null | awk '{s+=$1} END{print s+0}')
 
 # clean axiom footprint (from axiom-audit.sh badge if present)
-axiom_badge="badges/axiom-footprint.json"
+axiom_badge="ci/badges/axiom-footprint.json"
 clean_axioms="$( [ -f "$axiom_badge" ] && grep -oE '"message":"[^"]*"' "$axiom_badge" | sed 's/.*:"//;s/"//' || echo 'n/a' )"
 
 cat > "$OUT" <<JSON

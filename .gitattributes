@@ -27,4 +27,4 @@
 # no warning. A plain 3-way merge keeps what either side added and stops only
 # where both sides moved the same pin — the one case a person should decide.
 # `xtask scorecard`'s `no_ratchet_is_resolved_by_a_merge_driver` holds this.
-badges/scorecard.json   merge=keep-ours
+ci/badges/scorecard.json merge=keep-ours
