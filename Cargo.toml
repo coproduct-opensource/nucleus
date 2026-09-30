@@ -79,9 +79,9 @@ members = [
     "crates/nucleus-marketplace-dashboard", # Real-time verified-agent-marketplace: axum SSE orchestrator over the IFC gate (network-free core)
     "crates/nucleus-econ-types",            # Financially load-bearing newtypes (MicroUsd, ids); serde-only
     "crates/nucleus-externality",           # Pigouvian externality envelopes + rate-setter
-    "crates/nucleus-econ-kernels",          # PROVEN integer VCG + Pigou + sealed-bid kernels (parity-pinned to Lean)
+    "crates/nucleus-econ-kernels",          # Integer VCG + Pigou + sealed-bid kernels, parity-pinned to Lean. PROVED: single-good homogeneous Vickrey DSIC+IR (IntegerVcgTruthful.lean), Pigou DSIC preservation, budget conservation, settlement arithmetic, sealed-bid binding under an injectivity hypothesis. NOT proved: heterogeneous VCG (IR property-tested only). Kani: u128 welfare overflow-freedom only
     "crates/nucleus-commerce-conformance",  # conformance vectors for the open commerce layer: what "any runtime can integrate" has to mean
-    "crates/nucleus-recompute",             # verify_receipt: re-derive every cleared number from declared inputs via the proven kernels
+    "crates/nucleus-recompute",             # verify_receipt: re-derive every cleared number from declared inputs via the Lean-pinned kernels (proof scope: nucleus-econ-kernels)
     "crates/nucleus-witness-olog",          # Phase 2 (P2.1): Gov functor (admitted witness → olog fact) + signed accumulation manifest
     "crates/nucleus-creditworthiness",      # Agent credit file: recompute-verified history → bond-substituting reputation (financial active, externality reserved)
     "crates/nucleus-eval",                  # Recompute-verified eval receipt → CreditEvent: deterministic pass-rate bounds the reward (a lie mints a debit, not a fat credit)
