@@ -535,7 +535,7 @@ fn posture_spec(label: Option<&str>, rootfs: Option<&std::path::Path>) -> PodSpe
         workload: None,
         image: rootfs.map(|p| ImageSpec {
             kernel_path: PathBuf::from("/does/not/matter"),
-            rootfs_path: p.to_path_buf(),
+            rootfs: nucleus_spec::RootfsSource::Path(p.to_path_buf()),
             boot_args: None,
             read_only: true,
             scratch_path: None,

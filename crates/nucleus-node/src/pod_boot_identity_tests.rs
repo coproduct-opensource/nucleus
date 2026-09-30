@@ -25,7 +25,7 @@ async fn prepare_for_test(
         state: st,
         pod_dir: dir,
         spec: &spec,
-        image: &image,
+        image: &crate::rootfs_source::HostImage::resolve(&image).unwrap(),
         id,
         grant: &crate::net::IdentityGrant::Granted,
         vsock_path: socket,

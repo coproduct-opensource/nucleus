@@ -182,7 +182,7 @@ fn require_image_pins(spec: &nucleus_spec::PodSpec) -> Result<(), ApiError> {
     };
     let nucleus_spec::ImageSpec {
         kernel_path: _,
-        rootfs_path: _,
+        rootfs: _,
         boot_args: _,
         kernel_digest,
         rootfs_digest,
