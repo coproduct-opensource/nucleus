@@ -28,6 +28,8 @@
 //! parent a create would record goes through the real `resolve_parent_pod_id`,
 //! but `PodAuthority` admission and the driver spawn are out of the walk. The
 //! cascade-cancel in the reaper loop is not run.
+//!
+//! [`chain_walk`](super::chain_walk) runs all three.
 
 use std::collections::BTreeSet;
 
