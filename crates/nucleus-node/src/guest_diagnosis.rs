@@ -41,16 +41,39 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
+use nucleus_spec::tier2_artifacts::{GuestCapability, REBUILD_THE_GUEST};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{ApiError, PROXY_HEALTH_TIMEOUT_SECS_DEFAULT};
+
+/// What a signature means.
+enum Meaning {
+    /// The guest rootfs lacks something this node requires. The words come from
+    /// the capability table in `nucleus-spec`, which is also what `setup` refuses
+    /// a release with, so the two cannot describe one skew differently.
+    Predates(GuestCapability),
+    /// Anything else, in its own words.
+    Other(&'static str),
+}
+
+impl Meaning {
+    fn explain(&self) -> String {
+        match self {
+            Meaning::Predates(cap) => format!(
+                "the guest rootfs PREDATES this node. {}. {REBUILD_THE_GUEST}.",
+                cap.change()
+            ),
+            Meaning::Other(text) => (*text).to_string(),
+        }
+    }
+}
 
 /// A known failure signature and what it means.
 struct Signature {
     /// Substring to look for in the guest console.
     marker: &'static str,
     /// What the operator should be told.
-    explanation: &'static str,
+    meaning: Meaning,
 }
 
 /// Ordered most-specific first: the first match wins, so a precise cause beats
@@ -58,38 +81,48 @@ struct Signature {
 const SIGNATURES: &[Signature] = &[
     Signature {
         marker: "missing approval secret",
-        explanation: "the guest rootfs PREDATES this node. #2214 (2026-08-08) replaced the guest's \
-             shared approval secret with Ed25519 verification against the node's public key, \
-             so this node sends `nucleus.approval_pubkeys` and no longer sends \
-             `nucleus.approval_secret` — which this rootfs's guest-init still requires. \
-             Rebuild the rootfs from this checkout: `bash \
-             scripts/firecracker/build-rootfs.sh` (or `just guest-rootfs`). It preflights \
-             the host tooling first and, on macOS, prints how to run it in the Linux VM. \
-             Or run a nucleus-node from the same release as the rootfs.",
+        meaning: Meaning::Predates(GuestCapability::ApprovalByPublicKey),
+    },
+    // Before "failed to fetch identity", which is on the same console line. A
+    // guest from before #2379 booted read-only prints `failed to fetch identity:
+    // failed to create identity directory: Read-only file system`, and the
+    // generic signature answered "could not reach the workload API over vsock"
+    // — a wrong diagnosis for the pinned 2.2.0 rootfs under `read_only: true`.
+    Signature {
+        marker: "failed to create identity directory: Read-only file system",
+        meaning: Meaning::Predates(GuestCapability::SvidOnTmpfs),
     },
     Signature {
         marker: "failed to fetch identity",
-        explanation: "the guest could not reach the workload API over vsock. Either the node's \
+        meaning: Meaning::Other(
+            "the guest could not reach the workload API over vsock. Either the node's \
              WorkloadApiVsockBridge did not start before the guest connected, or the \
              per-pod socket (vsock.sock_<port>) is missing — check the pod directory for a \
              `vsock.sock_*` entry alongside `vsock.sock`.",
+        ),
     },
     Signature {
         marker: "failed to exec",
-        explanation: "guest-init could not start the tool-proxy: the binary is missing from the \
+        meaning: Meaning::Other(
+            "guest-init could not start the tool-proxy: the binary is missing from the \
              rootfs at /usr/local/bin/nucleus-tool-proxy, or is built for the wrong \
              architecture or libc.",
+        ),
     },
     Signature {
         marker: "panicked at",
-        explanation: "a guest process panicked. As PID 1 that takes the kernel with it, so the \
+        meaning: Meaning::Other(
+            "a guest process panicked. As PID 1 that takes the kernel with it, so the \
              panic message above is the real failure, not the health-check timeout.",
+        ),
     },
     // Least specific: always present when init dies, so it must sort last.
     Signature {
         marker: "Attempted to kill init",
-        explanation: "PID 1 exited, so the guest kernel panicked. The lines immediately above this \
+        meaning: Meaning::Other(
+            "PID 1 exited, so the guest kernel panicked. The lines immediately above this \
              in the console are the actual cause.",
+        ),
     },
 ];
 
@@ -114,7 +147,7 @@ pub(crate) fn diagnose(console_path: &Path) -> Option<String> {
 
     Some(format!(
         "guest console says: \"{evidence}\" — {}",
-        hit.explanation
+        hit.meaning.explain()
     ))
 }
 
@@ -339,6 +372,24 @@ mod tests {
             d.contains("build-rootfs.sh"),
             "a diagnosis without a runnable action is half a diagnosis: {d}"
         );
+    }
+
+    /// The pinned 2.2.0 rootfs booted `read_only: true` — what `verify --tier2`
+    /// sends — as the microVM-host spike measured it. The line also carries
+    /// "failed to fetch identity", which used to win and blame vsock.
+    #[test]
+    fn a_read_only_guest_from_before_2379_is_named_not_blamed_on_vsock() {
+        let f = console(
+            "[    1.47] Run /init as init process\n\
+             failed to fetch identity: failed to create identity directory: \
+             Read-only file system (os error 30)\n\
+             [    1.58] Kernel panic - not syncing: Attempted to kill init!\n",
+        );
+        let d = diagnose(f.path()).expect("a known signature must be recognised");
+        assert!(d.contains("PREDATES this node"), "{d}");
+        assert!(d.contains("#2379"), "{d}");
+        assert!(d.contains("build-rootfs.sh"), "{d}");
+        assert!(!d.contains("vsock"), "this is not a vsock failure: {d}");
     }
 
     /// Specificity: the kernel panic accompanies every init death, so a precise

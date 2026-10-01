@@ -94,7 +94,7 @@ pub use nucleus_proto::nucleus_node as proto;
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-node")]
+#[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
@@ -1161,7 +1161,7 @@ async fn create_pod_internal(
     tracing::Span::current().record("chain_depth", issued.chain_depth);
     // The issued lattice AND the admitted credentialed upstreams replace what
     // the spec requested, in one call so neither can be applied without the other.
-    issued.apply_to(&mut spec);
+    let reservation = issued.apply_to(&mut spec);
 
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
@@ -1175,8 +1175,7 @@ async fn create_pod_internal(
     let (driver_state, proxy_addr, log_path) = match spawned {
         Ok(s) => s,
         Err(e) => {
-            // Nothing runs: hand the budget reservation back to the parent.
-            state.authority.release_child(id).await;
+            reservation.release().await;
             return Err(e);
         }
     };
@@ -1203,7 +1202,7 @@ async fn create_pod_internal(
     });
 
     state.pods.lock().await.insert(id, handle);
-
+    reservation.commit(); // registered: the reaper releases it from here (a drop before, #3032)
     Ok((id, proxy_addr))
 }
 
@@ -3450,14 +3449,14 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::LockdownRequest>,
     ) -> Result<GrpcResponse<proto::LockdownResponse>, Status> {
-        // Red team finding: this was the only RPC without auth.
+        // Issuing and lifting are both operator actions: see `auth::Operation::Lockdown`.
         auth::authorize_grpc_operation(
             &request,
             &self.state.authz_policy,
-            auth::Operation::CancelPod, // Lockdown is at least as privileged as cancel
+            auth::Operation::Lockdown,
         )?;
 
-        let req = request.into_inner();
+        let (operator, req) = lockdown::attributed(request)?;
         let reason = if req.reason.is_empty() {
             "emergency lockdown".to_string()
         } else {
@@ -3478,7 +3477,7 @@ impl NodeService for GrpcService {
         let cmd = proto::LockdownCommand {
             active: !req.restore,
             reason: reason.clone(),
-            operator_id: req.operator_id.clone(),
+            operator_id: operator.clone(),
             timestamp_unix: timestamp,
             scope: scope_str.clone(),
         };
@@ -3507,7 +3506,7 @@ impl NodeService for GrpcService {
 
         tracing::warn!(
             reason = %reason,
-            operator = %req.operator_id,
+            operator = %operator,
             restore = req.restore,
             scope = %scope_str,
             affected_pods,
@@ -3539,7 +3538,7 @@ impl NodeService for GrpcService {
                     pod_id = %pod.id,
                     action = action,
                     reason = %reason,
-                    operator = %req.operator_id,
+                    operator = %operator,
                     "lockdown: pod affected"
                 );
                 let pod_dir = pod.log_path.parent().unwrap_or_else(|| Path::new("."));
@@ -3547,7 +3546,7 @@ impl NodeService for GrpcService {
                     pod_dir,
                     action,
                     &pod.id.to_string(),
-                    &format!("reason={}, operator={}", reason, req.operator_id),
+                    &format!("reason={}, operator={}", reason, operator),
                 )
                 .await;
             }

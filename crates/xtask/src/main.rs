@@ -229,6 +229,14 @@ enum Command {
     /// per family in `.scorecard-ratchet.toml`, two floors each: on the ratio,
     /// so it cannot fall, and on the population, because deleting an obligation
     /// raises the ratio without discharging anything.
+    /// Every agent-reachable entry point of the tool-proxy, by how it is
+    /// mediated: sealed (mints an `Authority`), checked (a runtime decision it
+    /// does not need to act), or unchecked. A report; the `mediate` scorecard
+    /// family gates the number, and `--badge` prints `badges/mediation.json`.
+    Mediation {
+        #[arg(long)]
+        badge: bool,
+    },
     Scorecard {
         #[arg(long)]
         measure: bool,
@@ -431,6 +439,7 @@ mod lean_action_builds;
 mod life;
 mod line_ratchet;
 mod local_coverage;
+mod mediate;
 mod pin_parity;
 mod pipefail;
 mod plan_measurements;
@@ -542,6 +551,10 @@ fn main() -> Result<()> {
             code => std::process::exit(code),
         },
         Command::Bound { measure, badge } => match bound::run(measure, badge)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
+        Command::Mediation { badge } => match mediate::run(badge)? {
             0 => Ok(()),
             code => std::process::exit(code),
         },

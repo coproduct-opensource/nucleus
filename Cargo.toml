@@ -6,7 +6,8 @@ members = [
     "crates/nucleus-policy-cert",   # PCA: recompute-verifiable certificates (R1)
     "crates/nucleus-cred-broker",   # CB4A: Credential Delivery Point (holds creds, decides nothing)
     "crates/nucleus-cred-protocol", # CB4A: wire types only, safe for the guest to link
-    "crates/nucleus-jsonl",         # One atomic append per record for every line-oriented evidence log
+    "crates/nucleus-oci-rootfs",    # OCI image -> one verified, normalized, deterministic rootfs tar (local layouts/archives only)
+    "crates/nucleus-jsonl",       # One atomic append per record for every line-oriented evidence log
     "crates/nucleus-pca",           # PCA: the unified verify() SDK facade
     "crates/nucleus",        # Enforcement: wraps OS APIs with policy checks
     "crates/nucleus-cli",    # CLI: distributed executor with enforcement
@@ -79,9 +80,9 @@ members = [
     "crates/nucleus-marketplace-dashboard", # Real-time verified-agent-marketplace: axum SSE orchestrator over the IFC gate (network-free core)
     "crates/nucleus-econ-types",            # Financially load-bearing newtypes (MicroUsd, ids); serde-only
     "crates/nucleus-externality",           # Pigouvian externality envelopes + rate-setter
-    "crates/nucleus-econ-kernels",          # PROVEN integer VCG + Pigou + sealed-bid kernels (parity-pinned to Lean)
+    "crates/nucleus-econ-kernels",          # Integer VCG + Pigou + sealed-bid kernels, parity-pinned to Lean. PROVED: single-good homogeneous Vickrey DSIC+IR (IntegerVcgTruthful.lean), Pigou DSIC preservation, budget conservation, settlement arithmetic, sealed-bid binding under an injectivity hypothesis. NOT proved: heterogeneous VCG (IR property-tested only). Kani: u128 welfare overflow-freedom only
     "crates/nucleus-commerce-conformance",  # conformance vectors for the open commerce layer: what "any runtime can integrate" has to mean
-    "crates/nucleus-recompute",             # verify_receipt: re-derive every cleared number from declared inputs via the proven kernels
+    "crates/nucleus-recompute",             # verify_receipt: re-derive every cleared number from declared inputs via the Lean-pinned kernels (proof scope: nucleus-econ-kernels)
     "crates/nucleus-witness-olog",          # Phase 2 (P2.1): Gov functor (admitted witness → olog fact) + signed accumulation manifest
     "crates/nucleus-creditworthiness",      # Agent credit file: recompute-verified history → bond-substituting reputation (financial active, externality reserved)
     "crates/nucleus-eval",                  # Recompute-verified eval receipt → CreditEvent: deterministic pass-rate bounds the reward (a lie mints a debit, not a fat credit)
@@ -204,10 +205,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # OpenTelemetry (opt-in via feature flags)
 # opentelemetry 0.32 pairs with tracing-opentelemetry 0.33 (the 0.33 line is
 # the one built against opentelemetry ^0.32); bump the pair together.
-opentelemetry = "0.32"
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "http-proto", "trace"] }
-tracing-opentelemetry = "0.33"
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic", "http-proto", "trace"] }
+tracing-opentelemetry = "0.34"
 
 # Crypto/signing
 sha2 = "0.11"

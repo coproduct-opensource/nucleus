@@ -1,0 +1,110 @@
+#!/bin/sh
+# `real-ld`: link rustc's aarch64 glibc outputs with the toolchain's own rust-lld, and hand every
+# other link back, unchanged, to the linker the compiler driver would have used.
+#
+# HOW IT IS REACHED. .cargo/config.toml puts this directory on COMPILER_PATH through `[env]`. GCC's
+# collect2 looks for a program named `real-ld` on COMPILER_PATH before it looks for `ld` (GCC 12
+# does so even under `-fuse-ld=...`, which is handled below). Nothing else looks for that name:
+# clang, the macOS toolchain, never calls it (checked). So on a host without GCC this file is inert.
+#
+# WHY NOT `target.<triple>.linker`, OR `-C link-arg`. Cargo 1.96 hashes the configured linker into
+# the fingerprint of EVERY unit (fingerprint/mod.rs, `calculate_normal`: `target_linker(unit.kind)`
+# goes into `config`), not only the units that link, and RUSTFLAGS enter every unit's `rustflags`.
+# Either one makes a gate's compiler-cache seed stale in full: measured, `linker = "cc"` (the
+# default, spelled out) turned 1477 seeded units dirty with `ConfigSettingsChanged`. An `[env]` value
+# reaches a unit's fingerprint only if the unit reads it (`env!`, `rerun-if-env-changed`); none reads
+# COMPILER_PATH, so the seed stays whole: the same 28 units compile with and without this.
+#
+# WHY LLD. The seeded `test` gate (3 vCPU, 8 GiB) reuses ~1000 units and then runs its large links
+# back to back, where a cold build spreads them out. GNU ld ran its peak to ~7.3 GiB of anonymous
+# memory and was OOM-killed in a pod (2026-09-30). Measured on the same seed and tree (8041af3aa)
+# in the gate image, 3 CPUs, an 8 GiB cgroup, `cargo test --no-run --all-features`, peak anon:
+#   GNU ld 7261 MiB anon, 60 s; gold 5690 MiB, 48 s; GNU ld --no-keep-memory 6419 MiB, 87 s;
+#   rust-lld 3144 MiB, 36 s.
+# rust-lld ships inside every rustup toolchain, so the gate image needs nothing new.
+#
+# WHEN IT ENGAGES -- all of: Linux with /proc, an aarch64 host, called by the native aarch64 glibc
+# GCC's collect2 (not a cross compiler, not musl), a rustc among the ancestors (so it is rustc's
+# link, not a build script's or a test's own `cc`), and that rustc's rust-lld exists. Otherwise it
+# execs what collect2 would have found without it: the next `real-ld`, `collect-ld` or `ld` on
+# COMPILER_PATH, then `ld` on PATH -- or, when the link asked for `-fuse-ld=NAME`, `ld.NAME`.
+# x86_64, every musl target and an explicit `-fuse-ld` are therefore untouched. A fallback on the
+# engaged path says so on stderr; rustc shows a linker's stderr when the link fails, which is when
+# it matters (a gate OOM names the missing rust-lld beside the kill).
+set -eu
+
+me=$(cd "$(dirname "$0")" && pwd -P)
+
+# GCC 12's collect2 looks for `real-ld` even under `-fuse-ld=...` (measured), and strips that flag
+# before running the linker, so read it from collect2's own command line.
+fuse_ld=
+if [ -r "/proc/$PPID/cmdline" ]; then
+    fuse_ld=$(tr '\0' '\n' <"/proc/$PPID/cmdline" | sed -n 's/^-fuse-ld=//p' | tail -n 1)
+fi
+
+# exec_first <colon-separated dirs> <names, colon-separated> <args...>: exec the first executable
+# NAME in the first DIR that has one, skipping this directory. Returns when there is none.
+exec_first() {
+    dirs=$1 names=$2
+    shift 2
+    old_ifs=$IFS
+    IFS=:
+    for dir in $dirs; do
+        [ -n "$dir" ] && [ -d "$dir" ] || continue
+        [ "$(cd "$dir" && pwd -P)" != "$me" ] || continue
+        for name in $names; do
+            if [ -x "$dir/$name" ] && [ ! -d "$dir/$name" ]; then
+                IFS=$old_ifs
+                exec "$dir/$name" "$@"
+            fi
+        done
+    done
+    IFS=$old_ifs
+}
+
+passthrough() {
+    if [ -n "$fuse_ld" ]; then
+        exec_first "${COMPILER_PATH:-}:$PATH" "ld.$fuse_ld" "$@"
+    else
+        exec_first "${COMPILER_PATH:-}" real-ld:collect-ld:ld "$@"
+        exec_first "$PATH" ld "$@"
+    fi
+    echo "real-ld: no linker found on COMPILER_PATH or PATH to hand this link to" >&2
+    exit 127
+}
+
+ppid_of() { sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f2; }
+
+[ "$(uname -s)" = Linux ] && [ -r /proc/self/stat ] || passthrough "$@"
+[ "$(uname -m)" = aarch64 ] || passthrough "$@"
+[ -z "$fuse_ld" ] || passthrough "$@"
+
+caller=$(readlink "/proc/$PPID/exe" 2>/dev/null) || passthrough "$@"
+case $caller in
+    *musl* | *android* | *gcc-cross*) passthrough "$@" ;;
+    */gcc/aarch64-*linux*/collect2) ;;
+    *) passthrough "$@" ;;
+esac
+
+# The rustc driving this link: parent is collect2, then cc, then rustc. Look a few levels up.
+rustc_exe=
+pid=$PPID
+for _ in 1 2 3 4 5 6; do
+    pid=$(ppid_of "$pid") || break
+    case $pid in '' | 0 | 1) break ;; esac
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+    case ${exe##*/} in rustc | rustc-*)
+        rustc_exe=$exe
+        break
+        ;;
+    esac
+done
+[ -n "$rustc_exe" ] || passthrough "$@"
+
+lld=$(dirname "$(dirname "$rustc_exe")")/lib/rustlib/aarch64-unknown-linux-gnu/bin/rust-lld
+if [ ! -x "$lld" ]; then
+    echo "real-ld: $lld is missing (a toolchain without rust-lld); linking with the system ld instead," \
+        "which needs about twice the memory -- see .cargo/ld/real-ld" >&2
+    passthrough "$@"
+fi
+exec "$lld" -flavor gnu "$@"

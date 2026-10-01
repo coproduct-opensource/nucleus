@@ -421,9 +421,20 @@ pub struct SearchResult {
 /// the async spawn through a concrete type — `AsyncShellSpawnEffect` has an
 /// `async fn` and is not dyn-compatible, so a trait object is impossible). It
 /// stays *unconstructible* outside this crate: its only field is private and
-/// its constructor [`RealEffects::new`] is crate-private, so the sole way to
-/// obtain one is through [`production_effects`] / [`production_effects_concrete`],
-/// which always wrap it in `PolicyEnforced` and require a policy.
+/// its constructors (`RealEffects::new`, `RealEffects::with_git_dir`) are
+/// crate-private, so the sole way to obtain one is through
+/// [`production_effects`] / [`production_effects_concrete`] /
+/// [`production_effects_in`], which always wrap it in `PolicyEnforced` and
+/// require a policy.
+///
+/// Held by the compiler, not by this paragraph (#3015). Naming the type is
+/// fine; constructing it is E0624, "associated function is private". Make
+/// `with_git_dir` `pub` again and this snippet compiles:
+///
+/// ```compile_fail,E0624
+/// let _named: Option<portcullis_effects::RealEffects> = None;
+/// let _raw = portcullis_effects::RealEffects::with_git_dir("/tmp");
+/// ```
 pub struct RealEffects {
     /// Working directory for git subprocesses.
     ///
@@ -450,7 +461,11 @@ impl RealEffects {
     }
 
     /// Scope git operations to `dir` instead of the process CWD.
-    pub fn with_git_dir(dir: impl Into<std::path::PathBuf>) -> Self {
+    ///
+    /// Crate-private like [`RealEffects::new`]: a raw handle is unmediated, so
+    /// the only public way to one scoped to a directory is
+    /// [`production_effects_in`], which wraps it in `PolicyEnforced`.
+    pub(crate) fn with_git_dir(dir: impl Into<std::path::PathBuf>) -> Self {
         Self {
             git_dir: Some(dir.into()),
             _private: (),

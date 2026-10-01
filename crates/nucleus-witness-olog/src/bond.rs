@@ -881,8 +881,10 @@ mod tests {
     // ── Parity bridge: BondedDeterrence.lean T1 ⇔ the real slashing schedule ──
     //
     // Lean `Nucleus.Cooperation.BondedDeterrence` proves, for the single-shot
-    // deterrence game `payoff Honest = 0`, `payoff Deviate = gain - B` (bond
-    // slashed under probability-1 recompute):
+    // deterrence game `payoff Honest = 0`, `payoff Deviate = gain - B`, where the
+    // bond is slashed on EVERY defection. That detection probability of 1 is the
+    // model's ASSUMPTION (named in `ReputationCapital.lean`'s honest scope
+    // boundary), not something recompute is proved to deliver:
     //
     //     T1 (`honest_strictly_dominates`):  B > gain → 0 > gain - B
     //

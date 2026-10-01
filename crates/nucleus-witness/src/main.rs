@@ -16,7 +16,7 @@ use nucleus_witness::{
 
 /// C2SP tlog-witness server.
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-witness", version, about)]
+#[command(name = "nucleus-witness", version, about, mut_args = |a| a.hide_env_values(true))]
 struct Cli {
     /// Bind address, e.g. 0.0.0.0:8443 (bind to all interfaces for
     /// 6PN / k8s accessibility).
@@ -111,3 +111,6 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await.context("axum serve")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod help_env_tests;

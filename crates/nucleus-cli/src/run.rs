@@ -127,6 +127,7 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
 /// By default, requires a running nucleus-node with Firecracker. Use `--local`
 /// to run the tool-proxy as a local subprocess instead (suitable for CI).
 #[derive(Args, Debug)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct RunArgs {
     /// Task prompt (use - for stdin). Not needed with --goal or --grant.
     #[arg(required_unless_present_any = ["goal", "grant"])]
@@ -567,6 +568,22 @@ async fn run_local(
     fs::create_dir_all(&tmp_dir)?;
     let _tmp_guard = TmpDirGuard::new(tmp_dir.clone());
 
+    // The session task token, from the policy the proxy's spec will carry and,
+    // when the proxy gets a pod certificate, bound to that certificate's
+    // fingerprint -- the proxy refuses a token naming another authority.
+    // Without it the proxy starts `Missing` and InScopeWithTask refuses every
+    // action (see `crate::session_token`).
+    let authority = match &args.pod_cert_b64 {
+        Some(cert) => Some(
+            portcullis::AttenuationToken::from_base64(cert.trim())
+                .map_err(|e| anyhow!("--pod-cert is not a certificate: {e}"))?
+                .fingerprint(),
+        ),
+        None => None,
+    };
+    let task_token =
+        crate::session_token::mint_local(&run_id.to_string(), policy, args.timeout, authority)?;
+
     // Generate per-run auth secrets
     let auth_secret = hex::encode(rand::random::<[u8; 32]>());
     let approval_secret = hex::encode(rand::random::<[u8; 32]>());
@@ -612,6 +629,7 @@ async fn run_local(
         .arg("--audit-log")
         .arg(&audit_path)
         .args(pod_cert_args(args))
+        .args(crate::session_token::proxy_args(&task_token))
         .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
         .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .kill_on_drop(true)
@@ -951,6 +969,10 @@ async fn create_pod_via_node(
     let mut request = ureq::post(&url)
         .config()
         .timeout_global(Some(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT))
+        // Without this, ureq turns a 4xx into a transport error and discards the
+        // body, so the `>= 400` branch below never ran and the node's own
+        // sentence ("no such policy profile") arrived as "http status: 400".
+        .http_status_as_error(false)
         .build()
         .header("content-type", "application/yaml");
     let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
@@ -1363,12 +1385,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
             .into_bytes();
-        let identity = reqwest::Identity::from_pem(&identity_pem).unwrap();
-        let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem).unwrap();
+        let tls =
+            nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem).unwrap();
         let client = reqwest::Client::builder()
-            .identity(identity)
-            .tls_certs_only(roots)
-            .danger_accept_invalid_hostnames(true)
+            .tls_backend_preconfigured(tls)
             .build()
             .unwrap();
 

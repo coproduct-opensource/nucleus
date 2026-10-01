@@ -8,7 +8,8 @@
 #
 # `keep-ours` resolves a derived file to the current branch's text so a rebase
 # does not stop on a number that is about to be re-measured anyway. See
-# `.gitattributes` for which files and why.
+# `.gitattributes` for which files and why — and for why the ratchet, which
+# carries schema as well as numbers, is not one of them (#3050).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 git config merge.keep-ours.name "keep this branch's text; the value is re-measured afterwards"

@@ -111,6 +111,14 @@ pub enum Operation {
     /// so a pod able to snapshot would be a pod able to author what its neighbours boot from.
     /// That is an operator's authority, not a workload's.
     SnapshotPod,
+    /// Issue or lift a lockdown (`NodeService::Lockdown`, either direction).
+    ///
+    /// Not part of the pod-management group. A lockdown is the operator's break-glass control:
+    /// an empty scope reaches every pod on the node, and lifting one is the human action that
+    /// ends it. Neither is a workload's to take, for itself or for anyone else — a pod that
+    /// needs to stop itself already can, locally, through its own circuit breaker. RECEIVING
+    /// lockdown commands (`WatchLockdown`) is a different operation and stays with the pods.
+    Lockdown,
     /// Any pod management operation (used for matching).
     PodManagement,
 }
@@ -364,6 +372,8 @@ impl AuthorizationPolicy {
                         );
                         return Ok(());
                     }
+                    // Falls through to the refusal below: see the variant's doc comment.
+                    Operation::Lockdown => {}
                 }
             }
         }
@@ -389,7 +399,7 @@ impl AuthorizationPolicy {
                     }
                     // Falls through to the refusal below rather than returning: see the variant's
                     // doc comment. A workload does not get to author what its neighbours boot.
-                    Operation::SnapshotPod => {}
+                    Operation::SnapshotPod | Operation::Lockdown => {}
                 }
             }
         }
@@ -885,6 +895,37 @@ mod tests {
             "spiffe://nucleus.local/ns/github/sa/myorg/myrepo".to_string(),
         );
         assert!(policy.authorize(&cicd, Operation::SnapshotPod).is_ok());
+    }
+
+    /// Issuing or lifting a lockdown belongs to the operator and the orchestrators, and to no
+    /// other identity class — while every pod keeps what it needs to RECEIVE one.
+    #[test]
+    fn lockdown_is_an_operator_action() {
+        let cli = "spiffe://nucleus.local/ns/system/sa/cli";
+        let policy = AuthorizationPolicy::new("nucleus.local").with_operator_identity(cli);
+        let ctx = |s: &str| AuthContext::from_spiffe(s.to_string());
+
+        for operator in [cli, "spiffe://nucleus.local/ns/default/sa/orchestrator"] {
+            assert!(
+                policy
+                    .authorize(&ctx(operator), Operation::Lockdown)
+                    .is_ok(),
+                "{operator}"
+            );
+        }
+        let pod = format!("spiffe://nucleus.local/ns/pods/sa/{}", uuid::Uuid::new_v4());
+        for other in [
+            pod.as_str(),
+            "spiffe://nucleus.local/ns/github/sa/myorg/myrepo",
+            "spiffe://nucleus.local/ns/system/sa/cli-other",
+        ] {
+            assert!(
+                policy.authorize(&ctx(other), Operation::Lockdown).is_err(),
+                "{other}"
+            );
+        }
+        // `WatchLockdown` is authorized as `CancelPod`: a pod must still hear a lockdown.
+        assert!(policy.authorize(&ctx(&pod), Operation::CancelPod).is_ok());
     }
 
     /// Exhaustive against `main.rs`'s `authenticated_routes` table: every

@@ -50,7 +50,9 @@ const IDENTITY_DIR: &str = "/run/nucleus/identity";
 struct SvidResponse {
     spiffe_id: String,
     certificate_chain: String,
-    private_key: String,
+    /// Served once per pod, to the first `FETCH_SVID`. guest-init asks first,
+    /// before any workload exists; `None` means something else already had it.
+    private_key: Option<String>,
     #[allow(dead_code)]
     expires_at: i64,
 }
@@ -620,7 +622,11 @@ pub fn fetch_identity(port: u32) -> Result<String, String> {
 
     // Write private key with restricted permissions
     let key_path = Path::new(IDENTITY_DIR).join("svid.key");
-    write_private_key(&key_path, &svid.private_key)?;
+    let key = svid.private_key.as_deref().ok_or(
+        "the host served the SVID without its key: it was already served to an earlier \
+         FETCH_SVID, and guest-init must be the first to ask",
+    )?;
+    write_private_key(&key_path, key)?;
 
     // Fetch trust bundle
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)

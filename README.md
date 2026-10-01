@@ -8,11 +8,20 @@
 [![Security Audit](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
 [![scorecard](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fbadges%2Fscorecard.json)](docs/adr/0007-make-the-defect-unwritable.md)
+[![sealed mediation](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fbadges%2Fmediation.json)](crates/xtask/src/mediate.rs)
 
-The last badge names the **weakest** of four defect families, not an average —
+The scorecard badge names the **weakest** of its defect families, not an average —
 `cargo xtask scorecard` reports how much of what this repo declares is actually
 enforced, family by family, and an average would let a family at zero hide behind
 one at a hundred. It is deliberately uncomfortable.
+
+The sealed-mediation badge counts the tool-proxy's agent-reachable entry points —
+every HTTP route and MCP tool — whose effect is reachable only by spending an
+`Authority` minted from a preflight. The rest are *checked* (a runtime decision is
+on the path, but the effect does not need its result) or *unchecked*;
+`cargo xtask mediation` prints which is which. It measures wiring, not whether the
+decisions are right, and not the VM isolation that keeps the tool-proxy the pod's
+only way out.
 
 **Nucleus expands the frontier of safely delegatable machine agency: any agent should be able to do as much useful real-world work as its principal is willing to authorize, while being structurally incapable of exceeding that authorization.**
 
@@ -116,11 +125,13 @@ nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
                                # POD and asserts what the guest did
 ```
 
-Guest artifacts come from the pinned release **v2.2.0**, the first whose rootfs
-matches a current node. `tier2_artifacts::GUEST_RELEASE_FLOOR` refuses anything
-older rather than installing a pod that cannot boot — everything up to 2.0.2
-ships a rootfs with no CA bundle, on which the guest panics as PID 1, and 2.1.0
-predates the change to how the guest is approved, which panics the same way. **Measured 48.7 s** from a deleted VM to
+Guest artifacts come from the pinned release **v2.2.0**.
+`tier2_artifacts::GuestCapability` lists what the node and CLI require of a guest
+and which release first shipped each, and `setup` refuses a release that lacks
+one rather than installing a pod that cannot boot. The v2.2.0 CLI installs its
+own matched guest. A CLI built from `main` refuses v2.2.0, which predates the
+egress attestation (#2365) and the SVID on tmpfs (#2379), and needs a guest built
+from the same checkout (`nucleus setup --artifacts local`) until the next release. **Measured 48.7 s** from a deleted VM to
 a booted pod, with Sigstore build provenance verified on every downloaded
 artifact.
 
