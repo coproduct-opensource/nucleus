@@ -69,9 +69,14 @@
 # all bound. 177/178.
 # 2026-09-29: `Sandbox::glob` joins with its DecisionToken and Authority taken by value
 # and consumed before the walk — two new sites, both bound, on top of main's 177/178. 179/180.
-floor_bp = 9944
+# 2026-09-27: declassification became a sealed witness. VerifiedDeclassification
+# joins the WITNESS vocabulary (bound at FlowGraph::apply_verified), and
+# kernel/declassify_authority.rs names DeclassificationToken bare, so four
+# existing bound sites become visible to the scan. 176/177, CaClient unchanged.
+# 2026-09-29, merging main into the declassification branch: both moves on one tree. 184/185.
+floor_bp = 9945
 floor_set = "measurement"
-population_floor = 180
+population_floor = 185
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -278,9 +283,16 @@ population_floor = 86
 # held proof and an expired token. It now carries not_after (the cache entry's
 # end, or the pod certificate's on a hit) and handle_perform refuses a proof past
 # it before the store is read. 7/13.
-floor_bp = 5384
+# 2026-09-27: VerifiedDeclassification, the witness FlowGraph::apply_verified
+# spends, entered as an affine right. Unbounded it measured 6/13 (46.15%) and
+# reddened this family; it now carries the signed token's valid_until, fixed at
+# mint, and apply_verified decides expiry from that field and no other on the
+# production path (refused Expired, not burned). 7/13.
+# 2026-09-29, merging main into the declassification branch: both affine rights
+# (Refilled from #3020, VerifiedDeclassification here) on one tree, both bounded. 8/14.
+floor_bp = 5714
 floor_set = "measurement"
-population_floor = 13
+population_floor = 14
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
@@ -448,6 +460,8 @@ population_floor = 143
 # 2026-09-29, merging main: #3036 (memory), #3041 (pod/*) and #3040 (glob, grep) sealed the
 # ten Checked handlers named above. 22/25 sealed; the three left are approve, declassify and
 # escalate, each Checked on an authority of its own (signature, token, certificate chain).
+# 2026-09-30, merging main: #3038 split declassify into Kernel::verify_declassification and
+# FlowGraph::apply_verified, so its OWN_AUTHORITY row names verify_declassification. 22/25.
 floor_bp = 8800
 floor_set = "measurement"
 population_floor = 25
