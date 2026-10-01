@@ -443,6 +443,10 @@ if [ -n "$CA_BUNDLE_SRC" ]; then
         exit 1
     fi
     echo "Installed CA bundle from build host: $CA_BUNDLE_SRC ($ca_count certificates)"
+    # The guest layer's own copy (nucleus_spec::guest_layout::CA_BUNDLE), which
+    # the runtime reads first. The Debian path above stays for workloads that
+    # expect it; the runtime no longer depends on the image providing one.
+    cp "$ROOTFS_DIR/etc/ssl/certs/ca-certificates.crt" "$ROOTFS_DIR/etc/nucleus/ca-bundle.pem"
 elif [ "${ALLOW_NO_CA_BUNDLE:-0}" = "1" ]; then
     echo "WARNING: no CA bundle found; ALLOW_NO_CA_BUNDLE=1 so continuing." >&2
     echo "         The guest tool-proxy will refuse to start with drand enabled." >&2
