@@ -381,10 +381,6 @@ fn case() -> impl Strategy<Value = Case> {
 /// the bottom run the documented rule.
 #[derive(Debug, Clone, Copy)]
 struct Rules {
-    /// `AuthorizationPolicy` documents that a CI identity "can only manage
-    /// pods with matching labels". On main the scope resolver gives CI
-    /// node-wide reach; #3088 adds its own case.
-    ci_scoped: bool,
     /// A create that never ran hands its reservation back: `Reservation`'s own
     /// doc says so. On main the release folds the whole allocation into the
     /// parent's consumption, as for a pod that ran, so the slot comes back and
@@ -394,7 +390,6 @@ struct Rules {
 
 impl Rules {
     const AS_SHIPPED: Self = Self {
-        ci_scoped: false,
         unrun_refunds: false,
     };
 }
@@ -537,7 +532,7 @@ impl Model {
     fn reaches(&self, who: Who, j: usize) -> bool {
         match who {
             Who::Operator | Who::Orch(_) => true,
-            Who::Ci(_) if !self.rules.ci_scoped => true,
+            // A CI identity reaches only the pods it created (#3088).
             Who::Ci(_) => self.pods[j].creator == who,
             Who::Pod(r) => {
                 let i = self.resolve(r);
@@ -1761,9 +1756,8 @@ fn a_chain_is_refused_one_hop_past_the_depth_bound() {
 
 /// Shrunk cases that found a bug, replayed before every walk under that
 /// walk's [`Rules`]. Each is named for the bug it found; the PR that added it
-/// shows the perturbation it was found under. The `#3088` and `#3105` entries
-/// check nothing as shipped and are the first thing their documented rule
-/// trips on.
+/// shows the perturbation it was found under. The `#3105` entry checks
+/// nothing as shipped and is the first thing its documented rule trips on.
 #[rustfmt::skip]
 const CORPUS: &[(&str, u8, &[Op])] = &[
     ("#3032: a create dropped mid-boot keeps no certificate", 0, &[
@@ -1810,22 +1804,11 @@ fn the_corpus_agrees_with_the_model() {
 
 // ── The documented rules, red on main ────────────────────────────────────────
 
-/// #3088: a CI identity reaches only pods it created.
-#[test]
-#[ignore = "red on main until #3088: CI identities are scoped node-wide"]
-fn as_documented_a_ci_identity_reaches_only_its_own_pods() {
-    explore(Rules {
-        ci_scoped: true,
-        ..Rules::AS_SHIPPED
-    });
-}
-
 /// #3105: a create that never ran hands its whole reservation back.
 #[test]
 #[ignore = "red on main until #3105: an unrun create's reservation is folded into consumption"]
 fn as_documented_a_create_that_never_ran_refunds_its_reservation() {
     explore(Rules {
         unrun_refunds: true,
-        ..Rules::AS_SHIPPED
     });
 }
