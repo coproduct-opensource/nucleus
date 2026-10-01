@@ -176,7 +176,7 @@ serde_yaml = "0.9"
 toml = "1.1"
 
 # Content provenance (EU AI Act)
-c2pa = { version = "0.91", default-features = false, features = ["rust_native_crypto"] }
+c2pa = { version = "0.90", default-features = false, features = ["rust_native_crypto"] }
 
 # Error handling
 thiserror = "2.0"
