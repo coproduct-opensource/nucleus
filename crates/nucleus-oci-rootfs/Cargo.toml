@@ -15,13 +15,13 @@ workspace = true
 [dependencies]
 flate2 = "1.1"
 hex = { workspace = true }
-oci-spec = { version = "0.8", default-features = false, features = ["image"] }
+oci-spec = { version = "0.10", default-features = false, features = ["image"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tar = { version = "0.4", default-features = false }
 thiserror = { workspace = true }
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }
