@@ -12,6 +12,7 @@ use std::time::Duration;
 
 /// Interact with a running nucleus-node
 #[derive(Args, Debug)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct NodeArgs {
     /// nucleus-node HTTP URL. `https://` since Move B: the node's HTTP
     /// listener requires mTLS unconditionally now — there is no plaintext

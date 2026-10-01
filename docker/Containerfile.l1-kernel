@@ -1,0 +1,47 @@
+# L1 kernel for the Apple `container` microVM host (SPIKE, see
+# docs/findings/microvm-host-apple-container.md).
+#
+# The container runtime's default kernel (Kata 3.32.0, linux 6.18.35 arm64) has
+# no KVM and no vhost-vsock, so `container run --virtualization` alone yields no
+# /dev/kvm. This rebuilds the SAME kernel version from kernel.org with the
+# default kernel's own embedded config plus docker/l1-kernel.fragment. It is
+# attached per container with `container run --kernel <Image>` — never as the
+# system-wide default.
+#
+# Build context is NOT the repo: it is a directory holding
+#   base-kernel          the default kernel file (sha256-checked below)
+#   l1-kernel.fragment   copied from docker/
+# The spike harness (crates/nucleus-cli/tests/microvm_host_spike.rs,
+# `build_l1_kernel`) assembles it and runs
+#   container build -c 8 -m 12g -f docker/Containerfile.l1-kernel \
+#     -o type=local,dest=<out> <ctx>
+# leaving <out>/linux_arm64/Image and <out>/linux_arm64/config (`-o type=local`
+# writes one directory per platform).
+
+FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bc bison build-essential ca-certificates flex libelf-dev libssl-dev xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned against https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc.
+ADD --checksum=sha256:f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236 \
+    https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.35.tar.xz /src/linux.tar.xz
+
+# The default kernel whose config we inherit: vmlinux-6.18.35-197-debug from
+# kata-static-3.32.0-arm64.tar.zst, as installed by `container`.
+COPY base-kernel l1-kernel.fragment /src/
+RUN echo "fb2cfb79eb1ae19447a85d75682d7fa5cfec97e24beb2609a492b806e8072c8d  /src/base-kernel" \
+        | sha256sum -c -
+
+WORKDIR /src
+RUN tar -xf linux.tar.xz && rm linux.tar.xz
+WORKDIR /src/linux-6.18.35
+RUN scripts/extract-ikconfig /src/base-kernel > .config \
+    && scripts/kconfig/merge_config.sh -m .config /src/l1-kernel.fragment \
+    && make ARCH=arm64 olddefconfig
+RUN make ARCH=arm64 -j"$(nproc)" Image
+
+FROM scratch
+COPY --from=build /src/linux-6.18.35/arch/arm64/boot/Image /Image
+COPY --from=build /src/linux-6.18.35/.config /config

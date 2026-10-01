@@ -11,6 +11,15 @@ rustflags = ["-C", "target-feature=+crt-static"]
 linker = "x86_64-linux-musl-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 
+# Linking aarch64 glibc outputs with rust-lld, through COMPILER_PATH and not `linker`/rustflags:
+# cargo fingerprints the configured linker and rustflags into EVERY unit, so either would make a
+# gate's whole compiler-cache seed stale; an `[env]` value it only fingerprints for units that read
+# it. GCC's collect2 finds `.cargo/ld/real-ld` there; clang never looks for that name, and the
+# wrapper hands x86_64, musl and every non-rustc link back to the linker it would have used.
+# Measurements and the rules are in .cargo/ld/real-ld.
+[env]
+COMPILER_PATH = { value = ".cargo/ld", relative = true }
+
 # Build configuration
 [build]
 # Uncomment to set default target:

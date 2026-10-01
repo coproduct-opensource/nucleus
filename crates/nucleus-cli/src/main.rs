@@ -61,7 +61,7 @@ mod verify_attestation;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
-#[command(name = "nucleus")]
+#[command(name = "nucleus", mut_args = |a| a.hide_env_values(true))]
 #[command(version, about, long_about = None)]
 struct Cli {
     /// Configuration file path
@@ -229,3 +229,6 @@ async fn main() -> Result<()> {
         Commands::MediationHook => std::process::exit(i32::from(mediation::run_hook())),
     }
 }
+
+#[cfg(test)]
+mod help_env_tests;

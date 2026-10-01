@@ -1511,6 +1511,35 @@ population_floor = 250
         assert!(b.contains(r#""schemaVersion":1"#), "{b}");
     }
 
+    /// #3050: `merge=keep-ours` on the ratchet kept one branch's text
+    /// wholesale, so merging a `main` that had added a required field (#3006's
+    /// `floor_set`) dropped it with a clean "Auto-merging". A ratchet carries
+    /// schema as well as pins, so it merges like source: line by line, with a
+    /// real conflict only where both sides moved the same pin.
+    #[test]
+    fn no_ratchet_is_resolved_by_a_merge_driver() {
+        let attrs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../",
+            ".gitattributes"
+        ))
+        .expect("the committed .gitattributes is readable");
+        let driven: Vec<&str> = attrs
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .filter(|l| {
+                let mut fields = l.split_whitespace();
+                fields.next().is_some_and(|path| path.contains("ratchet"))
+                    && fields.any(|attr| attr.starts_with("merge="))
+            })
+            .collect();
+        assert!(
+            driven.is_empty(),
+            "a ratchet is resolved by a merge driver, which can drop a field main added: {driven:?}"
+        );
+    }
+
     #[test]
     fn the_committed_ratchet_parses_and_pins_every_family_on_the_card() {
         // The gate's own configuration is a subject, not an assumption.
