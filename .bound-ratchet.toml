@@ -89,5 +89,9 @@
 # gain, not new enforcement counted twice.
 # 2026-09-29, merging main into the declassification branch: every move above applies to
 # one tree, so the pin is this tree's measurement.
-floor_bp = 9945
-declared_floor = 185
+# 2026-10-01: the execute-on-consume guard splits the executor's synchronous spawn
+# into `spawn_checked` (the guard) and `spawn_unguarded` (the effect), and the
+# effect half takes the `Authority` by name and spends it. One new site, bound:
+# D=186, B=185, dropped=1 (still CaClient), measured on this branch merged with main.
+floor_bp = 9946
+declared_floor = 186
