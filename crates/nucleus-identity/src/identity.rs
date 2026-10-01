@@ -61,6 +61,20 @@ impl Identity {
             .expect("invalid identity components")
     }
 
+    /// The identity a node's own certificate carries:
+    /// `spiffe://<trust_domain>/ns/system/sa/node`.
+    ///
+    /// Stated once, here, because two parties need it: the node mints its
+    /// certificate under it, and every client reaching the node accepts
+    /// exactly it (`node_tls`).
+    ///
+    /// # Errors
+    ///
+    /// When `trust_domain` is not a valid trust domain.
+    pub fn node(trust_domain: impl Into<String>) -> Result<Self> {
+        Self::try_new(trust_domain, "system", "node")
+    }
+
     /// Creates a new identity with validation, returning an error if invalid.
     ///
     /// # Arguments

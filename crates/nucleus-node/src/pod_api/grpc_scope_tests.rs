@@ -234,3 +234,71 @@ async fn http_resolves_a_tokenless_pod_peer_to_its_own_pod() {
     let got = crate::auth::resolve_http_caller(&st, &ctx, &headers).expect("a pod resolves");
     assert_eq!(got, Some(a));
 }
+
+/// A lockdown is attributed to the peer the interceptor verified. The request's
+/// own `operator_id` is the caller's claim: it may appear, quoted and labelled,
+/// but never as the operator — not in the command broadcast to proxies and not
+/// in the pod's lifecycle audit. Read `req.operator_id` in the handler again and
+/// both assertions go red.
+#[tokio::test]
+async fn a_lockdown_is_attributed_to_the_verified_peer_not_the_claimed_operator() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let target = register(&st, None).await;
+    let peer = "spiffe://nucleus.local/ns/default/sa/orchestrator";
+    let mut broadcast = st.lockdown_tx.subscribe();
+
+    svc(&st)
+        .lockdown(req(
+            proto::LockdownRequest {
+                scope: Some(proto::lockdown_request::Scope::PodId(target.to_string())),
+                reason: "attribution test".to_string(),
+                operator_id: "someone-else".to_string(),
+                restore: false,
+            },
+            Some(peer),
+            None,
+        ))
+        .await
+        .expect("an orchestrator may issue a lockdown");
+
+    let cmd = broadcast.try_recv().expect("the command was broadcast");
+    assert!(
+        cmd.operator_id.starts_with(peer),
+        "the broadcast names the verified peer, got {:?}",
+        cmd.operator_id
+    );
+    let audit = std::fs::read_to_string(st.state_dir.join("lifecycle.log")).expect("audited");
+    assert!(
+        audit.contains(&format!("operator={peer}")),
+        "the lifecycle audit names the verified peer: {audit}"
+    );
+    assert!(
+        !audit.contains("operator=someone-else") && !audit.contains("operator=\\\"someone-else"),
+        "and never the claimed name as the operator: {audit}"
+    );
+    cancel_all(&st).await;
+}
+
+/// Without a verified peer there is nobody to attribute a lockdown to, so it is
+/// refused before anything is broadcast.
+#[tokio::test]
+async fn a_lockdown_without_a_verified_peer_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let mut broadcast = st.lockdown_tx.subscribe();
+    let r = svc(&st)
+        .lockdown(req(
+            proto::LockdownRequest {
+                scope: None,
+                reason: String::new(),
+                operator_id: "someone".to_string(),
+                restore: false,
+            },
+            None,
+            None,
+        ))
+        .await;
+    assert!(r.is_err(), "no peer, no lockdown");
+    assert!(broadcast.try_recv().is_err(), "and nothing was broadcast");
+}

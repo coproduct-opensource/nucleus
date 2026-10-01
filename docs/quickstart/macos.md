@@ -19,7 +19,7 @@ nucleus setup
 > forbidden one refused with `kind=kernel_denied`, and no PID-1 panic.
 >
 > `v2.1.0` is the first release whose rootfs carries a CA bundle — everything up
-> to 2.0.2 panics as PID 1, and `GUEST_RELEASE_FLOOR` refuses to install those.
+> to 2.0.2 panics as PID 1, and `tier2_artifacts::GuestCapability` refuses to install those.
 > Earlier revisions of this page told you to build from a clone instead, because
 > at the time no published release could boot a pod.
 >
@@ -140,8 +140,10 @@ the tool-proxy directly — the same enforcement path, no vendor in it.
 
 Releases at or below **2.0.2 cannot boot**: their rootfs contains no CA bundle
 anywhere, and on such a rootfs the tool-proxy's drand client fails and, as PID 1,
-takes the guest kernel with it. `tier2_artifacts::GUEST_RELEASE_FLOOR` refuses
-them rather than installing a pod that cannot start.
+takes the guest kernel with it. `tier2_artifacts::GuestCapability` refuses
+them rather than installing a pod that cannot start. A CLI built from `main`
+also refuses v2.2.0: its guest predates the egress attestation (#2365) and the
+SVID on tmpfs (#2379), so from source use `--artifacts local`.
 
 The pinned release is **`2.1.0`**, the first build carrying the CA bundle,
 the `ip netns exec` separator fix and the workload-API socket chown. Each

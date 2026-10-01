@@ -556,24 +556,26 @@ pub(crate) async fn cancel_sub_pod(
 // Runtime / Budget helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn build_runtime(spec: &PodSpec) -> Result<PodRuntime, ApiError> {
+/// Build the proxy's executor runtime — the one every tool call runs through.
+///
+/// `containment` is an input, and the only caller passes
+/// `SandboxProof::containment()`, the single decider (ADR 0007 G). Until
+/// 2026-09-29 this function set `Unsandboxed` itself, for every pod: honest
+/// while tier 1 could be forged, but it meant that inside a real Firecracker
+/// guest a `minimum_isolation = microvm()` policy refused every command. Now a
+/// verified launch attests `MicroVM`, and everything short of one still attests
+/// `localhost()` and fails closed under a microVM policy.
+pub(crate) fn build_runtime(
+    spec: &PodSpec,
+    containment: nucleus::ContainmentMode,
+) -> Result<PodRuntime, ApiError> {
     let policy = spec
         .spec
         .resolve_policy()
         .map_err(|e| ApiError::Spec(e.to_string()))?;
     let timeout = std::time::Duration::from_secs(spec.spec.timeout_seconds);
     let mut runtime_spec = nucleus::PodSpec::new(policy, spec.spec.work_dir.clone(), timeout)
-        // Containment posture (most-paranoid #2). We declare the *honest* minimum:
-        // `Unsandboxed`. The proxy only starts inside a verified managed sandbox
-        // (it exits 78 without a `SandboxProof`), but a SPIFFE-tier proof does not
-        // by itself prove a microVM boundary — so we do NOT over-claim `MicroVM`.
-        // Consequence (fail-closed, by design): a policy that sets
-        // `minimum_isolation = microvm()` will REFUSE to execute here until real
-        // VM attestation (the SandboxProof DICE/Tier-1 launch measurement) is
-        // threaded in to upgrade this to `ContainmentMode::MicroVM`.
-        // TODO(most-paranoid #2 follow-up): derive containment from the verified
-        // SandboxProof tier (Attested/DICE => MicroVM) instead of this constant.
-        .with_containment(nucleus::ContainmentMode::Unsandboxed);
+        .with_containment(containment);
     if let Some(model) = spec.spec.budget_model.as_ref() {
         runtime_spec.budget_model = map_budget_model(model);
     }
@@ -1428,5 +1430,78 @@ spec:
 
         // An unrepresentable spend fails closed.
         assert!(narrow_to_ceiling(&ceiling, &request, f64::NAN, "spawn").is_err());
+    }
+}
+
+#[cfg(test)]
+mod containment_tests {
+    //! The proxy's runtime under a policy that demands a microVM. Pre-fix,
+    //! `build_runtime` hardcoded `Unsandboxed`, so the `MicroVM` case below was
+    //! red (`IsolationInsufficient`, achieved `process=shared`) no matter what
+    //! the sandbox proof said.
+    use super::*;
+    use nucleus::portcullis::kernel::Kernel;
+    use nucleus_ifc_kernel::SinkClass;
+    use nucleus_ifc_kernel::discharge::test_helpers::bundle_for_subject;
+    use portcullis::{CommandLattice, IsolationLattice, Obligations};
+
+    fn microvm_policy() -> PermissionLattice {
+        let mut policy = PermissionLattice::default();
+        policy.capabilities.run_bash = CapabilityLevel::LowRisk;
+        policy.commands = CommandLattice::permissive();
+        // No approval obligation, and no read/web leg for the trifecta
+        // normalisation to add one back: the containment gate is the only
+        // thing that should decide these two tests.
+        policy.capabilities.read_files = CapabilityLevel::Never;
+        policy.capabilities.web_fetch = CapabilityLevel::Never;
+        policy.capabilities.web_search = CapabilityLevel::Never;
+        policy.obligations = Obligations::default();
+        policy.with_minimum_isolation(IsolationLattice::microvm())
+    }
+
+    fn run_echo(containment: nucleus::ContainmentMode) -> nucleus::Result<std::process::Output> {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = microvm_policy();
+        let mut spec: PodSpec = serde_yaml::from_str(
+            "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\n\
+             spec:\n  work_dir: /w\n  policy:\n    type: profile\n    name: default\n",
+        )
+        .expect("spec parses");
+        spec.spec.work_dir = tmp.path().to_path_buf();
+        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+            lattice: Box::new(policy.clone()),
+        };
+        let runtime = build_runtime(&spec, containment).expect("runtime builds");
+        // The kernel is built WITH microvm isolation so it mints a token; the
+        // executor's containment gate is the thing under test.
+        let mut kernel = Kernel::with_isolation(policy, IsolationLattice::microvm());
+        #[allow(deprecated)] // `decide` is the shortest way to a real token
+        let (_, token) = kernel.decide(Operation::RunBash, "echo hi");
+        let authority = Authority::new(bundle_for_subject(
+            Operation::RunBash,
+            SinkClass::BashExec,
+            "echo hi",
+        ));
+        runtime
+            .executor()
+            .run("echo hi", token.expect("kernel allows"), authority)
+    }
+
+    /// A proxy on a bare host (tier 2/3 proof) under a microVM policy refuses.
+    #[test]
+    fn unsandboxed_runtime_refuses_a_microvm_policy() {
+        let err = run_echo(nucleus::ContainmentMode::Unsandboxed).unwrap_err();
+        assert!(
+            matches!(err, NucleusError::IsolationInsufficient { .. }),
+            "expected IsolationInsufficient, got {err:?}"
+        );
+    }
+
+    /// A proxy with a verified launch (tier 1) executes under the same policy.
+    #[test]
+    fn microvm_runtime_executes_a_microvm_policy() {
+        let out = run_echo(nucleus::ContainmentMode::MicroVM).expect("microVM containment runs");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
     }
 }
