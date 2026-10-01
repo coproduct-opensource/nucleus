@@ -970,6 +970,71 @@ pub(crate) mod handler_tests {
         }
     }
 
+    /// #3032, end to end: a create whose future is dropped mid-boot (its client
+    /// went away) hands its budget reservation back. The "tool proxy" here never
+    /// announces, so the spawn is still pending when the future is dropped and
+    /// neither arm of the spawn's `match` runs: the path that used to leak.
+    #[tokio::test]
+    async fn a_create_dropped_mid_boot_hands_its_budget_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut st = state(&dir);
+        // The script must be EXECUTABLE where it lives, and a temp dir need not
+        // be: a hardened host mounts /tmp noexec (the guest does, see
+        // nucleus-guest-init's GUEST_MOUNTS), the exec fails at once, the spawn's
+        // Err arm releases the reservation, and the create never reaches the
+        // await this test exists to drop. The test binary's own directory is
+        // executable wherever the test runs at all.
+        let exe = std::env::current_exe().expect("the test binary's path");
+        let bin = tempfile::Builder::new()
+            .prefix("never-announces")
+            .tempdir_in(exe.parent().expect("the test binary's directory"))
+            .expect("a temp dir beside the test binary");
+        let proxy = bin.path().join("never-announces.sh");
+        std::fs::write(&proxy, "#!/bin/sh\nexec sleep 10\n").expect("script");
+        std::fs::set_permissions(&proxy, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        st.tool_proxy_path = proxy;
+        let spec = || {
+            let work = st.state_dir.join("w");
+            std::fs::create_dir_all(&work).expect("work dir");
+            let mut spec: nucleus_spec::PodSpec =
+                serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+                    .expect("minimal spec");
+            spec.spec.work_dir = work;
+            spec
+        };
+        let parent = uuid::Uuid::new_v4();
+        let root = crate::pod_authority::Admission {
+            caller_spiffe_id: st.authority.root_minter().to_string(),
+            caller_pod: None,
+            header_cert: None,
+        };
+        st.authority
+            .admit_kept(&root, &spec(), parent)
+            .await
+            .expect("the parent is admitted");
+        let from_parent = crate::pod_authority::Admission {
+            caller_spiffe_id: format!("spiffe://nucleus.local/ns/pods/sa/{parent}"),
+            caller_pod: Some(parent),
+            header_cert: None,
+        };
+
+        let create = crate::create_pod_internal(&st, spec(), Some(parent), None, from_parent);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), create).await;
+        if let Ok(early) = outcome {
+            panic!("the create must still be booting when it is dropped; it returned {early:?}");
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while st.authority.live_children(parent).await != Some(0) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dropped create kept its reservation against the parent"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     /// A registered pod, running, optionally owned by `parent`.
     pub(crate) async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
         let dir = st.state_dir.join("w");
