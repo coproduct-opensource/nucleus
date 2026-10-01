@@ -876,6 +876,9 @@ mod walk;
 // gRPC handlers scope their caller as HTTP does, on the same fixture.
 #[cfg(all(test, feature = "local-driver"))]
 mod grpc_scope_tests;
+// Delegation chains through real admission, spawn, reaper and lockdown.
+#[cfg(all(test, feature = "local-driver"))]
+mod chain_walk;
 
 // No subsystem is faked: this is the real `PodAuthority`, the real
 // `NetworkAllocator`, the real signing key loaded off disk.
