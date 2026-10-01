@@ -349,7 +349,7 @@ struct PodCert {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-enum Parent {
+pub(crate) enum Parent {
     /// Minted by the bootstrap identity: no budget parent.
     Root,
     /// One hop below a registered pod.
@@ -375,6 +375,44 @@ struct Inner {
     pods: HashMap<Uuid, PodCert>,
     /// Ledgers for external callers' chains, keyed by chain fingerprint.
     external: HashMap<[u8; 32], BudgetLedger>,
+}
+
+/// A snapshot of [`PodAuthority`]'s state, from [`PodAuthority::held`].
+#[cfg(test)]
+pub(crate) struct Held {
+    pub pods: std::collections::BTreeMap<Uuid, HeldPod>,
+    pub external: std::collections::BTreeMap<[u8; 32], LedgerView>,
+}
+
+/// One pod's entry in a [`Held`] snapshot.
+#[cfg(test)]
+pub(crate) struct HeldPod {
+    pub cert: LatticeCertificate,
+    pub parent: Parent,
+    pub ledger: LedgerView,
+}
+
+/// A ledger in micro-USD, the unit it keeps.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LedgerView {
+    pub max: u64,
+    pub consumed: u64,
+    pub allocated: u64,
+    pub live: usize,
+}
+
+#[cfg(test)]
+impl LedgerView {
+    fn of(l: &BudgetLedger) -> Self {
+        let core = l.core();
+        Self {
+            max: core.parent_max_units(),
+            consumed: core.parent_consumed_units(),
+            allocated: core.allocated_units(),
+            live: core.live_children(),
+        }
+    }
 }
 
 /// Domain separator for pod-receipt signatures.
@@ -956,6 +994,34 @@ impl PodAuthority {
     pub(crate) async fn live_children(&self, pod_id: Uuid) -> Option<usize> {
         let inner = self.inner.lock().await;
         Some(inner.pods.get(&pod_id)?.ledger.live_children())
+    }
+
+    /// Everything this authority holds: each pod's certificate, budget parent
+    /// and ledger, and each external chain's ledger. For the delegation-chain
+    /// walk (`pod_api::chain_walk`), which compares it with its model after
+    /// every step.
+    #[cfg(test)]
+    pub(crate) async fn held(&self) -> Held {
+        let inner = self.inner.lock().await;
+        Held {
+            pods: inner
+                .pods
+                .iter()
+                .map(|(id, e)| {
+                    let held = HeldPod {
+                        cert: e.cert.clone(),
+                        parent: e.parent,
+                        ledger: LedgerView::of(&e.ledger),
+                    };
+                    (*id, held)
+                })
+                .collect(),
+            external: inner
+                .external
+                .iter()
+                .map(|(fp, l)| (*fp, LedgerView::of(l)))
+                .collect(),
+        }
     }
 
     /// Retire a pod's certificate and return its budget allocation to the
