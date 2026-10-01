@@ -1830,7 +1830,6 @@ fn random_delegation_chains_agree_with_the_model() {
         ("refused lockdowns", stats.lockdowns_refused),
         ("refusals under lockdown", stats.refused_locked),
         ("refusals below a stopped pod", stats.refused_stopped),
-        ("lockdowns reaching below their target", stats.locked_below),
     ] {
         assert!(n > 0, "the walk never reached {what}: {stats:?}");
     }
@@ -1870,6 +1869,41 @@ fn a_chain_is_refused_one_hop_past_the_depth_bound() {
     assert_eq!(stats.depth, MAX_DEPTH, "{stats:?}");
     assert_eq!(stats.refused_depth, 1, "{stats:?}");
     assert!(stats.cascaded >= MAX_DEPTH - 1, "{stats:?}");
+}
+
+/// A lockdown of a chain's root reaches every pod down the chain, and none of
+/// them can create while it holds. Deterministic, because a random walk only
+/// sometimes locks a pod that already has descendants.
+#[test]
+fn a_lockdown_of_a_chains_root_reaches_the_whole_chain() {
+    let create = Op::Create {
+        who: Who::Pod(PodRef::Newest),
+        via: Via::Grpc,
+        token: false,
+        budget: 0,
+        caps: 0,
+        boot: Boot::Runs,
+        header: None,
+    };
+    let mut ops = vec![create; 4];
+    ops.push(Op::Lockdown {
+        who: Who::Operator,
+        scope: Scope::Pod(Target::Pod(PodRef::Nth(0))),
+        claim: Claim::Empty,
+        restore: false,
+    });
+    ops.push(create);
+    let stats = runtime()
+        .block_on(run_case(
+            &Case {
+                root_budget: 0,
+                ops,
+            },
+            Rules::AS_SHIPPED,
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(stats.locked_below, 4, "{stats:?}");
+    assert_eq!(stats.refused_locked, 1, "{stats:?}");
 }
 
 // ── The regression corpus ────────────────────────────────────────────────────
