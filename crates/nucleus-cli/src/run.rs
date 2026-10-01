@@ -568,6 +568,22 @@ async fn run_local(
     fs::create_dir_all(&tmp_dir)?;
     let _tmp_guard = TmpDirGuard::new(tmp_dir.clone());
 
+    // The session task token, from the policy the proxy's spec will carry and,
+    // when the proxy gets a pod certificate, bound to that certificate's
+    // fingerprint -- the proxy refuses a token naming another authority.
+    // Without it the proxy starts `Missing` and InScopeWithTask refuses every
+    // action (see `crate::session_token`).
+    let authority = match &args.pod_cert_b64 {
+        Some(cert) => Some(
+            portcullis::AttenuationToken::from_base64(cert.trim())
+                .map_err(|e| anyhow!("--pod-cert is not a certificate: {e}"))?
+                .fingerprint(),
+        ),
+        None => None,
+    };
+    let task_token =
+        crate::session_token::mint_local(&run_id.to_string(), policy, args.timeout, authority)?;
+
     // Generate per-run auth secrets
     let auth_secret = hex::encode(rand::random::<[u8; 32]>());
     let approval_secret = hex::encode(rand::random::<[u8; 32]>());
@@ -613,6 +629,7 @@ async fn run_local(
         .arg("--audit-log")
         .arg(&audit_path)
         .args(pod_cert_args(args))
+        .args(crate::session_token::proxy_args(&task_token))
         .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
         .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .kill_on_drop(true)
