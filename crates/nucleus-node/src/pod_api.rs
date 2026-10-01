@@ -979,7 +979,18 @@ pub(crate) mod handler_tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let mut st = state(&dir);
-        let proxy = dir.path().join("never-announces.sh");
+        // The script must be EXECUTABLE where it lives, and a temp dir need not
+        // be: a hardened host mounts /tmp noexec (the guest does, see
+        // nucleus-guest-init's GUEST_MOUNTS), the exec fails at once, the spawn's
+        // Err arm releases the reservation, and the create never reaches the
+        // await this test exists to drop. The test binary's own directory is
+        // executable wherever the test runs at all.
+        let exe = std::env::current_exe().expect("the test binary's path");
+        let bin = tempfile::Builder::new()
+            .prefix("never-announces")
+            .tempdir_in(exe.parent().expect("the test binary's directory"))
+            .expect("a temp dir beside the test binary");
+        let proxy = bin.path().join("never-announces.sh");
         std::fs::write(&proxy, "#!/bin/sh\nexec sleep 10\n").expect("script");
         std::fs::set_permissions(&proxy, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         st.tool_proxy_path = proxy;
@@ -1010,10 +1021,9 @@ pub(crate) mod handler_tests {
 
         let create = crate::create_pod_internal(&st, spec(), Some(parent), None, from_parent);
         let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), create).await;
-        assert!(
-            outcome.is_err(),
-            "the create was still booting when it was dropped"
-        );
+        if let Ok(early) = outcome {
+            panic!("the create must still be booting when it is dropped; it returned {early:?}");
+        }
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while st.authority.live_children(parent).await != Some(0) {
