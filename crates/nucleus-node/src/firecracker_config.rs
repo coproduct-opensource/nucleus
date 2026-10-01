@@ -22,9 +22,9 @@ use tokio::process::Command;
 
 use nucleus_spec::PodSpec;
 
-#[cfg(target_os = "linux")]
-use crate::ApiError;
 use crate::net;
+#[cfg(target_os = "linux")]
+use {crate::ApiError, nucleus_spec::guest_layout::INIT};
 
 // ---------------------------------------------------------------------------
 // Config structs
@@ -956,13 +956,13 @@ impl FirecrackerConfig {
             .unwrap_or(512) as i64;
 
         let huge_pages = spec.spec.resources.as_ref().and_then(|r| r.huge_pages);
-        let default_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init".to_string();
+        let default_args = format!("console=ttyS0 reboot=k panic=1 pci=off init={INIT}");
         let mut boot_args = match image.boot_args.clone() {
             Some(args) => {
                 if args.contains("init=") {
                     Some(args)
                 } else {
-                    Some(format!("{args} init=/init"))
+                    Some(format!("{args} init={INIT}"))
                 }
             }
             None => Some(default_args),

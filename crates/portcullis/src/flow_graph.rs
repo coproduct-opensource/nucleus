@@ -9,6 +9,9 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use tracing::warn;
 
+#[cfg(feature = "crypto")]
+use crate::kernel::VerifiedDeclassification;
+
 use portcullis_core::effect::EffectKind;
 use portcullis_core::flow::{
     check_flow, intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind,
@@ -410,7 +413,11 @@ pub struct FlowGraph {
 /// Outcome of the shared governed-release enforcement
 /// [`FlowGraph::authorize_release`] (Phase 4). Every non-`Authorized` variant is
 /// a fail-closed, NON-burning refusal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Clone`/`Copy` since 2026-09-27: `Authorized` carries the one
+/// [`DeclassScope`] the burn paid for, and a copyable outcome would let one burn
+/// attach a scope to any number of nodes.
+#[derive(Debug, PartialEq, Eq)]
 pub enum ReleaseAuth {
     /// Value-bound, sink-scoped, and one-shot checks all passed; the
     /// authorization has been BURNED. The caller must attach this scope to the
@@ -427,14 +434,83 @@ pub enum ReleaseAuth {
 
 /// A node's declassification scope: the released view and the signed sink
 /// mask it applies to. See [`FlowGraph::effective_label`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// # Only a release can make one (2026-09-27)
+///
+/// A scope is a RELEASE: attaching one lowers what a node contributes to every
+/// operation in its mask. Its fields used to be `pub` and it derived `Copy`, so
+/// anyone with a `&mut FlowGraph` could write one as a struct literal and hand
+/// it to [`FlowGraph::record_release_scope`] — a release with no signature, no
+/// threshold, no value binding and no burn. The fields are now private and the
+/// type is neither `Clone` nor `Copy`: the three places that construct one are
+/// inside this module (the signed apply, the k-of-n
+/// [`FlowGraph::authorize_release`], and inheritance), and a scope read back
+/// through [`FlowGraph::declass_scope`] is a borrow that cannot be re-recorded.
+///
+/// Writing one by hand does not compile:
+///
+/// ```compile_fail
+/// use portcullis::flow_graph::{DeclassScope, FlowGraph};
+/// use portcullis_core::flow::NodeKind;
+/// use portcullis_core::IFCLabel;
+///
+/// let mut g = FlowGraph::new();
+/// let node = g.insert_observation(NodeKind::EnvVar, &[], 0).unwrap();
+/// let _released = IFCLabel::bottom();
+///
+/// // Everything above this line is proven to compile by the block below.
+/// g.record_release_scope(node, DeclassScope { released_label: _released, sink_mask: u16::MAX });
+/// ```
+///
+/// Nor does copying a recorded one onto a second node:
+///
+/// ```compile_fail
+/// use portcullis::flow_graph::{DeclassScope, FlowGraph};
+/// use portcullis_core::flow::NodeKind;
+/// use portcullis_core::IFCLabel;
+///
+/// let mut g = FlowGraph::new();
+/// let node = g.insert_observation(NodeKind::EnvVar, &[], 0).unwrap();
+/// let _released = IFCLabel::bottom();
+///
+/// // Everything above this line is proven to compile by the block below.
+/// let copied: DeclassScope = g.declass_scope(node).unwrap().clone();
+/// g.record_release_scope(node, copied);
+/// ```
+///
+/// The shared preamble, which must pass:
+///
+/// ```
+/// use portcullis::flow_graph::{DeclassScope, FlowGraph};
+/// use portcullis_core::flow::NodeKind;
+/// use portcullis_core::IFCLabel;
+///
+/// let mut g = FlowGraph::new();
+/// let node = g.insert_observation(NodeKind::EnvVar, &[], 0).unwrap();
+/// let _released = IFCLabel::bottom();
+/// # let _: Option<&DeclassScope> = g.declass_scope(node);
+/// ```
+#[derive(Debug, PartialEq, Eq)]
 pub struct DeclassScope {
     /// The label the node contributes to operations inside the mask.
-    pub released_label: IFCLabel,
+    released_label: IFCLabel,
     /// Bit mask over `Operation` discriminants (`1 << op as u8`), derived
     /// from the token's signed `allowed_sinks` by
     /// `DeclassificationToken::sink_mask()`. Mask 0 admits nothing.
-    pub sink_mask: u16,
+    sink_mask: u16,
+}
+
+impl DeclassScope {
+    /// The label the node contributes to operations inside the mask.
+    pub fn released_label(&self) -> IFCLabel {
+        self.released_label
+    }
+
+    /// Bit mask over `Operation` discriminants (`1 << op as u8`). Mask 0 admits
+    /// nothing.
+    pub fn sink_mask(&self) -> u16 {
+        self.sink_mask
+    }
 }
 
 impl FlowGraph {
@@ -1470,24 +1546,134 @@ impl FlowGraph {
         &self.compaction_log
     }
 
+    /// Spend a [`VerifiedDeclassification`](crate::kernel::VerifiedDeclassification)
+    /// on this graph: the ONE public way a signed token records a release.
+    ///
+    /// The witness is taken BY VALUE (ADR 0007 C-4), so a verification pays for
+    /// exactly one application; it can only have come from
+    /// [`Kernel::verify_declassification`](crate::kernel::Kernel::verify_declassification),
+    /// which checked the Ed25519 signature against the governor keys. This call
+    /// decides everything that depends on THIS graph, in this order — each
+    /// refusal is fail-closed and none of them burns:
+    ///
+    /// 1. **One-shot** — the witness's burn id is already in
+    ///    [`Self::release_burn_ledger`] ⇒ `Err(DeclassificationReplayed)`.
+    /// 2. **Value binding** — the node must exist (`NodeNotFound`) and its
+    ///    monitor-recorded ingest hash must equal the token's signed
+    ///    `content_commitment` (`ContentMismatch`).
+    /// 3. **Deadline** — past the witness's `valid_until` (the signed token's,
+    ///    fixed at mint) ⇒ `Expired`.
+    /// 4. **At-most-once-per-node, rule precondition** — `AlreadyDeclassified`,
+    ///    `PreconditionUnmet`.
+    ///
+    /// Only `Applied` records the [`DeclassScope`] and burns the id: a token
+    /// refused for an obstacle that can clear (the machine spec's `runD`
+    /// semantics, capability-primitive `Spike/Declassify.lean`: spend on
+    /// release, never on refusal) stays usable.
+    ///
+    /// Before 2026-09-27 the steps above ran inside the kernel, next to a `pub`
+    /// unsigned `apply_token` that skipped the signature entirely. The steps are
+    /// unchanged; what changed is that the unsigned primitive is now
+    /// `pub(crate)` and the signed path is the only one a caller outside this
+    /// crate can name. Calling the primitive from outside does not compile:
+    ///
+    /// ```compile_fail
+    /// use portcullis::flow_graph::FlowGraph;
+    /// use portcullis_core::declassify::{DeclassificationRule, DeclassificationToken, DeclassifyAction};
+    /// use portcullis_core::flow::NodeKind;
+    /// use portcullis_core::{ConfLevel, Operation};
+    ///
+    /// let mut g = FlowGraph::new();
+    /// let node = g.insert_observation(NodeKind::EnvVar, &[], 0).unwrap();
+    /// let token = DeclassificationToken::new(
+    ///     node,
+    ///     DeclassificationRule {
+    ///         action: DeclassifyAction::LowerConfidentiality { from: ConfLevel::Secret, to: ConfLevel::Public },
+    ///         justification: "unsigned".to_string(),
+    ///     },
+    ///     vec![Operation::GitPush],
+    ///     u64::MAX,
+    ///     "unsigned".to_string(),
+    /// );
+    ///
+    /// // Everything above this line is proven to compile by the block below.
+    /// let _ = g.apply_token(&token, 0);
+    /// ```
+    ///
+    /// The shared preamble, which must pass:
+    ///
+    /// ```
+    /// use portcullis::flow_graph::FlowGraph;
+    /// use portcullis_core::declassify::{DeclassificationRule, DeclassificationToken, DeclassifyAction};
+    /// use portcullis_core::flow::NodeKind;
+    /// use portcullis_core::{ConfLevel, Operation};
+    ///
+    /// let mut g = FlowGraph::new();
+    /// let node = g.insert_observation(NodeKind::EnvVar, &[], 0).unwrap();
+    /// let token = DeclassificationToken::new(
+    ///     node,
+    ///     DeclassificationRule {
+    ///         action: DeclassifyAction::LowerConfidentiality { from: ConfLevel::Secret, to: ConfLevel::Public },
+    ///         justification: "unsigned".to_string(),
+    ///     },
+    ///     vec![Operation::GitPush],
+    ///     u64::MAX,
+    ///     "unsigned".to_string(),
+    /// );
+    /// ```
+    #[cfg(feature = "crypto")]
+    pub fn apply_verified(
+        &mut self,
+        v: VerifiedDeclassification,
+        now: u64,
+    ) -> Result<portcullis_core::declassify::TokenApplyResult, crate::kernel::DenyReason> {
+        use portcullis_core::declassify::TokenApplyResult;
+
+        let (token, burn_id, valid_until) = v.into_parts();
+        // One-shot: already exercised ⇒ refuse with the dedicated replay
+        // verdict, BEFORE recording any scope — a replayed token must not
+        // re-run the application.
+        if self.release_burn_ledger.contains(&burn_id) {
+            return Err(crate::kernel::DenyReason::DeclassificationReplayed {
+                target_node: token.target_node_id.to_string(),
+            });
+        }
+        let result = self.apply_signed(&token, valid_until, now);
+        if matches!(result, TokenApplyResult::Applied { .. }) {
+            self.release_burn_ledger.insert(burn_id);
+        }
+        Ok(result)
+    }
+
     /// Apply a scoped declassification token to a specific node **without
-    /// signature verification**.
+    /// signature verification**. Test-only.
     ///
-    /// # Security Warning
-    ///
-    /// This method does **not** verify the token's Ed25519 signature.
-    /// In production, use [`apply_token_verified()`](Self::apply_token_verified)
-    /// which cryptographically verifies the signature against trusted keys
-    /// before applying the declassification.
-    ///
-    /// This unverified method is retained for backward compatibility and
-    /// testing scenarios where signature infrastructure is not available.
-    ///
-    /// Validates that:
+    /// Until 2026-09-27 this was `pub`, documented "should only be used in
+    /// tests", and nothing enforced that: any caller holding a `&mut FlowGraph`
+    /// could release any node for any sink with no signature. It is now
+    /// `#[cfg(test)]` and crate-private — this crate's tests use it to exercise
+    /// sink scope and at-most-once in isolation, and the production path is
+    /// [`Self::apply_verified`], which shares everything below the expiry check
+    /// through [`Self::record_token_scope`].
+    #[cfg(test)]
+    pub(crate) fn apply_token(
+        &mut self,
+        token: &portcullis_core::declassify::DeclassificationToken,
+        now: u64,
+    ) -> portcullis_core::declassify::TokenApplyResult {
+        if token.is_expired(now) {
+            return portcullis_core::declassify::TokenApplyResult::Expired {
+                valid_until: token.valid_until,
+                now,
+            };
+        }
+        self.record_token_scope(token)
+    }
+
+    /// Record the scope an unexpired token grants. Validates that:
     /// 1. The target node exists in the graph
-    /// 2. The token has not expired
-    /// 3. The node does not already carry a declass scope
-    /// 4. The underlying rule's precondition matches the node's label
+    /// 2. The node does not already carry a declass scope
+    /// 3. The underlying rule's precondition matches the node's label
     ///
     /// On success, records a [`DeclassScope`] for the target node — the
     /// node's stored label is NOT modified. `Applied::original_label` is the
@@ -1502,20 +1688,16 @@ impl FlowGraph {
     /// silently kept its label while `Applied` was returned. A scope on a
     /// frozen node is the legitimate declassification #947 set out to
     /// preserve.
-    pub fn apply_token(
+    ///
+    /// Expiry is the caller's: [`Self::apply_verified`] decides it from the
+    /// witness's deadline, the test-only `apply_token` from the token's, so each
+    /// path reads the deadline exactly once.
+    #[cfg(any(test, feature = "crypto"))]
+    fn record_token_scope(
         &mut self,
         token: &portcullis_core::declassify::DeclassificationToken,
-        now: u64,
     ) -> portcullis_core::declassify::TokenApplyResult {
         use portcullis_core::declassify::TokenApplyResult;
-
-        // Check expiry
-        if token.is_expired(now) {
-            return TokenApplyResult::Expired {
-                valid_until: token.valid_until,
-                now,
-            };
-        }
 
         // Check node exists
         let node = match self.get(token.target_node_id) {
@@ -1549,35 +1731,37 @@ impl FlowGraph {
         }
     }
 
-    /// Apply a declassification token with Ed25519 signature verification.
-    ///
-    /// Unlike `apply_token()`, this method **requires** a valid signature
-    /// verified against at least one of the provided trusted public keys.
-    /// Unsigned or tampered tokens are rejected with `InvalidSignature`.
-    ///
-    /// This is the recommended method for production use. The unverified
-    /// `apply_token()` should only be used in tests.
-    ///
-    /// # Arguments
-    ///
-    /// * `token` — The declassification token to apply.
-    /// * `trusted_keys` — Ed25519 public keys (32 bytes each) that may
-    ///   have signed this token. Supports key rotation by accepting
-    ///   multiple keys.
-    /// * `now` — Current unix timestamp for expiry checking.
-    #[cfg(feature = "crypto")]
-    pub fn apply_token_verified(
+    /// Signature check + [`Self::apply_signed`], at graph level — what this
+    /// method was before [`Self::apply_verified`] moved the signature check into
+    /// the kernel's mint. Test-only since 2026-09-27: production verifies once,
+    /// in `Kernel::verify_declassification`, and spends the witness here; this
+    /// keeps the #731 signature tests exercising the SAME apply the production
+    /// path runs.
+    #[cfg(all(test, feature = "crypto"))]
+    pub(crate) fn apply_token_verified(
         &mut self,
         token: &portcullis_core::declassify::DeclassificationToken,
         trusted_keys: &[&[u8]],
         now: u64,
     ) -> portcullis_core::declassify::TokenApplyResult {
-        use portcullis_core::declassify::TokenApplyResult;
-
-        // Verify signature FIRST — before any other checks
         if crate::token_sign::verify_token_any_key(token, trusted_keys).is_err() {
-            return TokenApplyResult::InvalidSignature;
+            return portcullis_core::declassify::TokenApplyResult::InvalidSignature;
         }
+        self.apply_signed(token, token.valid_until, now)
+    }
+
+    /// Value binding, then the deadline, then [`Self::record_token_scope`] — the
+    /// part of a signed apply that depends on this graph. `valid_until` is the
+    /// deadline the caller's evidence carries (the witness's, on the production
+    /// path), read here and nowhere else on that path.
+    #[cfg(feature = "crypto")]
+    fn apply_signed(
+        &mut self,
+        token: &portcullis_core::declassify::DeclassificationToken,
+        valid_until: u64,
+        now: u64,
+    ) -> portcullis_core::declassify::TokenApplyResult {
+        use portcullis_core::declassify::TokenApplyResult;
 
         // ── Value binding (Phase 3): a signed release names the SPECIFIC value ──
         //
@@ -1589,12 +1773,13 @@ impl FlowGraph {
         // the identity fixed by the signature no longer matches what was ingested.
         //
         // Fail-CLOSED and NON-BURNING: every refusal below returns before
-        // `apply_token`, so it neither records a `DeclassScope` nor spends the
-        // one-shot ledger (the token stays usable once a legitimate value is in
-        // place — `runD` semantics). This gate lives on the verified (production)
-        // path; the unsigned `apply_token` remains the primitive tests use to
-        // exercise sink-scope and one-shot in isolation. It mirrors the extracted
-        // decision core `extracted::declassify::value_authorized`.
+        // `record_token_scope`, so it neither records a `DeclassScope` nor spends
+        // the one-shot ledger (the token stays usable once a legitimate value is
+        // in place — `runD` semantics). This gate lives on the verified
+        // (production) path; the test-only unsigned `apply_token` remains the
+        // primitive tests use to exercise sink-scope and one-shot in isolation.
+        // It mirrors the extracted decision core
+        // `extracted::declassify::value_authorized`.
         //
         // A non-existent node keeps returning `NodeNotFound` (checked first),
         // which ALSO closes the mint-before-exist vector: no node ⇒ no recorded
@@ -1613,8 +1798,11 @@ impl FlowGraph {
             return TokenApplyResult::ContentMismatch;
         }
 
-        // Delegate to the existing sink-scope / one-shot apply logic.
-        self.apply_token(token, now)
+        // The deadline the evidence carries, then the scope itself.
+        if now > valid_until {
+            return TokenApplyResult::Expired { valid_until, now };
+        }
+        self.record_token_scope(token)
     }
 
     // ── Shared governed-release enforcement (Phase 4) ─────────────────────────

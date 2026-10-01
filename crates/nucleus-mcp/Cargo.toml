@@ -27,6 +27,7 @@ ureq = { workspace = true }
 uuid = { workspace = true }
 
 nucleus-client = { path = "../nucleus-client" }
+shell-words = { workspace = true }
 nucleus-spec = { path = "../nucleus-spec" }
 portcullis = { path = "../portcullis", features = ["serde"] }
 portcullis-core = { path = "../portcullis-core" }

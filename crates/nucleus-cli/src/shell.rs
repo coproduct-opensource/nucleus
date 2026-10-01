@@ -27,6 +27,7 @@ use crate::run::{McpEnvConfig, build_mcp_allowed_tools, write_mcp_config};
 /// flow through the nucleus permission lattice. The tool-proxy enforces
 /// capabilities, budget, command restrictions, and exposure tracking.
 #[derive(Args, Debug)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct ShellArgs {
     /// Working directory (default: current directory)
     #[arg(short = 'd', long, default_value = ".")]

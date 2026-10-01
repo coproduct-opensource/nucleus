@@ -19,21 +19,67 @@
 //! unobservable at every other sink. Non-vacuity: the oracles must differ on
 //! at least one operation, or every assertion above is comparing equal
 //! things and the test proves nothing.
+//!
+//! Every token here goes through the ONLY public apply path: a governor kernel
+//! signs it, `Kernel::verify_declassification` mints the witness, and
+//! `FlowGraph::apply_verified` spends it. Until 2026-09-27 these tests called the
+//! unsigned `FlowGraph::apply_token` directly — which compiling from an external
+//! test crate proved any caller could do. That primitive is now `pub(crate)`,
+//! and the sources are observed with a content hash the tokens commit to, so the
+//! value binding holds and the sink-scope property is measured on the real path.
+
+#![cfg(feature = "crypto")]
 
 use portcullis::flow_graph::FlowGraph;
+use portcullis::kernel::Kernel;
+use portcullis::token_sign;
+use portcullis::PermissionLattice;
 use portcullis_core::declassify::{
     DeclassificationRule, DeclassificationToken, DeclassifyAction, TokenApplyResult,
 };
 use portcullis_core::flow::NodeKind;
-use portcullis_core::{ConfLevel, Operation};
+use portcullis_core::{ConfLevel, ContentHash, Operation};
+use ring::rand::SystemRandom;
+use ring::signature::{Ed25519KeyPair, KeyPair};
 
 const NOW: u64 = 1000;
+
+/// The monitor-recorded content identity every source carries and every token
+/// commits to (non-zero, so the tokens are value-bound).
+const VALUE_ID: [u8; 32] = [0x5Au8; 32];
+
+/// A governor: a signing key and a kernel that trusts it.
+struct Governor {
+    key: Ed25519KeyPair,
+    kernel: Kernel,
+}
+
+fn governor() -> Governor {
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+    let mut pk = [0u8; 32];
+    pk.copy_from_slice(key.public_key().as_ref());
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    kernel.set_trusted_keys(vec![pk]);
+    Governor { key, kernel }
+}
+
+/// A Secret env-var observation carrying [`VALUE_ID`] as its recorded content.
+fn secret_source(g: &mut FlowGraph) -> u64 {
+    g.observe_with_content_hash(
+        NodeKind::EnvVar,
+        &[],
+        NOW,
+        ContentHash::from_bytes(VALUE_ID),
+    )
+    .unwrap()
+}
 
 /// A graph with one Secret-confidentiality source node (`EnvVar` intrinsic:
 /// Secret / Trusted / SYSTEM / NoAuthority / Deterministic).
 fn graph_with_secret_source() -> (FlowGraph, u64) {
     let mut g = FlowGraph::new();
-    let src = g.insert_observation(NodeKind::EnvVar, &[], NOW).unwrap();
+    let src = secret_source(&mut g);
     assert_eq!(
         g.get(src).unwrap().label.confidentiality,
         ConfLevel::Secret,
@@ -56,6 +102,21 @@ fn lower_conf_token(target: u64, sinks: Vec<Operation>) -> DeclassificationToken
         NOW + 3600,
         "sink-scope binding test".to_string(),
     )
+    .with_content_commitment(VALUE_ID)
+}
+
+/// Release `target` for `sinks` the only way a caller outside the crate can:
+/// sign, verify (mint the witness), spend it on `g`.
+fn release(g: &mut FlowGraph, target: u64, sinks: Vec<Operation>) -> TokenApplyResult {
+    let gov = governor();
+    let mut token = lower_conf_token(target, sinks);
+    token_sign::sign_token(&mut token, &gov.key);
+    let v = gov
+        .kernel
+        .verify_declassification(&token)
+        .expect("a governor-signed token verifies");
+    g.apply_verified(v, NOW)
+        .expect("a fresh token is not a replay")
 }
 
 #[test]
@@ -66,7 +127,7 @@ fn graph_verdicts_match_the_extracted_decision_pointwise() {
 
     // Token graph: scoped release on the source.
     let (mut g_token, src_t) = graph_with_secret_source();
-    let apply = g_token.apply_token(&lower_conf_token(src_t, granted.clone()), NOW);
+    let apply = release(&mut g_token, src_t, granted.clone());
     assert!(
         matches!(apply, TokenApplyResult::Applied { .. }),
         "token failed to apply: {apply:?}"
@@ -119,7 +180,7 @@ fn graph_verdicts_match_the_extracted_decision_pointwise() {
     // and exfil-class, so the released view must change its verdict.
     let (mut g2_strict, s2) = graph_with_secret_source();
     let (mut g2_token, t2) = graph_with_secret_source();
-    g2_token.apply_token(&lower_conf_token(t2, vec![Operation::WebFetch]), NOW);
+    release(&mut g2_token, t2, vec![Operation::WebFetch]);
     let strict_fetch = g2_strict
         .insert_action(Operation::WebFetch, &[s2], NOW)
         .unwrap();
@@ -140,7 +201,7 @@ fn stored_labels_and_decision_labels_stay_strict() {
     // session flow cache), and the receipt's recomputed verdict must all be
     // derived from the same stored state.
     let (mut g, src) = graph_with_secret_source();
-    g.apply_token(&lower_conf_token(src, vec![Operation::WriteFiles]), NOW);
+    release(&mut g, src, vec![Operation::WriteFiles]);
 
     let decision = g.insert_action(Operation::WriteFiles, &[src], NOW).unwrap();
 
@@ -175,14 +236,14 @@ fn inherited_scope_intersects_toward_strict() {
     // operations each parent granted individually. The deliberate sound
     // over-approximation.
     let mut g = FlowGraph::new();
-    let a = g.insert_observation(NodeKind::EnvVar, &[], NOW).unwrap();
-    let b = g.insert_observation(NodeKind::EnvVar, &[], NOW).unwrap();
+    let a = secret_source(&mut g);
+    let b = secret_source(&mut g);
     assert!(matches!(
-        g.apply_token(&lower_conf_token(a, vec![Operation::WebFetch]), NOW),
+        release(&mut g, a, vec![Operation::WebFetch]),
         TokenApplyResult::Applied { .. }
     ));
     assert!(matches!(
-        g.apply_token(&lower_conf_token(b, vec![Operation::WriteFiles]), NOW),
+        release(&mut g, b, vec![Operation::WriteFiles]),
         TokenApplyResult::Applied { .. }
     ));
 
@@ -200,15 +261,13 @@ fn inherited_scope_intersects_toward_strict() {
     // Overlapping masks DO survive: a child of two parents that both grant
     // WriteFiles keeps the release for WriteFiles and only WriteFiles.
     let mut g2 = FlowGraph::new();
-    let c = g2.insert_observation(NodeKind::EnvVar, &[], NOW).unwrap();
-    let d = g2.insert_observation(NodeKind::EnvVar, &[], NOW).unwrap();
-    g2.apply_token(
-        &lower_conf_token(c, vec![Operation::WriteFiles, Operation::WebFetch]),
-        NOW,
-    );
-    g2.apply_token(
-        &lower_conf_token(d, vec![Operation::WriteFiles, Operation::GitCommit]),
-        NOW,
+    let c = secret_source(&mut g2);
+    let d = secret_source(&mut g2);
+    release(&mut g2, c, vec![Operation::WriteFiles, Operation::WebFetch]);
+    release(
+        &mut g2,
+        d,
+        vec![Operation::WriteFiles, Operation::GitCommit],
     );
     let child2 = g2
         .insert_observation(NodeKind::ModelPlan, &[c, d], NOW)
@@ -232,7 +291,7 @@ fn inherited_scope_intersects_toward_strict() {
 #[test]
 fn causal_label_for_honors_the_scope() {
     let (mut g, src) = graph_with_secret_source();
-    g.apply_token(&lower_conf_token(src, vec![Operation::WriteFiles]), NOW);
+    release(&mut g, src, vec![Operation::WriteFiles]);
 
     // The op-aware prospective label sees the release exactly in-mask…
     assert_eq!(

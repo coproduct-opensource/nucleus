@@ -54,4 +54,17 @@ disallowed-methods = [
     # `#[expect]` saying so.
     { path = "std::fs::OpenOptions::append", reason = "ADR 0007 G-1: append a record with nucleus_jsonl::append_line (one atomic write)" },
     { path = "tokio::fs::OpenOptions::append", reason = "ADR 0007 G-1: append a record with nucleus_jsonl::append_line (one atomic write)" },
+
+    # B-6 -- a TLS client identifies its peer. The node's certificate names it by
+    # SPIFFE ID rather than hostname, so a client that switches the hostname check
+    # off must check the ID instead; `nucleus_identity::node_tls` does both, and is
+    # how every node-facing client builds its TLS. Measured when wired: 0 occurrences.
+    { path = "reqwest::ClientBuilder::danger_accept_invalid_hostnames", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::ClientBuilder::tls_danger_accept_invalid_hostnames", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::ClientBuilder::danger_accept_invalid_certs", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::ClientBuilder::tls_danger_accept_invalid_certs", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::blocking::ClientBuilder::danger_accept_invalid_hostnames", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::blocking::ClientBuilder::tls_danger_accept_invalid_hostnames", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::blocking::ClientBuilder::danger_accept_invalid_certs", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::blocking::ClientBuilder::tls_danger_accept_invalid_certs", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
 ]

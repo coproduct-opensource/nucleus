@@ -127,6 +127,7 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
 /// By default, requires a running nucleus-node with Firecracker. Use `--local`
 /// to run the tool-proxy as a local subprocess instead (suitable for CI).
 #[derive(Args, Debug)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct RunArgs {
     /// Task prompt (use - for stdin). Not needed with --goal or --grant.
     #[arg(required_unless_present_any = ["goal", "grant"])]
@@ -951,6 +952,10 @@ async fn create_pod_via_node(
     let mut request = ureq::post(&url)
         .config()
         .timeout_global(Some(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT))
+        // Without this, ureq turns a 4xx into a transport error and discards the
+        // body, so the `>= 400` branch below never ran and the node's own
+        // sentence ("no such policy profile") arrived as "http status: 400".
+        .http_status_as_error(false)
         .build()
         .header("content-type", "application/yaml");
     let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
@@ -1363,12 +1368,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
             .into_bytes();
-        let identity = reqwest::Identity::from_pem(&identity_pem).unwrap();
-        let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem).unwrap();
+        let tls =
+            nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem).unwrap();
         let client = reqwest::Client::builder()
-            .identity(identity)
-            .tls_certs_only(roots)
-            .danger_accept_invalid_hostnames(true)
+            .tls_backend_preconfigured(tls)
             .build()
             .unwrap();
 
