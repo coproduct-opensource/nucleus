@@ -81,6 +81,26 @@
 //! (0o400), following the derive-from-`pods/` convention `identity.rs` uses
 //! for the VM registry: a restart rebuilds the registry from the directory
 //! that already is the record of which pods exist.
+//!
+//! A ledger is persisted with its holder, because a restart must not hand
+//! back budget: `Σ live allocations` is re-derived from the live children's
+//! own files, but what RETIRED children consumed exists nowhere else. So:
+//!
+//! * a pod's `consumed` is in its own `authority.json`;
+//! * an external chain's ceiling and `consumed` are in
+//!   `authority/external/<fingerprint>.json`, written when the chain is first
+//!   charged and on every release;
+//! * a release writes the parent's record (naming the child as `retired`)
+//!   BEFORE it removes the child's file, and a restore skips any child its
+//!   parent names as retired. A crash between the two writes therefore
+//!   restores the ledger exactly, never with the child counted twice or not
+//!   at all.
+//!
+//! Every file is written whole and renamed into place. A record that exists
+//! and cannot be read is refused, not defaulted: an unreadable chain record
+//! refuses that chain, and an unreadable pod record — which cannot say whose
+//! child it was — refuses every delegated admission until an operator
+//! resolves it. Only the root minter, which holds no ledger, still creates.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -232,7 +252,7 @@ pub(crate) struct Reservation {
 
 struct Release {
     inner: std::sync::Arc<tokio::sync::Mutex<Inner>>,
-    path: PathBuf,
+    state_dir: PathBuf,
     pod_id: Uuid,
 }
 
@@ -255,7 +275,7 @@ impl Reservation {
     /// a task of its own.)
     pub async fn release(mut self) {
         if let Some(r) = self.release.take() {
-            release(&r.inner, &r.path, r.pod_id).await;
+            release(&r.inner, &r.state_dir, r.pod_id).await;
         }
     }
 }
@@ -270,7 +290,7 @@ impl Drop for Reservation {
         // against, so there is nothing to do.
         match tokio::runtime::Handle::try_current() {
             Ok(rt) => {
-                rt.spawn(async move { release(&r.inner, &r.path, r.pod_id).await });
+                rt.spawn(async move { release(&r.inner, &r.state_dir, r.pod_id).await });
             }
             Err(_) => tracing::warn!(pod = %r.pod_id, "reservation dropped outside a runtime"),
         }
@@ -280,27 +300,67 @@ impl Drop for Reservation {
 /// Retire `pod_id`'s certificate and return its allocation to its parent's
 /// ledger. The one body [`PodAuthority::release_child`] and a dropped
 /// [`Reservation`] share.
-async fn release(inner: &tokio::sync::Mutex<Inner>, path: &Path, pod_id: Uuid) {
-    let mut inner = inner.lock().await;
+///
+/// The parent's record is written first, naming the child as retired, and
+/// only then is the child's file removed; see the module docs. If the parent's
+/// record cannot be written the child's file is KEPT, so a restart restores
+/// the child as a live allocation: the same budget held, never handed back.
+async fn release(inner: &tokio::sync::Mutex<Inner>, state_dir: &Path, pod_id: Uuid) {
+    let mut guard = inner.lock().await;
+    let inner = &mut *guard;
     let Some(entry) = inner.pods.remove(&pod_id) else {
         return;
     };
     let consumed = entry.cert.effective_permissions().budget.max_cost_usd;
-    let released = match entry.parent {
-        Parent::Root => Ok(rust_decimal::Decimal::ZERO),
+    let recorded = match entry.parent {
+        Parent::Root => Ok(()),
         Parent::Pod(p) => match inner.pods.get_mut(&p) {
-            Some(parent) => parent.ledger.release(pod_id.as_u128(), consumed),
-            None => Ok(rust_decimal::Decimal::ZERO),
+            Some(parent) => match parent.ledger.release(pod_id.as_u128(), consumed) {
+                Ok(_) => {
+                    parent.retired.push(pod_id);
+                    retain_unremoved(state_dir, &mut parent.retired);
+                    persist_pod(state_dir, p, parent).await
+                }
+                Err(e) => {
+                    tracing::debug!(pod = %pod_id, error = %e, "budget release found no live allocation");
+                    Ok(())
+                }
+            },
+            None => Ok(()),
         },
         Parent::External(fp) => match inner.external.get_mut(&fp) {
-            Some(l) => l.release(pod_id.as_u128(), consumed),
-            None => Ok(rust_decimal::Decimal::ZERO),
+            Some(chain) => match chain.ledger.release(pod_id.as_u128(), consumed) {
+                Ok(_) => {
+                    chain.retired.push(pod_id);
+                    retain_unremoved(state_dir, &mut chain.retired);
+                    persist_external(state_dir, &fp, chain).await
+                }
+                Err(e) => {
+                    tracing::debug!(pod = %pod_id, error = %e, "budget release found no live allocation");
+                    Ok(())
+                }
+            },
+            None => Ok(()),
         },
     };
-    if let Err(e) = released {
-        tracing::debug!(pod = %pod_id, error = %e, "budget release found no live allocation");
+    match recorded {
+        Ok(()) => {
+            let _ = tokio::fs::remove_file(authority_path(state_dir, pod_id)).await;
+        }
+        Err(e) => tracing::error!(
+            pod = %pod_id,
+            error = %e,
+            "could not record a released allocation in its parent's ledger; the pod's \
+             authority file is kept, so a restart restores it as still allocated"
+        ),
     }
-    let _ = tokio::fs::remove_file(path).await;
+}
+
+/// Keep, of `retired`, only the children whose authority file still exists:
+/// the ones a restore could otherwise mistake for live. Bounded by the
+/// releases whose file removal has not happened yet.
+fn retain_unremoved(state_dir: &Path, retired: &mut Vec<Uuid>) {
+    retired.retain(|id| authority_path(state_dir, *id).exists());
 }
 
 impl IssuedAuthority {
@@ -330,9 +390,18 @@ struct PodCert {
     holder: Ed25519KeyPair,
     holder_pkcs8: Vec<u8>,
     ledger: BudgetLedger,
+    /// Children whose release is already in `ledger`'s consumption but whose
+    /// authority file may not be removed yet. See [`retain_unremoved`].
+    retired: Vec<Uuid>,
     parent: Parent,
     /// What this pod was admitted — the ceiling for its own children.
     upstreams: Vec<CredentialedEgressSpec>,
+}
+
+/// An external caller chain's ledger, and its retired children as for a pod.
+struct ChainLedger {
+    ledger: BudgetLedger,
+    retired: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,12 +425,61 @@ struct PersistedAuthority {
     /// children, which is the fail-closed reading of "not recorded".
     #[serde(default)]
     upstreams: Vec<CredentialedEgressSpec>,
+    /// What this pod's retired children consumed. Absent from files written
+    /// before ledgers were persisted, which recorded none.
+    #[serde(default)]
+    ledger: LedgerRecord,
+}
+
+/// The part of a ledger a restart cannot re-derive from live children.
+#[derive(Serialize, Deserialize, Default)]
+struct LedgerRecord {
+    /// Consumption, in the ledger's own unit (micro-USD).
+    consumed_micro: u64,
+    /// Children already folded into `consumed_micro`: a restore skips them.
+    retired: Vec<Uuid>,
+}
+
+/// `authority/external/<fingerprint>.json`.
+#[derive(Serialize, Deserialize)]
+struct PersistedChain {
+    version: u8,
+    /// The chain's ceiling, in micro-USD: its verified budget when first charged.
+    max_micro: u64,
+    ledger: LedgerRecord,
+}
+
+impl LedgerRecord {
+    fn of(ledger: &BudgetLedger, retired: &[Uuid]) -> Self {
+        Self {
+            consumed_micro: ledger.core().parent_consumed_units(),
+            retired: retired.to_vec(),
+        }
+    }
+}
+
+fn micro_usd(micro: u64) -> rust_decimal::Decimal {
+    rust_decimal::Decimal::new(i64::try_from(micro).unwrap_or(i64::MAX), 6)
+}
+
+/// `ledger`, charged up to the `consumed_micro` its record holds. Called
+/// before any child is allocated, so the charge is clamped only at `max`.
+fn charged(mut ledger: BudgetLedger, consumed_micro: u64) -> BudgetLedger {
+    let already = ledger.core().parent_consumed_units();
+    let _ = ledger.record_parent_consumed(micro_usd(consumed_micro.saturating_sub(already)));
+    ledger
 }
 
 struct Inner {
     pods: HashMap<Uuid, PodCert>,
     /// Ledgers for external callers' chains, keyed by chain fingerprint.
-    external: HashMap<[u8; 32], BudgetLedger>,
+    external: HashMap<[u8; 32], ChainLedger>,
+    /// Chains whose persisted ledger could not be read: refused, not reset.
+    unreadable_chains: std::collections::HashSet<[u8; 32]>,
+    /// A pod's persisted record could not be read. It cannot say whose child
+    /// it was, so no delegated admission can be charged correctly: every one
+    /// is refused until the file is resolved and the node restarted.
+    unreadable_pod: bool,
 }
 
 /// A snapshot of [`PodAuthority`]'s state, from [`PodAuthority::held`].
@@ -538,6 +656,8 @@ impl PodAuthority {
             inner: std::sync::Arc::new(tokio::sync::Mutex::new(Inner {
                 pods: HashMap::new(),
                 external: HashMap::new(),
+                unreadable_chains: std::collections::HashSet::new(),
+                unreadable_pod: false,
             })),
         })
     }
@@ -734,7 +854,16 @@ impl PodAuthority {
         let child_key = Ed25519KeyPair::from_pkcs8(child_pkcs8.as_ref())
             .map_err(|_| ApiError::Authority("holder key parse failed".into()))?;
 
-        let mut inner = self.inner.lock().await;
+        let mut guard = self.inner.lock().await;
+        let inner = &mut *guard;
+        let delegated = admission.caller_pod.is_some() || admission.header_cert.is_some();
+        if delegated && inner.unreadable_pod {
+            return Err(ApiError::Authority(
+                "this node could not restore a pod's authority record; delegated admission \
+                 is refused until it is resolved"
+                    .into(),
+            ));
+        }
 
         let (cert, parent, parent_upstreams) = if let Some(parent_id) = admission.caller_pod {
             // ── Case 1: one hop below a registered pod ──────────────────
@@ -801,10 +930,19 @@ impl PodAuthority {
                 )));
             }
             let fingerprint = token.fingerprint();
-            let ledger = inner
+            if inner.unreadable_chains.contains(&fingerprint) {
+                return Err(ApiError::Authority(
+                    "this node could not restore the caller chain's ledger; refused".into(),
+                ));
+            }
+            let chain = inner
                 .external
                 .entry(fingerprint)
-                .or_insert_with(|| BudgetLedger::for_parent(&verified.effective().budget));
+                .or_insert_with(|| ChainLedger {
+                    ledger: BudgetLedger::for_parent(&verified.effective().budget),
+                    retired: Vec::new(),
+                });
+            let ledger = &mut chain.ledger;
             if ledger.live_children() >= self.max_children {
                 return Err(ApiError::Authority(format!(
                     "caller chain already has {} live children (cap {})",
@@ -836,9 +974,7 @@ impl PodAuthority {
                     &child_key,
                 )
                 .map_err(|e| {
-                    if let Some(l) = inner.external.get_mut(&fingerprint) {
-                        let _ = l.release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
-                    }
+                    unreserve(inner, Parent::External(fingerprint), child_id);
                     ApiError::Authority(format!("delegation refused: {e}"))
                 })?;
             (cert, Parent::External(fingerprint), None)
@@ -884,13 +1020,7 @@ impl PodAuthority {
                 // Undo the reservation: nothing was issued. Checked only once the
                 // caller's authority is established, so a caller with none learns
                 // nothing about the registry from which refusal it gets.
-                if let Parent::Pod(parent_id) = &parent
-                    && let Some(p) = inner.pods.get_mut(parent_id)
-                {
-                    let _ = p
-                        .ledger
-                        .release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
-                }
+                unreserve(inner, parent, child_id);
                 return Err(refused);
             }
         };
@@ -898,14 +1028,32 @@ impl PodAuthority {
         let chain_depth = cert.chain_depth();
         let entry = PodCert {
             ledger: BudgetLedger::for_parent(&effective.budget),
+            retired: Vec::new(),
             cert,
             holder: child_key,
             holder_pkcs8: child_pkcs8.as_ref().to_vec(),
             parent,
             upstreams: upstreams.clone(),
         };
-        if let Err(e) = self.persist(child_id, &entry).await {
-            tracing::warn!(pod = %child_id, error = %e, "failed to persist pod authority; it will not survive a restart");
+        // A child that would not survive a restart would be missing from its
+        // parent's ledger after one, so it is not issued. Nor is a charge to a
+        // chain whose ceiling is not on disk.
+        let persisted = match parent {
+            Parent::External(fp) => match inner.external.get(&fp) {
+                Some(chain) => persist_external(&self.state_dir, &fp, chain).await,
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        };
+        if let Err(e) = match persisted {
+            Ok(()) => persist_pod(&self.state_dir, child_id, &entry).await,
+            Err(e) => Err(e),
+        } {
+            tracing::error!(pod = %child_id, error = %e, "could not persist the pod's authority; refused");
+            unreserve(inner, parent, child_id);
+            return Err(ApiError::Authority(
+                "the pod's authority could not be persisted".into(),
+            ));
         }
         inner.pods.insert(child_id, entry);
         tracing::info!(
@@ -923,7 +1071,7 @@ impl PodAuthority {
             reservation: Reservation {
                 release: Some(Release {
                     inner: std::sync::Arc::clone(&self.inner),
-                    path: self.authority_path(child_id),
+                    state_dir: self.state_dir.clone(),
                     pod_id: child_id,
                 }),
             },
@@ -1006,7 +1154,7 @@ impl PodAuthority {
             external: inner
                 .external
                 .iter()
-                .map(|(fp, l)| (*fp, LedgerView::of(l)))
+                .map(|(fp, l)| (*fp, LedgerView::of(&l.ledger)))
                 .collect(),
         }
     }
@@ -1015,92 +1163,116 @@ impl PodAuthority {
     /// parent's ledger. Until children report actual spend, the whole
     /// allocation is folded into the parent's consumption (no refund).
     pub async fn release_child(&self, pod_id: Uuid) {
-        release(&self.inner, &self.authority_path(pod_id), pod_id).await;
+        release(&self.inner, &self.state_dir, pod_id).await;
     }
 
-    /// Rebuild the registry from `pods/<id>/authority.json` after a restart.
-    /// Parent ledgers are re-derived by re-allocating every live child.
+    /// Rebuild the registry from `pods/<id>/authority.json` after a restart,
+    /// and every ledger with it: each holder's recorded consumption, then each
+    /// live child re-allocated against its parent. See the module docs for
+    /// what is refused when a record cannot be read.
     pub async fn restore_from_disk(&self) -> usize {
-        let pods_dir = self.state_dir.join("pods");
-        let Ok(mut entries) = tokio::fs::read_dir(&pods_dir).await else {
-            return 0;
-        };
+        let chains = read_chains(&self.state_dir).await;
         let mut loaded: Vec<(Uuid, PodCert)> = Vec::new();
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let Some(id) = entry
-                .file_name()
-                .to_str()
-                .and_then(|s| Uuid::parse_str(s).ok())
-            else {
-                continue;
-            };
-            let Ok(bytes) = tokio::fs::read(entry.path().join(AUTHORITY_FILE)).await else {
-                continue;
-            };
-            let Ok(persisted) = serde_json::from_slice::<PersistedAuthority>(&bytes) else {
-                tracing::warn!(pod = %id, "unreadable authority.json; pod will hold no certificate");
-                continue;
-            };
-            let Ok(holder_pkcs8) = base64_decode(&persisted.holder_pkcs8_b64) else {
-                continue;
-            };
-            let Ok(holder) = Ed25519KeyPair::from_pkcs8(&holder_pkcs8) else {
-                continue;
-            };
-            if holder.public_key().as_ref() != expected_next_key(&persisted.certificate) {
-                tracing::warn!(pod = %id, "persisted holder key does not match certificate; skipping");
-                continue;
+        let mut unreadable_pod = false;
+        if let Ok(mut entries) = tokio::fs::read_dir(self.state_dir.join("pods")).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let Some(id) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                else {
+                    continue;
+                };
+                let path = entry.path().join(AUTHORITY_FILE);
+                let bytes = match tokio::fs::read(&path).await {
+                    Ok(bytes) => bytes,
+                    // No record: a pod that holds no authority, or whose was released.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => {
+                        tracing::error!(pod = %id, error = %e, "pod authority record unreadable");
+                        unreadable_pod = true;
+                        continue;
+                    }
+                };
+                match restored_pod(&bytes) {
+                    Ok(cert) => loaded.push((id, cert)),
+                    Err(why) => {
+                        tracing::error!(
+                            pod = %id,
+                            path = %path.display(),
+                            why,
+                            "pod authority record unreadable: delegated admission is refused \
+                             until it is removed or repaired and the node restarted"
+                        );
+                        unreadable_pod = true;
+                    }
+                }
             }
-            let ledger =
-                BudgetLedger::for_parent(&persisted.certificate.effective_permissions().budget);
-            loaded.push((
-                id,
-                PodCert {
-                    cert: persisted.certificate,
-                    holder,
-                    holder_pkcs8,
-                    ledger,
-                    parent: persisted.parent,
-                    upstreams: persisted.upstreams,
-                },
-            ));
         }
 
-        let mut inner = self.inner.lock().await;
-        let restored = loaded.len();
-        let parents: Vec<(Uuid, Parent, rust_decimal::Decimal)> = loaded
-            .iter()
-            .map(|(id, c)| {
-                (
-                    *id,
-                    c.parent,
-                    c.cert.effective_permissions().budget.max_cost_usd,
-                )
-            })
-            .collect();
-        for (id, cert) in loaded {
-            inner.pods.insert(id, cert);
+        let mut guard = self.inner.lock().await;
+        let inner = &mut *guard;
+        inner.unreadable_pod |= unreadable_pod;
+        for (fp, chain) in chains {
+            match chain {
+                Some(chain) => {
+                    inner.external.insert(fp, chain);
+                }
+                None => {
+                    inner.unreadable_chains.insert(fp);
+                }
+            }
         }
-        for (child, parent, amount) in parents {
+        // A child its parent's record names as retired was already charged;
+        // only its file outlived the release.
+        let retired: std::collections::HashSet<Uuid> = loaded
+            .iter()
+            .flat_map(|(_, c)| c.retired.iter().copied())
+            .chain(
+                inner
+                    .external
+                    .values()
+                    .flat_map(|c| c.retired.iter().copied()),
+            )
+            .collect();
+        let mut restored = 0;
+        let mut children: Vec<(Uuid, Parent, rust_decimal::Decimal)> = Vec::new();
+        for (id, cert) in loaded {
+            if retired.contains(&id) {
+                let _ = tokio::fs::remove_file(authority_path(&self.state_dir, id)).await;
+                continue;
+            }
+            children.push((
+                id,
+                cert.parent,
+                cert.cert.effective_permissions().budget.max_cost_usd,
+            ));
+            inner.pods.insert(id, cert);
+            restored += 1;
+        }
+        for (child, parent, amount) in children {
             let result = match parent {
                 Parent::Root => Ok(()),
                 Parent::Pod(p) => match inner.pods.get_mut(&p) {
                     Some(parent) => parent.ledger.try_allocate(child.as_u128(), amount),
                     None => Ok(()),
                 },
-                Parent::External(fp) => {
-                    // The external chain's own budget is not persisted; be
-                    // conservative and treat what we restored as its ceiling.
-                    inner
-                        .external
-                        .entry(fp)
-                        .or_insert_with(|| {
-                            BudgetLedger::for_parent(
-                                &portcullis::BudgetLattice::with_cost_limit_decimal(amount),
-                            )
-                        })
-                        .try_allocate(child.as_u128(), amount)
-                }
+                // Refused at admission anyway; nothing to charge.
+                Parent::External(fp) if inner.unreadable_chains.contains(&fp) => Ok(()),
+                Parent::External(fp) => inner
+                    .external
+                    .entry(fp)
+                    // Only a node that ran before chain ledgers were persisted
+                    // has a child and no record: treat what was restored as the
+                    // whole ceiling, so nothing more is admitted under it.
+                    .or_insert_with(|| ChainLedger {
+                        ledger: BudgetLedger::for_parent(
+                            &portcullis::BudgetLattice::with_cost_limit_decimal(amount),
+                        ),
+                        retired: Vec::new(),
+                    })
+                    .ledger
+                    .try_allocate(child.as_u128(), amount),
             };
             if let Err(e) = result {
                 tracing::warn!(pod = %child, error = %e, "restored child exceeds its parent's ledger");
@@ -1109,34 +1281,164 @@ impl PodAuthority {
         restored
     }
 
+    #[cfg(test)]
     fn authority_path(&self, pod_id: Uuid) -> PathBuf {
-        self.state_dir
-            .join("pods")
-            .join(pod_id.to_string())
-            .join(AUTHORITY_FILE)
+        authority_path(&self.state_dir, pod_id)
     }
+}
 
-    async fn persist(&self, pod_id: Uuid, entry: &PodCert) -> std::io::Result<()> {
-        let path = self.authority_path(pod_id);
-        if let Some(dir) = path.parent() {
-            tokio::fs::create_dir_all(dir).await?;
-        }
-        let persisted = PersistedAuthority {
-            version: 1,
-            certificate: entry.cert.clone(),
-            holder_pkcs8_b64: base64_encode(&entry.holder_pkcs8),
-            parent: entry.parent,
-            upstreams: entry.upstreams.clone(),
+/// Undo a reservation made for `child_id` that will not be issued.
+fn unreserve(inner: &mut Inner, parent: Parent, child_id: Uuid) {
+    let ledger = match parent {
+        Parent::Root => None,
+        Parent::Pod(p) => inner.pods.get_mut(&p).map(|p| &mut p.ledger),
+        Parent::External(fp) => inner.external.get_mut(&fp).map(|c| &mut c.ledger),
+    };
+    if let Some(ledger) = ledger {
+        let _ = ledger.release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
+    }
+}
+
+fn authority_path(state_dir: &Path, pod_id: Uuid) -> PathBuf {
+    state_dir
+        .join("pods")
+        .join(pod_id.to_string())
+        .join(AUTHORITY_FILE)
+}
+
+fn chain_path(state_dir: &Path, fp: &[u8; 32]) -> PathBuf {
+    state_dir
+        .join("authority")
+        .join("external")
+        .join(format!("{}.json", hex::encode(fp)))
+}
+
+/// A pod's record, verified as far as it can be: the holder key must be the
+/// one its certificate names.
+fn restored_pod(bytes: &[u8]) -> Result<PodCert, &'static str> {
+    let persisted: PersistedAuthority =
+        serde_json::from_slice(bytes).map_err(|_| "does not parse")?;
+    let holder_pkcs8 =
+        base64_decode(&persisted.holder_pkcs8_b64).map_err(|_| "holder key is not base64")?;
+    let holder =
+        Ed25519KeyPair::from_pkcs8(&holder_pkcs8).map_err(|_| "holder key is not a key")?;
+    if holder.public_key().as_ref() != expected_next_key(&persisted.certificate) {
+        return Err("holder key does not match the certificate");
+    }
+    let ledger = BudgetLedger::for_parent(&persisted.certificate.effective_permissions().budget);
+    Ok(PodCert {
+        ledger: charged(ledger, persisted.ledger.consumed_micro),
+        retired: persisted.ledger.retired,
+        cert: persisted.certificate,
+        holder,
+        holder_pkcs8,
+        parent: persisted.parent,
+        upstreams: persisted.upstreams,
+    })
+}
+
+/// Every persisted chain ledger: `Some` restored, `None` present and unreadable.
+async fn read_chains(state_dir: &Path) -> Vec<([u8; 32], Option<ChainLedger>)> {
+    let mut out = Vec::new();
+    let dir = state_dir.join("authority").join("external");
+    let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+        return out;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let Some(fp) = name
+            .to_str()
+            .and_then(|n| n.strip_suffix(".json"))
+            .and_then(|h| hex::decode(h).ok())
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        else {
+            continue; // not a record: a temporary file, or not ours
         };
-        let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
-        tokio::fs::write(&path, bytes).await?;
+        let chain = tokio::fs::read(entry.path())
+            .await
+            .ok()
+            .and_then(|b| serde_json::from_slice::<PersistedChain>(&b).ok())
+            .map(|p| ChainLedger {
+                ledger: charged(
+                    BudgetLedger::for_parent(&portcullis::BudgetLattice::with_cost_limit_decimal(
+                        micro_usd(p.max_micro),
+                    )),
+                    p.ledger.consumed_micro,
+                ),
+                retired: p.ledger.retired,
+            });
+        if chain.is_none() {
+            tracing::error!(
+                path = %entry.path().display(),
+                "caller chain ledger unreadable: that chain is refused until it is resolved"
+            );
+        }
+        out.push((fp, chain));
+    }
+    out
+}
+
+async fn persist_pod(state_dir: &Path, pod_id: Uuid, entry: &PodCert) -> std::io::Result<()> {
+    let persisted = PersistedAuthority {
+        version: 1,
+        certificate: entry.cert.clone(),
+        holder_pkcs8_b64: base64_encode(&entry.holder_pkcs8),
+        parent: entry.parent,
+        upstreams: entry.upstreams.clone(),
+        ledger: LedgerRecord::of(&entry.ledger, &entry.retired),
+    };
+    let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
+    write_whole(&authority_path(state_dir, pod_id), &bytes).await
+}
+
+async fn persist_external(
+    state_dir: &Path,
+    fp: &[u8; 32],
+    chain: &ChainLedger,
+) -> std::io::Result<()> {
+    let persisted = PersistedChain {
+        version: 1,
+        max_micro: chain.ledger.core().parent_max_units(),
+        ledger: LedgerRecord::of(&chain.ledger, &chain.retired),
+    };
+    let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
+    write_whole(&chain_path(state_dir, fp), &bytes).await
+}
+
+/// Write `bytes` to `path` whole or not at all: a sibling written owner
+/// read-only (0o400) and synced, then renamed over `path`. A reader sees the
+/// old record or the new one, never part of either.
+async fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    let bytes = bytes.to_vec();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write as _;
+        let dir = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("no parent dir"))?;
+        std::fs::create_dir_all(dir)?;
+        let tmp = path.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).await?;
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o400);
         }
-        Ok(())
-    }
+        let written = (|| {
+            let mut f = options.open(&tmp)?;
+            f.write_all(&bytes)?;
+            f.sync_all()?;
+            std::fs::rename(&tmp, &path)?;
+            std::fs::File::open(dir)?.sync_all()
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        written
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 /// The node's federation issuer, if one is configured — and a refusal to
@@ -2144,4 +2446,7 @@ audience = "https://auth.model-api.invalid"
             "{creds:?}"
         );
     }
+
+    // Ledgers across a restart.
+    mod restart;
 }
