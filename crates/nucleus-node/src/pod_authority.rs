@@ -59,17 +59,21 @@
 //! `credentialed_egress` is not a policy field, so the certificate meet above
 //! does not narrow it — and it is the more direct exfiltration primitive of the
 //! two, since each entry names a node environment variable and a URL to send it
-//! to. Admission clamps it in the same match, by the same case:
+//! to. Admission bounds it in the same match, by the same case:
 //!
-//! 1. a pod caller: to what the PARENT was admitted (kept per pod, persisted
-//!    with its certificate) AND still in the operator registry, so delegation
-//!    can narrow and never invent;
-//! 2. an external caller: to the operator registry (`--upstreams`);
-//! 3. the root minter: to the operator registry.
+//! 1. a pod caller: by what the PARENT was admitted (kept per pod, persisted
+//!    with its certificate) AND what is still in the operator registry, so
+//!    delegation can narrow and never invent;
+//! 2. an external caller: by the operator registry (`--upstreams`);
+//! 3. the root minter: by the operator registry.
 //!
-//! With no registry configured every requested entry is dropped, for every
-//! case. See `upstreams.rs` for why that is fail-closed rather than "trust the
-//! root minter".
+//! An entry outside its bound REFUSES the pod (ADR 0010 §1): the caller gets
+//! the pod it asked for or none, never a quieter one. The refusal names the
+//! entry, not the reason, so "not in the registry", "differs from its entry"
+//! and "not held by the parent" read the same (ADR 0004: no oracle). With no
+//! registry configured every entry is outside, for every case. See
+//! `upstreams.rs` for why that is fail-closed rather than "trust the root
+//! minter".
 //!
 //! # Persistence
 //!
@@ -377,7 +381,7 @@ impl PodAuthority {
             }
             None => {
                 tracing::info!(
-                    "no --upstreams registry: every pod's credentialed_egress is dropped at admission"
+                    "no --upstreams registry: a pod requesting credentialed_egress is refused at admission"
                 );
                 None
             }
@@ -478,8 +482,9 @@ impl PodAuthority {
         Some(FederationSubject::new(subject, not_after))
     }
 
-    /// Clamp a requested `credentialed_egress` list to the registry, and — for a
-    /// pod caller — to what the parent was admitted as well.
+    /// Admit a requested `credentialed_egress` list only if every entry is in the
+    /// registry, and — for a pod caller — held by the parent as well. Otherwise
+    /// refuse, naming the first entry not granted and never why.
     ///
     /// Both ceilings for a pod caller, not just the parent's: the parent's set
     /// was a subset of the registry when it was admitted, but it may have been
@@ -491,7 +496,7 @@ impl PodAuthority {
         requested: &[CredentialedEgressSpec],
         parent: Option<&[CredentialedEgressSpec]>,
         child_id: Uuid,
-    ) -> Vec<CredentialedEgressSpec> {
+    ) -> Result<Vec<CredentialedEgressSpec>, ApiError> {
         let registry = self
             .registry
             .as_deref()
@@ -502,17 +507,23 @@ impl PodAuthority {
             kept = narrowed;
             dropped.extend(beyond_parent);
         }
-        for up in &dropped {
-            // By NAME, never by the variable's value — and not by the variable's
-            // name either, which is the caller's text and may be a probe.
-            tracing::warn!(
-                pod = %child_id,
-                upstream = %up.name,
-                "requested credentialed upstream is not granted (not in the operator registry, \
-                 differs from its entry, or not held by the calling pod); dropped at admission"
-            );
+        match dropped.first() {
+            None => Ok(kept),
+            Some(up) => {
+                // By NAME, never by the variable's value — and not by the variable's
+                // name either, which is the caller's text and may be a probe.
+                tracing::warn!(
+                    pod = %child_id,
+                    upstream = %up.name,
+                    "requested credentialed upstream is not granted (not in the operator registry, \
+                     differs from its entry, or not held by the calling pod); pod refused"
+                );
+                Err(ApiError::Authority(format!(
+                    "credentialed upstream `{}` is not granted",
+                    up.name
+                )))
+            }
         }
-        kept
     }
 
     /// The one identity allowed to mint from a bare policy.
@@ -731,11 +742,26 @@ impl PodAuthority {
             )));
         };
 
-        let upstreams = self.admit_upstreams(
+        let upstreams = match self.admit_upstreams(
             &spec.spec.credentialed_egress,
             parent_upstreams.as_deref(),
             child_id,
-        );
+        ) {
+            Ok(upstreams) => upstreams,
+            Err(refused) => {
+                // Undo the reservation: nothing was issued. Checked only once the
+                // caller's authority is established, so a caller with none learns
+                // nothing about the registry from which refusal it gets.
+                if let Parent::Pod(parent_id) = &parent
+                    && let Some(p) = inner.pods.get_mut(parent_id)
+                {
+                    let _ = p
+                        .ledger
+                        .release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
+                }
+                return Err(refused);
+            }
+        };
         let effective = cert.effective_permissions().clone();
         let chain_depth = cert.chain_depth();
         let entry = PodCert {
@@ -1447,7 +1473,7 @@ mod tests {
         assert!(verify_certificate(t.certificate(), &auth.root_pubkey, Utc::now(), 10).is_ok());
     }
 
-    // ── Credentialed upstreams, clamped at the NODE ──────────────────────
+    // ── Credentialed upstreams, bounded at the NODE ──────────────────────
     //
     // Before these, the node passed `credentialed_egress` through verbatim and
     // the only clamp was the in-guest tool-proxy's. Every test below calls
@@ -1508,11 +1534,18 @@ credential.env.var = "SEARCH_API_TOKEN"
         spec
     }
 
+    /// The refusal a caller gets for `name`: the entry, never the reason.
+    fn refused(name: &str) -> String {
+        ApiError::Authority(format!("credentialed upstream `{name}` is not granted")).to_string()
+    }
+
     /// (a) **A pod calling the node directly cannot name an upstream its
     /// parent lacks** — not an unregistered one, and not even a REGISTERED one
-    /// the parent was never admitted. Delegation narrows; it never invents.
+    /// the parent was never admitted. Delegation narrows; it never invents. The
+    /// pod is REFUSED (ADR 0010 §1), not created without the entry, and the
+    /// refusal gives back the budget it had reserved against the parent.
     #[tokio::test]
-    async fn a_pod_caller_cannot_gain_an_upstream_its_parent_lacks() {
+    async fn a_pod_caller_is_refused_an_upstream_its_parent_lacks() {
         let dir = tempfile::tempdir().unwrap();
         let auth = with_registry(dir.path());
         let parent = Uuid::new_v4();
@@ -1530,17 +1563,26 @@ credential.env.var = "SEARCH_API_TOKEN"
             "the control: the root minter is admitted a registry entry"
         );
 
-        let mut asked = loot();
-        asked.push(registered("search-api")); // registered, but the parent lacks it
-        assert_eq!(asked.len(), 3, "the fixture must request something to drop");
-        let child = auth
-            .admit(&from_pod(parent), &requesting(asked, 1), Uuid::new_v4())
+        // Registered, but the parent lacks it.
+        let err = auth
+            .admit(
+                &from_pod(parent),
+                &requesting(vec![registered("search-api")], 1),
+                Uuid::new_v4(),
+            )
             .await
-            .unwrap();
-        assert!(
-            child.upstreams.is_empty(),
-            "a pod's own request reached the node and kept {:?} — its parent held only model-api",
-            child.upstreams.iter().map(|u| &u.name).collect::<Vec<_>>()
+            .expect_err("an upstream the parent lacks refuses the pod");
+        assert_eq!(err.to_string(), refused("search-api"));
+        // A registry name retargeted at the caller's URL, then an invented entry.
+        let err = auth
+            .admit(&from_pod(parent), &requesting(loot(), 1), Uuid::new_v4())
+            .await
+            .expect_err("a retargeted entry refuses the pod");
+        assert_eq!(err.to_string(), refused("model-api"));
+        assert_eq!(
+            auth.inner.lock().await.pods[&parent].ledger.live_children(),
+            0,
+            "a refused child holds no reservation against its parent"
         );
 
         // Delegation still works for what the parent holds.
@@ -1555,12 +1597,12 @@ credential.env.var = "SEARCH_API_TOKEN"
         assert_eq!(child.upstreams, vec![registered("model-api")]);
     }
 
-    /// (b) **With a registry, the root minter and an external caller get only
-    /// registry entries**, field for field. A differing field is a different
-    /// entry, and an entry naming a variable the operator never registered is
-    /// dropped whoever asks.
+    /// (b) **With a registry, the root minter and an external caller are
+    /// admitted only registry entries**, field for field. A differing field is
+    /// a different entry, and an entry naming a variable the operator never
+    /// registered refuses the pod, whoever asks.
     #[tokio::test]
-    async fn root_and_external_callers_are_clamped_to_the_registry() {
+    async fn root_and_external_callers_are_refused_what_the_registry_lacks() {
         let dir = tempfile::tempdir().unwrap();
         let rng = ring::rand::SystemRandom::new();
         let ext_root = ephemeral_key().unwrap();
@@ -1570,14 +1612,6 @@ credential.env.var = "SEARCH_API_TOKEN"
         a.upstreams = Some(path);
         a.cert_trust_anchors = vec![hex::encode(ext_root.public_key().as_ref())];
         let auth = authority(dir.path(), a);
-
-        let mut asked = loot();
-        asked.push(registered("search-api"));
-        let root = auth
-            .admit(&by(MINTER), &requesting(asked.clone(), 5), Uuid::new_v4())
-            .await
-            .unwrap();
-        assert_eq!(root.upstreams, vec![registered("search-api")]);
 
         let caller = "spiffe://other.example/ns/agents/sa/orchestrator";
         let expiry = Utc::now() + Duration::hours(1);
@@ -1589,32 +1623,93 @@ credential.env.var = "SEARCH_API_TOKEN"
             caller_pod: None,
             header_cert: Some(token.to_base64().unwrap()),
         };
-        let ext = auth
-            .admit(&external, &requesting(asked, 1), Uuid::new_v4())
+
+        for who in [by(MINTER), external] {
+            let mut asked = vec![registered("search-api")];
+            asked.extend(loot());
+            let err = auth
+                .admit(&who, &requesting(asked, 1), Uuid::new_v4())
+                .await
+                .expect_err("an entry outside the registry refuses the pod");
+            assert_eq!(
+                err.to_string(),
+                refused("model-api"),
+                "{}",
+                who.caller_spiffe_id
+            );
+            let ok = auth
+                .admit(
+                    &who,
+                    &requesting(vec![registered("search-api")], 1),
+                    Uuid::new_v4(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(ok.upstreams, vec![registered("search-api")]);
+        }
+    }
+
+    /// The refusal is not an oracle (ADR 0004): "not in the registry" and "not
+    /// held by the parent" read the same, differing only in the name the caller
+    /// itself sent.
+    #[tokio::test]
+    async fn a_refusal_names_the_entry_not_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = with_registry(dir.path());
+        let parent = Uuid::new_v4();
+        auth.admit(&by(MINTER), &requesting(vec![], 5), parent)
             .await
             .unwrap();
-        assert_eq!(ext.upstreams, vec![registered("search-api")]);
+        let mut invented = loot().pop().expect("the invented entry");
+        invented.name = "search-api-2".into();
+        let not_registered = auth
+            .admit(
+                &from_pod(parent),
+                &requesting(vec![invented], 1),
+                Uuid::new_v4(),
+            )
+            .await
+            .expect_err("unregistered");
+        let not_held = auth
+            .admit(
+                &from_pod(parent),
+                &requesting(vec![registered("search-api")], 1),
+                Uuid::new_v4(),
+            )
+            .await
+            .expect_err("registered, not held");
+        assert_eq!(
+            not_registered
+                .to_string()
+                .replace("search-api-2", "search-api"),
+            not_held.to_string()
+        );
     }
 
     /// No registry is an empty ceiling for EVERY case, the root minter
     /// included. See `upstreams.rs` for why this is not "trust the operator CLI".
     #[tokio::test]
-    async fn without_a_registry_nobody_is_admitted_an_upstream() {
+    async fn without_a_registry_a_pod_requesting_an_upstream_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let auth = authority(dir.path(), args());
-        let issued = auth
+        let err = auth
             .admit(
                 &by(MINTER),
                 &requesting(vec![registered("model-api")], 5),
                 Uuid::new_v4(),
             )
             .await
+            .expect_err("no registry grants nothing");
+        assert_eq!(err.to_string(), refused("model-api"));
+        let issued = auth
+            .admit(&by(MINTER), &requesting(vec![], 5), Uuid::new_v4())
+            .await
             .unwrap();
-        assert!(issued.upstreams.is_empty());
+        assert!(issued.upstreams.is_empty(), "asking for none still works");
     }
 
     /// The per-pod admitted set is persisted with the certificate, so a
-    /// restarted node still clamps a restored parent's children to it.
+    /// restarted node still bounds a restored parent's children by it.
     #[tokio::test]
     async fn a_parents_admitted_upstreams_survive_a_restart() {
         let dir = tempfile::tempdir().unwrap();
@@ -1629,10 +1724,19 @@ credential.env.var = "SEARCH_API_TOKEN"
             .unwrap();
         let auth = with_registry(dir.path());
         assert_eq!(auth.restore_from_disk().await, 1);
-        let child = auth
+        let err = auth
             .admit(
                 &from_pod(parent),
                 &requesting(vec![registered("model-api"), registered("search-api")], 1),
+                Uuid::new_v4(),
+            )
+            .await
+            .expect_err("the restored parent never held search-api");
+        assert_eq!(err.to_string(), refused("search-api"));
+        let child = auth
+            .admit(
+                &from_pod(parent),
+                &requesting(vec![registered("model-api")], 1),
                 Uuid::new_v4(),
             )
             .await
