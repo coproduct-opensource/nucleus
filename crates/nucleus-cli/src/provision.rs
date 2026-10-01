@@ -404,11 +404,10 @@ fn local_build_candidates(artifact: Tier2Artifact, arch: &str) -> Vec<PathBuf> {
 
 /// Install the rootfs and the node binary onto `host`.
 ///
-/// Refuses a release below [`tier2_artifacts::GUEST_RELEASE_FLOOR`] rather than
-/// installing it: every release up to 2.0.2 ships a rootfs with no CA store, on
-/// which the tool-proxy panics as PID 1 and takes the guest kernel with it.
-/// Handing that to someone running the quickstart would look like nucleus being
-/// broken, which — on that artifact — it is.
+/// Refuses a release that lacks any [`tier2_artifacts::GuestCapability`] rather
+/// than installing it: a guest this build's node cannot boot would look like
+/// nucleus being broken, which — with that artifact — it is. Today that is the
+/// pinned release itself, so only `--artifacts local` installs.
 pub fn install_tier2_artifacts(
     host: &Tier2Host,
     arch: &str,
@@ -446,11 +445,11 @@ pub fn install_tier2_artifacts(
     }
 
     let version = tier2_artifacts::GUEST_RELEASE;
-    if !tier2_artifacts::release_is_acceptable(version) {
-        bail!(
-            "pinned guest release v{version} is below the floor v{}",
-            tier2_artifacts::GUEST_RELEASE_FLOOR
-        );
+    // Before any download: a guest this build cannot serve is refused here, by
+    // name, rather than installed and left to die mid-boot with a diagnosis
+    // pointing somewhere else.
+    if let Err(skew) = tier2_artifacts::guest_skew(version) {
+        bail!("{skew}");
     }
     println!("  Guest artifacts from release v{version}:");
     let assets = release_assets(version)?;
@@ -1155,6 +1154,33 @@ mod tests {
                 "{artifact:?} has no local build path, so Auto can never find it"
             );
         }
+    }
+
+    /// `setup --artifacts release` must refuse the pinned 2.2.0 guest before it
+    /// downloads or touches anything, and say why. It used to pass a floor of
+    /// 2.2.0 and install a guest this tree's node cannot boot. Hermetic: the
+    /// refusal comes before the release API and before the host, so a VM name
+    /// that does not exist is never reached.
+    #[test]
+    fn a_release_install_refuses_a_guest_this_build_cannot_serve() {
+        let cache = tempfile::tempdir().expect("tempdir");
+        let err = install_tier2_artifacts(
+            &Tier2Host::Lima("nucleus-test-never-reached".into()),
+            "aarch64",
+            cache.path(),
+            ArtifactSource::Release,
+        )
+        .expect_err("the pinned guest predates #2365 and #2379");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("#2365") && msg.contains("#2379"), "{msg}");
+        assert!(msg.contains("--artifacts local"), "{msg}");
+        assert!(
+            std::fs::read_dir(cache.path())
+                .expect("cache")
+                .next()
+                .is_none(),
+            "nothing may be downloaded before the refusal"
+        );
     }
 
     // ── mTLS identity provisioning (Move A step 6) ──────────────────────────
