@@ -59,6 +59,9 @@ pub(crate) enum EnvSource {
     RuntimeInjected,
     /// An egress forwarder name/URL from `workload_egress_env`.
     Egress,
+    /// A default the runtime supplies and `spec.env` may override: `HOME`,
+    /// pointed at [`workload_home`].
+    RuntimeDefault,
 }
 
 /// One classified environment entry: the name, the material kind the classifier
@@ -84,6 +87,8 @@ fn env_source(key: &str, spec: &WorkloadSpec) -> EnvSource {
         EnvSource::Egress
     } else if INHERITED_BY_NAME.contains(&key) {
         EnvSource::InheritedByName
+    } else if key == "HOME" && !spec.env.contains_key(key) {
+        EnvSource::RuntimeDefault
     } else if spec.env.contains_key(key) {
         EnvSource::SpecEnv
     } else {
@@ -114,10 +119,26 @@ fn env_source(key: &str, spec: &WorkloadSpec) -> EnvSource {
 ///
 /// Everything else a workload needs goes in `spec.env`, where an operator wrote
 /// it down. `PATH` is here because a command resolved without one fails in a way
-/// that looks like a missing binary rather than a missing variable; `HOME`,
-/// `LANG` and `TZ` because tools misbehave in confusing ways without them and
-/// none of the three can carry authority.
-pub(crate) const INHERITED_BY_NAME: [&str; 4] = ["PATH", "HOME", "LANG", "TZ"];
+/// that looks like a missing binary rather than a missing variable; `LANG` and
+/// `TZ` because tools misbehave in confusing ways without them and neither can
+/// carry authority.
+///
+/// `HOME` is NOT inherited any more. In a guest the runtime's `HOME` is `/`,
+/// which is on the read-only rootfs, so every tool that writes a dotfile failed;
+/// outside a guest it was the operator's own home directory. It is now
+/// [`workload_home`], a directory on the workload's own scratch.
+pub(crate) const INHERITED_BY_NAME: [&str; 3] = ["PATH", "LANG", "TZ"];
+
+/// The workload's `HOME` when its spec sets none: `<work_dir>/.home`, which is
+/// `/work/.home` in a guest (`nucleus_spec::guest_layout::WORKLOAD_HOME_NAME`).
+///
+/// Derived from the work dir rather than fixed, because the proxy also runs
+/// outside a guest. [`spawn_admitted`] creates it and hands it to the workload
+/// uid beside the work dir itself.
+#[must_use]
+pub(crate) fn workload_home(work_dir: &std::path::Path) -> std::path::PathBuf {
+    work_dir.join(nucleus_spec::guest_layout::WORKLOAD_HOME_NAME)
+}
 
 /// The uid a workload runs as when its spec sets none. Deliberately a high,
 /// unprivileged, non-root value: the guest runtime is root and holds every
@@ -229,6 +250,12 @@ impl WorkloadLaunch {
                 env.insert(key.to_string(), value);
             }
         }
+        // Under `spec.env`, which `workload_env` extends over it: an operator
+        // who names a HOME gets theirs.
+        env.insert(
+            "HOME".to_string(),
+            workload_home(work_dir).to_string_lossy().into_owned(),
+        );
         env.extend(workload_env(spec, proxy_url, auth_secret, egress));
         let classified = env
             .keys()
@@ -401,7 +428,27 @@ pub(crate) fn spawn_admitted(
     // via `/proc/<pid>/environ`.
     let drop_uid = if nix_getuid() == 0 { plan.uid } else { None };
     let hardened = drop_uid.is_some();
+    // The default HOME, made before the chown below so the same best-effort
+    // treatment covers both. Only when the admitted env still points at it: a
+    // spec that chose its own HOME chose its own directory too.
+    let home = workload_home(&plan.work_dir);
+    let default_home = plan.env.get("HOME").map(std::path::Path::new) == Some(home.as_path());
+    if default_home && let Err(e) = std::fs::create_dir_all(&home) {
+        tracing::warn!(
+            home = %home.display(),
+            error = %e,
+            "could not create the workload's HOME (expected when the scratch is read-only)"
+        );
+    }
     if let Some(uid) = drop_uid {
+        if default_home && let Err(e) = std::os::unix::fs::chown(&home, Some(uid), Some(uid)) {
+            tracing::warn!(
+                home = %home.display(),
+                uid,
+                error = %e,
+                "could not chown the workload's HOME to its uid"
+            );
+        }
         // Best-effort: hand the workload ownership of its work dir so the
         // unprivileged child can write its scratch. This is an ERGONOMIC aid,
         // not the security control — the uid drop below is. It legitimately
@@ -861,6 +908,64 @@ mod tests {
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
         }
+    }
+
+    /// `HOME` is the workload's own directory on its scratch, not the runtime's
+    /// (`/` in a guest, read-only), and a spec that names one keeps it.
+    #[test]
+    fn home_defaults_under_the_work_dir_and_a_spec_may_override_it() {
+        let work = std::path::Path::new("/work");
+        let source_of = |launch: &WorkloadLaunch| {
+            launch
+                .classified
+                .iter()
+                .find(|e| e.key == "HOME")
+                .map(|e| e.source)
+        };
+
+        let launch =
+            WorkloadLaunch::build(&spec_with(&[]), "http://127.0.0.1:8080", "s", work, &[]);
+        assert_eq!(
+            launch.env.get("HOME").map(String::as_str),
+            Some("/work/.home")
+        );
+        assert_eq!(source_of(&launch), Some(EnvSource::RuntimeDefault));
+
+        let launch = WorkloadLaunch::build(
+            &spec_with(&[("HOME", "/elsewhere")]),
+            "http://127.0.0.1:8080",
+            "s",
+            work,
+            &[],
+        );
+        assert_eq!(
+            launch.env.get("HOME").map(String::as_str),
+            Some("/elsewhere")
+        );
+        assert_eq!(source_of(&launch), Some(EnvSource::SpecEnv));
+    }
+
+    /// The default `HOME` exists by the time the workload runs: an unset or
+    /// missing HOME fails ordinary tools in ways that read as the workload's bug.
+    #[tokio::test]
+    async fn the_default_home_exists_when_the_workload_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec_with(&[]);
+        spec.command = "/bin/sh".into();
+        spec.args = vec![
+            "-c".into(),
+            "test -d \"$HOME\" && printf %s \"$HOME\"".into(),
+        ];
+        let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", "s", dir.path(), &[])
+            .admit()
+            .unwrap();
+        let (child, _receipt) = spawn_admitted(plan).unwrap();
+        let output = child.wait_with_output().await.unwrap();
+        assert!(output.status.success(), "HOME was not a directory");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            dir.path().join(".home").to_string_lossy()
+        );
     }
 
     /// The workload is told where its mediating proxy is. Without this it has no

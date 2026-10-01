@@ -200,6 +200,7 @@ impl Run {
             at_snapshot_barrier: Arc::default(),
             personalized: Arc::clone(&personalized),
             mediation_key_served: Arc::default(),
+            svid_key_served: Arc::default(),
             receipt_dir: Some(dir.path().join("p")),
             pod_registry: st.pods.clone(),
         };

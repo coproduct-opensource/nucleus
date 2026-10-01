@@ -41,7 +41,7 @@ fn load_production_signer()
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-control-plane-server", version)]
+#[command(name = "nucleus-control-plane-server", version, mut_args = |a| a.hide_env_values(true))]
 struct Cli {
     /// HTTP bind address (host:port).
     #[arg(long, default_value = "127.0.0.1:8080", env = "NUCLEUS_BIND")]
@@ -371,3 +371,6 @@ async fn shutdown_signal() {
     }
     tracing::info!("shutdown signal received");
 }
+
+#[cfg(test)]
+mod help_env_tests;

@@ -441,6 +441,13 @@ population_floor = 23
 # designed. Removing a discharged waiver lowers a discharged ratio (20/144 ->
 # 19/143), because the census counts waivers, not the defects under them; the
 # population floor is re-pinned with it so nothing else can slip under.
-floor_bp = 1328
+#
+# 2026-09-29: the tool-proxy's private `RunRequest` gives way to
+# `nucleus_client::wire::RunRequest`, and its `#[allow(dead_code)]` on
+# `timeout_seconds` goes with it -- a public field of a shared wire type is not
+# dead. One undischarged suppression deleted with the code it excused: 19 of
+# 142 = 13.38%. The ratio rises because the denominator shrank, so both pins
+# follow the measurement rather than reading it as progress.
+floor_bp = 1338
 floor_set = "measurement"
-population_floor = 143
+population_floor = 142

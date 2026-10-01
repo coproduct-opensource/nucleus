@@ -94,7 +94,7 @@ pub use nucleus_proto::nucleus_node as proto;
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-node")]
+#[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
@@ -3456,7 +3456,7 @@ impl NodeService for GrpcService {
             auth::Operation::Lockdown,
         )?;
 
-        let req = request.into_inner();
+        let (operator, req) = lockdown::attributed(request)?;
         let reason = if req.reason.is_empty() {
             "emergency lockdown".to_string()
         } else {
@@ -3477,7 +3477,7 @@ impl NodeService for GrpcService {
         let cmd = proto::LockdownCommand {
             active: !req.restore,
             reason: reason.clone(),
-            operator_id: req.operator_id.clone(),
+            operator_id: operator.clone(),
             timestamp_unix: timestamp,
             scope: scope_str.clone(),
         };
@@ -3506,7 +3506,7 @@ impl NodeService for GrpcService {
 
         tracing::warn!(
             reason = %reason,
-            operator = %req.operator_id,
+            operator = %operator,
             restore = req.restore,
             scope = %scope_str,
             affected_pods,
@@ -3538,7 +3538,7 @@ impl NodeService for GrpcService {
                     pod_id = %pod.id,
                     action = action,
                     reason = %reason,
-                    operator = %req.operator_id,
+                    operator = %operator,
                     "lockdown: pod affected"
                 );
                 let pod_dir = pod.log_path.parent().unwrap_or_else(|| Path::new("."));
@@ -3546,7 +3546,7 @@ impl NodeService for GrpcService {
                     pod_dir,
                     action,
                     &pod.id.to_string(),
-                    &format!("reason={}, operator={}", reason, req.operator_id),
+                    &format!("reason={}, operator={}", reason, operator),
                 )
                 .await;
             }
