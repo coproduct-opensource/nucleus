@@ -87,7 +87,16 @@ enum Seen {
 impl Seen {
     fn outcome_only(&self) -> Seen {
         match self {
-            Seen::Served(_) => Seen::Served(String::new()),
+            // The outcome AND the reply's shape (its field names): a fresh
+            // certificate's bytes differ run to run, but whether the SVID key is
+            // IN the reply is exactly what a one-shot changes.
+            Seen::Served(body) => Seen::Served(
+                serde_json::from_str::<serde_json::Value>(body)
+                    .ok()
+                    .and_then(|v| v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()))
+                    .unwrap_or_default()
+                    .join(","),
+            ),
             other => other.clone(),
         }
     }
@@ -101,6 +110,7 @@ struct Record {
     broker_served: bool,
     mediation_key_served: bool,
     audit_served: bool,
+    svid_key_served: bool,
     receipts: Vec<String>,
 }
 
@@ -112,13 +122,17 @@ impl Record {
             broker_served: false,
             mediation_key_served: false,
             audit_served: false,
+            svid_key_served: false,
             receipts: Vec::new(),
         }
     }
 
     /// Every host state reachable under `p`.
     fn reachable(p: Provision) -> Vec<Record> {
-        let bits: u32 = if p.broker_secret { 5 } else { 2 };
+        // The SVID key is served whatever the provision (the identity manager
+        // always issues), so its latch is a bit of every state; the other
+        // one-shots only exist under a full provision.
+        let bits: u32 = if p.broker_secret { 6 } else { 3 };
         let receipt_options: &[bool] = if p.receipts { &[false, true] } else { &[false] };
         let mut out = Vec::new();
         for mask in 0..(1u32 << bits) {
@@ -127,9 +141,10 @@ impl Record {
                 out.push(Record {
                     personalized: bit(0),
                     at_barrier: bit(1),
-                    broker_served: bits > 2 && bit(2),
-                    mediation_key_served: bits > 3 && bit(3),
-                    audit_served: bits > 4 && bit(4),
+                    svid_key_served: bit(2),
+                    broker_served: bits > 3 && bit(3),
+                    mediation_key_served: bits > 4 && bit(4),
+                    audit_served: bits > 5 && bit(5),
                     receipts: if receipt {
                         vec!["{\"receipt\":\"earlier\"}".to_string()]
                     } else {
@@ -193,6 +208,9 @@ async fn run(
     material
         .audit_creds_served
         .store(start.audit_served, Ordering::SeqCst);
+    material
+        .svid_key_served
+        .store(start.svid_key_served, Ordering::SeqCst);
     if !start.receipts.is_empty() {
         let mut lines = start.receipts.join("\n");
         lines.push('\n');
@@ -236,6 +254,7 @@ async fn run(
         broker_served: material.broker_secret_served.load(Ordering::SeqCst),
         mediation_key_served: material.mediation_key_served.load(Ordering::SeqCst),
         audit_served: material.audit_creds_served.load(Ordering::SeqCst),
+        svid_key_served: material.svid_key_served.load(Ordering::SeqCst),
         receipts,
     };
     (seen, record)
@@ -278,9 +297,10 @@ async fn take_census() -> Census {
     };
 
     // Starting states: EVERY reachable host state, not a sample. With everything
-    // provisioned, all 32 flag combinations are reachable, with and without a
-    // collected receipt; with nothing provisioned, no one-shot can be served and
-    // no receipt collected, leaving the 4 personalised/barrier combinations.
+    // provisioned, all 64 flag combinations are reachable, with and without a
+    // collected receipt; with nothing provisioned, no provisioned one-shot can be
+    // served and no receipt collected, leaving the 8 personalised/barrier/SVID-key
+    // combinations.
     for &p in &[FULL, EMPTY] {
         for start in Record::reachable(p) {
             let at = |extra: &str| {
@@ -348,6 +368,9 @@ enum Resource {
     AtBarrier,
     /// Whether a one-shot has been served.
     Served(OneShot),
+    /// Whether the SVID private key has been served (inside a success, so it is
+    /// not a [`OneShot`] refusal).
+    SvidKeyServed,
     /// The collected receipt log.
     ReceiptLog,
 }
@@ -374,8 +397,8 @@ fn footprint(letter: Letter) -> Footprint<Resource> {
                     fp.update(Resource::Served(OneShot::AuditCredentials))
                 }
                 Cmd::ShipReceipt => fp.update(Resource::ReceiptLog),
-                Cmd::FetchSvid
-                | Cmd::FetchBundle
+                Cmd::FetchSvid => fp.update(Resource::SvidKeyServed),
+                Cmd::FetchBundle
                 | Cmd::Ping
                 | Cmd::FetchPodCallerToken
                 | Cmd::FetchTaskToken

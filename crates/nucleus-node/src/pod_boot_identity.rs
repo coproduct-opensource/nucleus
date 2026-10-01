@@ -210,6 +210,9 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 mediation_signing_key: mediation::new_seed_hex(pod_dir),
                 mediation_spiffe_id: Some(mediation::spiffe_id(manager.trust_domain(), id)),
                 mediation_key_served: std::sync::Arc::default(),
+                // The SVID private key, like the one-shots: served to the first
+                // FETCH_SVID only (guest-init's, before the workload exists).
+                svid_key_served: std::sync::Arc::default(),
                 // Where the host durably collects SHIP_RECEIPT receipts.
                 receipt_dir: Some(pod_dir.to_path_buf()),
                 pod_registry: state.pods.clone(),
