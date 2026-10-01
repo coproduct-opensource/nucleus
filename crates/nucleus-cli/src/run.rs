@@ -951,6 +951,10 @@ async fn create_pod_via_node(
     let mut request = ureq::post(&url)
         .config()
         .timeout_global(Some(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT))
+        // Without this, ureq turns a 4xx into a transport error and discards the
+        // body, so the `>= 400` branch below never ran and the node's own
+        // sentence ("no such policy profile") arrived as "http status: 400".
+        .http_status_as_error(false)
         .build()
         .header("content-type", "application/yaml");
     let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
