@@ -32,12 +32,12 @@ pub(crate) struct Bundle {
 
 pub(crate) async fn collect(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<crate::auth::CallerScope>,
     Path(id): Path<Uuid>,
     Json(request): Json<Request>,
 ) -> Result<Json<Bundle>, ApiError> {
     validate_manifest(&request.artifacts)?;
-    let pod = crate::pod_api::get_pod_for_caller(&state, id, caller).await?;
+    let pod = crate::pod_api::get_pod_for_caller(&state, id, &caller).await?;
     let declared = pod
         .spec
         .spec
@@ -46,7 +46,7 @@ pub(crate) async fn collect(
         .map(|workload| &workload.artifacts);
     validate_selection(&request.artifacts, declared)?;
     // This establishes lineage and a completed workload before any artifact read.
-    let (mut claim, address) = workload_result::observe_claim(&state, caller, id).await?;
+    let (mut claim, address) = workload_result::observe_claim(&state, &caller, id).await?;
     let mut artifacts = BTreeMap::new();
     let mut remaining = MAX_ARTIFACT_BYTES;
     for (name, path) in request.artifacts {

@@ -1057,7 +1057,7 @@ impl IntoResponse for OidcApiError {
 
 async fn create_pod(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<auth::CallerScope>,
     Extension(auth_ctx): Extension<auth::AuthContext>,
     headers: axum::http::HeaderMap,
     body: Bytes,
@@ -1082,7 +1082,7 @@ async fn create_pod(
     // `x-nucleus-parent-pod-id` is unauthenticated, so lineage built on it is
     // forgeable in both directions -- see `pod_api::resolve_parent_pod_id`.
     let admission =
-        pod_authority::Admission::from_http(&state.authz_policy, caller, &auth_ctx, &headers);
+        pod_authority::Admission::from_http(&state.authz_policy, caller.pod(), &auth_ctx, &headers);
     let parent_pod_id = pod_api::resolve_parent_pod_id(
         admission.caller_pod,
         headers
@@ -1139,6 +1139,7 @@ async fn create_pod_internal(
     // deleted in #2512: it wrote labels and authorised nothing, and what a pod
     // MAY do comes from the certificate below. ───────────────────────────────
     driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
+    admission.stamp_ci_principal(&state.authz_policy, &mut spec)?;
 
     let pod_dir = state.state_dir.join("pods").join(id.to_string());
     tokio::fs::create_dir_all(&pod_dir).await?;
@@ -3282,7 +3283,7 @@ impl NodeService for GrpcService {
 
         // Scoped to the calling pod exactly as the HTTP listing is (#2475).
         let caller = pod_api::grpc_caller(&self.state, request.metadata(), request.extensions())?;
-        let infos = pod_api::collect_pod_infos(&self.state, caller).await;
+        let infos = pod_api::collect_pod_infos(&self.state, &caller).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
         Ok(GrpcResponse::new(proto::ListPodsResponse { pods }))
     }
@@ -3578,7 +3579,7 @@ impl NodeService for GrpcService {
         // pod peer is its own pod); anything unresolved still receives, fail-open.
         let watcher = pod_api::grpc_caller(&self.state, request.metadata(), request.extensions())
             .ok()
-            .flatten();
+            .and_then(|scope| scope.pod());
 
         let mut ack_stream = request.into_inner();
         // `rx` is moved into the forwarder (which owns the `recv` loop and takes

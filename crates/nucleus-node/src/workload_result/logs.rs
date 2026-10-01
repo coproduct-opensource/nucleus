@@ -30,14 +30,14 @@ impl Stream {
 
 pub(super) async fn stdout(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<crate::auth::CallerScope>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
     serve(state, caller, id, Stream::Stdout).await
 }
 pub(super) async fn stderr(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<crate::auth::CallerScope>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
     serve(state, caller, id, Stream::Stderr).await
@@ -45,11 +45,11 @@ pub(super) async fn stderr(
 
 async fn serve(
     state: NodeState,
-    caller: Option<Uuid>,
+    caller: crate::auth::CallerScope,
     id: Uuid,
     stream: Stream,
 ) -> Result<Response, ApiError> {
-    let (claim, address) = observe_claim(&state, caller, id).await?;
+    let (claim, address) = observe_claim(&state, &caller, id).await?;
     let bytes = fetch(&state.http_client, &address, &stream, stream.digest(&claim)).await?;
     Ok((
         [

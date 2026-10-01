@@ -127,7 +127,7 @@ enum Seen {
 type Record = Vec<(String, String, bool)>;
 
 async fn snapshot(st: &NodeState, u: &Universe) -> Record {
-    let mut out: Record = collect_pod_infos(st, None)
+    let mut out: Record = collect_pod_infos(st, &crate::auth::CallerScope::NodeWide)
         .await
         .iter()
         .map(|i| {
@@ -156,7 +156,12 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
     let u = Universe { r, c, g };
     for role in cancelled {
         if let Some(id) = u.id(*role) {
-            let _ = cancel_pod(State(st.clone()), Extension(None), AxumPath(id)).await;
+            let _ = cancel_pod(
+                State(st.clone()),
+                Extension(crate::auth::CallerScope::NodeWide),
+                AxumPath(id),
+            )
+            .await;
         }
     }
 
@@ -165,7 +170,13 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
         let s = match *letter {
             Letter::Cancel(caller, target) => {
                 let id = u.id(target).expect("a pod");
-                match cancel_pod(State(st.clone()), Extension(u.id(caller)), AxumPath(id)).await {
+                match cancel_pod(
+                    State(st.clone()),
+                    Extension(crate::auth::CallerScope::from_model(u.id(caller))),
+                    AxumPath(id),
+                )
+                .await
+                {
                     Ok(_) => Seen::Cancelled,
                     Err(ApiError::NotFound) => Seen::NotFound,
                     Err(e) => Seen::Other(e.to_string()),
@@ -173,23 +184,30 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
             }
             Letter::Get(caller, target) => {
                 let id = u.id(target).expect("a pod");
-                match get_pod_for_caller(&st, id, u.id(caller)).await {
+                match get_pod_for_caller(
+                    &st,
+                    id,
+                    &crate::auth::CallerScope::from_model(u.id(caller)),
+                )
+                .await
+                {
                     Ok(p) => Seen::Found(u.label(p.id, p.parent_pod_id)),
                     Err(ApiError::NotFound) => Seen::NotFound,
                     Err(e) => Seen::Other(e.to_string()),
                 }
             }
             Letter::List(caller) => {
-                let mut listed: Vec<(String, bool)> = collect_pod_infos(&st, u.id(caller))
-                    .await
-                    .iter()
-                    .map(|i| {
-                        (
-                            u.label(i.id, i.parent_pod_id),
-                            matches!(i.state, PodState::Running),
-                        )
-                    })
-                    .collect();
+                let mut listed: Vec<(String, bool)> =
+                    collect_pod_infos(&st, &crate::auth::CallerScope::from_model(u.id(caller)))
+                        .await
+                        .iter()
+                        .map(|i| {
+                            (
+                                u.label(i.id, i.parent_pod_id),
+                                matches!(i.state, PodState::Running),
+                            )
+                        })
+                        .collect();
                 listed.sort();
                 Seen::Listed(listed)
             }

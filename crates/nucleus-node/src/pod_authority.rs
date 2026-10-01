@@ -166,6 +166,19 @@ pub(crate) struct BootCertificate {
 }
 
 impl Admission {
+    /// Stamp the pod with its creator when that creator is a CI/CD identity,
+    /// and refuse a spec that sets the stamp itself. See
+    /// [`crate::auth::AuthorizationPolicy::stamp_ci_principal`].
+    pub fn stamp_ci_principal(
+        &self,
+        policy: &crate::auth::AuthorizationPolicy,
+        spec: &mut PodSpec,
+    ) -> Result<(), ApiError> {
+        policy
+            .stamp_ci_principal(&self.caller_spiffe_id, spec)
+            .map_err(ApiError::InvalidSpec)
+    }
+
     /// From an HTTP request: the per-pod caller token (if it proved a pod),
     /// else the mTLS peer's own pod SVID; plus the delegation-cert header.
     pub fn from_http(
