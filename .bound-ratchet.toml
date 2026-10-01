@@ -80,5 +80,14 @@
 # together: 171/172 -> 173/174, dropped still 1 (CaClient).
 # 2026-09-29, rebuilding the glob/grep branch onto main after #3041 landed: all three moves
 # apply to one tree, so the pin is this tree's measurement.
-floor_bp = 9944
-declared_floor = 180
+# 2026-09-27: declassification became a sealed witness. `VerifiedDeclassification`
+# joins the WITNESS vocabulary (its one site, `FlowGraph::apply_verified`, binds
+# it), and `kernel/declassify_authority.rs` now names `DeclassificationToken`
+# bare instead of path-qualified, so four sites that were always there become
+# visible to the scan (verify, the two fused applies, the witness's own field).
+# All five are bound: D=177, B=176, dropped=1 (still CaClient). A visibility
+# gain, not new enforcement counted twice.
+# 2026-09-29, merging main into the declassification branch: every move above applies to
+# one tree, so the pin is this tree's measurement.
+floor_bp = 9945
+declared_floor = 185

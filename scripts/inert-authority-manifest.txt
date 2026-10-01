@@ -108,6 +108,7 @@ WITNESS = [
   "CheckProof",
   "DecisionToken",
   "DeclassificationToken",
+  "VerifiedDeclassification",
   "SessionCleanseToken",
   "Authorized",
   "GuardedAction",

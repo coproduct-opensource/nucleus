@@ -273,8 +273,9 @@ What each status means, and what it deliberately does not:
   **Honest caveat — which leg is TESTED.** The proven single-use/sink-scope theorems
   and the value-bound apply→egress flip are exercised at the **unit level over the
   real `FlowGraph` type** (the same type and API the endpoint uses), and the endpoint
-  wiring (`apply_declassification_token_on` on `state.flow_graph`) is asserted by
-  inspection in `scripts/check-declassify-value-bound.sh`. The full
+  wiring (`verify_declassification`, then `graph.apply_verified(v, now)` on
+  `state.flow_graph` — the witness split of 2026-09-27) is asserted by inspection
+  in `scripts/check-declassify-value-bound.sh`. The full
   **HTTP-`POST /v1/declassify`-against-a-running-pod e2e** — a real governor request
   flipping a real tool-proxy egress verdict — is **boot-gated** (`boot-a-real-pod`,
   requires `/dev/kvm`) and is the conformance leg, the same shape as C1's runtime

@@ -10,8 +10,9 @@
 //! from the start.
 //!
 //! The client has the same shape as `nucleus node`'s: the chain is verified
-//! against the node's own CA and nothing else, and only hostname matching is
-//! skipped, because the node's certificate names a SPIFFE URI, never a host.
+//! against the node's own CA and nothing else, and the hostname check is
+//! replaced by a check that the certificate names the node's SPIFFE ID, because
+//! the node's certificate names a SPIFFE URI, never a host.
 //!
 //! Calls to a pod's tool-proxy are not here: the node's signed proxy fronts
 //! those, and `agency --local` signs its own.
@@ -61,13 +62,14 @@ impl Node {
             std::fs::read(cert).with_context(|| format!("reading {}", cert.display()))?;
         identity.push(b'\n');
         identity.extend(std::fs::read(key).with_context(|| format!("reading {}", key.display()))?);
-        let roots = reqwest::Certificate::from_pem_bundle(
-            &std::fs::read(bundle).with_context(|| format!("reading {}", bundle.display()))?,
-        )?;
+        let bundle =
+            std::fs::read(bundle).with_context(|| format!("reading {}", bundle.display()))?;
+        // The node is named by the SPIFFE ID in its certificate, not by a
+        // hostname: `node_tls` accepts exactly the node in `--tls-cert`'s
+        // trust domain, chained to `--trust-bundle`.
+        let tls = nucleus_identity::node_tls::node_client_config(&identity, &bundle)?;
         let client = reqwest::blocking::Client::builder()
-            .identity(reqwest::Identity::from_pem(&identity)?)
-            .tls_certs_only(roots)
-            .danger_accept_invalid_hostnames(true)
+            .tls_backend_preconfigured(tls)
             .timeout(Duration::from_secs(60))
             .build()?;
         Ok(Self {
