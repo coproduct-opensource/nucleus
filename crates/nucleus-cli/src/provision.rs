@@ -30,13 +30,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Where nucleus's artifacts live inside a Tier 2 host.
-///
-/// This is *guest-VM* path space on macOS, which is the distinction the config
-/// previously lost: `Config::artifacts_dir()` resolves under the host's
-/// `~/Library/Application Support`, and a PodSpec built from it named paths the
-/// node — running inside the Lima VM — cannot see.
-pub const HOST_ARTIFACTS_DIR: &str = "/var/lib/nucleus/artifacts";
+/// Where nucleus's artifacts live inside a Tier 2 host. Defined in
+/// `nucleus-spec`, which the Apple `container` host reads too.
+pub use nucleus_spec::tier2_artifacts::HOST_ARTIFACTS_DIR;
 
 /// Where the node keeps per-pod state inside the Tier 2 host.
 pub const HOST_STATE_DIR: &str = "/var/lib/nucleus/state";

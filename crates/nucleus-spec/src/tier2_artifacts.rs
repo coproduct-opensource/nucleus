@@ -34,6 +34,25 @@
 //! because "sha256 verified" reads like a supply-chain guarantee and this half
 //! of it is not one.
 
+/// Where nucleus's artifacts live inside a Tier 2 host.
+///
+/// This is *guest-VM* path space on macOS, which is the distinction the config
+/// previously lost: `Config::artifacts_dir()` resolves under the host's
+/// `~/Library/Application Support`, and a PodSpec built from it named paths the
+/// node — running inside the Lima VM — cannot see.
+///
+/// Lives here rather than in `nucleus-cli::provision` because two hosts now
+/// install into it: the Lima VM `provision` builds, and the Apple `container`
+/// image described by [`crate::microvm_host`]. One constant for both, so a
+/// PodSpec written for one names paths the other has (ADR 0007 G-1).
+pub const HOST_ARTIFACTS_DIR: &str = "/var/lib/nucleus/artifacts";
+
+/// The guest kernel's file name under [`HOST_ARTIFACTS_DIR`].
+pub const GUEST_KERNEL_FILE: &str = "vmlinux";
+
+/// The guest root filesystem's file name under [`HOST_ARTIFACTS_DIR`].
+pub const GUEST_ROOTFS_FILE: &str = "rootfs.ext4";
+
 /// A kernel image pinned by URL and content digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kernel {
