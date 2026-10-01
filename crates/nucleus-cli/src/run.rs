@@ -127,6 +127,7 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
 /// By default, requires a running nucleus-node with Firecracker. Use `--local`
 /// to run the tool-proxy as a local subprocess instead (suitable for CI).
 #[derive(Args, Debug)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct RunArgs {
     /// Task prompt (use - for stdin). Not needed with --goal or --grant.
     #[arg(required_unless_present_any = ["goal", "grant"])]

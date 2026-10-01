@@ -115,6 +115,7 @@ const AUTHORITY_FILE: &str = "authority.json";
 
 /// Operator knobs, flattened into the node's `Args`.
 #[derive(clap::Args, Debug, Clone)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub(crate) struct AuthorityArgs {
     /// SPIFFE ID of the ONE identity allowed to create a pod from a bare
     /// (inline / profile) policy with no certificate — the bootstrap case.

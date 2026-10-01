@@ -89,7 +89,7 @@ use nucleus_identity::mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsLi
 use policy::PolicyEngine;
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-tool-proxy")]
+#[command(name = "nucleus-tool-proxy", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Tool proxy server running inside nucleus pods")]
 struct Args {
     /// Pod spec YAML path.

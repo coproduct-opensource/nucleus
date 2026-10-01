@@ -94,7 +94,7 @@ pub use nucleus_proto::nucleus_node as proto;
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-node")]
+#[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
