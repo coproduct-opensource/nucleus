@@ -103,6 +103,7 @@ WITNESS = [
   "CertifiedPermissions",
   "WorkloadCertificate",
   "LaunchAttestation",
+  "VerifiedLaunch",
   "VerifiedGrant",
   "BindingProof",
   "CheckProof",

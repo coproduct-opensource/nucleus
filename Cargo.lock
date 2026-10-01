@@ -7626,6 +7626,7 @@ dependencies = [
  "portcullis",
  "portcullis-core",
  "portcullis-effects",
+ "rcgen",
  "regex",
  "reqwest 0.13.5",
  "ring",
