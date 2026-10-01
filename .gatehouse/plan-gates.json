@@ -40,6 +40,7 @@
     "platform": "linux/amd64",
     "reads": [],
     "replaces": [
+      "Escape canary: the pod refused what it must (network, host FS, privilege, a second SVID key)",
       "Ed25519 verify_strict gate (M-3)",
       "Sandbox trusted-base gate",
       "Fail-closed verifier gate",
@@ -64,6 +65,23 @@
     ],
     "seeds": [],
     "steps": [
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/gatehouse-escape-canary.py",
+        "reads": [
+          ".github/workflows/**",
+          ".sandbox-unpinned-ceiling",
+          "crates/**",
+          "docs/**",
+          "kani-divergence.toml",
+          "sandbox-trusted-base.txt",
+          "scripts/**",
+          "tests/**"
+        ],
+        "uid": 0,
+        "writes": []
+      },
       {
         "args": [],
         "loopback": 0,

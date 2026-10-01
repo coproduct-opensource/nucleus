@@ -54,6 +54,18 @@
   "cmd": [],
   "steps": [
     {
+      "program": "scripts/gatehouse-escape-canary.py",
+      "reads": [
+        ".github/workflows/**",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
+      ]
+    },
+    {
       "program": "scripts/check-verify-strict.sh",
       "reads": [
         ".github/workflows/**",
