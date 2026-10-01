@@ -66,6 +66,6 @@ lints = [
 # platform and feature resolution, and CI (linux) is the authority" -- and it was
 # not followed. The four-site gap is platform/feature resolution, not a regression:
 # the same 117 cast_lossless fixes are in the tree either way.
-ceiling = 345
+ceiling = 342
 target = 0
 step = 5
