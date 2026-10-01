@@ -1160,7 +1160,7 @@ async fn create_pod_internal(
     tracing::Span::current().record("chain_depth", issued.chain_depth);
     // The issued lattice AND the admitted credentialed upstreams replace what
     // the spec requested, in one call so neither can be applied without the other.
-    issued.apply_to(&mut spec);
+    let reservation = issued.apply_to(&mut spec);
 
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
@@ -1174,8 +1174,7 @@ async fn create_pod_internal(
     let (driver_state, proxy_addr, log_path) = match spawned {
         Ok(s) => s,
         Err(e) => {
-            // Nothing runs: hand the budget reservation back to the parent.
-            state.authority.release_child(id).await;
+            reservation.release().await;
             return Err(e);
         }
     };
@@ -1202,7 +1201,7 @@ async fn create_pod_internal(
     });
 
     state.pods.lock().await.insert(id, handle);
-
+    reservation.commit(); // registered: the reaper releases it from here (a drop before, #3032)
     Ok((id, proxy_addr))
 }
 
