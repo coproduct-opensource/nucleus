@@ -105,8 +105,8 @@ pub const OWN_AUTHORITY: &[(&str, &str, &str, &str)] = &[
     (
         "http /v1/declassify",
         "crates/nucleus-tool-proxy/src/declassify.rs",
-        "apply_declassification_token_on",
-        "the kernel verifies the governor's signed declassification token",
+        "verify_declassification",
+        "the kernel verifies the governor's signed declassification token and mints the witness the graph spends",
     ),
     (
         "http /v1/escalate",
@@ -673,7 +673,7 @@ mod tests {
             ),
             (
                 "crates/nucleus-tool-proxy/src/declassify.rs".to_string(),
-                "fn f() { apply_declassification_token_on(); }".to_string(),
+                "fn f() { verify_declassification(); }".to_string(),
             ),
             (
                 "crates/nucleus-tool-proxy/src/escalate.rs".to_string(),
