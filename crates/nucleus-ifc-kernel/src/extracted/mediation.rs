@@ -286,9 +286,13 @@ mod tests {
     /// How many `(Operation, SinkClass)` pairs are structurally earnable, i.e.
     /// pass `PathAllowed`. Pinned so a change to the structural rules shows up
     /// as a diff here rather than silently shrinking the proved domain.
-    /// 27 of the 247 pairs — the structural rules are tight, so the sweep below
-    /// covers 27 × 247 = 6 669 comparisons.
-    const EARNABLE_PAIRS: usize = 27;
+    /// 29 of the 247 pairs — the structural rules are tight, so the sweep below
+    /// covers 29 × 247 = 7 163 comparisons. (27 until 2026-09-27, when
+    /// `(WriteFiles, MemoryPersist)` became earnable so a memory write could
+    /// spend a preflight; 28 until the same day, when `(ManagePods,
+    /// AuditLogAppend)` became earnable so a pod list, status or log read
+    /// could.)
+    const EARNABLE_PAIRS: usize = 29;
 
     const ALL_MED_OPS: [MedOperation; 13] = [
         MedOperation::ReadFiles,

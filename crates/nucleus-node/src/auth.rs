@@ -111,6 +111,14 @@ pub enum Operation {
     /// so a pod able to snapshot would be a pod able to author what its neighbours boot from.
     /// That is an operator's authority, not a workload's.
     SnapshotPod,
+    /// Issue or lift a lockdown (`NodeService::Lockdown`, either direction).
+    ///
+    /// Not part of the pod-management group. A lockdown is the operator's break-glass control:
+    /// an empty scope reaches every pod on the node, and lifting one is the human action that
+    /// ends it. Neither is a workload's to take, for itself or for anyone else — a pod that
+    /// needs to stop itself already can, locally, through its own circuit breaker. RECEIVING
+    /// lockdown commands (`WatchLockdown`) is a different operation and stays with the pods.
+    Lockdown,
     /// Any pod management operation (used for matching).
     PodManagement,
 }
@@ -178,6 +186,40 @@ impl AuthorizationPolicy {
             spiffe_id
                 .strip_prefix(prefix.as_str())
                 .and_then(|rest| uuid::Uuid::parse_str(rest).ok())
+        })
+    }
+
+    /// Which pod an authenticated caller acts as, for scoping WHICH pods it may
+    /// list, read and cancel. The one resolver both transports use
+    /// (`resolve_http_caller`, `pod_api::grpc_caller`), so HTTP and gRPC cannot
+    /// disagree about a caller's reach.
+    ///
+    /// * `Ok(Some(pod))` — a pod: the one its caller token proves, else the one
+    ///   its own SVID names. A pod peer is its own pod with or without a token.
+    /// * `Ok(None)` — unscoped, and ONLY for an identity this policy positively
+    ///   grants node-wide pod management: the operator, an orchestrator, CI/CD.
+    /// * `Err` — anything else, including an identity under a pod prefix that
+    ///   names no pod. The unscoped answer is never a fallthrough.
+    pub fn caller_scope(
+        &self,
+        caller_token_pod: Option<uuid::Uuid>,
+        spiffe_id: &str,
+    ) -> Result<Option<uuid::Uuid>, AuthorizationError> {
+        if let Some(pod) = caller_token_pod.or_else(|| self.pod_id_from_spiffe(spiffe_id)) {
+            return Ok(Some(pod));
+        }
+        let node_wide = self.operator_identities.iter().any(|id| id == spiffe_id)
+            || self
+                .orchestrator_prefixes
+                .iter()
+                .chain(&self.cicd_prefixes)
+                .any(|prefix| spiffe_id.starts_with(prefix.as_str()));
+        if node_wide {
+            return Ok(None);
+        }
+        Err(AuthorizationError::NotAuthorized {
+            identity: spiffe_id.to_string(),
+            operation: "node-wide pod management".to_string(),
         })
     }
 
@@ -254,6 +296,8 @@ impl AuthorizationPolicy {
                         );
                         return Ok(());
                     }
+                    // Falls through to the refusal below: see the variant's doc comment.
+                    Operation::Lockdown => {}
                 }
             }
         }
@@ -279,7 +323,7 @@ impl AuthorizationPolicy {
                     }
                     // Falls through to the refusal below rather than returning: see the variant's
                     // doc comment. A workload does not get to author what its neighbours boot.
-                    Operation::SnapshotPod => {}
+                    Operation::SnapshotPod | Operation::Lockdown => {}
                 }
             }
         }
@@ -451,6 +495,21 @@ pub fn resolve_http_auth(
     )?)
 }
 
+/// Which pod an HTTP caller acts as, for `auth_middleware`: its caller token
+/// (from the headers) and its verified peer, through
+/// [`AuthorizationPolicy::caller_scope`] — the resolver gRPC uses too.
+pub fn resolve_http_caller(
+    state: &crate::NodeState,
+    ctx: &AuthContext,
+    headers: &axum::http::HeaderMap,
+) -> Result<Option<uuid::Uuid>, crate::ApiError> {
+    let token_pod =
+        crate::pod_caller_identity::identify_from_headers(state.caller_secret.as_ref(), headers);
+    Ok(state
+        .authz_policy
+        .caller_scope(token_pod.ok(), &ctx.spiffe_id)?)
+}
+
 /// Check authorization for a gRPC operation.
 ///
 /// This is a convenience function that extracts the auth context from the request
@@ -476,6 +535,46 @@ pub fn authorize_grpc_operation<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `caller_scope` answers unscoped only for an identity the policy names as
+    /// node-wide; a pod is its own pod with or without a token; anything else
+    /// is refused rather than defaulted.
+    #[test]
+    fn caller_scope_is_unscoped_only_for_a_named_node_wide_identity() {
+        let policy = AuthorizationPolicy::default()
+            .with_operator_identity("spiffe://nucleus.local/ns/system/sa/cli");
+        let pod = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let pod_svid = format!("spiffe://nucleus.local/ns/pods/sa/{pod}");
+
+        assert_eq!(policy.caller_scope(None, &pod_svid).unwrap(), Some(pod));
+        assert_eq!(
+            policy.caller_scope(Some(pod), &pod_svid).unwrap(),
+            Some(pod)
+        );
+        let orch = "spiffe://nucleus.local/ns/default/sa/orchestrator";
+        assert_eq!(policy.caller_scope(Some(other), orch).unwrap(), Some(other));
+
+        for node_wide in [
+            orch,
+            "spiffe://nucleus.local/ns/github/sa/ci",
+            "spiffe://nucleus.local/ns/system/sa/cli",
+        ] {
+            assert_eq!(
+                policy.caller_scope(None, node_wide).unwrap(),
+                None,
+                "{node_wide}"
+            );
+        }
+        for unplaced in [
+            "spiffe://nucleus.local/ns/pods/sa/not-a-pod",
+            "spiffe://nucleus.local/ns/system/sa/cli-other",
+            "spiffe://nucleus.local/ns/elsewhere/sa/x",
+            "spiffe://other.domain/ns/default/sa/orchestrator",
+        ] {
+            assert!(policy.caller_scope(None, unplaced).is_err(), "{unplaced}");
+        }
+    }
 
     #[test]
     fn test_auth_context_from_spiffe() {
@@ -658,6 +757,37 @@ mod tests {
             "spiffe://nucleus.local/ns/github/sa/myorg/myrepo".to_string(),
         );
         assert!(policy.authorize(&cicd, Operation::SnapshotPod).is_ok());
+    }
+
+    /// Issuing or lifting a lockdown belongs to the operator and the orchestrators, and to no
+    /// other identity class — while every pod keeps what it needs to RECEIVE one.
+    #[test]
+    fn lockdown_is_an_operator_action() {
+        let cli = "spiffe://nucleus.local/ns/system/sa/cli";
+        let policy = AuthorizationPolicy::new("nucleus.local").with_operator_identity(cli);
+        let ctx = |s: &str| AuthContext::from_spiffe(s.to_string());
+
+        for operator in [cli, "spiffe://nucleus.local/ns/default/sa/orchestrator"] {
+            assert!(
+                policy
+                    .authorize(&ctx(operator), Operation::Lockdown)
+                    .is_ok(),
+                "{operator}"
+            );
+        }
+        let pod = format!("spiffe://nucleus.local/ns/pods/sa/{}", uuid::Uuid::new_v4());
+        for other in [
+            pod.as_str(),
+            "spiffe://nucleus.local/ns/github/sa/myorg/myrepo",
+            "spiffe://nucleus.local/ns/system/sa/cli-other",
+        ] {
+            assert!(
+                policy.authorize(&ctx(other), Operation::Lockdown).is_err(),
+                "{other}"
+            );
+        }
+        // `WatchLockdown` is authorized as `CancelPod`: a pod must still hear a lockdown.
+        assert!(policy.authorize(&ctx(&pod), Operation::CancelPod).is_ok());
     }
 
     /// Exhaustive against `main.rs`'s `authenticated_routes` table: every

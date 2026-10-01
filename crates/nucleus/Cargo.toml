@@ -49,6 +49,11 @@ quanta = "0.12"
 
 # Secure path handling
 cap-std = "4"          # Capability-based filesystem
+# Pattern matching for `Sandbox::glob`. The walk is cap-std's; only the matcher
+# comes from here, so the pattern language agents already send to both glob
+# transports (`[abc]`, `?`, `**/`) keeps its meaning. Already in the lockfile
+# through nucleus-tool-proxy.
+glob = "0.3"
 cap-tempfile = "4"     # Secure temp files
 
 # Error handling

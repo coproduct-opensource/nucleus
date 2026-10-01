@@ -7,69 +7,6 @@ use nucleus::portcullis::FlowTracker;
 use nucleus::portcullis::kernel::DenyReason;
 
 #[test]
-fn test_rate_limiter_allows_burst() {
-    let limiter = ApprovalRateLimiter::new(5, 1);
-    // Should allow burst of 5
-    for i in 0..5 {
-        assert!(limiter.try_acquire(), "request {} should be allowed", i);
-    }
-    // 6th should be rejected
-    assert!(!limiter.try_acquire(), "request 6 should be rate limited");
-}
-
-#[test]
-fn test_rate_limiter_default_config() {
-    let limiter = ApprovalRateLimiter::default();
-    // Default is 20 burst, 10/sec refill
-    for i in 0..20 {
-        assert!(limiter.try_acquire(), "request {} should be allowed", i);
-    }
-    assert!(!limiter.try_acquire(), "request 21 should be rate limited");
-}
-
-#[test]
-fn test_nonce_cache_rejects_replay() {
-    let cache = ApprovalNonceCache::default();
-    let now = 1000;
-    let expiry = 2000;
-
-    // First use should succeed
-    assert!(cache.check_and_insert("nonce-1", expiry, now));
-    // Replay should fail
-    assert!(!cache.check_and_insert("nonce-1", expiry, now));
-    // Different nonce should succeed
-    assert!(cache.check_and_insert("nonce-2", expiry, now));
-}
-
-#[test]
-fn test_nonce_cache_expires_old_entries() {
-    let cache = ApprovalNonceCache::default();
-    let now = 1000;
-    let expiry = 1500;
-
-    assert!(cache.check_and_insert("nonce-old", expiry, now));
-
-    // Time passes, entry expires
-    let later = 2000;
-    // Old nonce was cleaned up, so this should succeed
-    assert!(cache.check_and_insert("nonce-old", 3000, later));
-}
-
-#[test]
-fn test_approval_registry_consume() {
-    let registry = ApprovalRegistry::default();
-
-    // Approve 2 uses
-    registry.approve("read /etc/passwd", 2, None);
-
-    // Should consume successfully twice
-    assert!(registry.consume("read /etc/passwd"));
-    assert!(registry.consume("read /etc/passwd"));
-    // Third should fail
-    assert!(!registry.consume("read /etc/passwd"));
-}
-
-#[test]
 fn test_run_request_array_form() {
     let json = r#"{"args": ["ls", "-la", "/tmp"]}"#;
     let req: RunRequest = serde_json::from_str(json).unwrap();
@@ -158,124 +95,6 @@ fn test_grep_match_serialization() {
     assert!(json.contains("src/main.rs"));
     assert!(json.contains("42"));
     assert!(json.contains("entry point"));
-}
-
-// ── Approval Bundle Tests ──────────────────────────────────────────
-
-fn make_test_key() -> (Vec<u8>, nucleus_identity::did::JsonWebKey) {
-    use ring::signature::KeyPair;
-    let rng = ring::rand::SystemRandom::new();
-    let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
-        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-        &rng,
-    )
-    .unwrap();
-    let key_pair = ring::signature::EcdsaKeyPair::from_pkcs8(
-        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-        pkcs8.as_ref(),
-        &rng,
-    )
-    .unwrap();
-    let pub_bytes = key_pair.public_key().as_ref();
-    let x = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&pub_bytes[1..33]);
-    let y = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&pub_bytes[33..65]);
-    let jwk = nucleus_identity::did::JsonWebKey::ec_p256(&x, &y);
-    (pkcs8.as_ref().to_vec(), jwk)
-}
-
-#[test]
-fn test_approval_bundle_populates_registry() {
-    let (pkcs8, jwk) = make_test_key();
-    let spec = "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: .";
-    let manifest_hash = compute_manifest_hash(spec.as_bytes());
-
-    let jws =
-        nucleus_identity::approval_bundle::ApprovalBundleBuilder::new("spiffe://test/human/alice")
-            .approve_operation("write_files")
-            .approve_operation("run_bash")
-            .manifest_hash(&manifest_hash)
-            .ttl_seconds(3600)
-            .build(&pkcs8)
-            .unwrap();
-
-    let registry = ApprovalRegistry::default();
-    let result = verify_and_load_approval_bundle(&jws, spec, &registry, std::slice::from_ref(&jwk));
-
-    assert!(result.is_ok(), "verify_and_load failed: {:?}", result);
-    assert!(
-        registry.consume("write_files"),
-        "write_files should be approved"
-    );
-    assert!(registry.consume("run_bash"), "run_bash should be approved");
-    assert!(
-        !registry.consume("web_fetch"),
-        "web_fetch should NOT be approved"
-    );
-}
-
-#[test]
-fn test_approval_bundle_wrong_manifest() {
-    let (pkcs8, jwk) = make_test_key();
-    let manifest_hash = compute_manifest_hash(b"different-manifest");
-
-    let jws =
-        nucleus_identity::approval_bundle::ApprovalBundleBuilder::new("spiffe://test/human/bob")
-            .approve_operation("read_files")
-            .manifest_hash(&manifest_hash)
-            .ttl_seconds(3600)
-            .build(&pkcs8)
-            .unwrap();
-
-    let registry = ApprovalRegistry::default();
-    let result = verify_and_load_approval_bundle(
-        &jws,
-        "actual-manifest-content",
-        &registry,
-        std::slice::from_ref(&jwk),
-    );
-    assert!(result.is_err(), "should fail with manifest hash mismatch");
-}
-
-#[test]
-fn test_approval_bundle_max_uses() {
-    let (pkcs8, jwk) = make_test_key();
-    let spec = "spec: limited-use";
-    let manifest_hash = compute_manifest_hash(spec.as_bytes());
-
-    let jws =
-        nucleus_identity::approval_bundle::ApprovalBundleBuilder::new("spiffe://test/human/carol")
-            .approve_operation("write_files")
-            .manifest_hash(&manifest_hash)
-            .max_uses(2)
-            .ttl_seconds(3600)
-            .build(&pkcs8)
-            .unwrap();
-
-    let registry = ApprovalRegistry::default();
-    verify_and_load_approval_bundle(&jws, spec, &registry, std::slice::from_ref(&jwk)).unwrap();
-
-    // Should only allow 2 uses
-    assert!(registry.consume("write_files"));
-    assert!(registry.consume("write_files"));
-    assert!(
-        !registry.consume("write_files"),
-        "third use should be denied"
-    );
-}
-
-#[test]
-fn test_approval_bundle_invalid_jws() {
-    let (_pkcs8, jwk) = make_test_key();
-    let registry = ApprovalRegistry::default();
-    // A trusted key IS configured, so this exercises the invalid-JWS rejection
-    // (not the fail-closed-empty path).
-    let result = verify_and_load_approval_bundle(
-        "not.a.valid.jws",
-        "spec",
-        &registry,
-        std::slice::from_ref(&jwk),
-    );
-    assert!(result.is_err());
 }
 
 // ── Lockdown meet(current, read_only) Tests ───────────────────────
@@ -754,67 +573,6 @@ mod ingest_content_address {
             plain.session_taint_ceiling()
         );
     }
-}
-
-/// SECURITY (approval-gate bypass): the approval bundle must be verified against a
-/// PINNED trusted approver key, never the key embedded in the JWS header. Old code
-/// passed `&header.jwk` (attacker-controlled) as the expected key → any
-/// self-signed bundle verified → the human-approval gate was bypassable. RED on
-/// that code; GREEN now (pinned-key + fail-closed).
-#[test]
-fn approval_bundle_requires_pinned_trusted_key_not_header_self_trust() {
-    use nucleus_identity::approval_bundle::{ApprovalBundleBuilder, compute_manifest_hash};
-
-    let spec = "pod: spec yaml";
-    let manifest_hash = compute_manifest_hash(spec.as_bytes());
-
-    // Attacker signs a bundle approving a dangerous op with THEIR OWN key.
-    let (attacker_key, attacker_jwk) = make_test_key();
-    let jws = ApprovalBundleBuilder::new("spiffe://attacker/evil")
-        .approve_operation("run_bash")
-        .manifest_hash(&manifest_hash)
-        .ttl_seconds(3600)
-        .build(&attacker_key)
-        .unwrap();
-
-    // (1) Fail-closed: no trusted approver key configured ⇒ refuse.
-    let approvals = ApprovalRegistry::default();
-    let err = verify_and_load_approval_bundle(&jws, spec, &approvals, &[]).unwrap_err();
-    assert!(
-        format!("{err}").contains("no trusted approver keys"),
-        "empty trusted set must refuse fail-closed, got: {err}"
-    );
-
-    // (2) THE FIX: attacker's self-signed bundle REJECTED when the pinned trusted
-    // approver is a DIFFERENT (legit) key. Old self-trust code ACCEPTED it.
-    let (_legit_key, legit_jwk) = make_test_key();
-    let approvals = ApprovalRegistry::default();
-    assert!(
-        verify_and_load_approval_bundle(&jws, spec, &approvals, std::slice::from_ref(&legit_jwk))
-            .is_err(),
-        "a bundle signed by a non-trusted key must be rejected (no header self-trust)"
-    );
-    assert!(
-        !approvals.consume("run_bash"),
-        "the attacker's operation must NOT be registered"
-    );
-
-    // (3) No false-negative: a bundle whose signer IS the pinned trusted approver verifies.
-    let approvals = ApprovalRegistry::default();
-    assert!(
-        verify_and_load_approval_bundle(
-            &jws,
-            spec,
-            &approvals,
-            std::slice::from_ref(&attacker_jwk)
-        )
-        .is_ok(),
-        "a bundle from the configured trusted approver must verify"
-    );
-    assert!(
-        approvals.consume("run_bash"),
-        "the trusted-signed operation must be registered"
-    );
 }
 
 // ── Kernel denials must say what the kernel actually said ────────────────────
@@ -2122,4 +1880,37 @@ async fn concurrent_audit_entries_land_whole_and_in_chain_order() {
         n += 1;
     }
     assert_eq!(n, 64, "every entry exactly once");
+}
+
+/// clap prints an env-backed arg's CURRENT value in `--help` unless the arg
+/// hides it, so a secret sitting in the environment reaches the terminal, shell
+/// logs and CI logs (#3026). Walked over the whole command tree, so a new flag
+/// or subcommand that forgets `hide_env_values` reds here.
+#[test]
+fn help_never_prints_an_env_value() {
+    fn walk(cmd: &clap::Command, seen: &mut usize, shown: &mut Vec<String>) {
+        for arg in cmd.get_arguments().filter(|a| a.get_env().is_some()) {
+            *seen += 1;
+            if !arg.is_hide_env_values_set() {
+                shown.push(format!("{} --{}", cmd.get_name(), arg.get_id()));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            walk(sub, seen, shown);
+        }
+    }
+    let (mut seen, mut shown) = (0, Vec::new());
+    walk(
+        &<Args as clap::CommandFactory>::command(),
+        &mut seen,
+        &mut shown,
+    );
+    assert!(
+        seen > 0,
+        "no env-backed arg was found; the walk reached nothing"
+    );
+    assert!(
+        shown.is_empty(),
+        "--help would print the value of: {shown:?}"
+    );
 }

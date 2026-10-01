@@ -79,7 +79,7 @@ pub use budget::AtomicBudget;
 pub use command::{BudgetModel, ContainmentMode, Executor};
 pub use error::{NucleusError, Result};
 pub use pod::{PodRuntime, PodSpec};
-pub use sandbox::Sandbox;
+pub use sandbox::{Completeness, GlobListing, Sandbox};
 pub use time::MonotonicGuard;
 
 // Re-export portcullis for convenience

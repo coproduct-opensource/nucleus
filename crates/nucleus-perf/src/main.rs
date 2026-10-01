@@ -1186,3 +1186,6 @@ fn load_approval_key(path: &str) -> Result<ed25519_dalek::SigningKey> {
     ed25519_dalek::SigningKey::from_pkcs8_der(&bytes)
         .map_err(|e| anyhow::anyhow!("{path} is not a PKCS8 Ed25519 key: {e}"))
 }
+
+#[cfg(test)]
+mod help_env_tests;

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 /// Interact with a running nucleus-node
 #[derive(Args, Debug)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct NodeArgs {
     /// nucleus-node HTTP URL. `https://` since Move B: the node's HTTP
     /// listener requires mTLS unconditionally now — there is no plaintext
@@ -334,6 +335,9 @@ fn load_mtls_config(args: &NodeArgs) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     }
 }
 
+/// How long an ordinary management request (health, list, cancel) may take.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The two transports this command speaks: plaintext HMAC (ureq, unchanged
 /// from before mTLS support existed) or mTLS (reqwest — see the Cargo.toml
 /// comment on the reqwest dependency for why ureq can't do this).
@@ -347,7 +351,7 @@ fn create_client(args: &NodeArgs) -> Result<HttpClient> {
     match load_mtls_config(args)? {
         None => {
             let config = ureq::Agent::config_builder()
-                .timeout_global(Some(Duration::from_secs(30)))
+                .timeout_global(Some(REQUEST_TIMEOUT))
                 .build();
             Ok(HttpClient::Plain(config.into()))
         }
@@ -361,29 +365,17 @@ fn create_client(args: &NodeArgs) -> Result<HttpClient> {
             // own `TlsServerConfig`/`TlsClientConfig` builders already use.
             let _ = rustls::crypto::ring::default_provider().install_default();
 
-            let identity = reqwest::Identity::from_pem(&identity_pem)
-                .context("failed to build client identity from --tls-cert/--tls-key")?;
-            let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem)
-                .context("failed to parse --trust-bundle")?;
+            // The node's certificate names it by SPIFFE ID, not by hostname,
+            // so hostname verification cannot identify it; `node_tls` checks
+            // the chain against `--trust-bundle` AND that the certificate
+            // names exactly the node — in the trust domain `--tls-cert`
+            // itself belongs to.
+            let tls = nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem)
+                .context("failed to build the node TLS configuration from --tls-cert/--tls-key/--trust-bundle")?;
 
             let builder = reqwest::Client::builder()
-                .identity(identity)
-                .timeout(Duration::from_secs(30))
-                // `tls_certs_only` — not repeated `add_root_certificate` —
-                // is required here: reqwest refuses to combine
-                // `danger_accept_invalid_hostnames` with the platform/webpki
-                // default roots, exactly because that combination would mean
-                // trusting a hostname-unverified cert from ANY public CA.
-                // `tls_certs_only` replaces the trust store entirely with
-                // ONLY `--trust-bundle`'s roots, which is what's actually
-                // wanted: the chain IS still validated, against the node's
-                // own CA and nothing else. Hostname/SNI matching is the ONLY
-                // check skipped, because it's meaningless here — the node's
-                // self-issued SVID carries a SPIFFE URI SAN, never a DNS or
-                // IP SAN, since SPIFFE identity, not hostname, is this
-                // system's trust model.
-                .tls_certs_only(roots)
-                .danger_accept_invalid_hostnames(true);
+                .timeout(REQUEST_TIMEOUT)
+                .tls_backend_preconfigured(tls);
 
             Ok(HttpClient::Mtls(
                 builder.build().context("failed to build mTLS client")?,
@@ -396,12 +388,18 @@ impl HttpClient {
     /// Sends a request and returns `(status, body)`. Not used for
     /// `stream_logs`, which needs a streaming read rather than a buffered
     /// body and branches on the backend itself.
+    ///
+    /// `within` is required rather than defaulted because the right deadline
+    /// is the operation's, not the client's: a pod create waits on a boot the
+    /// node itself bounds, and cutting it off at the management default is
+    /// what turned #2904's diagnosable failure into `timeout: global`.
     async fn send(
         &self,
         method: reqwest::Method,
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
+        within: Duration,
     ) -> Result<(u16, Vec<u8>)> {
         match self {
             HttpClient::Plain(agent) => {
@@ -409,13 +407,17 @@ impl HttpClient {
                 // types (`WithoutBody` / `WithBody`), so the two must stay
                 // in separate branches rather than a common `let` binding.
                 let result = if method == reqwest::Method::GET {
-                    let mut req = agent.get(url);
+                    let mut req = agent.get(url).config().timeout_global(Some(within)).build();
                     for (key, value) in headers {
                         req = req.header(key, value);
                     }
                     req.call()
                 } else {
-                    let mut req = agent.post(url);
+                    let mut req = agent
+                        .post(url)
+                        .config()
+                        .timeout_global(Some(within))
+                        .build();
                     for (key, value) in headers {
                         req = req.header(key, value);
                     }
@@ -433,7 +435,7 @@ impl HttpClient {
                 }
             }
             HttpClient::Mtls(client) => {
-                let mut req = client.request(method, url);
+                let mut req = client.request(method, url).timeout(within);
                 for (key, value) in headers {
                     req = req.header(key.as_str(), value.as_str());
                 }
@@ -508,7 +510,13 @@ async fn health(client: &HttpClient, url: &str, secret: Option<&[u8]>, actor: &s
     let headers = maybe_sign(secret, actor, b"");
 
     let (status, body) = client
-        .send(reqwest::Method::GET, &endpoint, &headers, b"")
+        .send(
+            reqwest::Method::GET,
+            &endpoint,
+            &headers,
+            b"",
+            REQUEST_TIMEOUT,
+        )
         .await
         .context("Health check failed")?;
     ensure_ok(status, &body, "Health check")?;
@@ -527,7 +535,13 @@ async fn list_pods(
     let headers = maybe_sign(secret, actor, b"");
 
     let (status, body) = client
-        .send(reqwest::Method::GET, &endpoint, &headers, b"")
+        .send(
+            reqwest::Method::GET,
+            &endpoint,
+            &headers,
+            b"",
+            REQUEST_TIMEOUT,
+        )
         .await
         .context("List pods failed")?;
     ensure_ok(status, &body, "List pods")?;
@@ -563,7 +577,13 @@ async fn create_pod(
     }
 
     let (status, resp_body) = client
-        .send(reqwest::Method::POST, &endpoint, &headers, body.as_bytes())
+        .send(
+            reqwest::Method::POST,
+            &endpoint,
+            &headers,
+            body.as_bytes(),
+            nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT,
+        )
         .await
         .context("Create pod failed")?;
     ensure_ok(status, &resp_body, "Create pod")?;
@@ -583,7 +603,13 @@ async fn cancel_pod(
     let headers = maybe_sign(secret, actor, b"");
 
     let (status, resp_body) = client
-        .send(reqwest::Method::POST, &endpoint, &headers, b"")
+        .send(
+            reqwest::Method::POST,
+            &endpoint,
+            &headers,
+            b"",
+            REQUEST_TIMEOUT,
+        )
         .await
         .context("Cancel pod failed")?;
     match status {
@@ -712,6 +738,95 @@ fn sign_request(secret: &[u8], actor: &str, method: &str, body: Option<&str>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node that answers only after `delay`, with a 200 and an empty JSON body.
+    fn slow_node(delay: Duration) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    std::thread::sleep(delay);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\ncontent-type: application/json\r\n\r\n{}",
+                    );
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// #2904, client side. The node's health budget and the CLI's request clock
+    /// were both 30 s, so the CLI always gave up first and the node's diagnosis of
+    /// a pod that would not boot was never read. The operation's deadline must win
+    /// over the client's default on BOTH transports, or passing a longer one for
+    /// `create` changes nothing.
+    ///
+    /// Driven red: dropping the per-request `timeout_global`/`timeout` in `send`
+    /// fails both halves at the one-second client default.
+    #[tokio::test]
+    async fn an_operations_deadline_outlasts_the_clients_default() {
+        let url = slow_node(Duration::from_millis(1500));
+        let short = Duration::from_secs(1);
+        let long = Duration::from_secs(10);
+
+        let plain = HttpClient::Plain(
+            ureq::Agent::config_builder()
+                .timeout_global(Some(short))
+                .build()
+                .into(),
+        );
+        let (status, _) = plain
+            .send(reqwest::Method::POST, &url, &[], b"{}", long)
+            .await
+            .expect("the plain transport must honour the operation's deadline");
+        assert_eq!(status, 200);
+
+        // `rustls-no-provider`: the client refuses to build without one, whichever
+        // test in this binary happens to run first.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mtls = HttpClient::Mtls(reqwest::Client::builder().timeout(short).build().unwrap());
+        let (status, _) = mtls
+            .send(reqwest::Method::POST, &url, &[], b"{}", long)
+            .await
+            .expect("the mTLS transport must honour the operation's deadline");
+        assert_eq!(status, 200);
+
+        // Non-vacuity: the server really is slower than the short deadline.
+        assert!(
+            plain
+                .send(reqwest::Method::GET, &url, &[], b"", short)
+                .await
+                .is_err(),
+            "the stand-in node must be slow enough for the deadline to matter"
+        );
+    }
+
+    /// Every CLI path that POSTs a pod names the node-derived deadline. A census,
+    /// not a proof: it catches a new create site written with the client default,
+    /// which is how the four existing ones came to share the node's 30 s.
+    #[test]
+    fn every_pod_create_site_waits_on_the_node_derived_deadline() {
+        let sources = [
+            ("node.rs", include_str!("node.rs")),
+            ("verify.rs", include_str!("verify.rs")),
+            ("twosafety_boot.rs", include_str!("twosafety_boot.rs")),
+            ("run.rs", include_str!("run.rs")),
+        ];
+        for (name, src) in sources {
+            assert!(
+                src.contains("/v1/pods\""),
+                "{name} no longer creates pods; update this census"
+            );
+            assert!(
+                src.contains("POD_CREATE_CLIENT_TIMEOUT"),
+                "{name} POSTs /v1/pods without POD_CREATE_CLIENT_TIMEOUT: its client would give \
+                 up before the node reports why a pod did not boot (#2904)"
+            );
+        }
+    }
 
     #[test]
     fn test_load_secret_from_file() {
@@ -992,11 +1107,11 @@ mod tests {
         server_handle.await.unwrap();
     }
 
-    /// The refute half: `tls_certs_only` must actually be pinning to
+    /// The refute half: the client must actually be pinning to
     /// `--trust-bundle`'s roots, not accidentally falling back to a broader
     /// trust store. A server cert signed by an UNRELATED CA must be refused
-    /// even though `danger_accept_invalid_hostnames` is set — proving that
-    /// flag skips only the hostname check, not chain validation.
+    /// even though it names the node — the identity check replaces only the
+    /// hostname check, not chain validation.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn create_client_refuses_a_server_from_an_unrelated_ca() {
         use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa, TlsServerConfig};
@@ -1084,6 +1199,79 @@ mod tests {
             result.is_err(),
             "a server certificate from an unrelated CA must be refused, \
              even with hostname verification disabled"
+        );
+
+        server_handle.await.unwrap();
+    }
+
+    /// The other refute half: the node's CA certifies pods too, so a chain
+    /// that verifies says only "certified by this CA". A server presenting a
+    /// pod's certificate from the SAME CA the CLI trusts is not the node.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_client_accepts_only_the_node_from_its_own_ca() {
+        use nucleus_identity::{
+            CaClient, CsrOptions, Identity, SelfSignedCa, TlsServerConfig, WorkloadCertificate,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let trust_domain = "cli-mtls-peer-test.nucleus.local";
+        let ca = SelfSignedCa::new(trust_domain).unwrap();
+        async fn mint(ca: &SelfSignedCa, id: &Identity) -> WorkloadCertificate {
+            let csr = CsrOptions::new(id.to_spiffe_uri()).generate().unwrap();
+            ca.sign_csr(
+                csr.csr(),
+                csr.private_key(),
+                id,
+                std::time::Duration::from_secs(3600),
+            )
+            .await
+            .unwrap()
+        }
+        let client_cert = mint(&ca, &Identity::new(trust_domain, "system", "cli")).await;
+        let pod = Identity::new(trust_domain, "pods", "550e8400-e29b-41d4-a716-446655440000");
+        let server_cert = mint(&ca, &pod).await;
+        let trust_bundle = ca.trust_bundle().clone();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("client-cert.pem");
+        let key_path = dir.path().join("client-key.pem");
+        let bundle_path = dir.path().join("trust-bundle.pem");
+        fs::write(&cert_path, client_cert.chain_pem()).unwrap();
+        fs::write(&key_path, client_cert.private_key_pem()).unwrap();
+        fs::write(&bundle_path, trust_bundle.roots()[0].to_pem()).unwrap();
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer) = tcp_listener.accept().await.unwrap();
+            let acceptor = TlsServerConfig::new(server_cert, trust_bundle)
+                .build_acceptor()
+                .unwrap();
+            // Answers exactly as the node would, so the only way the client
+            // can fail is by refusing the certificate.
+            if let Ok(mut tls) = acceptor.accept(stream).await {
+                let mut buf = [0u8; 1024];
+                let _ = tls.read(&mut buf).await;
+                let _ = tls
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}",
+                    )
+                    .await;
+            }
+        });
+
+        let mut args = base_args();
+        args.url = format!("https://{addr}");
+        args.tls_cert = Some(cert_path);
+        args.tls_key = Some(key_path);
+        args.trust_bundle = Some(bundle_path);
+
+        let agent = create_client(&args).unwrap();
+        let result = health(&agent, &args.url, None, &args.actor).await;
+        assert!(
+            result.is_err(),
+            "a pod's certificate from the node's own CA must not be taken for the node"
         );
 
         server_handle.await.unwrap();

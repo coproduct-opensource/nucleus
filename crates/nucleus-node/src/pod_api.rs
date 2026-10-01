@@ -254,12 +254,28 @@ fn scoped_lookup<T: Lineage + Clone>(items: &[T], id: Uuid, caller: Option<Uuid>
         .cloned()
 }
 
-/// WHICH pod a gRPC request proves it is, from the same two metadata entries
-/// the HTTP middleware reads — and with the same outcome for an unprovable
-/// claim (`.ok()`: treated as no identity, exactly as `auth_middleware` does),
-/// so the two transports cannot disagree about who is calling (#2475).
-pub(crate) fn grpc_caller(caller_secret: &[u8], md: &tonic::metadata::MetadataMap) -> Option<Uuid> {
-    crate::pod_caller_identity::identify_from_metadata(caller_secret, md).ok()
+/// WHICH pod a gRPC request acts as: the caller token from the same two
+/// metadata entries the HTTP middleware reads, AND the interceptor-verified
+/// peer, through `AuthorizationPolicy::caller_scope` — the resolver
+/// `auth_middleware` uses — so the two transports cannot disagree (#2475).
+///
+/// The peer is required, not optional: a request with no verified peer is
+/// `UNAUTHENTICATED`, and an identity the policy does not grant node-wide reach
+/// is `PERMISSION_DENIED`. Neither is ever answered with the unscoped `None`.
+pub(crate) fn grpc_caller(
+    state: &NodeState,
+    md: &tonic::metadata::MetadataMap,
+    extensions: &tonic::Extensions,
+) -> Result<Option<Uuid>, tonic::Status> {
+    let ctx = extensions
+        .get::<crate::auth::AuthContext>()
+        .ok_or_else(|| tonic::Status::unauthenticated("no authenticated peer"))?;
+    let token_pod =
+        crate::pod_caller_identity::identify_from_metadata(state.caller_secret.as_ref(), md).ok();
+    state
+        .authz_policy
+        .caller_scope(token_pod, &ctx.spiffe_id)
+        .map_err(|e| tonic::Status::permission_denied(e.to_string()))
 }
 
 /// Resolve a pod named on the wire for a gRPC caller: parse the id, identify
@@ -269,11 +285,12 @@ pub(crate) fn grpc_caller(caller_secret: &[u8], md: &tonic::metadata::MetadataMa
 pub(crate) async fn grpc_scoped_pod(
     state: &NodeState,
     md: &tonic::metadata::MetadataMap,
+    extensions: &tonic::Extensions,
     raw_id: &str,
 ) -> Result<Arc<PodHandle>, tonic::Status> {
     let id =
         Uuid::parse_str(raw_id).map_err(|_| tonic::Status::invalid_argument("invalid pod id"))?;
-    let caller = grpc_caller(state.caller_secret.as_ref(), md);
+    let caller = grpc_caller(state, md, extensions)?;
     get_pod_for_caller(state, id, caller)
         .await
         .map_err(|_| tonic::Status::not_found("pod not found"))
@@ -821,32 +838,6 @@ mod ownership_tests {
         );
     }
 
-    /// gRPC identifies the caller from the same two metadata entries the HTTP
-    /// middleware reads, with the same outcome for a claim that does not verify.
-    #[test]
-    fn grpc_caller_mirrors_the_http_middleware() {
-        let secret = [7u8; 32];
-        let pod = a();
-        let token = crate::pod_caller_identity::derive_token(&secret, pod);
-        let mut md = tonic::metadata::MetadataMap::new();
-        assert_eq!(
-            super::grpc_caller(&secret, &md),
-            None,
-            "nothing claimed: operator scope"
-        );
-        md.insert(
-            nucleus_client::HEADER_POD_ID,
-            pod.to_string().parse().unwrap(),
-        );
-        md.insert(nucleus_client::HEADER_POD_TOKEN, token.parse().unwrap());
-        assert_eq!(super::grpc_caller(&secret, &md), Some(pod));
-        assert_eq!(
-            super::grpc_caller(&[8u8; 32], &md),
-            None,
-            "an unprovable claim is no identity, as over HTTP"
-        );
-    }
-
     /// Structural: no gRPC pod-management handler reaches the registry through
     /// the unscoped lookup any more, and the listing is scoped.
     #[test]
@@ -882,6 +873,9 @@ mod ownership_tests {
 // The command walk over this surface, on the same fixture below.
 #[cfg(all(test, feature = "local-driver"))]
 mod walk;
+// gRPC handlers scope their caller as HTTP does, on the same fixture.
+#[cfg(all(test, feature = "local-driver"))]
+mod grpc_scope_tests;
 
 // No subsystem is faked: this is the real `PodAuthority`, the real
 // `NetworkAllocator`, the real signing key loaded off disk.
@@ -889,7 +883,7 @@ mod walk;
 // `local-driver` is not a default feature; CI's coverage job runs
 // `--all-features`, which compiles this.
 #[cfg(all(test, feature = "local-driver"))]
-mod handler_tests {
+pub(crate) mod handler_tests {
     mod boot_identity {
         use super::*;
         include!("pod_boot_identity_tests.rs");
@@ -919,7 +913,7 @@ mod handler_tests {
     /// Mirrors `main()`'s construction. A field added to `NodeState` breaks this
     /// at compile time, which is the right failure: the fixture should not drift
     /// silently away from what the node actually runs with.
-    pub(super) fn state(dir: &tempfile::TempDir) -> NodeState {
+    pub(crate) fn state(dir: &tempfile::TempDir) -> NodeState {
         // `main()` installs this before building any client; this crate takes
         // reqwest with `rustls-no-provider`, so `Client::new()` PANICS without
         // it. Idempotent, so every test may call it.
@@ -977,7 +971,7 @@ mod handler_tests {
     }
 
     /// A registered pod, running, optionally owned by `parent`.
-    pub(super) async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
+    pub(crate) async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
         let dir = st.state_dir.join("w");
         std::fs::create_dir_all(&dir).expect("work dir");
         let mut spec: nucleus_spec::PodSpec =

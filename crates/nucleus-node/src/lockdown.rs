@@ -8,6 +8,33 @@
 
 use uuid::Uuid;
 
+/// Who issued a lockdown: the peer the gRPC interceptor VERIFIED, never the
+/// request's own `operator_id`.
+///
+/// `LockdownRequest.operator_id` is a string the caller writes. Logging it as
+/// the operator let any caller allowed to issue a lockdown record someone else
+/// as its author, in the node log, in every pod's lifecycle audit and in the
+/// command broadcast to proxies. The name the caller gives is kept, quoted and
+/// labelled as a claim, beside the identity that was proved; it never stands in
+/// for it.
+///
+/// Returns the request's body so a handler cannot read `operator_id` without
+/// having gone through here: the attribution and the body come out together.
+pub(crate) fn attributed(
+    request: tonic::Request<crate::proto::LockdownRequest>,
+) -> Result<(String, crate::proto::LockdownRequest), tonic::Status> {
+    let verified = crate::auth::get_auth_context(&request)
+        .map(|ctx| ctx.spiffe_id.clone())
+        .ok_or_else(|| tonic::Status::unauthenticated("no authenticated peer"))?;
+    let req = request.into_inner();
+    let operator = if req.operator_id.is_empty() {
+        verified
+    } else {
+        format!("{verified} (claims {:?})", req.operator_id)
+    };
+    Ok((operator, req))
+}
+
 /// Forward broadcast lockdown commands to one watcher's stream, filtered.
 ///
 /// Lives beside `reaches` rather than in the gRPC handler so the decision and
@@ -124,3 +151,7 @@ mod tests {
         assert!(lockdown_reaches("something-new", Some(b())));
     }
 }
+
+// Issuing and lifting a lockdown, run against the real `GrpcService` on the pod-API fixture.
+#[cfg(all(test, feature = "local-driver"))]
+mod authz_tests;

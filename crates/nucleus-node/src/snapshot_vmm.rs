@@ -95,7 +95,7 @@ pub(crate) async fn create(
 /// been things that were built, tested, documented and called by nothing, and the difference
 /// between that and this is whether the gap is written down. Restore-instead-of-boot needs a
 /// guest that reconnects its vsock after restore, which is a rootfs release and a
-/// `GUEST_RELEASE_FLOOR` bump; until then the honest state is "half a pair, and here is which
+/// `GuestCapability` entry; until then the honest state is "half a pair, and here is which
 /// half".
 #[allow(dead_code)]
 pub(crate) async fn load(sock: &Path, artifacts: &SnapshotArtifacts) -> Result<(), String> {

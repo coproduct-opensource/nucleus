@@ -72,6 +72,7 @@ mod driver;
 #[cfg(test)]
 mod effect_footprint;
 mod envelope_frame;
+mod federated_credential;
 mod guest_socket;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod host_requirements;
@@ -93,7 +94,7 @@ pub use nucleus_proto::nucleus_node as proto;
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-node")]
+#[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
@@ -1109,15 +1110,14 @@ async fn auth_middleware(
         .map_err(|e| ApiError::Body(e.to_string()))?;
     let context = auth::resolve_http_auth(&state, &parts)?;
 
-    // WHICH POD is calling, when the caller can prove it. See
-    // `pod_caller_identity::identify_from_headers` for why this cannot change a
-    // verdict.
-    let caller =
-        pod_caller_identity::identify_from_headers(state.caller_secret.as_ref(), &parts.headers);
+    // WHICH POD is calling: its caller token, else its own pod SVID. Unscoped
+    // only for an identity the policy grants node-wide reach, never by default
+    // (`AuthorizationPolicy::caller_scope`, which gRPC resolves through too).
+    let caller = auth::resolve_http_caller(&state, &context, &parts.headers)?;
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
     req.extensions_mut().insert(context);
-    req.extensions_mut().insert(caller.ok());
+    req.extensions_mut().insert(caller);
     Ok(next.run(req).await)
 }
 
@@ -2787,7 +2787,7 @@ async fn spawn_firecracker_pod(
         let health_addr = proxy.listen_addr();
         let signed_proxy = Some(proxy);
 
-        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id).await {
+        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id, &mut child).await {
             if let Some(proxy) = signed_proxy {
                 proxy.shutdown().await;
             }
@@ -2858,13 +2858,13 @@ async fn spawn_firecracker_pod(
             prepared_identity.identity(),
             id,
             broker_verify,
-            // The SAME expression the workload API bridge uses. That socket was
-            // chowned and this one was not, which is why no guest could have
-            // reached the broker under the jailer.
+            // The SAME expression the workload API bridge uses. That socket was chowned and this
+            // one was not, which is why no guest could have reached the broker under the jailer.
             jail_layout
                 .as_ref()
                 .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
-        )?;
+        )
+        .await?;
 
         let pod_boot_identity::IdentityParts {
             identity: pod_identity,
@@ -3155,7 +3155,7 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 /// host round-trips during startup, and would be wrong even once the host chain
 /// is fixed. It is not a workaround for that defect and should not be read as
 /// one.
-pub(crate) const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
+pub(crate) use nucleus_spec::boot_budget::PROXY_HEALTH_TIMEOUT_SECS_DEFAULT;
 
 async fn serve_grpc(
     state: NodeState,
@@ -3282,7 +3282,7 @@ impl NodeService for GrpcService {
         )?;
 
         // Scoped to the calling pod exactly as the HTTP listing is (#2475).
-        let caller = pod_api::grpc_caller(self.state.caller_secret.as_ref(), request.metadata());
+        let caller = pod_api::grpc_caller(&self.state, request.metadata(), request.extensions())?;
         let infos = pod_api::collect_pod_infos(&self.state, caller).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
         Ok(GrpcResponse::new(proto::ListPodsResponse { pods }))
@@ -3299,8 +3299,8 @@ impl NodeService for GrpcService {
             auth::Operation::StreamLogs,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.id).await?;
+        let (md, ext, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.id).await?;
         let logs = tokio::fs::read_to_string(&pod.log_path)
             .await
             .unwrap_or_default();
@@ -3318,8 +3318,8 @@ impl NodeService for GrpcService {
             auth::Operation::CancelPod,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.id).await?;
+        let (md, ext, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.id).await?;
         pod.cancel()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -3339,8 +3339,8 @@ impl NodeService for GrpcService {
             auth::Operation::GetPod,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &req.pod_id).await?;
+        let (md, ext, req) = request.into_parts();
+        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.pod_id).await?;
         let info = handle.info().await;
         Ok(GrpcResponse::new(proto::GetPodResponse {
             pod: Some(pod_info_to_grpc(info)),
@@ -3360,8 +3360,8 @@ impl NodeService for GrpcService {
             auth::Operation::StreamLogs,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.pod_id).await?;
+        let (md, ext, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.pod_id).await?;
 
         let log_path = pod.log_path.clone();
         let follow = req.follow;
@@ -3392,8 +3392,8 @@ impl NodeService for GrpcService {
             auth::Operation::GetPod,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.pod_id).await?;
+        let (md, ext, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.pod_id).await?;
         let id = pod.id;
 
         let include_initial = req.include_initial;
@@ -3421,9 +3421,9 @@ impl NodeService for GrpcService {
             auth::Operation::GetReceipt,
         )?;
 
-        let (md, _, req) = request.into_parts();
+        let (md, ext, req) = request.into_parts();
         let pod_id_str = req.pod_id;
-        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &pod_id_str).await?;
+        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &pod_id_str).await?;
 
         let built = pod_receipt::build(&handle, &self.state.authority)
             .await
@@ -3449,14 +3449,14 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::LockdownRequest>,
     ) -> Result<GrpcResponse<proto::LockdownResponse>, Status> {
-        // Red team finding: this was the only RPC without auth.
+        // Issuing and lifting are both operator actions: see `auth::Operation::Lockdown`.
         auth::authorize_grpc_operation(
             &request,
             &self.state.authz_policy,
-            auth::Operation::CancelPod, // Lockdown is at least as privileged as cancel
+            auth::Operation::Lockdown,
         )?;
 
-        let req = request.into_inner();
+        let (operator, req) = lockdown::attributed(request)?;
         let reason = if req.reason.is_empty() {
             "emergency lockdown".to_string()
         } else {
@@ -3477,7 +3477,7 @@ impl NodeService for GrpcService {
         let cmd = proto::LockdownCommand {
             active: !req.restore,
             reason: reason.clone(),
-            operator_id: req.operator_id.clone(),
+            operator_id: operator.clone(),
             timestamp_unix: timestamp,
             scope: scope_str.clone(),
         };
@@ -3506,7 +3506,7 @@ impl NodeService for GrpcService {
 
         tracing::warn!(
             reason = %reason,
-            operator = %req.operator_id,
+            operator = %operator,
             restore = req.restore,
             scope = %scope_str,
             affected_pods,
@@ -3538,7 +3538,7 @@ impl NodeService for GrpcService {
                     pod_id = %pod.id,
                     action = action,
                     reason = %reason,
-                    operator = %req.operator_id,
+                    operator = %operator,
                     "lockdown: pod affected"
                 );
                 let pod_dir = pod.log_path.parent().unwrap_or_else(|| Path::new("."));
@@ -3546,7 +3546,7 @@ impl NodeService for GrpcService {
                     pod_dir,
                     action,
                     &pod.id.to_string(),
-                    &format!("reason={}, operator={}", reason, req.operator_id),
+                    &format!("reason={}, operator={}", reason, operator),
                 )
                 .await;
             }
@@ -3575,12 +3575,11 @@ impl NodeService for GrpcService {
             auth::Operation::CancelPod,
         )?;
 
-        // WHICH pod is watching; an unidentified watcher is unchanged.
-        let watcher = pod_caller_identity::identify_from_metadata(
-            self.state.caller_secret.as_ref(),
-            request.metadata(),
-        )
-        .ok();
+        // WHICH pod is watching, resolved as every other handler resolves it (a
+        // pod peer is its own pod); anything unresolved still receives, fail-open.
+        let watcher = pod_api::grpc_caller(&self.state, request.metadata(), request.extensions())
+            .ok()
+            .flatten();
 
         let mut ack_stream = request.into_inner();
         // `rx` is moved into the forwarder (which owns the `recv` loop and takes

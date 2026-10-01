@@ -52,8 +52,64 @@ pub(crate) fn caller_identity_headers() -> Option<(String, String)> {
         std::env::var("NUCLEUS_POD_CALLER_TOKEN").ok(),
     )
 }
+use portcullis::{Act, PodId, PodSink};
+use portcullis_effects::authority::{Authority, SpendError};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// The four things this client does to a pod, as [`Act`]s — the ONE rendering
+/// of each target, shared by the handler that mints an [`Authority`] and the
+/// method below that spends it (G-1).
+///
+/// **Why the client spends (2026-09-27).** Every handler in `pod_mgmt.rs` ran
+/// `check_manage_pods` and then called straight through: a decision ran, and
+/// the request to the node did not need its result. Spending here, before the
+/// request is built, is what makes the node call unreachable without a
+/// discharge earned for this exact act — the `broker_client::perform_line`
+/// pattern, where the refusal happens before there is anything to send.
+pub(crate) mod acts {
+    use super::{Act, PodId, PodSink, Uuid};
+
+    /// A create, bound to the SHA-256 of the exact spec YAML sent to the node.
+    ///
+    /// The subject is the digest, not the name: a pod spec is the whole of
+    /// what the child will be, so an authority earned for one spec must not
+    /// pay for a different one — and the proxy rewrites the requested spec
+    /// (narrowing, stripping, clamping) before sending it, so the only honest
+    /// target is the bytes that actually cross.
+    pub(crate) fn create(yaml: &str) -> Act {
+        use sha2::{Digest, Sha256};
+        Act::ManagePod {
+            pod: PodId::new(format!("spec:sha256:{}", hex::encode(Sha256::digest(yaml)))),
+            sink: PodSink::AgentSpawn,
+        }
+    }
+
+    /// A listing. `*` because the node answers for every pod this caller may
+    /// manage; `get_pod_status` filters that answer and spends the same act.
+    pub(crate) fn list() -> Act {
+        Act::ManagePod {
+            pod: PodId::new("*"),
+            sink: PodSink::Observe,
+        }
+    }
+
+    /// Reading one pod's logs.
+    pub(crate) fn logs(id: Uuid) -> Act {
+        Act::ManagePod {
+            pod: PodId::new(id.to_string()),
+            sink: PodSink::Observe,
+        }
+    }
+
+    /// Stopping one pod — the only act that spends `PodSink::Teardown`.
+    pub(crate) fn cancel(id: Uuid) -> Act {
+        Act::ManagePod {
+            pod: PodId::new(id.to_string()),
+            sink: PodSink::Teardown,
+        }
+    }
+}
 
 /// Thin HTTP client wrapping nucleus-node pod management endpoints.
 #[derive(Clone)]
@@ -114,6 +170,16 @@ impl std::fmt::Display for NodeClientError {
 
 impl std::error::Error for NodeClientError {}
 
+impl From<SpendError> for NodeClientError {
+    /// A refused spend, named as one. The request was never built, so this is
+    /// never a transport failure and must not read like one.
+    fn from(e: SpendError) -> Self {
+        Self {
+            message: format!("authority refused before any request was sent: {e}"),
+        }
+    }
+}
+
 impl NodeClient {
     /// Build a node client that authenticates over mTLS with the given SVID
     /// identity, presenting it to a node whose HTTP listener now requires
@@ -124,12 +190,11 @@ impl NodeClient {
     /// `nucleus-sdk::MtlsConfig` already use, so callers can build it the
     /// same way: read cert bytes, push a newline, extend with key bytes.
     /// `trust_bundle_pem` is the node's CA root, used to validate the
-    /// server's cert chain; hostname/SNI verification is skipped (see the
-    /// comment on `tls_certs_only` below) because the node's SVID carries a
-    /// SPIFFE URI SAN, never a DNS or IP SAN — SPIFFE identity, not
-    /// hostname, is this system's trust model, matching every other mTLS
-    /// client in this codebase (`nucleus-cli/src/node.rs`,
-    /// `nucleus-sdk/src/auth.rs`).
+    /// server's cert chain. In place of hostname verification the server's
+    /// certificate must name the node's SPIFFE ID, because the node's SVID
+    /// carries a SPIFFE URI SAN, never a DNS or IP SAN — SPIFFE identity, not
+    /// hostname, is this system's trust model. Every node-facing client
+    /// builds its TLS the same way: `nucleus_identity::node_tls`.
     pub fn new(
         base_url: String,
         identity_pem: &[u8],
@@ -141,28 +206,19 @@ impl NodeClient {
         // feature, and why installing it again here is harmless.
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        let identity = reqwest::Identity::from_pem(identity_pem).map_err(|e| NodeClientError {
-            message: format!("failed to build client identity from SVID cert/key: {e}"),
-        })?;
-        let roots = reqwest::Certificate::from_pem_bundle(trust_bundle_pem).map_err(|e| {
-            NodeClientError {
-                message: format!("failed to parse trust bundle: {e}"),
-            }
-        })?;
+        // The node's certificate names it by SPIFFE ID, never by hostname,
+        // so `node_tls` replaces the hostname check with a check that the
+        // certificate chains to the node's CA AND names exactly the node in
+        // this pod's own trust domain. The same CA certifies pods, so the
+        // chain alone would not say which workload answered.
+        let tls = nucleus_identity::node_tls::node_client_config(identity_pem, trust_bundle_pem)
+            .map_err(|e| NodeClientError {
+                message: format!("failed to build the node TLS configuration: {e}"),
+            })?;
 
         let http = reqwest::Client::builder()
-            .identity(identity)
             .timeout(std::time::Duration::from_secs(30))
-            // `tls_certs_only`, not repeated `add_root_certificate`: reqwest
-            // refuses to combine `danger_accept_invalid_hostnames` with the
-            // platform/webpki default roots, since that combination would
-            // mean trusting a hostname-unverified cert from ANY public CA.
-            // `tls_certs_only` replaces the trust store entirely with ONLY
-            // the node's own CA root, so the chain is still fully validated
-            // — only hostname matching is skipped, and only against a
-            // pinned root.
-            .tls_certs_only(roots)
-            .danger_accept_invalid_hostnames(true)
+            .tls_backend_preconfigured(tls)
             .build()
             .map_err(|e| NodeClientError {
                 message: format!("failed to build mTLS client: {e}"),
@@ -175,14 +231,23 @@ impl NodeClient {
         })
     }
 
-    /// Create a sub-pod from a PodSpec YAML string.
-    pub async fn create_pod(&self, yaml: &str) -> Result<CreatePodResponse, NodeClientError> {
+    /// Create a sub-pod from a PodSpec YAML string, spending an authority
+    /// earned for [`acts::create`] of exactly these bytes.
+    pub async fn create_pod(
+        &self,
+        yaml: &str,
+        a: Authority,
+    ) -> Result<CreatePodResponse, NodeClientError> {
+        // Spent BEFORE the body is built — see `acts`.
+        let _bundle = a.spend_on(&acts::create(yaml))?;
         let body = serde_json::json!({ "yaml": yaml });
         self.post_json("/v1/pods", &body).await
     }
 
-    /// List all pods managed by this node.
-    pub async fn list_pods(&self) -> Result<Vec<PodInfo>, NodeClientError> {
+    /// List the pods this caller may manage, spending an [`acts::list`]
+    /// authority.
+    pub async fn list_pods(&self, a: Authority) -> Result<Vec<PodInfo>, NodeClientError> {
+        let _bundle = a.spend_on(&acts::list())?;
         self.get_json("/v1/pods").await
     }
 
@@ -211,7 +276,9 @@ impl NodeClient {
         .await;
     }
 
-    pub async fn pod_logs(&self, id: Uuid) -> Result<String, NodeClientError> {
+    /// Read one pod's logs, spending an [`acts::logs`] authority for `id`.
+    pub async fn pod_logs(&self, id: Uuid, a: Authority) -> Result<String, NodeClientError> {
+        let _bundle = a.spend_on(&acts::logs(id))?;
         let url = format!("{}/v1/pods/{}/logs", self.base_url, id);
         let mut request = self.http.get(&url);
         if let Some((pod_id, token)) = caller_identity_headers() {
@@ -240,8 +307,13 @@ impl NodeClient {
         })
     }
 
-    /// Cancel a running pod.
-    pub async fn cancel_pod(&self, id: Uuid) -> Result<(), NodeClientError> {
+    /// Cancel a running pod, spending an [`acts::cancel`] authority for `id`.
+    ///
+    /// The one pod act a tainted session may still take: the kernel classes
+    /// `(ManagePods, CloudMutation)` as authority-reducing, and the node admits
+    /// a cancel only for the calling pod and its direct children.
+    pub async fn cancel_pod(&self, id: Uuid, a: Authority) -> Result<(), NodeClientError> {
+        let _bundle = a.spend_on(&acts::cancel(id))?;
         let url = format!("{}/v1/pods/{}/cancel", self.base_url, id);
         let body_bytes = b"{}";
 
@@ -456,19 +528,138 @@ mod mtls_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    use nucleus_ifc_kernel::discharge::test_helpers::bundle_for_subject;
+    use portcullis_effects::receipt::ReceiptLog;
+
+    /// A witnessed authority earned for exactly `act` — what a handler mints
+    /// from `run_gate::preflight_pod`, minus the obligations.
+    fn authority_for(act: &Act) -> Authority {
+        Authority::new(bundle_for_subject(
+            act.operation(),
+            act.sink_class(),
+            &act.subject(),
+        ))
+        .witnessed_by(Arc::new(ReceiptLog::new()))
+    }
+
+    fn list_authority() -> Authority {
+        authority_for(&acts::list())
+    }
+
+    /// A client with a real SVID aimed at a port nothing listens on, so any
+    /// request that IS sent fails as a transport error, instantly. The spend
+    /// refusals below are told apart from that by their message.
+    async fn client_at_a_closed_port() -> NodeClient {
+        let trust_domain = "node-client-spend-test.nucleus.local";
+        let ca = SelfSignedCa::new(trust_domain).unwrap();
+        let cert = issue(&ca, trust_domain, "tool-proxy").await;
+        let mut identity_pem = cert.chain_pem().into_bytes();
+        identity_pem.push(b'\n');
+        identity_pem.extend_from_slice(cert.private_key_pem().as_bytes());
+        let bundle_pem = ca
+            .trust_bundle()
+            .roots()
+            .iter()
+            .map(|c| c.to_pem())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into_bytes();
+        NodeClient::new(
+            "https://127.0.0.1:1".to_string(),
+            &identity_pem,
+            &bundle_pem,
+            Arc::new(Mutex::new(FlowGraph::new())),
+        )
+        .unwrap()
+    }
+
+    const REFUSED: &str = "authority refused before any request was sent";
+
+    /// **A cancel is refused before anything is sent** (2026-09-27).
+    ///
+    /// An authority earned to cancel pod A, or to observe pod B, cannot cancel
+    /// pod B — and the refusal comes from the spend, not from the network: the
+    /// base URL is a closed port, so a request that had been sent would fail
+    /// with a transport error instead. Non-vacuity: the correctly-earned
+    /// authority DOES reach the network, and fails there.
+    ///
+    /// A-19 probe: deleting the `spend_on` line in `cancel_pod` turns the first
+    /// two assertions into transport errors, and this test red.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_spends_before_sending() {
+        let client = client_at_a_closed_port().await;
+        let a = Uuid::from_u128(0xA);
+        let b = Uuid::from_u128(0xB);
+
+        let wrong_pod = client
+            .cancel_pod(b, authority_for(&acts::cancel(a)))
+            .await
+            .expect_err("an authority for pod A must not cancel pod B");
+        assert!(wrong_pod.message.contains(REFUSED), "{wrong_pod}");
+
+        let wrong_sink = client
+            .cancel_pod(b, authority_for(&acts::logs(b)))
+            .await
+            .expect_err("an observe authority must not pay for a teardown");
+        assert!(wrong_sink.message.contains(REFUSED), "{wrong_sink}");
+
+        let sent = client
+            .cancel_pod(b, authority_for(&acts::cancel(b)))
+            .await
+            .expect_err("nothing listens on the closed port");
+        assert!(
+            !sent.message.contains(REFUSED),
+            "the right authority must reach the transport: {sent}"
+        );
+    }
+
+    /// **A create authority is bound to the exact spec bytes.** The subject is
+    /// the SHA-256 of the YAML, so an authority earned for one spec cannot pay
+    /// for another — and the correctly-earned one reaches the transport.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_binds_the_spec_digest() {
+        use sha2::{Digest, Sha256};
+        let yaml = "metadata: {name: child}\n";
+        let other = "metadata: {name: someone-else}\n";
+        assert_eq!(
+            acts::create(yaml).subject(),
+            format!("spec:sha256:{}", hex::encode(Sha256::digest(yaml)))
+        );
+        assert_ne!(acts::create(yaml).subject(), acts::create(other).subject());
+
+        let client = client_at_a_closed_port().await;
+        let swapped = client
+            .create_pod(other, authority_for(&acts::create(yaml)))
+            .await
+            .expect_err("an authority for one spec must not create another");
+        assert!(swapped.message.contains(REFUSED), "{swapped}");
+
+        let sent = client
+            .create_pod(yaml, authority_for(&acts::create(yaml)))
+            .await
+            .expect_err("nothing listens on the closed port");
+        assert!(!sent.message.contains(REFUSED), "{sent}");
+    }
+
     async fn issue(
         ca: &SelfSignedCa,
         trust_domain: &str,
         service: &str,
     ) -> nucleus_identity::WorkloadCertificate {
-        let identity = Identity::new(trust_domain, "system", service);
+        issue_as(ca, &Identity::new(trust_domain, "system", service)).await
+    }
+
+    async fn issue_as(
+        ca: &SelfSignedCa,
+        identity: &Identity,
+    ) -> nucleus_identity::WorkloadCertificate {
         let csr = CsrOptions::new(identity.to_spiffe_uri())
             .generate()
             .unwrap();
         ca.sign_csr(
             csr.csr(),
             csr.private_key(),
-            &identity,
+            identity,
             std::time::Duration::from_secs(3600),
         )
         .await
@@ -525,7 +716,7 @@ mod mtls_tests {
         )
         .unwrap();
         let pods = client
-            .list_pods()
+            .list_pods(list_authority())
             .await
             .expect("a real mTLS handshake against the SAME CA must succeed");
         assert!(pods.is_empty());
@@ -534,8 +725,8 @@ mod mtls_tests {
     }
 
     /// The refute half: a server cert from an UNRELATED CA must be refused
-    /// even though hostname verification is skipped — proving `tls_certs_only`
-    /// is pinning to the SVID's own trust bundle, not a broader store.
+    /// even though it names the node — proving the client pins the SVID's
+    /// own trust bundle, not a broader store.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_pods_refuses_a_server_from_an_unrelated_ca() {
         let real_domain = "node-client-refuse-test.nucleus.local";
@@ -578,10 +769,63 @@ mod mtls_tests {
             Arc::new(Mutex::new(FlowGraph::new())),
         )
         .unwrap();
-        let result = client.list_pods().await;
+        let result = client.list_pods(list_authority()).await;
         assert!(
             result.is_err(),
             "a server cert from an unrelated CA must be refused, not silently trusted"
+        );
+
+        server_handle.abort();
+    }
+
+    /// The node's CA certifies pods as well as the node, so a verified chain
+    /// alone does not identify the node. A server presenting a sibling pod's
+    /// certificate from the SAME CA is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_pods_accepts_only_the_node_from_its_own_ca() {
+        let trust_domain = "node-client-peer-test.nucleus.local";
+        let ca = SelfSignedCa::new(trust_domain).unwrap();
+        let client_cert = issue(&ca, trust_domain, "tool-proxy").await;
+        let sibling = Identity::new(trust_domain, "pods", Uuid::from_u128(0xB).to_string());
+        let server_cert = issue_as(&ca, &sibling).await;
+        let trust_bundle = ca.trust_bundle().clone();
+
+        let mut identity_pem = client_cert.chain_pem().into_bytes();
+        identity_pem.push(b'\n');
+        identity_pem.extend_from_slice(client_cert.private_key_pem().as_bytes());
+        let bundle_pem = trust_bundle.roots()[0].to_pem().as_bytes().to_vec();
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer) = tcp_listener.accept().await.unwrap();
+            let acceptor = TlsServerConfig::new(server_cert, trust_bundle)
+                .build_acceptor()
+                .unwrap();
+            // Answers exactly as the node would, so the only way the client
+            // can fail is by refusing the certificate.
+            if let Ok(mut tls) = acceptor.accept(stream).await {
+                let mut buf = [0u8; 1024];
+                let _ = tls.read(&mut buf).await;
+                let _ = tls
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n[]",
+                    )
+                    .await;
+            }
+        });
+
+        let client = NodeClient::new(
+            format!("https://{addr}"),
+            &identity_pem,
+            &bundle_pem,
+            Arc::new(Mutex::new(FlowGraph::new())),
+        )
+        .unwrap();
+        let result = client.list_pods(list_authority()).await;
+        assert!(
+            result.is_err(),
+            "a pod's certificate from the node's own CA must not be taken for the node"
         );
 
         server_handle.abort();

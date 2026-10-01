@@ -30,13 +30,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Where nucleus's artifacts live inside a Tier 2 host.
-///
-/// This is *guest-VM* path space on macOS, which is the distinction the config
-/// previously lost: `Config::artifacts_dir()` resolves under the host's
-/// `~/Library/Application Support`, and a PodSpec built from it named paths the
-/// node — running inside the Lima VM — cannot see.
-pub const HOST_ARTIFACTS_DIR: &str = "/var/lib/nucleus/artifacts";
+/// Where nucleus's artifacts live inside a Tier 2 host. Defined in
+/// `nucleus-spec`, which the Apple `container` host reads too.
+pub use nucleus_spec::tier2_artifacts::HOST_ARTIFACTS_DIR;
 
 /// Where the node keeps per-pod state inside the Tier 2 host.
 pub const HOST_STATE_DIR: &str = "/var/lib/nucleus/state";
@@ -408,11 +404,10 @@ fn local_build_candidates(artifact: Tier2Artifact, arch: &str) -> Vec<PathBuf> {
 
 /// Install the rootfs and the node binary onto `host`.
 ///
-/// Refuses a release below [`tier2_artifacts::GUEST_RELEASE_FLOOR`] rather than
-/// installing it: every release up to 2.0.2 ships a rootfs with no CA store, on
-/// which the tool-proxy panics as PID 1 and takes the guest kernel with it.
-/// Handing that to someone running the quickstart would look like nucleus being
-/// broken, which — on that artifact — it is.
+/// Refuses a release that lacks any [`tier2_artifacts::GuestCapability`] rather
+/// than installing it: a guest this build's node cannot boot would look like
+/// nucleus being broken, which — with that artifact — it is. Today that is the
+/// pinned release itself, so only `--artifacts local` installs.
 pub fn install_tier2_artifacts(
     host: &Tier2Host,
     arch: &str,
@@ -450,11 +445,11 @@ pub fn install_tier2_artifacts(
     }
 
     let version = tier2_artifacts::GUEST_RELEASE;
-    if !tier2_artifacts::release_is_acceptable(version) {
-        bail!(
-            "pinned guest release v{version} is below the floor v{}",
-            tier2_artifacts::GUEST_RELEASE_FLOOR
-        );
+    // Before any download: a guest this build cannot serve is refused here, by
+    // name, rather than installed and left to die mid-boot with a diagnosis
+    // pointing somewhere else.
+    if let Err(skew) = tier2_artifacts::guest_skew(version) {
+        bail!("{skew}");
     }
     println!("  Guest artifacts from release v{version}:");
     let assets = release_assets(version)?;
@@ -661,25 +656,24 @@ pub fn mtls_client_if_provisioned() -> Result<Option<reqwest::Client>> {
 }
 
 pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
-    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
-
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let identity = reqwest::Identity::from_pem(&identity_pem)
-        .context("failed to build client identity from the provisioned CLI cert/key")?;
-    let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem)
-        .context("failed to parse the provisioned trust bundle")?;
-
-    // Same reasoning as `node.rs::create_client`: `tls_certs_only` pins the
-    // trust store to ONLY the node's own CA, and hostname verification is
-    // skipped because the node's self-issued SVID carries a SPIFFE URI SAN,
-    // never a DNS or IP SAN.
+    let tls = provisioned_node_tls()?;
     reqwest::Client::builder()
-        .identity(identity)
         .timeout(std::time::Duration::from_secs(30))
-        .tls_certs_only(roots)
-        .danger_accept_invalid_hostnames(true)
+        .tls_backend_preconfigured(tls)
         .build()
         .context("failed to build mTLS client")
+}
+
+/// The TLS configuration both provisioned clients use: the provisioned CLI
+/// identity, the provisioned trust bundle, and — because the node's
+/// certificate names it by SPIFFE ID rather than hostname — acceptance of
+/// exactly the node in the trust domain that identity belongs to. See
+/// `nucleus_identity::node_tls`.
+fn provisioned_node_tls() -> Result<rustls::ClientConfig> {
+    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem)
+        .context("failed to build the node TLS configuration from the provisioned identity")
 }
 
 /// The `reqwest::blocking` twin of [`mtls_client_from_provisioned_identity`],
@@ -690,19 +684,10 @@ pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
 /// wrap the call (and every use of the returned client) in
 /// `tokio::task::block_in_place`, as `twosafety_boot::execute` does.
 pub fn mtls_blocking_client_from_provisioned_identity() -> Result<reqwest::blocking::Client> {
-    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
-
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let identity = reqwest::Identity::from_pem(&identity_pem)
-        .context("failed to build client identity from the provisioned CLI cert/key")?;
-    let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem)
-        .context("failed to parse the provisioned trust bundle")?;
-
+    let tls = provisioned_node_tls()?;
     reqwest::blocking::Client::builder()
-        .identity(identity)
         .timeout(std::time::Duration::from_secs(30))
-        .tls_certs_only(roots)
-        .danger_accept_invalid_hostnames(true)
+        .tls_backend_preconfigured(tls)
         .build()
         .context("failed to build mTLS client")
 }
@@ -1171,6 +1156,33 @@ mod tests {
         }
     }
 
+    /// `setup --artifacts release` must refuse the pinned 2.2.0 guest before it
+    /// downloads or touches anything, and say why. It used to pass a floor of
+    /// 2.2.0 and install a guest this tree's node cannot boot. Hermetic: the
+    /// refusal comes before the release API and before the host, so a VM name
+    /// that does not exist is never reached.
+    #[test]
+    fn a_release_install_refuses_a_guest_this_build_cannot_serve() {
+        let cache = tempfile::tempdir().expect("tempdir");
+        let err = install_tier2_artifacts(
+            &Tier2Host::Lima("nucleus-test-never-reached".into()),
+            "aarch64",
+            cache.path(),
+            ArtifactSource::Release,
+        )
+        .expect_err("the pinned guest predates #2365 and #2379");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("#2365") && msg.contains("#2379"), "{msg}");
+        assert!(msg.contains("--artifacts local"), "{msg}");
+        assert!(
+            std::fs::read_dir(cache.path())
+                .expect("cache")
+                .next()
+                .is_none(),
+            "nothing may be downloaded before the refusal"
+        );
+    }
+
     // ── mTLS identity provisioning (Move A step 6) ──────────────────────────
 
     #[tokio::test]
@@ -1296,12 +1308,10 @@ mod tests {
         let bundle_pem = std::fs::read(&paths.trust_bundle).unwrap();
 
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let identity = reqwest::Identity::from_pem(&identity_pem).unwrap();
-        let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem).unwrap();
+        let tls =
+            nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem).unwrap();
         let client = reqwest::Client::builder()
-            .identity(identity)
-            .tls_certs_only(roots)
-            .danger_accept_invalid_hostnames(true)
+            .tls_backend_preconfigured(tls)
             .build()
             .unwrap();
 

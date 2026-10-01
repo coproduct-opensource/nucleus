@@ -77,10 +77,18 @@ run "check-line-ratchet --strict" bash scripts/check-line-ratchet.sh --strict
 # gauntlet of about a minute. `check-clippy-ratchet` is the fourth and is NOT here -- 53 s warm
 # and minutes cold, so it sits in --full below with the other clippy work.
 run "check-gate-defs-match-plan" bash scripts/check-gate-defs-match-plan.sh
+# The seeded-gate restamp in the SDK step runs only inside a gate pod, so its logic is proved
+# here: only byte-equal pkg files move, and nothing moves once cargo has run. Under 1 s.
+run "gatehouse-verifier-sdk --self-test" sh scripts/gatehouse-verifier-sdk.sh --self-test
 run "ci-spec check" cargo run -q -p xtask -- ci-spec check
 # The gauntlet checking its own list. Cheap, and the only thing that stops a gate being added to
 # CI and never reaching the fast path -- which is how three of today's five misses happened.
 run "ci-spec local-coverage" cargo run -q -p xtask -- ci-spec local-coverage
+# The scorecard families (bound, alg, tot, life, typed, suppress) and their ratchet. Manifest
+# Guards runs it and this file did not: on 2026-09-26 #3019 and #3020 each passed this gauntlet
+# 31/31 and then went red in CI -- a new crate diluting `tot` below its floor, a new affine
+# right entering `life` without a validity interval. 2.8 s warm.
+run "xtask scorecard" cargo run -q -p xtask -- scorecard
 
 # The Lean gates. Declared NOT-LOCAL on 2026-09-20 on the assumption that a developer has no
 # Lean toolchain -- which was never tested and is wrong: `lean-toolchain` pins v4.30.0 and elan
@@ -140,10 +148,25 @@ if [ "$FULL" = 1 ] && printf '%s\n' "$changed" | grep -q '\.rs$'; then
         run "cargo test --workspace (lib, bins, tests)" cargo test --all-features --lib --bins --tests
     else
         pk=$(printf '%s\n' "$affected" | sed 's/^/-p /' | tr '\n' ' ')
+        # `--lib` and `--doc` refuse a selection in which NO package has a library, so a change
+        # confined to bin-only crates (nucleus-node is one) failed here having run no test at all.
+        # Both flags go only where there is a library to aim them at.
+        libs=$(cargo metadata --no-deps --format-version 1 2>/dev/null | jq -r --arg a "$affected" '
+            ($a | split("\n")) as $want
+            | .packages[] | select(.name as $n | $want | index($n))
+            | select(any(.targets[].kind[]; . == "lib" or . == "rlib" or . == "dylib"
+                                            or . == "cdylib" or . == "staticlib" or . == "proc-macro"))
+            | .name')
+        libflag=; [ -n "$libs" ] && libflag=--lib
         # shellcheck disable=SC2086
-        run "cargo test (affected: lib, bins, tests)" cargo test --all-features --lib --bins --tests $pk
-        # shellcheck disable=SC2086
-        run "cargo test --doc (affected)" cargo test --all-features --doc $pk
+        run "cargo test (affected: lib, bins, tests)" cargo test --all-features $libflag --bins --tests $pk
+        if [ -n "$libs" ]; then
+            lk=$(printf '%s\n' "$libs" | sed 's/^/-p /' | tr '\n' ' ')
+            # shellcheck disable=SC2086
+            run "cargo test --doc (affected)" cargo test --all-features --doc $lk
+        else
+            echo "  skip  cargo test --doc (no affected crate has a library)"
+        fi
     fi
     for s in check-declassify-sink-scope-enforced check-declassify-value-bound check-c1-inbound-fences; do
         [ -x "scripts/$s.sh" ] && run "$s" bash "scripts/$s.sh"

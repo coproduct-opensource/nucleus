@@ -133,11 +133,7 @@ pub(crate) async fn attest(pod_dir: &Path, spec: &PodSpec, pod_id: &str) -> Resu
              not started. This is the netns/iptables backstop failing to apply, \
              not a policy decision"
         ),
-        Verdict::Absent => ("the guest produced no egress attestation. Expected a \
-             `NUCLEUS_EGRESS_PROBE:` line on the console. Treated as a failure \
-             rather than a pass: the control this replaces was trusted precisely \
-             because nothing could make it red")
-            .to_string(),
+        Verdict::Absent => absent_problem(),
     };
 
     if std::env::var(OVERRIDE_ENV).is_ok_and(|v| v == "1") {
@@ -151,6 +147,26 @@ pub(crate) async fn attest(pod_dir: &Path, spec: &PodSpec, pod_id: &str) -> Resu
         return Ok(());
     }
     Err(problem)
+}
+
+/// What an absent verdict is reported as.
+///
+/// The commonest cause is not a broken probe but a guest that predates it: every
+/// published release through 2.2.0 ships a guest-init that never runs it, so a
+/// node from this tree refuses every confined pod on the pinned rootfs. The
+/// refusal stands — the probe is the only evidence the fence drops traffic —
+/// but the operator is told which change to look up and how to get a guest that
+/// has it, in the capability table's words rather than a second copy of them.
+fn absent_problem() -> String {
+    use nucleus_spec::tier2_artifacts::{GuestCapability, REBUILD_THE_GUEST};
+    format!(
+        "the guest produced no egress attestation. Expected a \
+         `NUCLEUS_EGRESS_PROBE:` line on the console. Treated as a failure rather \
+         than a pass: the control this replaces was trusted precisely because \
+         nothing could make it red. If the guest rootfs predates the probe: {}. \
+         {REBUILD_THE_GUEST}",
+        GuestCapability::EgressAttestation.change()
+    )
 }
 
 /// Health, then attestation — the single gate a pod passes to be called up.
@@ -167,12 +183,15 @@ pub(crate) async fn gate(
     pod_dir: &Path,
     spec: &PodSpec,
     pod_id: uuid::Uuid,
+    vmm: &mut tokio::process::Child,
 ) -> Result<(), crate::ApiError> {
     // `wait_for_proxy_health` moved into `guest_diagnosis` (#2355), which also
     // enriches a timeout with the guest console's actual cause. Both halves read
     // the same console: one to explain why the pod never came up, this one to
-    // require it proved its fence.
-    crate::guest_diagnosis::wait_for_proxy_health(addr, &pod_dir.join("firecracker.log")).await?;
+    // require it proved its fence. The VMM goes in so a dead guest ends the wait
+    // instead of running it out (#2904).
+    let console = pod_dir.join("firecracker.log");
+    crate::guest_diagnosis::wait_for_proxy_health(addr, &console, vmm).await?;
     attest(pod_dir, spec, &pod_id.to_string())
         .await
         .map_err(crate::ApiError::Driver)
@@ -208,6 +227,21 @@ mod tests {
             Verdict::Absent
         );
         assert_eq!(verdict("", true), Verdict::Absent);
+    }
+
+    /// The pinned 2.2.0 guest booted by a node from this tree: no verdict,
+    /// because its guest-init predates #2365. Still a refusal, and now one that
+    /// says which change the guest lacks and how to build one that has it.
+    #[test]
+    fn an_absent_verdict_names_the_guest_skew_and_still_refuses() {
+        let msg = absent_problem();
+        assert!(msg.contains("NUCLEUS_EGRESS_PROBE:"), "{msg}");
+        assert!(msg.contains("#2365"), "{msg}");
+        assert!(msg.contains("build-rootfs.sh"), "{msg}");
+        assert!(
+            !msg.contains(OVERRIDE_ENV),
+            "the fix for an old guest is a new guest, not the override: {msg}"
+        );
     }
 
     /// A console carrying both must resolve to the escape. A probe that ran

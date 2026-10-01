@@ -31,7 +31,60 @@
 # that silently covered half the gates would be the exact vacuity it exists to
 # find.
 #
-# Usage: scripts/check-gates-can-fail.sh
+# Usage: scripts/check-gates-can-fail.sh                      # every probe
+#        scripts/check-gates-can-fail.sh --vacuity-only        # perturbations bite; no gate run
+#        scripts/check-gates-can-fail.sh --baseline-only       # each gate green; nothing perturbed
+#        scripts/check-gates-can-fail.sh --changed-from <rev>  # probes whose inputs moved since <rev>
+#        scripts/check-gates-can-fail.sh --backstop-from <rev> # every probe if gate code moved, else as above
+#        scripts/check-gates-can-fail.sh --for-event <event> <merge-group base>     # what CI calls; base may be ''
+
+#          ... [--changed-files <file>] [--plan]               # a given diff; print, run nothing
+#
+# SCOPED RUNS
+#
+# A probe asks one question: does gate G RED on a violation planted in its target, and GREEN
+# when the violation is restored? The answer is a function of G's code, of the fixed files G
+# reads, and of the target. If the tree differs from <rev> in none of those, the answer on this
+# tree is the answer on <rev>, and asking again buys nothing.
+#
+# Those INPUTS are derived from G's own text by scripts/gate-inputs.sh -- never listed by hand
+# -- and cover, per probe:
+#
+#   * G's code: its script and every script it names, transitively; every cargo package it
+#     builds or runs, with that package's path-dependency closure, Cargo.lock, the root
+#     Cargo.toml, rust-toolchain.toml and .cargo/ (for an xtask gate: the xtask package);
+#   * every tracked FILE G's code names, by path or by bare name -- its allowlists, ratchets,
+#     manifests, ledgers (for an xtask gate, the string literals of its module and the modules
+#     it uses);
+#   * the probe's target, and every file its perturbation or generator functions name;
+#   * the engine: this file, gate-inputs.sh, and ci.yml (the job all of this runs in). Any of
+#     those changing selects EVERY probe.
+#
+# NOT covered is G's subject CORPUS: the set G walks -- a directory or glob it names
+# (`crates/nucleus-tool-proxy/src`, `crates/**/*.rs`), or a walk it does not spell at all
+# (`find . -name '*.lean'`, cargo's workspace walk, a path read out of a ledger). A change to
+# the corpus outside the target can move the answer in exactly two ways:
+#
+#   (a) G goes red on the UNPERTURBED tree. G runs as its own check on the same commit and
+#       says so there; the probe would only repeat it.
+#   (b) G's response to the planted violation changes -- slack opening under a count ceiling,
+#       a second copy of the pattern elsewhere masking the first. This is the real hole: an
+#       UNDECLARED INPUT, a file the answer depends on that the derivation does not see.
+#
+# The full run is what catches (b) and any other undeclared input:
+#
+#   * the MERGE QUEUE (`--backstop-from`, merge_group) runs every probe whenever the queued
+#     change touches gate code -- scripts/, .github/, crates/xtask/, any Cargo.toml, Cargo.lock,
+#     the toolchain or .cargo/ -- which is at least the queue's filter before this mode
+#     existed; otherwise it runs the scoped selection, re-asked on the tree that will land. So an
+#     undeclared input that is GATE CODE is caught before it lands, as before;
+#   * a PUSH TO MAIN runs every probe, unconditionally. That is where (b) in the corpus is
+#     caught -- after it lands, which is no later than before this mode existed: a corpus-only
+#     change ran no probe on its pull request or in the queue then either.
+#
+# The diff is TWO-POINT, `git diff <rev> HEAD`: the tree difference, because a full run on <rev>
+# vouches for <rev>'s tree. A <rev> not present in the checkout cannot be diffed, and that runs
+# every probe rather than guess.
 set -uo pipefail
 
 # `--vacuity-only`: apply every perturbation, check it changes its target, restore,
@@ -67,20 +120,67 @@ VACUITY_ONLY=0
 # over a DIRTY tree -- which is the state a developer is actually in before a push, and the
 # reason this can live in the fast gauntlet at all.
 BASELINE_ONLY=0
-if [[ "${1:-}" == "--baseline-only" ]]; then
-    BASELINE_ONLY=1
+# Scope: `full` (every probe), `scoped` (probes whose inputs moved) or `backstop` (every probe if
+# gate code moved, otherwise scoped). `--plan` prints each decision and runs nothing, which is
+# how the self-test in gate-inputs.sh exercises the same code CI takes.
+SCOPE=full
+SCOPE_BASE=""
+CHANGED_FILES=""
+PLAN=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --baseline-only)  BASELINE_ONLY=1 ;;
+        --vacuity-only)   VACUITY_ONLY=1 ;;
+        # The revision may be EMPTY (a workflow expression that evaluated to nothing). That is
+        # not an error: a base nobody can name is a diff nobody can read, and the scope setup
+        # below runs every probe and says so. Only a MISSING argument is refused.
+        --changed-from)   [[ $# -ge 2 ]] || { echo "ERROR: --changed-from needs a revision"; exit 2; }
+                          SCOPE=scoped;   SCOPE_BASE="$2"; shift ;;
+        --backstop-from)  [[ $# -ge 2 ]] || { echo "ERROR: --backstop-from needs a revision"; exit 2; }
+                          SCOPE=backstop; SCOPE_BASE="$2"; shift ;;
+        --for-event)
+            # The workflow's one call, so which events get which scope is decided HERE, beside
+            # the argument for it, and not in YAML. A pull request's checkout is its merge
+            # commit, whose first parent is the base it merges into; the merge queue names its
+            # base. Anything else -- a push to main above all -- is the full run.
+            #
+            # ALWAYS two arguments, the second possibly empty: ci.yml passes
+            # `github.event.merge_group.base_sha`, which only a merge_group payload carries, so
+            # on every other event it is ''. Consuming it only for merge_group left that '' to
+            # the loop as an argument of its own, and every pull request exited 2 (#3062).
+            [[ $# -ge 3 ]] || { echo "ERROR: --for-event needs <event> <merge-group base> (the base may be empty)"; exit 2; }
+            case "$2" in
+                pull_request) SCOPE=scoped;   SCOPE_BASE="HEAD^1" ;;
+                merge_group)  SCOPE=backstop; SCOPE_BASE="$3" ;;
+                *)            SCOPE=full ;;
+            esac
+            shift 2 ;;
+        --changed-files)  CHANGED_FILES="${2:?--changed-files needs a file}"; shift ;;
+        --plan)           PLAN=1 ;;
+        *) echo "ERROR: unknown argument '$1'"; exit 2 ;;
+    esac
     shift
+done
+if [[ -n "$CHANGED_FILES" && "$SCOPE" == full ]]; then
+    SCOPE=scoped
+    SCOPE_BASE="the base of the given diff"
 fi
-if [[ "${1:-}" == "--vacuity-only" ]]; then
-    VACUITY_ONLY=1
-    shift
+if [[ "$SCOPE" != full || "$PLAN" == "1" ]] && [[ "$VACUITY_ONLY" == "1" || "$BASELINE_ONLY" == "1" ]]; then
+    # The cheap halves are unscoped on purpose: they are seconds, and the vacuity half is the
+    # one that catches a perturbation the tree moved under -- which any diff can do.
+    echo "ERROR: --vacuity-only and --baseline-only always run every probe; they take no scope."
+    exit 2
+fi
+if [[ "$PLAN" == "1" && "$SCOPE" == full ]]; then
+    echo "ERROR: --plan needs a diff: --changed-from, --backstop-from, --for-event or --changed-files."
+    exit 2
 fi
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
 # A dirty tree cannot be safely perturbed: the restore step would have to guess
 # what was yours. Refuse rather than risk it — `git checkout -- <file>` has
 # destroyed uncommitted work in this repo before.
-if [[ "$BASELINE_ONLY" != "1" ]] && [[ -n "$(git status --porcelain)" ]]; then
+if [[ "$BASELINE_ONLY" != "1" && "$PLAN" != "1" ]] && [[ -n "$(git status --porcelain)" ]]; then
     echo "ERROR: the working tree is dirty. This script edits real files and"
     echo "restores them from a copy; running it over uncommitted work risks that"
     echo "work. Commit or stash first."
@@ -93,6 +193,93 @@ fi
 # full run each perturbation is its own question and no deduplication is possible.
 BASELINE_SEEN=""
 
+# ── Scope ────────────────────────────────────────────────────────────────
+# See SCOPED RUNS at the top. CHANGED is the diff, one path per line; SCOPE_ALL, when set, is
+# the reason every probe runs.
+# shellcheck source=scripts/gate-inputs.sh
+source scripts/gate-inputs.sh
+SCOPE_ALL=""
+CHANGED=""
+selected=0
+skipped=0
+if [[ "$SCOPE" != full ]]; then
+    gi_init
+    CHANGED="$GI_TMP/changed.$$"
+    if [[ -n "$CHANGED_FILES" ]]; then
+        grep -v '^$' "$CHANGED_FILES" > "$CHANGED" || true
+    elif [[ -z "$SCOPE_BASE" ]]; then
+        SCOPE_BASE="(no base)"
+        SCOPE_ALL="no base revision was given, so the diff cannot be read"
+        : > "$CHANGED"
+    elif ! git rev-parse --verify -q "${SCOPE_BASE}^{commit}" >/dev/null; then
+        SCOPE_ALL="$SCOPE_BASE is not present in this checkout, so the diff cannot be read"
+        : > "$CHANGED"
+    elif ! git diff --name-only --no-renames "$SCOPE_BASE" HEAD > "$CHANGED"; then
+        SCOPE_ALL="git diff $SCOPE_BASE HEAD failed, so the diff cannot be read"
+    else
+        SCOPE_BASE="$SCOPE_BASE ($(git rev-parse --short "${SCOPE_BASE}^{commit}"))"
+    fi
+    echo "scope: $SCOPE from $SCOPE_BASE — $(wc -l < "$CHANGED" | tr -d ' ') path(s) changed"
+    if [[ -z "$SCOPE_ALL" ]]; then
+        for e in "${GI_ENGINE[@]}"; do
+            if grep -qxF -- "$e" "$CHANGED"; then
+                SCOPE_ALL="the probe engine changed ($e)"
+                break
+            fi
+        done
+    fi
+    # The backstop: every probe when the change touches gate code. The roots are the merge
+    # queue's own filter from before this mode existed, widened to every manifest and the
+    # toolchain, so the queue re-proves at least what it did then -- and it is what catches an
+    # undeclared input that is gate code before it lands. Anything else is scoped.
+    if [[ "$SCOPE" == backstop && -z "$SCOPE_ALL" ]]; then
+        root_hit="$(grep -m1 -E '^scripts/|^\.github/|^crates/xtask/|(^|/)Cargo\.toml$|^Cargo\.lock$|^rust-toolchain\.toml$|^\.cargo/' "$CHANGED" || true)"
+        if [[ -n "$root_hit" ]]; then
+            SCOPE_ALL="backstop: $root_hit is gate code"
+        fi
+    fi
+    [[ -n "$SCOPE_ALL" ]] && echo "scope: running EVERY probe — $SCOPE_ALL"
+fi
+
+# scope_decide <label> <kind: script|xtask> <name> <target> <flags> [function...]
+#
+# Succeeds when the probe should RUN. Prints the decision and its reason in every scoped mode,
+# so a skipped probe is a line that says why, never an absence.
+scope_decide() {
+    [[ "$SCOPE" == full ]] && return 0
+    local label="$1" kind="$2" name="$3" target="$4" flags="$5"
+    shift 5
+    local reason="" inputs n hit
+    if [[ -n "$SCOPE_ALL" ]]; then
+        reason="$SCOPE_ALL"
+    else
+        inputs="$GI_TMP/probe-inputs.$$"
+        {
+            case "$kind" in
+                script) gi_script_inputs "scripts/$name" ;;
+                xtask)  gi_xtask_inputs "$name" ;;
+            esac
+            printf '%s\n' "$target"
+            # A flag can name a file (`--baseline scripts/exemplar-baseline.json`).
+            # shellcheck disable=SC2086
+            printf '%s\n' $flags | gi_resolve
+            gi_function_inputs "$@"
+        } | grep -v '^$' | sort -u > "$inputs"
+        n="$(grep -c . "$inputs")"
+        if hit="$(gi_first_hit "$inputs" "$CHANGED")"; then
+            reason="${hit%%$'\t'*} changed (input ${hit#*$'\t'})"
+        else
+            echo "  skip  $label — none of its $n inputs changed since $SCOPE_BASE"
+            skipped=$((skipped + 1))
+            return 1
+        fi
+    fi
+    echo "  run   $label — $reason"
+    selected=$((selected + 1))
+    [[ "$PLAN" == "1" ]] && return 1
+    return 0
+}
+
 RESTORE_FROM=""
 RESTORE_TO=""
 restore() {
@@ -103,7 +290,7 @@ restore() {
 }
 # Restore on ANY exit, including a signal — a half-perturbed tree left behind by
 # an interrupted run is worse than no check.
-trap restore EXIT INT TERM
+trap 'restore; gi_cleanup' EXIT INT TERM
 
 failures=0
 covered=0
@@ -118,6 +305,7 @@ covered=0
 probe() {
     local gate="$1" ci_flags="$2" target="$3" desc="$4"
     shift 4
+    scope_decide "$gate${ci_flags:+ $ci_flags} ($desc)" script "$gate" "$target" "$ci_flags" "$@" || return 0
 
     if [[ "$BASELINE_ONLY" == "1" ]]; then
         case "$BASELINE_SEEN" in
@@ -280,6 +468,7 @@ probe() {
 probe_xtask_flagged() {
     local sub="$1" flags="$2" target="$3" desc="$4"
     shift 4
+    scope_decide "xtask $sub $flags ($desc)" xtask "$sub" "$target" "$flags" "$@" || return 0
 
     local invocations
     invocations="$(grep -rhE "xtask -- ${sub}" .github/workflows/*.yml 2>/dev/null \
@@ -411,6 +600,7 @@ probe_xtask_flagged() {
 probe_xtask_partial() {
     local sub="$1" ci_flags="$2" marker="$3" target="$4" desc="$5"
     shift 5
+    scope_decide "xtask $sub ($desc)" xtask "$sub" "$target" "" "$@" || return 0
 
     local invocations
     invocations="$(grep -rhE "xtask -- $sub" .github/workflows/*.yml 2>/dev/null \
@@ -522,6 +712,7 @@ probe_xtask_partial() {
 probe_xtask() {
     local sub="$1" target="$2" desc="$3"
     shift 3
+    scope_decide "xtask $sub ($desc)" xtask "$sub" "$target" "" "$@" || return 0
 
     if [[ "$BASELINE_ONLY" == "1" ]]; then
         case "$BASELINE_SEEN" in
@@ -662,6 +853,7 @@ probe_xtask_generated() {
     # it behind, and THIS SCRIPT refuses to start on a dirty tree. A probe whose cost is
     # that the next run cannot start is not a probe.
     local generated2="${9:-}" local_path2="${10:-}" gen_fn2="${11:-}"
+    scope_decide "xtask $sub ($desc)" xtask "$sub" "$target" "$ci_flags" "$gen_fn" "$perturb_fn" "$gen_fn2" || return 0
 
     local invocations
     # Backslash continuations joined FIRST. A workflow may spell the invocation over
@@ -1075,6 +1267,18 @@ perturb_cancel_in_progress() {
     fi
 }
 
+# The derivation that scoping trusts, tested before it is trusted. Every mode that runs a gate
+# runs this -- full, scoped and backstop -- because the full run is the one a change to the
+# derivation always gets, and a scoped run is the one that depends on it. It runs the engine in
+# `--plan` mode, so it is never run from `--plan` itself; the cheap halves stay cheap.
+if [[ "$PLAN" != "1" && "$VACUITY_ONLY" != "1" && "$BASELINE_ONLY" != "1" ]]; then
+    echo "The input derivation's own fixtures (scripts/gate-inputs.sh --self-test):"
+    if ! gi_self_test; then
+        failures=$((failures + 1))
+    fi
+    echo
+fi
+
 echo "Probing whether each gate fails on its own subject..."
 echo
 
@@ -1367,10 +1571,13 @@ perturb_exemplar_baseline() {
 }
 
 perturb_fly_pool_volumes() {
-    # The exact configuration the manager refuses, and the one that was committed:
-    # requires_volume with no volumes for eight machines, so the machines past the
-    # end of the list compile onto the root filesystem and run out of disk.
-    sed -i.bak 's/"requires_volume":false/"requires_volume":true/' "$1" && rm -f "$1.bak"
+    # The configuration the manager refuses: a pool that requires a volume per machine with no
+    # volumes to give them, so the machines past the end of the list compile onto the root
+    # filesystem and run out of disk. It was once COMMITTED that way (requires_volume flipped on
+    # for eight volume-less machines). Since #3057 the build pool legitimately requires_volume
+    # with all 24 volumes listed, so the old probe -- flip false->true -- changed nothing and
+    # bit nothing; the refused state is now reached by dropping the volume list instead.
+    perl -0pi -e 's/,"volumes":\[[^\]]*\]//' "$1"
 }
 # gatehouse-pin: a second pin naming a different commit. The real one -- the plan
 # lane ran 4d42510 while the shadow lane ran 7326bfa9 -- is what put the third pin
@@ -1717,6 +1924,12 @@ probe check-kani-divergence.sh "" crates/portcullis/src/capability.rs \
       "an unlisted cfg(not(kani)) fork" \
       perturb_kani_divergence_unlisted
 
+if [[ "$PLAN" == "1" ]]; then
+    echo
+    echo "plan: $selected probe(s) would run, $skipped skipped. NOTHING WAS RUN."
+    exit 0
+fi
+
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #
 # A perturbation for these needs a duplicate crate version or a non-wasm
@@ -1857,6 +2070,9 @@ SELF_FALSIFIED=(
 
 echo
 echo "Covered: $covered gate(s) probed."
+if [[ "$SCOPE" != full ]]; then
+    echo "Scope: $selected probe(s) selected, $skipped skipped because nothing they read changed since $SCOPE_BASE."
+fi
 echo "Uncovered: ${#UNCOVERED[@]} (ceiling $UNCOVERED_CEILING) — these have no perturbation yet:"
 for u in "${UNCOVERED[@]}"; do echo "    $u"; done
 echo "Self-falsified in-workflow: ${#SELF_FALSIFIED[@]} — reds-on-revert runs on a toolchain this job lacks:"
@@ -2095,6 +2311,13 @@ if [[ "$VACUITY_ONLY" == "1" ]]; then
     # script the thing it exists to catch.
     echo "OK: every perturbation still changes its target. NO GATE WAS RUN:"
     echo "    this says the probes still bite, not that the gates red on them."
+    exit 0
+fi
+if [[ "$SCOPE" != full && "$skipped" -gt 0 ]]; then
+    # Claim the half that was established, as the other modes do.
+    echo "OK: every SELECTED probe REDs on its own subject and GREENs when restored."
+    echo "    $skipped probe(s) were not re-asked: none of their inputs differ from $SCOPE_BASE,"
+    echo "    so their answer is the one the full run on that tree gave."
     exit 0
 fi
 echo "OK: every probed gate REDs on its own subject and GREENs when restored."

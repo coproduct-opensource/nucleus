@@ -43,10 +43,12 @@ ENDPOINT="crates/nucleus-tool-proxy/src/declassify.rs"
 # at the kernel's own graph (`kernel.apply_declassification_token(&token)`, the
 # self-graph variant), declassification goes inert end-to-end (the read graph is
 # never populated) and C4 collapses back to a dead mechanism. Assert the wiring
-# the live claim rests on.
+# the live claim rests on. (2026-09-27: the endpoint spells the apply as
+# `verify_declassification` + `graph.apply_verified(v, now)` on the locked
+# `state.flow_graph`; the literal below moved with it, the check did not.)
 [[ -f "$ENDPOINT" ]] || { echo "FAIL: $ENDPOINT not found"; exit 1; }
-if ! grep -q 'apply_declassification_token_on' "$ENDPOINT"; then
-    echo "FAIL: $ENDPOINT no longer calls apply_declassification_token_on —"
+if ! grep -q 'graph.apply_verified(' "$ENDPOINT"; then
+    echo "FAIL: $ENDPOINT no longer spends its witness via graph.apply_verified —"
     echo "      the apply must land on the caller-supplied live graph, not the"
     echo "      kernel's own (never-populated) flow_graph. This is the #2235 regression."
     exit 1

@@ -9,7 +9,9 @@
 //!   broker secret, the mediation key and the audit credentials, and the refusal
 //!   carries **none of the secret's bytes**. A walk that only checked "the second
 //!   call errors" would miss the failure that matters: a refusal that leaks the
-//!   value in its diagnostic.
+//!   value in its diagnostic. The SVID private key is the same law served
+//!   inside a success: the first `FETCH_SVID` carries it, every later one the
+//!   public chain alone.
 //! - **A5, personalisation and snapshot do not commute.** After any command that
 //!   personalises the VM, `clone_safety` must say `PersonalizedSince`, whatever
 //!   else happened; before it, the verdict follows `SNAPSHOT_READY`.
@@ -140,6 +142,7 @@ struct Model {
     broker_served: bool,
     mediation_key_served: bool,
     audit_served: bool,
+    svid_key_served: bool,
     personalized: bool,
     at_barrier: bool,
 }
@@ -151,6 +154,7 @@ impl Model {
             broker_served: false,
             mediation_key_served: false,
             audit_served: false,
+            svid_key_served: false,
             personalized: false,
             at_barrier: false,
         }
@@ -228,8 +232,8 @@ impl Model {
             Cmd::FetchMediationKey => self.mediation_key_served |= served,
             Cmd::FetchAuditCredentials => self.audit_served |= served,
             Cmd::SnapshotReady => self.at_barrier = true,
-            Cmd::FetchSvid
-            | Cmd::FetchBundle
+            Cmd::FetchSvid => self.svid_key_served |= served,
+            Cmd::FetchBundle
             | Cmd::Ping
             | Cmd::FetchTaskToken
             | Cmd::FetchDlcAdmission
@@ -294,6 +298,7 @@ fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
         at_snapshot_barrier: Arc::default(),
         personalized: Arc::default(),
         mediation_key_served: Arc::default(),
+        svid_key_served: Arc::default(),
         receipt_dir: p.receipts.then(|| receipt_dir.to_path_buf()),
         pod_registry: crate::pod_api::PodRegistry::default(),
     }
@@ -350,8 +355,20 @@ fn walk(provision: Provision, ops: &[Op]) -> Result<(), String> {
 
             match (&expect, &reply) {
                 (Expect::Served, Ok(body)) => {
-                    serde_json::from_str::<serde_json::Value>(body)
+                    let v = serde_json::from_str::<serde_json::Value>(body)
                         .map_err(|e| format!("{}: served a non-JSON body: {e}", at()))?;
+                    // The SVID key is a one-shot served INSIDE a success: the first
+                    // FETCH_SVID carries it, every later one the chain alone.
+                    if matches!(op, Op::Command(Cmd::FetchSvid))
+                        && v.get("private_key").is_some() == model.svid_key_served
+                    {
+                        return Err(format!(
+                            "{}: key present={} after svid_key_served={}",
+                            at(),
+                            v.get("private_key").is_some(),
+                            model.svid_key_served
+                        ));
+                    }
                 }
                 (Expect::Refused(want), Err(got)) if want == got => {}
                 (_, _) => return Err(format!("{}: host replied {reply:?}", at())),

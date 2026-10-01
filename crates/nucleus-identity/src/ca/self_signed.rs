@@ -595,16 +595,34 @@ impl SelfSignedCa {
 ///
 /// This allows signing certificates using only the public key from a CSR,
 /// without requiring the corresponding private key.
+///
+/// rcgen's [`PublicKeyData::der_bytes`] is the key's BIT STRING contents, NOT
+/// the SubjectPublicKeyInfo: rcgen wraps it in an SPKI itself. Handing it the
+/// CSR's whole SPKI (`spki.raw`) wrapped it twice, and every certificate this
+/// CA signed from a CSR carried a public key no TLS stack would load
+/// (`EE_KEY_TOO_SMALL` / `X509_PUBKEY_get0: decode error`). So the only way to
+/// build one is [`CsrPublicKey::from_spki`], which takes the key bits itself.
 struct CsrPublicKey {
-    /// DER-encoded SubjectPublicKeyInfo from the CSR.
-    spki_der: Vec<u8>,
+    /// The public key's BIT STRING contents (e.g. the SEC1 point for ECDSA).
+    key_bits: Vec<u8>,
     /// The signature algorithm for this public key.
     algorithm: &'static SignatureAlgorithm,
 }
 
+impl CsrPublicKey {
+    /// The key a CSR asks to be certified, or `None` for an algorithm this CA
+    /// does not sign.
+    fn from_spki(spki: &x509_parser::x509::SubjectPublicKeyInfo<'_>) -> Option<Self> {
+        Some(Self {
+            key_bits: spki.subject_public_key.data.to_vec(),
+            algorithm: detect_algorithm(&spki.algorithm)?,
+        })
+    }
+}
+
 impl PublicKeyData for CsrPublicKey {
     fn der_bytes(&self) -> &[u8] {
-        &self.spki_der
+        &self.key_bits
     }
 
     fn algorithm(&self) -> &'static SignatureAlgorithm {
@@ -840,19 +858,9 @@ impl CaClient for SelfSignedCa {
 
         // Extract the SubjectPublicKeyInfo from the CSR
         let csr_info = &parsed_csr.certification_request_info;
-        let spki = &csr_info.subject_pki;
-        let spki_der = spki.raw.to_vec();
-
-        // Detect the algorithm from the CSR's public key
-        let algorithm = detect_algorithm(&spki.algorithm).ok_or_else(|| {
+        let public_key = CsrPublicKey::from_spki(&csr_info.subject_pki).ok_or_else(|| {
             Error::CaSigning("unsupported public key algorithm in CSR".to_string())
         })?;
-
-        // Create a wrapper that implements PublicKeyData
-        let public_key = CsrPublicKey {
-            spki_der,
-            algorithm,
-        };
 
         // Sign using the public key from the CSR
         let chain = self.sign_with_public_key(&public_key, identity, ttl)?;
@@ -944,6 +952,40 @@ mod tests {
 
         // Verify the certificate uses the workload's own key (no key escrow)
         assert_eq!(cert.private_key_pem(), cert_sign.private_key());
+    }
+
+    /// The certificate `sign_csr_only` issues carries the CSR's key, byte for
+    /// byte, in a SubjectPublicKeyInfo a verifier can parse. Every other CSR test
+    /// checks the SAN; none read the key back, which is how a doubly wrapped
+    /// SPKI shipped.
+    #[tokio::test]
+    async fn a_csr_signed_certificate_carries_the_csrs_key_unwrapped() {
+        use x509_parser::prelude::FromDer as _;
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let identity = Identity::new("nucleus.local", "default", "csr-only");
+        let request = crate::CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+
+        let chain = ca
+            .sign_csr_only(request.csr(), &identity, Duration::from_secs(300))
+            .await
+            .unwrap();
+
+        let csr_der = SelfSignedCa::pem_to_der(request.csr(), "CERTIFICATE REQUEST").unwrap();
+        let (_, csr) = X509CertificationRequest::from_der(&csr_der).unwrap();
+        let leaf_der = SelfSignedCa::pem_to_der(&chain, "CERTIFICATE").unwrap();
+        let (_, leaf) = x509_parser::certificate::X509Certificate::from_der(&leaf_der).unwrap();
+
+        let issued = leaf.public_key();
+        assert_eq!(
+            issued.raw, csr.certification_request_info.subject_pki.raw,
+            "the issued SPKI is not the CSR's SPKI"
+        );
+        assert!(
+            issued.parsed().is_ok(),
+            "the issued public key does not parse"
+        );
     }
 
     #[tokio::test]

@@ -586,6 +586,15 @@ mod tests {
              The tool-proxy needs one to start with drand enabled, and it is PID 1 — \
              so the pod will not boot."
         );
+        // The guest layer's own copy, which the runtime prefers. Without it the
+        // runtime falls back to the IMAGE's store, which an arbitrary workload
+        // image need not have.
+        let guest_layer_bundle = nucleus_spec::guest_layout::CA_BUNDLE.trim_start_matches('/');
+        assert!(
+            script.contains(guest_layer_bundle),
+            "build-rootfs.sh does not install the guest layer's CA bundle at \
+             /{guest_layer_bundle}; the runtime would depend on the image's CA store"
+        );
     }
 
     /// **The snapshot payoff, now REALIZED (2026-08-08).** A command line built
