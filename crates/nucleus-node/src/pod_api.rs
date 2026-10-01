@@ -970,6 +970,7 @@ pub(crate) mod handler_tests {
             authority,
             http_client: reqwest::Client::new(),
             lockdown_tx: tokio::sync::broadcast::channel::<crate::proto::LockdownCommand>(16).0,
+            lockdowns: Arc::default(),
         }
     }
 

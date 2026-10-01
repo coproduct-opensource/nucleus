@@ -443,6 +443,8 @@ struct NodeState {
     http_client: reqwest::Client,
     /// Broadcast channel for streaming lockdown commands to connected tool-proxies.
     lockdown_tx: tokio::sync::broadcast::Sender<proto::LockdownCommand>,
+    /// The lockdowns in force (`lockdown::Active`).
+    lockdowns: Arc<std::sync::Mutex<lockdown::Active>>,
 }
 
 #[derive(Debug)]
@@ -750,6 +752,7 @@ async fn main() -> Result<(), ApiError> {
             .build()
             .unwrap_or_default(),
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
+        lockdowns: Arc::default(),
     };
 
     // Release what the previous life of this node acquired, BEFORE serving anything: a pod
@@ -1156,6 +1159,7 @@ async fn create_pod_internal(
     // ── Authority Gate: proof of caller authority, budget conserved ──
     // The caller's certificate decides what this pod may do; the spec's policy
     // is a REQUEST, meet-clamped and never trusted alone. See pod_authority.rs.
+    lockdown::admits(state, admission.caller_pod).await?;
     let issued = state.authority.admit(&admission, &spec, id).await?;
     tracing::Span::current().record("chain_depth", issued.chain_depth);
     // The issued lattice AND the admitted credentialed upstreams replace what
@@ -3456,110 +3460,9 @@ impl NodeService for GrpcService {
         )?;
 
         let (operator, req) = lockdown::attributed(request)?;
-        let reason = if req.reason.is_empty() {
-            "emergency lockdown".to_string()
-        } else {
-            req.reason.clone()
-        };
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let scope_str = match &req.scope {
-            Some(proto::lockdown_request::Scope::PodId(id)) => format!("pod:{id}"),
-            Some(proto::lockdown_request::Scope::LabelSelector(sel)) => format!("label:{sel}"),
-            None => "all".to_string(),
-        };
-
-        let cmd = proto::LockdownCommand {
-            active: !req.restore,
-            reason: reason.clone(),
-            operator_id: operator.clone(),
-            timestamp_unix: timestamp,
-            scope: scope_str.clone(),
-        };
-
-        // Broadcast to all connected tool-proxy streams
-        let broadcast_receivers = self.state.lockdown_tx.receiver_count();
-        let _send_result = self.state.lockdown_tx.send(cmd);
-
-        // Count affected pods by scope
-        let pods = self.state.pods.lock().await;
-        let affected_pods = match &req.scope {
-            Some(proto::lockdown_request::Scope::PodId(id)) => {
-                if pods.values().any(|p| p.id.to_string() == *id) {
-                    1u32
-                } else {
-                    0u32
-                }
-            }
-            Some(proto::lockdown_request::Scope::LabelSelector(selector)) => {
-                pods.values()
-                    .filter(|p| matches_label_selector(&p.spec.metadata.labels, selector))
-                    .count() as u32
-            }
-            None => pods.len() as u32,
-        };
-
-        tracing::warn!(
-            reason = %reason,
-            operator = %operator,
-            restore = req.restore,
-            scope = %scope_str,
-            affected_pods,
-            broadcast_receivers,
-            "LOCKDOWN RPC — broadcast to connected proxies"
-        );
-
-        // Write per-pod lifecycle audit events (label-scoped matching).
-        {
-            let action = if req.restore {
-                "lockdown_restored"
-            } else {
-                "lockdown_applied"
-            };
-            for pod in pods.values() {
-                let matches = match &req.scope {
-                    Some(proto::lockdown_request::Scope::PodId(target_id)) => {
-                        pod.id.to_string() == *target_id
-                    }
-                    Some(proto::lockdown_request::Scope::LabelSelector(selector)) => {
-                        matches_label_selector(&pod.spec.metadata.labels, selector)
-                    }
-                    None => true,
-                };
-                if !matches {
-                    continue;
-                }
-                tracing::info!(
-                    pod_id = %pod.id,
-                    action = action,
-                    reason = %reason,
-                    operator = %operator,
-                    "lockdown: pod affected"
-                );
-                let pod_dir = pod.log_path.parent().unwrap_or_else(|| Path::new("."));
-                lifecycle::write_lifecycle_audit(
-                    pod_dir,
-                    action,
-                    &pod.id.to_string(),
-                    &format!("reason={}, operator={}", reason, operator),
-                )
-                .await;
-            }
-        }
-        // Release pods lock before response
-        drop(pods);
-
-        Ok(GrpcResponse::new(proto::LockdownResponse {
-            affected_pods,
-            // TODO: wire up actual audit entry creation when per-pod
-            // AuditEntry::ExecutionBlocked is implemented. Do not fabricate counts.
-            audit_entries_created: 0,
-            timestamp_unix: timestamp,
-        }))
+        Ok(GrpcResponse::new(
+            lockdown::issue(&self.state, operator, req).await,
+        ))
     }
 
     type WatchLockdownStream = ReceiverStream<Result<proto::LockdownCommand, Status>>;
@@ -3587,7 +3490,7 @@ impl NodeService for GrpcService {
 
         let (tx, grpc_rx) = tokio::sync::mpsc::channel(16);
 
-        lockdown::spawn_filtered_forwarder(rx, tx, watcher);
+        lockdown::spawn_filtered_forwarder(self.state.clone(), rx, tx, watcher);
 
         // ACK consumer: log acknowledgements from the tool-proxy
         tokio::spawn(async move {

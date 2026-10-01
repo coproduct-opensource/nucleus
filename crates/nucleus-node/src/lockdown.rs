@@ -1,12 +1,28 @@
-//! Who a lockdown command is allowed to reach.
+//! Issuing a lockdown, holding it, and who it reaches.
 //!
 //! Its own module because `main.rs` carries a line ratchet and anything added
 //! must be paid for by something taken out -- and because the fail-open rule
 //! below is the one place in this subsystem that deliberately inverts the
 //! project's fail-closed default, which is easier to find here than buried
 //! among request handlers.
+//!
+//! # A pod's lockdown is its subtree's
+//!
+//! A pod's children hold authority delegated from it, so a lockdown of the pod
+//! covers every pod below it in the registry: each is audited, each watcher is
+//! told, and none of them may create a pod while it holds. The node keeps the
+//! lockdowns in force ([`Active`]) rather than only broadcasting them, so that
+//! the same rule decides at admission and for a watcher that connects after
+//! the broadcast went out. Admission also refuses a pod that has stopped, or
+//! has a stopped pod above it: its subtree's authority is withdrawn at once,
+//! not one reaper pass per generation.
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use uuid::Uuid;
+
+use crate::proto::{LockdownCommand, LockdownRequest, LockdownResponse, lockdown_request};
 
 /// Who issued a lockdown: the peer the gRPC interceptor VERIFIED, never the
 /// request's own `operator_id`.
@@ -43,21 +59,286 @@ pub(crate) fn attributed(
 /// free-text reason into every other pod's VM -- the same mistake as returning
 /// a full pod list and refusing individually, since the information has already
 /// crossed by the time the check runs.
+///
+/// A watcher that connects while a lockdown covers it is told first: the
+/// broadcast it missed is not repeated.
 pub(crate) fn spawn_filtered_forwarder(
-    mut rx: tokio::sync::broadcast::Receiver<crate::proto::LockdownCommand>,
-    tx: tokio::sync::mpsc::Sender<Result<crate::proto::LockdownCommand, tonic::Status>>,
+    state: crate::NodeState,
+    mut rx: tokio::sync::broadcast::Receiver<LockdownCommand>,
+    tx: tokio::sync::mpsc::Sender<Result<LockdownCommand, tonic::Status>>,
     watcher: Option<Uuid>,
 ) {
     tokio::spawn(async move {
+        if let Some(cmd) = in_force(&state, watcher).await
+            && tx.send(Ok(cmd)).await.is_err()
+        {
+            return;
+        }
         while let Ok(cmd) = rx.recv().await {
-            if !reaches(&cmd.scope, watcher) {
+            let Some(cmd) = delivery(&state, &cmd, watcher).await else {
                 continue;
-            }
+            };
             if tx.send(Ok(cmd)).await.is_err() {
                 break; // client disconnected
             }
         }
     });
+}
+
+/// The lockdowns in force. Label-selector lockdowns are not held: the proxies
+/// apply those to every pod (see [`reaches`]), and the node does not yet
+/// evaluate them for itself.
+#[derive(Debug, Default)]
+pub(crate) struct Active {
+    /// Node-wide, with the command that applied it.
+    all: Option<LockdownCommand>,
+    /// Per locked pod: covers the pod and every pod below it.
+    pods: HashMap<Uuid, LockdownCommand>,
+}
+
+enum Target {
+    All,
+    Pod(Uuid),
+    Other,
+}
+
+fn target(scope: &str) -> Target {
+    if scope.is_empty() || scope == "all" {
+        return Target::All;
+    }
+    match scope.strip_prefix("pod:").map(Uuid::parse_str) {
+        Some(Ok(id)) => Target::Pod(id),
+        _ => Target::Other,
+    }
+}
+
+impl Active {
+    /// Hold `cmd`, or lift what it lifts. Lifting a node-wide lockdown lifts
+    /// every lockdown, as it does at every proxy, which holds one switch.
+    pub(crate) fn apply(&mut self, cmd: &LockdownCommand) {
+        match (target(&cmd.scope), cmd.active) {
+            (Target::All, true) => self.all = Some(cmd.clone()),
+            (Target::All, false) => *self = Self::default(),
+            (Target::Pod(id), true) => {
+                self.pods.insert(id, cmd.clone());
+            }
+            (Target::Pod(id), false) => {
+                self.pods.remove(&id);
+            }
+            (Target::Other, _) => {}
+        }
+    }
+
+    /// The lockdown that covers a pod whose lineage -- itself, then each pod
+    /// above it -- is `lineage`.
+    pub(crate) fn covering(&self, lineage: &[Uuid]) -> Option<&LockdownCommand> {
+        self.all
+            .as_ref()
+            .or_else(|| lineage.iter().find_map(|id| self.pods.get(id)))
+    }
+}
+
+fn held(state: &crate::NodeState) -> std::sync::MutexGuard<'_, Active> {
+    state
+        .lockdowns
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+type Registry = HashMap<Uuid, Arc<crate::PodHandle>>;
+
+/// `pod`, then each pod above it in the registry. Bounded by the registry's
+/// size, so a cycle cannot loop.
+fn lineage_in(pods: &Registry, pod: Uuid) -> Vec<Uuid> {
+    let mut out = vec![pod];
+    while out.len() <= pods.len() {
+        let Some(up) = out
+            .last()
+            .and_then(|id| pods.get(id))
+            .and_then(|p| p.parent_pod_id)
+        else {
+            break;
+        };
+        out.push(up);
+    }
+    out
+}
+
+async fn lineage(state: &crate::NodeState, pod: Uuid) -> Vec<Uuid> {
+    lineage_in(&*state.pods.lock().await, pod)
+}
+
+/// What `watcher` is sent for a broadcast `cmd`; `None` is nothing.
+///
+/// A pod-scoped command reaches the pod's whole subtree. A proxy applies a
+/// `pod:` command only when it names the proxy's own pod, so a pod below the
+/// target is sent it addressed to itself. A lift reaches only a watcher no
+/// other lockdown still covers: lifting a pod's lockdown must not unlock a
+/// child that its parent's lockdown still holds.
+pub(crate) async fn delivery(
+    state: &crate::NodeState,
+    cmd: &LockdownCommand,
+    watcher: Option<Uuid>,
+) -> Option<LockdownCommand> {
+    let Some(w) = watcher else {
+        return Some(cmd.clone()); // unresolved: deliver, see `reaches`
+    };
+    let lineage = lineage(state, w).await;
+    let reached = match target(&cmd.scope) {
+        Target::Pod(t) => lineage.contains(&t),
+        _ => reaches(&cmd.scope, Some(w)),
+    };
+    if !reached || (!cmd.active && held(state).covering(&lineage).is_some()) {
+        return None;
+    }
+    Some(addressed(cmd, w))
+}
+
+/// The lockdown in force over `watcher`, addressed to it.
+pub(crate) async fn in_force(
+    state: &crate::NodeState,
+    watcher: Option<Uuid>,
+) -> Option<LockdownCommand> {
+    let Some(w) = watcher else {
+        return held(state).all.clone();
+    };
+    let lineage = lineage(state, w).await;
+    let cmd = held(state).covering(&lineage).cloned()?;
+    Some(addressed(&cmd, w))
+}
+
+fn addressed(cmd: &LockdownCommand, watcher: Uuid) -> LockdownCommand {
+    let mut out = cmd.clone();
+    if matches!(target(&cmd.scope), Target::Pod(t) if t != watcher) {
+        out.scope = format!("pod:{watcher}");
+    }
+    out
+}
+
+/// Refuse a create a pod asks for while a lockdown covers it, or while it or
+/// any pod above it has stopped.
+///
+/// # Errors
+/// [`crate::ApiError::Authority`], naming which.
+pub(crate) async fn admits(
+    state: &crate::NodeState,
+    caller: Option<Uuid>,
+) -> Result<(), crate::ApiError> {
+    let Some(pod) = caller else {
+        return Ok(());
+    };
+    let (lineage, handles): (Vec<Uuid>, Vec<Arc<crate::PodHandle>>) = {
+        let pods = state.pods.lock().await;
+        let lineage = lineage_in(&pods, pod);
+        let handles = lineage
+            .iter()
+            .filter_map(|id| pods.get(id).cloned())
+            .collect();
+        (lineage, handles)
+    };
+    if let Some(cmd) = held(state).covering(&lineage) {
+        tracing::warn!(pod = %pod, lockdown = %cmd.scope, "create refused: the caller is under lockdown");
+        return Err(crate::ApiError::Authority(format!(
+            "pod {pod} is under lockdown"
+        )));
+    }
+    for h in handles {
+        if !matches!(h.status().await, crate::PodState::Running) {
+            tracing::warn!(pod = %pod, stopped = %h.id, "create refused: the caller's lineage has stopped");
+            return Err(crate::ApiError::Authority(format!(
+                "pod {pod} or a pod above it has stopped"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Issue or lift a lockdown attributed to `operator` (see [`attributed`]):
+/// hold it, broadcast it, and audit it in every pod it covers.
+pub(crate) async fn issue(
+    state: &crate::NodeState,
+    operator: String,
+    req: LockdownRequest,
+) -> LockdownResponse {
+    let reason = if req.reason.is_empty() {
+        "emergency lockdown".to_string()
+    } else {
+        req.reason.clone()
+    };
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let scope = match &req.scope {
+        Some(lockdown_request::Scope::PodId(id)) => format!("pod:{id}"),
+        Some(lockdown_request::Scope::LabelSelector(sel)) => format!("label:{sel}"),
+        None => "all".to_string(),
+    };
+    let cmd = LockdownCommand {
+        active: !req.restore,
+        reason: reason.clone(),
+        operator_id: operator.clone(),
+        timestamp_unix: timestamp,
+        scope: scope.clone(),
+    };
+    // Held BEFORE it is broadcast, so a watcher deciding on the broadcast
+    // decides against it.
+    held(state).apply(&cmd);
+    let broadcast_receivers = state.lockdown_tx.receiver_count();
+    let _ = state.lockdown_tx.send(cmd);
+
+    let affected: Vec<Arc<crate::PodHandle>> = {
+        let pods = state.pods.lock().await;
+        match (&req.scope, target(&scope)) {
+            (Some(lockdown_request::Scope::LabelSelector(sel)), _) => pods
+                .values()
+                .filter(|p| crate::matches_label_selector(&p.spec.metadata.labels, sel))
+                .cloned()
+                .collect(),
+            (Some(lockdown_request::Scope::PodId(_)), Target::Pod(root)) => pods
+                .values()
+                .filter(|p| lineage_in(&pods, p.id).contains(&root))
+                .cloned()
+                .collect(),
+            (Some(lockdown_request::Scope::PodId(_)), _) => Vec::new(),
+            (None, _) => pods.values().cloned().collect(),
+        }
+    };
+    tracing::warn!(
+        reason = %reason,
+        operator = %operator,
+        restore = req.restore,
+        scope = %scope,
+        affected_pods = affected.len(),
+        broadcast_receivers,
+        "LOCKDOWN RPC — broadcast to connected proxies"
+    );
+    let action = if req.restore {
+        "lockdown_restored"
+    } else {
+        "lockdown_applied"
+    };
+    for pod in &affected {
+        tracing::info!(pod_id = %pod.id, action, reason = %reason, operator = %operator, "lockdown: pod affected");
+        let pod_dir = pod
+            .log_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        crate::lifecycle::write_lifecycle_audit(
+            pod_dir,
+            action,
+            &pod.id.to_string(),
+            &format!("reason={reason}, operator={operator}"),
+        )
+        .await;
+    }
+    LockdownResponse {
+        affected_pods: u32::try_from(affected.len()).unwrap_or(u32::MAX),
+        // Not wired until per-pod `AuditEntry::ExecutionBlocked` exists. Do
+        // not fabricate counts.
+        audit_entries_created: 0,
+        timestamp_unix: timestamp,
+    }
 }
 
 /// Should a lockdown command scoped `scope` reach a watcher that is `watcher`?

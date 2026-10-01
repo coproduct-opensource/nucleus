@@ -34,15 +34,21 @@
 //!   model's, coordinate by coordinate: its ceiling, what retired children
 //!   consumed, what live children hold, how many there are. A create that
 //!   never ran releases its reservation exactly once.
-//! - **Revocation reaches the subtree.** Once the reaper has run to a fixpoint,
-//!   every pod below a stopped pod is stopped, no stopped pod holds a
-//!   certificate, and none of them can create anything.
+//! - **Revocation reaches the subtree.** A pod that has stopped, or has a
+//!   stopped pod above it, can create nothing from that moment, before any
+//!   reaper pass. Once the reaper has run to a fixpoint, every pod below a
+//!   stopped pod is stopped, no stopped pod holds a certificate, and none of
+//!   them can create anything.
 //! - **Scope.** A pod lists and cancels only itself and its direct children; an
 //!   identity the policy grants node-wide reach reaches every pod; a refusal is
 //!   `NotFound` and leaves the target running. Cancelling twice answers alike.
 //! - **Attribution.** A lockdown is broadcast and audited under the verified
 //!   peer, with the caller's own `operator_id` only as a quoted claim beside
 //!   it, and only an operator or orchestrator may issue one.
+//! - **A lockdown covers the subtree.** A pod's lockdown is audited in, and
+//!   delivered to, the pod and every pod below it, and none of them can create
+//!   anything while it holds; a watcher that connects later is told it. Lifting
+//!   it reaches only the pods no other lockdown still covers.
 //!
 //! # Running it
 //!
@@ -438,6 +444,10 @@ struct MPod {
 struct Model {
     pods: Vec<MPod>,
     external: Vec<LedgerView>,
+    /// Pods under a pod-scoped lockdown, each covering its subtree.
+    locked: BTreeSet<usize>,
+    /// A node-wide lockdown is in force.
+    locked_all: bool,
     rules: Rules,
 }
 
@@ -458,8 +468,31 @@ impl Model {
                 .iter()
                 .map(|(_, b)| fresh_ledger(u64::from(*b) * MICRO))
                 .collect(),
+            locked: BTreeSet::new(),
+            locked_all: false,
             rules,
         }
+    }
+
+    /// Pod `i`, then each pod above it in the registry.
+    fn lineage(&self, i: usize) -> Vec<usize> {
+        let mut out = vec![i];
+        while let Some(up) = out.last().and_then(|&a| self.pods[a].reg_parent) {
+            out.push(up);
+        }
+        out
+    }
+
+    /// Is pod `i` under a lockdown: node-wide, or of it or a pod above it?
+    fn covered(&self, i: usize) -> bool {
+        self.locked_all || self.lineage(i).iter().any(|a| self.locked.contains(a))
+    }
+
+    /// Has pod `i`, or a pod above it, stopped?
+    fn stopped_above(&self, i: usize) -> bool {
+        self.lineage(i)
+            .iter()
+            .any(|&a| self.pods[a].phase != Phase::Running)
     }
 
     fn resolve(&self, r: PodRef) -> usize {
@@ -496,8 +529,10 @@ impl Model {
             Who::Pod(r) => {
                 let i = self.resolve(r);
                 let p = &self.pods[i];
-                // A pod whose authority the reaper released holds no certificate.
-                if p.phase == Phase::Reaped || p.depth + 1 > MAX_DEPTH {
+                // A pod whose authority the reaper released holds no certificate;
+                // a pod under lockdown, or stopped, or below one that stopped,
+                // may not use the one it holds.
+                if self.covered(i) || self.stopped_above(i) || p.depth + 1 > MAX_DEPTH {
                     return None;
                 }
                 (Source::Pod(i), p.depth + 1)
@@ -813,6 +848,13 @@ struct Stats {
     repeat_cancels: usize,
     attributed_claims: usize,
     lockdowns_refused: usize,
+    /// Creates refused because a lockdown covers the caller.
+    refused_locked: usize,
+    /// Creates refused because the caller or a pod above it stopped, before
+    /// the reaper released anything.
+    refused_stopped: usize,
+    /// Pods a lockdown reached because a pod above them was its target.
+    locked_below: usize,
 }
 
 impl Stats {
@@ -831,6 +873,9 @@ impl Stats {
         self.repeat_cancels += o.repeat_cancels;
         self.attributed_claims += o.attributed_claims;
         self.lockdowns_refused += o.lockdowns_refused;
+        self.refused_locked += o.refused_locked;
+        self.refused_stopped += o.refused_stopped;
+        self.locked_below += o.locked_below;
     }
 }
 
@@ -1044,9 +1089,18 @@ impl Walk {
     fn count_refusal(&mut self, who: Who, micro: u64) {
         let ledger = match who {
             Who::Pod(r) => {
-                let p = &self.model.pods[self.model.resolve(r)];
+                let i = self.model.resolve(r);
+                let p = &self.model.pods[i];
                 if p.phase == Phase::Reaped {
                     self.stats.refused_released += 1;
+                    return;
+                }
+                if self.model.covered(i) {
+                    self.stats.refused_locked += 1;
+                    return;
+                }
+                if self.model.stopped_above(i) {
+                    self.stats.refused_stopped += 1;
                     return;
                 }
                 if p.depth + 1 > MAX_DEPTH {
@@ -1468,10 +1522,29 @@ impl Walk {
         if cmd.active == restore {
             return Err("broadcast in the wrong direction".into());
         }
+        let target = match scope {
+            Scope::Pod(Target::Pod(r)) => Some(self.model.resolve(r)),
+            _ => None,
+        };
+        match (scope, target) {
+            (Scope::All, _) if restore => {
+                self.model.locked_all = false;
+                self.model.locked.clear();
+            }
+            (Scope::All, _) => self.model.locked_all = true,
+            (_, Some(j)) if restore => {
+                self.model.locked.remove(&j);
+            }
+            (_, Some(j)) => {
+                self.model.locked.insert(j);
+            }
+            _ => {}
+        }
+        let below = |j: usize| target.is_some_and(|t| self.model.lineage(j).contains(&t));
         let affected: Vec<usize> = (0..self.model.pods.len())
             .filter(|&j| match scope {
                 Scope::All | Scope::Label => true,
-                Scope::Pod(t) => self.model.pods[j].id == self.target_id(t),
+                Scope::Pod(_) => below(j),
             })
             .collect();
         if resp.affected_pods as usize != affected.len() {
@@ -1481,11 +1554,47 @@ impl Walk {
                 affected.len()
             ));
         }
+        // What each pod's watcher is sent, now and if it connects later.
+        for j in 0..self.model.pods.len() {
+            let id = self.model.pods[j].id;
+            let sent = crate::lockdown::delivery(&self.node.st, &cmd, Some(id)).await;
+            let reached = match scope {
+                Scope::All | Scope::Label => true,
+                Scope::Pod(_) => below(j),
+            };
+            let want = reached && !(restore && self.model.covered(j));
+            match sent {
+                Some(c) if want => {
+                    let addressed = match scope {
+                        Scope::Pod(_) => c.scope == format!("pod:{id}"),
+                        _ => c.scope == cmd.scope,
+                    };
+                    if !addressed || c.active == restore || c.operator_id != operator {
+                        return Err(format!("pod {j} is sent {c:?}"));
+                    }
+                    if target.is_some_and(|t| t != j) && !restore {
+                        self.stats.locked_below += 1;
+                    }
+                }
+                None if !want => {}
+                sent => {
+                    return Err(format!(
+                        "pod {j} is sent {sent:?}; the model says it is {}sent this lockdown",
+                        if want { "" } else { "not " }
+                    ));
+                }
+            }
+            let later = crate::lockdown::in_force(&self.node.st, Some(id)).await;
+            if later.as_ref().is_some_and(|c| !c.active) || later.is_some() != self.model.covered(j)
+            {
+                return Err(format!(
+                    "a watcher pod {j} connects now is told {later:?}; the model says it is {}under lockdown",
+                    if self.model.covered(j) { "" } else { "not " }
+                ));
+            }
+        }
         for &j in &affected {
             let id = self.model.pods[j].id;
-            if !crate::lockdown::reaches(&cmd.scope, Some(id)) {
-                return Err(format!("the broadcast does not reach its target {id}"));
-            }
             let log = self
                 .node
                 .st
@@ -1702,7 +1811,10 @@ fn explore(rules: Rules) -> Stats {
 fn random_delegation_chains_agree_with_the_model() {
     let stats = explore(Rules::AS_SHIPPED);
     eprintln!("chain walk reached: {stats:?}");
-    assert!(stats.depth >= 4, "{stats:?}");
+    // Three, not deeper: a chain stops growing the moment any pod above its
+    // newest stops, which a random walk does often. The depth bound itself is
+    // `a_chain_is_refused_one_hop_past_the_depth_bound`'s.
+    assert!(stats.depth >= 3, "{stats:?}");
     for (what, n) in [
         ("admitted", stats.admitted),
         ("external admissions", stats.external_admitted),
@@ -1716,6 +1828,9 @@ fn random_delegation_chains_agree_with_the_model() {
         ("repeated cancels", stats.repeat_cancels),
         ("attributed claims", stats.attributed_claims),
         ("refused lockdowns", stats.lockdowns_refused),
+        ("refusals under lockdown", stats.refused_locked),
+        ("refusals below a stopped pod", stats.refused_stopped),
+        ("lockdowns reaching below their target", stats.locked_below),
     ] {
         assert!(n > 0, "the walk never reached {what}: {stats:?}");
     }
@@ -1788,6 +1903,30 @@ const CORPUS: &[(&str, u8, &[Op])] = &[
     ]),
     ("#3105: a failed spawn hands its reservation back", 1, &[
         Op::Create { who: Who::Orch(0), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::SpawnFails, header: None },
+    ]),
+    ("a pod's lockdown reaches the pods below it", 0, &[
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Lockdown { who: Who::Operator, scope: Scope::Pod(Target::Pod(PodRef::Nth(0))), claim: Claim::Empty, restore: false },
+    ]),
+    ("a pod below a locked pod creates nothing", 0, &[
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Lockdown { who: Who::Orch(0), scope: Scope::Pod(Target::Pod(PodRef::Nth(0))), claim: Claim::Empty, restore: false },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Http, token: true, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+    ]),
+    ("lifting a pod's lockdown leaves the one above it in force", 0, &[
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Lockdown { who: Who::Operator, scope: Scope::Pod(Target::Pod(PodRef::Nth(0))), claim: Claim::Empty, restore: false },
+        Op::Lockdown { who: Who::Operator, scope: Scope::Pod(Target::Pod(PodRef::Newest)), claim: Claim::Empty, restore: false },
+        Op::Lockdown { who: Who::Operator, scope: Scope::Pod(Target::Pod(PodRef::Newest)), claim: Claim::Empty, restore: true },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+    ]),
+    ("a watcher that connects under a lockdown is told it", 0, &[
+        Op::Lockdown { who: Who::Operator, scope: Scope::All, claim: Claim::Empty, restore: false },
+    ]),
+    ("a pod below a stopped pod creates nothing", 0, &[
+        Op::Cancel { who: Who::Operator, via: Via::Grpc, token: false, target: Target::Pod(PodRef::Newest) },
+        Op::Create { who: Who::Operator, via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::Runs, header: Some(PodRef::Newest) },
+        Op::Create { who: Who::Pod(PodRef::Nth(1)), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
     ]),
 ];
 
