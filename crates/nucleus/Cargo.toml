@@ -45,7 +45,7 @@ hex = { workspace = true }
 uuid = { workspace = true }
 
 # Monotonic time (not wall clock)
-quanta = "0.12"
+quanta = "0.13"
 
 # Secure path handling
 cap-std = "4"          # Capability-based filesystem

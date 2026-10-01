@@ -176,7 +176,7 @@ serde_yaml = "0.9"
 toml = "1.1"
 
 # Content provenance (EU AI Act)
-c2pa = { version = "0.90", default-features = false, features = ["rust_native_crypto"] }
+c2pa = { version = "0.91", default-features = false, features = ["rust_native_crypto"] }
 
 # Error handling
 thiserror = "2.0"
@@ -205,10 +205,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # OpenTelemetry (opt-in via feature flags)
 # opentelemetry 0.32 pairs with tracing-opentelemetry 0.33 (the 0.33 line is
 # the one built against opentelemetry ^0.32); bump the pair together.
-opentelemetry = "0.32"
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "http-proto", "trace"] }
-tracing-opentelemetry = "0.33"
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic", "http-proto", "trace"] }
+tracing-opentelemetry = "0.34"
 
 # Crypto/signing
 sha2 = "0.11"
