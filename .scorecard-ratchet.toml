@@ -74,9 +74,13 @@
 # kernel/declassify_authority.rs names DeclassificationToken bare, so four
 # existing bound sites become visible to the scan. 176/177, CaClient unchanged.
 # 2026-09-29, merging main into the declassification branch: both moves on one tree. 184/185.
-floor_bp = 9945
+# 2026-10-01: the execute-on-consume guard splits the executor's synchronous
+# spawn into `spawn_checked` (the guard) and `spawn_unguarded` (the effect), and
+# the effect half takes the `Authority` by name and spends it -- one more bound
+# site, on main's 184/185. 185/186 = 99.46%, and the floor follows it up.
+floor_bp = 9946
 floor_set = "measurement"
-population_floor = 185
+population_floor = 186
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
