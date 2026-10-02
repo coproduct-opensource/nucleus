@@ -219,9 +219,12 @@ population_floor = 278
 # probe, the scratch-image read-back, workspace seed/harvest) declares all seven
 # in lib.rs and main.rs from its first commit; 31/89, 34.83%. Declaring it moved
 # one site: the CAP_NET_ADMIN mask `1u64 << bit` became `checked_shl`.
+# 2026-10-02 (#3119, rebased): the population pin had not followed the three
+# crates above -- the tree measures 31/89 on main and here, while the pin still
+# said 86. Re-pinned to the measurement; the ratio is unchanged.
 floor_bp = 3483
 floor_set = "measurement"
-population_floor = 86
+population_floor = 89
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -469,9 +472,21 @@ population_floor = 23
 # crates/nucleus-node/src/oidc.rs, is deleted in favour of a configured [[caller]]
 # binding, and its four production #[allow(dead_code)]s go with it -- by deletion,
 # not discharge. 19 of 138 = 13.76%; both pins follow the tree.
-floor_bp = 1376
+#
+# 2026-10-02 (#3119, rebased onto the above): RE-MEASURED, because the census
+# was wrong. `suppressions()` searched for the next `[allow(` and fell back to
+# `[expect(` only when none was left, so any `#[expect]` ahead of an `#[allow]` in
+# the same file was skipped. Fixed to take the earlier of the two (test
+# `an_expect_before_an_allow_is_not_skipped`, red on the old scanner). Main
+# (574687d76) measured with the corrected scanner is 21 of 140, not the 19 of 138
+# pinned above. #3119 then moves `nucleus-tool-proxy`'s hardening hook into
+# `nucleus::ChildConfinement`, deleting one undischarged `#[allow(unsafe_code)]`
+# -- the allow that had been hiding `workload.rs`'s expect. Nothing was
+# discharged: 21 of 139 = 15.10%, and the ratio rises because the denominator
+# shrank. Both pins follow the measurement so it does not read as progress.
+floor_bp = 1510
 floor_set = "measurement"
-population_floor = 138
+population_floor = 139
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

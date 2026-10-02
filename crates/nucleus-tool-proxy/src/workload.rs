@@ -144,7 +144,7 @@ pub(crate) fn workload_home(work_dir: &std::path::Path) -> std::path::PathBuf {
 /// per-pod secret in its environment, so the workload MUST run as a distinct
 /// uid or it could read that environment via `/proc/<pid>/environ`. A pod may
 /// override with `workload.uid`, but never to the runtime's own uid.
-pub(crate) const DEFAULT_WORKLOAD_UID: u32 = 65534;
+pub(crate) const DEFAULT_WORKLOAD_UID: u32 = nucleus::DEFAULT_CHILD_UID;
 
 ///
 /// # No proxy credential crosses
@@ -258,11 +258,17 @@ impl AdmittedWorkloadPlan {
     /// The one decider of the child's uid, shared by `spawn_admitted` and the
     /// door (ADR 0007 G-1).
     pub(crate) fn runs_as(&self) -> RunsAs {
-        let own = nix_getuid();
-        match self.uid {
-            Some(uid) if own == 0 => RunsAs::Dropped(uid),
-            _ => RunsAs::Inherited(own),
+        match self.confinement().drop_uid() {
+            Some(uid) => RunsAs::Dropped(uid),
+            None => RunsAs::Inherited(nix_getuid()),
         }
+    }
+
+    /// How `spawn_admitted` confines this workload: the same
+    /// `nucleus::ChildConfinement` rule a MicroVM `/v1/run` child gets, so the
+    /// door's uid and the spawned child's uid come from one decision.
+    pub(crate) fn confinement(&self) -> nucleus::ChildConfinement {
+        nucleus::ChildConfinement::workload(self.uid.unwrap_or(DEFAULT_WORKLOAD_UID))
     }
 
     /// The uid the workload door admits for this launch.
@@ -494,27 +500,23 @@ pub(crate) fn spawn_admitted(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    // The privilege boundary is DECLARED on the Command, because std applies it
-    // in the right window: `do_exec` runs setgid, the supplementary-group drop
-    // (setgroups(0, NULL) — automatic when a uid is set, the parent is root,
-    // and no explicit groups were given), and setuid BEFORE the `pre_exec`
-    // closures (std/src/sys/process/unix/unix.rs). `gid` is set alongside `uid`
-    // so the child does not keep the runtime's primary gid (root's 0 in the
-    // guest) after its uid dropped. The run-5 boot proved the ordering the hard
-    // way: a hook that tried setgroups itself ran as the ALREADY-dropped uid
-    // and got EPERM.
-    // The privilege drop and the scratch-dir chown are only possible as root,
-    // which the guest runtime is. Under a non-root test harness neither syscall
-    // would succeed, so both are skipped there; the admit-time uid logic (which
-    // guarantees `plan.uid` is a distinct unprivileged uid, never the runtime's)
-    // is unit-tested directly. In the guest the workload therefore always runs
-    // as that distinct uid and cannot read the runtime's secret-bearing environ
-    // via `/proc/<pid>/environ`.
-    let drop_uid = match plan.runs_as() {
-        RunsAs::Dropped(uid) => Some(uid),
-        RunsAs::Inherited(_) => None,
-    };
-    let hardened = drop_uid.is_some();
+    // The privilege boundary: the SAME `nucleus::ChildConfinement` the
+    // Executor gives every `/v1/run` child under MicroVM (ADR 0007 G-1 — one
+    // decider, one mechanism; the copy that lived here is gone). It declares
+    // the uid/gid drop on the Command, where std applies it before `chdir` and
+    // before any `pre_exec` closure, and installs the async-signal-safe hook
+    // that marks every inherited fd above 2 close-on-exec (the runc
+    // CVE-2024-21626 lesson) and, once dropped, sets no_new_privs and rlimits.
+    //
+    // Only root can drop, which the guest runtime is. Under a non-root test
+    // harness the confinement cannot drop and says so (`drop_uid() == None`);
+    // the admit-time uid logic (which guarantees `plan.uid` is a distinct
+    // unprivileged uid, never the runtime's) is unit-tested directly. In the
+    // guest the workload therefore always runs as that distinct uid and cannot
+    // read the runtime's secret-bearing environ via `/proc/<pid>/environ`.
+    let confinement = plan.confinement();
+    let drop_uid = confinement.drop_uid();
+    let hardened = confinement.restricts();
     // The default HOME, made before the chown below so the same best-effort
     // treatment covers both. Only when the admitted env still points at it: a
     // spec that chose its own HOME chose its own directory too.
@@ -527,42 +529,30 @@ pub(crate) fn spawn_admitted(
             "could not create the workload's HOME (expected when the scratch is read-only)"
         );
     }
-    if let Some(uid) = drop_uid {
-        if default_home && let Err(e) = std::os::unix::fs::chown(&home, Some(uid), Some(uid)) {
-            tracing::warn!(
-                home = %home.display(),
-                uid,
-                error = %e,
-                "could not chown the workload's HOME to its uid"
-            );
-        }
-        // Best-effort: hand the workload ownership of its work dir so the
-        // unprivileged child can write its scratch. This is an ERGONOMIC aid,
-        // not the security control — the uid drop below is. It legitimately
-        // fails when the work dir is read-only (a pod with no writable scratch
-        // drive, where `/work` is on the read-only rootfs), and in that case the
-        // workload cannot write it regardless, so the failure is not fatal: log
-        // it and proceed. The privilege drop still happens unconditionally.
-        if let Err(e) = std::os::unix::fs::chown(&plan.work_dir, Some(uid), Some(uid)) {
-            tracing::warn!(
-                work_dir = %plan.work_dir.display(),
-                uid,
-                error = %e,
-                "could not chown the workload work dir to its uid; the workload will run \
-                 without ownership of it (expected when the scratch is read-only)"
-            );
-        }
-        cmd.uid(uid);
-        cmd.gid(uid);
+    if default_home && let Err(e) = confinement.hand_over(&home) {
+        tracing::warn!(
+            home = %home.display(),
+            uid = ?drop_uid,
+            error = %e,
+            "could not chown the workload's HOME to its uid"
+        );
     }
-    // The async-signal-safe hardening hook, ALWAYS installed. It marks every
-    // inherited fd above 0/1/2 close-on-exec (`close_range(..CLOEXEC)`) so
-    // "only the child's own stdio crosses the exec" is true BY CONSTRUCTION,
-    // not by trusting that every fd the parent holds happens to be CLOEXEC —
-    // the runc CVE-2024-21626 lesson. When a uid is set it additionally applies
-    // no_new_privs and rlimits — the self-restrictions an unprivileged process
-    // may still make. Runs AFTER std's stdio dup2 and privilege drop.
-    harden::apply(&mut cmd, drop_uid);
+    // Best-effort: hand the workload ownership of its work dir so the
+    // unprivileged child can write its scratch. This is an ERGONOMIC aid, not
+    // the security control — the uid drop is. It legitimately fails when the
+    // work dir is read-only (a pod with no writable scratch drive, where
+    // `/work` is on the read-only rootfs), and in that case the workload cannot
+    // write it regardless, so the failure is not fatal: log it and proceed.
+    if let Err(e) = confinement.hand_over(&plan.work_dir) {
+        tracing::warn!(
+            work_dir = %plan.work_dir.display(),
+            uid = ?drop_uid,
+            error = %e,
+            "could not chown the workload work dir to its uid; the workload will run \
+             without ownership of it (expected when the scratch is read-only)"
+        );
+    }
+    confinement.apply(cmd.as_std_mut());
 
     tracing::info!(
         command = %plan.command,
@@ -572,152 +562,6 @@ pub(crate) fn spawn_admitted(
     let child = cmd.spawn()?;
     let receipt = LaunchReceipt::from_admitted(&plan, hardened, child.id());
     Ok((child, receipt))
-}
-
-/// The async-signal-safe child-side hardening hook. Local to the tool-proxy
-/// because `nucleus::HostSandbox` is `pub(crate)` to its own crate and does not
-/// bound descriptors or rlimits this way. Mirrors that module's
-/// audited-exception pattern: two `unsafe` blocks (the syscall sequence and the
-/// `pre_exec` install), every call is async-signal-safe, and any `Err` fails
-/// the spawn (fail-closed — the child never execs).
-///
-/// The privileged drops (setgid, setgroups, setuid) are NOT here: std's
-/// `do_exec` performs them from `.uid()`/`.gid()` BEFORE the `pre_exec`
-/// closures run, so this hook already executes as the dropped uid and may only
-/// do what an unprivileged process can do to itself.
-#[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
-mod harden {
-    use std::io;
-
-    const RLIMIT_NPROC_MAX: libc::rlim_t = 512;
-    const RLIMIT_NOFILE_MAX: libc::rlim_t = 4096;
-    const RLIMIT_FSIZE_MAX: libc::rlim_t = 8 * 1024 * 1024 * 1024; // 8 GiB
-    const RLIMIT_CPU_SECS: libc::rlim_t = 3600;
-
-    #[cfg(target_env = "gnu")]
-    type RlimitResource = libc::__rlimit_resource_t;
-    #[cfg(not(target_env = "gnu"))]
-    type RlimitResource = libc::c_int;
-
-    fn rlimit(limit: libc::rlim_t) -> libc::rlimit {
-        libc::rlimit {
-            rlim_cur: limit,
-            rlim_max: limit,
-        }
-    }
-
-    /// `CLOSE_RANGE_CLOEXEC` from uapi `linux/close_range.h` (kernel ≥ 5.11):
-    /// mark the range close-on-exec instead of closing it now. Local constant
-    /// because the `libc` crate's binding availability varies by target.
-    const CLOSE_RANGE_CLOEXEC: libc::c_long = 1 << 2;
-
-    /// Runs after fork, before exec. MUST be async-signal-safe: raw syscalls
-    /// only, no allocation, no locks.
-    ///
-    /// Always condemns inherited fds above 2 (close-on-exec at the exec
-    /// boundary); applies the unprivileged self-restrictions (no_new_privs,
-    /// rlimits) when a uid is requested. One `unsafe` block for the whole
-    /// sequence, deliberately: every call in it is a well-known
-    /// async-signal-safe FFI syscall, and consolidating them keeps the crate's
-    /// unsafe surface minimal (the exemplar `unsafe_blocks` ratchet).
-    fn harden_child(uid: Option<u32>) -> io::Result<()> {
-        // SAFETY: every call below is an async-signal-safe libc syscall taking
-        // scalars or a pointer to a fully-initialized local `rlimit`; none
-        // allocates or takes a lock, satisfying the `pre_exec` contract. A
-        // `!= 0` return is an error and fails the spawn (fail-closed).
-        unsafe {
-            // Mark every fd from 3 up close-on-exec rather than closing it
-            // HERE. This hook runs between fork and exec, a window in which
-            // std still owns an internal CLOEXEC status pipe the child uses to
-            // report a failed later step (or a failed exec) back to the
-            // parent. Closing fds now severed that pipe, and when a later step
-            // failed the child could only abort — the run-5 boot's
-            // `fatal runtime error: assertion failed:
-            // output.write(&bytes).is_ok()` (std unix.rs, the CLOEXEC-pipe
-            // write) — an unreportable crash in place of a spawn error.
-            // CLOSE_RANGE_CLOEXEC yields the identical post-exec closure —
-            // nothing above 2 survives the exec — while leaving the pipe
-            // usable before it (it is already CLOEXEC; re-flagging is a
-            // no-op).
-            //
-            // Invoked as the raw `close_range` syscall, not
-            // `libc::close_range`, because the latter is a glibc-only wrapper
-            // in the `libc` crate and the guest rootfs is musl. ENOSYS
-            // (pre-5.9, no syscall) is tolerated — std marks everything it
-            // creates CLOEXEC, the fallback there. EINVAL (5.9–5.10: syscall
-            // exists, flag does not) falls back to closing outright, accepting
-            // the unreportable-failure trap on those kernels only; the pinned
-            // guest kernel is newer. Any other error fails the spawn.
-            if libc::syscall(
-                libc::SYS_close_range,
-                3 as libc::c_long,
-                libc::c_uint::MAX as libc::c_long,
-                CLOSE_RANGE_CLOEXEC,
-            ) != 0
-            {
-                let err = io::Error::last_os_error();
-                match err.raw_os_error() {
-                    Some(libc::ENOSYS) => {}
-                    Some(libc::EINVAL) => {
-                        if libc::syscall(
-                            libc::SYS_close_range,
-                            3 as libc::c_long,
-                            libc::c_uint::MAX as libc::c_long,
-                            0 as libc::c_long,
-                        ) != 0
-                        {
-                            let err = io::Error::last_os_error();
-                            if err.raw_os_error() != Some(libc::ENOSYS) {
-                                return Err(err);
-                            }
-                        }
-                    }
-                    _ => return Err(err),
-                }
-            }
-            if uid.is_some() {
-                // The child ALREADY runs as the dropped uid/gid here — std's
-                // `do_exec` applied setgid, the supplementary-group drop, and
-                // setuid before any `pre_exec` closure (see the declarations
-                // on the Command in `spawn_admitted`). Attempting
-                // setgroups/setgid at this point fails with EPERM, which is
-                // exactly how the run-5 boot failed. What remains is what an
-                // unprivileged process may do to itself:
-                // No new privileges: defeats setuid/file-capability escalation.
-                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                for (resource, max) in [
-                    (libc::RLIMIT_NPROC, RLIMIT_NPROC_MAX),
-                    (libc::RLIMIT_NOFILE, RLIMIT_NOFILE_MAX),
-                    (libc::RLIMIT_FSIZE, RLIMIT_FSIZE_MAX),
-                    (libc::RLIMIT_CPU, RLIMIT_CPU_SECS),
-                ] {
-                    let rl = rlimit(max);
-                    if libc::setrlimit(resource as RlimitResource, &rl) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn apply(cmd: &mut tokio::process::Command, uid: Option<u32>) {
-        // SAFETY: `harden_child` only invokes async-signal-safe syscalls and
-        // does not allocate.
-        unsafe {
-            cmd.pre_exec(move || harden_child(uid));
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-mod harden {
-    pub(super) fn apply(_cmd: &mut tokio::process::Command, _uid: Option<u32>) {
-        // No procfs / no CommandExt uid semantics off Linux; the guest is Linux.
-    }
 }
 
 /// Refuse a pod that withholds a credential from a workload that could read it.
@@ -767,13 +611,9 @@ pub(crate) fn reject_credential_readable_workload(
 /// new dependency — a credential-adjacent control is a poor place to widen the
 /// dependency surface, and the LiteLLM compromise is the reminder why.
 pub(crate) fn nix_getuid() -> u32 {
-    std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap_or_else(|_| {
-        // Not Linux, or no procfs. Fall back to a value that cannot equal a
-        // configured uid, so the check errs toward ACCEPTING an explicit
-        // distinct uid rather than refusing every pod on a platform where it
-        // cannot verify. The Linux guest is where this matters.
-        std::fs::metadata(".").expect("cwd always stat-able")
-    }))
+    // One reader of "who is the runtime", shared with the confinement that
+    // decides whether a child can be dropped (ADR 0007 G-1).
+    nucleus::runtime_uid()
 }
 
 /// A tamper-evident record of exactly what authority a workload launch handed

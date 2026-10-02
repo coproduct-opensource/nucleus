@@ -109,10 +109,18 @@ pub enum Suppression {
 ///
 /// Inner (`#![allow]`) and outer (`#[allow]`) both count: a crate-level allow is
 /// the broadest waiver there is.
+///
+/// The next site is the EARLIER of the two forms. `find(allow).or_else(find(expect))`
+/// jumps to the next allow and skips every expect in front of it, so a file's
+/// expects were invisible whenever an allow followed them.
 pub fn suppressions(region: &str) -> Vec<Suppression> {
     let mut out = Vec::new();
     let mut rest = region;
-    while let Some(i) = rest.find("[allow(").or_else(|| rest.find("[expect(")) {
+    while let Some(i) = [rest.find("[allow("), rest.find("[expect(")]
+        .into_iter()
+        .flatten()
+        .min()
+    {
         let is_allow = rest[i..].starts_with("[allow(");
         // Must be an attribute: `#[` or `#![` immediately before.
         let before = &rest[..i];
@@ -215,6 +223,24 @@ mod tests {
         assert_eq!(
             suppressions(src),
             vec![Suppression::Allow, Suppression::Expect]
+        );
+    }
+
+    /// An `#[expect]` BEFORE an `#[allow]` in the same region must still count.
+    ///
+    /// The scanner once searched for the next `[allow(` and only fell back to
+    /// `[expect(` when no allow remained, so it jumped straight to the allow
+    /// and every expect ahead of it was never seen. `nucleus-tool-proxy`'s
+    /// `workload.rs` had one at line 382 hidden by an `#[allow(unsafe_code)]`
+    /// at 502; deleting the allow (#3119) made it appear, and the census read a
+    /// waiver that had always been there as a new discharge.
+    #[test]
+    fn an_expect_before_an_allow_is_not_skipped() {
+        let src =
+            "#[expect(dead_code, reason = \"why\")]\nfn f() {}\n#[allow(unused)]\nfn g() {}\n";
+        assert_eq!(
+            suppressions(src),
+            vec![Suppression::Expect, Suppression::Allow]
         );
     }
 
