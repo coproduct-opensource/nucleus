@@ -146,7 +146,7 @@ sleep 14   # A boots (~7s to probe) and the probe polls until C/B settle.
 ALOG="$(sudo find "$STATE_DIR" "$JAIL_DIR" -path "*$A*" -name firecracker.log 2>/dev/null | head -1)"
 [ -n "$ALOG" ] || die "no firecracker.log for A ($A)"
 # `tr -d` strips the guest console's trailing CR so the id set compares cleanly.
-IDS="$(sudo grep -aoE 'NUCLEUS_PODLIST_PROBE: PASS self=[^ ]+ ids=[^ ]+' "$ALOG" 2>/dev/null | tail -1 | sed -E 's/.*ids=//' | tr -d '[:space:]')"
+IDS="$(sudo grep -aoE 'NUCLEUS_PODLIST_PROBE: PASS ids=[^ ]+' "$ALOG" 2>/dev/null | tail -1 | sed -E 's/.*ids=//' | tr -d '[:space:]')"
 OP="$(operator_ids)"
 
 echo "  A(orch) =$A"

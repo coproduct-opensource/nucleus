@@ -20,21 +20,28 @@ property (it holds the ids of A, its child C, and sibling B):
 A ∈ scoped  ∧  C ∈ scoped  ∧  B ∉ scoped  ∧  {A,B,C} ⊆ operator  ∧  scoped ⊊ operator
 ```
 
+Self-present (`A ∈ scoped`) is checked by the host, against the id the operator
+was given at create time. The probe does not know its own id and does not ask:
+on Firecracker the only source is `FETCH_POD_CALLER_TOKEN`, which is served
+once, to `nucleus-guest-init`, before any workload exists (#2724, #3113), and a
+workload asking for it is refused. `POD_LIST` needs no token; the vsock socket
+is the authority. The probe can send nothing else.
+
 Self-present is **necessary but not the scoping signal** — a fail-open guest also
 sees itself. `C ∈ scoped` is the discriminating tooth that proves the live filter
 is *lineage-scoped*, not *self-only*; `B ∉ scoped` is the isolation; the operator
 control proves B/C genuinely booted. The probe's local PASS means only "the
-listing is real and self-scoped, now go check exclusion."
+listing is real, now go check it."
 
 ## Verdict
 
 A sentinel on **both** stdout and stderr, plus the exit code (the tool-proxy
 drains stderr into the guest console, where the harness greps it back):
 
-- `NUCLEUS_PODLIST_PROBE: PASS self=<id> ids=<comma,list>` — real, self-scoped
-  listing; `ids=` is the host's to check.
+- `NUCLEUS_PODLIST_PROBE: PASS ids=<comma,list>` — a real, non-empty listing;
+  `ids=` is the host's to check.
 - `NUCLEUS_PODLIST_PROBE: FAIL: <reason>` (exit 1) — missing/empty/malformed
-  reply, a refusal object, or self absent (an unscoped/failed query).
+  reply or a refusal object.
 
 ## CI lane
 
