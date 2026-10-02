@@ -517,7 +517,7 @@ async fn snapshot_running_pod(
 ///
 /// The route the SDKs have been calling all along. `Operation::GetReceipt` has existed in the
 /// authorization enum since receipts did, and the gRPC surface has served them — but over HTTP
-/// this was a 404, so `sdk/python/nucleus_sdk/client.py`'s `get_receipt` could never have worked.
+/// this was a 404, so `sdks/python/nucleus_sdk/client.py`'s `get_receipt` could never have worked.
 ///
 /// Read-only, unlike its gRPC twin, which also fires an outward report to the trust API. That
 /// asymmetry is deliberate and `pod_receipt`'s module docs carry the argument: a GET should not

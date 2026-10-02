@@ -86,7 +86,7 @@ pub const RATCHET: &str = ".scorecard-ratchet.toml";
 /// The badge cannot go stale, because the change that moves a number does not
 /// pass without moving the badge with it — the repo's own ratchet idiom applied
 /// to its own shield.
-pub const BADGE: &str = "badges/scorecard.json";
+pub const BADGE: &str = "ci/badges/scorecard.json";
 
 /// What one family found in the tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1173,7 +1173,7 @@ mod tests {
         let badge = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../",
-            "badges/scorecard.json"
+            "ci/badges/scorecard.json"
         ))
         .expect("the committed badge is readable");
         assert!(

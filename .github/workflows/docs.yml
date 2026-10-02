@@ -6,9 +6,6 @@ on:
     branches: [main]
     paths:
       - "docs/**"
-      - "slides/**"
-      - "blog/**"
-      - "book.toml"
       - "sdks/verifier-js/**"
       - "crates/nucleus-envelope/**"
       - "crates/ctf-engine/**"
@@ -41,18 +38,18 @@ jobs:
       - name: Install mdBook
         run: cargo install mdbook --locked
       - name: Build docs
-        run: mdbook build
+        run: mdbook build docs
       - name: Build slides
         run: |
           mkdir -p book/slides
           npx --yes @marp-team/marp-cli@latest \
-            -I slides \
+            -I docs/slides \
             --html \
             -o book/slides
       - name: Copy blog posts
         run: |
           mkdir -p book/blog
-          cp blog/*.md book/blog/
+          cp docs/blog/*.md book/blog/
       # --- In-browser verifier demo, published at /verify/ ---
       # Real fixtures (generated + self-verified by the example) + the Rust
       # verifier compiled to WASM. No fake data; reproducible from source.

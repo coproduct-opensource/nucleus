@@ -1,6 +1,6 @@
 # Production Delta
 
-What must be true before Nucleus can be called enterprise-ready. This page consolidates gaps from [SECURITY_TODO.md](../SECURITY_TODO.md), [FORMAL_METHODS.md](../FORMAL_METHODS.md), and [Verified Claims](verified-claims.md) into one checklist.
+What must be true before Nucleus can be called enterprise-ready. This page consolidates gaps from [SECURITY_TODO.md](SECURITY_TODO.md), [FORMAL_METHODS.md](FORMAL_METHODS.md), and [Verified Claims](verified-claims.md) into one checklist.
 
 ## Hardening
 
