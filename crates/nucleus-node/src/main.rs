@@ -72,6 +72,7 @@ mod cred_split;
 mod driver;
 #[cfg(test)]
 mod effect_footprint;
+mod egress_meter;
 mod envelope_frame;
 mod federated_credential;
 mod federation_ingress;
@@ -941,7 +942,7 @@ async fn create_pod_internal(
     driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
     admission.stamp_ci_principal(&state.authz_policy, &mut spec)?;
 
-    let pod_dir = state.state_dir.join("pods").join(id.to_string());
+    let pod_dir = lifecycle::pod_dir(&state.state_dir, id);
     tokio::fs::create_dir_all(&pod_dir).await?;
 
     // ── Posture Gate: proof-carrying admission (fail-closed) ──────────
@@ -2468,14 +2469,7 @@ async fn spawn_firecracker_pod(
         let mut netns_pid: Option<u32> = None;
 
         if state.firecracker_netns {
-            let default_policy = NetworkSpec {
-                allow: Vec::new(),
-                deny: Vec::new(),
-                dns_allow: Vec::new(),
-                url_allow: Vec::new(),
-                mime_allow: None,
-                max_response_bytes: None,
-            };
+            let default_policy = NetworkSpec::nothing_listed();
             let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
             let pid = match pid {
                 Some(pid) => pid,
