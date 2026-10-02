@@ -28,6 +28,8 @@ nucleus-proto = { path = "../nucleus-proto" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-bundle-cas = { path = "../nucleus-bundle-cas" }
+# `nucleus image`: the one flattener every image source goes through.
+nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
 
 # Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
 # pre-1.0; see nucleus-bundle-cas for version pins + rationale.
@@ -102,6 +104,9 @@ ed25519-dalek = { workspace = true }
 serde_json = { workspace = true }
 rcgen = "0.14"
 x509-parser = { workspace = true }
+# `nucleus image` tests: an in-process fake registry, and layers built in-test.
+axum = { workspace = true }
+tar = { version = "0.4", default-features = false }
 
 [lints]
 workspace = true

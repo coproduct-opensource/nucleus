@@ -6644,6 +6644,7 @@ name = "nucleus-cli"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64 0.23.1",
  "chrono",
  "clap",
@@ -6659,6 +6660,7 @@ dependencies = [
  "nucleus-identity",
  "nucleus-lineage",
  "nucleus-node-binding",
+ "nucleus-oci-rootfs",
  "nucleus-proto",
  "nucleus-provenance-memory",
  "nucleus-spec",
@@ -6676,6 +6678,7 @@ dependencies = [
  "serde_yaml",
  "sha2 0.11.0",
  "shellexpand",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

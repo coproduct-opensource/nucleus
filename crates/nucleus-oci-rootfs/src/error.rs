@@ -81,6 +81,17 @@ pub enum ImportError {
         /// The absent blob.
         digest: Sha256Digest,
     },
+    /// A [`crate::BlobSource`] outside this crate (a registry client) could not
+    /// produce a file. Its own typed error is kept whole as the source, so a
+    /// caller can downcast to it instead of reading a folded string (A-3).
+    #[error("{what}: {source}")]
+    Source {
+        /// What was being fetched.
+        what: String,
+        /// The source's own error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
     /// A member of an oci-archive that is not a regular file was asked for.
     #[error("archive member `{name}` is not a regular file")]
     ArchiveMemberNotRegular {

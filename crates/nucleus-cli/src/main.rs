@@ -32,6 +32,7 @@ mod goal;
 mod grant;
 mod guard;
 mod identity;
+mod image;
 mod keychain;
 mod lima_boot;
 mod lineage;
@@ -158,6 +159,9 @@ enum Commands {
     /// Content-addressed bundle transfer over iroh-blobs (publish/fetch)
     Bundle(bundle::BundleArgs),
 
+    /// Import an OCI image, pinned by digest, as a verified rootfs (import/resolve)
+    Image(image::ImageArgs),
+
     /// Verify an attested SVID against expected measurements (relying party, C9)
     VerifyAttestation(verify_attestation::VerifyAttestationArgs),
 
@@ -224,6 +228,7 @@ async fn main() -> Result<()> {
         Commands::Envelope(args) => envelope::execute(args),
         Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
         Commands::Bundle(args) => bundle::execute(args).await,
+        Commands::Image(args) => image::execute(args),
         Commands::VerifyAttestation(args) => verify_attestation::execute(args),
         // The hook's whole contract is its exit status; nothing else may
         // reach stdout/stderr after the decision is printed.
