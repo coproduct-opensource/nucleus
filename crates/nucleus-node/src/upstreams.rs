@@ -151,7 +151,7 @@ struct EntryFile {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum CredentialFile {
     Env { var: String },
-    Federated(FederatedFile),
+    Federated(Box<FederatedFile>),
 }
 
 #[derive(Deserialize)]
@@ -324,7 +324,7 @@ impl UpstreamRegistry {
                     (CredentialSource::Env { var: var.clone() }, var)
                 }
                 CredentialFile::Federated(fed) => (
-                    CredentialSource::Federated(Arc::new(federated(&up.name, fed)?)),
+                    CredentialSource::Federated(Arc::new(federated(&up.name, *fed)?)),
                     String::new(),
                 ),
             };
