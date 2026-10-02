@@ -29,3 +29,5 @@ nucleus-spec = { path = "../nucleus-spec" }
 # netdev). Linux-only: AF_NETLINK does not exist elsewhere. The messages are
 # encoded in net.rs; see its module docs for why not netlink-packet-route.
 netlink-sys = { version = "0.9", default-features = false }
+# `IPT_SO_{GET_INFO,SET_REPLACE}` for the in-guest egress fence (`fence.rs`).
+libc = "0.2"
