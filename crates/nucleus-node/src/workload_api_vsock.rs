@@ -1429,6 +1429,99 @@ mod tests {
         );
     }
 
+    /// #2724: every per-pod value guest-init fetches before the workload exists
+    /// crosses the socket ONCE. The first connection plays guest-init; the
+    /// second plays the uid-65534 workload that read the port off
+    /// `/proc/cmdline` — on a FRESH connection, because vsock cannot say who
+    /// is asking. The second must get a NAMED refusal carrying none of the
+    /// value's bytes. On a node that serves these on demand, the second reply
+    /// is the value again and this test is what goes red.
+    #[tokio::test]
+    async fn every_per_pod_value_is_served_once_across_connections() {
+        const TOKEN: &str = "once-task-token-8c1e";
+        const CERT: &str = "b25jZS1jZXJ0LTRmMDI=";
+        const CALLER: &str = "once-caller-token-d93a";
+        const DLC: &str = "op=once-dlc-credential-77b0";
+        let temp_dir = tempdir().unwrap();
+        let vsock_uds_path = temp_dir.path().join("vsock.sock");
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let material = PodMaterial {
+            task_token: Some(crate::session_mint::MintedTaskToken {
+                token_json: TOKEN.to_string(),
+                nonce_hex: "00".repeat(16),
+                issuer_hex: "11".repeat(32),
+            }),
+            pod_certificate: Some(crate::pod_authority::BootCertificate {
+                token_b64: CERT.to_string(),
+                root_pubkey_hex: "22".repeat(32),
+            }),
+            caller_token: Some(CALLER.to_string()),
+            dlc_admission: Some(DlcAdmissionMaterial {
+                trusted_keys: "33".repeat(32),
+                issuer: "44".repeat(32),
+                credentials: DLC.to_string(),
+            }),
+            ..PodMaterial::default()
+        };
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            15012,
+            uuid::Uuid::new_v4(),
+            manager,
+            material,
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        async fn ask(socket: &std::path::Path, command: &str) -> String {
+            let stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = tokio::io::BufReader::new(reader);
+            writer.write_all(command.as_bytes()).await.unwrap();
+            writer.flush().await.unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            line
+        }
+
+        let cases = [
+            ("FETCH_TASK_TOKEN\n", TOKEN, "task token already served"),
+            (
+                "FETCH_POD_CERTIFICATE\n",
+                CERT,
+                "pod certificate already served",
+            ),
+            ("FETCH_POD_CALLER_TOKEN\n", CALLER, "caller token already served"),
+            ("FETCH_DLC_ADMISSION\n", DLC, "dlc admission already served"),
+        ];
+        let mut replies = Vec::new();
+        for (command, _, _) in cases {
+            let init = ask(bridge.socket_path(), command).await;
+            let workload = ask(bridge.socket_path(), command).await;
+            replies.push((init, workload));
+        }
+        bridge.shutdown().await;
+
+        for ((command, value, refusal), (init, workload)) in cases.iter().zip(&replies) {
+            assert!(
+                init.contains(value),
+                "{command:?}: guest-init, asking first, must be served: {init}"
+            );
+            let second: serde_json::Value = serde_json::from_str(workload).unwrap();
+            assert_eq!(
+                second["error"].as_str(),
+                Some(*refusal),
+                "{command:?}: a second request must be refused by name, got: {workload}"
+            );
+            assert!(
+                !workload.contains(value),
+                "{command:?}: the refusal leaked the value: {workload}"
+            );
+        }
+    }
+
     /// `POD_LIST` is wired end-to-end: a guest frame reaches `PodListView` and
     /// comes back a valid JSON ARRAY, not an unknown-command error. The registry
     /// here is empty (`PodMaterial::default`), so the array is empty — the
