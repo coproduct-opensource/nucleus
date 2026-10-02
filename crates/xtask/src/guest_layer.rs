@@ -123,7 +123,8 @@ pub fn features(binary: GuestBinary) -> &'static [&'static str] {
         | GuestBinary::NetProbe
         | GuestBinary::WorkloadProbe
         | GuestBinary::PodlistProbe
-        | GuestBinary::AdversaryProbe => &[],
+        | GuestBinary::AdversaryProbe
+        | GuestBinary::Mcp => &[],
     }
 }
 
@@ -593,6 +594,35 @@ mod tests {
         let f = release_coverage(&GuestBinary::ALL, &rootfs, &unuploaded);
         assert_eq!(f.len(), 1, "{f:#?}");
         assert!(f[0].contains("UPLOADS nucleus-workload-probe"), "{f:#?}");
+    }
+
+    /// The MCP bridge is a guest binary like the probes: a release that builds
+    /// it for the CLI tarball but never hands it to the rootfs job is red.
+    #[test]
+    fn a_release_that_does_not_upload_the_mcp_bridge_is_red() {
+        assert!(GuestBinary::ALL.contains(&GuestBinary::Mcp));
+        let rootfs = repo_file("scripts/firecracker/build-rootfs.sh");
+        let release = repo_file(".github/workflows/release.yml");
+        let unuploaded: String = release
+            .lines()
+            .filter(|l| !l.trim_end().ends_with("release/nucleus-mcp"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_ne!(unuploaded, release, "perturbation matched nothing");
+        let f = release_coverage(&GuestBinary::ALL, &rootfs, &unuploaded);
+        assert_eq!(
+            f,
+            vec!["release.yml never UPLOADS nucleus-mcp; the rootfs job runs on another runner"]
+        );
+
+        let unbuilt: String = release
+            .lines()
+            .filter(|l| !l.contains("cross build -p nucleus-mcp "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_ne!(unbuilt, release, "perturbation matched nothing");
+        let f = release_coverage(&GuestBinary::ALL, &rootfs, &unbuilt);
+        assert_eq!(f, vec!["release.yml never BUILDS nucleus-mcp"]);
     }
 
     #[test]

@@ -176,6 +176,11 @@ pub enum GuestCapability {
     /// the guest cannot connect to, so an agent run in the pod (P5) reaches no
     /// tool and no egress at all.
     WorkloadDoor,
+    /// The guest carries the MCP bridge at `guest_layout::MCP_BIN`, which an
+    /// agent run in the pod speaks MCP to and which reaches the tool-proxy
+    /// through the workload door with no secret (#2696 P2). An older guest has
+    /// no bridge, so an agent started in the pod (P5) has no tools at all.
+    McpBridge,
 }
 
 /// Which published release first carried a [`GuestCapability`].
@@ -191,12 +196,13 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 5] = [
+    pub const ALL: [GuestCapability; 6] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::EgressAttestation,
         GuestCapability::SvidOnTmpfs,
         GuestCapability::WorkloadDoor,
+        GuestCapability::McpBridge,
     ];
 
     /// The first release whose rootfs has this.
@@ -208,6 +214,7 @@ impl GuestCapability {
             GuestCapability::EgressAttestation => FirstShipped::NotYet,
             GuestCapability::SvidOnTmpfs => FirstShipped::NotYet,
             GuestCapability::WorkloadDoor => FirstShipped::NotYet,
+            GuestCapability::McpBridge => FirstShipped::NotYet,
         }
     }
 
@@ -237,6 +244,10 @@ impl GuestCapability {
                 "#3031 gave the workload its own door, a Unix socket the tool-proxy \
                  serves to the workload's uid alone; an older guest points the workload at \
                  the proxy's vsock listener, which nothing inside the guest can connect to"
+            }
+            GuestCapability::McpBridge => {
+                "#2696 (P2) put the MCP bridge in the guest at /usr/local/bin/nucleus-mcp; \
+                 an older guest has none, so an agent run in the pod has no way to call its tools"
             }
         }
     }
@@ -354,8 +365,9 @@ fn skew_against(
 /// which is precisely the skew being closed.
 ///
 /// **2.2.0 does not serve this tree.** It predates
-/// [`GuestCapability::EgressAttestation`], [`GuestCapability::SvidOnTmpfs`] and
-/// [`GuestCapability::WorkloadDoor`], so `setup` refuses to install it (see
+/// [`GuestCapability::EgressAttestation`], [`GuestCapability::SvidOnTmpfs`],
+/// [`GuestCapability::WorkloadDoor`] and [`GuestCapability::McpBridge`], so
+/// `setup` refuses to install it (see
 /// [`guest_skew`]) and says to build the guest locally instead. The change that
 /// bumps this constant to the next release must also turn those entries into
 /// [`FirstShipped::Release`];
@@ -515,6 +527,7 @@ mod tests {
                 GuestCapability::EgressAttestation,
                 GuestCapability::SvidOnTmpfs,
                 GuestCapability::WorkloadDoor,
+                GuestCapability::McpBridge,
             ]
         );
         let msg = skew.to_string();
@@ -523,6 +536,7 @@ mod tests {
             "#2365",
             "#2379",
             "#3031",
+            "#2696",
             "no published release yet",
             "build-rootfs.sh",
             "--artifacts local",
@@ -556,7 +570,8 @@ mod tests {
                 GuestCapability::ApprovalByPublicKey => GuestCapability::EgressAttestation,
                 GuestCapability::EgressAttestation => GuestCapability::SvidOnTmpfs,
                 GuestCapability::SvidOnTmpfs => GuestCapability::WorkloadDoor,
-                GuestCapability::WorkloadDoor => GuestCapability::CaBundle,
+                GuestCapability::WorkloadDoor => GuestCapability::McpBridge,
+                GuestCapability::McpBridge => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

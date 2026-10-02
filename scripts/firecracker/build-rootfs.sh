@@ -54,6 +54,7 @@ WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucle
 EGRESS_PROBE_BIN="${EGRESS_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-probe}"
 PODLIST_PROBE_BIN="${PODLIST_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-podlist-probe}"
 ADVERSARY_PROBE_BIN="${ADVERSARY_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-adversary-probe}"
+MCP_BIN="${MCP_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-mcp}"
 NET_ALLOW="${NET_ALLOW:-}"
 NET_DENY="${NET_DENY:-}"
 # NOTE: Secrets are now injected at runtime via kernel command line (nucleus.auth_secret, nucleus.approval_secret)
@@ -156,6 +157,7 @@ WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucle
 EGRESS_PROBE_BIN="${EGRESS_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-probe}"
 PODLIST_PROBE_BIN="${PODLIST_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-podlist-probe}"
 ADVERSARY_PROBE_BIN="${ADVERSARY_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-adversary-probe}"
+MCP_BIN="${MCP_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-mcp}"
             shift 2
             ;;
         --output)
@@ -495,6 +497,9 @@ cp "$EGRESS_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
 # runs it as the workload); guarded like podlist so lanes that do not build it
 # skip cleanly rather than error.
 [ -f "$ADVERSARY_PROBE_BIN" ] && cp "$ADVERSARY_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
+# The MCP bridge an agent in the pod uses (#2696 P2); the release builds it,
+# boot lanes that do not are skipped like the probes above.
+[ -f "$MCP_BIN" ] && cp "$MCP_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-mcp"
 
 # Copy init binary (prefer Rust binary, fall back to shell script)
 if [ -f "$GUEST_INIT_BIN" ]; then
@@ -547,6 +552,9 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
 # runs it as the workload); guarded like podlist so lanes that do not build it
 # skip cleanly rather than error.
 [ -f "$ADVERSARY_PROBE_BIN" ] && cp "$ADVERSARY_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
+# The MCP bridge an agent in the pod uses (#2696 P2); the release builds it,
+# boot lanes that do not are skipped like the probes above.
+[ -f "$MCP_BIN" ] && cp "$MCP_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-mcp"
     if [ -e "$OVERLAY_DIR/init" ]; then
         echo "WARNING: overlay shadowed /init; restoring the nucleus init" >&2
     fi
@@ -564,6 +572,7 @@ chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
 [ -f "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe" ] && chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
+[ -f "$ROOTFS_DIR/usr/local/bin/nucleus-mcp" ] && chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-mcp"
 
 # Build ext4 image from directory
 rm -f "$ROOTFS_IMG"

@@ -654,8 +654,10 @@ async fn run_local(
         &mcp_command_path,
         &McpEnvConfig {
             proxy_url: &proxy_url,
-            auth_secret: Some(&auth_secret),
-            approval_secret: Some(&approval_secret),
+            auth: McpProxyAuth::Hmac {
+                auth_secret: &auth_secret,
+                approval_secret: &approval_secret,
+            },
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
             sandbox_token: Some(&sandbox_token),
@@ -828,8 +830,9 @@ async fn run_enforced(
         &mcp_command_path,
         &McpEnvConfig {
             proxy_url: &proxy_url,
-            auth_secret: None,
-            approval_secret: None,
+            // The node's SignedProxy signs every request it forwards, so the
+            // bridge holds no secret, and says so rather than leaving it out.
+            auth: McpProxyAuth::SignedUpstream,
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
             sandbox_token: None, // provided by node in enforced mode
@@ -1004,10 +1007,23 @@ async fn create_pod_via_node(
     }
 }
 
+/// How `nucleus-mcp` authenticates to a TCP tool-proxy. No unauthenticated
+/// arm: the bridge refuses to start against TCP without one of these.
+pub enum McpProxyAuth<'a> {
+    /// The bridge signs with the proxy's shared secret, and approvals with the
+    /// approval secret.
+    Hmac {
+        auth_secret: &'a str,
+        approval_secret: &'a str,
+    },
+    /// A signing proxy (the node's) sits in front of the tool-proxy and signs
+    /// every request the bridge sends through it.
+    SignedUpstream,
+}
+
 pub struct McpEnvConfig<'a> {
     pub proxy_url: &'a str,
-    pub auth_secret: Option<&'a str>,
-    pub approval_secret: Option<&'a str>,
+    pub auth: McpProxyAuth<'a>,
     pub spec_path: &'a Path,
     pub kernel_trace: Option<&'a Path>,
     pub sandbox_token: Option<&'a str>,
@@ -1040,14 +1056,26 @@ pub fn write_mcp_config(
         "NUCLEUS_MCP_PROXY_URL".to_string(),
         env_cfg.proxy_url.to_string(),
     );
-    if let Some(secret) = env_cfg.auth_secret {
-        env.insert("NUCLEUS_MCP_AUTH_SECRET".to_string(), secret.to_string());
-    }
-    if let Some(secret) = env_cfg.approval_secret {
-        env.insert(
-            "NUCLEUS_MCP_APPROVAL_SECRET".to_string(),
-            secret.to_string(),
-        );
+    match env_cfg.auth {
+        McpProxyAuth::Hmac {
+            auth_secret,
+            approval_secret,
+        } => {
+            env.insert(
+                "NUCLEUS_MCP_AUTH_SECRET".to_string(),
+                auth_secret.to_string(),
+            );
+            env.insert(
+                "NUCLEUS_MCP_APPROVAL_SECRET".to_string(),
+                approval_secret.to_string(),
+            );
+        }
+        McpProxyAuth::SignedUpstream => {
+            env.insert(
+                "NUCLEUS_MCP_SIGNED_UPSTREAM".to_string(),
+                "true".to_string(),
+            );
+        }
     }
     env.insert(
         "NUCLEUS_MCP_SPEC".to_string(),
