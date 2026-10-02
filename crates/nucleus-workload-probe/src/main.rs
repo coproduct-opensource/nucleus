@@ -51,7 +51,33 @@ const IDENTITY_VARS: &[&str] = &[
 /// learns the full canary and no secret ever reaches the console.
 const CANARY_PREFIX: &str = "nucleus-e2e-canary-";
 
+/// The `/v1/run` child's sentinels — a different stage from the workload's, so
+/// one console log can carry both verdicts without either masking the other.
+const RUN_CHILD_PASS: &str = "NUCLEUS_RUN_CHILD_PROBE: PASS";
+const RUN_CHILD_FAIL: &str = "NUCLEUS_RUN_CHILD_PROBE: FAIL";
+
 fn main() {
+    // Stage 2: invoked as a `/v1/run` command
+    // (`{"args": ["/usr/local/bin/nucleus-workload-probe", "--run-child"]}`)
+    // rather than as the pod workload. A command the tool-proxy runs for the
+    // agent must not be guest root: the proxy is PID 1 and root, and its
+    // environment holds the pod's secrets.
+    if std::env::args().nth(1).as_deref() == Some("--run-child") {
+        let status = std::fs::read_to_string("/proc/self/status");
+        let pid1_environ = std::fs::read("/proc/1/environ");
+        let fails = run_child_failures(status.as_deref().ok(), &pid1_environ);
+        if fails.is_empty() {
+            println!("{RUN_CHILD_PASS}");
+            eprintln!("{RUN_CHILD_PASS}");
+        } else {
+            let reason = fails.join("; ");
+            println!("{RUN_CHILD_FAIL}: {reason}");
+            eprintln!("{RUN_CHILD_FAIL}: {reason}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let mut fails: Vec<String> = Vec::new();
 
     check_environment(&mut fails);
@@ -269,5 +295,72 @@ fn check_root_readonly(fails: &mut Vec<String>) {
         Some(true) => {}
         Some(false) => fails.push("root filesystem is mounted read-write".to_string()),
         None => fails.push("no root (/) mount found in /proc/self/mountinfo".to_string()),
+    }
+}
+
+/// The `--run-child` verdict, pure so it is testable off-guest.
+///
+/// * the real uid (`Uid:` first field) must not be 0;
+/// * `/proc/1/environ` must be refused with a PERMISSION error. "Could not
+///   look" for any other reason (no procfs, no PID 1) is not "looked and it
+///   was denied" (ADR 0007 A-1), so it fails too: the probe cannot vouch for
+///   containment it did not observe.
+fn run_child_failures(
+    status: Option<&str>,
+    pid1_environ: &std::io::Result<Vec<u8>>,
+) -> Vec<String> {
+    let mut fails = Vec::new();
+    let uid = status.and_then(|s| {
+        s.lines()
+            .find_map(|l| l.strip_prefix("Uid:"))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|v| v.parse::<u32>().ok())
+    });
+    match uid {
+        Some(0) => fails.push("the /v1/run child runs as root (uid 0)".to_string()),
+        Some(_) => {}
+        None => fails.push("could not read the child's uid from /proc/self/status".to_string()),
+    }
+    match pid1_environ {
+        Ok(_) => fails
+            .push("the /v1/run child can read /proc/1/environ — the runtime's secrets".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(e) => fails.push(format!(
+            "/proc/1/environ unreadable for a reason other than permission ({e}); \
+             containment was not observed"
+        )),
+    }
+    fails
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_child_failures;
+    use std::io;
+
+    const NOBODY: &str = "Name:\tprobe\nUid:\t65534\t65534\t65534\t65534\n";
+    const ROOT: &str = "Name:\tprobe\nUid:\t0\t0\t0\t0\n";
+
+    fn denied() -> io::Result<Vec<u8>> {
+        Err(io::Error::from(io::ErrorKind::PermissionDenied))
+    }
+
+    #[test]
+    fn an_unprivileged_child_that_is_refused_pid1s_environ_passes() {
+        assert!(run_child_failures(Some(NOBODY), &denied()).is_empty());
+    }
+
+    /// The pre-fix guest: root, and the read succeeds.
+    #[test]
+    fn a_root_child_that_reads_pid1s_environ_fails_twice() {
+        let fails = run_child_failures(Some(ROOT), &Ok(b"K=V\0".to_vec()));
+        assert_eq!(fails.len(), 2, "{fails:?}");
+    }
+
+    #[test]
+    fn could_not_look_is_not_denied() {
+        let missing = Err(io::Error::from(io::ErrorKind::NotFound));
+        assert_eq!(run_child_failures(Some(NOBODY), &missing).len(), 1);
+        assert_eq!(run_child_failures(None, &denied()).len(), 1);
     }
 }
