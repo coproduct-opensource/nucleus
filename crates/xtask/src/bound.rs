@@ -466,6 +466,81 @@ mod tests {
         assert!(witness_params("    fn f(authority: String) {", &witness()).is_empty());
     }
 
+    // ── #2986: the witness is named by its type, not by its spelling ──
+
+    fn permissions() -> Vec<String> {
+        vec!["VerifiedPermissions".to_string(), "Authority".to_string()]
+    }
+
+    #[test]
+    fn a_path_qualified_witness_is_the_same_site_as_a_bare_one() {
+        // The #2526 move: `certificate_to_bid(verified: &VerifiedPermissions)`
+        // became `from_verified(verified: &portcullis::VerifiedPermissions)` and
+        // the census read the move as a deletion.
+        for line in [
+            "    pub fn from_verified(verified: &VerifiedPermissions) -> Self {",
+            "    pub fn from_verified(verified: &portcullis::VerifiedPermissions) -> Self {",
+            "    pub fn from_verified(verified: &::portcullis::VerifiedPermissions) -> Self {",
+            "    fn f(verified: &crate::certificate::VerifiedPermissions) {",
+            "    fn f(verified: &'a mut portcullis::certificate::VerifiedPermissions) {",
+            "    fn f(verified: & 'a  portcullis :: VerifiedPermissions) {",
+        ] {
+            assert_eq!(
+                witness_params(line, &permissions()),
+                vec![Binding::Bound],
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_qualified_witness_can_be_dropped_too() {
+        // The numerator and D − B must see the same spelling the denominator does,
+        // or a dropped site hides from INERT_TOTAL by being written with its path.
+        assert_eq!(
+            witness_params(
+                "    fn f(_a: portcullis_effects::authority::Authority) {",
+                &permissions()
+            ),
+            vec![Binding::Dropped]
+        );
+    }
+
+    #[test]
+    fn a_name_that_merely_ends_with_the_witness_is_not_a_site() {
+        // Identifiers are compared whole: a suffix match would count every
+        // `NotVerifiedPermissions` as enforcement it is not.
+        for line in [
+            "    fn f(p: NotVerifiedPermissions) {",
+            "    fn f(p: &portcullis::NotVerifiedPermissions) {",
+            "    fn f(p: &crate::x::VerifiedPermissionsView) {",
+        ] {
+            assert!(witness_params(line, &permissions()).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_witness_in_the_middle_of_a_path_is_not_the_type() {
+        // `Authority::Inner` names `Inner`; and an associated-function call in a
+        // field initialiser is an expression, not a witness-typed binding.
+        for line in [
+            "    fn f(a: Authority::Inner) {",
+            "    let s = S { authority: portcullis_effects::authority::Authority::new(b) };",
+            "use crate::attestation::Authority;",
+        ] {
+            assert!(witness_params(line, &permissions()).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_census_counts_a_moved_site_where_it_landed() {
+        let c = census(
+            &corpus("pub fn from_verified(verified: &portcullis::VerifiedPermissions) {}\n"),
+            &permissions(),
+        );
+        assert_eq!(c["crates/demo/src/lib.rs"].bound, 1);
+    }
+
     #[test]
     fn an_empty_surface_is_zero_not_a_hundred_percent() {
         // Deleting the last witness parameter must not paint the badge green.
