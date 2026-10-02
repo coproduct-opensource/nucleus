@@ -59,6 +59,7 @@
 //! size, which is sufficient for a byte budget and deliberately not a DLP claim.
 
 use core::num::NonZeroU32;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::budget_ledger::{ChildId, LedgerCore, LedgerError};
 
@@ -255,11 +256,21 @@ pub enum EgressNovelty {
 /// C-4). Only [`EgressLedger::reserve`] constructs one. A hold that is dropped
 /// unsettled stays allocated — the bytes remain unavailable, which is the
 /// fail-closed reading of "we do not know whether they were sent".
+///
+/// A hold is valid against ONE ledger: the one that decided it. Its `id` is
+/// only unique within that ledger — every ledger numbers its holds from zero —
+/// so the hold also carries that ledger's `epoch`, and [`EgressLedger::settle`]
+/// refuses a hold whose epoch is not its own. Without it, a hold from ledger A
+/// settled on ledger B released B's hold with the same id: a `NotSent`
+/// refunded bytes B had in flight, and B's own hold, settled later, matched
+/// nothing and was never counted — a byte-ceiling bypass through the public API.
 #[must_use = "an unsettled hold keeps its bytes reserved for the life of the ledger"]
 #[derive(Debug, PartialEq, Eq)]
 pub struct EgressHold {
     id: ChildId,
     bytes: EgressBytes,
+    /// The [`EgressLedger`] that decided this hold.
+    epoch: u64,
 }
 
 impl EgressHold {
@@ -269,6 +280,29 @@ impl EgressHold {
         self.bytes
     }
 }
+
+/// Why [`EgressLedger::settle`] could not settle a hold. Either way nothing in
+/// this ledger changed, and the hold's bytes stay reserved in the ledger that
+/// minted it — the fail-closed reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressSettleError {
+    /// The hold was decided by a different ledger.
+    ForeignHold,
+    /// The hold carries this ledger's epoch and names no allocation in it.
+    /// Unreachable while holds are settled by value; a fault, not a no-op.
+    UnknownHold,
+}
+
+impl core::fmt::Display for EgressSettleError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ForeignHold => write!(f, "egress hold was decided by a different ledger"),
+            Self::UnknownHold => write!(f, "egress hold names no allocation in its ledger"),
+        }
+    }
+}
+
+impl std::error::Error for EgressSettleError {}
 
 /// What happened to a held send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,7 +367,14 @@ pub struct EgressLedger {
     window: Window,
     latch: Latch,
     next_id: ChildId,
+    /// This ledger's identity, stamped on every hold it decides.
+    epoch: u64,
 }
+
+/// The source of [`EgressLedger`] epochs. Process-wide and only ever
+/// incremented, so no two ledgers in one process share an epoch. A hold never
+/// crosses a process: it is not `Serialize`.
+static NEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 impl EgressLedger {
     /// A fresh ledger with nothing sent.
@@ -349,6 +390,7 @@ impl EgressLedger {
             },
             latch: Latch::Open,
             next_id: 0,
+            epoch: NEXT_EPOCH.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -453,7 +495,11 @@ impl EgressLedger {
                 if let EgressPace::PerWindow { .. } = self.ceiling.pace {
                     self.window.counted = self.window.counted.saturating_add(bytes);
                 }
-                EgressDecision::Admitted(EgressHold { id, bytes })
+                EgressDecision::Admitted(EgressHold {
+                    id,
+                    bytes,
+                    epoch: self.epoch,
+                })
             }
             Err(LedgerError::InsufficientBudget { .. }) => {
                 let refusal = self.exhausted(bytes);
@@ -474,15 +520,26 @@ impl EgressLedger {
     /// this pod has spent; [`EgressSettlement::NotSent`] refunds them.
     ///
     /// Takes the hold by value: settling is the hold's end.
-    pub fn settle(&mut self, hold: EgressHold, outcome: EgressSettlement) {
+    ///
+    /// A hold this ledger did not decide is refused BEFORE its id is looked
+    /// up: ids are per-ledger, so a foreign id can name one of this ledger's
+    /// own holds. On any error nothing here changes.
+    pub fn settle(
+        &mut self,
+        hold: EgressHold,
+        outcome: EgressSettlement,
+    ) -> Result<(), EgressSettleError> {
+        if hold.epoch != self.epoch {
+            return Err(EgressSettleError::ForeignHold);
+        }
         let spent = match outcome {
             EgressSettlement::Sent => hold.bytes,
             EgressSettlement::NotSent => 0,
         };
-        // `UnknownChild` is the only error `release` has, and it means a hold
-        // minted by a DIFFERENT ledger. Nothing of this ledger's changes, which
-        // is the conservative answer — a foreign hold cannot refund bytes here.
-        let _ = self.core.release(hold.id, spent);
+        match self.core.release(hold.id, spent) {
+            Ok(_refunded) => Ok(()),
+            Err(_) => Err(EgressSettleError::UnknownHold),
+        }
     }
 
     /// Fold in bytes a counter observed AFTER they were sent — a kernel byte
@@ -544,7 +601,9 @@ mod tests {
     fn a_send_past_the_ceiling_is_refused_and_names_the_dimension() {
         let mut ledger = EgressLedger::new(EgressCeiling::new(1_000, EgressPace::Unpaced));
         let first = admitted(ledger.reserve(600, 0));
-        ledger.settle(first, EgressSettlement::Sent);
+        ledger
+            .settle(first, EgressSettlement::Sent)
+            .expect("this ledger's hold");
 
         let (refusal, novelty) = refused(ledger.reserve(500, 0));
         assert_eq!(
@@ -588,7 +647,9 @@ mod tests {
             refusal,
             EgressRefusal::CeilingExhausted { counted: 700, .. }
         ));
-        ledger.settle(a, EgressSettlement::Sent);
+        ledger
+            .settle(a, EgressSettlement::Sent)
+            .expect("this ledger's hold");
         assert!(ledger.core().conserves());
     }
 
@@ -622,7 +683,9 @@ mod tests {
                 EgressNovelty::First
             )
         ));
-        ledger.settle(hold, EgressSettlement::Sent);
+        ledger
+            .settle(hold, EgressSettlement::Sent)
+            .expect("this ledger's hold");
         assert!(ledger.core().conserves());
     }
 
@@ -631,7 +694,9 @@ mod tests {
         let mut ledger = EgressLedger::new(EgressCeiling::new(1_000, EgressPace::Unpaced));
         let hold = admitted(ledger.reserve(1_000, 0));
         assert_eq!(ledger.remaining(), 0);
-        ledger.settle(hold, EgressSettlement::NotSent);
+        ledger
+            .settle(hold, EgressSettlement::NotSent)
+            .expect("this ledger's hold");
         assert_eq!(ledger.remaining(), 1_000);
         assert_eq!(ledger.counted(), 0);
     }
@@ -645,7 +710,9 @@ mod tests {
 
         let mut ledger = EgressLedger::new(ceiling);
         let hold = admitted(ledger.reserve(DEFAULT_EGRESS_MAX_BYTES, 0));
-        ledger.settle(hold, EgressSettlement::Sent);
+        ledger
+            .settle(hold, EgressSettlement::Sent)
+            .expect("this ledger's hold");
         let (refusal, _) = refused(ledger.reserve(1, 0));
         assert!(matches!(refusal, EgressRefusal::CeilingExhausted { .. }));
     }
@@ -654,7 +721,9 @@ mod tests {
     fn the_pace_refuses_within_a_window_and_resets_after_it() {
         let mut ledger = EgressLedger::new(paced(10_000, 100, 60));
         let h = admitted(ledger.reserve(80, 1_000));
-        ledger.settle(h, EgressSettlement::Sent);
+        ledger
+            .settle(h, EgressSettlement::Sent)
+            .expect("this ledger's hold");
 
         let (refusal, novelty) = refused(ledger.reserve(30, 1_010));
         assert_eq!(
@@ -672,7 +741,9 @@ mod tests {
 
         // A pace refusal does not latch: the next window admits.
         let h = admitted(ledger.reserve(30, 1_060));
-        ledger.settle(h, EgressSettlement::Sent);
+        ledger
+            .settle(h, EgressSettlement::Sent)
+            .expect("this ledger's hold");
         assert_eq!(ledger.counted(), 110);
     }
 
@@ -698,8 +769,34 @@ mod tests {
             EgressRefusal::TooManyInFlight { max: EGRESS_SLOTS }
         );
         for h in holds {
-            ledger.settle(h, EgressSettlement::Sent);
+            ledger
+                .settle(h, EgressSettlement::Sent)
+                .expect("this ledger's hold");
         }
         assert_eq!(ledger.counted(), u64::try_from(EGRESS_SLOTS).expect("fits"));
+    }
+
+    /// **The cross-ledger defect.** Two ledgers both number their first hold
+    /// zero. Settling A's hold on B must not touch B's allocation: before the
+    /// epoch, a `NotSent` refunded B's in-flight bytes, and B's own hold then
+    /// settled against nothing and was never counted.
+    #[test]
+    fn a_hold_from_another_ledger_is_refused_and_changes_nothing() {
+        let mut a = EgressLedger::new(EgressCeiling::new(1_000, EgressPace::Unpaced));
+        let mut b = EgressLedger::new(EgressCeiling::new(1_000, EgressPace::Unpaced));
+        let from_a = admitted(a.reserve(1, 0));
+        let from_b = admitted(b.reserve(900, 0));
+        assert_eq!(b.counted(), 900, "non-vacuity: B has bytes in flight");
+
+        assert_eq!(
+            b.settle(from_a, EgressSettlement::NotSent),
+            Err(EgressSettleError::ForeignHold)
+        );
+        assert_eq!(b.counted(), 900, "a foreign hold refunded nothing");
+        assert_eq!(a.counted(), 1, "and its own ledger still holds it");
+
+        b.settle(from_b, EgressSettlement::Sent)
+            .expect("B's own hold settles");
+        assert_eq!(b.counted(), 900, "B's send is counted");
     }
 }

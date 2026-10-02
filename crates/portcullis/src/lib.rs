@@ -294,7 +294,8 @@ pub use effect_catalog::{
 };
 pub use egress_budget::{
     EgressBytes, EgressCeiling, EgressDecision, EgressHold, EgressLedger, EgressNovelty,
-    EgressObservation, EgressPace, EgressRefusal, EgressSettlement, DEFAULT_EGRESS_MAX_BYTES,
+    EgressObservation, EgressPace, EgressRefusal, EgressSettleError, EgressSettlement,
+    DEFAULT_EGRESS_MAX_BYTES,
 };
 #[cfg(all(feature = "spec", not(kani)))]
 pub use escalation_proposal::{

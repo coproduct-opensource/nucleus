@@ -127,7 +127,12 @@ impl EgressMeter {
         // Poisoned: the hold cannot be settled, so its bytes stay reserved —
         // counted as sent, the fail-closed reading.
         if let Ok(mut ledger) = self.ledger.lock() {
-            ledger.settle(hold, outcome);
+            // Unreachable from `EgressCharge`, which borrows the meter that
+            // decided its hold. Reported rather than dropped: the bytes stay
+            // reserved (fail-closed), and a fault here is a defect to find.
+            if let Err(e) = ledger.settle(hold, outcome) {
+                tracing::error!(pod = %self.pod_id, "egress settle refused: {e}");
+            }
         }
     }
 }

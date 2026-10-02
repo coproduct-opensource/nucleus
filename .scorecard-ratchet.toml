@@ -312,9 +312,32 @@ population_floor = 89
 # production path (refused Expired, not burned). 7/13.
 # 2026-09-29, merging main into the declassification branch: both affine rights
 # (Refilled from #3020, VerifiedDeclassification here) on one tree, both bounded. 8/14.
-floor_bp = 5714
+# 2026-10-01 (#3112, #2905): egress_meter::EgressCharge, the host's reservation
+# for one guest send, entered as an affine right. Unbounded it reddened CI at
+# 8/15 (53.33%). Chasing it found a real gap one layer down: EgressHold ids are
+# per-ledger (every ledger numbers from zero), so a hold settled on a ledger
+# that did not decide it released THAT ledger's same-id hold -- a NotSent
+# refunded bytes in flight, and the real hold then settled against nothing and
+# was never counted. EgressHold now carries its ledger's epoch and
+# EgressLedger::settle refuses a foreign one (EgressSettleError::ForeignHold)
+# before the id is looked up.
+# EgressCharge itself is bounded by its LIFETIME, not a field: EgressCharge<'a>
+# borrows the meter that decided its hold, so settling it anywhere else is a
+# compile error -- the form the note above calls stronger than a fingerprint.
+# This census reads field names and cannot see a lifetime, so it counts the
+# charge as unbounded; copying the epoch onto the charge would be a second
+# decider of one fact (ADR 0007 G) written only to move this number.
+# The floor is re-pinned to the measured 8/15. LOWERED, not raised: nothing
+# went away -- the population grew by one right this census cannot credit.
+# Decided by the #3112 dispatch; the owner may veto, and the alternative is
+# teaching `life` to credit a lifetime borrow of the deciding ledger.
+# Census blind spot found on the way: `is_clone` looks 8 lines above a
+# declaration AFTER production_region strips comments, so the window crosses
+# into the previous item. EgressHold and EgressDecision are affine but read as
+# Clone because the derive(Clone) two items up lands in their window.
+floor_bp = 5333
 floor_set = "measurement"
-population_floor = 14
+population_floor = 15
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
