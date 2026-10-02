@@ -275,6 +275,7 @@ fn boot_args_with_identity(will_have_identity: bool) -> String {
         "aa00bb11-approval-pubkeys",
         will_have_identity.then_some(15012),
         None,
+        None,
     );
     config.boot_source.boot_args.unwrap_or_default()
 }
@@ -301,6 +302,7 @@ fn dlc_provisioning_never_rides_the_cmdline() {
             None,
             "aa00bb11-approval-pubkeys",
             Some(15012),
+            None,
             None,
         )
         .boot_source
@@ -395,9 +397,21 @@ fn no_pod_cmdline_carries_any_per_pod_secret() {
 #[cfg(target_os = "linux")]
 fn boot_args_maximal() -> String {
     let spec: PodSpec = serde_json::from_str(
-            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"s3_bucket":"bkt","s3_prefix":"p/","s3_region":"us-west-2","s3_endpoint":"https://e.example"}}}"#,
-        )
-        .expect("maximal spec must deserialize");
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit","prefix":"p"}}}"#,
+    )
+    .expect("maximal spec must deserialize");
+    let sinks = crate::audit_sink::AuditSinks::from_toml(
+        r#"
+        [[sink]]
+        name = "audit"
+        bucket = "bkt"
+        prefix = "nucleus"
+        region = "us-west-2"
+        endpoint = "https://e.example"
+        "#,
+    )
+    .expect("operator sinks load");
+    let target = sinks.resolve_for(&spec).expect("resolves");
     let config = FirecrackerConfig::from_spec(
         &spec,
         std::path::Path::new("/unused/firecracker.log"),
@@ -406,21 +420,21 @@ fn boot_args_maximal() -> String {
         None,
         "aa00bb11-approval-pubkeys",
         Some(15012),
+        target.as_ref(),
         None,
     );
     config.boot_source.boot_args.unwrap_or_default()
 }
 
-/// #3120: an audit sink value reaches the command line only through the parser admission runs.
-/// On main the bucket was appended verbatim, so this spec's line named a second `init=` — after
-/// the node's, and the kernel takes the last one — and a `nucleus.net=` the node never wrote.
-/// Admission refuses the spec (`spec_posture`); this pins that even a spec that reached the
-/// builder some other way contributes no token the node did not write.
+/// #3131: the builder renders an audit sink only from the target admission resolved, never from
+/// `spec.spec.audit_sink`. A spec that names a sink but reaches the builder without a resolved
+/// target (as if admission were skipped) contributes no `nucleus.audit_s3_*` token at all, so the
+/// command line can only ever carry the operator's destination.
 #[cfg(target_os = "linux")]
 #[test]
-fn an_audit_sink_cannot_add_a_kernel_token() {
+fn the_spec_audit_sink_is_never_rendered_unresolved() {
     let spec: PodSpec = serde_json::from_str(
-        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"s3_bucket":"bkt init=/bin/sh nucleus.net=10.9.9.2/30"}}}"#,
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit"}}}"#,
     )
     .expect("spec deserializes");
     let config = FirecrackerConfig::from_spec(
@@ -432,20 +446,17 @@ fn an_audit_sink_cannot_add_a_kernel_token() {
         "aa00bb11-approval-pubkeys",
         None,
         None,
+        None,
     );
     let args = config.boot_source.boot_args.unwrap_or_default();
-    let keyed = |key: &str| {
-        args.split_whitespace()
-            .filter(|t| t.starts_with(key))
-            .count()
-    };
-    assert_eq!(keyed("init="), 1, "only the node's init=: {args}");
+    assert!(!args.contains("nucleus.audit_s3_"), "{args}");
     assert_eq!(
-        keyed("nucleus.net="),
-        0,
-        "no net plan, so no nucleus.net=: {args}"
+        args.split_whitespace()
+            .filter(|t| t.starts_with("init="))
+            .count(),
+        1,
+        "only the node's init=: {args}"
     );
-    assert_eq!(keyed("nucleus.audit_s3_bucket="), 0, "{args}");
 }
 
 /// **Behavioral completeness — the robust replacement for the source-scrape.**
@@ -901,6 +912,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
         None,
         "aa00bb11-approval-pubkeys",
         None,
+        None,
         Some(&layout),
     );
     let config_json = serde_json::to_vec_pretty(&config).expect("serialize");
@@ -1050,6 +1062,7 @@ fn every_jailed_config_path_is_brought_into_the_jail() {
         &host(&img),
         None,
         "aa00bb11-approval-pubkeys",
+        None,
         None,
         Some(&JailLayout::new(
             Path::new("/srv/jail"),
@@ -1733,6 +1746,7 @@ fn a_spec_asking_for_huge_pages_reaches_the_machine_config() {
             &host(&image(true, false)),
             None,
             "aa00bb11-approval-pubkeys",
+            None,
             None,
             None,
         )

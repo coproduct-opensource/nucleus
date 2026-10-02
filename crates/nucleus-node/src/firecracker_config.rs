@@ -941,6 +941,8 @@ impl FirecrackerConfig {
         net_plan: Option<&net::NetPlan>,
         approval_pubkeys: &str,
         workload_api_port: Option<u32>,
+        // The pod's audit sink as admission resolved it (`spec_posture::admit`).
+        audit_sink: Option<&crate::audit_sink::AuditTarget>,
         // When jailed, every path emitted below is IN-JAIL, not host.
         jail: Option<&JailLayout>,
     ) -> Self {
@@ -1033,22 +1035,17 @@ impl FirecrackerConfig {
             };
         }
 
-        // Inject audit S3 sink config via kernel args. Rendered by the same parser admission ran
-        // (`spec_posture::audit_sink_boot_args`), never from the raw strings: those were appended
-        // verbatim, so a bucket of `b init=/bin/sh` was a second token and the kernel takes the
-        // last `init=` (#3120). Admission refused any spec this parse rejects, so the `Err` arm is
-        // a closure over that, like `enforce_pci_off`, and emits no sink rather than a raw value.
-        if let Some(ref sink) = spec.spec.audit_sink {
-            match crate::spec_posture::audit_sink_boot_args(sink) {
-                Ok(tokens) => {
-                    for token in tokens {
-                        boot_args = match boot_args.take() {
-                            Some(args) => Some(format!("{args} {token}")),
-                            None => Some(token),
-                        };
-                    }
-                }
-                Err(refused) => tracing::error!(%refused, "audit sink not rendered"),
+        // Inject the audit S3 sink via kernel args, from the target admission resolved against the
+        // operator's `--audit-sinks` (#3131), never from `spec.spec.audit_sink`: the spec only
+        // names a sink, and the bucket and endpoint the node's credentials write to are the
+        // operator's. Each value is one token of its grammar (#3120): a raw bucket of
+        // `b init=/bin/sh` was a second token, and the kernel takes the last `init=`.
+        if let Some(target) = audit_sink {
+            for token in crate::audit_sink::audit_sink_boot_args(target) {
+                boot_args = match boot_args.take() {
+                    Some(args) => Some(format!("{args} {token}")),
+                    None => Some(token),
+                };
             }
             // The AWS credentials are NO LONGER EMITTED here.
             //

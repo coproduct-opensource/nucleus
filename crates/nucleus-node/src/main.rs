@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 mod api_error;
 mod art12_collector;
+mod audit_sink;
 mod auth;
 mod firecracker_api;
 mod firecracker_config;
@@ -118,6 +119,8 @@ struct Args {
     authority: pod_authority::AuthorityArgs,
     #[command(flatten)]
     host_paths: host_paths::HostPathArgs,
+    #[command(flatten)]
+    audit_sinks: audit_sink::AuditSinkArgs,
     /// Driver backend.
     #[arg(
         long,
@@ -389,6 +392,9 @@ struct NodeState {
     /// Operator-configured registry of proof-carrying postures a trusted builder
     /// has proven. Consulted fail-closed at pod admission (`posture.rs`).
     trusted_postures: posture::PostureRegistry,
+    /// The operator's audit sinks (`--audit-sinks`): the only destinations a pod's audit log is
+    /// written to with the node's credentials (#3131). Read at admission (`spec_posture::admit`).
+    audit_sinks: Arc<audit_sink::AuditSinks>,
     /// Drand configuration for anchoring approval signatures.
     drand_config: Option<DrandConfig>,
     /// Identity manager for SPIFFE certificates (experimental, not yet wired to Firecracker).
@@ -725,6 +731,7 @@ async fn main() -> Result<(), ApiError> {
         )),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
         trusted_postures: posture::PostureRegistry::from_operator_str(&args.trusted_postures),
+        audit_sinks: Arc::new(args.audit_sinks.load().map_err(ApiError::Driver)?),
         drand_config,
         identity_manager,
         identity_vsock_port: args.identity_workload_api_vsock_port,
@@ -944,7 +951,8 @@ async fn create_pod_internal(
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
     rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
     host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;
-    spec_posture::admit(&spec)?; // posture fields a spec may not weaken (#3120)
+    // Posture fields a spec may not weaken (#3120), and where its audit log goes (#3131).
+    let audit_sink = spec_posture::admit(&spec, &state.audit_sinks)?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -982,10 +990,13 @@ async fn create_pod_internal(
 
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
-        DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id).await,
-        DriverKind::Firecracker => spawn_firecracker_pod(state, &pod_dir, &spec, id).await,
+        DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id, audit_sink.as_ref()).await,
+        DriverKind::Firecracker => {
+            spawn_firecracker_pod(state, &pod_dir, &spec, id, audit_sink.as_ref()).await
+        }
         DriverKind::Container => {
-            spawn_container_pod(state, &pod_dir, &spec, id, raw_yaml.as_deref()).await
+            let raw = raw_yaml.as_deref();
+            spawn_container_pod(state, &pod_dir, &spec, id, raw, audit_sink.as_ref()).await
         }
         DriverKind::AppleVz => driver::spawn_vz_pod(state, &pod_dir, &spec, id).await,
     };
@@ -1253,6 +1264,7 @@ async fn spawn_local_pod(
     pod_dir: &Path,
     spec: &PodSpec,
     id: Uuid,
+    audit_sink: Option<&audit_sink::AuditTarget>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
@@ -1319,17 +1331,11 @@ async fn spawn_local_pod(
 
     art12_collector::provision_pod_env(&mut command, pod_dir, &state.listen_addr, &id.to_string());
 
-    // Pass audit sink config from PodSpec for deletion-resistant remote storage
-    if let Some(ref sink) = spec.spec.audit_sink {
-        command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET", &sink.s3_bucket);
-        if let Some(ref prefix) = sink.s3_prefix {
-            command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX", prefix);
-        }
-        if let Some(ref region) = sink.s3_region {
-            command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION", region);
-        }
-        if let Some(ref endpoint) = sink.s3_endpoint {
-            command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT", endpoint);
+    // The audit sink admission resolved against the operator's `--audit-sinks` (#3131): the
+    // destination is the operator's, never a value read from the spec.
+    if let Some(target) = audit_sink {
+        for (key, value) in target.proxy_env() {
+            command.env(key, value);
         }
         // Forward ambient AWS credentials so the tool-proxy's aws_config chain works.
         // Operators set these on nucleus-node; they flow through to the S3 sink.
@@ -1516,6 +1522,7 @@ async fn container_env(
     proxy_mode: bool,
     sandbox_token: &str,
     spec_yaml: &str,
+    audit_sink: Option<&audit_sink::AuditTarget>,
 ) -> Vec<String> {
     let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
 
@@ -1528,20 +1535,10 @@ async fn container_env(
         env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
         art12_collector::provision_container_env(&mut env);
 
-        // Pass audit sink config from PodSpec for deletion-resistant remote storage
-        if let Some(ref sink) = spec.spec.audit_sink {
-            env.push(format!(
-                "NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET={}",
-                sink.s3_bucket
-            ));
-            if let Some(ref prefix) = sink.s3_prefix {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX={prefix}"));
-            }
-            if let Some(ref region) = sink.s3_region {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION={region}"));
-            }
-            if let Some(ref endpoint) = sink.s3_endpoint {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT={endpoint}"));
+        // The audit sink admission resolved against the operator's `--audit-sinks` (#3131).
+        if let Some(target) = audit_sink {
+            for (key, value) in target.proxy_env() {
+                env.push(format!("{key}={value}"));
             }
             // Forward ambient AWS credentials for the S3 sink
             for key in [
@@ -1603,6 +1600,7 @@ async fn spawn_container_pod(
     spec: &PodSpec,
     id: Uuid,
     raw_yaml: Option<&str>,
+    audit_sink: Option<&audit_sink::AuditTarget>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     // Fail-closed: reject a network egress policy the container driver cannot
     // enforce (parity with spawn_local_pod / firecracker reject_unsupported_policy)
@@ -1664,7 +1662,16 @@ async fn spawn_container_pod(
         .cloned()
         .unwrap_or_else(|| state.container_image.clone());
 
-    let env = container_env(state, spec, id, proxy_mode, &sandbox_token, &spec_yaml).await;
+    let env = container_env(
+        state,
+        spec,
+        id,
+        proxy_mode,
+        &sandbox_token,
+        &spec_yaml,
+        audit_sink,
+    )
+    .await;
 
     let pod_dir_abs = pod_dir
         .canonicalize()
@@ -1948,10 +1955,11 @@ async fn spawn_firecracker_pod(
     pod_dir: &Path,
     spec: &PodSpec,
     id: Uuid,
+    audit_sink: Option<&audit_sink::AuditTarget>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (state, pod_dir, spec, id);
+        let _ = (state, pod_dir, spec, id, audit_sink);
         let why = "firecracker requires Linux; run nucleus-node inside Colima on macOS";
         Err(ApiError::Driver(why.to_string()))
     }
@@ -2173,6 +2181,7 @@ async fn spawn_firecracker_pod(
             // The PUBLIC half only — the signing half stays in this process.
             &hex::encode(state.approval_signer.verifying_key().to_bytes()),
             workload_api_port,
+            audit_sink,
             jail_layout.as_ref(),
         );
         let config_json = match serde_json::to_vec_pretty(&config) {
