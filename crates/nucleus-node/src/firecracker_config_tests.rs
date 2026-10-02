@@ -279,6 +279,47 @@ fn boot_args_with_identity(will_have_identity: bool) -> String {
     config.boot_source.boot_args.unwrap_or_default()
 }
 
+/// #2903: a pod's DLC-D provisioning reaches the guest over the workload API
+/// (`FETCH_DLC_ADMISSION`, served once), NEVER on the kernel command line,
+/// which every process in the guest can read. A pod that asks for admission
+/// gets the same line, byte for byte, as one that does not.
+#[cfg(target_os = "linux")]
+#[test]
+fn dlc_provisioning_never_rides_the_cmdline() {
+    use nucleus_spec::dlc_admission::{DlcProvisioning, ENV_PREFIX};
+    let dlc = DlcProvisioning {
+        trusted_keys: "5a".repeat(32),
+        issuer: "6b".repeat(32),
+        credentials: "read_files=7c7c".to_string(),
+    };
+    let line = |spec: &PodSpec| {
+        FirecrackerConfig::from_spec(
+            spec,
+            std::path::Path::new("/unused/firecracker.log"),
+            std::path::Path::new("/unused/vsock.sock"),
+            &host(&image(true, false)),
+            None,
+            "aa00bb11-approval-pubkeys",
+            Some(15012),
+            None,
+        )
+        .boot_source
+        .boot_args
+        .unwrap_or_default()
+    };
+    let mut provisioned = base_spec();
+    provisioned.metadata.labels = dlc.labels();
+    let args = line(&provisioned);
+    assert_eq!(args, line(&base_spec()), "labels changed the cmdline");
+    assert!(!args.contains(ENV_PREFIX), "{args}");
+    for (_, value) in dlc.env() {
+        assert!(
+            !args.contains(value),
+            "a provisioning value is on the cmdline: {args}"
+        );
+    }
+}
+
 /// **No pod carries a Tier-3 `sandbox_token` on its cmdline — RETIRED.**
 /// The fallback was verified with an auth secret the guest no longer has on
 /// any shipped rootfs (`/etc/nucleus/auth.secret` is written only under

@@ -300,7 +300,7 @@ fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
                 root_pubkey_hex: "22".repeat(32),
             }),
         caller_token: p.caller_token.then(|| CALLER_TOKEN.to_string()),
-        dlc_admission: p.dlc_admission.then(|| DlcAdmissionMaterial {
+        dlc_admission: p.dlc_admission.then(|| DlcProvisioning {
             trusted_keys: "33".repeat(32),
             issuer: "44".repeat(32),
             credentials: DLC_CREDENTIALS.to_string(),

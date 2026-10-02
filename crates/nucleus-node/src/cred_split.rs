@@ -127,11 +127,19 @@ spec:
         // itself rather than the word "credentials" — an unbounded span running
         // to end-of-file, matched against a word that appears in a dozen
         // comments, passed with the injection deleted. Caught by perturbation.
-        let container_fn = src
-            .split("async fn spawn_container_pod")
-            .nth(1)
-            .and_then(|s| s.split("\nasync fn ").next())
-            .expect("the container driver exists");
+        // The environment is assembled in `container_env` (split out so a test
+        // can read it without Docker); the driver must still be what calls it.
+        let span = |name: &str| {
+            src.split(&format!("async fn {name}"))
+                .nth(1)
+                .and_then(|s| s.split("\nasync fn ").next())
+                .unwrap_or_else(|| panic!("{name} exists"))
+        };
+        assert!(
+            span("spawn_container_pod").contains("container_env("),
+            "the container driver no longer builds its env with container_env"
+        );
+        let container_fn = span("container_env");
         assert!(
             container_fn.contains("creds.env"),
             "the container driver no longer injects credentials — if that is real \

@@ -1,6 +1,7 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
 pub mod boot_budget;
+pub mod dlc_admission;
 pub mod exit_report_auth;
 pub mod guest_layout;
 pub mod identity;
