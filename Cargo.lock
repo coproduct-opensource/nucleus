@@ -6833,6 +6833,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-decision-protocol"
+version = "1.0.0"
+dependencies = [
+ "nucleus-ifc-kernel",
+ "proptest",
+]
+
+[[package]]
 name = "nucleus-delivery-conformance"
 version = "1.0.0"
 dependencies = [

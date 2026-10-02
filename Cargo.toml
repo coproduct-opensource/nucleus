@@ -6,6 +6,7 @@ members = [
     "crates/nucleus-policy-cert",   # PCA: recompute-verifiable certificates (R1)
     "crates/nucleus-cred-broker",   # CB4A: Credential Delivery Point (holds creds, decides nothing)
     "crates/nucleus-cred-protocol", # CB4A: wire types only, safe for the guest to link
+    "crates/nucleus-decision-protocol", # L-1 P7: the per-pod decision channel's one wire declaration (guest + host)
     "crates/nucleus-oci-rootfs",    # OCI image -> one verified, normalized, deterministic rootfs tar (local layouts/archives only)
     "crates/nucleus-jsonl",       # One atomic append per record for every line-oriented evidence log
     "crates/nucleus-pca",           # PCA: the unified verify() SDK facade
