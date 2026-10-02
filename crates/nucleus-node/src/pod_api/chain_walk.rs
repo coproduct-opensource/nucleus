@@ -349,7 +349,7 @@ fn op() -> impl Strategy<Value = Op> {
         // Mostly none, so the budget and fan-out refusals stay reachable; then
         // the registry's own entries, which a pod caller holds only if its
         // parent does; then anything, the registry's absentees included.
-        prop_oneof![5 => Just(0u8), 3 => 1u8..=REGISTERED, 1 => 0u8..16],
+        prop_oneof![8 => Just(0u8), 2 => 1u8..=REGISTERED, 1 => 0u8..16],
     )
         .prop_map(|(who, via, token, budget, caps, boot, header, ups)| Op::Create {
             who,
