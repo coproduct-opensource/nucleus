@@ -1476,11 +1476,23 @@ mod containment_tests {
         );
     }
 
-    /// A proxy with a verified launch (tier 1) executes under the same policy.
+    /// A proxy with a verified launch (tier 1) passes the isolation gate under
+    /// the same policy. A root runtime (the guest) then runs the command; any
+    /// other runtime cannot separate the child from itself and refuses BY NAME
+    /// after the gate (#3120) — so the refusal is not `IsolationInsufficient`.
     #[test]
     fn microvm_runtime_executes_a_microvm_policy() {
-        let out = run_echo(nucleus::ContainmentMode::MicroVM).expect("microVM containment runs");
-        assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+        let result = run_echo(nucleus::ContainmentMode::MicroVM);
+        match nucleus::runtime_uid() {
+            0 => {
+                let out = result.expect("microVM containment runs");
+                assert!(out.status.success());
+                assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+            }
+            _ => assert!(
+                matches!(result, Err(NucleusError::ChildSeparationUnavailable { .. })),
+                "a non-root MicroVM runtime must refuse by name, got {result:?}"
+            ),
+        }
     }
 }

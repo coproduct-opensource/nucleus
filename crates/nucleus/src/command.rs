@@ -96,6 +96,11 @@ pub enum ContainmentMode {
     /// ([`DEFAULT_CHILD_UID`](crate::DEFAULT_CHILD_UID)) and is hardened, by
     /// the same [`ChildConfinement`](crate::ChildConfinement) the workload
     /// launch uses. It used to get nothing, and ran as guest root.
+    ///
+    /// Only a root runtime can drop. A non-root runtime under this mode
+    /// refuses every spawn with
+    /// [`NucleusError::ChildSeparationUnavailable`] rather than running the
+    /// child at its own uid (#3120).
     MicroVM,
 }
 
@@ -1593,6 +1598,68 @@ mod tests {
         assert!(!read_pid1, "the child read /proc/1/environ");
     }
 
+    /// #3120 item 2, on a real spawn: a MicroVM child never reads the
+    /// runtime's environment, whoever the runtime is.
+    ///
+    /// Root (the guest): the child drops and the read fails. Any other uid:
+    /// the runtime cannot drop, and the spawn is refused BY NAME — before the
+    /// fix it ran `cat /proc/<runtime>/environ` at the runtime's uid and
+    /// printed every byte (red on the parent commit, as uid 1001: "read the
+    /// runtime's environ: 1943 bytes"). Not `#[ignore]`d: each uid asserts
+    /// its own exact outcome, so CI as root and a developer as themselves
+    /// both run it.
+    #[test]
+    fn a_microvm_child_never_reads_the_runtimes_environ_whoever_the_runtime_is() {
+        let tmp = tempdir().unwrap();
+        let policy = test_policy();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let mut kernel = Kernel::new(policy.clone());
+        let budget = AtomicBudget::new(&test_budget());
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .in_microvm();
+        let environ = format!("/proc/{}/environ", std::process::id());
+        assert!(
+            std::fs::read(&environ).is_ok_and(|b| !b.is_empty()),
+            "positive control: the runtime reads its own environ"
+        );
+        let args = vec!["cat".to_string(), environ];
+        let subject = args.join(" ");
+        let dt = run_token(&mut kernel, &subject);
+        let result = executor.run_args(
+            &args,
+            None,
+            None,
+            dt,
+            Authority::new(allowed_bundle(&subject)),
+        );
+        match crate::runtime_uid() {
+            0 => {
+                let out = result.expect("a root runtime drops and spawns");
+                assert!(
+                    !out.status.success() && out.stdout.is_empty(),
+                    "the dropped child read the runtime's environ"
+                );
+            }
+            runtime_uid => match result {
+                Err(NucleusError::ChildSeparationUnavailable {
+                    runtime_uid: r,
+                    child_uid,
+                }) => {
+                    assert_eq!(r, runtime_uid);
+                    assert_eq!(child_uid, crate::DEFAULT_CHILD_UID);
+                }
+                Ok(out) => panic!(
+                    "a MicroVM child of a non-root runtime (uid {runtime_uid}) ran at its uid \
+                     (read {} bytes of its environ)",
+                    out.stdout.len()
+                ),
+                Err(other) => panic!("refused, but not by name: {other:?}"),
+            },
+        }
+    }
+
     /// The other half of "don't break the workspace": a file the runtime writes
     /// through a MicroVM pod's sandbox belongs to the child uid, so the agent's
     /// next command can rewrite it in place.
@@ -2043,7 +2110,11 @@ mod tests {
         }
 
         /// When the Executor attests it is inside a microVM, a microVM-requiring
-        /// policy passes the gate.
+        /// policy passes the gate. What happens next depends on the REAL
+        /// runtime uid, and both outcomes are asserted exactly: a root runtime
+        /// (the guest) runs the child; any other refuses it by name at the
+        /// confinement step, which runs after this gate — so the refusal is
+        /// not `IsolationInsufficient`.
         #[test]
         fn microvm_required_and_in_microvm_allows() {
             let tmp = tempdir().unwrap();
@@ -2057,10 +2128,18 @@ mod tests {
                 .in_microvm();
 
             let dt = run_token(&mut kernel, "echo hi");
-            let output = executor
-                .run("echo hi", dt, Authority::new(run_bundle("echo hi")))
-                .unwrap();
-            assert!(output.status.success());
+            let result = executor.run("echo hi", dt, Authority::new(run_bundle("echo hi")));
+            match crate::runtime_uid() {
+                0 => assert!(result.unwrap().status.success()),
+                runtime_uid => assert!(
+                    matches!(
+                        result,
+                        Err(NucleusError::ChildSeparationUnavailable { runtime_uid: r, .. })
+                            if r == runtime_uid
+                    ),
+                    "a non-root MicroVM executor must refuse by name, got {result:?}"
+                ),
+            }
         }
 
         /// On non-Linux hosts, requesting host hardening fails CLOSED rather than

@@ -14,33 +14,59 @@
 //!
 //! # Shape (ADR 0007 B, C, D)
 //!
-//! * [`ChildConfinement`] has a private field and three constructors:
-//!   [`ChildConfinement::for_containment`] (the Executor's), and
-//!   [`ChildConfinement::workload`] (the tool-proxy workload's) and nothing
-//!   else. There is no `Default` (B-1).
-//! * `for_containment` is an exhaustive `match` on [`ContainmentMode`] with no
-//!   `_` arm (B-3, E): `Unconfigured` is refused, and a mode added later does
-//!   not compile until somebody says how its children are confined.
+//! * [`ChildConfinement`] has a private field and two constructors:
+//!   [`ChildConfinement::for_containment`] (the Executor's) and
+//!   [`ChildConfinement::workload`] (the tool-proxy workload's). There is no
+//!   `Default` (B-1).
+//! * Both are exhaustive `match`es on [`ContainmentMode`] with no `_` arm
+//!   (B-3, E): `Unconfigured` is refused, and a mode added later does not
+//!   compile until somebody says how its children are confined.
 //! * The Executor holds no `Option<hook>` it could leave empty: every spawn
 //!   site asks `for_containment` and hands the result's [`apply`] to the
 //!   sealed spawn home, so a MicroVM spawn without the uid drop has no line of
 //!   code that could express it.
 //!
+//! # Separation is enforced or refused, never assumed (#3120)
+//!
+//! "This child must not share the runtime's uid" is decided in one private
+//! function, `separate`, and it has exactly two outcomes: a uid drop, or a
+//! named refusal ([`NucleusError::ChildSeparationUnavailable`],
+//! [`NucleusError::ChildSharesRuntimeUid`]). Before #3120 it had a third: a
+//! runtime that could not drop (anything but root) quietly ran the child at
+//! its own uid with inherited fds closed. The tool-proxy's admission refused a
+//! same-uid workload and then the spawn produced one, because the check and
+//! the effect were two decisions. The admission now IS this decision: the
+//! plan carries the `ChildConfinement` it was admitted with, and the spawn
+//! applies that value.
+//!
+//! The one posture that runs a child at the runtime's uid is the bare host
+//! tier, [`ContainmentMode::Unsandboxed`] — an explicit, audited opt-in whose
+//! own documentation says the child is a normal host process. A non-root
+//! runtime cannot reach that posture by failing to drop; it reaches it only by
+//! having declared `Unsandboxed`.
+//!
 //! # What the child gets
 //!
-//! | Posture | uid/gid | inherited fds > 2 | no_new_privs + rlimits |
-//! |---|---|---|---|
-//! | bare (`Unsandboxed`, explicit dev opt-in) | runtime's | untouched | no |
-//! | close-inherited (separation wanted, runtime not root) | runtime's | close-on-exec | no |
-//! | restricted (`HostHardened`) | runtime's | close-on-exec | yes |
-//! | drop-to *uid* (separation wanted, runtime root) | *uid* | close-on-exec | yes |
+//! | Mode | runtime root | runtime not root |
+//! |---|---|---|
+//! | `Unconfigured` | refused | refused |
+//! | `Unsandboxed`, `/v1/run` child | bare: runtime's uid | bare: runtime's uid |
+//! | `Unsandboxed`, workload, no `workload.uid` | drop to 65534 | bare: runtime's uid |
+//! | `Unsandboxed`, workload, explicit `workload.uid` | drop to it | **refused** |
+//! | `HostHardened`, `/v1/run` child | restricted, runtime's uid | restricted, runtime's uid |
+//! | `HostHardened`, workload | drop | **refused** |
+//! | `MicroVM` (child or workload) | drop | **refused** |
 //!
-//! "Separation wanted" is the workload and the MicroVM `/v1/run` child. Both
-//! decide it in one private function, `separate`, so they cannot drift apart.
-//! The close-inherited row exists because only root can change uid: a test
-//! harness or a non-root developer proxy cannot drop, and the child then runs
-//! as that (already unprivileged) user, as the workload always has. Inside a
-//! guest the proxy is root, so the drop row is the one that runs.
+//! "Bare" = no fd closing, no `no_new_privs`, no rlimits. "Restricted" = fds
+//! above 2 close-on-exec, `no_new_privs`, rlimits, no uid change. "Drop" =
+//! restricted, and uid/gid changed first. An explicit `workload.uid` is a
+//! request the runtime must honour or refuse; only the unset default may
+//! collapse to the bare tier, because only then did nobody ask for a uid.
+//!
+//! `HostHardened`'s `/v1/run` child keeps the runtime's uid: that mode's
+//! documented contract is self-restriction (it attests `process: Shared`), and
+//! the tool-proxy never selects it — its containment comes only from
+//! `SandboxProof`, which yields `MicroVM` or `Unsandboxed`.
 //!
 //! [`apply`]: ChildConfinement::apply
 
@@ -70,14 +96,26 @@ pub struct ChildConfinement {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Posture {
-    /// Explicit bare-host opt-in (`ContainmentMode::Unsandboxed`).
-    Bare,
-    /// Separation was wanted but the runtime cannot change uid.
-    CloseInherited,
+    /// The child is a plain host process at the runtime's uid, and can read
+    /// everything the runtime can, its environment included. Reachable ONLY
+    /// from `ContainmentMode::Unsandboxed` — never as the fallback of a
+    /// separation that could not happen.
+    Unsandboxed,
     /// Self-restriction without a uid change (`ContainmentMode::HostHardened`).
     Restricted,
     /// Drop to this uid (and gid), then self-restrict.
     DropTo(u32),
+}
+
+/// Who the child runs as, relative to the runtime. Two-valued on purpose: a
+/// confinement either changes the uid or it does not, and there is no third
+/// state now that "wanted to, could not" is a refusal rather than a posture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildUid {
+    /// A uid that is not the runtime's.
+    Distinct(u32),
+    /// The runtime's own uid: the child can read the runtime's environment.
+    SharedWithRuntime,
 }
 
 impl ChildConfinement {
@@ -85,8 +123,10 @@ impl ChildConfinement {
     /// every child it spawns.
     ///
     /// # Errors
-    /// [`NucleusError::IsolationNotConfigured`] for
-    /// [`ContainmentMode::Unconfigured`] — no posture, no spawn.
+    /// * [`NucleusError::IsolationNotConfigured`] for
+    ///   [`ContainmentMode::Unconfigured`] — no posture, no spawn.
+    /// * [`NucleusError::ChildSeparationUnavailable`] for
+    ///   [`ContainmentMode::MicroVM`] when the runtime is not root.
     pub fn for_containment(mode: ContainmentMode) -> Result<Self> {
         Self::decide(mode, runtime_uid())
     }
@@ -99,7 +139,7 @@ impl ChildConfinement {
         match mode {
             ContainmentMode::Unconfigured => Err(NucleusError::IsolationNotConfigured),
             ContainmentMode::Unsandboxed => Ok(Self {
-                posture: Posture::Bare,
+                posture: Posture::Unsandboxed,
             }),
             ContainmentMode::HostHardened => Ok(Self {
                 posture: Posture::Restricted,
@@ -107,37 +147,100 @@ impl ChildConfinement {
             // The VM is the boundary against the HOST; inside it, the
             // tool-proxy is PID 1 and root, and holds every pod secret. A
             // command it runs for the agent is separated from it exactly as
-            // the workload is.
-            ContainmentMode::MicroVM => Ok(Self::separate(DEFAULT_CHILD_UID, runtime_uid)),
+            // the workload is — or not run.
+            ContainmentMode::MicroVM => Self::separate(DEFAULT_CHILD_UID, runtime_uid),
         }
     }
 
-    /// The confinement of a pod workload that runs as `uid`.
+    /// The confinement of a pod workload under `mode` that asked for
+    /// `requested` (`workload.uid`; `None` = the default,
+    /// [`DEFAULT_CHILD_UID`]).
     ///
-    /// The caller has already refused `uid == runtime_uid()` (the
-    /// tool-proxy's admission does); this does not re-decide that.
-    #[must_use]
-    pub fn workload(uid: u32) -> Self {
-        Self::separate(uid, runtime_uid())
+    /// This is the workload's ADMISSION, not only its spawn: the tool-proxy
+    /// admits a workload by obtaining this value and spawns by applying it,
+    /// so what was checked and what is enforced are one value (#3120).
+    ///
+    /// # Errors
+    /// * [`NucleusError::IsolationNotConfigured`] for `Unconfigured`.
+    /// * [`NucleusError::ChildSharesRuntimeUid`] when the uid asked for is
+    ///   the runtime's own.
+    /// * [`NucleusError::ChildSeparationUnavailable`] when separation is
+    ///   required and the runtime cannot drop: every mode but `Unsandboxed`,
+    ///   and `Unsandboxed` with an explicit `workload.uid`.
+    pub fn workload(mode: ContainmentMode, requested: Option<u32>) -> Result<Self> {
+        Self::decide_workload(mode, requested, runtime_uid())
+    }
+
+    pub(crate) fn decide_workload(
+        mode: ContainmentMode,
+        requested: Option<u32>,
+        runtime_uid: u32,
+    ) -> Result<Self> {
+        let uid = requested.unwrap_or(DEFAULT_CHILD_UID);
+        match mode {
+            ContainmentMode::Unconfigured => Err(NucleusError::IsolationNotConfigured),
+            // The bare host tier, declared. A root runtime still drops (a
+            // stronger posture costs nothing); a non-root one cannot, and
+            // the workload runs as a plain host process — which is what
+            // `Unsandboxed` means. Only when no uid was asked for: an
+            // explicit `workload.uid` the runtime cannot honour is refused
+            // rather than silently replaced by the runtime's.
+            ContainmentMode::Unsandboxed => match requested {
+                None if runtime_uid != 0 => Ok(Self {
+                    posture: Posture::Unsandboxed,
+                }),
+                None | Some(_) => Self::separate(uid, runtime_uid),
+            },
+            ContainmentMode::HostHardened | ContainmentMode::MicroVM => {
+                Self::separate(uid, runtime_uid)
+            }
+        }
     }
 
     /// "This child must not share the runtime's authority" — the one rule the
-    /// workload and the MicroVM `/v1/run` child share.
-    fn separate(uid: u32, runtime_uid: u32) -> Self {
-        let posture = if runtime_uid == 0 && uid != 0 {
-            Posture::DropTo(uid)
+    /// workload and the MicroVM `/v1/run` child share. A drop, or a named
+    /// refusal; there is no third outcome.
+    fn separate(uid: u32, runtime_uid: u32) -> Result<Self> {
+        if uid == runtime_uid {
+            Err(NucleusError::ChildSharesRuntimeUid { uid })
+        } else if runtime_uid != 0 {
+            Err(NucleusError::ChildSeparationUnavailable {
+                runtime_uid,
+                child_uid: uid,
+            })
         } else {
-            Posture::CloseInherited
-        };
-        Self { posture }
+            Ok(Self {
+                posture: Posture::DropTo(uid),
+            })
+        }
+    }
+
+    /// Who the child runs as, relative to the runtime.
+    #[must_use]
+    pub fn child_uid(&self) -> ChildUid {
+        match self.posture {
+            Posture::DropTo(uid) => ChildUid::Distinct(uid),
+            Posture::Unsandboxed | Posture::Restricted => ChildUid::SharedWithRuntime,
+        }
     }
 
     /// The uid the child will run as, when it is not the runtime's.
     #[must_use]
     pub fn drop_uid(&self) -> Option<u32> {
+        match self.child_uid() {
+            ChildUid::Distinct(uid) => Some(uid),
+            ChildUid::SharedWithRuntime => None,
+        }
+    }
+
+    /// Whether this is the bare host tier: the declared `Unsandboxed`
+    /// posture, the one in which a child reads the runtime's environment.
+    /// Callers print the banner off this.
+    #[must_use]
+    pub fn is_unsandboxed(&self) -> bool {
         match self.posture {
-            Posture::DropTo(uid) => Some(uid),
-            Posture::Bare | Posture::CloseInherited | Posture::Restricted => None,
+            Posture::Unsandboxed => true,
+            Posture::Restricted | Posture::DropTo(_) => false,
         }
     }
 
@@ -146,7 +249,7 @@ impl ChildConfinement {
     pub fn restricts(&self) -> bool {
         match self.posture {
             Posture::Restricted | Posture::DropTo(_) => true,
-            Posture::Bare | Posture::CloseInherited => false,
+            Posture::Unsandboxed => false,
         }
     }
 
@@ -154,8 +257,8 @@ impl ChildConfinement {
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
-            Posture::CloseInherited | Posture::Restricted | Posture::DropTo(_) => true,
-            Posture::Bare => false,
+            Posture::Restricted | Posture::DropTo(_) => true,
+            Posture::Unsandboxed => false,
         }
     }
 
@@ -176,8 +279,7 @@ impl ChildConfinement {
     /// For a `tokio::process::Command`, pass `cmd.as_std_mut()`.
     pub fn apply(&self, cmd: &mut std::process::Command) {
         match self.posture {
-            Posture::Bare => {}
-            Posture::CloseInherited => imp::install(cmd, false),
+            Posture::Unsandboxed => {}
             Posture::Restricted => imp::install(cmd, true),
             Posture::DropTo(uid) => {
                 imp::drop_to(cmd, uid);
@@ -208,9 +310,13 @@ impl ChildConfinement {
 ///
 /// Read through `std` (the owner of `/proc/self`) so this needs neither
 /// `unsafe` nor a new dependency. Where there is no procfs it falls back to
-/// the owner of the working directory, a value that cannot be root on a
-/// developer host — so the answer errs toward "cannot drop", which keeps the
-/// child confined by every other means rather than refusing every spawn.
+/// the owner of the working directory, and failing both, `u32::MAX`.
+///
+/// Both directions of a wrong answer fail closed. Reading a root runtime as
+/// non-root makes every separated spawn a
+/// [`NucleusError::ChildSeparationUnavailable`] refusal; reading a non-root
+/// runtime as root declares a uid change the kernel then refuses (`EPERM`),
+/// so the spawn fails. Neither runs a separated child at the runtime's uid.
 #[must_use]
 pub fn runtime_uid() -> u32 {
     imp::runtime_uid()
@@ -380,37 +486,102 @@ mod tests {
         assert!(c.closes_inherited_fds());
     }
 
-    /// The MicroVM `/v1/run` child and the workload are the SAME decision.
+    /// The MicroVM `/v1/run` child and the default workload are the SAME
+    /// decision, at every runtime uid — including the refusal.
     #[test]
     fn the_microvm_child_and_the_default_workload_are_one_decision() {
         for runtime in [0, 1000] {
             assert_eq!(
-                ChildConfinement::decide(ContainmentMode::MicroVM, runtime).unwrap(),
-                ChildConfinement::separate(DEFAULT_CHILD_UID, runtime),
+                ChildConfinement::decide(ContainmentMode::MicroVM, runtime).ok(),
+                ChildConfinement::decide_workload(ContainmentMode::MicroVM, None, runtime).ok(),
             );
         }
     }
 
-    /// A runtime that cannot drop still closes inherited fds — never bare.
+    /// #3120 item 2, at the decision: separation wanted and impossible is a
+    /// named refusal, not a same-uid child. Before the fix this returned a
+    /// `CloseInherited` posture — the runtime's uid — for a non-root runtime,
+    /// the state the workload admission refuses.
     #[test]
-    fn a_non_root_runtime_cannot_drop_but_is_not_bare() {
-        let c = ChildConfinement::decide(ContainmentMode::MicroVM, 1000).unwrap();
-        assert_eq!(c.drop_uid(), None);
-        assert!(c.closes_inherited_fds());
+    fn a_non_root_runtime_refuses_a_microvm_child_by_name() {
+        assert!(matches!(
+            ChildConfinement::decide(ContainmentMode::MicroVM, 1000),
+            Err(NucleusError::ChildSeparationUnavailable {
+                runtime_uid: 1000,
+                child_uid: DEFAULT_CHILD_UID,
+            })
+        ));
     }
 
-    /// Dropping "to root" is not a drop.
+    /// Every mode that wants a separated workload refuses one a non-root
+    /// runtime cannot drop, whatever the uid asked for.
     #[test]
-    fn separation_to_uid_zero_is_not_a_drop() {
-        let c = ChildConfinement::separate(0, 0);
-        assert_eq!(c.drop_uid(), None);
-        assert!(c.closes_inherited_fds());
+    fn a_non_root_runtime_refuses_every_separated_workload_by_name() {
+        for mode in [ContainmentMode::MicroVM, ContainmentMode::HostHardened] {
+            for requested in [None, Some(4242)] {
+                assert!(
+                    matches!(
+                        ChildConfinement::decide_workload(mode, requested, 1000),
+                        Err(NucleusError::ChildSeparationUnavailable { .. })
+                    ),
+                    "{mode:?} / {requested:?}"
+                );
+            }
+        }
+    }
+
+    /// The bare host tier is reached only by declaring it, and only for the
+    /// default uid: an explicit `workload.uid` is honoured or refused.
+    #[test]
+    fn unsandboxed_is_the_only_same_uid_workload_and_only_by_default() {
+        let c = ChildConfinement::decide_workload(ContainmentMode::Unsandboxed, None, 1000)
+            .expect("the declared bare tier runs");
+        assert!(c.is_unsandboxed());
+        assert_eq!(c.child_uid(), ChildUid::SharedWithRuntime);
+        assert!(matches!(
+            ChildConfinement::decide_workload(ContainmentMode::Unsandboxed, Some(4242), 1000),
+            Err(NucleusError::ChildSeparationUnavailable { .. })
+        ));
+        // A root runtime still drops, even on the bare tier.
+        let c = ChildConfinement::decide_workload(ContainmentMode::Unsandboxed, None, 0).unwrap();
+        assert_eq!(c.child_uid(), ChildUid::Distinct(DEFAULT_CHILD_UID));
+    }
+
+    /// The runtime's own uid is never a boundary, in any mode, root or not.
+    #[test]
+    fn a_workload_asking_for_the_runtimes_uid_is_refused_by_name() {
+        for mode in [
+            ContainmentMode::Unsandboxed,
+            ContainmentMode::HostHardened,
+            ContainmentMode::MicroVM,
+        ] {
+            assert!(matches!(
+                ChildConfinement::decide_workload(mode, Some(1000), 1000),
+                Err(NucleusError::ChildSharesRuntimeUid { uid: 1000 })
+            ));
+            assert!(matches!(
+                ChildConfinement::decide_workload(mode, Some(0), 0),
+                Err(NucleusError::ChildSharesRuntimeUid { uid: 0 })
+            ));
+        }
+    }
+
+    /// A root runtime drops an explicit uid to exactly that uid.
+    #[test]
+    fn a_root_runtime_drops_an_explicit_workload_uid() {
+        let c = ChildConfinement::decide_workload(ContainmentMode::MicroVM, Some(4242), 0).unwrap();
+        assert_eq!(c.child_uid(), ChildUid::Distinct(4242));
+        assert!(c.restricts());
     }
 
     #[test]
     fn unconfigured_is_refused_not_passed_through() {
         assert!(matches!(
             ChildConfinement::decide(ContainmentMode::Unconfigured, 0),
+            Err(NucleusError::IsolationNotConfigured)
+        ));
+        assert!(matches!(
+            ChildConfinement::decide_workload(ContainmentMode::Unconfigured, None, 0),
             Err(NucleusError::IsolationNotConfigured)
         ));
     }
@@ -424,9 +595,18 @@ mod tests {
 
     #[test]
     fn unsandboxed_is_the_one_bare_posture() {
-        let c = ChildConfinement::decide(ContainmentMode::Unsandboxed, 0).unwrap();
-        assert_eq!(c.drop_uid(), None);
-        assert!(!c.restricts());
-        assert!(!c.closes_inherited_fds());
+        for runtime in [0, 1000] {
+            let c = ChildConfinement::decide(ContainmentMode::Unsandboxed, runtime).unwrap();
+            assert!(c.is_unsandboxed());
+            assert_eq!(c.drop_uid(), None);
+            assert!(!c.restricts());
+            assert!(!c.closes_inherited_fds());
+        }
+        for mode in [ContainmentMode::HostHardened, ContainmentMode::MicroVM] {
+            assert!(
+                ChildConfinement::decide(mode, 0).is_ok_and(|c| !c.is_unsandboxed()),
+                "{mode:?}"
+            );
+        }
     }
 }

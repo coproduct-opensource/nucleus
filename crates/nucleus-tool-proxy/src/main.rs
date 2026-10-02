@@ -1085,7 +1085,10 @@ async fn main() -> Result<(), ApiError> {
         };
     }
 
-    let runtime = pod_mgmt::build_runtime(&spec, sandbox_proof.containment())?;
+    // Copied out once: the executor's children and the workload are confined
+    // under the same containment, and `sandbox_proof` moves into the state.
+    let containment = sandbox_proof.containment();
+    let runtime = pod_mgmt::build_runtime(&spec, containment)?;
     let approvals = Arc::new(ApprovalRegistry::default());
 
     // Load signed approval bundle if present
@@ -1772,6 +1775,7 @@ async fn main() -> Result<(), ApiError> {
             &spec,
             &args.workload_door,
             door_app,
+            containment,
             completion_writer,
             Some(exit_report::on_workload_exit(
                 exit_audit.clone(),
@@ -1814,6 +1818,7 @@ async fn main() -> Result<(), ApiError> {
         &spec,
         &args.workload_door,
         door_app,
+        containment,
         completion_writer,
         Some(exit_report::on_workload_exit(
             exit_audit.clone(),

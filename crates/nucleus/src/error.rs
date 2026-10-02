@@ -186,6 +186,42 @@ pub enum NucleusError {
         reason: String,
     },
 
+    /// A child had to run under a uid other than the runtime's, and this
+    /// runtime cannot give it one: only root can change a child's uid.
+    ///
+    /// The runtime holds every per-pod secret in its environment, and a
+    /// process sharing its uid reads them from `/proc/<pid>/environ`. A child
+    /// that was meant to be separated and is not would be exactly the state
+    /// the workload admission refuses, so the spawn is refused instead of run
+    /// at the runtime's uid (#3120). The one posture that runs a child at the
+    /// runtime's uid is `ContainmentMode::Unsandboxed`, which says so.
+    #[error(
+        "child separation unavailable: this child must not run as the runtime's uid \
+         ({runtime_uid}), and only a root runtime can drop it to uid {child_uid} — a same-uid \
+         child could read every per-pod secret from /proc/<pid>/environ. Run the runtime as \
+         root (as in the microVM guest), or declare the bare host tier explicitly \
+         (ContainmentMode::Unsandboxed)"
+    )]
+    ChildSeparationUnavailable {
+        /// The runtime's own uid (not root).
+        runtime_uid: u32,
+        /// The uid the child should have run as.
+        child_uid: u32,
+    },
+
+    /// The uid a child was asked to run as is the runtime's own, which is no
+    /// boundary at all: a same-uid process reads the runtime's environment —
+    /// every per-pod secret — from `/proc/<pid>/environ`.
+    #[error(
+        "child shares the runtime's uid ({uid}), so it could read the runtime's environment — \
+         every per-pod secret — via /proc/<pid>/environ. Set `workload.uid` to a distinct \
+         unprivileged uid"
+    )]
+    ChildSharesRuntimeUid {
+        /// The requested uid, equal to the runtime's.
+        uid: u32,
+    },
+
     /// IO error from underlying operation.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

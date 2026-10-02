@@ -153,8 +153,9 @@ impl PodRuntime {
 
     /// The pod's sandbox, handing what it creates to the uid its executor's
     /// children run as — both read off the one decider for `spec.containment`.
-    /// An undeclared posture (no confinement) leaves ownership alone; its
-    /// executor refuses every spawn anyway.
+    /// A posture with no confinement — undeclared, or MicroVM under a
+    /// runtime that cannot drop — leaves ownership alone; its executor
+    /// refuses every spawn anyway, with the same error.
     fn sandbox_for(spec: &PodSpec) -> Result<Sandbox> {
         let sandbox = Sandbox::new(&spec.policy, &spec.work_dir)?;
         Ok(
