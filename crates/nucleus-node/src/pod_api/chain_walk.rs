@@ -52,6 +52,10 @@
 //! - **Scope.** A pod lists and cancels only itself and its direct children; an
 //!   identity the policy grants node-wide reach reaches every pod; a refusal is
 //!   `NotFound` and leaves the target running. Cancelling twice answers alike.
+//! - **A CI identity names only its own pods as parent.** The parent header
+//!   is honoured for an operator or orchestrator whatever it names, and for a
+//!   CI identity only when it names a pod that identity may manage; any other
+//!   is refused as `NotFound`, before admission, and nothing is created.
 //! - **Attribution.** A lockdown is broadcast and audited under the verified
 //!   peer, with the caller's own `operator_id` only as a quoted claim beside
 //!   it, and only an operator or orchestrator may issue one.
@@ -612,6 +616,17 @@ impl Model {
         }
     }
 
+    /// May `who` record the pod `header` names as its new pod's parent? A
+    /// pod's proof wins over any header, and the node-wide identities name any
+    /// pod. A CI identity names only a pod it may manage: naming another's
+    /// would plant its pod in that pod's lineage, listing and cascade.
+    fn may_name_parent(&self, who: Who, header: Option<PodRef>) -> bool {
+        match who {
+            Who::Ci(_) => header.is_none_or(|h| self.reaches(who, self.resolve(h))),
+            Who::Operator | Who::Orch(_) | Who::Pod(_) | Who::Stranger => true,
+        }
+    }
+
     fn may_lock_down(who: Who) -> bool {
         matches!(who, Who::Operator | Who::Orch(_))
     }
@@ -973,6 +988,10 @@ struct Stats {
     locked_below: usize,
     /// Restarts with a retired child's consumption in some ledger.
     restarts_with_consumption: usize,
+    /// CI creates refused for naming a parent the identity may not manage.
+    refused_parent: usize,
+    /// CI creates admitted under a parent the identity named by header.
+    ci_parented: usize,
 }
 
 impl Stats {
@@ -998,6 +1017,8 @@ impl Stats {
         self.refused_stopped += o.refused_stopped;
         self.locked_below += o.locked_below;
         self.restarts_with_consumption += o.restarts_with_consumption;
+        self.refused_parent += o.refused_parent;
+        self.ci_parented += o.ci_parented;
     }
 }
 
@@ -1186,6 +1207,15 @@ impl Walk {
             fut.await
         };
 
+        if !self.model.may_name_parent(who, header) {
+            let Created::Refused(_) = got else {
+                return Err(format!(
+                    "the model refuses a parent this caller may not manage; the node: {got}"
+                ));
+            };
+            self.stats.refused_parent += 1;
+            return Ok(());
+        }
         let Some((source, depth)) = want else {
             let Created::Refused(_) = got else {
                 return Err(format!("the model refuses this create; the node: {got}"));
@@ -1304,7 +1334,14 @@ impl Walk {
                         Ok(id) => Created::Pod(id),
                         Err(e) => Created::SpawnFailed(format!("unparseable id: {e}")),
                     },
-                    Err(s) if s.code() == tonic::Code::PermissionDenied => {
+                    // NOT_FOUND: a parent the caller may not manage, refused
+                    // like any pod outside its scope.
+                    Err(s)
+                        if matches!(
+                            s.code(),
+                            tonic::Code::PermissionDenied | tonic::Code::NotFound
+                        ) =>
+                    {
                         Created::Refused(s.message().to_string())
                     }
                     Err(s) => Created::SpawnFailed(format!("{:?}: {}", s.code(), s.message())),
@@ -1340,9 +1377,11 @@ impl Walk {
                 .await
                 {
                     Ok(resp) => Created::Pod(resp.0.id),
-                    Err(e @ (ApiError::Authority(_) | ApiError::Authorization(_))) => {
-                        Created::Refused(e.to_string())
-                    }
+                    Err(
+                        e @ (ApiError::Authority(_)
+                        | ApiError::Authorization(_)
+                        | ApiError::NotFound),
+                    ) => Created::Refused(e.to_string()),
                     Err(e) => Created::SpawnFailed(e.to_string()),
                 }
             }
@@ -1490,6 +1529,9 @@ impl Walk {
             Who::Pod(r) => Some(self.model.resolve(r)),
             _ => header.map(|h| self.model.resolve(h)),
         };
+        if matches!(who, Who::Ci(_)) && header.is_some() {
+            self.stats.ci_parented += 1;
+        }
         self.model.allocate(source, micro);
         self.model.pods.push(MPod {
             id,
@@ -2044,6 +2086,7 @@ fn random_delegation_chains_agree_with_the_model() {
         ("refusals under lockdown", stats.refused_locked),
         ("refusals below a stopped pod", stats.refused_stopped),
         ("restarts with consumption", stats.restarts_with_consumption),
+        ("refused CI parents", stats.refused_parent),
     ] {
         assert!(n > 0, "the walk never reached {what}: {stats:?}");
     }
@@ -2146,6 +2189,53 @@ fn a_child_is_never_admitted_an_upstream_its_parent_lacks() {
     assert_eq!(stats.admitted_upstreams_from_a_pod, 3, "{stats:?}");
 }
 
+/// #3126: a CI identity names as parent only a pod it may manage. Run over
+/// both transports. Against the root (unstamped) and another CI identity's pod
+/// the create is refused before admission, nothing is created and no ledger
+/// moves; against its own pod it is admitted under that parent; and the
+/// operator still names any pod, a CI identity's included. Every recorded
+/// parent is checked against the model after each step.
+#[test]
+fn a_ci_identity_names_only_its_own_pods_as_parent() {
+    for via in [Via::Grpc, Via::Http] {
+        let create = |who, header| Op::Create {
+            who,
+            via,
+            token: false,
+            budget: 0,
+            caps: 0,
+            boot: Boot::Runs,
+            header,
+            ups: 0,
+        };
+        let ops = vec![
+            // Pod 1: ci-0's own.
+            create(Who::Ci(0), None),
+            // ci-0 under its own pod: in scope.
+            create(Who::Ci(0), Some(PodRef::Nth(1))),
+            // ci-1 under ci-0's pod: another identity's.
+            create(Who::Ci(1), Some(PodRef::Nth(1))),
+            // ci-0 under the operator's root: unstamped.
+            create(Who::Ci(0), Some(PodRef::Nth(0))),
+            // The operator under ci-0's pod: node-wide, unchanged.
+            create(Who::Operator, Some(PodRef::Nth(1))),
+        ];
+        let stats = runtime()
+            .block_on(run_case(
+                &Case {
+                    root_budget: 0,
+                    ops,
+                },
+                Rules::AS_SHIPPED,
+            ))
+            .unwrap_or_else(|e| panic!("{via:?}: {e}"));
+        assert_eq!(stats.refused_parent, 2, "{via:?}: {stats:?}");
+        assert_eq!(stats.ci_parented, 1, "{via:?}: {stats:?}");
+        // The root, ci-0's two, and the operator's.
+        assert_eq!(stats.admitted, 4, "{via:?}: {stats:?}");
+    }
+}
+
 // ── The regression corpus ────────────────────────────────────────────────────
 
 /// Shrunk cases that found a bug, replayed before every walk under that
@@ -2173,6 +2263,15 @@ const CORPUS: &[(&str, u8, &[Op])] = &[
     ("#3088: a CI identity reaches the pod it created", 0, &[
         Op::Create { who: Who::Ci(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
         Op::List { who: Who::Ci(0), via: Via::Grpc, token: false },
+    ]),
+    ("#3126: a CI identity cannot name the operator's pod as parent", 0, &[
+        Op::Create { who: Who::Ci(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Nth(0)), ups: 0 },
+        Op::Create { who: Who::Ci(1), via: Via::Http, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Nth(0)), ups: 0 },
+    ]),
+    ("#3126: a CI identity names its own pod as parent", 0, &[
+        Op::Create { who: Who::Ci(0), via: Via::Http, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
+        Op::Create { who: Who::Ci(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Newest), ups: 0 },
+        Op::Create { who: Who::Ci(1), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Nth(1)), ups: 0 },
     ]),
     ("#3105: a failed spawn hands its reservation back", 1, &[
         Op::Create { who: Who::Orch(0), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::SpawnFails, header: None, ups: 0 },

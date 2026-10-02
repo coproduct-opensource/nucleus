@@ -25,7 +25,7 @@
 //! # What this does not reach
 //!
 //! Pods are registered through the fixture, not `create_pod_internal`. The
-//! parent a create would record goes through the real `resolve_parent_pod_id`,
+//! parent a create would record goes through the real `parent_for_create`,
 //! but `PodAuthority` admission and the driver spawn are out of the walk. The
 //! cascade-cancel in the reaper loop is not run.
 //!
@@ -209,10 +209,13 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                     let caller_id = model.caller_id(caller);
                     let header_text =
                         header.map(|h| model.pods[h % model.pods.len()].id.to_string());
-                    let parent = resolve_parent_pod_id(
+                    let parent = parent_for_create(
+                        &st,
                         &crate::auth::CallerScope::from_model(caller_id),
                         header_text.as_deref(),
-                    );
+                    )
+                    .await
+                    .map_err(|e| at(format!("parent refused: {e}")))?;
                     let want = match caller_id {
                         Some(c) => Some(c),
                         None => header_text.as_deref().and_then(|h| Uuid::parse_str(h).ok()),
