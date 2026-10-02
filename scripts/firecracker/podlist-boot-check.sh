@@ -78,6 +78,7 @@ sudo -b env RUST_LOG="${RUST_LOG:-warn}" \
     NUCLEUS_JAILER_PATH="$(command -v jailer)" \
     NUCLEUS_JAILER_CHROOT_BASE="$JAIL_DIR" \
     NUCLEUS_FIRECRACKER_NETNS=false \
+    NUCLEUS_NODE_ARTIFACTS_ROOT="$FC_DIR" \
     "$NODE_BIN" --listen "$ADDR" --state-dir "$STATE_DIR" \
     --proxy-auth-secret "$SECRET" --proxy-approval-secret "$SECRET" \
     --identity-workload-api-socket "$FC_DIR/wapi.sock" > "$FC_DIR/node-podlist-check.log" 2>&1
