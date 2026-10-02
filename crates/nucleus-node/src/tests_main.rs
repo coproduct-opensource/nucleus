@@ -733,7 +733,9 @@ fn create_pod_internal_still_consults_the_authority_gate() {
     assert!(
         body.contains("reservation.release().await;") && body.contains("reservation.commit();"),
         "a failed spawn hands the budget reservation back, and only a registered pod keeps it \
-         (a dropped create releases through the guard's Drop, #3032)"
+         (a dropped create releases through the guard's Drop, #3032). `Reservation::release` \
+         is the unspawned arm: nothing ran, so the spend is zero, where `release_child(_, None)` \
+         would fold the WHOLE allocation into the parent"
     );
     // Both entry points build an Admission — neither bypasses the gate.
     assert!(src.contains("pod_authority::Admission::from_http("));

@@ -216,6 +216,47 @@ async fn the_credited_spend_is_clamped_and_absence_folds_everything() {
     }
 }
 
+/// A pod whose driver never started it spent nothing, so its parent gets
+/// the whole reservation back through `Reservation::release` — unlike
+/// `release_child(_, None)`, which folds it. The control: the same $5
+/// sibling is refused after a fold.
+#[tokio::test]
+async fn a_pod_that_never_spawned_hands_its_whole_reservation_back() {
+    async fn five_dollar_sibling_fits(unspawned: bool) -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = authority(dir.path(), args());
+        let parent = Uuid::new_v4();
+        auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), parent)
+            .await
+            .unwrap();
+        let child = Uuid::new_v4();
+        if unspawned {
+            let issued = auth
+                .admit(&from_pod(parent), &spec_with(lattice(3)), child)
+                .await
+                .unwrap();
+            issued.reservation.release().await;
+        } else {
+            auth.admit_kept(&from_pod(parent), &spec_with(lattice(3)), child)
+                .await
+                .unwrap();
+            auth.release_child(child, None).await;
+        }
+        auth.admit_kept(&from_pod(parent), &spec_with(lattice(5)), Uuid::new_v4())
+            .await
+            .is_ok()
+    }
+
+    assert!(
+        five_dollar_sibling_fits(true).await,
+        "nothing ran, nothing spent"
+    );
+    assert!(
+        !five_dollar_sibling_fits(false).await,
+        "the control: a fold keeps the $3 consumed"
+    );
+}
+
 #[tokio::test]
 async fn a_request_over_the_parent_budget_is_refused_not_clamped() {
     let dir = tempfile::tempdir().unwrap();

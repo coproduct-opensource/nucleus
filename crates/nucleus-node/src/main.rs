@@ -979,6 +979,7 @@ async fn create_pod_internal(
     let (driver_state, proxy_addr, log_path) = match spawned {
         Ok(s) => s,
         Err(e) => {
+            // Nothing ran, so nothing was spent: the reservation goes back whole.
             reservation.release().await;
             return Err(e);
         }

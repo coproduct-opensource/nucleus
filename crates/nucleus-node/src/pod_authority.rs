@@ -339,14 +339,21 @@ impl Drop for Reservation {
         // as its own task. Outside a runtime there is nothing left to release
         // against, so there is nothing to do.
         //
-        // A dropped create is NOT known to have run nothing: the future was
-        // abandoned mid-boot, and whether the guest got as far as charging is
-        // exactly what this path cannot see. So it releases on the "could not
-        // look" arm, which folds the allocation (ADR 0007 A-2); only the
-        // spawn's own error, through `release`, is known to be unspawned.
+        // An uncommitted reservation is a pod the node never registered: it
+        // was never reaped, so no spend receipt of its can be collected, and
+        // it hands the whole reservation back exactly as `release` does
+        // (#3032's definition of done, #3105).
         match tokio::runtime::Handle::try_current() {
             Ok(rt) => {
-                rt.spawn(async move { release(&r.inner, &r.state_dir, r.pod_id, None).await });
+                rt.spawn(async move {
+                    release(
+                        &r.inner,
+                        &r.state_dir,
+                        r.pod_id,
+                        Some(rust_decimal::Decimal::ZERO),
+                    )
+                    .await
+                });
             }
             Err(_) => tracing::warn!(pod = %r.pod_id, "reservation dropped outside a runtime"),
         }
