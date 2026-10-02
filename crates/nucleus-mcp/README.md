@@ -34,8 +34,9 @@ nucleus-mcp \
 
 | Flag | Env | Purpose |
 |---|---|---|
-| `--proxy-url` | `NUCLEUS_MCP_PROXY_URL` | tool-proxy base URL |
-| `--auth-secret` | `NUCLEUS_MCP_AUTH_SECRET` | HMAC secret for signing tool calls |
+| `--proxy-url` | `NUCLEUS_MCP_PROXY_URL` | tool-proxy URL: `http://host:port`, or `unix:///<socket>` (falls back to `NUCLEUS_TOOL_PROXY_URL`) |
+| `--auth-secret` | `NUCLEUS_MCP_AUTH_SECRET` | HMAC secret for signing tool calls (TCP only) |
+| `--signed-upstream` | `NUCLEUS_MCP_SIGNED_UPSTREAM` | a signing proxy in front of a TCP tool-proxy signs instead (TCP only) |
 | `--approval-secret` | `NUCLEUS_MCP_APPROVAL_SECRET` | separate secret for `/v1/approve` |
 | `--actor` | `NUCLEUS_MCP_ACTOR` | actor id used in HMAC signatures |
 | `--spec` | `NUCLEUS_MCP_SPEC` | PodSpec used to filter visible tools |
@@ -43,6 +44,14 @@ nucleus-mcp \
 | `--kernel-trace` | `NUCLEUS_MCP_KERNEL_TRACE` | JSONL path for per-call kernel decisions |
 
 Run `nucleus-mcp --help` for the full list.
+
+A TCP proxy needs `--auth-secret` or `--signed-upstream`; the bridge refuses to
+start with neither. Inside a pod the bridge ships in the guest layer at
+`/usr/local/bin/nucleus-mcp` and needs no flags: the runtime sets
+`NUCLEUS_TOOL_PROXY_URL=unix:///run/nucleus-door/workload.sock`, the workload
+door, which admits the workload by its uid. There it holds no secret (it refuses
+one), and an operation held for approval is returned to the agent with its
+reason, because approvals are the host's decision.
 
 ## Why a bridge
 

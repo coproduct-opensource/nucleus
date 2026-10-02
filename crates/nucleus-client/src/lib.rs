@@ -44,6 +44,8 @@ use sha2::Sha256;
 pub mod drand;
 /// Egress admission proofs: a host the pod's policy allows.
 pub mod egress;
+/// Where a client reaches the tool-proxy: the one parser of a proxy URL.
+pub mod endpoint;
 /// The tool-proxy's file and command wire format, declared once.
 pub mod wire;
 

@@ -122,6 +122,10 @@ pub const WORKLOAD_PROBE_BIN: &str = GuestBinary::WorkloadProbe.path();
 pub const PODLIST_PROBE_BIN: &str = GuestBinary::PodlistProbe.path();
 /// The adversary probe (probe-pod boot lane).
 pub const ADVERSARY_PROBE_BIN: &str = GuestBinary::AdversaryProbe.path();
+/// The MCP bridge an agent in the pod speaks to (#2696 P2): stdio MCP in, the
+/// tool-proxy's workload door out. It needs no flags there: the runtime gives
+/// the workload `NUCLEUS_TOOL_PROXY_URL`, the door's `unix://` URL.
+pub const MCP_BIN: &str = GuestBinary::Mcp.path();
 
 /// A binary the guest layer ships, and the one place its guest path and the
 /// cargo package that builds it are written.
@@ -146,6 +150,9 @@ pub enum GuestBinary {
     PodlistProbe,
     /// The adversary probe.
     AdversaryProbe,
+    /// The MCP bridge (`nucleus-mcp`), which an agent run in the pod uses to
+    /// reach its tools through the workload door (#2696 P2).
+    Mcp,
 }
 
 /// `(guest path, cargo package)` for a binary installed under
@@ -158,7 +165,7 @@ macro_rules! guest_bin {
 
 impl GuestBinary {
     /// Every binary the guest layer ships.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Init,
         Self::ToolProxy,
         Self::EgressProbe,
@@ -166,6 +173,7 @@ impl GuestBinary {
         Self::WorkloadProbe,
         Self::PodlistProbe,
         Self::AdversaryProbe,
+        Self::Mcp,
     ];
 
     /// `(guest path, cargo package)`. Each package's binary target carries the
@@ -179,6 +187,7 @@ impl GuestBinary {
             Self::WorkloadProbe => guest_bin!("workload-probe"),
             Self::PodlistProbe => guest_bin!("podlist-probe"),
             Self::AdversaryProbe => guest_bin!("adversary-probe"),
+            Self::Mcp => guest_bin!("mcp"),
         }
     }
 
@@ -372,6 +381,7 @@ mod tests {
             WORKLOAD_PROBE_BIN,
             PODLIST_PROBE_BIN,
             ADVERSARY_PROBE_BIN,
+            MCP_BIN,
             WORKLOAD_DOOR,
         ] {
             assert!(
@@ -394,6 +404,7 @@ mod tests {
             GuestBinary::WorkloadProbe => 4,
             GuestBinary::PodlistProbe => 5,
             GuestBinary::AdversaryProbe => 6,
+            GuestBinary::Mcp => 7,
         };
         for (i, b) in GuestBinary::ALL.iter().enumerate() {
             assert_eq!(slot(*b), i, "{b:?} out of place in ALL");

@@ -19,7 +19,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::profiles;
-use crate::run::{McpEnvConfig, build_mcp_allowed_tools, write_mcp_config};
+use crate::run::{McpEnvConfig, McpProxyAuth, build_mcp_allowed_tools, write_mcp_config};
 
 /// Launch an interactive agent session with nucleus as the security context.
 ///
@@ -186,8 +186,10 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         &mcp_command_path,
         &McpEnvConfig {
             proxy_url: &proxy_url,
-            auth_secret: Some(&auth_secret),
-            approval_secret: Some(&approval_secret),
+            auth: McpProxyAuth::Hmac {
+                auth_secret: &auth_secret,
+                approval_secret: &approval_secret,
+            },
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
             sandbox_token: Some(&sandbox_token),

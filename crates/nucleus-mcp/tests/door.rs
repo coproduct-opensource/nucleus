@@ -54,7 +54,9 @@ fn respond(stream: &mut UnixStream, status: &str, body: &str) {
         "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(response.as_bytes()).expect("write response");
+    stream
+        .write_all(response.as_bytes())
+        .expect("write response");
 }
 
 /// A test proxy door. `/v1/read` of `hello.txt` answers with its contents
@@ -89,7 +91,10 @@ fn test_door(listener: UnixListener, n: usize) -> mpsc::Receiver<Seen> {
 
 /// Run the bridge with `env` (and nothing inherited), feed it `requests`, and
 /// return its stdout lines and exit status.
-fn run_bridge(env: &[(&str, &str)], requests: &[Value]) -> (Vec<Value>, std::process::ExitStatus, String) {
+fn run_bridge(
+    env: &[(&str, &str)],
+    requests: &[Value],
+) -> (Vec<Value>, std::process::ExitStatus, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nucleus-mcp"));
     cmd.env_clear()
         .envs(env.iter().copied())
@@ -112,7 +117,11 @@ fn run_bridge(env: &[(&str, &str)], requests: &[Value]) -> (Vec<Value>, std::pro
         .lines()
         .map(|l| serde_json::from_str(&l.expect("utf-8 line")).expect("a JSON-RPC line"))
         .collect();
-    (lines, out.status, String::from_utf8_lossy(&out.stderr).into_owned())
+    (
+        lines,
+        out.status,
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
 }
 
 fn rpc(id: u64, method: &str, params: Value) -> Value {
@@ -142,8 +151,16 @@ fn an_agent_lists_tools_and_reads_through_the_door() {
         &[
             rpc(1, "initialize", json!({ "protocolVersion": "2025-11-25" })),
             rpc(2, "tools/list", json!({})),
-            rpc(3, "tools/call", json!({ "name": "read", "arguments": { "path": "hello.txt" } })),
-            rpc(4, "tools/call", json!({ "name": "read", "arguments": { "path": "../etc/shadow" } })),
+            rpc(
+                3,
+                "tools/call",
+                json!({ "name": "read", "arguments": { "path": "hello.txt" } }),
+            ),
+            rpc(
+                4,
+                "tools/call",
+                json!({ "name": "read", "arguments": { "path": "../etc/shadow" } }),
+            ),
         ],
     );
     assert!(status.success(), "bridge failed: {status}\n{stderr}");
@@ -170,7 +187,11 @@ fn an_agent_lists_tools_and_reads_through_the_door() {
     for _ in 0..2 {
         let seen = door.recv().expect("the door saw both reads");
         let head = seen.head.to_ascii_lowercase();
-        assert!(seen.request_line.starts_with("POST /v1/read "), "{}", seen.head);
+        assert!(
+            seen.request_line.starts_with("POST /v1/read "),
+            "{}",
+            seen.head
+        );
         assert!(!head.contains("x-nucleus-signature"), "{}", seen.head);
     }
 }
