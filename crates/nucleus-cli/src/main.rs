@@ -40,6 +40,13 @@ mod lineage_verify;
 mod lockdown;
 mod manifest;
 mod mediation;
+// The Apple `container` microVM host. It compiles everywhere so its tests run
+// in CI; the change that wires it into `shell` and `run` gates it to macOS.
+#[expect(
+    dead_code,
+    reason = "not wired into shell/run until the host-tier wiring lands"
+)]
+mod microvm_host;
 mod node;
 mod observe;
 mod profiles;

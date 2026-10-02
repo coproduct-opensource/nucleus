@@ -484,9 +484,17 @@ population_floor = 23
 # -- the allow that had been hiding `workload.rs`'s expect. Nothing was
 # discharged: 21 of 139 = 15.10%, and the ratio rises because the denominator
 # shrank. Both pins follow the measurement so it does not read as progress.
-floor_bp = 1510
+#
+# 2026-10-02 (#3076, rebased onto #3119): the microVM host backend
+# (crates/nucleus-cli/src/microvm_host) lands before the change that wires it
+# into `shell`/`run`, so its module carries
+# `#[expect(dead_code, reason = ...)]`. That waiver expires by itself once the
+# wiring uses the module. Re-measured on the tree rebased onto 02e7aa341
+# (`cargo xtask scorecard --measure`): 22 of 140 = 15.71% -- one more
+# discharged suppression and one more in the population.
+floor_bp = 1571
 floor_set = "measurement"
-population_floor = 139
+population_floor = 140
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

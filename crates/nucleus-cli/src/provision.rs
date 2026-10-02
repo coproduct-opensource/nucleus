@@ -625,6 +625,12 @@ pub struct MtlsIdentityPaths {
 fn read_provisioned_identity_pems() -> Result<(Vec<u8>, Vec<u8>)> {
     let dir = crate::config::Config::identity_dir()
         .context("could not resolve the identity directory")?;
+    read_identity_pems_in(&dir)
+}
+
+/// `(identity_pem, bundle_pem)` from the three files [`mint_cli_identity`]
+/// writes into `dir`.
+fn read_identity_pems_in(dir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
     let cert_path = dir.join("cli-cert.pem");
     let key_path = dir.join("cli-key.pem");
     let bundle_path = dir.join("trust-bundle.pem");
@@ -679,10 +685,17 @@ pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
 /// exactly the node in the trust domain that identity belongs to. See
 /// `nucleus_identity::node_tls`.
 fn provisioned_node_tls() -> Result<rustls::ClientConfig> {
-    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
+    node_tls_from_pems(read_provisioned_identity_pems()?)
+}
+
+/// The node TLS configuration for an `(identity_pem, bundle_pem)` pair, read
+/// from the provisioned identity or from one [`mint_cli_identity`] wrote into
+/// another directory.
+fn node_tls_from_pems(pems: (Vec<u8>, Vec<u8>)) -> Result<rustls::ClientConfig> {
+    let (identity_pem, bundle_pem) = pems;
     let _ = rustls::crypto::ring::default_provider().install_default();
     nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem)
-        .context("failed to build the node TLS configuration from the provisioned identity")
+        .context("failed to build the node TLS configuration from the CLI identity")
 }
 
 /// The `reqwest::blocking` twin of [`mtls_client_from_provisioned_identity`],
@@ -693,7 +706,17 @@ fn provisioned_node_tls() -> Result<rustls::ClientConfig> {
 /// wrap the call (and every use of the returned client) in
 /// `tokio::task::block_in_place`, as `twosafety_boot::execute` does.
 pub fn mtls_blocking_client_from_provisioned_identity() -> Result<reqwest::blocking::Client> {
-    let tls = provisioned_node_tls()?;
+    blocking_client_from_tls(provisioned_node_tls()?)
+}
+
+/// The blocking mTLS client for an identity [`mint_cli_identity`] wrote into
+/// `dir`, for a node whose CA is not the provisioned Tier 2 one, such as the
+/// Apple `container` microVM host's.
+pub fn mtls_blocking_client_in(dir: &Path) -> Result<reqwest::blocking::Client> {
+    blocking_client_from_tls(node_tls_from_pems(read_identity_pems_in(dir)?)?)
+}
+
+fn blocking_client_from_tls(tls: rustls::ClientConfig) -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .tls_backend_preconfigured(tls)
@@ -864,7 +887,7 @@ fn load_or_seed_host_ca(
 /// `identity_dir` as a parameter rather than reading
 /// `Config::identity_dir()` itself specifically so a test can point it at a
 /// tempdir instead of `~/.config/nucleus/identity`.
-async fn mint_cli_identity(
+pub(crate) async fn mint_cli_identity(
     ca: &nucleus_identity::SelfSignedCa,
     trust_domain: &str,
     identity_dir: &Path,
