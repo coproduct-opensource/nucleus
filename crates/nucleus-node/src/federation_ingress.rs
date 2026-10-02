@@ -1378,10 +1378,33 @@ ceiling = {{ profile = "read_only" }}
                 .entries()
                 .to_vec();
         assert_eq!(registry.len(), 2);
+        let (granted, ungranted): (Vec<_>, Vec<_>) =
+            registry.into_iter().partition(|u| u.name == "model-api");
+        assert_eq!(ungranted.len(), 1, "search-api is outside the binding");
+
+        // A tenant cannot name an upstream outside its binding: the pod is
+        // refused, naming the entry (#3091), not created without it.
+        let refused =
+            f.st.authority
+                .admit(
+                    &admission(&resp),
+                    &pod_spec(ungranted, 1),
+                    uuid::Uuid::new_v4(),
+                )
+                .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(crate::ApiError::Authority(m))
+                    if m == "credentialed upstream `search-api` is not granted"
+            ),
+            "{refused:?}"
+        );
+
         let pod = uuid::Uuid::new_v4();
         let issued =
             f.st.authority
-                .admit(&admission(&resp), &pod_spec(registry.clone(), 1), pod)
+                .admit(&admission(&resp), &pod_spec(granted, 1), pod)
                 .await
                 .expect("admitted through case 2");
         let binding =
