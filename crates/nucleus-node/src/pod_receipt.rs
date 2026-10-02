@@ -23,12 +23,10 @@
 //! is what a GET should be. The asymmetry is the bug being contained rather than spread, and it is
 //! written down here so the next person finds a decision instead of an inconsistency.
 
-// Declared HERE, not in main.rs, because this is the only thing that needs it:
-// the read-back exists so a receipt can be built for a microVM. It also keeps
-// `main.rs` off its line ceiling, which it was sitting exactly on.
-#[path = "scratch_readback.rs"]
-mod scratch_readback;
-
+// The read-back exists so a receipt can be built for a microVM; it lives in
+// `nucleus-microvm-host` beside the workspace harvest that shares its journal
+// replay.
+use nucleus_microvm_host::scratch_readback;
 use std::sync::Arc;
 
 use serde::Serialize;

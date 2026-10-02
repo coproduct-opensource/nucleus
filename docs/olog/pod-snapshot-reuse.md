@@ -61,8 +61,8 @@ Read each row as: *a `source` **is** a `target`*, via the named function.
 | `base_for` | a launch **is** entitled to a base, or is not | `crates/nucleus-node/src/snapshot_restore.rs:base_for` |
 | `network_overrides` | a configuration **is** the tap retargeting a restore needs | `crates/nucleus-node/src/snapshot_restore.rs:network_overrides` |
 | `verify` | a placed image **is** the image that was pinned | `crates/nucleus-node/src/image_identity.rs:verify` |
-| `sharing_requirements` | a host **is** what it must provide before a base taken on it may be reused | `crates/nucleus-node/src/host_requirements.rs:sharing_requirements` |
-| `sysfs_satisfied` | a sysfs reading **is** a hardening property held, or not | `crates/nucleus-node/src/host_requirements.rs:sysfs_satisfied` |
+| `sharing_requirements` | a host **is** what it must provide before a base taken on it may be reused | `crates/nucleus-microvm-host/src/probe.rs:sharing_requirements` |
+| `sysfs_satisfied` | a sysfs reading **is** a hardening property held, or not | `crates/nucleus-microvm-host/src/probe.rs:sysfs_satisfied` |
 | `build` | an exited pod **is** an execution receipt | `crates/nucleus-node/src/pod_receipt.rs:build` |
 
 ---

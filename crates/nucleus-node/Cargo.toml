@@ -80,6 +80,9 @@ bollard = "0.21"
 
 nucleus = { path = "../nucleus" }
 nucleus-identity = { path = "../nucleus-identity" }
+# The host requirements table and the scratch-image read-back, shared with
+# `nucleus-hostctl`, which runs them before a node exists.
+nucleus-microvm-host = { path = "../nucleus-microvm-host" }
 nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap", optional = true }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-spec = { path = "../nucleus-spec" }

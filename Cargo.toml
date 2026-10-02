@@ -16,6 +16,7 @@ members = [
     "crates/nucleus-spec",   # Shared PodSpec definitions
     "crates/nucleus-proto",  # Generated gRPC/Protobuf types
     "crates/nucleus-node",   # Node daemon (kubelet analogue)
+    "crates/nucleus-microvm-host", # Host requirements + KVM probe, workspace seed/harvest (nucleus-hostctl)
     "crates/nucleus-tool-proxy", # Tool proxy server (runs inside pod)
     "crates/nucleus-mcp-guard",  # Trifecta Gate: observe-only MCP proxy, flags exfil risk
     "crates/nucleus-guest-init", # Guest init for Firecracker images
