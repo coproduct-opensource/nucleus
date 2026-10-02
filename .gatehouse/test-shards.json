@@ -1,0 +1,173 @@
+{
+ "_comment": [
+  "The test suite as scope shards. Generated into .gatehouse/gates/test-*.json and pipeline.writ by",
+  "scripts/gatehouse-test-shards.py; `--check` refuses a stale generation. Layout measured on nucleus",
+  "2fc73eda over the 40 merged PRs before it (gatehouse docs/sublinear-testing.md): two shards beat",
+  "more, because each run pays ~130 s of per-attempt overhead against a 101 s suite.",
+  "fixtures: paths a package's tests read OUTSIDE its dependency closure, from strace of every test",
+  "process (open/exec/stat of a file, directory listings as dir/**, probes of absent paths whose",
+  "parent exists), rustc dep-info and build-script rerun-if-changed. The four bare lib.rs/main.rs",
+  "entries are proptest's search for a crate root; .env/.ssh are probes the tests make.",
+  "Compile-time reads come from rustc's dep-info, NORMALIZED: include_str!(\"../../../examples/x\") is recorded as written, `..` and all, and only normpath shows it leaves the crate (the shadow caught the one the first derivation missed, as a compile error)."
+ ],
+ "base": {
+  "env": {
+   "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+   "platform": "linux/amd64",
+   "toolchains": {
+    "rust": "1.96.1"
+   },
+   "env_vars": {},
+   "pins": [
+    {
+     "platform": "linux/arm64",
+     "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c"
+    },
+    {
+     "platform": "linux/amd64",
+     "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628"
+    }
+   ]
+  },
+  "seeds": [
+   "main-e8cb8d499-x86_64-t@sha256:fb0c1c307911f8448d4195cab94f739adba39a955c9a21be3c96ede0a32d0218"
+  ],
+  "resources": {
+   "cpus": 3,
+   "mem_mb": 8192,
+   "disk_mb": 8192
+  },
+  "tools": [
+   "sh@0.5.12",
+   "cargo@1.96.1",
+   "rustc@1.96.1",
+   "cargo-nextest@0.9.145",
+   "unshare@2.38.1",
+   "ip@6.1.0",
+   "python3@3.11.2"
+  ]
+ },
+ "shards": [
+  {
+   "name": "test-node",
+   "writ": "testNode",
+   "placeholder": "0000000000000000000000000000000000000000000000000000000000000003",
+   "scope": "**",
+   "git_checkout": true,
+   "_why": "nucleus-node's cluster, and the four test binaries that read the whole repository (nucleus-node::olog, xtask::bin/xtask, and the two below): their scope is ** whatever shard holds them, and this is the shard that changes on most trees anyway.",
+   "packages": [
+    "nucleus",
+    "nucleus-audit",
+    "nucleus-cli",
+    "nucleus-guest-init",
+    "nucleus-mcp",
+    "nucleus-node",
+    "nucleus-oidc-provider",
+    "nucleus-perf",
+    "nucleus-sdk",
+    "nucleus-spec",
+    "nucleus-tool-proxy",
+    "portcullis-effects",
+    "xtask"
+   ],
+   "build_also": [
+    "nucleus-action-key",
+    "nucleus-delivery-conformance"
+   ],
+   "filter": "not (package(nucleus-action-key) | package(nucleus-delivery-conformance)) | binary_id(nucleus-action-key::escapes_population) | binary_id(nucleus-delivery-conformance::claim_honesty)",
+   "timeout_s": 1800,
+   "measured_ms": 360000
+  },
+  {
+   "name": "test-libs",
+   "writ": "testLibs",
+   "placeholder": "0000000000000000000000000000000000000000000000000000000000000007",
+   "rest": true,
+   "filter": "not (binary_id(nucleus-action-key::escapes_population) | binary_id(nucleus-delivery-conformance::claim_honesty))",
+   "timeout_s": 1800,
+   "measured_ms": 480000
+  }
+ ],
+ "fixtures": {
+  "portcullis": [
+   ".env",
+   ".ssh",
+   "crates/.env",
+   "crates/escape",
+   "examples/policies/**",
+   "profiles/**",
+   "lib.rs",
+   "main.rs",
+   "crates/lib.rs",
+   "crates/main.rs"
+  ],
+  "nucleus-proto": [
+   "crates/nucleus-control-plane/proto/job_service.proto",
+   "crates/nucleus-identity/proto/workload.proto",
+   "crates/nucleus-node/proto/nucleus_node.proto"
+  ],
+  "nucleus-ifc-kernel": [
+   "docs/architecture/mediated-set.md"
+  ],
+  "ck-kernel": [
+   "PolicyManifest.toml"
+  ],
+  "nucleus-identity": [
+   "lib.rs",
+   "main.rs",
+   "crates/lib.rs",
+   "crates/main.rs"
+  ],
+  "nucleus-authority-exchange": [
+   "lib.rs",
+   "main.rs",
+   "crates/lib.rs",
+   "crates/main.rs"
+  ],
+  "ci-spec": [
+   "lib.rs",
+   "main.rs",
+   "crates/lib.rs",
+   "crates/main.rs"
+  ],
+  "nucleus-policy-kernel": [
+   "lib.rs",
+   "main.rs",
+   "crates/lib.rs",
+   "crates/main.rs"
+  ],
+  "nucleus-econ-kernels": [
+   "lib.rs",
+   "main.rs",
+   "crates/lib.rs",
+   "crates/main.rs"
+  ],
+  "nucleus-rubric": [
+   "lib.rs",
+   "main.rs",
+   "crates/lib.rs",
+   "crates/main.rs"
+  ],
+  "ck-policy": [
+   "lib.rs",
+   "main.rs",
+   "crates/lib.rs",
+   "crates/main.rs"
+  ],
+  "nucleus-lineage": [
+   "lib.rs",
+   "main.rs",
+   "crates/lib.rs",
+   "crates/main.rs"
+  ],
+  "nucleus-commerce-conformance": [
+   "examples/independent-conformance/vectors.json"
+  ],
+  "nucleus-github-oidc": [
+   "crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem"
+  ],
+  "nucleus-trust-registry": [
+   "crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem"
+  ]
+ }
+}

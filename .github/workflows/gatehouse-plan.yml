@@ -16,10 +16,20 @@ on:
     paths:
       - ".gatehouse/**"
       - ".github/workflows/gatehouse-plan.yml"
+      - "Cargo.toml"
+      - "crates/*/Cargo.toml"
+      - "sdks/verifier-js/Cargo.toml"
+      - "scripts/gatehouse-test-shards.py"
+      - "scripts/test-shard.py"
   pull_request:
     paths:
       - ".gatehouse/**"
       - ".github/workflows/gatehouse-plan.yml"
+      - "Cargo.toml"
+      - "crates/*/Cargo.toml"
+      - "sdks/verifier-js/Cargo.toml"
+      - "scripts/gatehouse-test-shards.py"
+      - "scripts/test-shard.py"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -72,6 +82,13 @@ jobs:
       # every other gate here.
       - name: The gate definitions carry what the plan declares
         run: ./scripts/check-gate-defs-match-plan.sh
+      # The test shards' scopes are DERIVED from cargo's dependency graph and the layout in
+      # .gatehouse/test-shards.json; a manifest change that moves the graph without regenerating
+      # them leaves a scope that no longer says what the shard reads. scripts/test-shard.py refuses
+      # the one case that would pass silently (a crate the shard tests whose sources it was not
+      # given); this says which file is stale before a lane has to.
+      - name: The test shards are generated from the current dependency graph
+        run: python3 scripts/gatehouse-test-shards.py --check
       - name: Is the gatehouse token available?
         id: tok
         env:
