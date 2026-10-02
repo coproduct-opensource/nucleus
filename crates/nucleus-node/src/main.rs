@@ -1280,7 +1280,12 @@ async fn spawn_local_pod(
         .arg("--listen")
         .arg("127.0.0.1:0")
         .arg("--announce-path")
-        .arg(&announce_path);
+        .arg(&announce_path)
+        // The workload door, in the pod's own directory: the guest default
+        // (`guest_layout::WORKLOAD_DOOR`, under /run) is not writable by a
+        // host-side proxy. Bound only when the pod has a workload.
+        .arg("--workload-door")
+        .arg(std::path::absolute(pod_dir.join("workload.sock"))?);
     command.env(
         "NUCLEUS_TOOL_PROXY_AUTH_SECRET",
         state.proxy_auth_secret.as_str(),

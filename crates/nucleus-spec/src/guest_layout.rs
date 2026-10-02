@@ -198,6 +198,21 @@ impl GuestBinary {
 /// The per-pod scratch mount.
 pub const WORK_DIR: &str = "/work";
 
+/// The workload door: the Unix socket on which the tool-proxy serves the
+/// workload, and only the workload (#3031 option B, #2696 P1).
+///
+/// The one declaration of where it is. The proxy binds it, and the workload
+/// learns it from `NUCLEUS_TOOL_PROXY_URL` (`unix://` + this path), which the
+/// proxy derives from the socket it actually bound, never from this constant
+/// re-typed.
+///
+/// Under `/run`, the boot tmpfs, so an image cannot pre-place anything there.
+/// In a directory of its own, and not under `/run/nucleus`, because that
+/// directory is mode 0700 and the workload's uid could not traverse it to
+/// connect. The workload's own scratch (`/work`) is the wrong home too: the
+/// workload owns it, so it could unlink the socket and bind its own.
+pub const WORKLOAD_DOOR: &str = "/run/nucleus-door/workload.sock";
+
 /// The name of the workload's home directory under its work dir.
 ///
 /// A name, not a path, because the tool-proxy also runs outside a guest with a
@@ -357,6 +372,7 @@ mod tests {
             WORKLOAD_PROBE_BIN,
             PODLIST_PROBE_BIN,
             ADVERSARY_PROBE_BIN,
+            WORKLOAD_DOOR,
         ] {
             assert!(
                 reserved_by(path).is_some(),

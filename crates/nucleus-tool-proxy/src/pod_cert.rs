@@ -138,12 +138,18 @@ pub(crate) enum DelegationAuthority {
 }
 
 /// The delegation authority of an authentication method. Only SPIFFE mTLS
-/// binds an identity; the shared-secret, approval, and host-vsock tiers do
-/// not, and a certificate on any of them is refused.
+/// binds an identity; the shared-secret, approval, host-vsock and
+/// workload-door tiers do not, and a certificate on any of them is refused.
+///
+/// Exhaustive (ADR 0007 E-2): a new method must say which it is here.
 pub(crate) fn delegation_authority(method: &AuthMethod) -> DelegationAuthority {
     match method {
         AuthMethod::SpiffeMtls => DelegationAuthority::Bound,
-        _ => DelegationAuthority::Unbound,
+        AuthMethod::Hmac
+        | AuthMethod::HmacDrand
+        | AuthMethod::HostVsock
+        | AuthMethod::Ed25519Drand
+        | AuthMethod::WorkloadDoor => DelegationAuthority::Unbound,
     }
 }
 
@@ -379,6 +385,7 @@ mod tests {
             AuthMethod::HmacDrand,
             AuthMethod::HostVsock,
             AuthMethod::Ed25519Drand,
+            AuthMethod::WorkloadDoor,
         ] {
             assert_eq!(
                 delegation_authority(&m),

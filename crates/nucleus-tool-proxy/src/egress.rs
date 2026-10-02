@@ -102,10 +102,15 @@ pub(crate) fn upstream_url(spec: &CredentialedEgressSpec, path: &str) -> Option<
 /// Names and local addresses ONLY. The credential is deliberately absent — that
 /// absence is the feature, and a test asserts it rather than trusting the
 /// reading of this function.
+///
+/// `door_url` is the workload door's `unix://<socket>` URL, so each upstream's
+/// URL is `unix://<socket>/v1/egress/<name>`: a client connects to the socket
+/// named by `NUCLEUS_TOOL_PROXY_URL`, which is a prefix of this one, and sends
+/// the remainder as the HTTP path.
 #[must_use]
 pub(crate) fn workload_egress_env(
     specs: &[CredentialedEgressSpec],
-    proxy_url: &str,
+    door_url: &str,
 ) -> std::collections::BTreeMap<String, String> {
     specs
         .iter()
@@ -115,7 +120,7 @@ pub(crate) fn workload_egress_env(
                     "NUCLEUS_EGRESS_{}_URL",
                     s.name.to_uppercase().replace('-', "_")
                 ),
-                format!("{proxy_url}/v1/egress/{}", s.name),
+                format!("{door_url}/v1/egress/{}", s.name),
             )
         })
         .collect()

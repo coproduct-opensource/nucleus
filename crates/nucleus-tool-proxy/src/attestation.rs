@@ -392,6 +392,159 @@ impl AttestationVerifier {
         }
         Ok(())
     }
+
+    /// The attestation requirement, decided over what the transport proved.
+    ///
+    /// The requirement authenticates a *network* caller (the host, the node)
+    /// by the launch attestation its certificate carries. Each kind of
+    /// evidence is its own arm, matched exhaustively (ADR 0007 E-2), so a new
+    /// transport cannot fall through to a pass (B-3):
+    ///
+    /// - [`TransportEvidence::ClientCert`]: the certificate's attestation, then
+    ///   the assurance floor over that certificate.
+    /// - [`TransportEvidence::DoorPeer`]: satisfied. The workload door already
+    ///   authenticated the caller by its kernel-reported uid, and the evidence
+    ///   exists only on one of the door's own routes
+    ///   ([`crate::workload_door::DoorAdmission`]). A local peer proven to be
+    ///   the workload has no certificate to attest and does not need one.
+    /// - [`TransportEvidence::None`]: the `x-nucleus-attestation` header if one
+    ///   was sent, otherwise refused. Absence is not a pass (A-5).
+    ///
+    /// # Errors
+    /// The reason the requirement is not met.
+    pub(crate) fn admit(
+        &self,
+        evidence: &TransportEvidence<'_>,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<(), String> {
+        if !self.is_required() {
+            return Ok(());
+        }
+        let (result, cert_der) = match evidence {
+            TransportEvidence::DoorPeer(admission) => {
+                debug!(
+                    uid = admission.uid(),
+                    route = ?admission.route(),
+                    "attestation requirement met by the workload door's peer credentials"
+                );
+                return Ok(());
+            }
+            TransportEvidence::ClientCert(der) => {
+                info!(
+                    event = "attestation_verify_mtls",
+                    "verifying attestation from client certificate"
+                );
+                (self.verify_certificate(der), Some(*der))
+            }
+            TransportEvidence::None => match headers.get(HEADER_ATTESTATION) {
+                Some(value) => {
+                    // Less secure than mTLS: a header can be replayed.
+                    warn!(
+                        event = "attestation_verify_header",
+                        "attestation via header (not mTLS) - consider enabling mTLS for production"
+                    );
+                    let value = value
+                        .to_str()
+                        .map_err(|_| "invalid attestation header encoding".to_string())?;
+                    (self.verify_header(value), None)
+                }
+                None => {
+                    return Err(
+                        "attestation required but not provided (enable mTLS or send \
+                                x-nucleus-attestation header)"
+                            .to_string(),
+                    );
+                }
+            },
+        };
+        if !result.matches_requirements {
+            return Err(result
+                .rejection_reason
+                .clone()
+                .unwrap_or_else(|| "unknown attestation failure".to_string()));
+        }
+        // North Star C9: the assurance floor, fail-closed on absent, invalid or
+        // replayed residency evidence. A no-op when the floor is L0Bearer.
+        self.enforce_floor(cert_der, &result)?;
+        if let Some(ref info) = result.attestation {
+            debug!(
+                kernel_hash = %&info.kernel_hash[..16],
+                rootfs_hash = %&info.rootfs_hash[..16],
+                "attestation verified"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// The header a network caller without mTLS may carry its attestation in.
+pub(crate) const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
+
+/// What the transport proved about a request's caller, before any header is
+/// read. [`AttestationVerifier::admit`] decides the requirement over it, and
+/// [`TransportEvidence::ingress`] decides which auth tiers are open to it, so
+/// "which listener" is read once (ADR 0007 G-1).
+#[derive(Debug)]
+pub(crate) enum TransportEvidence<'a> {
+    /// A client certificate the mTLS handshake presented (DER).
+    ClientCert(&'a [u8]),
+    /// A peer the workload door admitted by `SO_PEERCRED`, on one of the
+    /// door's own routes. Only the door's accept path and route layer can
+    /// produce the value inside (ADR 0007 C-1, C-2).
+    DoorPeer(&'a crate::workload_door::DoorAdmission),
+    /// Neither: a caller on the main listener with no client certificate.
+    None,
+}
+
+impl<'a> TransportEvidence<'a> {
+    /// Read the evidence from a request's extensions.
+    ///
+    /// A connection the door accepted must carry a door route's admission. One
+    /// without it (a door connection outside the door's route table) is
+    /// refused rather than read as a main-listener caller, and an admission
+    /// without a door connection is refused too: neither can be built, and
+    /// "cannot happen" is not a reason to pass (ADR 0007 A-2).
+    ///
+    /// # Errors
+    /// The two impossible shapes, named.
+    pub(crate) fn of(extensions: &'a axum::http::Extensions) -> Result<Self, String> {
+        use crate::workload_door::{DoorAdmission, DoorPeer};
+        use axum::extract::ConnectInfo;
+        use nucleus_identity::mtls::{ClientCertInfo, MtlsConnectInfo};
+
+        match (
+            extensions.get::<ConnectInfo<DoorPeer>>(),
+            extensions.get::<DoorAdmission>(),
+        ) {
+            (Some(ConnectInfo(peer)), Some(admission)) if admission.uid() == peer.uid() => {
+                Ok(Self::DoorPeer(admission))
+            }
+            (Some(_), Some(_)) => {
+                Err("the door admission names a different peer than the connection".to_string())
+            }
+            (Some(_), None) => Err(
+                "a workload door connection reached a route outside the door's table".to_string(),
+            ),
+            (None, Some(_)) => {
+                Err("a door admission arrived on a connection the door did not accept".to_string())
+            }
+            (None, None) => Ok(extensions
+                .get::<MtlsConnectInfo>()
+                .and_then(|info| info.client_cert.as_ref())
+                .or_else(|| extensions.get::<ClientCertInfo>())
+                .map_or(Self::None, |cert| Self::ClientCert(cert.der()))),
+        }
+    }
+
+    /// Which listener the evidence came through.
+    pub(crate) fn ingress(&self) -> crate::auth::Ingress {
+        match self {
+            Self::DoorPeer(admission) => crate::auth::Ingress::WorkloadDoor {
+                uid: admission.uid(),
+            },
+            Self::ClientCert(_) | Self::None => crate::auth::Ingress::Listener,
+        }
+    }
 }
 
 /// Relying-party cross-check for a forensic [`MediationReceipt`] (North Star C9 /

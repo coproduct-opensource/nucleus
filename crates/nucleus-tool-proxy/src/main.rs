@@ -76,6 +76,7 @@ mod artifact;
 mod verdict_sink;
 mod web_fetch_policy;
 mod workload;
+mod workload_door;
 mod workload_supervisor;
 
 use approval::{
@@ -109,6 +110,17 @@ struct Args {
     /// always admitted; an out-of-namespace peer is the host).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_PEER_UIDS", value_delimiter = ',')]
     peer_uids: Vec<u32>,
+    /// Where to bind the workload door: the Unix socket on which this proxy
+    /// serves its workload's tool calls and egress, and nothing else (#3031
+    /// option B). Bound only when the pod spec has a workload. The default is
+    /// the guest's `guest_layout::WORKLOAD_DOOR`; a proxy outside a guest names
+    /// a directory it can write.
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_WORKLOAD_DOOR",
+        default_value = nucleus_spec::guest_layout::WORKLOAD_DOOR
+    )]
+    workload_door: PathBuf,
     /// Optional vsock CID override.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_VSOCK_CID")]
     vsock_cid: Option<u32>,
@@ -1715,6 +1727,10 @@ async fn main() -> Result<(), ApiError> {
     let exit_kernel = state.kernel.clone();
     let exit_grant = spec.metadata.task_grant_id.clone();
 
+    // Built from the same state and the same middleware, before `state` moves
+    // into the main router below. Served only if the pod has a workload.
+    let door_app = workload_door::router(state.clone());
+
     let app = app
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, auth_middleware))
@@ -1747,14 +1763,15 @@ async fn main() -> Result<(), ApiError> {
         // THE GUEST PATH: vsock in a microVM, a peer-verified Unix socket in a
         // container (#2446). The proxy serves the host-verified transport and
         // `main` returns right here — everything below this block is host/TCP
-        // only. The workload therefore starts on this path (between bind and
-        // serve, so its proxy URL names a socket that exists); before run 4's
-        // diagnosis it started only below, and an in-guest pod's workload never
-        // ran at all.
+        // only. The workload therefore starts on this path, between bind and
+        // serve; before run 4's diagnosis it started only below, and an
+        // in-guest pod's workload never ran at all. It does not call this
+        // listener (nothing in the guest can connect to it): it is pointed at
+        // its own door, bound inside `start` (`workload::start_if_configured`).
         let _workload = workload_supervisor::start(
             &spec,
-            bound.proxy(),
-            &args.auth_secret,
+            &args.workload_door,
+            door_app,
             completion_writer,
             Some(exit_report::on_workload_exit(
                 exit_audit.clone(),
@@ -1795,8 +1812,8 @@ async fn main() -> Result<(), ApiError> {
     // vsock branch above — this line alone is unreachable in a real guest.
     let _workload = workload_supervisor::start(
         &spec,
-        workload::BoundProxy::Tcp(addr),
-        &args.auth_secret,
+        &args.workload_door,
+        door_app,
         completion_writer,
         Some(exit_report::on_workload_exit(
             exit_audit.clone(),
@@ -1950,7 +1967,6 @@ fn is_allowed_during_lockdown(path: &str) -> bool {
     )
 }
 
-const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
 const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
 
 async fn auth_middleware(
@@ -1981,79 +1997,17 @@ async fn auth_middleware(
         ));
     }
 
-    // Verify attestation if required
-    if state.attestation_verifier.is_required() {
-        // Try to get client certificate from mTLS connection first
-        // Check both direct ClientCertInfo and MtlsConnectInfo
-        let client_cert_der = parts
-            .extensions
-            .get::<MtlsConnectInfo>()
-            .and_then(|info| info.client_cert.as_ref())
-            .or_else(|| parts.extensions.get::<ClientCertInfo>())
-            .map(|cert| cert.der());
-
-        let attestation_result = if let Some(cert_der) = client_cert_der {
-            // mTLS mode: extract attestation from client certificate
-            let spiffe_id = parts
-                .extensions
-                .get::<MtlsConnectInfo>()
-                .and_then(|info| info.client_cert.as_ref())
-                .and_then(|cert| cert.spiffe_id.clone());
-            tracing::info!(
-                spiffe_id = ?spiffe_id,
-                path = %parts.uri.path(),
-                method = %parts.method,
-                event = "attestation_verify_mtls",
-                "verifying attestation from client certificate"
-            );
-            state.attestation_verifier.verify_certificate(cert_der)
-        } else if let Some(att_header) = parts.headers.get(HEADER_ATTESTATION) {
-            // Fallback: attestation passed via header (base64-encoded DER)
-            // This is less secure as headers can be spoofed
-            tracing::warn!(
-                path = %parts.uri.path(),
-                method = %parts.method,
-                event = "attestation_verify_header",
-                "attestation via header (not mTLS) - consider enabling mTLS for production"
-            );
-            let att_value = att_header.to_str().map_err(|_| {
-                ApiError::AttestationFailed("invalid attestation header encoding".to_string())
-            })?;
-            state.attestation_verifier.verify_header(att_value)
-        } else {
-            // No attestation provided
-            attestation::AttestationResult {
-                attestation_present: false,
-                attestation: None,
-                matches_requirements: false,
-                rejection_reason: Some("attestation required but not provided (enable mTLS or send x-nucleus-attestation header)".to_string()),
-            }
-        };
-
-        if !attestation_result.matches_requirements {
-            let reason = attestation_result
-                .rejection_reason
-                .unwrap_or_else(|| "unknown attestation failure".to_string());
-            return Err(ApiError::AttestationFailed(reason));
-        }
-
-        // North Star C9 — enforce the assurance floor on the live path (fail-closed
-        // on absent/invalid/replayed residency evidence). No-op when the floor is
-        // L0Bearer. Logic lives in `AttestationVerifier::enforce_floor` (unit-tested).
-        state
-            .attestation_verifier
-            .enforce_floor(client_cert_der, &attestation_result)
-            .map_err(ApiError::AttestationFailed)?;
-
-        // Log successful attestation verification
-        if let Some(ref info) = attestation_result.attestation {
-            tracing::debug!(
-                kernel_hash = %&info.kernel_hash[..16],
-                rootfs_hash = %&info.rootfs_hash[..16],
-                "attestation verified"
-            );
-        }
-    }
+    // What the transport proved, read once: it decides the attestation
+    // requirement here and the ingress below. Only the workload door's accept
+    // path and route layer produce `DoorPeer`, so a main-listener request can
+    // never be read as the door's, nor the reverse. The requirement and the
+    // assurance floor live in `AttestationVerifier::admit` (unit-tested).
+    let evidence = attestation::TransportEvidence::of(&parts.extensions)
+        .map_err(ApiError::AttestationFailed)?;
+    state
+        .attestation_verifier
+        .admit(&evidence, &parts.headers)
+        .map_err(ApiError::AttestationFailed)?;
 
     // Determine authentication context (unified flow — no early returns).
     // Precedence is decided by `auth::select_auth_tier` alone, which is
@@ -2063,7 +2017,8 @@ async fn auth_middleware(
     // the SPIFFE-before-approval order and so could not catch it. Now there is
     // one.
     let spiffe_id = auth::extract_spiffe_id_from_extensions(&parts.extensions);
-    let tier = auth::select_auth_tier(
+    let tier = auth::tier_of(
+        evidence.ingress(),
         spiffe_id.is_some(),
         parts.uri.path() == APPROVE_PATH,
         state.approval_verifier.is_some(),
@@ -2106,6 +2061,10 @@ async fn auth_middleware(
         // is the point: the HMAC key it replaces was readable by the agent
         // from /proc/cmdline.
         (auth::AuthTier::HostVsock, _) => auth::verify_host_vsock(),
+        // The door's listener admitted this peer by its kernel-reported uid
+        // before the stream reached the router. The workload holds no secret;
+        // being that uid on that socket is the authentication.
+        (auth::AuthTier::WorkloadDoor { uid }, _) => auth::verify_workload_door(uid),
         (auth::AuthTier::Hmac, _) => auth::verify_http(&parts.headers, &bytes, &state.auth)?,
     };
 
