@@ -6,7 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 description = "Node daemon (kubelet analogue) for nucleus pods"
 repository = "https://github.com/coproduct-opensource/nucleus"
-documentation = "https://docs.rs/nucleus-node"
 readme = "README.md"
 keywords = ["ai", "security", "daemon", "kubelet"]
 categories = ["network-programming", "development-tools"]
