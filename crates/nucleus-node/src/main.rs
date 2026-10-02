@@ -878,14 +878,10 @@ async fn create_pod(
     // caller: the per-pod caller token, or the caller's own pod SVID.
     // `x-nucleus-parent-pod-id` is unauthenticated, so lineage built on it is
     // forgeable in both directions -- see `pod_api::resolve_parent_pod_id`.
+    let named = headers.get(PARENT_HEADER).and_then(|v| v.to_str().ok());
     let admission =
         pod_authority::Admission::from_http(&state.authz_policy, caller.pod(), &auth_ctx, &headers);
-    let parent_pod_id = pod_api::resolve_parent_pod_id(
-        &caller,
-        headers
-            .get("x-nucleus-parent-pod-id")
-            .and_then(|v| v.to_str().ok()),
-    );
+    let parent_pod_id = pod_api::parent_for_create(&state, &caller, named).await?;
 
     let raw = String::from_utf8_lossy(&body).to_string();
     let (id, proxy_addr) =
@@ -917,6 +913,9 @@ async fn auth_middleware(
     req.extensions_mut().insert(caller);
     Ok(next.run(req).await)
 }
+
+/// The unauthenticated parent header; read only by `pod_api::parent_for_create`.
+const PARENT_HEADER: &str = "x-nucleus-parent-pod-id";
 
 #[tracing::instrument(skip_all, fields(boot.stage = "pod.create", pod_id = tracing::field::Empty, chain_depth = tracing::field::Empty))]
 async fn create_pod_internal(
@@ -3003,13 +3002,13 @@ impl NodeService for GrpcService {
         let scope = policy
             .caller_scope(None, &auth_ctx.spiffe_id)
             .map_err(|e| Status::permission_denied(e.to_string()))?;
-        let parent_pod_id = pod_api::resolve_parent_pod_id(
-            &scope,
-            request
-                .metadata()
-                .get("x-nucleus-parent-pod-id")
-                .and_then(|v| v.to_str().ok()),
-        );
+        let named = request
+            .metadata()
+            .get(PARENT_HEADER)
+            .and_then(|v| v.to_str().ok());
+        let parent_pod_id = pod_api::parent_for_create(&self.state, &scope, named)
+            .await
+            .map_err(|e| Status::not_found(e.to_string()))?;
 
         let yaml = request.into_inner().yaml;
         if yaml.trim().is_empty() {
