@@ -1,5 +1,6 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
+pub mod boot_args;
 pub mod boot_budget;
 pub mod exit_report_auth;
 pub mod guest_layout;
@@ -558,7 +559,9 @@ pub struct ImageSpec {
     /// (an OCI artifact) on the wire, exactly one. A LOCATION, like `kernel_path`: the program
     /// identity takes `rootfs_digest`, never this.
     pub rootfs: RootfsSource,
-    /// Optional kernel boot args.
+    /// Extra guest kernel command line tokens. The node owns the command line. A spec may add only
+    /// the tokens [`boot_args::SpecBootArgs::parse`] admits, and the node refuses any other token
+    /// when the pod is created (#3124).
     pub boot_args: Option<String>,
     /// Whether the root filesystem should be mounted read-only.
     ///
