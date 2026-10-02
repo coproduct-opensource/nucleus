@@ -226,11 +226,11 @@ async fn legitimate_paths_are_admitted_resolved_and_still_digest_checked() {
     pinned.kernel_digest = Some(pin(&pinned.kernel_path, b"kernel"));
     pinned.data_digest = Some(pin(pinned.data_path.as_ref().expect("data"), b"corpus"));
     let host = |image: &ImageSpec| crate::rootfs_source::HostImage::resolve(image).expect("path");
-    crate::image_identity::verify(&host(&pinned), None)
+    crate::image_identity::verify(&host(&pinned), None, None)
         .await
         .expect("pins hold against the admitted paths");
     pinned.data_digest = Some(pin(&n.state.path().join("other"), b"another corpus"));
-    let err = crate::image_identity::verify(&host(&pinned), None)
+    let err = crate::image_identity::verify(&host(&pinned), None, None)
         .await
         .expect_err("a mismatched data pin is still refused");
     assert!(err.contains("data"), "{err}");

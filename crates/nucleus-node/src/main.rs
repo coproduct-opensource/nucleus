@@ -49,6 +49,7 @@ mod pod_receipt;
 mod pod_view;
 mod production_confinement;
 mod rootfs_source;
+mod sealed_rootfs;
 mod spec_posture;
 mod workload_api_protocol;
 mod workload_api_vsock;
@@ -214,6 +215,11 @@ struct Args {
     /// Unprivileged gid the jailed VMM drops to.
     #[arg(long, env = "NUCLEUS_JAILER_GID", default_value_t = 100)]
     jailer_gid: u32,
+    /// Seal each pinned read-only rootfs once per node life and boot every pod from a reflink
+    /// clone of it, instead of reading the whole file before each boot (`sealed_rootfs.rs`).
+    /// Needs reflink on the jailer chroot base's filesystem; without it pods are read as before.
+    #[arg(long, env = "NUCLEUS_SEAL_PINNED_ROOTFS")]
+    seal_pinned_rootfs: bool,
 
     // Container driver configuration
     /// Container image for pod execution (container driver).
@@ -349,6 +355,8 @@ struct NodeState {
     jailer_uid: production_confinement::NonRootUid,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     jailer_gid: u32,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    sealed_rootfs: Option<Arc<sealed_rootfs::SealedRootfs>>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     network_allocator: Arc<net::NetworkAllocator>,
     /// Node HTTP listen address (for orchestrator pod management back-references).
@@ -687,6 +695,10 @@ async fn main() -> Result<(), ApiError> {
         jailer_chroot_base: args.jailer_chroot_base.clone(),
         jailer_uid: args.jailer_uid,
         jailer_gid: args.jailer_gid,
+        sealed_rootfs: sealed_rootfs::from_flags(
+            args.seal_pinned_rootfs && args.firecracker_jailer,
+            &args.jailer_chroot_base,
+        ),
         network_allocator: Arc::new(net::NetworkAllocator::new()),
         #[cfg(feature = "local-driver")]
         listen_addr: args.listen.clone(),
@@ -2196,8 +2208,18 @@ async fn spawn_firecracker_pod(
         }
 
         // Hold the artifacts to what the spec pinned, AFTER placement: in the jail these are the
-        // hard-linked inodes that will boot, so there is no window between measuring and using.
-        let measured = match image_identity::verify(image, jail_layout.as_ref()).await {
+        // inodes that will boot (hard links, or a clone of a sealed copy for the rootfs).
+        // A pinned read-only rootfs is swapped for a clone of the node's sealed copy, measured
+        // once per node life (`sealed_rootfs.rs`); `None` leaves it to `verify` to read.
+        let sealed = match (&state.sealed_rootfs, &jail_layout, &image.rootfs_digest) {
+            (Some(store), Some(jail), Some(pin)) if image.read_only => {
+                let dest = jail.host_path(firecracker_config::in_jail::ROOTFS);
+                let owner = (state.jailer_uid.get(), state.jailer_gid);
+                store.place(image.rootfs_path(), pin, &dest, owner).await
+            }
+            _ => None,
+        };
+        let measured = match image_identity::verify(image, jail_layout.as_ref(), sealed).await {
             Ok(measured) => measured,
             Err(err) => {
                 cleanup_net_resources(

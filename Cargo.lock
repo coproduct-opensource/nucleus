@@ -7208,6 +7208,7 @@ dependencies = [
  "hyper-util",
  "ipnet",
  "jsonwebtoken",
+ "libc",
  "nucleus",
  "nucleus-ci-verdict",
  "nucleus-client",

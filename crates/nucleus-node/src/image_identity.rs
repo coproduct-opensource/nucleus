@@ -104,16 +104,28 @@ pub(crate) struct Measured {
 /// held to the pin -- two answers about one file with a window between them. Now the pinned
 /// artifacts are read exactly once, in the jail, after placement, and the certificate carries
 /// those bytes.
+///
+/// `sealed_rootfs` is what `SealedRootfs::place` measured for the rootfs it cloned into the
+/// jail: a read of an inode that has been kernel-immutable since before the read, of which
+/// the jail's rootfs is a clone. It is held to the pin exactly as a read here would be; it
+/// replaces the read, never the comparison. `None` reads the placed file, as always.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[tracing::instrument(skip_all, fields(boot.stage = "image.verify"))]
 pub(crate) async fn verify(
     image: &HostImage,
     jail: Option<&JailLayout>,
+    sealed_rootfs: Option<nucleus_identity::attestation::Hash256>,
 ) -> Result<Measured, String> {
     let mut measured_out = Measured::default();
     for p in pins(image, jail) {
-        let measured = nucleus_identity::attestation::measure_artifact(&p.path)
-            .await
-            .map_err(|e| format!("cannot measure the {} at {}: {e}", p.what, p.path.display()))?;
+        let measured = match (p.what, sealed_rootfs) {
+            ("rootfs", Some(sealed)) => sealed,
+            _ => nucleus_identity::attestation::measure_artifact(&p.path)
+                .await
+                .map_err(|e| {
+                    format!("cannot measure the {} at {}: {e}", p.what, p.path.display())
+                })?,
+        };
         let measured_hex = hex::encode(measured);
         if measured_hex != p.expected.hex() {
             return Err(format!(
@@ -163,7 +175,7 @@ mod tests {
     #[tokio::test]
     async fn an_unpinned_image_is_not_a_failure() {
         let img = image(Path::new("/nonexistent/vmlinux"), None);
-        assert!(verify(&img, None).await.is_ok());
+        assert!(verify(&img, None, None).await.is_ok());
     }
 
     /// A pin that matches passes, measured with the same function the attestation uses.
@@ -178,7 +190,9 @@ mod tests {
                 .unwrap(),
         );
         let img = image(&k, Some(&format!("sha-256:{digest}")));
-        verify(&img, None).await.expect("a matching pin must pass");
+        verify(&img, None, None)
+            .await
+            .expect("a matching pin must pass");
     }
 
     /// A pin that does not match refuses, and the message names both digests.
@@ -193,7 +207,7 @@ mod tests {
         let wrong = format!("sha-256:{}", "ab".repeat(32));
         let img = image(&k, Some(&wrong));
 
-        let err = verify(&img, None)
+        let err = verify(&img, None, None)
             .await
             .expect_err("a wrong digest must refuse the launch");
         assert!(err.contains("kernel"), "{err}");
@@ -212,7 +226,55 @@ mod tests {
             Path::new("/nonexistent/vmlinux"),
             Some(&format!("sha-256:{}", "cd".repeat(32))),
         );
-        let err = verify(&img, None).await.expect_err("missing must refuse");
+        let err = verify(&img, None, None)
+            .await
+            .expect_err("missing must refuse");
+        assert!(err.contains("cannot measure"), "{err}");
+    }
+
+    fn rootfs_image(rootfs: &Path, pin: &str) -> HostImage {
+        HostImage::resolve(&nucleus_spec::ImageSpec {
+            kernel_path: PathBuf::from("/unused/vmlinux"),
+            rootfs: nucleus_spec::RootfsSource::Path(rootfs.to_path_buf()),
+            boot_args: None,
+            read_only: true,
+            scratch_path: None,
+            kernel_digest: None,
+            rootfs_digest: Some(ArtifactDigest::parse(pin).expect("test digest parses")),
+            scratch_digest: None,
+            data_path: None,
+            data_digest: None,
+        })
+        .expect("a path rootfs resolves")
+    }
+
+    /// A sealed measurement replaces the READ of the rootfs, never the comparison: one that
+    /// matches is reported without opening the file, and one that does not is refused with
+    /// the same message a read would give.
+    #[tokio::test]
+    async fn a_sealed_rootfs_is_held_to_the_pin_without_being_read() {
+        let pin = [0x11_u8; 32];
+        let img = rootfs_image(
+            Path::new("/nonexistent/rootfs.ext4"),
+            &format!("sha-256:{}", hex::encode(pin)),
+        );
+
+        let ok = verify(&img, None, Some(pin))
+            .await
+            .expect("a sealed measurement that matches must pass without a read");
+        assert_eq!(ok.rootfs, Some(pin));
+
+        let err = verify(&img, None, Some([0x22_u8; 32]))
+            .await
+            .expect_err("a sealed measurement that does not match must refuse");
+        assert!(
+            err.contains("rootfs") && err.contains(&"22".repeat(32)),
+            "{err}"
+        );
+
+        let err = verify(&img, None, None)
+            .await
+            .expect_err("unsealed: read, and missing");
         assert!(err.contains("cannot measure"), "{err}");
     }
 }
