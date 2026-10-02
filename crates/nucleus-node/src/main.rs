@@ -56,7 +56,11 @@ mod workload_api_vsock;
 mod workload_artifacts;
 mod workload_result;
 use api_error::ApiError;
+#[cfg(feature = "local-driver")]
+mod bare_tier_opt_in;
 mod boot_trace;
+#[cfg(feature = "local-driver")]
+use bare_tier_opt_in::{local_driver_opt_in, unsandboxed_proxy_flag};
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
 // On any other host every item here is genuinely dead, and CI builds release
 // binaries with `RUSTFLAGS=-D warnings`, so the warning is an error that fails the
@@ -325,6 +329,13 @@ struct NodeState {
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
+    /// Whether this node's local driver deliberately runs its tool-proxies
+    /// on the bare host tier, decided once at startup by
+    /// [`local_driver_opt_in`]. It is what puts `--unsandboxed` on a proxy's
+    /// command line, so the flag traces to the operator's
+    /// `--driver local --allow-local-driver` and to nothing else.
+    #[cfg(feature = "local-driver")]
+    local_driver_opt_in: nucleus::UnsandboxedOptIn,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_path: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -675,6 +686,8 @@ async fn main() -> Result<(), ApiError> {
         driver: args.driver.clone(),
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
+        #[cfg(feature = "local-driver")]
+        local_driver_opt_in: local_driver_opt_in(&args.driver, args.allow_local_driver),
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
         firecracker_api_boot: args.firecracker_api_boot,
@@ -1278,6 +1291,7 @@ async fn spawn_local_pod(
 
     let mut command = Command::new(&state.tool_proxy_path);
     command
+        .args(unsandboxed_proxy_flag(state.local_driver_opt_in))
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")
