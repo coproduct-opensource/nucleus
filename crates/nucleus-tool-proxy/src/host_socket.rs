@@ -169,8 +169,12 @@ pub(crate) async fn bind_unix(
 }
 
 /// The URL form the workload and the announce file carry for a Unix socket.
+///
+/// Written by `nucleus_client::endpoint`, whose `ProxyEndpoint::parse` is what
+/// every client (the in-guest MCP bridge among them) reads it back with, so the
+/// writer and the readers are one declaration (ADR 0007 G-1).
 pub(crate) fn unix_url(path: &Path) -> String {
-    format!("unix://{}", path.display())
+    nucleus_client::endpoint::ProxyEndpoint::unix(path).to_string()
 }
 
 fn current_uid() -> u32 {

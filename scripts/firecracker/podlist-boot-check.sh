@@ -78,6 +78,7 @@ sudo -b env RUST_LOG="${RUST_LOG:-warn}" \
     NUCLEUS_JAILER_PATH="$(command -v jailer)" \
     NUCLEUS_JAILER_CHROOT_BASE="$JAIL_DIR" \
     NUCLEUS_FIRECRACKER_NETNS=false \
+    NUCLEUS_NODE_ARTIFACTS_ROOT="$FC_DIR" \
     "$NODE_BIN" --listen "$ADDR" --state-dir "$STATE_DIR" \
     --proxy-auth-secret "$SECRET" --proxy-approval-secret "$SECRET" \
     --identity-workload-api-socket "$FC_DIR/wapi.sock" > "$FC_DIR/node-podlist-check.log" 2>&1
@@ -146,7 +147,7 @@ sleep 14   # A boots (~7s to probe) and the probe polls until C/B settle.
 ALOG="$(sudo find "$STATE_DIR" "$JAIL_DIR" -path "*$A*" -name firecracker.log 2>/dev/null | head -1)"
 [ -n "$ALOG" ] || die "no firecracker.log for A ($A)"
 # `tr -d` strips the guest console's trailing CR so the id set compares cleanly.
-IDS="$(sudo grep -aoE 'NUCLEUS_PODLIST_PROBE: PASS self=[^ ]+ ids=[^ ]+' "$ALOG" 2>/dev/null | tail -1 | sed -E 's/.*ids=//' | tr -d '[:space:]')"
+IDS="$(sudo grep -aoE 'NUCLEUS_PODLIST_PROBE: PASS ids=[^ ]+' "$ALOG" 2>/dev/null | tail -1 | sed -E 's/.*ids=//' | tr -d '[:space:]')"
 OP="$(operator_ids)"
 
 echo "  A(orch) =$A"

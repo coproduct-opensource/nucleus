@@ -88,7 +88,7 @@ spec:
     $env.RUST_LOG = "info"
 
     # We need to use shell background process
-    ^bash -c $"cd ($root_dir) && cargo run -p nucleus-node -- --driver firecracker --listen ($node_addr) --proxy-auth-secret test-secret --firecracker-netns >($node_log) 2>&1 &"
+    ^bash -c $"cd ($root_dir) && cargo run -p nucleus-node -- --driver firecracker --listen ($node_addr) --proxy-auth-secret test-secret --artifacts-root ./build/firecracker --scratch-root ./build/firecracker --firecracker-netns >($node_log) 2>&1 &"
 
     sleep 1sec
 

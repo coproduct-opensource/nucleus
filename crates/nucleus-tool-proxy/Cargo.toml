@@ -60,8 +60,8 @@ hex = { workspace = true }
 # signature against configured PUBLIC keys (verify_strict only — see M-3).
 # Was dev-only; promoted when /v1/approve gained the signature tier.
 ed25519-dalek = { workspace = true }
-# The workload-spawn hardening hook (setgroups/setgid/prctl/setrlimit in a
-# pre_exec closure). Same version the `nucleus` crate uses for `hardening.rs`.
+# `O_NOFOLLOW` for the exit report. (The workload-spawn hardening hook that
+# used to need it now lives in `nucleus::ChildConfinement`.)
 libc = "0.2"
 dirs = "7.0"
 whoami = "2"

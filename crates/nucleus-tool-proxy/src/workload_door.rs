@@ -367,12 +367,16 @@ impl UnservedDoor {
     pub(crate) fn bind(path: &Path) -> Result<Self, ApiError> {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
-        let failed = |what: &str, e: std::io::Error| {
+        // A named function, not a closure bound to a local: a call through a
+        // local binding is an unresolved path to the call-graph lints, and
+        // `bind` is reachable from the workload-spawn root
+        // (workload_identity_isolation, FM-5).
+        fn failed_at(path: &Path, what: &str, e: std::io::Error) -> ApiError {
             ApiError::Spec(format!(
                 "could not {what} the workload door at {}: {e}",
                 path.display()
             ))
-        };
+        }
         if !path.is_absolute() {
             return Err(ApiError::Spec(format!(
                 "the workload door must be an absolute path, got {}",
@@ -387,21 +391,22 @@ impl UnservedDoor {
                 .recursive(true)
                 .mode(0o755)
                 .create(parent)
-                .map_err(|e| failed("create the directory of", e))?;
+                .map_err(|e| failed_at(path, "create the directory of", e))?;
         }
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(failed("remove a stale socket at", e)),
+            Err(e) => return Err(failed_at(path, "remove a stale socket at", e)),
         }
         let std_listener =
-            std::os::unix::net::UnixListener::bind(path).map_err(|e| failed("bind", e))?;
+            std::os::unix::net::UnixListener::bind(path).map_err(|e| failed_at(path, "bind", e))?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))
-            .map_err(|e| failed("set the mode of", e))?;
+            .map_err(|e| failed_at(path, "set the mode of", e))?;
         std_listener
             .set_nonblocking(true)
-            .map_err(|e| failed("configure", e))?;
-        let listener = UnixListener::from_std(std_listener).map_err(|e| failed("register", e))?;
+            .map_err(|e| failed_at(path, "configure", e))?;
+        let listener =
+            UnixListener::from_std(std_listener).map_err(|e| failed_at(path, "register", e))?;
         Ok(Self {
             listener,
             path: path.to_path_buf(),

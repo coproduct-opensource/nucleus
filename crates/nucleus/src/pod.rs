@@ -130,7 +130,7 @@ impl PodRuntime {
             });
         }
 
-        let sandbox = Sandbox::new(&spec.policy, &spec.work_dir)?;
+        let sandbox = Self::sandbox_for(&spec)?;
         let budget = AtomicBudget::new(&spec.policy.budget);
         let time_guard = MonotonicGuard::new(spec.timeout);
 
@@ -145,11 +145,24 @@ impl PodRuntime {
 
     /// Attach an approver for approval-gated operations.
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Result<Self> {
-        let sandbox =
-            Sandbox::new(&self.spec.policy, &self.spec.work_dir)?.with_approver(approver.clone());
+        let sandbox = Self::sandbox_for(&self.spec)?.with_approver(approver.clone());
         self.sandbox = sandbox;
         self.approver = Some(approver);
         Ok(self)
+    }
+
+    /// The pod's sandbox, handing what it creates to the uid its executor's
+    /// children run as — both read off the one decider for `spec.containment`.
+    /// An undeclared posture (no confinement) leaves ownership alone; its
+    /// executor refuses every spawn anyway.
+    fn sandbox_for(spec: &PodSpec) -> Result<Sandbox> {
+        let sandbox = Sandbox::new(&spec.policy, &spec.work_dir)?;
+        Ok(
+            match crate::ChildConfinement::for_containment(spec.containment) {
+                Ok(confinement) => sandbox.owned_for(confinement),
+                Err(_) => sandbox,
+            },
+        )
     }
 
     /// Get the pod policy.

@@ -84,25 +84,70 @@ fn caller_may_manage(
     parent_pod_id == Some(caller) || pod_id == caller
 }
 
-/// The parent to record for a pod being created.
+/// A create named, as its parent, a pod the caller may not manage (#3126).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParentOutOfScope(Uuid);
+
+/// The parent to record for a pod being created, decided per scope. The pure
+/// half of [`parent_for_create`]: `registry` holds the pod the header names,
+/// if any, and only a CI identity's arm reads it.
 ///
-/// A proved pod wins outright; the header is consulted only for a node-domain
-/// non-pod caller (operator, orchestrator, CI). See the call site for why the
-/// header alone is not trustworthy.
+/// * `Pod` — the proved pod, outright, whatever the header says.
+/// * `Tenant` — NO parent from the header. It is unauthenticated, so honouring
+///   it let a tenant make any pod on the node the parent of a pod it controls:
+///   its pod then appeared in the victim's `/v1/pods` listing and
+///   `PodListView`, and in the victim's cascade-cancel. A tenant's pods are
+///   roots of its own lineage (#3022).
+/// * `NodeWide` — the header, as named: the operator or an orchestrator holds
+///   every pod already, so lineage it records grants it nothing new.
+/// * `CiPrincipal` — the header only when it names a pod this identity may
+///   manage: one stamped with its own ID (#3088's label rule, the same
+///   `scoped_lookup` every read and cancel uses). Naming any other pod plants
+///   the CI's pod in that pod's lineage exactly as a tenant could, so it is
+///   refused rather than recorded or silently dropped (#3126).
 ///
-/// A federated tenant gets NO parent from the header. The header is
-/// unauthenticated, so honouring it let a tenant make any pod on the node the
-/// parent of a pod it controls: its pod then appeared in the victim's
-/// `/v1/pods` listing and `PodListView`, and in the victim's cascade-cancel.
-/// A tenant's pods are roots of its own lineage.
-pub(crate) fn resolve_parent_pod_id(caller: &CallerScope, header: Option<&str>) -> Option<Uuid> {
+/// An unparseable header is no parent, for every scope that reads one.
+fn resolve_parent_pod_id<T: Lineage + Clone>(
+    caller: &CallerScope,
+    header: Option<&str>,
+    registry: &[T],
+) -> Result<Option<Uuid>, ParentOutOfScope> {
+    let named = header.and_then(|s| Uuid::parse_str(s).ok());
     match caller {
-        CallerScope::Pod(pod_id) => Some(*pod_id),
-        CallerScope::Tenant(_) => None,
-        CallerScope::NodeWide | CallerScope::CiPrincipal(_) => {
-            header.and_then(|s| Uuid::parse_str(s).ok())
-        }
+        CallerScope::Pod(pod_id) => Ok(Some(*pod_id)),
+        CallerScope::Tenant(_) => Ok(None),
+        CallerScope::NodeWide => Ok(named),
+        CallerScope::CiPrincipal(_) => match named {
+            None => Ok(None),
+            Some(id) => scoped_lookup(registry, id, caller)
+                .map(|_| Some(id))
+                .ok_or(ParentOutOfScope(id)),
+        },
     }
+}
+
+/// The parent a create records, for HTTP and gRPC alike: the one decider
+/// ([`resolve_parent_pod_id`]) over the pod the header names in the live
+/// registry. An out-of-scope parent is `NotFound`, the answer for a pod that
+/// does not exist, so a refused create does not tell a CI identity which pod
+/// ids are present (the oracle argument on [`get_pod_for_caller`]).
+pub(crate) async fn parent_for_create(
+    state: &NodeState,
+    caller: &CallerScope,
+    header: Option<&str>,
+) -> Result<Option<Uuid>, ApiError> {
+    let named = match header.and_then(|s| Uuid::parse_str(s).ok()) {
+        Some(id) => state.pods.lock().await.get(&id).cloned(),
+        None => None,
+    };
+    resolve_parent_pod_id(caller, header, named.as_slice()).map_err(|ParentOutOfScope(id)| {
+        tracing::warn!(
+            parent = %id,
+            caller = ?caller,
+            "a create named a parent the caller may not manage"
+        );
+        ApiError::NotFound
+    })
 }
 
 pub(crate) async fn list_pods(
@@ -574,9 +619,36 @@ pub(crate) async fn get_receipt(
 
 #[cfg(test)]
 mod ownership_tests {
-    use super::{caller_may_manage, resolve_parent_pod_id};
+    use super::{ParentOutOfScope, caller_may_manage, resolve_parent_pod_id};
     use crate::auth::CallerScope;
     use uuid::Uuid;
+
+    /// A registry entry for the parent resolver: a root pod, stamped with the
+    /// CI identity that created it, or with none.
+    #[derive(Clone)]
+    struct Named {
+        id: Uuid,
+        ci: Option<&'static str>,
+    }
+    impl super::Lineage for Named {
+        fn lineage_id(&self) -> Uuid {
+            self.id
+        }
+        fn lineage_parent(&self) -> Option<Uuid> {
+            None
+        }
+        fn lineage_ci_principal(&self) -> Option<&str> {
+            self.ci
+        }
+    }
+    /// The header names no pod the registry holds.
+    const NONE: [Named; 0] = [];
+    const CI: &str = "spiffe://nucleus.local/ns/github/sa/org-repo";
+    const OTHER_CI: &str = "spiffe://nucleus.local/ns/github/sa/org-other";
+
+    fn ci() -> CallerScope {
+        CallerScope::CiPrincipal(CI.to_string())
+    }
 
     fn a() -> Uuid {
         Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap()
@@ -869,8 +941,8 @@ mod ownership_tests {
     #[test]
     fn a_proved_caller_overrides_the_claimed_parent() {
         assert_eq!(
-            resolve_parent_pod_id(&CallerScope::Pod(b()), Some(&a().to_string())),
-            Some(b())
+            resolve_parent_pod_id(&CallerScope::Pod(b()), Some(&a().to_string()), &NONE),
+            Ok(Some(b()))
         );
     }
 
@@ -879,13 +951,16 @@ mod ownership_tests {
     #[test]
     fn the_header_still_applies_to_unidentified_callers() {
         assert_eq!(
-            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&a().to_string())),
-            Some(a())
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&a().to_string()), &NONE),
+            Ok(Some(a()))
         );
-        assert_eq!(resolve_parent_pod_id(&CallerScope::NodeWide, None), None);
         assert_eq!(
-            resolve_parent_pod_id(&CallerScope::NodeWide, Some("not-a-uuid")),
-            None
+            resolve_parent_pod_id(&CallerScope::NodeWide, None, &NONE),
+            Ok(None)
+        );
+        assert_eq!(
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some("not-a-uuid"), &NONE),
+            Ok(None)
         );
     }
 
@@ -895,8 +970,8 @@ mod ownership_tests {
     #[test]
     fn forging_the_parent_header_gains_an_identified_pod_nothing() {
         // B claims to be A's child, hoping to be handed A's children.
-        let recorded = resolve_parent_pod_id(&CallerScope::Pod(b()), Some(&a().to_string()));
-        assert_eq!(recorded, Some(b()), "the proof must win");
+        let recorded = resolve_parent_pod_id(&CallerScope::Pod(b()), Some(&a().to_string()), &NONE);
+        assert_eq!(recorded, Ok(Some(b())), "the proof must win");
         // And it still cannot reach A's child.
         assert!(!caller_may_manage(
             &CallerScope::Pod(b()),
@@ -904,6 +979,71 @@ mod ownership_tests {
             Some(a()),
             None
         ));
+    }
+
+    // ── #3126: a CI identity names only its own pods as parent ────────────
+
+    /// A CI identity that names, as parent, a pod another CI identity created,
+    /// an unstamped pod, or a pod that does not exist is refused, naming the
+    /// pod. Each would plant its pod in a lineage it does not own: the named
+    /// pod's scope, listing, cascade and lockdown would all reach it.
+    #[test]
+    fn a_ci_identity_cannot_name_a_pod_outside_its_scope_as_parent() {
+        let theirs = Named {
+            id: a(),
+            ci: Some(OTHER_CI),
+        };
+        let unstamped = Named { id: b(), ci: None };
+        for (what, registry) in [("another CI's", [theirs]), ("an unstamped", [unstamped])] {
+            let id = registry[0].id;
+            assert_eq!(
+                resolve_parent_pod_id(&ci(), Some(&id.to_string()), &registry),
+                Err(ParentOutOfScope(id)),
+                "{what} pod"
+            );
+        }
+        assert_eq!(
+            resolve_parent_pod_id(&ci(), Some(&child_of_a().to_string()), &NONE),
+            Err(ParentOutOfScope(child_of_a())),
+            "a pod that does not exist: refused alike, so no existence oracle"
+        );
+    }
+
+    /// The control: its own pod -- stamped with its ID by the node -- it may
+    /// name; and no header, or one that is not a pod id, is no parent.
+    #[test]
+    fn a_ci_identity_names_its_own_pod_as_parent() {
+        let mine = [Named {
+            id: a(),
+            ci: Some(CI),
+        }];
+        assert_eq!(
+            resolve_parent_pod_id(&ci(), Some(&a().to_string()), &mine),
+            Ok(Some(a()))
+        );
+        assert_eq!(resolve_parent_pod_id(&ci(), None, &mine), Ok(None));
+        assert_eq!(
+            resolve_parent_pod_id(&ci(), Some("not-a-uuid"), &mine),
+            Ok(None)
+        );
+    }
+
+    /// The operator's header is unchanged: it names any pod, in the registry
+    /// or not, stamped by any CI identity or by none.
+    #[test]
+    fn the_operator_still_names_any_parent() {
+        let theirs = [Named {
+            id: a(),
+            ci: Some(OTHER_CI),
+        }];
+        assert_eq!(
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&a().to_string()), &theirs),
+            Ok(Some(a()))
+        );
+        assert_eq!(
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&b().to_string()), &NONE),
+            Ok(Some(b()))
+        );
     }
 
     // ── #2475: the gRPC surface uses the same ownership predicate ─────────
@@ -1057,7 +1197,7 @@ pub(crate) mod handler_tests {
         NodeState {
             pods: Arc::new(Mutex::new(HashMap::new())),
             state_dir: a.state_dir.clone(),
-            scratch_root: a.scratch.ensure(&a.state_dir).expect("scratch root"),
+            host_roots: a.host_paths.ensure(&a.state_dir).expect("host roots"),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
             firecracker_path: a.firecracker_path.clone(),
@@ -1702,13 +1842,14 @@ pub(crate) mod handler_tests {
     fn a_tenant_cannot_name_a_parent_by_header() {
         let victim = Uuid::new_v4();
         let header = victim.to_string();
+        let none: &[Arc<PodHandle>] = &[];
         assert_eq!(
-            resolve_parent_pod_id(&tenant("tenant-a.example.invalid"), Some(&header)),
-            None
+            resolve_parent_pod_id(&tenant("tenant-a.example.invalid"), Some(&header), none),
+            Ok(None)
         );
         assert_eq!(
-            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&header)),
-            Some(victim),
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&header), none),
+            Ok(Some(victim)),
             "the control: the operator's header still applies"
         );
     }

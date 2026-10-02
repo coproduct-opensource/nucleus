@@ -105,9 +105,45 @@ pub struct Sandbox {
     /// `Authority::spend` now refuses that outright; this is the log that makes
     /// the refusal unnecessary.
     receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
+    /// The uid that files and directories this sandbox CREATES are handed to:
+    /// the executor's dropped child uid, when it has one.
+    ///
+    /// Under MicroVM the runtime writes as root and the commands it runs drop
+    /// to the workload uid. Without this, a file written through the sandbox
+    /// would be root's, and the agent's next command — a formatter rewriting
+    /// it in place, a build writing into a directory the sandbox made — would
+    /// be refused. `None` keeps the runtime's ownership: the restrictive
+    /// direction, not a grant.
+    child_owner: Option<u32>,
 }
 
 impl Sandbox {
+    /// Hand what this sandbox creates to the children `confinement` describes.
+    /// A no-op for a confinement that does not drop uid.
+    #[must_use]
+    pub fn owned_for(mut self, confinement: crate::ChildConfinement) -> Self {
+        self.child_owner = confinement.drop_uid();
+        self
+    }
+
+    /// Give a just-created entry to the child uid. Called on the creating
+    /// handle where there is one, so nothing can be swapped in between.
+    fn hand_over_fd(&self, fd: impl std::os::fd::AsFd) -> std::io::Result<()> {
+        match self.child_owner {
+            Some(uid) => std::os::unix::fs::fchown(fd, Some(uid), Some(uid)),
+            None => Ok(()),
+        }
+    }
+
+    /// Give a just-created directory (relative to the root) to the child uid.
+    fn hand_over_dir(&self, path: &Path) -> std::io::Result<()> {
+        if self.child_owner.is_none() {
+            return Ok(());
+        }
+        let dir = self.root.open_dir(path)?;
+        self.hand_over_fd(&dir)
+    }
+
     /// The receipts for authorities spent through this sandbox.
     pub fn receipts(&self) -> &portcullis_effects::receipt::ReceiptLog {
         &self.receipts
@@ -135,6 +171,7 @@ impl Sandbox {
             obligations: normalized.obligations,
             approver: None,
             permissions,
+            child_owner: None,
         })
     }
 
@@ -527,9 +564,29 @@ impl Sandbox {
         self.check_policy(path)?;
         self.check_write_or_edit_capability(path, approval)?;
 
-        self.root
-            .write(path, contents)
+        self.write_owned(path, contents.as_ref())
             .map_err(|e| classify_path_io(path.to_path_buf(), &e))
+    }
+
+    /// `Dir::write`, except that a file this call CREATES is handed to the
+    /// child uid on the creating handle. An existing file is truncated in
+    /// place and keeps its owner, as before.
+    pub(crate) fn write_owned(&self, path: &Path, contents: &[u8]) -> std::io::Result<()> {
+        if self.child_owner.is_none() {
+            return self.root.write(path, contents);
+        }
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        match self.root.open_with(path, &options) {
+            Ok(mut file) => {
+                self.hand_over_fd(&file)?;
+                std::io::Write::write_all(&mut file, contents)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.root.write(path, contents)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Create a directory.
@@ -564,6 +621,7 @@ impl Sandbox {
 
         self.root
             .create_dir(path)
+            .and_then(|()| self.hand_over_dir(path))
             .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
@@ -597,8 +655,22 @@ impl Sandbox {
         self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
+        // Only the components THIS call creates are handed over; a directory
+        // that already existed keeps whatever owner it had.
+        let created: Vec<PathBuf> = if self.child_owner.is_some() {
+            path.ancestors()
+                .filter(|p| !p.as_os_str().is_empty() && !self.root.exists(p))
+                .map(Path::to_path_buf)
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.root
             .create_dir_all(path)
+            .and_then(|()| {
+                // Outermost first, so each is handed over before what it holds.
+                created.iter().rev().try_for_each(|p| self.hand_over_dir(p))
+            })
             .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
@@ -1077,6 +1149,8 @@ impl Sandbox {
             // path narrows, the policy does not — so a token redeemable here is
             // redeemable there.
             permissions: self.permissions.clone(),
+            // And the same children: what it creates goes to the same uid.
+            child_owner: self.child_owner,
         })
     }
 }

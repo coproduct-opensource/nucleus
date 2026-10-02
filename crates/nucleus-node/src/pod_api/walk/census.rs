@@ -212,10 +212,13 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
                 Seen::Listed(listed)
             }
             Letter::Create(caller) => {
-                let parent = resolve_parent_pod_id(
+                let parent = parent_for_create(
+                    &st,
                     &crate::auth::CallerScope::from_model(u.id(caller)),
                     None,
-                );
+                )
+                .await
+                .expect("no header names no parent to refuse");
                 let _ = register(&st, parent).await;
                 Seen::Created
             }

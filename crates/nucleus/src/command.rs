@@ -38,7 +38,7 @@ use portcullis_effects::AsyncShellSpawnEffect;
 use portcullis_effects::authority::Authority;
 use portcullis_effects::{PolicyEnforced, RealEffects, ShellEffect, production_effects_concrete};
 
-use crate::hardening::HostSandbox;
+use crate::hardening::ChildConfinement;
 
 const MIN_EXEC_COST_USD: f64 = 0.000001;
 
@@ -88,7 +88,14 @@ pub enum ContainmentMode {
     /// The Executor is itself running inside a managed microVM guest (the VM is
     /// the boundary). Attests `microvm()`. Must only be declared when the process
     /// is provably inside the sandbox (e.g. the tool-proxy's enforced
-    /// `SandboxProof` at startup). No in-process hardening is applied.
+    /// `SandboxProof` at startup).
+    ///
+    /// The VM is the boundary against the HOST, not against the runtime: in
+    /// the guest the tool-proxy is PID 1 and root and holds every pod secret in
+    /// its environment. So each child drops to the workload uid
+    /// ([`DEFAULT_CHILD_UID`](crate::DEFAULT_CHILD_UID)) and is hardened, by
+    /// the same [`ChildConfinement`](crate::ChildConfinement) the workload
+    /// launch uses. It used to get nothing, and ran as guest root.
     MicroVM,
 }
 
@@ -365,9 +372,9 @@ impl<'a> Executor<'a> {
     ///   close it with `Stdio::null()`.
     ///
     /// The invariant hardening is threaded through `run_argv`: the environment
-    /// allowlist as `&self.allowed_env`, and — under
-    /// [`ContainmentMode::HostHardened`] — `HostSandbox::harden_std` as the
-    /// injected `harden` hook (`None` reproduces the un-hardened spawn).
+    /// allowlist as `&self.allowed_env`, and the executor's
+    /// [`ChildConfinement`] as the injected `harden` hook — always `Some`, for
+    /// every containment mode, so there is no un-hardened branch to take.
     ///
     /// Keeping all three public methods routed through this one function lets the
     /// executor-proof gate require an `Authority` as the final parameter
@@ -388,8 +395,12 @@ impl<'a> Executor<'a> {
         stdin_data: Option<&str>,
         authority: Authority,
     ) -> Result<Output> {
+        // Decided BEFORE anything is snapshotted or spawned, and handed to the
+        // spawn by value: `spawn_unguarded` cannot be called without one.
+        let confinement = self.child_confinement()?;
+        self.hand_over_workspace(confinement);
         let before = crate::consume_guard::Snapshot::take(self.sandbox.root_dir())?;
-        let result = self.spawn_unguarded(program, args, cwd, stdin_data, authority);
+        let result = self.spawn_unguarded(program, args, cwd, stdin_data, confinement, authority);
         let reverted = before.revert_changes(self.sandbox.root_dir())?;
         if !reverted.is_empty() {
             let command = std::iter::once(program)
@@ -401,20 +412,44 @@ impl<'a> Executor<'a> {
         result.map_err(NucleusError::from)
     }
 
+    /// How every child this executor spawns is confined — asked of the one
+    /// decider ([`ChildConfinement::for_containment`]), never re-derived here.
+    ///
+    /// # Errors
+    /// [`NucleusError::IsolationNotConfigured`] when no posture was declared.
+    pub fn child_confinement(&self) -> Result<ChildConfinement> {
+        ChildConfinement::for_containment(self.containment)
+    }
+
+    /// Give the sandbox root to a dropped child's uid so it can enter and
+    /// write its working directory — the same best-effort step the workload
+    /// launch takes for its work dir. Not the security control (the drop is);
+    /// a read-only scratch legitimately refuses it.
+    fn hand_over_workspace(&self, confinement: ChildConfinement) {
+        if let Err(e) = confinement.hand_over(self.sandbox.root_path()) {
+            tracing::warn!(
+                root = %self.sandbox.root_path().display(),
+                error = %e,
+                "could not hand the sandbox root to the child uid; the child runs \
+                 without ownership of it (expected when the scratch is read-only)"
+            );
+        }
+    }
+
     fn spawn_unguarded(
         &self,
         program: &str,
         args: &[String],
         cwd: &std::path::Path,
         stdin_data: Option<&str>,
+        confinement: ChildConfinement,
         authority: Authority,
     ) -> io::Result<Output> {
-        // Under HostHardened, hand the sealed home `HostSandbox::harden_std` as
-        // the pre-spawn hook; otherwise `None` (un-hardened spawn). The concrete
-        // hardening lives in this crate, so it is injected as a callback.
-        let harden: Option<&(dyn Fn(&mut Command) + Send + Sync)> = (self.containment
-            == ContainmentMode::HostHardened)
-            .then_some(&HostSandbox::harden_std as &(dyn Fn(&mut Command) + Send + Sync));
+        // The hook is ALWAYS installed: there is no `None` to forget. Under
+        // MicroVM the child leaves the runtime's (root) uid exactly as the
+        // workload does; `hardening.rs` has the table.
+        let hook = move |cmd: &mut Command| confinement.apply(cmd);
+        let harden: Option<&(dyn Fn(&mut Command) + Send + Sync)> = Some(&hook);
 
         // Delegate to the sealed home. `stdin_data` (an `Option<&str>`) becomes
         // `Option<&[u8]>` via `str::as_bytes` — the child receives the exact same
@@ -814,8 +849,8 @@ impl<'a> Executor<'a> {
     /// impossible — the trait is not dyn-compatible). The sealed home reproduces
     /// the previous inline builder exactly: `env_clear` + `envs(allowed_env)`,
     /// piped stdout/stderr, `Stdio::null()` stdin (the timeout paths never feed
-    /// stdin, so `None` is passed), `kill_on_drop(true)`, the host-hardening hook
-    /// under [`ContainmentMode::HostHardened`], and `tokio::time::timeout` around
+    /// stdin, so `None` is passed), `kill_on_drop(true)`, the executor's
+    /// [`ChildConfinement`] as the hook, and `tokio::time::timeout` around
     /// the wait.
     ///
     /// Behavior is preserved byte-for-byte, including the error mapping: the
@@ -831,13 +866,11 @@ impl<'a> Executor<'a> {
         timeout: Duration,
         authority: Authority,
     ) -> Result<Output> {
-        // Under HostHardened, hand the sealed home `HostSandbox::harden_tokio` as
-        // the pre-spawn hook; otherwise `None` (un-hardened spawn). Mirrors the
-        // synchronous `spawn_checked` harden-injection, on `tokio::process`.
-        let harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)> =
-            (self.containment == ContainmentMode::HostHardened).then_some(
-                &HostSandbox::harden_tokio as &(dyn Fn(&mut tokio::process::Command) + Send + Sync),
-            );
+        // The same confinement as the synchronous spawn, on `tokio::process`.
+        let confinement = self.child_confinement()?;
+        self.hand_over_workspace(confinement);
+        let hook = move |cmd: &mut tokio::process::Command| confinement.apply(cmd.as_std_mut());
+        let harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)> = Some(&hook);
 
         // The execute-on-consume guard, as on the synchronous path: a timed-out
         // command can have written before it was killed, so the comparison runs
@@ -1489,6 +1522,102 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello world"));
+    }
+
+    /// Run `args` through a MicroVM executor over `sandbox`; return trimmed
+    /// stdout and whether it exited 0.
+    fn run_in_microvm(sandbox: &Sandbox, args: &[&str]) -> (String, bool) {
+        let policy = test_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let budget = AtomicBudget::new(&test_budget());
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, sandbox, &budget)
+            .with_time_guard(&guard)
+            .in_microvm();
+        let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        let subject = args.join(" ");
+        let dt = run_token(&mut kernel, &subject);
+        let output = executor
+            .run_args(
+                &args,
+                None,
+                None,
+                dt,
+                Authority::new(allowed_bundle(&subject)),
+            )
+            .expect("the MicroVM spawn runs");
+        (
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            output.status.success(),
+        )
+    }
+
+    /// THE finding, on a real spawn: inside a guest the tool-proxy is PID 1 and
+    /// root, and a `/v1/run` child under MicroVM ran as root too — so it could
+    /// read the runtime's environment (broker secret, mediation signing key,
+    /// audit credentials) out of procfs. It must run as the workload uid.
+    ///
+    /// Needs root, because only root can drop — which is exactly the guest's
+    /// situation. Run with
+    /// `sudo <test-binary> --ignored a_microvm_child_of_a_root_runtime`.
+    /// Red on the parent commit (`id -u` printed `0` and the read succeeded).
+    #[test]
+    #[ignore = "needs root: only a root runtime can drop the child's uid"]
+    fn a_microvm_child_of_a_root_runtime_is_not_root_and_cannot_read_the_runtimes_environ() {
+        // Spelled with std and a literal rather than this crate's names, so the
+        // SAME test compiles on the parent commit and shows the defect there.
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata("/proc/self").map(|m| m.uid()).ok(),
+            Some(0),
+            "run this test as root; as anyone else it proves nothing"
+        );
+        let tmp = tempdir().unwrap();
+        let policy = test_policy();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let (uid, ok) = run_in_microvm(&sandbox, &["id", "-u"]);
+        assert!(ok, "id -u failed");
+        assert_eq!(uid, "65534", "child uid (the workload's)");
+
+        // The runtime here is this test process, root, exactly as PID 1 is in
+        // the guest. Non-vacuity: the runtime itself CAN read its environ.
+        let environ = format!("/proc/{}/environ", std::process::id());
+        assert!(
+            std::fs::read(&environ).is_ok_and(|b| !b.is_empty()),
+            "positive control: the runtime reads its own environ"
+        );
+        let (_, read_ok) = run_in_microvm(&sandbox, &["cat", environ.as_str()]);
+        assert!(!read_ok, "the child read the root runtime's {environ}");
+        let (_, read_pid1) = run_in_microvm(&sandbox, &["cat", "/proc/1/environ"]);
+        assert!(!read_pid1, "the child read /proc/1/environ");
+    }
+
+    /// The other half of "don't break the workspace": a file the runtime writes
+    /// through a MicroVM pod's sandbox belongs to the child uid, so the agent's
+    /// next command can rewrite it in place.
+    #[test]
+    #[ignore = "needs root: only root can chown"]
+    fn a_microvm_pods_sandbox_hands_what_it_creates_to_the_child_uid() {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(crate::runtime_uid(), 0, "run this test as root");
+        let tmp = tempdir().unwrap();
+        let policy = test_policy();
+        let sandbox = Sandbox::new(&policy, tmp.path())
+            .unwrap()
+            .owned_for(ChildConfinement::for_containment(ContainmentMode::MicroVM).unwrap());
+        sandbox
+            .write_owned(std::path::Path::new("new.txt"), b"x")
+            .unwrap();
+        let meta = std::fs::metadata(tmp.path().join("new.txt")).unwrap();
+        assert_eq!(meta.uid(), crate::DEFAULT_CHILD_UID);
+
+        // And the child, as that uid, can rewrite it in place.
+        let (_, ok) = run_in_microvm(&sandbox, &["truncate", "-s", "0", "new.txt"]);
+        assert!(
+            ok,
+            "the dropped child could not write a file the runtime created"
+        );
     }
 
     #[test]

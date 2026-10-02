@@ -26,18 +26,26 @@
 //!
 //!   A ∈ scoped  ∧  C ∈ scoped  ∧  B ∉ scoped  ∧  {A,B,C} ⊆ operator  ∧  scoped ⊊ operator
 //!
-//! # What the probe CAN prove locally, and why self-present is not enough
+//! # What the probe CAN prove locally, and why it does not know its own id
 //!
-//! The probe's own anti-vacuity is narrow: the call genuinely ran, returned a
-//! real (non-empty) listing, and that listing contains A's OWN id — so the query
-//! reached the node and came back A's scoped view, not an error or an empty stub.
+//! The probe's own anti-vacuity is narrow: the call genuinely ran and returned a
+//! real, non-empty listing of well-formed pod ids, not an error object or an
+//! empty stub. It does NOT check that its own id is in the listing, because a
+//! workload has no legitimate way to learn its own id: on Firecracker the only
+//! source is `FETCH_POD_CALLER_TOKEN`, which serves the id alongside the caller
+//! token, once, to `nucleus-guest-init` before any workload exists (#2724,
+//! #3113). A workload asking for it is refused, correctly, and the probe must
+//! not be the one exception. `POD_LIST` itself needs no token: the socket is the
+//! authority.
 //!
-//! Self-present is NECESSARY but is NOT the scoping signal, and the probe must
-//! never be allowed to stand as the property: an unidentified guest that
-//! fail-OPENS to the operator view *also* contains self. The scoping is proven
-//! only by C-included ∧ B-excluded ∧ strict-subset, and every one of those is
-//! host-side. This is why PASS here means "the listing is real and self-scoped,
-//! now go check exclusion" — not "cross-pod isolation holds".
+//! Self-membership is the host's to check, and it already does with the id the
+//! operator was given at create time (`A ∈ scoped` above), which is a stronger
+//! witness than any id the guest could report about itself. Self-present was
+//! never the scoping signal anyway: an unidentified guest that fail-OPENS to the
+//! operator view also contains self. The scoping is proven only by
+//! C-included ∧ B-excluded ∧ strict-subset, every one of which is host-side. So
+//! PASS here means "the listing is real, now go check it", not "cross-pod
+//! isolation holds".
 
 // ADR 0007 totality: a function whose signature says it returns is lying if it
 // panics. Denied for the shipped build only — `assert!` IS a panic, so denying
@@ -86,45 +94,27 @@ const FAIL_SENTINEL: &str = "NUCLEUS_PODLIST_PROBE: FAIL";
 /// separate from the vsock I/O so it is unit-tested without a live socket.
 #[derive(Debug, PartialEq, Eq)]
 enum Verdict {
-    /// The listing is real and self-scoped; `ids` is the set for the host to
-    /// check for B-exclusion / C-inclusion.
+    /// The listing is real (a non-empty array of string ids); `ids` is the set
+    /// for the host to check for A-inclusion, C-inclusion and B-exclusion.
     Pass { ids: Vec<String> },
-    /// The listing is missing, malformed, empty, or does not contain self — the
-    /// probe refuses to pass so a broken query cannot certify isolation.
+    /// The listing is missing, malformed, empty, or a refusal object — the probe
+    /// refuses to pass so a broken query cannot certify isolation.
     Fail { reason: String },
 }
 
 fn main() {
     let port = workload_api_port();
 
-    // The pod's own id. As a WORKLOAD — spawned by the tool-proxy, not the same
-    // process as guest-init — this does NOT inherit the NUCLEUS_POD_ID that
-    // guest-init sets for itself (verified on a live boot: the env var is absent
-    // here). So the id is fetched from the same socket-authenticated vsock that
-    // serves POD_LIST: FETCH_POD_CALLER_TOKEN answers {caller_token, pod_id}, and
-    // the socket — not the guest — says which pod that is. An env override is
-    // honored first, for the KVM-free harness and tests.
-    let self_id = match resolve_self_id(std::env::var("NUCLEUS_POD_ID").ok()) {
-        Ok(id) => id,
-        Err(_) => match fetch_pod_id(port) {
-            Ok(id) => id,
-            Err(e) => {
-                fail(&format!(
-                    "no NUCLEUS_POD_ID in the environment and could not fetch this pod's id over vsock ({e}) — cannot self-check the listing; refusing to pass vacuously"
-                ));
-                return;
-            }
-        },
-    };
-
     // Poll for the settled scoped view (see POLL_ATTEMPTS): keep the largest
-    // valid, self-containing listing seen; a sibling can never enter it, so
-    // larger is strictly more of this pod's own lineage.
+    // valid listing seen; a sibling can never enter it, so larger is strictly
+    // more of this pod's own lineage. No caller token and no pod id is asked
+    // for: `POD_LIST` is authenticated by the socket, and the caller token is
+    // guest-init's, served once (see the module docs).
     let mut best: Option<Vec<String>> = None;
     let mut last_reason = "no POD_LIST reply".to_string();
     for _ in 0..POLL_ATTEMPTS {
-        match fetch_over_vsock(port, "POD_LIST") {
-            Ok(reply) => match decide(&reply, &self_id) {
+        match fetch_pod_list(port) {
+            Ok(reply) => match decide(&reply) {
                 Verdict::Pass { ids } => {
                     if best.as_ref().is_none_or(|b| ids.len() > b.len()) {
                         best = Some(ids);
@@ -138,47 +128,16 @@ fn main() {
     }
 
     match best {
-        // `ids=` is what the host harness parses for the B-exclusion / C-inclusion
-        // assertions. The listing carries no secrets (same data as `/v1/pods`).
+        // `ids=` is what the host harness parses for the A-inclusion,
+        // C-inclusion and B-exclusion assertions. The listing carries no secrets
+        // (same data as `/v1/pods`).
         Some(ids) => {
-            let line = format!("{PASS_SENTINEL} self={self_id} ids={}", ids.join(","));
+            let line = format!("{PASS_SENTINEL} ids={}", ids.join(","));
             println!("{line}");
             eprintln!("{line}");
         }
         None => fail(&last_reason),
     }
-}
-
-/// Resolve this pod's own id from an optional `NUCLEUS_POD_ID` override. Absent
-/// or blank is an `Err` (not a default) — the caller then falls back to fetching
-/// the id over vsock. Pure, so both branches are unit-tested.
-fn resolve_self_id(env_value: Option<String>) -> Result<String, String> {
-    match env_value {
-        Some(id) if !id.trim().is_empty() => Ok(id.trim().to_string()),
-        _ => Err("NUCLEUS_POD_ID not set".into()),
-    }
-}
-
-/// This pod's own id, fetched over the socket-authenticated vsock. The socket is
-/// per-pod, so `FETCH_POD_CALLER_TOKEN` answers THIS pod's `{caller_token,
-/// pod_id}` — the id cannot be forged by the guest. The token is ignored here;
-/// only the id is needed, to self-check the listing.
-fn fetch_pod_id(port: u32) -> Result<String, String> {
-    let reply = fetch_over_vsock(port, "FETCH_POD_CALLER_TOKEN")?;
-    parse_pod_id(&reply).ok_or_else(|| {
-        format!(
-            "FETCH_POD_CALLER_TOKEN reply carried no pod_id: {:?}",
-            reply.trim()
-        )
-    })
-}
-
-/// Extract `pod_id` from a `FETCH_POD_CALLER_TOKEN` reply
-/// (`{"caller_token":"…","pod_id":"…"}`). Pure, so it is unit-tested; returns
-/// `None` on a legacy token-only reply or an error object.
-fn parse_pod_id(reply: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(reply.trim()).ok()?;
-    v.get("pod_id")?.as_str().map(str::to_string)
 }
 
 /// Emit the FAIL sentinel on both streams and exit non-zero, matching the
@@ -198,10 +157,17 @@ fn workload_api_port() -> u32 {
         .unwrap_or(DEFAULT_WORKLOAD_API_PORT)
 }
 
-/// Connect the workload-API vsock, send one `command`, and read the one reply
+/// Connect the workload-API vsock, send `POD_LIST`, and read the one reply
 /// line. Mirrors the client in `nucleus-guest-init::identity` (same CID/port/
 /// framing); each call is a fresh connection, matching the per-frame handler.
-fn fetch_over_vsock(port: u32, command: &str) -> Result<String, String> {
+///
+/// The command is fixed, not a parameter: this is the only request the probe
+/// can make. Every other workload-API value is served once, to guest-init,
+/// before the workload exists (#3113), and a workload asking for one is refused,
+/// so a probe that needed one could not run as a workload at all.
+fn fetch_pod_list(port: u32) -> Result<String, String> {
+    const POD_LIST: &str = "POD_LIST";
+    let command = POD_LIST;
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("connect (cid {VMADDR_CID_HOST} port {port}): {e}"))?;
     // Bound the read so a host that accepts but never answers cannot wedge the
@@ -223,9 +189,9 @@ fn fetch_over_vsock(port: u32, command: &str) -> Result<String, String> {
 }
 
 /// Decide the probe's LOCAL verdict over a POD_LIST reply. Pure by design: the
-/// security property (B out, C in, strict subset) is the HOST's job; this only
-/// establishes that the listing is real and contains self.
-fn decide(response: &str, self_id: &str) -> Verdict {
+/// security property (A in, C in, B out, strict subset) is the HOST's job; this
+/// only establishes that the listing is real.
+fn decide(response: &str) -> Verdict {
     let trimmed = response.trim();
     if trimmed.is_empty() {
         return Verdict::Fail {
@@ -270,20 +236,12 @@ fn decide(response: &str, self_id: &str) -> Verdict {
         }
     }
 
-    if !ids.iter().any(|id| id == self_id) {
-        return Verdict::Fail {
-            reason: format!(
-                "this pod's own id {self_id} is NOT in its own listing — the call did not come back as this pod's scoped view (an unauthenticated or failed query), so any exclusion it shows proves nothing"
-            ),
-        };
-    }
-
     Verdict::Pass { ids }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Verdict, decide, parse_pod_id, resolve_self_id};
+    use super::{Verdict, decide};
 
     const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -300,91 +258,76 @@ mod tests {
     }
 
     /// The normal live case: A sees itself and its child C. PASS, ids extracted
-    /// in order for the host to run B-exclusion / C-inclusion on.
+    /// in order for the host to run A/C-inclusion and B-exclusion on.
     #[test]
     fn self_and_child_present_passes_and_extracts_ids() {
         let resp = format!(
             r#"[{{"id":"{A}","name":"orch-a"}},{{"id":"{C}","name":"child-c","parent_pod_id":"{A}"}}]"#
         );
-        assert_eq!(ids(decide(&resp, A)), vec![A.to_string(), C.to_string()]);
+        assert_eq!(ids(decide(&resp)), vec![A.to_string(), C.to_string()]);
     }
 
     /// `parent_pod_id` must not be mistaken for `id`: only the `id` field is
-    /// extracted, so the set is exactly the pods, never their parents.
+    /// extracted, so the set is exactly the pods, never their parents. (Were
+    /// the parent read as an id, C's own listing would wrongly contain A.)
     #[test]
     fn parent_pod_id_is_not_read_as_an_id() {
         let resp = format!(r#"[{{"id":"{C}","name":"child-c","parent_pod_id":"{A}"}}]"#);
-        // self_id = C here (the child querying its own socket).
-        assert_eq!(ids(decide(&resp, C)), vec![C.to_string()]);
+        assert_eq!(ids(decide(&resp)), vec![C.to_string()]);
     }
 
-    /// **The self-only case the probe CANNOT discriminate — pinned so it is not
-    /// mistaken for the property.** `[A]` contains self and is non-empty, so the
-    /// probe PASSes; whether the filter is genuinely lineage-scoped or broken to
-    /// self-only is invisible here and is the HOST's job (assert C ∈ scoped).
+    /// **The defects the probe CANNOT discriminate, pinned so a local PASS is
+    /// not mistaken for the property.** A self-only `[A]`, an unscoped `[A,B,C]`
+    /// (a node serving the operator view), and a listing without A all reach
+    /// the host verbatim, where `C ∈`, `B ∉` and `A ∈` red them. The probe must
+    /// not filter, reorder or drop an id, since that could hide a leak.
     #[test]
-    fn self_only_passes_locally_but_is_the_hosts_to_discriminate() {
-        let resp = format!(r#"[{{"id":"{A}","name":"orch-a"}}]"#);
-        assert_eq!(ids(decide(&resp, A)), vec![A.to_string()]);
-    }
+    fn scoping_defects_reach_the_host_verbatim() {
+        let self_only = format!(r#"[{{"id":"{A}"}}]"#);
+        assert_eq!(ids(decide(&self_only)), vec![A.to_string()]);
 
-    /// Self absent → the query did not come back as A's scoped view. Any
-    /// exclusion it shows is meaningless, so FAIL rather than certify.
-    #[test]
-    fn self_absent_fails_as_unauthenticated() {
-        let resp = format!(r#"[{{"id":"{B}","name":"sibling-b"}}]"#);
-        assert!(is_fail(decide(&resp, A)));
+        let unscoped = format!(r#"[{{"id":"{A}"}},{{"id":"{B}"}},{{"id":"{C}"}}]"#);
+        assert_eq!(
+            ids(decide(&unscoped)),
+            vec![A.to_string(), B.to_string(), C.to_string()],
+            "a leaked sibling must reach the host, which reds on B in the listing"
+        );
+
+        let not_self = format!(r#"[{{"id":"{B}"}}]"#);
+        assert_eq!(ids(decide(&not_self)), vec![B.to_string()]);
     }
 
     /// Empty listing → a scoped view must contain at least this pod, so `[]` is a
     /// failed/unscoped query, not isolation. FAIL (no vacuous pass).
     #[test]
     fn empty_listing_fails_vacuous() {
-        assert!(is_fail(decide("[]", A)));
-        assert!(is_fail(decide("   ", A)));
+        assert!(is_fail(decide("[]")));
+        assert!(is_fail(decide("   ")));
     }
 
     /// A refusal object (`{"error":...}`) is not a listing — must not read as a
-    /// silent pass just because it is valid JSON.
+    /// silent pass just because it is valid JSON. The second is the exact reply
+    /// the node gave the previous probe for the caller token it no longer asks
+    /// for (#3113): a refusal of any kind reds the probe.
     #[test]
     fn error_object_is_not_a_listing() {
-        assert!(is_fail(decide(r#"{"error":"nope"}"#, A)));
+        assert!(is_fail(decide(r#"{"error":"nope"}"#)));
+        assert!(is_fail(decide(
+            r#"{"error":"caller token already served"}"#
+        )));
     }
 
     /// Malformed JSON is a transport/serialization failure, not a listing.
     #[test]
     fn malformed_json_fails() {
-        assert!(is_fail(decide("[{\"id\":", A)));
-        assert!(is_fail(decide("not json at all", A)));
+        assert!(is_fail(decide("[{\"id\":")));
+        assert!(is_fail(decide("not json at all")));
     }
 
     /// An entry without a string id is malformed — refuse rather than guess.
     #[test]
     fn entry_without_string_id_fails() {
-        assert!(is_fail(decide(r#"[{"name":"no-id"}]"#, A)));
-        assert!(is_fail(decide(r#"[{"id":42}]"#, A)));
-    }
-
-    /// Missing or blank `NUCLEUS_POD_ID` → `Err` (the caller then fetches the id
-    /// over vsock); a set value is trimmed and used as the override.
-    #[test]
-    fn missing_or_blank_self_id_falls_through() {
-        assert!(resolve_self_id(None).is_err());
-        assert!(resolve_self_id(Some("   ".into())).is_err());
-        assert_eq!(resolve_self_id(Some("  a-b  ".into())).unwrap(), "a-b");
-    }
-
-    /// The vsock self-id path: `pod_id` is lifted from a FETCH_POD_CALLER_TOKEN
-    /// reply, and a legacy token-only reply or an error object yields `None` (so
-    /// the probe fails rather than self-checks against a missing id).
-    #[test]
-    fn parse_pod_id_reads_the_id_or_none() {
-        assert_eq!(
-            parse_pod_id(&format!(r#"{{"caller_token":"t","pod_id":"{A}"}}"#)).as_deref(),
-            Some(A)
-        );
-        assert_eq!(parse_pod_id(r#"{"caller_token":"t"}"#), None);
-        assert_eq!(parse_pod_id(r#"{"error":"none"}"#), None);
-        assert_eq!(parse_pod_id("not json"), None);
+        assert!(is_fail(decide(r#"[{"name":"no-id"}]"#)));
+        assert!(is_fail(decide(r#"[{"id":42}]"#)));
     }
 }

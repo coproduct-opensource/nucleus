@@ -13,8 +13,8 @@ spec:
     deny:
       - "0.0.0.0/0"
   image:
-    kernel_path: /var/lib/nucleus/vmlinux
-    rootfs_path: /var/lib/nucleus/rootfs.ext4
+    kernel_path: /var/lib/nucleus/artifacts/vmlinux
+    rootfs_path: /var/lib/nucleus/artifacts/rootfs.ext4
     read_only: true
   seccomp:
     mode: default
