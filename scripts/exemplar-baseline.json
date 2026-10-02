@@ -11,7 +11,7 @@
   "rust_craft": {
     "permissive_verify": 13,
     "verify_calls_GUARD": 44,
-    "unsafe_blocks": 6,
+    "unsafe_blocks": 8,
     "crates_total": 67,
     "crates_lints_workspace": 41,
     "lints_adoption_pct": 61

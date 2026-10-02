@@ -635,7 +635,8 @@ pub fn install_from_files() -> Result<Fenced, FenceError> {
 /// The step the kernel refused.
 #[cfg(target_os = "linux")]
 pub fn install(policy: &EgressPolicy) -> Result<(), FenceError> {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use nix::sys::socket::{AddressFamily, SockFlag, SockProtocol, SockType};
+    use std::os::fd::AsRawFd;
 
     /// `IPT_BASE_CTL`: `IPT_SO_GET_INFO` and `IPT_SO_SET_REPLACE` share it.
     const IPT_SO_GET_INFO: libc::c_int = 64;
@@ -645,19 +646,17 @@ pub fn install(policy: &EgressPolicy) -> Result<(), FenceError> {
 
     let kernel = |step: &'static str| move |e: std::io::Error| FenceError::Kernel(step, e);
 
-    // SAFETY: plain socket(2); the result is checked before it is wrapped.
-    let raw = unsafe {
-        libc::socket(
-            libc::AF_INET,
-            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
-            libc::IPPROTO_RAW,
-        )
-    };
-    if raw < 0 {
-        return Err(kernel("socket")(std::io::Error::last_os_error()));
-    }
-    // SAFETY: `raw` is a fresh, owned, valid descriptor.
-    let sock = unsafe { OwnedFd::from_raw_fd(raw) };
+    // The socket needs no `unsafe` of ours: nix returns it already owned. The
+    // two sockopt calls below do, because x_tables' ABI is a caller-sized
+    // buffer the kernel both reads and writes (`IPT_SO_GET_INFO` takes the
+    // table name *in* the buffer it fills), which no safe wrapper models.
+    let sock = nix::sys::socket::socket(
+        AddressFamily::Inet,
+        SockType::Raw,
+        SockFlag::SOCK_CLOEXEC,
+        SockProtocol::Raw,
+    )
+    .map_err(|e| kernel("socket")(std::io::Error::from(e)))?;
 
     let mut info = [0u8; IPT_GETINFO_LEN];
     info[..6].copy_from_slice(b"filter");
