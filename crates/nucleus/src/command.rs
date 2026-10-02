@@ -83,7 +83,10 @@ pub enum ContainmentMode {
     /// "Bare" means no namespace or seccomp confinement, never root: a root
     /// runtime's child still drops to
     /// [`DEFAULT_CHILD_UID`](crate::DEFAULT_CHILD_UID) (owner decision,
-    /// 2026-10-02). Only a non-root runtime's child runs at the runtime's uid.
+    /// 2026-10-02). Only a non-root runtime's child runs at the runtime's uid,
+    /// and only with [`UnsandboxedOptIn::Explicit`](crate::UnsandboxedOptIn)
+    /// (the tool-proxy's `--unsandboxed`); without it every spawn is refused
+    /// with [`NucleusError::UnsandboxedNotOptedIn`].
     Unsandboxed,
     /// Linux host hardening via a `pre_exec` hook (no-new-privs + rlimits today;
     /// seccomp/landlock are a tracked follow-up). Attests a strengthened *file*
@@ -156,6 +159,10 @@ pub struct Executor<'a> {
     permissions: String,
     /// The declared containment posture. Default fails closed.
     containment: ContainmentMode,
+    /// The operator's opt-in to the bare host tier. `Absent` unless declared
+    /// ([`Self::allow_unsandboxed_local`], [`Self::with_unsandboxed_opt_in`]):
+    /// a non-root `Unsandboxed` executor without it refuses every spawn.
+    unsandboxed_opt_in: crate::UnsandboxedOptIn,
     /// The sealed effects home (B1) that *both* the synchronous and the async
     /// spawns delegate to. Held as the **concrete** `PolicyEnforced<RealEffects>`
     /// (from [`production_effects_concrete`]), not a trait object, for one
@@ -208,6 +215,7 @@ impl<'a> Executor<'a> {
             required_isolation,
             permissions,
             containment: ContainmentMode::Unconfigured,
+            unsandboxed_opt_in: crate::UnsandboxedOptIn::Absent,
             effects,
         }
     }
@@ -217,9 +225,24 @@ impl<'a> Executor<'a> {
     /// This is the conscious, audited downgrade: the spawned process is a normal
     /// host child with only env/cwd scoping. It attests `localhost()` isolation,
     /// so any policy requiring stronger isolation will still fail closed.
+    ///
+    /// The name IS the explicit opt-in: it declares the mode and
+    /// [`UnsandboxedOptIn::Explicit`](crate::UnsandboxedOptIn::Explicit)
+    /// together. [`Self::with_containment`] with `Unsandboxed` alone does not,
+    /// and a non-root runtime then refuses every spawn by name.
     #[must_use]
     pub fn allow_unsandboxed_local(mut self) -> Self {
         self.containment = ContainmentMode::Unsandboxed;
+        self.unsandboxed_opt_in = crate::UnsandboxedOptIn::Explicit;
+        self
+    }
+
+    /// Carry the operator's bare-tier opt-in (the tool-proxy's
+    /// `--unsandboxed`) to the confinement decision. Meaningful only under
+    /// `Unsandboxed` on a non-root runtime; it grants nothing elsewhere.
+    #[must_use]
+    pub fn with_unsandboxed_opt_in(mut self, opt_in: crate::UnsandboxedOptIn) -> Self {
+        self.unsandboxed_opt_in = opt_in;
         self
     }
 
@@ -432,7 +455,7 @@ impl<'a> Executor<'a> {
     /// # Errors
     /// [`NucleusError::IsolationNotConfigured`] when no posture was declared.
     pub fn child_confinement(&self) -> Result<ChildConfinement> {
-        ChildConfinement::for_containment(self.containment)
+        ChildConfinement::for_containment(self.containment, self.unsandboxed_opt_in)
     }
 
     /// Give the sandbox root to a dropped child's uid so it can enter and
@@ -1218,7 +1241,11 @@ mod tests {
         // A root runtime's child runs as the drop uid (owner decision 2), so
         // the hook directory must be its to write, or the escape this test
         // reverts never happens and the test proves nothing.
-        let confinement = ChildConfinement::for_containment(ContainmentMode::Unsandboxed).unwrap();
+        let confinement = ChildConfinement::for_containment(
+            ContainmentMode::Unsandboxed,
+            crate::UnsandboxedOptIn::Explicit,
+        )
+        .unwrap();
         for dir in [".git", ".git/hooks"] {
             confinement.hand_over(&tmp.path().join(dir)).unwrap();
         }
@@ -1614,6 +1641,54 @@ mod tests {
         assert!(!read_pid1, "the child read /proc/1/environ");
     }
 
+    /// Owner decision (2026-10-02, follow-up on #3129): every bare execution
+    /// traces to an explicit opt-in. A `/v1/run` child of a non-root runtime
+    /// declared `Unsandboxed`, with no `UnsandboxedOptIn::Explicit`, is
+    /// refused BY NAME (naming `--unsandboxed`) -- declaring the mode alone
+    /// used to run it at the runtime's uid. A root runtime drops instead, so
+    /// it needs no opt-in. On a real spawn.
+    #[test]
+    fn an_unsandboxed_child_without_the_opt_in_is_refused_by_name() {
+        let tmp = tempdir().unwrap();
+        let policy = test_policy();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let mut kernel = Kernel::new(policy.clone());
+        let budget = AtomicBudget::new(&test_budget());
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .with_containment(ContainmentMode::Unsandboxed);
+        let args = vec!["id".to_string(), "-u".to_string()];
+        let subject = args.join(" ");
+        let dt = run_token(&mut kernel, &subject);
+        let result = executor.run_args(
+            &args,
+            None,
+            None,
+            dt,
+            Authority::new(allowed_bundle(&subject)),
+        );
+        match crate::runtime_uid() {
+            0 => {
+                let out = result.expect("a root runtime drops; it needs no opt-in");
+                assert_eq!(
+                    String::from_utf8_lossy(&out.stdout).trim(),
+                    crate::DEFAULT_CHILD_UID.to_string()
+                );
+            }
+            runtime => match result {
+                Err(NucleusError::UnsandboxedNotOptedIn { runtime_uid }) => {
+                    assert_eq!(runtime_uid, runtime);
+                }
+                Err(other) => panic!("refused, but not by name: {other:?}"),
+                Ok(out) => panic!(
+                    "a bare child ran at the runtime's uid ({runtime}) with no opt-in: id -u = {}",
+                    String::from_utf8_lossy(&out.stdout).trim()
+                ),
+            },
+        }
+    }
+
     /// Owner decision 2 (2026-10-02, #3129): whenever the runtime is root,
     /// its `/v1/run` children leave root in EVERY mode -- `Unsandboxed` and
     /// `HostHardened` included, not only `MicroVM`. `Unsandboxed` then means
@@ -1640,7 +1715,8 @@ mod tests {
             let guard = MonotonicGuard::seconds(10);
             let executor = Executor::new(&policy, &sandbox, &budget)
                 .with_time_guard(&guard)
-                .with_containment(mode);
+                .with_containment(mode)
+                .with_unsandboxed_opt_in(crate::UnsandboxedOptIn::Explicit);
             let run = |kernel: &mut Kernel, args: Vec<String>| {
                 let subject = args.join(" ");
                 let dt = run_token(kernel, &subject);
@@ -1698,7 +1774,8 @@ mod tests {
             let guard = MonotonicGuard::seconds(10);
             let executor = Executor::new(&policy, &sandbox, &budget)
                 .with_time_guard(&guard)
-                .with_containment(mode);
+                .with_containment(mode)
+                .with_unsandboxed_opt_in(crate::UnsandboxedOptIn::Explicit);
             let args = vec!["ls".to_string(), "/proc/self/fd".to_string()];
             let subject = args.join(" ");
             let dt = run_token(&mut kernel, &subject);
@@ -1806,9 +1883,13 @@ mod tests {
         assert_eq!(crate::runtime_uid(), 0, "run this test as root");
         let tmp = tempdir().unwrap();
         let policy = test_policy();
-        let sandbox = Sandbox::new(&policy, tmp.path())
-            .unwrap()
-            .owned_for(ChildConfinement::for_containment(ContainmentMode::MicroVM).unwrap());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap().owned_for(
+            ChildConfinement::for_containment(
+                ContainmentMode::MicroVM,
+                crate::UnsandboxedOptIn::Absent,
+            )
+            .unwrap(),
+        );
         sandbox
             .write_owned(std::path::Path::new("new.txt"), b"x")
             .unwrap();

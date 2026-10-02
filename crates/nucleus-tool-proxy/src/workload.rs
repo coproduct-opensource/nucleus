@@ -1107,7 +1107,7 @@ mod tests {
             _ => {
                 let refused = admitted.expect_err("no opt-in, no same-uid workload");
                 assert!(
-                    refused.0.contains("unsandboxed workload not opted in")
+                    refused.0.contains("unsandboxed execution not opted in")
                         && refused.0.contains("--unsandboxed"),
                     "refused by name: {refused}"
                 );

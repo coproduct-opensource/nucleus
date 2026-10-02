@@ -568,6 +568,7 @@ pub(crate) async fn cancel_sub_pod(
 pub(crate) fn build_runtime(
     spec: &PodSpec,
     containment: nucleus::ContainmentMode,
+    opt_in: nucleus::UnsandboxedOptIn,
 ) -> Result<PodRuntime, ApiError> {
     let policy = spec
         .spec
@@ -575,7 +576,8 @@ pub(crate) fn build_runtime(
         .map_err(|e| ApiError::Spec(e.to_string()))?;
     let timeout = std::time::Duration::from_secs(spec.spec.timeout_seconds);
     let mut runtime_spec = nucleus::PodSpec::new(policy, spec.spec.work_dir.clone(), timeout)
-        .with_containment(containment);
+        .with_containment(containment)
+        .with_unsandboxed_opt_in(opt_in);
     if let Some(model) = spec.spec.budget_model.as_ref() {
         runtime_spec.budget_model = map_budget_model(model);
     }
@@ -1450,7 +1452,8 @@ mod containment_tests {
         spec.spec.policy = nucleus_spec::PolicySpec::Inline {
             lattice: Box::new(policy.clone()),
         };
-        let runtime = build_runtime(&spec, containment).expect("runtime builds");
+        let runtime = build_runtime(&spec, containment, nucleus::UnsandboxedOptIn::Explicit)
+            .expect("runtime builds");
         // The kernel is built WITH microvm isolation so it mints a token; the
         // executor's containment gate is the thing under test.
         let mut kernel = Kernel::with_isolation(policy, IsolationLattice::microvm());

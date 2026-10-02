@@ -231,7 +231,7 @@ impl ApiError {
             | ApiError::Nucleus(NucleusError::HardeningUnavailable { .. })
             | ApiError::Nucleus(NucleusError::ChildSeparationUnavailable { .. })
             | ApiError::Nucleus(NucleusError::ChildSharesRuntimeUid { .. })
-            | ApiError::Nucleus(NucleusError::UnsandboxedWorkloadNotOptedIn { .. }) => {
+            | ApiError::Nucleus(NucleusError::UnsandboxedNotOptedIn { .. }) => {
                 (StatusCode::FORBIDDEN, "isolation_denied", None, None)
             }
             ApiError::Nucleus(NucleusError::ProvenanceUnverified { .. }) => {

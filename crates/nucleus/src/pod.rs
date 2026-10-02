@@ -30,6 +30,10 @@ pub struct PodSpec {
     /// sets [`ContainmentMode::MicroVM`] once its `SandboxProof` is verified, or
     /// a Tier-1 `--local` run opts into [`ContainmentMode::Unsandboxed`]).
     pub containment: ContainmentMode,
+    /// The operator's opt-in to the bare host tier (the tool-proxy's
+    /// `--unsandboxed`). `Absent` by default: a non-root `Unsandboxed` pod
+    /// then refuses every spawn by name. See [`crate::UnsandboxedOptIn`].
+    pub unsandboxed_opt_in: crate::UnsandboxedOptIn,
     /// Third-party artifacts this pod pulls (images/packages/models/MCP servers).
     /// Each must carry a verified provenance attestation under [`Self::provenance`]
     /// or the pod refuses to spawn (most-paranoid next-bet #3).
@@ -57,6 +61,7 @@ impl PodSpec {
             timeout,
             budget_model: BudgetModel::default(),
             containment: ContainmentMode::Unconfigured,
+            unsandboxed_opt_in: crate::UnsandboxedOptIn::Absent,
             artifacts: Vec::new(),
             attestations: Vec::new(),
             provenance: nucleus_provenance::ProvenancePolicy::Unconfigured,
@@ -67,6 +72,13 @@ impl PodSpec {
     #[must_use]
     pub fn with_containment(mut self, mode: ContainmentMode) -> Self {
         self.containment = mode;
+        self
+    }
+
+    /// Carry the operator's bare-tier opt-in to this pod's executor.
+    #[must_use]
+    pub fn with_unsandboxed_opt_in(mut self, opt_in: crate::UnsandboxedOptIn) -> Self {
+        self.unsandboxed_opt_in = opt_in;
         self
     }
 
@@ -159,7 +171,10 @@ impl PodRuntime {
     fn sandbox_for(spec: &PodSpec) -> Result<Sandbox> {
         let sandbox = Sandbox::new(&spec.policy, &spec.work_dir)?;
         Ok(
-            match crate::ChildConfinement::for_containment(spec.containment) {
+            match crate::ChildConfinement::for_containment(
+                spec.containment,
+                spec.unsandboxed_opt_in,
+            ) {
                 Ok(confinement) => sandbox.owned_for(confinement),
                 Err(_) => sandbox,
             },
@@ -196,7 +211,8 @@ impl PodRuntime {
         let mut executor = Executor::new(&self.spec.policy, &self.sandbox, &self.budget)
             .with_time_guard(&self.time_guard)
             .with_budget_model(self.spec.budget_model)
-            .with_containment(self.spec.containment);
+            .with_containment(self.spec.containment)
+            .with_unsandboxed_opt_in(self.spec.unsandboxed_opt_in);
 
         if let Some(ref approver) = self.approver {
             executor = executor.with_approver(approver.clone());

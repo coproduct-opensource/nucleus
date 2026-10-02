@@ -323,6 +323,13 @@ struct NodeState {
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
+    /// Whether this node's local driver deliberately runs its tool-proxies
+    /// on the bare host tier, decided once at startup by
+    /// [`local_driver_opt_in`]. It is what puts `--unsandboxed` on a proxy's
+    /// command line, so the flag traces to the operator's
+    /// `--driver local --allow-local-driver` and to nothing else.
+    #[cfg(feature = "local-driver")]
+    local_driver_opt_in: nucleus::UnsandboxedOptIn,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_path: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -673,6 +680,8 @@ async fn main() -> Result<(), ApiError> {
         driver: args.driver.clone(),
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
+        #[cfg(feature = "local-driver")]
+        local_driver_opt_in: local_driver_opt_in(&args.driver, args.allow_local_driver),
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
         firecracker_api_boot: args.firecracker_api_boot,
@@ -1232,6 +1241,36 @@ impl ContainerPod {
     }
 }
 
+/// The local driver's bare-tier opt-in, as a typed value (owner decision,
+/// 2026-10-02: every bare execution traces to an explicit opt-in).
+///
+/// The local driver runs each tool-proxy as a plain host process, so the
+/// proxy's children are on the bare tier. The node grants that only when the
+/// operator chose BOTH the local driver and `--allow-local-driver` (the
+/// existing "no VM isolation" acknowledgement); every other combination is
+/// `Absent`, and the proxy then refuses a bare child by name. Exhaustive, no
+/// `_` arm (ADR 0007 B-3).
+#[cfg(feature = "local-driver")]
+fn local_driver_opt_in(driver: &DriverKind, allowed: bool) -> nucleus::UnsandboxedOptIn {
+    match (driver, allowed) {
+        (DriverKind::Local, true) => nucleus::UnsandboxedOptIn::Explicit,
+        (DriverKind::Local, false)
+        | (DriverKind::Firecracker | DriverKind::Container | DriverKind::AppleVz, true | false) => {
+            nucleus::UnsandboxedOptIn::Absent
+        }
+    }
+}
+
+/// The tool-proxy flag that carries [`local_driver_opt_in`]'s answer: the
+/// flag for `Explicit`, nothing for `Absent`.
+#[cfg(feature = "local-driver")]
+fn unsandboxed_proxy_flag(opt_in: nucleus::UnsandboxedOptIn) -> Option<&'static str> {
+    match opt_in {
+        nucleus::UnsandboxedOptIn::Explicit => Some("--unsandboxed"),
+        nucleus::UnsandboxedOptIn::Absent => None,
+    }
+}
+
 #[cfg(feature = "local-driver")]
 async fn spawn_local_pod(
     state: &NodeState,
@@ -1276,6 +1315,7 @@ async fn spawn_local_pod(
 
     let mut command = Command::new(&state.tool_proxy_path);
     command
+        .args(unsandboxed_proxy_flag(state.local_driver_opt_in))
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")
@@ -3454,3 +3494,56 @@ fn pod_info_to_grpc(info: PodInfo) -> proto::PodInfo {
 #[cfg(test)]
 #[path = "tests_main.rs"]
 mod tests;
+
+/// The local driver's `--unsandboxed` is a typed decision, made once, and the
+/// flag appears on a tool-proxy's command line only for the one combination
+/// that chose the bare host tier.
+#[cfg(all(test, feature = "local-driver"))]
+mod local_driver_opt_in_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_allowed_local_driver_opts_its_proxies_in() {
+        assert_eq!(
+            local_driver_opt_in(&DriverKind::Local, true),
+            nucleus::UnsandboxedOptIn::Explicit
+        );
+        for (driver, allowed) in [
+            (DriverKind::Local, false),
+            (DriverKind::Firecracker, true),
+            (DriverKind::Firecracker, false),
+            (DriverKind::Container, true),
+            (DriverKind::AppleVz, true),
+        ] {
+            assert_eq!(
+                local_driver_opt_in(&driver, allowed),
+                nucleus::UnsandboxedOptIn::Absent,
+                "{driver:?} / allowed={allowed}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_flag_is_passed_for_explicit_and_only_for_explicit() {
+        assert_eq!(
+            unsandboxed_proxy_flag(nucleus::UnsandboxedOptIn::Explicit),
+            Some("--unsandboxed")
+        );
+        assert_eq!(
+            unsandboxed_proxy_flag(nucleus::UnsandboxedOptIn::Absent),
+            None
+        );
+    }
+
+    /// The node fixture (`--driver local --allow-local-driver`) is the
+    /// deliberate case, so its state carries the opt-in.
+    #[test]
+    fn the_local_driver_fixture_carries_the_opt_in() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::pod_api::handler_tests::state(&dir);
+        assert_eq!(
+            state.local_driver_opt_in,
+            nucleus::UnsandboxedOptIn::Explicit
+        );
+    }
+}

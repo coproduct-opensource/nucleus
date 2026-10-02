@@ -222,21 +222,22 @@ pub enum NucleusError {
         uid: u32,
     },
 
-    /// A pod workload would run as the (non-root) runtime's own uid on the
-    /// bare host tier, and the operator did not opt in to that explicitly.
+    /// A child -- a `/v1/run` command or a pod workload -- would run as the
+    /// (non-root) runtime's own uid on the bare host tier, and the operator
+    /// did not opt in to that explicitly.
     ///
     /// Declaring `ContainmentMode::Unsandboxed` is not, by itself, consent to
-    /// a workload that can read every per-pod secret from
-    /// `/proc/<pid>/environ` (owner decision 1, 2026-10-02): that takes
+    /// a child that can read every per-pod secret from `/proc/<pid>/environ`
+    /// (owner decision, 2026-10-02): every bare execution traces to
     /// `UnsandboxedOptIn::Explicit`, the tool-proxy's `--unsandboxed`.
     #[error(
-        "unsandboxed workload not opted in: on the bare host tier this workload would run as \
+        "unsandboxed execution not opted in: on the bare host tier this child would run as \
          the runtime's own uid ({runtime_uid}) and could read every per-pod secret via \
          /proc/<pid>/environ. That requires the explicit --unsandboxed opt-in, which was not \
          given. Pass --unsandboxed to the tool-proxy, or run the runtime as root (it drops the \
-         workload) or in a microVM"
+         child) or in a microVM"
     )]
-    UnsandboxedWorkloadNotOptedIn {
+    UnsandboxedNotOptedIn {
         /// The runtime's own uid (not root).
         runtime_uid: u32,
     },

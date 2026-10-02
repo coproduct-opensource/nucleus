@@ -231,15 +231,16 @@ struct Args {
     /// When enabled, requests must include valid VM attestation.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_REQUIRE_ATTESTATION")]
     require_attestation: bool,
-    /// Explicit opt-in to the bare host tier for the pod WORKLOAD (owner
-    /// decision, 2026-10-02): on a non-root runtime whose containment is
-    /// `Unsandboxed`, run the workload as this process's own uid, where it can
-    /// read every per-pod secret in this process's environment. Without it
-    /// such a workload is refused by name. A root runtime drops the workload
-    /// regardless, and no other containment is affected.
+    /// Explicit opt-in to the bare host tier (owner decisions, 2026-10-02):
+    /// on a non-root runtime whose containment is `Unsandboxed`, run `/v1/run`
+    /// children and the pod workload as this process's own uid, where they
+    /// can read every per-pod secret in this process's environment. Without
+    /// it every such child is refused by name. A root runtime drops its
+    /// children regardless, and no other containment is affected.
     ///
     /// A flag only, never an env var: ambient configuration is not an
-    /// explicit opt-in. `nucleus run --local` and `nucleus shell` pass it.
+    /// explicit opt-in. `nucleus run --local`, `nucleus shell` and a node's
+    /// allowed local driver pass it.
     #[arg(
         long = "unsandboxed",
         action = clap::ArgAction::SetTrue,
@@ -1119,12 +1120,12 @@ async fn main() -> Result<(), ApiError> {
     if args.unsandboxed == nucleus::UnsandboxedOptIn::Explicit {
         console_line(&format!(
             "[nucleus-tool-proxy] --unsandboxed: bare host tier opted in (containment {containment:?}, \
-             runtime uid {}). A workload on this tier runs as this process's uid and can read its \
-             secrets; a root runtime still drops it.",
+             runtime uid {}). Commands and a workload on this tier run as this process's uid and \
+             can read its secrets; a root runtime still drops them.",
             nucleus::runtime_uid()
         ));
     }
-    let runtime = pod_mgmt::build_runtime(&spec, containment)?;
+    let runtime = pod_mgmt::build_runtime(&spec, containment, args.unsandboxed)?;
     let approvals = Arc::new(ApprovalRegistry::default());
 
     // Load signed approval bundle if present
