@@ -99,11 +99,36 @@ The demo runs five scenarios. A prompt-injection write is **denied by adversaria
 
 The demo above proves the algebra. To point nucleus at a real workload, install
 the CLI — a larger build (~1400 dependencies), which is why it is not the first
-thing this page asks you to run:
+thing this page asks you to run.
+
+### Install
+
+This is the one canonical install section; other pages link here rather than
+restating it.
 
 ```bash
-cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-cli
+# The CLI (the `nucleus` binary), built from this repository:
+cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-cli --locked
 
+# Host-side helpers that `nucleus run --local` and `nucleus shell` spawn. They are
+# not in the release bundle and `nucleus setup` does not install them:
+cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-mcp nucleus-tool-proxy --locked
+```
+
+Or, on macOS, the prebuilt release binary plus `nucleus setup` in one step — see
+[docs/quickstart/macos.md](docs/quickstart/macos.md):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/scripts/install.sh | bash
+```
+
+> **Never `cargo install nucleus-cli` (or any `nucleus-*` name) from crates.io.**
+> This project publishes no binary crates there. The crates.io name `nucleus-cli`
+> belongs to an unrelated project (an STM32 developer tool, owner `harshverma27`),
+> and the other names are unclaimed — anyone could publish under them. Always
+> install with `--git https://github.com/coproduct-opensource/nucleus`.
+
+```bash
 nucleus audit [PATH]                # Tier 0: scan agent configs, no runtime (CI exit codes)
 nucleus run --local "your task"     # Tier 1: run with enforced permissions (process-level, no VM)
 nucleus run --goal "fix the failing CI build" --dry-run

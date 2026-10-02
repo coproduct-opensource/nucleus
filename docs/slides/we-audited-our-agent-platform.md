@@ -328,7 +328,7 @@ The agents have the access. The guardrails must be real.
 # How We Catch This Now
 
 ```bash
-cargo install nucleus-audit
+cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-audit --locked
 
 nucleus-audit scan --pod-spec your-agent.yaml
 
@@ -558,7 +558,7 @@ The lattice algebra was correct. The deployment activation was not.
 # Try It
 
 ```bash
-cargo install nucleus-audit
+cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-audit --locked
 nucleus-audit scan --pod-spec your-agent.yaml
 ```
 

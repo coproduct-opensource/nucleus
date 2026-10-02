@@ -163,7 +163,7 @@ The uninhabitable state means that every orchestration vulnerability is also an 
 We built `nucleus-audit scan` to catch these patterns statically — before deployment:
 
 ```bash
-cargo install nucleus-audit
+cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-audit --locked
 
 nucleus-audit scan --pod-spec your-agent.yaml
 ```
