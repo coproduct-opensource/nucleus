@@ -28,10 +28,10 @@ pub(crate) fn routes() -> axum::Router<NodeState> {
 
 pub(crate) async fn get(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<crate::auth::CallerScope>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<WorkloadResult>, ApiError> {
-    let pod = pod_api::get_pod_for_caller(&state, id, caller).await?;
+    let pod = pod_api::get_pod_for_caller(&state, id, &caller).await?;
     let address =
         pod.proxy_addr.lock().await.clone().ok_or_else(|| {
             ApiError::SupervisorUnavailable("proxy address is not ready".to_string())
@@ -44,16 +44,16 @@ pub(crate) async fn get(
 /// as such and the public microVM verifier refuses it.
 pub(crate) async fn receipt(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<crate::auth::CallerScope>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Receipt>, ApiError> {
-    let (claim, _) = observe_claim(&state, caller, id).await?;
+    let (claim, _) = observe_claim(&state, &caller, id).await?;
     sign_claim(&state, id, claim).map(Json)
 }
 
 pub(crate) async fn observe_claim(
     state: &NodeState,
-    caller: Option<Uuid>,
+    caller: &crate::auth::CallerScope,
     id: Uuid,
 ) -> Result<(ExecutionClaim, String), ApiError> {
     let pod = pod_api::get_pod_for_caller(state, id, caller).await?;

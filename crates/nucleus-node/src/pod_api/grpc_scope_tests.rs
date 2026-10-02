@@ -4,7 +4,7 @@
 //! `handler_tests` fixture), with the interceptor's `AuthContext` placed in
 //! the request extensions the way `serve_grpc` places it.
 
-use super::handler_tests::{register, state};
+use super::handler_tests::{register, register_labelled, state};
 use super::*;
 use crate::proto;
 use crate::proto::node_service_server::NodeService;
@@ -232,7 +232,97 @@ async fn http_resolves_a_tokenless_pod_peer_to_its_own_pod() {
     let ctx = crate::auth::AuthContext::from_spiffe(pod_svid(a));
     let headers = axum::http::HeaderMap::new();
     let got = crate::auth::resolve_http_caller(&st, &ctx, &headers).expect("a pod resolves");
-    assert_eq!(got, Some(a));
+    assert_eq!(got, crate::auth::CallerScope::Pod(a));
+}
+
+/// A CI/CD peer is scoped to the pods it created — those the node stamped with
+/// its identity — and nothing else: it lists them alone, and every by-id
+/// operation on any other pod is NOT_FOUND, with that pod untouched. It used to
+/// resolve to the operator's unscoped view.
+#[tokio::test]
+async fn a_ci_peer_manages_only_the_pods_stamped_with_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";
+    let label = crate::auth::CI_PRINCIPAL_LABEL;
+    let mine = register_labelled(&st, None, &[(label, ci)]).await;
+    let theirs = register_labelled(
+        &st,
+        None,
+        &[(label, "spiffe://nucleus.local/ns/github/sa/org-other")],
+    )
+    .await;
+    let unstamped = register(&st, None).await;
+
+    assert_eq!(
+        listed(&st, ci, None).await,
+        vec![mine.to_string()],
+        "a CI peer lists only its own pods"
+    );
+    let s = svc(&st);
+    for other in [theirs, unstamped] {
+        let get = s.get_pod(req(
+            proto::GetPodRequest {
+                pod_id: other.to_string(),
+            },
+            Some(ci),
+            None,
+        ));
+        assert_eq!(code(get.await), Some(tonic::Code::NotFound), "get {other}");
+        let cancel = s.cancel_pod(req(
+            proto::PodId {
+                id: other.to_string(),
+            },
+            Some(ci),
+            None,
+        ));
+        assert_eq!(
+            code(cancel.await),
+            Some(tonic::Code::NotFound),
+            "cancel {other}"
+        );
+        assert!(running(&st, other).await, "{other} is untouched");
+    }
+    let own = s.cancel_pod(req(
+        proto::PodId {
+            id: mine.to_string(),
+        },
+        Some(ci),
+        None,
+    ));
+    assert!(own.await.is_ok(), "a CI peer cancels its own pod");
+    cancel_all(&st).await;
+}
+
+/// The stamp is the node's: a create whose spec sets it is refused as an
+/// invalid spec before anything is admitted, whoever sends it. Drives the real
+/// HTTP handler, so it holds the line in `create_pod_internal` that stamps.
+#[tokio::test]
+async fn a_create_that_sets_the_ci_principal_label_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let body = format!(
+        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","metadata":{{"labels":{{"{}":"spiffe://nucleus.local/ns/github/sa/org-other"}}}},"spec":{{}}}}"#,
+        crate::auth::CI_PRINCIPAL_LABEL
+    );
+    let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";
+    let r = crate::create_pod(
+        axum::extract::State(st.clone()),
+        axum::Extension(crate::auth::CallerScope::CiPrincipal(ci.to_string())),
+        axum::Extension(crate::auth::AuthContext::from_spiffe(ci.to_string())),
+        axum::http::HeaderMap::new(),
+        axum::body::Bytes::from(body),
+    )
+    .await;
+    match r {
+        Err(crate::ApiError::InvalidSpec(msg)) => assert!(
+            msg.contains(crate::auth::CI_PRINCIPAL_LABEL),
+            "the refusal names the label: {msg}"
+        ),
+        Err(e) => panic!("refused for the wrong reason: {e}"),
+        Ok(_) => panic!("a spec that sets the node's stamp was admitted"),
+    }
+    assert!(st.pods.lock().await.is_empty(), "and nothing was created");
 }
 
 /// A lockdown is attributed to the peer the interceptor verified. The request's

@@ -34,6 +34,10 @@
 //!   model's, coordinate by coordinate: its ceiling, what retired children
 //!   consumed, what live children hold, how many there are. A create that
 //!   never ran releases its reservation exactly once.
+//! - **A restart changes nothing.** The node can restart between any two
+//!   steps: a fresh authority over the same state directory, restored from
+//!   disk. Every ledger must come back exactly as the model kept it, including
+//!   what retired children consumed, which no live child records.
 //! - **Revocation reaches the subtree.** A pod that has stopped, or has a
 //!   stopped pod above it, can create nothing from that moment, before any
 //!   reaper pass. Once the reaper has run to a fixpoint, every pod below a
@@ -214,6 +218,8 @@ enum Op {
     },
     /// One pass of the reaper.
     Reap,
+    /// The node restarts: a fresh authority, restored from its state directory.
+    Restart,
 }
 
 /// One case: the root pod's budget, then the steps.
@@ -283,6 +289,7 @@ impl Case {
                     }
                 ),
                 Op::Reap => "Op::Reap".to_string(),
+                Op::Restart => "Op::Restart".to_string(),
             };
             out.push_str(&format!("    {line},\n"));
         }
@@ -372,6 +379,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => list,
         1 => lockdown,
         2 => Just(Op::Reap),
+        1 => Just(Op::Restart),
     ]
 }
 
@@ -387,10 +395,6 @@ fn case() -> impl Strategy<Value = Case> {
 /// the bottom run the documented rule.
 #[derive(Debug, Clone, Copy)]
 struct Rules {
-    /// `AuthorizationPolicy` documents that a CI identity "can only manage
-    /// pods with matching labels". On main the scope resolver gives CI
-    /// node-wide reach; #3088 adds its own case.
-    ci_scoped: bool,
     /// A create that never ran hands its reservation back: `Reservation`'s own
     /// doc says so. On main the release folds the whole allocation into the
     /// parent's consumption, as for a pod that ran, so the slot comes back and
@@ -400,7 +404,6 @@ struct Rules {
 
 impl Rules {
     const AS_SHIPPED: Self = Self {
-        ci_scoped: false,
         unrun_refunds: false,
     };
 }
@@ -572,7 +575,7 @@ impl Model {
     fn reaches(&self, who: Who, j: usize) -> bool {
         match who {
             Who::Operator | Who::Orch(_) => true,
-            Who::Ci(_) if !self.rules.ci_scoped => true,
+            // A CI identity reaches only the pods it created (#3088).
             Who::Ci(_) => self.pods[j].creator == who,
             Who::Pod(r) => {
                 let i = self.resolve(r);
@@ -624,6 +627,8 @@ struct Node {
     chains: Vec<(String, [u8; 32])>,
     ext_lattices: Vec<PermissionLattice>,
     operator: String,
+    /// What the authority was built with, to build it again on a restart.
+    args: AuthorityArgs,
     _bin: tempfile::TempDir,
 }
 
@@ -724,6 +729,7 @@ fn node(dir: &tempfile::TempDir) -> Node {
         chains,
         ext_lattices,
         operator,
+        args,
         _bin: bin,
     }
 }
@@ -855,6 +861,8 @@ struct Stats {
     refused_stopped: usize,
     /// Pods a lockdown reached because a pod above them was its target.
     locked_below: usize,
+    /// Restarts with a retired child's consumption in some ledger.
+    restarts_with_consumption: usize,
 }
 
 impl Stats {
@@ -876,6 +884,7 @@ impl Stats {
         self.refused_locked += o.refused_locked;
         self.refused_stopped += o.refused_stopped;
         self.locked_below += o.locked_below;
+        self.restarts_with_consumption += o.restarts_with_consumption;
     }
 }
 
@@ -995,7 +1004,32 @@ impl Walk {
                 self.stats.cascaded += self.model.reap();
                 Ok(())
             }
+            Op::Restart => self.restart().await,
         }
+    }
+
+    /// A fresh authority over the same state directory, restored from disk,
+    /// in place of the old one. The model does not change: nothing a restart
+    /// does may show in any ledger.
+    async fn restart(&mut self) -> Result<(), String> {
+        let fresh = PodAuthority::new(&self.node.args, "nucleus.local", &self.node.st.state_dir)
+            .map_err(|e| format!("the authority does not rebuild: {e}"))?;
+        fresh.restore_from_disk().await;
+        let fresh = Arc::new(fresh);
+        self.node.st.authority = Arc::clone(&fresh);
+        self.node.failing.authority = fresh;
+        let consumed = self
+            .model
+            .pods
+            .iter()
+            .filter(|p| p.phase != Phase::Reaped)
+            .map(|p| p.ledger)
+            .chain(self.model.external.iter().copied())
+            .any(|l| l.consumed > 0);
+        if consumed {
+            self.stats.restarts_with_consumption += 1;
+        }
+        Ok(())
     }
 
     async fn create(&mut self, op: &Op) -> Result<(), String> {
@@ -1830,6 +1864,7 @@ fn random_delegation_chains_agree_with_the_model() {
         ("refused lockdowns", stats.lockdowns_refused),
         ("refusals under lockdown", stats.refused_locked),
         ("refusals below a stopped pod", stats.refused_stopped),
+        ("restarts with consumption", stats.restarts_with_consumption),
     ] {
         assert!(n > 0, "the walk never reached {what}: {stats:?}");
     }
@@ -1910,9 +1945,8 @@ fn a_lockdown_of_a_chains_root_reaches_the_whole_chain() {
 
 /// Shrunk cases that found a bug, replayed before every walk under that
 /// walk's [`Rules`]. Each is named for the bug it found; the PR that added it
-/// shows the perturbation it was found under. The `#3088` and `#3105` entries
-/// check nothing as shipped and are the first thing their documented rule
-/// trips on.
+/// shows the perturbation it was found under. The `#3105` entry checks
+/// nothing as shipped and is the first thing its documented rule trips on.
 #[rustfmt::skip]
 const CORPUS: &[(&str, u8, &[Op])] = &[
     ("#3032: a create dropped mid-boot keeps no certificate", 0, &[
@@ -1962,6 +1996,16 @@ const CORPUS: &[(&str, u8, &[Op])] = &[
         Op::Create { who: Who::Operator, via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::Runs, header: Some(PodRef::Newest) },
         Op::Create { who: Who::Pod(PodRef::Nth(1)), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
     ]),
+    ("an external chain's ledger is restored on restart", 0, &[
+        Op::Create { who: Who::Orch(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Restart,
+    ]),
+    ("what a retired child consumed is restored on restart", 1, &[
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::Runs, header: None },
+        Op::Cancel { who: Who::Operator, via: Via::Grpc, token: false, target: Target::Pod(PodRef::Newest) },
+        Op::Reap,
+        Op::Restart,
+    ]),
 ];
 
 fn replay(rules: Rules) {
@@ -1983,22 +2027,11 @@ fn the_corpus_agrees_with_the_model() {
 
 // ── The documented rules, red on main ────────────────────────────────────────
 
-/// #3088: a CI identity reaches only pods it created.
-#[test]
-#[ignore = "red on main until #3088: CI identities are scoped node-wide"]
-fn as_documented_a_ci_identity_reaches_only_its_own_pods() {
-    explore(Rules {
-        ci_scoped: true,
-        ..Rules::AS_SHIPPED
-    });
-}
-
 /// #3105: a create that never ran hands its whole reservation back.
 #[test]
 #[ignore = "red on main until #3105: an unrun create's reservation is folded into consumption"]
 fn as_documented_a_create_that_never_ran_refunds_its_reservation() {
     explore(Rules {
         unrun_refunds: true,
-        ..Rules::AS_SHIPPED
     });
 }

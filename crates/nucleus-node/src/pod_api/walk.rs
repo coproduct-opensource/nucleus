@@ -235,7 +235,9 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                 }
                 Op::List { caller } => {
                     let caller_id = model.caller_id(caller);
-                    let infos = collect_pod_infos(&st, caller_id).await;
+                    let infos =
+                        collect_pod_infos(&st, &crate::auth::CallerScope::from_model(caller_id))
+                            .await;
                     let got: BTreeSet<Uuid> = infos.iter().map(|i| i.id).collect();
                     let want = model.visible_to(caller_id);
                     if got != want {
@@ -263,22 +265,36 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                 Op::Get { caller, target } => {
                     let caller_id = model.caller_id(caller);
                     let id = model.target_id(target, unknown);
-                    let got = get_pod_for_caller(&st, id, caller_id).await;
+                    let got = get_pod_for_caller(
+                        &st,
+                        id,
+                        &crate::auth::CallerScope::from_model(caller_id),
+                    )
+                    .await;
                     check_scoped(&model, caller_id, id, got.map(|p| p.id), &mut stats)
                         .map_err(at)?;
                 }
                 Op::Logs { caller, target } => {
                     let caller_id = model.caller_id(caller);
                     let id = model.target_id(target, unknown);
-                    let got = pod_logs(State(st.clone()), Extension(caller_id), AxumPath(id)).await;
+                    let got = pod_logs(
+                        State(st.clone()),
+                        Extension(crate::auth::CallerScope::from_model(caller_id)),
+                        AxumPath(id),
+                    )
+                    .await;
                     check_scoped(&model, caller_id, id, got.map(|_| id), &mut stats).map_err(at)?;
                 }
                 Op::Cancel { caller, target } => {
                     let caller_id = model.caller_id(caller);
                     let id = model.target_id(target, unknown);
                     let already = model.pod(id).is_some_and(|p| p.cancelled);
-                    let got =
-                        cancel_pod(State(st.clone()), Extension(caller_id), AxumPath(id)).await;
+                    let got = cancel_pod(
+                        State(st.clone()),
+                        Extension(crate::auth::CallerScope::from_model(caller_id)),
+                        AxumPath(id),
+                    )
+                    .await;
                     let allowed = model.may_manage(caller_id, id);
                     check_scoped(&model, caller_id, id, got.map(|_| id), &mut stats).map_err(at)?;
                     if allowed {

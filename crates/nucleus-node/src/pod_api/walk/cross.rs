@@ -259,7 +259,12 @@ impl Run {
         );
         let k = register(&st, Some(p)).await;
         if k_cancelled {
-            let _ = cancel_pod(State(st.clone()), Extension(None), AxumPath(k)).await;
+            let _ = cancel_pod(
+                State(st.clone()),
+                Extension(crate::auth::CallerScope::NodeWide),
+                AxumPath(k),
+            )
+            .await;
         }
 
         let (r, w) = UnixStream::connect(&socket)
@@ -292,11 +297,12 @@ impl Run {
     }
 
     async fn registry(&self) -> Vec<(String, bool)> {
-        let mut out: Vec<(String, bool)> = collect_pod_infos(&self.st, None)
-            .await
-            .iter()
-            .map(|i| (self.label(i.id), matches!(i.state, PodState::Running)))
-            .collect();
+        let mut out: Vec<(String, bool)> =
+            collect_pod_infos(&self.st, &crate::auth::CallerScope::NodeWide)
+                .await
+                .iter()
+                .map(|i| (self.label(i.id), matches!(i.state, PodState::Running)))
+                .collect();
         out.sort();
         out
     }
@@ -360,7 +366,13 @@ impl Run {
                 } else {
                     self.k
                 };
-                match cancel_pod(State(self.st.clone()), Extension(None), AxumPath(id)).await {
+                match cancel_pod(
+                    State(self.st.clone()),
+                    Extension(crate::auth::CallerScope::NodeWide),
+                    AxumPath(id),
+                )
+                .await
+                {
                     Ok(_) => Seen::HostOk,
                     Err(ApiError::NotFound) => Seen::HostNotFound,
                     Err(e) => Seen::Other(e.to_string()),
@@ -642,7 +654,12 @@ async fn a_guest_fetching_during_cancel_leaves_no_certificate() {
         });
         // Let the guest get going, so cancel lands mid-stream rather than first.
         tokio::time::sleep(Duration::from_millis(5)).await;
-        let _ = cancel_pod(State(run.st.clone()), Extension(None), AxumPath(run.p)).await;
+        let _ = cancel_pod(
+            State(run.st.clone()),
+            Extension(crate::auth::CallerScope::NodeWide),
+            AxumPath(run.p),
+        )
+        .await;
         done.store(true, Ordering::SeqCst);
         let cached = run
             .manager
@@ -689,7 +706,12 @@ async fn a_mint_in_flight_at_cancel_is_waited_for() {
         let (mut r, mut w) = run.open.take().expect("the open connection");
         w.write_all(b"FETCH_SVID\n").await.expect("frame written");
         w.flush().await.expect("frame flushed");
-        let _ = cancel_pod(State(run.st.clone()), Extension(None), AxumPath(run.p)).await;
+        let _ = cancel_pod(
+            State(run.st.clone()),
+            Extension(crate::auth::CallerScope::NodeWide),
+            AxumPath(run.p),
+        )
+        .await;
         let cached = run
             .manager
             .secret_manager()
@@ -755,7 +777,11 @@ async fn cancel_p(run: &Run) -> Duration {
     let started = std::time::Instant::now();
     let r = tokio::time::timeout(
         Duration::from_secs(10),
-        cancel_pod(State(run.st.clone()), Extension(None), AxumPath(run.p)),
+        cancel_pod(
+            State(run.st.clone()),
+            Extension(crate::auth::CallerScope::NodeWide),
+            AxumPath(run.p),
+        ),
     )
     .await;
     assert!(
