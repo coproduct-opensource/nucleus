@@ -290,7 +290,8 @@ pub struct RunArgs {
     #[arg(long, env = "NUCLEUS_FIRECRACKER_VSOCK_PORT", default_value_t = 5000)]
     pub vsock_port: u32,
 
-    /// Mount rootfs read-only (recommended).
+    /// Mount rootfs read-only. The node refuses `false` at create (#3132): the
+    /// rootfs is its shared artifact, and writable storage is `/work`.
     #[arg(long, env = "NUCLEUS_FIRECRACKER_READ_ONLY", default_value_t = true)]
     pub rootfs_read_only: bool,
 

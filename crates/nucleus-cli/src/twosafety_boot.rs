@@ -572,7 +572,7 @@ impl PodBoot {
                   "policy":{{"type":"profile","name":"codegen"}},
                   "image":{{"kernel_path":"{HOST_ARTIFACTS_DIR}/vmlinux",
                             "rootfs_path":"{HOST_ARTIFACTS_DIR}/rootfs.ext4",
-                            "read_only":false{boot_args}}},
+                            "read_only":true{boot_args}}},
                   "vsock":{{"guest_cid":{GUEST_CID},"port":5005}}}}}}"#
         );
 
