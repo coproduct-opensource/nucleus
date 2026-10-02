@@ -79,11 +79,20 @@ pub enum ContainmentMode {
     /// Explicit developer opt-in to bare host execution (Tier-1 `--local`).
     /// Attests only `localhost()` isolation; emits an audit warning on use.
     /// A policy that requires anything stronger will fail closed.
+    ///
+    /// "Bare" means no namespace or seccomp confinement, never root: a root
+    /// runtime's child still drops to
+    /// [`DEFAULT_CHILD_UID`](crate::DEFAULT_CHILD_UID) (owner decision,
+    /// 2026-10-02). Only a non-root runtime's child runs at the runtime's uid.
     Unsandboxed,
     /// Linux host hardening via a `pre_exec` hook (no-new-privs + rlimits today;
     /// seccomp/landlock are a tracked follow-up). Attests a strengthened *file*
     /// dimension only; on non-Linux this mode fails closed with
     /// `HardeningUnavailable`. Cannot satisfy `sandboxed()`/`microvm()` policies.
+    ///
+    /// A root runtime's child also drops to
+    /// [`DEFAULT_CHILD_UID`](crate::DEFAULT_CHILD_UID) (owner decision,
+    /// 2026-10-02); a non-root one self-restricts at the runtime's uid.
     HostHardened,
     /// The Executor is itself running inside a managed microVM guest (the VM is
     /// the boundary). Attests `microvm()`. Must only be declared when the process
@@ -1206,6 +1215,13 @@ mod tests {
     fn a_command_that_writes_a_git_hook_is_reverted_and_refused() {
         let tmp = tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".git/hooks")).unwrap();
+        // A root runtime's child runs as the drop uid (owner decision 2), so
+        // the hook directory must be its to write, or the escape this test
+        // reverts never happens and the test proves nothing.
+        let confinement = ChildConfinement::for_containment(ContainmentMode::Unsandboxed).unwrap();
+        for dir in [".git", ".git/hooks"] {
+            confinement.hand_over(&tmp.path().join(dir)).unwrap();
+        }
         let policy = test_policy();
         let budget = AtomicBudget::new(&test_budget());
         let mut kernel = Kernel::new(policy.clone());
@@ -1596,6 +1612,126 @@ mod tests {
         assert!(!read_ok, "the child read the root runtime's {environ}");
         let (_, read_pid1) = run_in_microvm(&sandbox, &["cat", "/proc/1/environ"]);
         assert!(!read_pid1, "the child read /proc/1/environ");
+    }
+
+    /// Owner decision 2 (2026-10-02, #3129): whenever the runtime is root,
+    /// its `/v1/run` children leave root in EVERY mode -- `Unsandboxed` and
+    /// `HostHardened` included, not only `MicroVM`. `Unsandboxed` then means
+    /// no namespace or seccomp confinement, but never root.
+    ///
+    /// On a real spawn, each runtime uid asserting its own exact outcome: a
+    /// root runtime's child is uid 65534 and cannot read the runtime's
+    /// environ; a non-root runtime's child keeps that runtime's uid (the
+    /// declared bare / self-restricted tiers, unchanged).
+    #[test]
+    fn a_root_runtimes_child_is_never_root_in_any_mode() {
+        let mut modes = vec![ContainmentMode::Unsandboxed];
+        if cfg!(target_os = "linux") {
+            modes.push(ContainmentMode::HostHardened);
+        }
+        let runtime = crate::runtime_uid();
+        let environ = format!("/proc/{}/environ", std::process::id());
+        for mode in modes {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let mut kernel = Kernel::new(policy.clone());
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .with_containment(mode);
+            let run = |kernel: &mut Kernel, args: Vec<String>| {
+                let subject = args.join(" ");
+                let dt = run_token(kernel, &subject);
+                executor
+                    .run_args(
+                        &args,
+                        None,
+                        None,
+                        dt,
+                        Authority::new(allowed_bundle(&subject)),
+                    )
+                    .unwrap_or_else(|e| panic!("{mode:?}: spawn refused: {e}"))
+            };
+            let id = run(&mut kernel, vec!["id".into(), "-u".into()]);
+            let child_uid = String::from_utf8_lossy(&id.stdout).trim().to_string();
+            let read = run(&mut kernel, vec!["cat".into(), environ.clone()]);
+            if runtime == 0 {
+                assert_eq!(
+                    child_uid,
+                    crate::DEFAULT_CHILD_UID.to_string(),
+                    "{mode:?}: a root runtime's child ran as root"
+                );
+                assert!(
+                    !read.status.success() && read.stdout.is_empty(),
+                    "{mode:?}: the dropped child read the runtime's environ ({} bytes)",
+                    read.stdout.len()
+                );
+            } else {
+                assert_eq!(child_uid, runtime.to_string(), "{mode:?}");
+            }
+        }
+    }
+
+    /// The fd half of the confinement, on a real spawn: a `HostHardened`
+    /// child (restricted, or dropped under a root runtime) inherits no
+    /// descriptor beyond its own stdio, while the bare tier's child keeps
+    /// whatever the runtime leaves open. `ls /proc/self/fd` opens one more fd
+    /// for its directory listing, so a confined child lists at most four.
+    ///
+    /// This is the mechanism the tool-proxy's workload test used to cover
+    /// through a non-root harness; since #3120 a non-root workload is either
+    /// refused or on the declared bare tier, which closes nothing, so the
+    /// close-on-exec sweep is asserted here, where a non-root CI runner still
+    /// reaches it. The test harness itself holds high non-CLOEXEC fds (seen in
+    /// CI: 149 and 152), which is what the bare row shows.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_confined_child_inherits_no_fd_beyond_its_stdio() {
+        let list = |mode: ContainmentMode| {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let mut kernel = Kernel::new(policy.clone());
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .with_containment(mode);
+            let args = vec!["ls".to_string(), "/proc/self/fd".to_string()];
+            let subject = args.join(" ");
+            let dt = run_token(&mut kernel, &subject);
+            let out = executor
+                .run_args(
+                    &args,
+                    None,
+                    None,
+                    dt,
+                    Authority::new(allowed_bundle(&subject)),
+                )
+                .unwrap_or_else(|e| panic!("{mode:?}: spawn refused: {e}"));
+            assert!(out.status.success(), "{mode:?}: ls ran");
+            String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let confined = list(ContainmentMode::HostHardened);
+        assert!(
+            confined.len() >= 3,
+            "non-vacuity: the child has its stdio; got {confined:?}"
+        );
+        assert!(
+            confined.len() <= 4,
+            "a confined child inherited a descriptor beyond its stdio: {confined:?}"
+        );
+        let bare = list(ContainmentMode::Unsandboxed);
+        if crate::runtime_uid() != 0 {
+            // The contrast, reported rather than required: whether the bare
+            // child sees extra fds depends on what the harness left open.
+            eprintln!("bare-tier child fds (no sweep, by design): {bare:?}");
+        }
     }
 
     /// #3120 item 2, on a real spawn: a MicroVM child never reads the

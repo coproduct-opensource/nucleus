@@ -1914,3 +1914,31 @@ fn help_never_prints_an_env_value() {
         "--help would print the value of: {shown:?}"
     );
 }
+
+/// Owner decision 1 (2026-10-02): the bare-tier workload opt-in is a typed
+/// value that only the explicit `--unsandboxed` flag produces. Absent flag,
+/// absent opt-in; there is no env var that could set it ambiently.
+#[test]
+fn the_unsandboxed_opt_in_comes_only_from_the_flag() {
+    let parse = |extra: &[&str]| {
+        let mut argv = vec!["nucleus-tool-proxy", "--spec", "/nonexistent/pod.yaml"];
+        argv.extend_from_slice(extra);
+        <Args as clap::Parser>::try_parse_from(argv)
+            .expect("parses")
+            .unsandboxed
+    };
+    assert_eq!(parse(&[]), nucleus::UnsandboxedOptIn::Absent);
+    assert_eq!(
+        parse(&["--unsandboxed"]),
+        nucleus::UnsandboxedOptIn::Explicit
+    );
+    let not_env_backed = <Args as clap::CommandFactory>::command()
+        .get_arguments()
+        .find(|a| a.get_id() == "unsandboxed")
+        .map(|a| a.get_env().is_none());
+    assert_eq!(
+        not_env_backed,
+        Some(true),
+        "the opt-in must not be env-backed"
+    );
+}

@@ -88,6 +88,7 @@ pub(crate) fn start(
     door_path: &std::path::Path,
     door_app: axum::Router,
     containment: nucleus::ContainmentMode,
+    opt_in: nucleus::UnsandboxedOptIn,
     writer: Writer,
     on_exit: Option<ExitHook>,
 ) -> Result<Option<Supervisor>, ApiError> {
@@ -97,7 +98,9 @@ pub(crate) fn start(
             reason: error.to_string(),
         },
     };
-    let Some((child, launch)) = workload::start_if_configured(spec, door_path, door_app, containment)? else {
+    let Some((child, launch)) =
+        workload::start_if_configured(spec, door_path, door_app, containment, opt_in)?
+    else {
         crate::console_line("[workload] no workload configured in pod spec");
         return Ok(None);
     };

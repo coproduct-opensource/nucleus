@@ -45,15 +45,32 @@
 //! runtime cannot reach that posture by failing to drop; it reaches it only by
 //! having declared `Unsandboxed`.
 //!
+//! # Owner decisions (2026-10-02, #3129)
+//!
+//! 1. **A bare-tier workload needs an explicit opt-in.** Declaring
+//!    `Unsandboxed` is not enough for a pod *workload* to run at a non-root
+//!    runtime's uid: the operator must also pass [`UnsandboxedOptIn::Explicit`]
+//!    (the tool-proxy's `--unsandboxed`, which `nucleus run --local` and
+//!    `nucleus shell` pass deliberately). Without it the admission refuses with
+//!    [`NucleusError::UnsandboxedWorkloadNotOptedIn`]. A log line and a banner
+//!    are what the opt-in buys, not a substitute for it.
+//! 2. **A root runtime's children are never root.** Whenever the runtime is
+//!    root, every child drops to [`DEFAULT_CHILD_UID`] — in every mode,
+//!    `HostHardened` and `Unsandboxed` included. `Unsandboxed` then means no
+//!    namespace or seccomp confinement, but not root.
+//! 3. **An explicit `workload.uid` the runtime cannot honour is refused** by
+//!    name, never replaced by the runtime's uid.
+//!
 //! # What the child gets
 //!
 //! | Mode | runtime root | runtime not root |
 //! |---|---|---|
 //! | `Unconfigured` | refused | refused |
-//! | `Unsandboxed`, `/v1/run` child | bare: runtime's uid | bare: runtime's uid |
-//! | `Unsandboxed`, workload, no `workload.uid` | drop to 65534 | bare: runtime's uid |
+//! | `Unsandboxed`, `/v1/run` child | drop to 65534 | bare: runtime's uid |
+//! | `Unsandboxed`, workload, no `workload.uid`, opted in | drop to 65534 | bare: runtime's uid |
+//! | `Unsandboxed`, workload, no `workload.uid`, no opt-in | drop to 65534 | **refused** |
 //! | `Unsandboxed`, workload, explicit `workload.uid` | drop to it | **refused** |
-//! | `HostHardened`, `/v1/run` child | restricted, runtime's uid | restricted, runtime's uid |
+//! | `HostHardened`, `/v1/run` child | drop to 65534 | restricted, runtime's uid |
 //! | `HostHardened`, workload | drop | **refused** |
 //! | `MicroVM` (child or workload) | drop | **refused** |
 //!
@@ -63,10 +80,11 @@
 //! request the runtime must honour or refuse; only the unset default may
 //! collapse to the bare tier, because only then did nobody ask for a uid.
 //!
-//! `HostHardened`'s `/v1/run` child keeps the runtime's uid: that mode's
-//! documented contract is self-restriction (it attests `process: Shared`), and
-//! the tool-proxy never selects it — its containment comes only from
-//! `SandboxProof`, which yields `MicroVM` or `Unsandboxed`.
+//! A non-root `HostHardened` `/v1/run` child keeps the runtime's uid: that
+//! mode's documented contract is self-restriction (it attests
+//! `process: Shared`), and a non-root runtime cannot drop. The tool-proxy
+//! never selects it — its containment comes only from `SandboxProof`, which
+//! yields `MicroVM` or `Unsandboxed`.
 //!
 //! [`apply`]: ChildConfinement::apply
 
@@ -107,6 +125,27 @@ enum Posture {
     DropTo(u32),
 }
 
+/// The operator's explicit acceptance that a pod workload may run as a
+/// non-root runtime's own uid on the bare host tier (owner decision 1,
+/// 2026-10-02).
+///
+/// A named two-case type rather than a `bool` (ADR 0007 A): the absent case
+/// is the refusal, and nothing defaults to the other one — there is no
+/// `Default` (B-1). It reaches [`ChildConfinement::workload`] only from the
+/// tool-proxy's `--unsandboxed` flag, which the CLI's host-tier commands pass
+/// deliberately; it grants nothing to a root runtime (which drops anyway) or
+/// to a mode other than `Unsandboxed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsandboxedOptIn {
+    /// No opt-in: a workload that would share the runtime's uid is refused
+    /// with [`NucleusError::UnsandboxedWorkloadNotOptedIn`].
+    Absent,
+    /// The operator passed `--unsandboxed`: a default-uid workload under
+    /// `ContainmentMode::Unsandboxed` on a non-root runtime runs at the
+    /// runtime's uid, announced by a log line and a console banner.
+    Explicit,
+}
+
 /// Who the child runs as, relative to the runtime. Two-valued on purpose: a
 /// confinement either changes the uid or it does not, and there is no third
 /// state now that "wanted to, could not" is a refusal rather than a posture.
@@ -127,6 +166,9 @@ impl ChildConfinement {
     ///   [`ContainmentMode::Unconfigured`] — no posture, no spawn.
     /// * [`NucleusError::ChildSeparationUnavailable`] for
     ///   [`ContainmentMode::MicroVM`] when the runtime is not root.
+    ///
+    /// A root runtime's child drops to [`DEFAULT_CHILD_UID`] in every mode
+    /// (owner decision 2).
     pub fn for_containment(mode: ContainmentMode) -> Result<Self> {
         Self::decide(mode, runtime_uid())
     }
@@ -138,6 +180,13 @@ impl ChildConfinement {
         // not compile until its children's confinement is written here.
         match mode {
             ContainmentMode::Unconfigured => Err(NucleusError::IsolationNotConfigured),
+            // Owner decision 2 (2026-10-02): a root runtime's child is never
+            // root, whatever the mode. The bare and self-restricted tiers
+            // still mean "no namespace or seccomp confinement", but a root
+            // runtime can always drop, so it does.
+            ContainmentMode::Unsandboxed | ContainmentMode::HostHardened if runtime_uid == 0 => {
+                Self::separate(DEFAULT_CHILD_UID, runtime_uid)
+            }
             ContainmentMode::Unsandboxed => Ok(Self {
                 posture: Posture::Unsandboxed,
             }),
@@ -154,7 +203,7 @@ impl ChildConfinement {
 
     /// The confinement of a pod workload under `mode` that asked for
     /// `requested` (`workload.uid`; `None` = the default,
-    /// [`DEFAULT_CHILD_UID`]).
+    /// [`DEFAULT_CHILD_UID`]), with the operator's `opt_in` to the bare tier.
     ///
     /// This is the workload's ADMISSION, not only its spawn: the tool-proxy
     /// admits a workload by obtaining this value and spawns by applying it,
@@ -167,14 +216,22 @@ impl ChildConfinement {
     /// * [`NucleusError::ChildSeparationUnavailable`] when separation is
     ///   required and the runtime cannot drop: every mode but `Unsandboxed`,
     ///   and `Unsandboxed` with an explicit `workload.uid`.
-    pub fn workload(mode: ContainmentMode, requested: Option<u32>) -> Result<Self> {
-        Self::decide_workload(mode, requested, runtime_uid())
+    /// * [`NucleusError::UnsandboxedWorkloadNotOptedIn`] for the bare tier
+    ///   (`Unsandboxed`, default uid, non-root runtime) without
+    ///   [`UnsandboxedOptIn::Explicit`].
+    pub fn workload(
+        mode: ContainmentMode,
+        requested: Option<u32>,
+        opt_in: UnsandboxedOptIn,
+    ) -> Result<Self> {
+        Self::decide_workload(mode, requested, runtime_uid(), opt_in)
     }
 
     pub(crate) fn decide_workload(
         mode: ContainmentMode,
         requested: Option<u32>,
         runtime_uid: u32,
+        opt_in: UnsandboxedOptIn,
     ) -> Result<Self> {
         let uid = requested.unwrap_or(DEFAULT_CHILD_UID);
         match mode {
@@ -184,12 +241,19 @@ impl ChildConfinement {
             // the workload runs as a plain host process — which is what
             // `Unsandboxed` means. Only when no uid was asked for: an
             // explicit `workload.uid` the runtime cannot honour is refused
-            // rather than silently replaced by the runtime's.
-            ContainmentMode::Unsandboxed => match requested {
-                None if runtime_uid != 0 => Ok(Self {
+            // rather than silently replaced by the runtime's. And only on the
+            // operator's explicit opt-in (owner decision 1): declaring the
+            // mode is not, by itself, consent to a same-uid workload.
+            ContainmentMode::Unsandboxed => match (requested, opt_in) {
+                (None, UnsandboxedOptIn::Explicit) if runtime_uid != 0 => Ok(Self {
                     posture: Posture::Unsandboxed,
                 }),
-                None | Some(_) => Self::separate(uid, runtime_uid),
+                (None, UnsandboxedOptIn::Absent) if runtime_uid != 0 => {
+                    Err(NucleusError::UnsandboxedWorkloadNotOptedIn { runtime_uid })
+                }
+                (None | Some(_), UnsandboxedOptIn::Absent | UnsandboxedOptIn::Explicit) => {
+                    Self::separate(uid, runtime_uid)
+                }
             },
             ContainmentMode::HostHardened | ContainmentMode::MicroVM => {
                 Self::separate(uid, runtime_uid)
@@ -474,6 +538,72 @@ mod imp {
 mod tests {
     use super::*;
 
+    /// Owner decision 2 (2026-10-02): a root runtime's `/v1/run` child drops
+    /// to the workload uid in every mode, not only `MicroVM`. Red before the
+    /// decision: `Unsandboxed` and `HostHardened` returned `drop_uid() ==
+    /// None` for runtime uid 0, i.e. a root child.
+    #[test]
+    fn a_root_runtimes_child_drops_in_every_mode() {
+        for mode in [
+            ContainmentMode::Unsandboxed,
+            ContainmentMode::HostHardened,
+            ContainmentMode::MicroVM,
+        ] {
+            let c = ChildConfinement::decide(mode, 0).expect("a declared mode confines");
+            assert_eq!(c.drop_uid(), Some(DEFAULT_CHILD_UID), "{mode:?}");
+            assert!(c.restricts(), "{mode:?}");
+            assert!(!c.is_unsandboxed(), "{mode:?}");
+        }
+    }
+
+    /// Owner decision 1 (2026-10-02): a non-root runtime runs a workload at
+    /// its own uid only on an explicit opt-in; without one it refuses BY NAME.
+    /// Red before the decision: declaring `Unsandboxed` alone admitted it.
+    #[test]
+    fn a_bare_tier_workload_needs_the_explicit_opt_in() {
+        assert!(matches!(
+            ChildConfinement::decide_workload(
+                ContainmentMode::Unsandboxed,
+                None,
+                1000,
+                UnsandboxedOptIn::Absent
+            ),
+            Err(NucleusError::UnsandboxedWorkloadNotOptedIn { runtime_uid: 1000 })
+        ));
+        let c = ChildConfinement::decide_workload(
+            ContainmentMode::Unsandboxed,
+            None,
+            1000,
+            UnsandboxedOptIn::Explicit,
+        )
+        .expect("the opted-in bare tier runs");
+        assert!(c.is_unsandboxed());
+        assert_eq!(c.child_uid(), ChildUid::SharedWithRuntime);
+        // The opt-in is not needed where nothing shares a uid: a root runtime
+        // drops, with or without it.
+        for opt_in in [UnsandboxedOptIn::Absent, UnsandboxedOptIn::Explicit] {
+            let c =
+                ChildConfinement::decide_workload(ContainmentMode::Unsandboxed, None, 0, opt_in)
+                    .unwrap();
+            assert_eq!(c.child_uid(), ChildUid::Distinct(DEFAULT_CHILD_UID));
+        }
+    }
+
+    /// The opt-in reaches only the bare tier: it never turns a refused
+    /// separation in another mode into a same-uid workload.
+    #[test]
+    fn the_opt_in_grants_nothing_outside_the_bare_tier() {
+        for mode in [ContainmentMode::HostHardened, ContainmentMode::MicroVM] {
+            assert!(
+                matches!(
+                    ChildConfinement::decide_workload(mode, None, 1000, UnsandboxedOptIn::Explicit),
+                    Err(NucleusError::ChildSeparationUnavailable { .. })
+                ),
+                "{mode:?}"
+            );
+        }
+    }
+
     /// THE finding (A-19): inside a guest the runtime is root, and a MicroVM
     /// child must leave root. Red on the commit before this module, where the
     /// Executor handed the spawn home `None` for every mode but HostHardened.
@@ -493,7 +623,13 @@ mod tests {
         for runtime in [0, 1000] {
             assert_eq!(
                 ChildConfinement::decide(ContainmentMode::MicroVM, runtime).ok(),
-                ChildConfinement::decide_workload(ContainmentMode::MicroVM, None, runtime).ok(),
+                ChildConfinement::decide_workload(
+                    ContainmentMode::MicroVM,
+                    None,
+                    runtime,
+                    UnsandboxedOptIn::Absent
+                )
+                .ok(),
             );
         }
     }
@@ -519,13 +655,15 @@ mod tests {
     fn a_non_root_runtime_refuses_every_separated_workload_by_name() {
         for mode in [ContainmentMode::MicroVM, ContainmentMode::HostHardened] {
             for requested in [None, Some(4242)] {
-                assert!(
-                    matches!(
-                        ChildConfinement::decide_workload(mode, requested, 1000),
-                        Err(NucleusError::ChildSeparationUnavailable { .. })
-                    ),
-                    "{mode:?} / {requested:?}"
-                );
+                for opt_in in [UnsandboxedOptIn::Absent, UnsandboxedOptIn::Explicit] {
+                    assert!(
+                        matches!(
+                            ChildConfinement::decide_workload(mode, requested, 1000, opt_in),
+                            Err(NucleusError::ChildSeparationUnavailable { .. })
+                        ),
+                        "{mode:?} / {requested:?} / {opt_in:?}"
+                    );
+                }
             }
         }
     }
@@ -534,17 +672,27 @@ mod tests {
     /// default uid: an explicit `workload.uid` is honoured or refused.
     #[test]
     fn unsandboxed_is_the_only_same_uid_workload_and_only_by_default() {
-        let c = ChildConfinement::decide_workload(ContainmentMode::Unsandboxed, None, 1000)
-            .expect("the declared bare tier runs");
+        let c = ChildConfinement::decide_workload(
+            ContainmentMode::Unsandboxed,
+            None,
+            1000,
+            UnsandboxedOptIn::Explicit,
+        )
+        .expect("the declared, opted-in bare tier runs");
         assert!(c.is_unsandboxed());
         assert_eq!(c.child_uid(), ChildUid::SharedWithRuntime);
-        assert!(matches!(
-            ChildConfinement::decide_workload(ContainmentMode::Unsandboxed, Some(4242), 1000),
-            Err(NucleusError::ChildSeparationUnavailable { .. })
-        ));
-        // A root runtime still drops, even on the bare tier.
-        let c = ChildConfinement::decide_workload(ContainmentMode::Unsandboxed, None, 0).unwrap();
-        assert_eq!(c.child_uid(), ChildUid::Distinct(DEFAULT_CHILD_UID));
+        // Owner decision 3: an explicit uid is honoured or refused, opt-in or not.
+        for opt_in in [UnsandboxedOptIn::Absent, UnsandboxedOptIn::Explicit] {
+            assert!(matches!(
+                ChildConfinement::decide_workload(
+                    ContainmentMode::Unsandboxed,
+                    Some(4242),
+                    1000,
+                    opt_in
+                ),
+                Err(NucleusError::ChildSeparationUnavailable { .. })
+            ));
+        }
     }
 
     /// The runtime's own uid is never a boundary, in any mode, root or not.
@@ -555,21 +703,29 @@ mod tests {
             ContainmentMode::HostHardened,
             ContainmentMode::MicroVM,
         ] {
-            assert!(matches!(
-                ChildConfinement::decide_workload(mode, Some(1000), 1000),
-                Err(NucleusError::ChildSharesRuntimeUid { uid: 1000 })
-            ));
-            assert!(matches!(
-                ChildConfinement::decide_workload(mode, Some(0), 0),
-                Err(NucleusError::ChildSharesRuntimeUid { uid: 0 })
-            ));
+            for opt_in in [UnsandboxedOptIn::Absent, UnsandboxedOptIn::Explicit] {
+                assert!(matches!(
+                    ChildConfinement::decide_workload(mode, Some(1000), 1000, opt_in),
+                    Err(NucleusError::ChildSharesRuntimeUid { uid: 1000 })
+                ));
+                assert!(matches!(
+                    ChildConfinement::decide_workload(mode, Some(0), 0, opt_in),
+                    Err(NucleusError::ChildSharesRuntimeUid { uid: 0 })
+                ));
+            }
         }
     }
 
     /// A root runtime drops an explicit uid to exactly that uid.
     #[test]
     fn a_root_runtime_drops_an_explicit_workload_uid() {
-        let c = ChildConfinement::decide_workload(ContainmentMode::MicroVM, Some(4242), 0).unwrap();
+        let c = ChildConfinement::decide_workload(
+            ContainmentMode::MicroVM,
+            Some(4242),
+            0,
+            UnsandboxedOptIn::Absent,
+        )
+        .unwrap();
         assert_eq!(c.child_uid(), ChildUid::Distinct(4242));
         assert!(c.restricts());
     }
@@ -581,27 +737,33 @@ mod tests {
             Err(NucleusError::IsolationNotConfigured)
         ));
         assert!(matches!(
-            ChildConfinement::decide_workload(ContainmentMode::Unconfigured, None, 0),
+            ChildConfinement::decide_workload(
+                ContainmentMode::Unconfigured,
+                None,
+                0,
+                UnsandboxedOptIn::Explicit
+            ),
             Err(NucleusError::IsolationNotConfigured)
         ));
     }
 
+    /// A non-root `HostHardened` runtime cannot drop, so it self-restricts.
     #[test]
     fn host_hardened_restricts_without_a_uid_change() {
-        let c = ChildConfinement::decide(ContainmentMode::HostHardened, 0).unwrap();
+        let c = ChildConfinement::decide(ContainmentMode::HostHardened, 1000).unwrap();
         assert_eq!(c.drop_uid(), None);
         assert!(c.restricts());
     }
 
+    /// The bare posture: a non-root runtime under `Unsandboxed`. A root one
+    /// drops instead (owner decision 2).
     #[test]
     fn unsandboxed_is_the_one_bare_posture() {
-        for runtime in [0, 1000] {
-            let c = ChildConfinement::decide(ContainmentMode::Unsandboxed, runtime).unwrap();
-            assert!(c.is_unsandboxed());
-            assert_eq!(c.drop_uid(), None);
-            assert!(!c.restricts());
-            assert!(!c.closes_inherited_fds());
-        }
+        let c = ChildConfinement::decide(ContainmentMode::Unsandboxed, 1000).unwrap();
+        assert!(c.is_unsandboxed());
+        assert_eq!(c.drop_uid(), None);
+        assert!(!c.restricts());
+        assert!(!c.closes_inherited_fds());
         for mode in [ContainmentMode::HostHardened, ContainmentMode::MicroVM] {
             assert!(
                 ChildConfinement::decide(mode, 0).is_ok_and(|c| !c.is_unsandboxed()),
