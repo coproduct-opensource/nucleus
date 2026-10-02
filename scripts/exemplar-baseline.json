@@ -9,7 +9,7 @@
     "clean_axiom_footprint": "n/a"
   },
   "rust_craft": {
-    "permissive_verify": 13,
+    "permissive_verify": 14,
     "verify_calls_GUARD": 44,
     "unsafe_blocks": 8,
     "crates_total": 67,

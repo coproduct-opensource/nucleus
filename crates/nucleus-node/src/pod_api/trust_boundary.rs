@@ -639,6 +639,7 @@ impl Host for Node {
             "kernel_path": kernel, "rootfs_path": rootfs,
         }))
         .map_err(|e| e.to_string())?;
+        let image = crate::rootfs_source::HostImage::resolve(&image).map_err(|e| e.to_string())?;
         let spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
             "apiVersion": "nucleus/v1", "kind": "Pod",
             "metadata": {"name": POD_NAME}, "spec": {},
