@@ -33,7 +33,7 @@ nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
 
 # Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
 # pre-1.0; see nucleus-bundle-cas for version pins + rationale.
-iroh = "=1.2.0"
+iroh = "=1.3.0"
 iroh-blobs = "=0.103.0"
 
 # gRPC client
