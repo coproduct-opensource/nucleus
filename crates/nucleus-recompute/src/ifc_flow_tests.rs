@@ -91,7 +91,5 @@ fn cross_check_rejects_input_output_mismatch() {
 fn cross_check_inherits_allow_rule() {
     // A child gated on "adversarial" is rejected by the allow-rule before the
     // input/output comparison even matters.
-    assert!(
-        !verify_ifc_flow_consistent(Some("adversarial"), Some("adversarial")).is_consistent()
-    );
+    assert!(!verify_ifc_flow_consistent(Some("adversarial"), Some("adversarial")).is_consistent());
 }
