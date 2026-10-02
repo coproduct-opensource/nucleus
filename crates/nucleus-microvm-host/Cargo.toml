@@ -28,6 +28,12 @@ nucleus-identity = { path = "../nucleus-identity" }
 nucleus-spec = { path = "../nucleus-spec" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+# The seed tar (`ext4::tree_tar`), and reading an input tar's headers to size
+# the image. The same crate and features `nucleus-oci-rootfs` emits with.
+tar = { version = "0.4", default-features = false }
+# The pinned mke2fs.conf and the probe's smoke build live in a temp dir.
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "fs"] }
 
 # Safe wrappers over the KVM ioctls, from the crate the VMM itself is built on,
