@@ -78,9 +78,17 @@
 # spawn into `spawn_checked` (the guard) and `spawn_unguarded` (the effect), and
 # the effect half takes the `Authority` by name and spends it -- one more bound
 # site, on main's 184/185. 185/186 = 99.46%, and the floor follows it up.
-floor_bp = 9946
+# 2026-10-01: census correction, not new obligations (#2986). The census read a
+# witness type by its bare spelling, so a parameter written with its path --
+# `&portcullis::VerifiedPermissions`, `portcullis_effects::authority::Authority`,
+# `&portcullis_core::declassify::DeclassificationToken` -- was not a site at all.
+# It now reads the type's last path segment as a whole identifier. Seven bound
+# sites that were always there become visible (authority-exchange from_verified,
+# tool-proxy broker_client and run_gate, four in portcullis flow_graph); dropped
+# is unchanged at 33, so INERT_TOTAL still agrees. 192/193 = 99.48%.
+floor_bp = 9948
 floor_set = "measurement"
-population_floor = 186
+population_floor = 193
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`

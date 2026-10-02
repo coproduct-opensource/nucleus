@@ -93,5 +93,10 @@
 # into `spawn_checked` (the guard) and `spawn_unguarded` (the effect), and the
 # effect half takes the `Authority` by name and spends it. One new site, bound:
 # D=186, B=185, dropped=1 (still CaClient), measured on this branch merged with main.
-floor_bp = 9946
-declared_floor = 186
+# 2026-10-01: census correction, not new obligations (#2986). A witness parameter
+# written with its path (`&portcullis::VerifiedPermissions`) was invisible to the
+# scan; it now matches the type's last path segment as a whole identifier. Seven
+# existing bound sites become visible: D=193, B=192, dropped=1 (still CaClient),
+# raw dropped still 33 == INERT_TOTAL.
+floor_bp = 9948
+declared_floor = 193
